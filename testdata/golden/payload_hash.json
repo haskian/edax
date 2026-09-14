@@ -1,0 +1,26 @@
+[
+  {
+    "expected": 14695981039346656037,
+    "input": ""
+  },
+  {
+    "expected": 12638187200555641996,
+    "input": "a"
+  },
+  {
+    "expected": 9625390261332436968,
+    "input": "foobar"
+  },
+  {
+    "expected": 13442112783690484973,
+    "input": "{\"email\":\"a@b.c\"}"
+  },
+  {
+    "expected": 7895284774704607456,
+    "input": "user.create"
+  },
+  {
+    "expected": 1851910297177432799,
+    "input": "café ☕ 🦀"
+  }
+]

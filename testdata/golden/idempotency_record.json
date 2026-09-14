@@ -1,0 +1,122 @@
+[
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":true}",
+    "name": "pending_claim",
+    "outcome": "in_progress",
+    "payload_hash": 11234062831410934249,
+    "state": "pending",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":true}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"pending\":false}",
+    "name": "cached_success_with_value",
+    "outcome": "succeeded",
+    "payload_hash": 11234062831410934249,
+    "result": {
+      "invoice_id": "invoice-7",
+      "total": 5000
+    },
+    "state": "done",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"pending\":false}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":false}",
+    "name": "cached_success_with_null_result",
+    "outcome": "succeeded",
+    "payload_hash": 11234062831410934249,
+    "result": null,
+    "state": "done",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":false}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}",
+    "error": "codec: bad payload",
+    "name": "cached_failure",
+    "outcome": "failed",
+    "payload_hash": 11234062831410934249,
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"pending\":false}",
+    "name": "older_writer_without_pending_field_success",
+    "outcome": "succeeded",
+    "payload_hash": 11234062831410934249,
+    "result": 42,
+    "state": "done",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"pending\":false}",
+    "error": "boom",
+    "name": "older_writer_without_pending_field_failure",
+    "outcome": "failed",
+    "payload_hash": 11234062831410934249,
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\"}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":false}",
+    "name": "absent_result_reads_as_null",
+    "outcome": "succeeded",
+    "payload_hash": 11234062831410934249,
+    "result": null,
+    "state": "done",
+    "stored": "{\"payload_hash\":11234062831410934249,\"pending\":false}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":true}",
+    "name": "pending_wins_over_a_stale_error",
+    "outcome": "in_progress",
+    "payload_hash": 11234062831410934249,
+    "state": "pending",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"pending\":true}"
+  },
+  {
+    "current": 11234062831410934249,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"pending\":false}",
+    "error": "boom",
+    "name": "error_wins_over_a_result",
+    "outcome": "failed",
+    "payload_hash": 11234062831410934249,
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":\"boom\",\"pending\":false}"
+  },
+  {
+    "current": 11234059532876049616,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":true}",
+    "name": "payload_mismatch_while_pending",
+    "outcome": "payload_mismatch",
+    "payload_hash": 11234062831410934249,
+    "state": "pending",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"pending\":true}"
+  },
+  {
+    "current": 11234059532876049616,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}",
+    "error": "codec: bad payload",
+    "name": "payload_mismatch_on_cached_failure",
+    "outcome": "payload_mismatch",
+    "payload_hash": 11234062831410934249,
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}"
+  },
+  {
+    "current": 11234059532876049616,
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"pending\":false}",
+    "name": "payload_mismatch_on_cached_success",
+    "outcome": "payload_mismatch",
+    "payload_hash": 11234062831410934249,
+    "result": 42,
+    "state": "done",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"pending\":false}"
+  }
+]

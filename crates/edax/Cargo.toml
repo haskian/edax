@@ -1,0 +1,24 @@
+[package]
+name = "edax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ergonomic Rust SDK over the edax kernels: aggregates, storage seam, command bus, consumer, and sagas"
+
+[dependencies]
+edax-core.workspace = true
+edax-cqrs.workspace = true
+edax-event.workspace = true
+edax-adapters.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = { version = "1", optional = true }
+
+[features]
+default = ["msgpack"]
+msgpack = ["dep:rmp-serde"]
+
+[dev-dependencies]
+edax-golden.workspace = true
+proptest = "1"

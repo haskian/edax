@@ -1,0 +1,312 @@
+[
+  {
+    "documents": [
+      {
+        "n": 3
+      },
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      }
+    ],
+    "expected_cursor": "WzMsbnVsbF0=",
+    "expected_page": [
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      },
+      {
+        "n": 3
+      }
+    ],
+    "query": {
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 3
+      },
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      },
+      {
+        "n": 5
+      },
+      {
+        "n": 4
+      }
+    ],
+    "expected_cursor": "WzMsbnVsbF0=",
+    "expected_page": [
+      {
+        "n": 2
+      },
+      {
+        "n": 3
+      }
+    ],
+    "query": {
+      "limit": 2,
+      "offset": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 1
+      },
+      {},
+      {
+        "n": 3
+      }
+    ],
+    "expected_cursor": "WzEsbnVsbF0=",
+    "expected_page": [
+      {},
+      {
+        "n": 3
+      },
+      {
+        "n": 1
+      }
+    ],
+    "query": {
+      "sort": [
+        {
+          "desc": true,
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "v": "a"
+      },
+      {
+        "v": 2
+      },
+      {
+        "v": true
+      },
+      {
+        "v": null
+      },
+      {
+        "v": [
+          1
+        ]
+      },
+      {
+        "v": {
+          "k": 1
+        }
+      }
+    ],
+    "expected_cursor": "W251bGwsbnVsbF0=",
+    "expected_page": [
+      {
+        "v": 2
+      },
+      {
+        "v": "a"
+      },
+      {
+        "v": true
+      },
+      {
+        "v": [
+          1
+        ]
+      },
+      {
+        "v": {
+          "k": 1
+        }
+      },
+      {
+        "v": null
+      }
+    ],
+    "query": {
+      "sort": [
+        {
+          "path": "v"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 2,
+        "s": "open"
+      },
+      {
+        "n": 1,
+        "s": "closed"
+      },
+      {
+        "n": 1,
+        "s": "open"
+      }
+    ],
+    "expected_cursor": "WzIsbnVsbF0=",
+    "expected_page": [
+      {
+        "n": 1,
+        "s": "open"
+      },
+      {
+        "n": 2,
+        "s": "open"
+      }
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "eq",
+          "path": "s",
+          "value": "open"
+        }
+      },
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      },
+      {
+        "n": 3
+      }
+    ],
+    "expected_cursor": "WzIsbnVsbF0=",
+    "expected_page": [
+      {
+        "n": 2
+      }
+    ],
+    "query": {
+      "after": "WzFd",
+      "limit": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 3
+      },
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      }
+    ],
+    "expected_cursor": "W10=",
+    "expected_page": [
+      {
+        "n": 3
+      },
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      }
+    ],
+    "query": {}
+  },
+  {
+    "documents": [
+      {
+        "bal": 150,
+        "id": "a"
+      },
+      {
+        "bal": 300,
+        "id": "b"
+      },
+      {
+        "bal": 150,
+        "id": "c"
+      }
+    ],
+    "expected_cursor": "WzE1MCwiYSJd",
+    "expected_page": [
+      {
+        "bal": 300,
+        "id": "b"
+      },
+      {
+        "bal": 150,
+        "id": "a"
+      }
+    ],
+    "query": {
+      "limit": 2,
+      "sort": [
+        {
+          "desc": true,
+          "path": "bal"
+        },
+        {
+          "path": "id"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "n": 1
+      },
+      {
+        "n": 2
+      }
+    ],
+    "expected_cursor": null,
+    "expected_page": [],
+    "query": {
+      "offset": 5,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  }
+]

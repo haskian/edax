@@ -1,0 +1,59 @@
+name: Release
+
+# Tag-driven. The build runs on every tag; publishing is a separate job behind the
+# `pypi` GitHub environment, so it cannot fire until that environment exists.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  # version.yml calls this after it cuts a tag. It cannot rely on the tag push above:
+  # GitHub does not start a workflow from a ref pushed with GITHUB_TOKEN, so a bump would
+  # tag the release and then publish nothing.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Publishing an artifact that fails its own test suite is not worth the convenience.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  wheels:
+    name: Build wheels (${{ matrix.runs-on }})
+    needs: ci
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      matrix:
+        runs-on: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cargo-cache-key: release
+      - name: Build
+        working-directory: crates/edax-py
+        # abi3-py39, so one wheel per platform covers every supported interpreter.
+        run: mise exec -- maturin build --release --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.runs-on }}
+          path: crates/edax-py/dist/*.whl
+
+  publish:
+    name: Publish to PyPI
+    needs: wheels
+    runs-on: ubuntu-latest
+    # Create this environment (with a required reviewer) to arm publishing. Until then
+    # the job is blocked, so a stray tag cannot release anything.
+    environment: pypi
+    permissions:
+      # Trusted publishing: no long-lived PyPI token in secrets.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

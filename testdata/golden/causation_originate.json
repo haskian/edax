@@ -1,0 +1,62 @@
+[
+  {
+    "expected": {
+      "causation_id": "fresh-1",
+      "correlation_id": "fresh-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {}
+  },
+  {
+    "expected": {
+      "causation_id": "corr-1",
+      "correlation_id": "corr-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "correlation_id": "corr-1"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-0",
+      "correlation_id": "fresh-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "causation_id": "evt-0"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-0",
+      "correlation_id": "corr-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "causation_id": "evt-0",
+      "correlation_id": "corr-1"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "fresh-1",
+      "correlation_id": "fresh-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "trace": "t-9"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "corr-1",
+      "correlation_id": "corr-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "correlation_id": "corr-1",
+      "trace": "t-9"
+    }
+  }
+]

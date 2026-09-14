@@ -1,0 +1,38 @@
+# alef drives the edax-py native binding. The plain-Rust surface in `edax-abi` is the single source;
+# alef emits the pyo3 module (`_edax`) into `crates/edax-py/src/lib.rs`. The hand-written ergonomic
+# package under `crates/edax-py/python/edax/` is NOT owned by alef — only the generated binding is, so
+# the generator's whole python package (scaffold __init__/api/exceptions/options AND the type stub)
+# is routed to the throwaway `.alef` dir and not shipped. In this alef version that output dir IS the
+# package dir, so it must NOT point at `python/edax` or alef overwrites the hand-written __init__.py.
+#
+# The `_edax.pyi` type stub is the one piece we DO ship (so checkers see Event/EventEnvelope fields):
+# it's committed at `crates/edax-py/python/edax/_edax.pyi` next to the compiled `_edax`, with a `py.typed`
+# marker (PEP 561) — we commit the generated binding so checkers don't need to regenerate it. The shipped
+# copy has alef's `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.
+#
+# Regenerate with --clean ONLY: `alef generate --lang python --clean`. A plain incremental
+# `alef generate` is destructive here — on a cache hit it skips re-emitting `src/lib.rs` / the stub but
+# still runs cleanup, deleting them; `--clean` re-emits everything so cleanup has nothing to orphan.
+# After a regen, refresh the shipped stub (strip the alef header so cleanup ignores it):
+#   tail -n +6 crates/edax-py/.alef/_edax.pyi  -> body, under a hand-written PEP 561 header.
+
+[workspace]
+languages = ["python"]
+alef_version = "0.86.0"
+
+[[crates]]
+name = "edax-abi"
+core_import = "edax_abi"
+sources = ["crates/edax-abi/src/lib.rs"]
+version_from = "crates/edax-abi/Cargo.toml"
+
+[crates.output]
+python = "crates/edax-py/src"
+
+[crates.python]
+module_name = "_edax"
+pip_name = "edax"
+scaffold_output = "crates/edax-py/.alef"
+
+[crates.python.stubs]
+output = "crates/edax-py/.alef"

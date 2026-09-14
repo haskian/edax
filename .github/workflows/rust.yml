@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner image for the job.
+        type: string
+        default: ubuntu-latest
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: clippy + tests
+    runs-on: ${{ inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cargo-cache-key: rust
+
+      # Warnings are currently zero across the workspace; -D keeps it that way.
+      - name: Clippy
+        run: mise exec -- cargo clippy --workspace --all-targets -- -D warnings
+
+      # Also covers the golden vectors in testdata/golden, which are the cross-language
+      # contract: a kernel change that moves them fails here rather than silently in a
+      # second SDK. The proptest model suite runs at its committed case counts; raise
+      # them with PROPTEST_CASES for a deeper sweep.
+      - name: Test
+        run: mise exec -- cargo test --workspace

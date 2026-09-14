@@ -1,0 +1,12 @@
+[package]
+name = "edax-golden"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test-only harness for the golden vectors in testdata/golden (never published)"
+# A test harness ships nothing. It exists so the regenerate-or-assert rule has one definition.
+publish = false
+
+[dependencies]
+serde_json = "1"

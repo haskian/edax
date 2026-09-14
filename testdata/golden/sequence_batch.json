@@ -1,0 +1,62 @@
+[
+  {
+    "error": null,
+    "expected": 7,
+    "sequences": []
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "sequences": [
+      1
+    ]
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "sequences": [
+      3,
+      4,
+      5
+    ]
+  },
+  {
+    "error": "envelope 1 has no sequence",
+    "expected": 0,
+    "sequences": [
+      1,
+      null
+    ]
+  },
+  {
+    "error": "envelope 1 has sequence 4, expected 3",
+    "expected": 1,
+    "sequences": [
+      2,
+      4
+    ]
+  },
+  {
+    "error": "envelope 0 has sequence 2, expected 1",
+    "expected": 0,
+    "sequences": [
+      2,
+      1
+    ]
+  },
+  {
+    "error": "envelope 1 has sequence 1, expected 2",
+    "expected": 0,
+    "sequences": [
+      1,
+      1
+    ]
+  },
+  {
+    "error": "envelope 0 has sequence 18446744073709551615, expected 2",
+    "expected": 1,
+    "sequences": [
+      18446744073709551615
+    ]
+  }
+]
