@@ -1,0 +1,63 @@
+# One config for every Python file in the repo: the SDK, its tests, and the examples.
+# A second config per directory is a second set of rules to keep in sync.
+
+target-version = "py39" # crates/edax-py/pyproject.toml declares requires-python >=3.9
+line-length = 110
+
+exclude = [
+    # alef-generated; regenerated from crates/edax-abi and never hand-edited.
+    "crates/edax-py/python/edax/_edax.pyi",
+    "crates/edax-py/.alef",
+]
+
+[lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # import order
+    "UP",      # pyupgrade
+    "B",       # bugbear
+    "A",       # shadowed builtins — the tree already carries `noqa: A002` for Command.type
+    "BLE",     # blind except — the tree already carries `noqa: BLE001` where one is deliberate
+    "SIM",
+    "RUF",
+]
+
+ignore = [
+    # PEP 604 (`X | None`) in annotations. Every module has `from __future__ import annotations`,
+    # so these are strings at definition time — but `dataclass` and `msgspec.Struct` resolve them
+    # at runtime, and `eval("str | None")` raises on 3.9, which `abi3-py39` and requires-python
+    # both genuinely target. `Optional` stays until the floor moves to 3.10.
+    "UP007",
+    "UP045",
+    # The single `__all__` is grouped by concern under comment headers (submodules, kernel
+    # functions, errors) and sorted within each group. One flat alphabetical list would read
+    # worse, not better.
+    "RUF022",
+]
+
+[lint.flake8-builtins]
+# `id` and `type` are domain vocabulary here, not accidents: every store seam takes an aggregate
+# or saga `id`, and a command's `type` is the key it is routed by. Both read correctly and both
+# match the Rust side's names. `filter` likewise names the kernel's query filter.
+builtins-ignorelist = ["id", "type", "filter"]
+
+[lint.per-file-ignores]
+# Tests reach for private helpers to pin internal contracts, and assert on them. E501 is off
+# here because the suites are table-driven over realistic payloads: a case is one row. The
+# formatter reflows most rows within `line-length`; a table it is told to leave alone (see
+# `[format]` below) keeps rows past that width, and E501 must not fight it.
+"crates/edax-py/tests/*" = ["SLF001", "E501"]
+# The examples open with ASCII diagrams of the flow they demonstrate; a wrapped diagram is not one.
+# Those live in comments, which the formatter never touches, so only the linter needs telling.
+"examples/py/*" = ["E501"]
+
+# `ruff format --check .` gates CI (.github/workflows/python.yml, `lint` job). `line-length` stays
+# at 110 for the formatter as well: the SDK modules fit it as written, and a wider limit would
+# only let ordinary code sprawl. It does not rescue the widest test tables either — rows there
+# reach 156 columns — so one genuinely tabular block (`test_filter.py`, the constructor →
+# canonical-form table) carries a trailing `# fmt: skip` on its decorator instead. Use that only
+# where the rows are data a reader scans column by column; everywhere else the formatter wins.
+# Ruff also formats the fenced Python blocks in `*.md`, so the README quickstart follows suit.
+[format]
+docstring-code-format = true

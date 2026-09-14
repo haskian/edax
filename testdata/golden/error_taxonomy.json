@@ -1,0 +1,56 @@
+[
+  {
+    "code": "concurrency",
+    "message": "expected 3, stored 4",
+    "terminal": false,
+    "wire": "concurrency: expected 3, stored 4"
+  },
+  {
+    "code": "codec",
+    "message": "invalid type: string, expected u64",
+    "terminal": true,
+    "wire": "codec: invalid type: string, expected u64"
+  },
+  {
+    "code": "store",
+    "message": "connection to the event store was reset",
+    "terminal": false,
+    "wire": "store: connection to the event store was reset"
+  },
+  {
+    "code": "payload_mismatch",
+    "message": "acct-1-3",
+    "terminal": true,
+    "wire": "payload_mismatch: acct-1-3"
+  },
+  {
+    "code": "in_progress",
+    "message": "acct-1-3",
+    "terminal": false,
+    "wire": "in_progress: acct-1-3"
+  },
+  {
+    "code": "cached_failure",
+    "message": "codec error: invalid type: string, expected u64",
+    "terminal": true,
+    "wire": "cached_failure: codec error: invalid type: string, expected u64"
+  },
+  {
+    "code": "handler_not_found",
+    "message": "Deposit",
+    "terminal": true,
+    "wire": "handler_not_found: Deposit"
+  },
+  {
+    "code": "already_registered",
+    "message": "Deposit",
+    "terminal": true,
+    "wire": "already_registered: Deposit"
+  },
+  {
+    "code": "bad_handle",
+    "message": "unknown transaction 7: not begun, or already committed or rolled back",
+    "terminal": true,
+    "wire": "bad_handle: unknown transaction 7: not begun, or already committed or rolled back"
+  }
+]

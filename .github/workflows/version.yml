@@ -1,0 +1,67 @@
+name: Version
+
+# On push to main: a conventional-commit SemVer bump (cog) writes CHANGELOG.md and cuts the
+# tag, then the release runs for that tag. This workflow publishes nothing itself.
+#
+# Requires main to accept pushes from github-actions[bot] — either a bot bypass on the branch
+# protection rule, or an unprotected main. Without it the bump commit cannot land and the job
+# fails at the push, not at the bump.
+on:
+  push:
+    branches: [main]
+
+# Never two bumps at once: the second would compute its next version from a tag the first has
+# not pushed yet, and both would claim the same one.
+concurrency:
+  group: version
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the bump commit, the changelog and the tag back to main
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.bump.outputs.released }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # cog reads every commit back to the last tag
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/setup
+
+      - id: bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # First run on a repo with no tags: anchor v0.0.0 at the root commit so the first
+          # real bump measures only the commits that followed it, not the whole history.
+          if [ -z "$(git tag)" ]; then
+            git tag v0.0.0 "$(git rev-list --max-parents=0 HEAD | tail -1)"
+            git push origin v0.0.0
+          fi
+
+          # Non-zero means the commits since the last tag imply no release (docs, chore, ci).
+          # That is the ordinary case, not a failure.
+          if mise exec -- cog bump --auto --skip-ci; then
+            git push origin HEAD:main
+            git push origin --tags
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$(git describe --tags --abbrev=0 --match='v[0-9]*')" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=No release::No commit since the last tag implies a version bump."
+          fi
+
+  # Same jobs a manually pushed `v*` tag would run: CI, wheels, then PyPI behind the `pypi`
+  # environment. Called rather than triggered — see the note on release.yml's workflow_call.
+  release:
+    needs: bump
+    if: needs.bump.outputs.released == 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

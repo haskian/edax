@@ -1,0 +1,16 @@
+/target
+**/__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.hypothesis/
+*.so
+*.dylib
+*.a
+.alef/
+__pycache__/
+*.pyd
+*.egg-info/
+dist/
+
+.cocoindex_code

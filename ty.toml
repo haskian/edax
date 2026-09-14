@@ -1,0 +1,26 @@
+# Type checking for the Python SDK, its tests, and the examples.
+
+[environment]
+# The SDK is a maturin project: the package lives under `python/`, not at the repo root, and
+# `_edax` is a compiled extension only present in the venv the extension was built into.
+# `tests/` is a root too: the suites import shared fixtures as `from conftest import ...`,
+# which pytest resolves by rootdir but a type checker will not guess.
+root = ["crates/edax-py/python", "crates/edax-py/tests"]
+python = "crates/edax-py/.venv"
+# The floor the package actually supports (abi3-py39, requires-python >=3.9), not whatever the
+# local interpreter happens to be — otherwise a 3.10-only construct type-checks here and breaks
+# for a user on 3.9.
+python-version = "3.9"
+
+[src]
+include = ["crates/edax-py/python", "crates/edax-py/tests", "examples/py"]
+exclude = [
+    # alef-generated from crates/edax-abi; never hand-edited, so a diagnostic here is not actionable.
+    "crates/edax-py/python/edax/_edax.pyi",
+]
+
+[analysis]
+# The broker and Redis backends wrap a client the caller owns and installs through an extra
+# (`edax[kafka]`, `[redis]`). The base package deliberately depends on none of them, so they are
+# absent from a plain checkout. An unresolved import here is the design, not a mistake.
+allowed-unresolved-imports = ["aiokafka", "aiokafka.**", "redis", "redis.**"]

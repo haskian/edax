@@ -1,0 +1,152 @@
+[
+  {
+    "expected": 0,
+    "id": "agg-1",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "agg-1",
+    "n": 1
+  },
+  {
+    "expected": 6,
+    "id": "agg-1",
+    "n": 7
+  },
+  {
+    "expected": 228,
+    "id": "agg-1",
+    "n": 256
+  },
+  {
+    "expected": 740,
+    "id": "agg-1",
+    "n": 1024
+  },
+  {
+    "expected": 0,
+    "id": "agg-2",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "agg-2",
+    "n": 1
+  },
+  {
+    "expected": 0,
+    "id": "agg-2",
+    "n": 7
+  },
+  {
+    "expected": 157,
+    "id": "agg-2",
+    "n": 256
+  },
+  {
+    "expected": 925,
+    "id": "agg-2",
+    "n": 1024
+  },
+  {
+    "expected": 0,
+    "id": "order-42",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "order-42",
+    "n": 1
+  },
+  {
+    "expected": 4,
+    "id": "order-42",
+    "n": 7
+  },
+  {
+    "expected": 244,
+    "id": "order-42",
+    "n": 256
+  },
+  {
+    "expected": 756,
+    "id": "order-42",
+    "n": 1024
+  },
+  {
+    "expected": 0,
+    "id": "user:7",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "user:7",
+    "n": 1
+  },
+  {
+    "expected": 4,
+    "id": "user:7",
+    "n": 7
+  },
+  {
+    "expected": 61,
+    "id": "user:7",
+    "n": 256
+  },
+  {
+    "expected": 61,
+    "id": "user:7",
+    "n": 1024
+  },
+  {
+    "expected": 0,
+    "id": "",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "",
+    "n": 1
+  },
+  {
+    "expected": 2,
+    "id": "",
+    "n": 7
+  },
+  {
+    "expected": 197,
+    "id": "",
+    "n": 256
+  },
+  {
+    "expected": 453,
+    "id": "",
+    "n": 1024
+  },
+  {
+    "expected": 0,
+    "id": "🦀-aggregate",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "🦀-aggregate",
+    "n": 1
+  },
+  {
+    "expected": 4,
+    "id": "🦀-aggregate",
+    "n": 7
+  },
+  {
+    "expected": 220,
+    "id": "🦀-aggregate",
+    "n": 256
+  },
+  {
+    "expected": 476,
+    "id": "🦀-aggregate",
+    "n": 1024
+  }
+]

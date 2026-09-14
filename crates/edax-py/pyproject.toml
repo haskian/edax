@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "edax"
+version = "0.0.1"
+description = "Polyglot event-sourcing toolkit"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "msgspec>=0.20.0",
+]
+
+[project.optional-dependencies]
+# Tech-specific adapters over a caller-owned client; install the extra to pull the client library.
+redis = ["redis>=4.2"]            # edax.backend.redis
+kafka = ["aiokafka>=0.8"]         # edax.backend.kafka
+test = ["pytest", "pytest-asyncio", "hypothesis"]
+
+[tool.maturin]
+module-name = "edax._edax"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

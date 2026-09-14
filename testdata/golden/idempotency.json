@@ -1,0 +1,32 @@
+[
+  {
+    "current": 11234062831410934249,
+    "expected": "proceed",
+    "prior": null
+  },
+  {
+    "current": 11234062831410934249,
+    "expected": "replay",
+    "prior": 11234062831410934249
+  },
+  {
+    "current": 11234062831410934249,
+    "expected": "payload_mismatch",
+    "prior": 11234059532876049616
+  },
+  {
+    "current": 0,
+    "expected": "proceed",
+    "prior": null
+  },
+  {
+    "current": 0,
+    "expected": "replay",
+    "prior": 0
+  },
+  {
+    "current": 11234062831410934249,
+    "expected": "payload_mismatch",
+    "prior": 0
+  }
+]

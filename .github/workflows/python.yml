@@ -1,0 +1,90 @@
+name: Python
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner image for the job.
+        type: string
+        default: ubuntu-latest
+      python-version:
+        description: Interpreter uv provisions for the venv. pyproject declares >=3.9.
+        type: string
+        default: "3.12"
+
+permissions:
+  contents: read
+
+jobs:
+  # Lint and type-check need no native extension, so they run beside the test job rather than
+  # gating it — a style error should not wait on a release build of the Rust kernel.
+  lint:
+    name: ruff + ty
+    runs-on: ${{ inputs.runs-on }}
+    env:
+      VIRTUAL_ENV: ${{ github.workspace }}/crates/edax-py/.venv
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+
+      # ty resolves `edax` from this venv, so it must exist and hold the runtime deps the SDK
+      # imports. The compiled `_edax` is not needed: its types come from the committed stub.
+      - name: Create venv
+        working-directory: crates/edax-py
+        run: |
+          mise exec -- uv venv --python ${{ inputs.python-version }}
+          mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+
+      - name: Lint
+        run: mise exec -- ruff check .
+
+      # The tree is `ruff format`-clean; the one table that must stay one-case-per-row carries a
+      # `# fmt: skip`, so this check and the layout cannot drift apart. See `[format]` in ruff.toml.
+      - name: Format
+        run: mise exec -- ruff format --check .
+
+      - name: Type-check
+        run: mise exec -- ty check
+
+      # Documentation regressions: long sentences, crates/...:NNN citations, banned idioms.
+      - name: Lint the documentation
+        run: python3 scripts/doclint.py
+
+  test:
+    name: pytest
+    runs-on: ${{ inputs.runs-on }}
+    env:
+      # maturin develop installs into the venv named here; exporting it means no `activate`.
+      VIRTUAL_ENV: ${{ github.workspace }}/crates/edax-py/.venv
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cargo-cache-key: python
+
+      - name: Create venv
+        working-directory: crates/edax-py
+        run: mise exec -- uv venv --python ${{ inputs.python-version }}
+
+      - name: Install test dependencies
+        working-directory: crates/edax-py
+        run: mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+
+      # THIS STEP IS LOAD-BEARING. pytest never rebuilds the native module: without it the
+      # suite imports a stale _edax and passes green while proving nothing about the Rust
+      # side. Any change under edax-core/-event/-cqrs/-adapters/-abi needs this first.
+      - name: Build the native extension
+        working-directory: crates/edax-py
+        run: mise exec -- maturin develop --release
+
+      - name: Test
+        run: crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
+
+      # Every example ends in asserts, so a clean exit is the test. They run in this job rather
+      # than beside the linters because they import the compiled extension built above.
+      - name: Examples
+        run: |
+          for f in examples/py/*.py; do
+            echo "--- $f"
+            crates/edax-py/.venv/bin/python "$f" || exit 1
+          done

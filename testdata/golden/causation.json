@@ -1,0 +1,51 @@
+[
+  {
+    "expected": {
+      "causation_id": "evt-root",
+      "correlation_id": "evt-root"
+    },
+    "parent_event_id": "evt-root",
+    "parent_metadata": {}
+  },
+  {
+    "expected": {
+      "causation_id": "evt-2",
+      "correlation_id": "corr-1"
+    },
+    "parent_event_id": "evt-2",
+    "parent_metadata": {
+      "correlation_id": "corr-1"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-2",
+      "correlation_id": "corr-1"
+    },
+    "parent_event_id": "evt-2",
+    "parent_metadata": {
+      "causation_id": "evt-1",
+      "correlation_id": "corr-1"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-2",
+      "correlation_id": "evt-2"
+    },
+    "parent_event_id": "evt-2",
+    "parent_metadata": {
+      "causation_id": "evt-1"
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-3",
+      "correlation_id": "evt-3"
+    },
+    "parent_event_id": "evt-3",
+    "parent_metadata": {
+      "trace": "t-9"
+    }
+  }
+]

@@ -1,0 +1,444 @@
+[
+  {
+    "document": {
+      "status": "open"
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "status",
+        "value": "open"
+      }
+    }
+  },
+  {
+    "document": {
+      "status": "closed"
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "status",
+        "value": "open"
+      }
+    }
+  },
+  {
+    "document": {
+      "status": "open"
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "ne",
+        "path": "status",
+        "value": "closed"
+      }
+    }
+  },
+  {
+    "document": {},
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "ne",
+        "path": "status",
+        "value": "x"
+      }
+    }
+  },
+  {
+    "document": {},
+    "expected": true,
+    "filter": {
+      "not": {
+        "compare": {
+          "op": "eq",
+          "path": "status",
+          "value": "x"
+        }
+      }
+    }
+  },
+  {
+    "document": {
+      "total": 5000
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "total",
+        "value": 4200
+      }
+    }
+  },
+  {
+    "document": {
+      "total": 100
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "total",
+        "value": 4200
+      }
+    }
+  },
+  {
+    "document": {
+      "total": "5000"
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "total",
+        "value": 4200
+      }
+    }
+  },
+  {
+    "document": {
+      "n": 1
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "n",
+        "value": 1.0
+      }
+    }
+  },
+  {
+    "document": {
+      "status": "open"
+    },
+    "expected": true,
+    "filter": {
+      "in": {
+        "path": "status",
+        "values": [
+          "open",
+          "closed"
+        ]
+      }
+    }
+  },
+  {
+    "document": {
+      "status": "open"
+    },
+    "expected": false,
+    "filter": {
+      "in": {
+        "path": "status",
+        "values": [
+          "a"
+        ]
+      }
+    }
+  },
+  {
+    "document": {},
+    "expected": false,
+    "filter": {
+      "in": {
+        "path": "status",
+        "values": [
+          "a"
+        ]
+      }
+    }
+  },
+  {
+    "document": {
+      "p": 1
+    },
+    "expected": true,
+    "filter": {
+      "exists": {
+        "exists": true,
+        "path": "p"
+      }
+    }
+  },
+  {
+    "document": {
+      "p": null
+    },
+    "expected": false,
+    "filter": {
+      "exists": {
+        "exists": true,
+        "path": "p"
+      }
+    }
+  },
+  {
+    "document": {},
+    "expected": true,
+    "filter": {
+      "exists": {
+        "exists": false,
+        "path": "p"
+      }
+    }
+  },
+  {
+    "document": {
+      "address": {
+        "city": "NYC"
+      }
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "address.city",
+        "value": "NYC"
+      }
+    }
+  },
+  {
+    "document": {
+      "address": {
+        "city": "NYC"
+      }
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "address.zip",
+        "value": "x"
+      }
+    }
+  },
+  {
+    "document": {
+      "status": "open",
+      "total": 5000
+    },
+    "expected": true,
+    "filter": {
+      "and": [
+        {
+          "compare": {
+            "op": "eq",
+            "path": "status",
+            "value": "open"
+          }
+        },
+        {
+          "compare": {
+            "op": "gt",
+            "path": "total",
+            "value": 4200
+          }
+        }
+      ]
+    }
+  },
+  {
+    "document": {
+      "status": "open",
+      "total": 5000
+    },
+    "expected": false,
+    "filter": {
+      "and": [
+        {
+          "compare": {
+            "op": "eq",
+            "path": "status",
+            "value": "open"
+          }
+        },
+        {
+          "compare": {
+            "op": "gt",
+            "path": "total",
+            "value": 9999
+          }
+        }
+      ]
+    }
+  },
+  {
+    "document": {
+      "status": "open",
+      "total": 5000
+    },
+    "expected": true,
+    "filter": {
+      "or": [
+        {
+          "compare": {
+            "op": "eq",
+            "path": "status",
+            "value": "closed"
+          }
+        },
+        {
+          "compare": {
+            "op": "gt",
+            "path": "total",
+            "value": 4200
+          }
+        }
+      ]
+    }
+  },
+  {
+    "document": {
+      "total": 5000
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "gte",
+        "path": "total",
+        "value": 5000
+      }
+    }
+  },
+  {
+    "document": {
+      "name": "m"
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "name",
+        "value": "z"
+      }
+    }
+  },
+  {
+    "document": {
+      "sku": "INV-2024-01"
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "sku",
+        "value": "INV-"
+      }
+    }
+  },
+  {
+    "document": {
+      "sku": "INV-2024-01"
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "sku",
+        "value": "ORD-"
+      }
+    }
+  },
+  {
+    "document": {
+      "n": 5
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "n",
+        "value": "5"
+      }
+    }
+  },
+  {
+    "document": {
+      "tags": [
+        "paid",
+        "eu"
+      ]
+    },
+    "expected": true,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "eu"
+      }
+    }
+  },
+  {
+    "document": {
+      "tags": [
+        "paid",
+        "eu"
+      ]
+    },
+    "expected": false,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "usd"
+      }
+    }
+  },
+  {
+    "document": {
+      "tags": "eu"
+    },
+    "expected": false,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "eu"
+      }
+    }
+  },
+  {
+    "document": {
+      "a": 5
+    },
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "a.b",
+        "value": "x"
+      }
+    }
+  },
+  {
+    "document": {
+      "total": 5000
+    },
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lte",
+        "path": "total",
+        "value": 5000
+      }
+    }
+  },
+  {
+    "document": {},
+    "expected": true,
+    "filter": {
+      "and": []
+    }
+  },
+  {
+    "document": {},
+    "expected": false,
+    "filter": {
+      "or": []
+    }
+  }
+]

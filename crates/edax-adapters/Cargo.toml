@@ -1,0 +1,13 @@
+[package]
+name = "edax-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Concrete in-memory backend adapters for the edax seams"
+
+[dependencies]
+edax-core = { workspace = true }
+edax-cqrs = { workspace = true }
+edax-event = { workspace = true }
+serde_json = "1"

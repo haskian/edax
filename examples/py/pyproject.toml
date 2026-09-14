@@ -1,0 +1,17 @@
+# Runnable env for the Python examples. `uv sync` here builds the local edax SDK (maturin), so the
+# examples run without a manual maturin/pip dance:
+#
+#   cd examples/py && uv sync && uv run python outbox.py
+[project]
+name = "edax-examples"
+version = "0"
+requires-python = ">=3.9"
+dependencies = [
+    "edax",  # local edax SDK; msgspec comes transitively. No example uses a broker client.
+]
+
+[tool.uv.sources]
+edax = { path = "../../crates/edax-py", editable = true }
+
+[tool.uv]
+package = false  # this dir is a bag of scripts, not an installable package — don't build it

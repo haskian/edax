@@ -1,0 +1,23 @@
+# Conventional-commit versioning. `cog bump --auto` reads the commits since the last tag,
+# picks the SemVer bump they imply, writes CHANGELOG.md and creates the tag.
+
+# `v`-prefixed, because release.yml triggers on `v*`.
+tag_prefix = "v"
+
+# A bump is only ever cut from main; a stray run on a branch must not create a tag.
+branch_whitelist = ["main"]
+
+# Merge commits carry no conventional type of their own, and their contents are already
+# counted through the commits they bring in.
+ignore_merge_commits = true
+
+# The bump commit is pushed back to main and would otherwise re-trigger CI on a tree CI
+# just passed.
+skip_ci = "[skip ci]"
+
+[changelog]
+path = "CHANGELOG.md"
+template = "remote"
+remote = "github.com"
+owner = "crtomirmajer"
+repository = "edax"

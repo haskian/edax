@@ -1,0 +1,78 @@
+[
+  {
+    "available": [],
+    "error": null,
+    "from": 1,
+    "plan": [],
+    "to": 1
+  },
+  {
+    "available": [
+      1,
+      2
+    ],
+    "error": null,
+    "from": 1,
+    "plan": [
+      1,
+      2
+    ],
+    "to": 3
+  },
+  {
+    "available": [
+      1
+    ],
+    "error": "missing upcast step 2 (no transform for v2 -> v3)",
+    "from": 1,
+    "plan": null,
+    "to": 3
+  },
+  {
+    "available": [
+      2
+    ],
+    "error": "missing upcast step 1 (no transform for v1 -> v2)",
+    "from": 1,
+    "plan": null,
+    "to": 3
+  },
+  {
+    "available": [
+      2,
+      3,
+      4
+    ],
+    "error": null,
+    "from": 2,
+    "plan": [
+      2,
+      3,
+      4
+    ],
+    "to": 5
+  },
+  {
+    "available": [
+      2
+    ],
+    "error": "cannot upcast downward: from 3 > to 2",
+    "from": 3,
+    "plan": null,
+    "to": 2
+  },
+  {
+    "available": [
+      0,
+      1,
+      9
+    ],
+    "error": null,
+    "from": 0,
+    "plan": [
+      0,
+      1
+    ],
+    "to": 2
+  }
+]

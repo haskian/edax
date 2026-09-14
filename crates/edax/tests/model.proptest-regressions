@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f1d708a5098f12ee36e0639607583888adace07676b7528b48fdefa80d812ff6 # shrinks to history = [Dispatch { kind: 0, key: 1, payload: 2, outcome: 2 }, Dispatch { kind: 0, key: 1, payload: 2, outcome: 0 }]
+cc 48da9dbce3636bdab0830ca1d3bfa9c1ff90a1be712f8c70226118e1554c8749 # shrinks to history = [Append { agg: 0, delta: 0, n: 1, ns: 0, gap: true }]
