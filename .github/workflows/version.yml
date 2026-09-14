@@ -63,5 +63,11 @@ jobs:
   release:
     needs: bump
     if: needs.bump.outputs.released == 'true'
+    # A called workflow may only use what its caller grants. release.yml's publish job needs
+    # `id-token: write` for PyPI trusted publishing; without this grant GitHub rejects the
+    # whole run at validation, before any job starts.
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/release.yml
     secrets: inherit
