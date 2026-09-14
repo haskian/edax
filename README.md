@@ -1,5 +1,9 @@
 # edax
 
+> [!WARNING]
+> **Early alpha.** Version 0.0.1. The API is unstable and will change without notice, and nothing is
+> published to a package registry yet. Not ready for production. Build from source.
+
 **An ergonomic toolkit for building event-driven systems. Command Query Responsibility Segregation
 (CQRS) and event sourcing, with a Rust core and language software development kits (SDKs) that
 cannot drift apart.**
@@ -11,6 +15,28 @@ service, or in one language, and the bug surfaces months later as a dropped row 
 customer. edax puts exactly those decisions in pure Rust **kernels**, and wraps them in an SDK per
 language. **Golden vectors** pin the result, so drift fails the build instead of production. The
 SDK **wires**. The kernel **decides**. Neither layer re-derives the other's job.
+
+## Install
+
+Nothing is published to a registry yet, so install from the Git source. Both SDKs build the Rust
+kernel from source, so a [Rust toolchain](https://rustup.rs) must be on your `PATH`.
+
+**Python ([uv](https://docs.astral.sh/uv/)):** `maturin` builds the native extension automatically.
+
+```sh
+uv pip install "git+https://github.com/crtomirmajer/edax#subdirectory=crates/edax-py"
+```
+
+**Rust ([cargo](https://doc.rust-lang.org/cargo/)):**
+
+```toml
+[dependencies]
+edax = { git = "https://github.com/crtomirmajer/edax" }
+```
+
+Working inside a checkout instead? Point `uv` at the local path (`uv pip install ./crates/edax-py`),
+or use the pinned [mise](https://mise.jdx.dev) toolchain — see
+[getting started](docs/guides/getting-started.md).
 
 ## Quickstart
 
