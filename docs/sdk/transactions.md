@@ -65,7 +65,7 @@ The `Transactor` Protocol has exactly one method, and a docstring that is the sp
 | isolation | Nothing written through the yielded `tx` is visible to other transactions before commit. |
 | one handle | The yielded `tx` is one backend handle that **every** participant store accepts. Writes through it are atomic as a set: all commit or none. |
 | read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `transaction` sees the appended events. |
-| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` instead of opening a second one, so no savepoint support is needed. Nesting `transaction` yourself is undefined. |
+| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` instead of opening a second one, so no savepoint support is needed. A second `transaction` on the same transactor raises `BadHandle`. |
 | threading | The handle is used from one asyncio task at a time; no thread safety required. |
 
 Rust states the same boundary as three methods plus a scoped helper:
@@ -288,9 +288,22 @@ would have the dispatcher redeliver a wiring mistake forever. The Rust adapter r
 transaction token with the same code (`edax_adapters::unknown_tx`), so both SDKs give a misrouted
 handle one verdict. See [errors.md](./errors.md).
 
-**Do not nest.** The SDK never opens a second unit of work inside an open one. The idempotency guard
-enforces this actively. Given `unit_of_work=` while `current_tx()` is already set, it raises
-`BadHandle`. It will not commit the claim independently of the writes it guards.
+**Nesting is refused.** The SDK never opens a second unit of work inside an open one, and neither may
+you. `transaction(t)` while `t` already has one open raises terminal `BadHandle`. The inner block
+would commit on its own clean exit, and the outer rollback could not take those writes back.
+
+Nobody writes `transaction()` inside `transaction()` on purpose. It happens when one service
+function that opens a unit of work calls another that does the same. Compose those two by passing
+the tx down, or by moving the `transaction` out to their shared caller.
+
+A second transactor, over another database, still nests. The guard compares transactor identity, so
+only a genuine second unit of work on the same transactor is refused. Two transactor objects over
+one connection pool are two identities and are not caught; one transactor per database is the wiring
+this assumes. Neither nested commit is atomic with the other's: two databases cannot commit
+together, so treat that pair as a [saga](./sagas.md).
+
+The idempotency guard enforces its own case. Given `unit_of_work=` while `current_tx()` is already
+set, it raises `BadHandle` rather than committing the claim independently of the writes it guards.
 
 **Isolation in the memory backend is by exclusion, not by blocking.** A key one open transaction
 staged is held until that transaction ends. A second writer gets `ConcurrencyError` at once rather
