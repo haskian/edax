@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from conftest import SplitLedger
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -63,3 +64,14 @@ class TestMemoryIdempotencyStore(IdempotencyStoreContract):
     def event_store(self, db: MemoryTransactor) -> Any:
         # The same transactor, so the rollback clause has one unit of work to roll back.
         return MemoryEventStore(db)
+
+
+class TestSplitLedgerIdempotencyStore(IdempotencyStoreContract):
+    """The Redis shape: a ledger of its own, with no ``event_store`` fixture on purpose. The
+    rollback clause must skip, not error on the missing fixture."""
+
+    joins_transaction = False
+
+    @pytest.fixture
+    def idempotency_store(self) -> Any:
+        return SplitLedger()

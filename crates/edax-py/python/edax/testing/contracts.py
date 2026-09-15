@@ -306,7 +306,8 @@ class ProjectionStoreContract:
 
     #: ``get_many`` pages identically to the kernel rather than being the backend's own dialect.
     supports_kernel_queries: bool = False
-    #: There is a unit of work to join. Requires a ``transactor`` fixture when true.
+    #: There is a unit of work to join. Requires a ``transactor`` fixture when true; a backend that
+    #: declares ``False`` needs no such fixture.
     supports_transactions: bool = True
 
     async def test_an_absent_entity_reads_as_none(self, projection_store: Any) -> None:
@@ -421,11 +422,14 @@ class IdempotencyStoreContract:
 
     The seam whose correctness cannot be checked by any type or review that does not know your
     isolation level, and the one where a mistake runs a handler twice. Supply an
-    ``idempotency_store`` fixture.
+    ``idempotency_store`` fixture, plus an ``event_store`` fixture on the same transactor when
+    ``joins_transaction`` is true.
     """
 
-    #: The store enlists in the caller's unit of work, so a rollback frees the claim.
-    #: ``False`` for a ledger of its own (Redis), where the claim survives the caller's rollback.
+    #: The store enlists in the caller's unit of work, so a rollback frees the claim. Requires an
+    #: ``event_store`` fixture on the same transactor when true.
+    #: ``False`` for a ledger of its own (Redis), where the claim survives the caller's rollback;
+    #: such a ledger needs no ``event_store`` fixture.
     joins_transaction: bool = True
     #: Records expire. A suite cannot test retention without waiting, so this only gates the clause
     #: that says a *completed* record is still readable immediately after it is written.
@@ -520,7 +524,7 @@ class IdempotencyStoreContract:
         assert await idempotency_store.claim(a, 1) is None
         assert await idempotency_store.claim(b, 2) is None, "a different key is still free"
 
-    async def test_a_rollback_frees_the_claim(self, idempotency_store: Any, event_store: Any) -> None:
+    async def test_a_rollback_frees_the_claim(self, idempotency_store: Any, request: Any) -> None:
         """ "A shared ledger runs ``begin; claim; run; complete; commit``: one atomic commit, so the
         rollback *is* the release."
 
@@ -530,6 +534,8 @@ class IdempotencyStoreContract:
         """
         if not self.joins_transaction:
             raise pytest.skip.Exception("ledger declares joins_transaction = False")
+        # Resolved lazily so a backend that skips this clause need not define the fixture at all.
+        event_store = request.getfixturevalue("event_store")
         key = _id("req")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
