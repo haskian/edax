@@ -65,6 +65,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `idempotency_record.json` | `name`, `stored`, `current`, `payload_hash`, `state`, `outcome`, `encoded`, plus `result` or `error` | the record's wire shape, reading order, re-encoded bytes and replay verdict — 12 cases including a stored `null` result replaying as a success | `edax-cqrs` `Record` / `outcome` | `edax-cqrs` `idempotency_record_cases` |
 | `partition.json` | `id`, `n`, `expected` | consistent-hash placement for six aggregate ids against five partition counts; `n = 0` clamps to 1 | `edax-event` `partition` | `edax-event` `partition_cases` |
 | `payload_hash.json` | `input`, `expected` | raw Fowler-Noll-Vo 1a (FNV-1a) over six byte strings, including `café ☕ 🦀` | `edax-cqrs` `payload_hash` | `edax-cqrs` `payload_hash_cases` |
+| `cursor.json` | `sort`, `document`, `expected_cursor`, `expected_effective_sort`, `expected_tuple` | the keyset cursor round trip: the `id` tiebreak, every type in the total order, a missing sort path, and a tuple whose arity does not match the sort | `edax-event` `encode_cursor` / `decode_cursor` / `effective_sort` |
 | `query.json` | `query`, `documents`, `expected_page`, `expected_cursor` | ordering, the total type order, offset, limit, `after`, and the byte-identical cursor generated from the last row | `edax-event` `query_json` / `encode_cursor` | `edax-event` `query_cases` |
 | `rendezvous.json` | `id`, `n`, `expected` | rendezvous placement for six ids against six bucket counts | `edax-event` `rendezvous` | `edax-event` `rendezvous_cases` |
 | `sequence_batch.json` | `expected`, `sequences`, `error` | the dense-batch rule: accepted runs, an unsequenced envelope, a gap, a reorder, a repeat, the `i64` ceiling | `edax-event` `check_sequence_batch` | `edax-event` `sequence_batch_cases` |
@@ -90,6 +91,7 @@ test, so they regenerate with the `edax-event` command.
 | `idempotency_record.json` | its generator | `test_command.py::test_golden_idempotency_record`: decode, re-encode, and the verdict |
 | `partition.json` | its generator | `test_edax.py::test_golden_partition` |
 | `payload_hash.json` | its generator | `test_command.py::test_golden_payload_hash` |
+| `cursor.json` | its generator, including the mismatched-arity cases | `test_kernel_extra.py::test_golden_cursor` |
 | `query.json` | its generator, and a Rust round-trip of each spec through the SDK query shape | `test_kernel_extra.py::test_golden_query`, plus `test_build_spec_matches_the_golden_query_shape` |
 | `rendezvous.json` | its generator | `test_kernel_extra.py::test_golden_rendezvous` |
 | `sequence_batch.json` | its generator | `test_edax.py::test_golden_sequence_batch` |

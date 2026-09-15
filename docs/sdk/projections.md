@@ -194,7 +194,24 @@ ignores the cursor rather than rejecting it.
 
 `encode_cursor(doc, keys)` is `base64(json([values at the tiebroken sort paths]))`. A row reaches
 the next page only if its tuple sorts strictly after the cursor tuple. An equal tuple was the
-previous page's last row. A short cursor tuple pads with `null`.
+previous page's last row. A short cursor tuple pads with `null`, and a long one is truncated.
+
+**A backend does not have to re-derive any of that.** The kernel owns both halves of the round trip.
+Read the cursor with `decode_cursor` rather than parsing base64 and JSON yourself. Order by
+`effective_sort` rather than by the declared keys:
+
+```python
+from edax.query import decode_cursor, effective_sort
+
+keys = effective_sort(spec["sort"])  # the declared sort plus the `id` tiebreak
+values = decode_cursor(spec["after"], spec["sort"])  # one value per key in `keys`, aligned
+# bind `keys` into ORDER BY and `values` into the keyset comparison
+```
+
+Both are pinned by `testdata/golden/cursor.json`, which every binding's suite reads. A backend that
+decodes differently fails a test instead of paging wrong in production. Hand-rolling the format is
+the error this exists to prevent. The pad-and-truncate rule above is easy to miss, and a cursor
+minted under a different sort then reads one way in your `WHERE` clause and another in the kernel.
 
 **The document must carry a unique `"id"` for kernel-identical paging.** The kernel appends
 `{"path": "id"}` as a final sort key unless your sort already ends there. No two rows then share a

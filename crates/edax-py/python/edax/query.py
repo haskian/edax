@@ -69,3 +69,30 @@ def encode_cursor(document: Document, sort: list[SortKey]) -> str:
     """Mint the keyset cursor for the last document of a page under ``sort``. Portable across bindings."""
     with errors.mapped():
         return _edax.encode_cursor(json.dumps(document), json.dumps(sort))
+
+
+def decode_cursor(cursor: str, sort: list[SortKey]) -> list[Any]:
+    """Read a keyset cursor back into the value tuple it carries, one value per effective sort key.
+
+    The inverse of :func:`encode_cursor`, and what a backend binds into its own keyset ``WHERE``
+    clause instead of re-deriving the base64/JSON wire format from prose. Pass the query's declared
+    ``sort``; the ``id`` tiebreak is applied here as it is everywhere else, so the tuple lines up with
+    :func:`effective_sort`.
+
+    A tuple that does not match the sort's arity is padded with ``None`` or truncated rather than
+    rejected, because that is what the reference applier compares it as. A cursor minted under a
+    different sort therefore reads the same way here and there.
+    """
+    with errors.mapped():
+        return json.loads(_edax.decode_cursor(cursor, json.dumps(sort)))
+
+
+def effective_sort(sort: list[SortKey]) -> list[SortKey]:
+    """The keys a page is actually ordered by: ``sort`` with the unique ``id`` tiebreak appended.
+
+    A backend that orders by the declared keys alone disagrees with the kernel at every tie, and
+    keyset paging then drops or repeats tied rows. Empty in, empty out: an unsorted query keeps input
+    order and takes no cursor.
+    """
+    with errors.mapped():
+        return json.loads(_edax.effective_sort(json.dumps(sort)))
