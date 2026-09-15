@@ -123,13 +123,16 @@ class RedisIdempotencyStore:
             fenced = await self._conn.set_px_if_prefix(
                 self._key(key), owner.encode(), (owner + body).encode(), self._ttl_ms
             )
-        self._owned.pop(key, None)
         if not fenced:
             # Loud on purpose: the outcome was not recorded, so the caller must not report success.
+            # The token is kept: the guard answers a refused `complete` with `release`, which must stay
+            # fenced or its plain DEL would delete the claim that replaced this one. `release` drops the
+            # token once its fenced DEL has run, a no-op against the new holder's prefix.
             raise StoreError(
                 f"redis complete {key!r}: the claim expired and was taken over, "
                 "so the outcome was not recorded"
             )
+        self._owned.pop(key, None)
 
     async def release(self, key: str, tx: Optional[Tx] = None) -> None:
         """Delete the key, releasing a claim. Fenced while this caller holds the claim, so a release

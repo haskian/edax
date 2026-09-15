@@ -4,7 +4,8 @@ claim/complete/release contract runs under P2 in ``test_model.py``."""
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Any, Callable, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, ClassVar, Optional
 
 import edax
 import pytest
@@ -382,3 +383,58 @@ async def test_a_failed_release_keeps_the_fence_for_the_retry() -> None:
 
     prior = await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash)
     assert prior is not None and prior.pending, "the retried release deleted the new holder's claim"
+
+
+async def test_a_refused_complete_keeps_the_fence_for_the_compensating_release() -> None:
+    """A refused ``complete`` is answered by the guard with ``release``, so the token may only be
+    dropped once the fence has served that release too. Dropping it inside ``complete`` leaves the
+    lapsed worker holding none, and its ``release`` then issues the plain unconditional ``DEL`` that
+    deletes the live claim of the worker which took the key over."""
+    conn = FakeRedis()
+    slow = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    fast = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+
+    await slow.claim("order-7", RECORD.payload_hash)
+    conn.now_ms += TTL_MS // 10 + 1  # the slow worker's claim lapses while it is still working
+    await fast.claim("order-7", RECORD.payload_hash), "the second worker takes over"
+
+    with pytest.raises(edax.StoreError, match="taken over"):
+        await slow.complete("order-7", RECORD)
+    await slow.release("order-7")  # what the guard does next
+
+    prior = await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash)
+    assert prior is not None and prior.pending, "the compensating release deleted the new holder's claim"
+    assert "order-7" not in slow._owned, "the token outlived the release that consumed it"
+
+
+async def test_a_refused_complete_through_the_guard_does_not_free_the_new_holders_key() -> None:
+    """The same takeover through a real dispatch, which is how it reaches a user: the handler
+    succeeds, ``complete`` is refused because the claim lapsed mid-handler, and the guard answers
+    that with ``release``. Two handlers running one key is exactly what the fence exists to
+    prevent."""
+
+    @dataclass
+    class Deposit:
+        request_id: str
+        type: ClassVar[str] = "Deposit"
+
+    conn = FakeRedis()
+    ledger = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    taker = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+
+    async def handler(cmd: Deposit) -> str:
+        # The handler outruns its claim, and another worker takes the key over while it still runs.
+        conn.now_ms += TTL_MS // 10 + 1
+        assert await taker.claim(cmd.request_id, RECORD.payload_hash) is None
+        return "done"
+
+    bus = edax.command.CommandBus(edax.command.idempotent(ledger, key=lambda c: c.request_id))
+    bus.register(Deposit.type, handler)
+
+    with pytest.raises(edax.StoreError, match="taken over"):
+        await bus.dispatch(Deposit("req-A"))
+
+    held = await conn.get("idem:req-A")
+    assert held is not None and decode_record(held.decode()[32:]).pending, (
+        "the guard's compensating release deleted the taker's live claim"
+    )

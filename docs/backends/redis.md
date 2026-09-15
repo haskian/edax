@@ -142,8 +142,10 @@ learns its claim was taken over.
 #### `complete`
 
 - Holding the claim: `set_px_if_prefix` under `ttl_ms`.
-- On a `False` return it raises `StoreError`.
+- On a `False` return it raises `StoreError`, and it keeps its token.
 - A `False` return means the outcome was not recorded, so the caller must not report success.
+- The token is kept because the guard answers a refused `complete` with `release`. That `release`
+  must stay fenced, or its `DEL` would delete the claim that replaced this one.
 - Holding no claim: a plain `SET ... PX ttl_ms` with a fresh token.
 - That is a direct write, not a guarded dispatch. The seam's plain `complete` means exactly that.
 
@@ -159,7 +161,10 @@ still producing. It raises on purpose.
 `test_redis.py::test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holders` asserts it.
 
 `release` is the path that silently loses work when it is unfenced. A bare `DEL` frees a key another
-worker is actively holding. Two handlers then run for it.
+worker is actively holding. Two handlers then run for it. This is why a refused `complete` keeps its
+token. The compensating `release` that follows is then fenced, and its `delete_if_prefix` is a
+no-op against the new holder's prefix.
+`test_redis.py::test_a_refused_complete_keeps_the_fence_for_the_compensating_release` asserts it.
 
 ### Two workers racing a claim TTL expiry
 
