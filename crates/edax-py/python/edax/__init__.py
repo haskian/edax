@@ -42,7 +42,14 @@ from .aggregate import (
 # The wrappers, not the raw kernel functions: one public name per causation rule.
 from .causation import ensure_ids, originate, propagate
 from .codec import json_codec, msgpack_codec
-from .dispatcher import Delivery, KeyOrderedDispatcher
+from .command import (
+    CommandBus,
+    IdempotencyStore,
+    Record,
+    idempotent,
+    retry,
+)
+from .dispatcher import DeadLetterFn, Delivery, KeyOrderedDispatcher
 from .errors import (
     AlreadyRegistered,
     BadHandle,
@@ -57,7 +64,7 @@ from .errors import (
     is_terminal,
 )
 from .projection import Entity, ProjectionStore
-from .router import EventRouter
+from .router import EventRouter, idempotent_by_id
 from .saga import Completed, Saga, SagaInstance, SagaRunner, SagaStore
 from .store import (
     AggregateCodec,
@@ -67,6 +74,7 @@ from .store import (
     Repository,
     Snapshot,
     Transactor,
+    Tx,
     current_tx,
     pump,
     transaction,
@@ -129,6 +137,13 @@ __all__ = [
     "PayloadMismatch",
     "StoreError",
     "is_terminal",
+    # write side
+    "CommandBus",
+    "IdempotencyStore",
+    "Record",
+    "idempotent",
+    "idempotent_by_id",
+    "retry",
     # storage seam and orchestration
     "AggregateCodec",
     "EventCodec",
@@ -137,6 +152,7 @@ __all__ = [
     "Repository",
     "Snapshot",
     "Transactor",
+    "Tx",
     "current_tx",
     "pump",
     "transaction",
@@ -145,6 +161,7 @@ __all__ = [
     "Entity",
     "ProjectionStore",
     "EventRouter",
+    "DeadLetterFn",
     "Delivery",
     "KeyOrderedDispatcher",
     # sagas

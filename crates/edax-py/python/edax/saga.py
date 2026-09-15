@@ -39,11 +39,14 @@ class SagaInstance:
 
 
 class Saga(Protocol):
-    def correlation_id(self, env: EventEnvelope) -> Optional[str]:
+    """Parameters are positional-only for the same reason as :class:`~edax.store.AggregateCodec`'s: the
+    runner calls them positionally, so an implementation may name them after its own workflow."""
+
+    def correlation_id(self, env: EventEnvelope, /) -> Optional[str]:
         """Which running instance this event belongs to, or ``None`` to ignore it."""
         ...
 
-    def handle(self, state: Any, env: EventEnvelope) -> tuple[Any, list[Any]]:
+    def handle(self, state: Any, env: EventEnvelope, /) -> tuple[Any, list[Any]]:
         """Fold ``env`` into the instance; ``state`` is ``None`` for a new one. Return ``(new_state,
         commands)``, where a ``new_state`` of :data:`Completed` finishes and removes the instance."""
         ...

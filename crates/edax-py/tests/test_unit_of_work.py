@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import edax
 import pytest
@@ -396,6 +396,111 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     ledger.raise_on_claim = False
     still_held = await ledger.claim("req-A", _hash_of(cmd))
     assert still_held is not None and still_held.pending, "the winner's claim survived the loser"
+
+
+class InsufficientFunds(Exception):
+    """A host's domain error: deterministic, so the kernel's callers must see it as terminal."""
+
+    terminal: ClassVar[bool] = True
+
+
+class RefusesToSettle:
+    """Mixin: every compensating write is refused, and counted so a test can prove the guard tried to
+    compensate rather than skipping it. A joining ledger refuses because the handler's own failed
+    statement has already aborted the transaction they share; a ledger of its own refuses because it
+    is unreachable. Same refusal either way, so one mixin serves both bases."""
+
+    refusals: int = 0
+
+    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
+        self.refusals += 1
+        raise edax.StoreError("the compensating write was refused")
+
+    async def release(self, key: str, tx: Optional[Any] = None) -> None:
+        self.refusals += 1
+        raise edax.StoreError("the compensating write was refused")
+
+
+class RefusingLedger(RefusesToSettle, MemoryIdempotencyStore):
+    """A joining ledger whose compensating writes are refused."""
+
+
+class RefusingSplitLedger(RefusesToSettle, SplitLedger):
+    """The split-store twin, where no rollback is coming and retention is what frees the key."""
+
+
+@dataclass
+class CompensationCase:
+    handler_error: Exception
+    shared: bool  # a ledger that joins the host's transaction, or one of its own
+    # A terminal failure is compensated by `complete`, which falls back to `release` when refused, so
+    # it meets the refusing store twice; a transient failure only releases.
+    refusals: int
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            CompensationCase(InsufficientFunds("balance is 0"), shared=True, refusals=2),
+            id="ambient_terminal_error_keeps_its_verdict",
+        ),
+        pytest.param(
+            CompensationCase(RuntimeError("the downstream service timed out"), shared=True, refusals=1),
+            id="ambient_transient_error_keeps_its_type",
+        ),
+        pytest.param(
+            CompensationCase(RuntimeError("the downstream service timed out"), shared=False, refusals=1),
+            id="own_ledger_refused_release_keeps_the_handlers_error",
+        ),
+    ],
+)
+async def test_a_refused_compensation_never_replaces_the_handlers_error(
+    case: CompensationCase,
+) -> None:
+    """The handler's exception is the verdict the caller, :func:`~edax.command.retry` and the
+    dispatcher branch on. A compensating write the store refuses must never take its place.
+
+    This is the README's own wiring: the host opens the transaction around the dispatch and passes no
+    ``unit_of_work``, so the guard compensates by hand — inside a transaction the handler's failed
+    statement has already aborted. Letting that refusal through re-typed a terminal domain error as a
+    transient ``StoreError``, so ``retry`` re-ran a deterministic failure and a dispatcher nacked to
+    ``max_attempts`` instead of dead-lettering on the first attempt.
+    """
+    db = MemoryTransactor()
+    ledger: Any = RefusingLedger(db) if case.shared else RefusingSplitLedger()
+    runs = 0
+
+    async def handler(cmd: Deposit) -> None:
+        nonlocal runs
+        runs += 1
+        raise case.handler_error
+
+    bus = CommandBus(idempotent(ledger, key=key_of))
+    bus.register("Deposit", handler)
+    cmd = Deposit(100, "req-A")
+
+    with pytest.raises(type(case.handler_error)) as caught:
+        if case.shared:
+            async with edax.with_tx(db):
+                await bus.dispatch(cmd)
+        else:
+            await bus.dispatch(cmd)
+
+    assert caught.value is case.handler_error, "the handler's own exception, not a copy of it"
+    assert edax.is_terminal(caught.value) is edax.is_terminal(case.handler_error), "verdict survived"
+    assert runs == 1
+    assert ledger.refusals == case.refusals, "the guard compensated; the store is what refused"
+
+    if case.shared:
+        # The host's rollback is what frees the claim, so the key is clear for a redelivery.
+        assert await ledger.claim("req-A", _hash_of(cmd)) is None
+    else:
+        # No rollback is coming: the claim stays pending until the store's retention frees it. That
+        # is the documented residual cost of a ledger of its own, not a leak.
+        with pytest.raises(edax.InProgress):
+            await bus.dispatch(cmd)
+        assert runs == 1, "the pending claim blocked the redelivery"
 
 
 async def test_joins_transaction_defaults_to_false_for_an_undeclared_store() -> None:

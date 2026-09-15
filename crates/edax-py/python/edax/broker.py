@@ -7,11 +7,14 @@ order and the dispatcher pool keeps them serialized on one worker. See ``docs/ba
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Callable, Optional, Protocol
 
 from ._async import maybe_await
 from .aggregate import Event, EventEnvelope
 from .dispatcher import AckFn, Delivery, KeyOrderedDispatcher
+
+logger = logging.getLogger("edax.broker")
 
 KeyFn = Callable[[EventEnvelope], str]
 
@@ -88,9 +91,9 @@ async def _dead_letter(dispatcher: KeyOrderedDispatcher, poison: UndecodableDeli
     """Settle a poison message through the dispatcher's dead-letter hook, the route a terminal handler
     failure takes. The ack is the point: without it the transport's watermark pins on the message and the
     consumer crash-loops after every restart. With no hook wired the message nacks, loud but never lost."""
-    # Read directly, because routing the poison message through `submit` would hand a handler an envelope
-    # with no event in it.
-    on_dead = dispatcher._on_dead
+    # Read through the public accessor, because routing the poison message through `submit` would hand a
+    # handler an envelope with no event in it.
+    on_dead = dispatcher.on_dead
     if on_dead is None:
         await poison.nack()
         return
@@ -109,13 +112,25 @@ class _ConsumerLoop:
             delivery = await self.poll()
             if delivery is None:
                 return
-            if isinstance(delivery, UndecodableDelivery):
-                await _dead_letter(dispatcher, delivery)
-                continue
             try:
-                await dispatcher.submit(delivery)
+                if isinstance(delivery, UndecodableDelivery):
+                    try:
+                        await _dead_letter(dispatcher, delivery)
+                    except Exception:
+                        # The sink failed, not the loop. Same outcome as a raising `on_dead` on the
+                        # dispatcher route: the message stays unsettled, the broker redelivers it on its
+                        # session timeout or a restart, and the sink gets another try. Nacking instead
+                        # would re-read every offset above the poison on a seeking transport, and the
+                        # poison route has no attempt budget to stop it.
+                        logger.exception(
+                            "edax consumer: dead-lettering poison message %s failed; the loop continues",
+                            delivery.envelope.id,
+                        )
+                else:
+                    await dispatcher.submit(delivery)
             except asyncio.CancelledError:
                 # Cancelled after `poll` took the message: settle it, or it stays unsettled until the
-                # broker session times out and the transport's watermark pins on it.
+                # broker session times out and the transport's watermark pins on it. One rule for both
+                # routes, so a change to it cannot land on only one.
                 await delivery.nack()
                 raise

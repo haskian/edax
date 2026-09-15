@@ -4,10 +4,26 @@ build-backend = "maturin"
 
 [project]
 name = "edax"
-version = "0.0.1"
+# Read from `crates/edax-py/Cargo.toml`, which inherits the workspace version. One version literal
+# for the whole repo instead of a copy here that a bump has to remember to rewrite.
+dynamic = ["version"]
 description = "Polyglot event-sourcing toolkit"
+readme = "../../README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+keywords = ["event-sourcing", "cqrs", "idempotency", "outbox", "saga", "kafka"]
+authors = [{ name = "Crtomir Majer" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
     "msgspec>=0.20.0",
 ]
@@ -17,6 +33,12 @@ dependencies = [
 redis = ["redis>=4.2"]            # edax.backend.redis
 kafka = ["aiokafka>=0.8"]         # edax.backend.kafka
 test = ["pytest", "pytest-asyncio", "hypothesis"]
+
+[project.urls]
+Homepage = "https://github.com/crtomirmajer/edax"
+Repository = "https://github.com/crtomirmajer/edax"
+Documentation = "https://github.com/crtomirmajer/edax/tree/main/docs"
+Issues = "https://github.com/crtomirmajer/edax/issues"
 
 [tool.maturin]
 module-name = "edax._edax"

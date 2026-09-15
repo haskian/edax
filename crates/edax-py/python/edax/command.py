@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import AsyncIterator, Awaitable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, fields, is_dataclass
@@ -25,6 +26,8 @@ from .errors import (  # re-exported: the command errors are part of this module
     is_terminal,
 )
 from .store import Transactor, Tx, current_tx, with_tx
+
+logger = logging.getLogger("edax.command")
 
 
 class Command(Protocol):
@@ -133,7 +136,9 @@ class IdempotencyStore(Protocol):
       handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
       cannot block returns the holder's record as pending, reported as :class:`~edax.errors.InProgress`.
     - *Complete / release.* ``complete`` overwrites the key with the terminal record, ``release`` deletes it.
-      Both are idempotent; releasing an absent key is a no-op.
+      Both are idempotent; releasing an absent key is a no-op. A fenced backend that refuses a ``complete``
+      because the claim was taken over must keep its fence: the guard answers a refused ``complete`` with
+      ``release``, and an unfenced ``release`` would then delete the claim that replaced this one.
     - *Retention.* A record must outlive the longest window in which the same key can be redelivered.
     - *Record contents.* ``payload_hash`` is the kernel's unsigned 64-bit hash: store it losslessly, never a
       signed ``BIGINT``; one outside ``0 .. 2**64 - 1`` raises :class:`~edax.errors.CodecError`. ``result``
@@ -250,7 +255,12 @@ def idempotent(
     :class:`~edax.errors.InProgress` while the winner is in flight. A transient handler failure releases the
     claim so a retry can re-run. ``unit_of_work`` hands the guard the transaction, which is what lets a
     failed commit release the claim (see :func:`_guarded`); place this guard outside :func:`retry`, unless
-    you pass it and then inside. See ``docs/sdk/idempotency.md``."""
+    you pass it and then inside.
+
+    ``key`` owns its own namespace. The command *type* is deliberately outside the payload hash, so two
+    different commands carrying the same business fields hash identically and one reused key replays the
+    wrong command's cached result. Scope the key by command type, and by service where a ledger is shared.
+    See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``."""
 
     def mw(next_: Handler) -> Handler:
         async def handler(cmd: Command) -> Any:
@@ -351,18 +361,39 @@ async def _guarded_around_the_work(
         async with _unit(unit_of_work):
             result = await run()
     except Exception as e:
-        if is_terminal(e):
-            await _complete_or_release(store, key, Record(payload_hash, error=str(e)))
-        else:
-            await store.release(key)
+        await _settle_failure(store, key, Record(payload_hash, error=str(e)) if is_terminal(e) else None)
         raise
     except BaseException:
         # Cancelled: nobody will complete this claim, so release it or every later dispatch raises
         # InProgress. Shielded, or a second cancel would abandon the claim until its TTL expires.
-        await asyncio.shield(store.release(key))
+        await asyncio.shield(_settle_failure(store, key, None))
         raise
     await _complete_or_release(store, key, Record(payload_hash, result=result))
     return result
+
+
+async def _settle_failure(store: IdempotencyStore, key: str, record: Optional[Record]) -> None:
+    """Settle the claim after the handler failed: cache ``record``, or release when there is nothing to
+    cache. Never raises. The handler's exception is the verdict the caller, :func:`retry` and the
+    dispatcher act on, so a compensation the store refuses must not replace it. Inside the host's
+    transaction that refusal is usually the abort the handler's own failed statement caused, and the
+    host's rollback frees the claim; on a ledger of its own the claim stays pending until its retention
+    frees it. Either way the claim is settled by something other than this call."""
+    try:
+        if record is None:
+            await store.release(key)
+        else:
+            await _complete_or_release(store, key, record)
+    except Exception:
+        # Expected when the ledger shares a transaction the handler already aborted, so it is not news.
+        expected = joins_transaction(store) and current_tx() is not None
+        logger.log(
+            logging.DEBUG if expected else logging.WARNING,
+            "edax idempotency: compensation for %r was refused after a failed handler; "
+            "the ambient rollback or the record's retention frees the claim",
+            key,
+            exc_info=True,
+        )
 
 
 def _replay(key: str, payload_hash: int, prior: Record) -> Any:

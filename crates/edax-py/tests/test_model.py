@@ -39,6 +39,7 @@ from conftest import (
     counter_repo,
     expect,
     fields,
+    recorded_backoff,
     same,
     sequence_of,
     stamp,
@@ -375,15 +376,21 @@ def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
         done: Record = (hash_, ("done", value))
         failed: Record = (hash_, ("failed", "terminal"))
         if op.lost == 2:
-            # The outcome write lands, then loses its response. Transient: the release landed, so
-            # the key is free either way.
+            # The outcome write lands, then loses its response. The key ends free either way: a
+            # released claim is gone, and a `complete` whose reply was lost is cleaned up by the
+            # middleware's release. The outcome is dropped and a redelivery re-runs (at-least-once)
+            # rather than finding a claim stuck pending. The fence does not apply: `complete` already
+            # handed the claim back, so that release is the seam's plain unconditional delete.
+            #
+            # What the *caller* sees differs by path. After a failed handler the handler's own error
+            # survives, because a compensation the store refuses must not replace the verdict `retry`
+            # and the dispatcher branch on.
             if op.outcome == 1:
-                return Expectation(raises=edax.StoreError, arm="release", runs=1, slot=None)
-            # Success and terminal: `complete` landed but only its reply was lost, so the
-            # middleware's complete-failed cleanup releases the key. The outcome is dropped and a
-            # redelivery re-runs (at-least-once) rather than finding a claim stuck pending. The
-            # fence does not apply: `complete` already handed the claim back, so this release is
-            # the seam's plain unconditional delete.
+                return Expectation(raises=RuntimeError, match="transient", arm="release", runs=1, slot=None)
+            if op.outcome == 2:
+                return Expectation(raises=edax.CodecError, arm="complete", runs=1, slot=None)
+            # Success: the store's failure is the only news there is, and the caller must not report
+            # a success that was never recorded.
             return Expectation(raises=edax.StoreError, arm="complete", runs=1, slot=None)
         return (
             Expectation(value=value, runs=1, slot=done),
@@ -594,7 +601,11 @@ async def _replay_dispatcher(workers: int, max_attempts: int, with_dead: bool, s
 def test_dispatcher_keeps_per_aggregate_fifo(
     workers: int, max_attempts: int, with_dead: bool, submits: list[Submit]
 ) -> None:
-    asyncio.run(_replay_dispatcher(workers, max_attempts, with_dead, submits))
+    # The property under test is settlement order, not timing, and every nack waits one step of the
+    # kernel's backoff schedule. Paid for real across a hundred examples that is minutes of sleeping;
+    # `test_dispatcher.py` asserts the schedule itself.
+    with recorded_backoff():
+        asyncio.run(_replay_dispatcher(workers, max_attempts, with_dead, submits))
 
 
 # =========================================================================

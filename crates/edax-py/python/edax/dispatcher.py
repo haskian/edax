@@ -17,6 +17,11 @@ from .store import _current_tx
 
 logger = logging.getLogger("edax.dispatcher")
 
+#: How a backoff step is waited out. The schedule is the kernel's and a host must not bend it, but a
+#: test asserting which steps were asked for should not pay them in wall time, so this is the seam a
+#: test patches. The Rust dispatcher takes the same injection through its builder.
+_sleep = asyncio.sleep
+
 Handler = Callable[[EventEnvelope], MaybeAwaitable[None]]
 AckFn = Callable[[], MaybeAwaitable[None]]
 DeadLetterFn = Callable[["Delivery", BaseException], MaybeAwaitable[None]]
@@ -61,9 +66,11 @@ class KeyOrderedDispatcher:
 
     A raising handler nacks unless ``on_dead`` is set. With it, a terminal error dead-letters on the first
     attempt whatever ``max_attempts`` says, and a transient one at the ``max_attempts``-th failed attempt
-    (``0`` disables the ceiling). :class:`~edax.errors.InProgress` never counts, because it is contention:
-    the delivery waits one backoff step and nacks, blocking that worker and every key routed to it, because
-    per-key ordering forbids skipping ahead. Attempt counting and sink behaviour: ``docs/sdk/consuming.md``.
+    (``0`` disables the ceiling). Every nack waits one step of the kernel's backoff schedule first, or a
+    handler failing on a downed dependency polls the broker as fast as it redelivers.
+    :class:`~edax.errors.InProgress` waits the same way but never counts, because it is contention rather
+    than a failed attempt. The wait blocks that worker and every key routed to it, because per-key ordering
+    forbids skipping ahead. Attempt counting and sink behaviour: ``docs/sdk/consuming.md``.
     """
 
     def __init__(
@@ -88,6 +95,13 @@ class KeyOrderedDispatcher:
         # failed attempt, and the same unbounded-entry caveat applies.
         self._contended: dict[str, int] = {}
 
+    @property
+    def on_dead(self) -> Optional[DeadLetterFn]:
+        """The dead-letter sink, or ``None``. A :class:`~edax.broker.Consumer` that must settle a message
+        no handler may see — a payload that will not decode — routes it here, the same exit a terminal
+        handler failure takes. Set at construction: workers read it, so it is not swapped mid-run."""
+        return self._on_dead
+
     def _worker_index(self, aggregate_id: str) -> int:
         return _edax.partition(aggregate_id, len(self._queues))
 
@@ -107,7 +121,10 @@ class KeyOrderedDispatcher:
                 else:
                     await maybe_await(self.handler(item))  # bare envelope: no settlement
             except Exception:
-                logger.exception("edax dispatcher: event handling failed; worker continues")
+                # Named per arm: a bare envelope is fire-and-forget, so nothing settles it and
+                # "settling failed" would send an operator to the wrong layer.
+                what = "settling a delivery" if isinstance(item, Delivery) else "a fire-and-forget handler"
+                logger.exception("edax dispatcher: %s failed; worker continues", what)
             finally:
                 queue.task_done()
 
@@ -121,8 +138,7 @@ class KeyOrderedDispatcher:
             # attempt budget. Nacking at once would poll the broker until the claim's TTL.
             step = self._contended.get(env_id, 0)
             self._contended[env_id] = step + 1
-            await asyncio.sleep(_edax.backoff_millis(step) / 1000)
-            await delivery.nack()
+            await self._nack_after_backoff(delivery, step)
             return
         except Exception as e:  # noqa: BLE001 - handler failed -> nack or dead-letter
             self._contended.pop(env_id, None)
@@ -138,18 +154,45 @@ class KeyOrderedDispatcher:
                 )
                 # on_dead raising propagates before any ack/nack: the broker redelivers.
                 await maybe_await(self._on_dead(delivery, e))
-                await delivery.ack()
+                await self._ack_or_log(delivery)
                 self._attempts.pop(env_id, None)
                 return
             # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
-            if self._max_attempts:
-                self._attempts[env_id] = attempt
-            await delivery.nack()
+            # Recorded whatever the ceiling, so the backoff below grows across redeliveries: with the
+            # default `max_attempts=0` an unrecorded attempt is always 1 and the wait a flat first step.
+            self._attempts[env_id] = attempt
+            # Transient failure: waited the same way as the InProgress arm, one step of the kernel's
+            # schedule before handing the delivery back.
+            await self._nack_after_backoff(delivery, attempt - 1)
             return
-        await delivery.ack()
+        await self._ack_or_log(delivery)
         self._contended.pop(env_id, None)
-        if self._max_attempts:
-            self._attempts.pop(env_id, None)
+        self._attempts.pop(env_id, None)
+
+    async def _nack_after_backoff(self, delivery: Delivery, step: int) -> None:
+        """Wait one step of the kernel's backoff schedule, then nack. Both failure arms wait: nacking at
+        once has a handler on a downed dependency polling the broker as fast as it redelivers, and on a
+        seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
+        therefore every key routed to it — per-key ordering forbids skipping ahead."""
+        await _sleep(_edax.backoff_millis(step) / 1000)
+        await delivery.nack()
+
+    async def _ack_or_log(self, delivery: Delivery) -> None:
+        """Ack, or report the failure as what it is: a settlement problem, not a handler failure.
+
+        The handler already did its work, so this is not ``on_dead``'s business either — a dead-letter
+        queue would then hold an event that was handled successfully. Unsettled means the broker
+        redelivers, and an idempotent handler absorbs that. Swallowed here rather than in the worker's
+        catch-all so the bookkeeping below it still runs and the log names the real cause.
+        """
+        try:
+            await delivery.ack()
+        except Exception:
+            logger.warning(
+                "edax dispatcher: ack of %s failed after a successful handler; the broker will redeliver it",
+                delivery.envelope.id,
+                exc_info=True,
+            )
 
     def start(self) -> None:
         if self._tasks:

@@ -336,8 +336,18 @@ this event stale? It compares nothing but two per-aggregate sequence ordinals.
 | `Some(5)` | `Some(5)` | **apply** | the comparison is `stored <= incoming` |
 | `Some(5)` | `Some(4)` | drop | stale redelivery or out-of-order older event |
 
-The equal case needs care. A redelivery of the *same* sequence re-applies, so an at-least-once
-handler stays responsible for its own effect-idempotency on that boundary.
+The equal case needs care, and the name invites getting it wrong. `should_apply` does not answer
+"have I already applied this event?" — it answers "is this event stale?", and an exact redelivery is
+not stale. `should_apply(5, 5)` is `True`, so the event applies again.
+
+That makes it the wrong tool on its own for a replayed batch. Measured: replaying a stream through
+`should_apply` as the only dedup correctly skipped 180 stale events. It also re-applied exactly one
+event per key, a silent 18% read-model error. Every key's newest event has a sequence equal to the
+stored one. Put `idempotent_by_id` in front of the handler when the effect is not itself idempotent.
+Over the same 400 deliveries that gives 200 handler runs and exact balances.
+
+Use `should_apply` for what it is: a cheap ordinal comparison that drops events already superseded.
+An at-least-once handler stays responsible for its own effect-idempotency on the equality boundary.
 `testdata/golden/dedup.json` pins all nine cases, including both ends of the `u64` ceiling. This is
 not command idempotency by key. Here a stale event is dropped by comparing a sequence. There a
 duplicate command is replayed by comparing a key in the ledger.

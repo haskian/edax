@@ -45,6 +45,25 @@ cannot tell a lost insert response from another claimant holding this key. Relea
 case would delete the winner's live claim. A claim whose response was lost is settled by retention
 instead.
 
+
+## The key prefix
+
+Every key the store writes is `{prefix}{key}`, and `prefix` defaults to `"idem:"` — the same default
+for every store, every service and every environment. Two services sharing one Redis therefore share
+a key space, and a bare request id that both use is one claim.
+
+The collision is loud rather than silent: the two commands hash differently, so the loser gets a
+terminal `PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though,
+and nothing in the guard can tell that apart from a genuine key reuse.
+
+```python
+ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:")
+```
+
+Give each service and environment its own prefix. Namespacing the *key* by command type is a
+separate job and belongs to your key function — see
+[commands.md](../sdk/commands.md#the-key-namespace-is-yours).
+
 ## Two TTLs
 
 One shared value cannot bound both states. A pending claim and a terminal record fail in opposite
@@ -142,8 +161,10 @@ learns its claim was taken over.
 #### `complete`
 
 - Holding the claim: `set_px_if_prefix` under `ttl_ms`.
-- On a `False` return it raises `StoreError`.
+- On a `False` return it raises `StoreError`, and it keeps its token.
 - A `False` return means the outcome was not recorded, so the caller must not report success.
+- The token is kept because the guard answers a refused `complete` with `release`. That `release`
+  must stay fenced, or its `DEL` would delete the claim that replaced this one.
 - Holding no claim: a plain `SET ... PX ttl_ms` with a fresh token.
 - That is a direct write, not a guarded dispatch. The seam's plain `complete` means exactly that.
 
@@ -159,7 +180,10 @@ still producing. It raises on purpose.
 `test_redis.py::test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holders` asserts it.
 
 `release` is the path that silently loses work when it is unfenced. A bare `DEL` frees a key another
-worker is actively holding. Two handlers then run for it.
+worker is actively holding. Two handlers then run for it. This is why a refused `complete` keeps its
+token. The compensating `release` that follows is then fenced, and its `delete_if_prefix` is a
+no-op against the new holder's prefix.
+`test_redis.py::test_a_refused_complete_keeps_the_fence_for_the_compensating_release` asserts it.
 
 ### Two workers racing a claim TTL expiry
 

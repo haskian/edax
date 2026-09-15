@@ -7,7 +7,7 @@
 //! Regenerate after an intentional change: `EDAX_REGEN=1 cargo test -p edax-event --test golden`.
 //! Without the env var this test ASSERTS the committed files still match the code.
 
-use edax_event::query::{encode_cursor, query_json, SortKey};
+use edax_event::query::{decode_cursor, effective_sort, encode_cursor, query_json, SortKey};
 use edax_event::{encode_from_json, Format};
 use edax_golden::write_or_check;
 use serde_json::{json, Value};
@@ -64,6 +64,63 @@ fn query_cases() -> Vec<Value> {
             let cursor = page.last().map(|row| encode_cursor(row, &sort));
             json!({ "query": q, "documents": docs, "expected_page": page, "expected_cursor": cursor })
         })
+        .collect()
+}
+
+fn cursor_cases() -> Vec<Value> {
+    // The round trip a backend depends on: a cursor minted from a row decodes back to the tuple its
+    // `WHERE` clause binds, under the sort the page is actually ordered by. Each case pins both
+    // halves, so a binding that decodes differently fails here rather than silently paging wrong.
+    let cases: Vec<(Value, Value)> = vec![
+        // The ordinary case: one declared key, `id` appended as the tiebreak.
+        (json!([{"path": "age"}]), json!({"id": "user-1", "age": 36})),
+        // Two declared keys; the tiebreak still lands last.
+        (json!([{"path": "s"}, {"path": "n", "desc": true}]), json!({"id": "a", "s": "open", "n": 4})),
+        // `id` already terminal: no second tiebreak is appended.
+        (json!([{"path": "n"}, {"path": "id"}]), json!({"id": "z", "n": 1})),
+        // Sorting on `id` alone is already tie-free.
+        (json!([{"path": "id"}]), json!({"id": "only"})),
+        // A missing sort path encodes as null and must decode back as null, not as an absent slot.
+        (json!([{"path": "missing"}]), json!({"id": "user-2"})),
+        // Every type the total order spans, so the tuple's JSON round trip is pinned for each.
+        (json!([{"path": "v"}]), json!({"id": "t1", "v": {"k": [1, "two", true, null]}})),
+        // An unsorted query has no order to resume from; the tiebreak is a no-op on an empty sort.
+        (json!([]), json!({"id": "user-3", "age": 1})),
+    ];
+    cases
+        .into_iter()
+        .map(|(sort, doc)| {
+            let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
+            let cursor = encode_cursor(&doc, &keys);
+            let decoded = decode_cursor(&cursor, &keys).unwrap();
+            json!({
+                "sort": sort,
+                "document": doc,
+                "expected_cursor": cursor,
+                "expected_effective_sort": effective_sort(&keys),
+                "expected_tuple": decoded,
+            })
+        })
+        .chain(
+            // Cursors that did not come from this sort. The applier pads a short tuple with null and
+            // ignores a long one, so the decoder must report exactly what the applier would compare.
+            [
+                (json!([{"path": "a"}, {"path": "b"}]), "W10=", json!([null, null, null])),
+                (json!([{"path": "a"}]), "WzEsMiwzLDRd", json!([1, 2])),
+            ]
+            .into_iter()
+            .map(|(sort, cursor, tuple)| {
+                let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
+                assert_eq!(json!(decode_cursor(cursor, &keys).unwrap()), tuple, "mismatched-arity case");
+                json!({
+                    "sort": sort,
+                    "document": Value::Null,
+                    "expected_cursor": cursor,
+                    "expected_effective_sort": effective_sort(&keys),
+                    "expected_tuple": tuple,
+                })
+            }),
+        )
         .collect()
 }
 
@@ -301,6 +358,7 @@ fn golden() {
     write_or_check("envelopes.json", envelope_cases());
     write_or_check("filter.json", filter_cases());
     write_or_check("query.json", query_cases());
+    write_or_check("cursor.json", cursor_cases());
     write_or_check("upcast.json", upcast_cases());
     write_or_check("causation.json", causation_cases());
     write_or_check("causation_originate.json", originate_cases());

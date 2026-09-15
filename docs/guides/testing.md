@@ -174,6 +174,33 @@ followed by a successful one on the same key, and an append batch with a gap in 
 Hypothesis does the same thing in `.hypothesis/`, but that directory is gitignored, so a Python
 regression is pinned by adding an explicit case to the table instead.
 
+## The packaged conformance suite
+
+`edax.testing` is the one layer aimed outward. Everything above tests `edax`; this tests the backend
+*you* wrote, which is the code neither this project nor its test suite has ever seen.
+
+```python
+import pytest
+from edax.testing import EventStoreContract
+
+
+class TestPostgresEventStore(EventStoreContract):
+    @pytest.fixture
+    async def event_store(self, pool):
+        return PostgresEventStore(pool)
+```
+
+Install it with `pip install edax[test]`. Full seam-by-seam coverage, the capability flags, and the
+fault wrappers are in [the backend guide](../backends/README.md). Two properties are worth knowing
+before you rely on it:
+
+- **It is proved to discriminate.** `crates/edax-py/tests/test_contract_discriminates.py` breaks one
+  clause per case, the way a real backend breaks it. A signed column for an unsigned hash, `>=` where
+  the contract says `>`, a version advanced by a failed save. Each case asserts the suite catches it.
+  A conformance suite that only ever passes is a promise, not a test.
+- **It runs against the in-tree backends too.** `test_contract_memory.py` holds the memory stores to
+  the same clauses, so the suite cannot drift from the implementations it describes.
+
 ## Contract suites a host can reuse
 
 Four harnesses are written against the *seam*, not the backend, so pointing one at a new

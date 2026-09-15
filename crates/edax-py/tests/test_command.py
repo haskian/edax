@@ -864,7 +864,10 @@ class IdemCase:
             id="unencodable_payload_is_terminal_before_any_claim",
         ),
         # A claim nobody completes would raise InProgress on every redelivery until it expires, so a
-        # failing complete releases it and the redelivery re-runs the handler.
+        # failing complete releases it and the redelivery re-runs the handler. Which error the caller
+        # sees differs by path: after a success the store's failure is the only news there is, but
+        # after a failed handler the handler's own verdict is what `retry` and the dispatcher branch on,
+        # so a refused compensation must not replace it.
         pytest.param(
             IdemCase(
                 "req-1", CreateUser("a@b.c"), [None, None], BrokenCompleteStore, edax.StoreError, 2, 2, 2
@@ -877,12 +880,12 @@ class IdemCase:
                 CreateUser("a@b.c"),
                 [edax.CodecError("bad"), edax.CodecError("bad")],
                 BrokenCompleteStore,
-                edax.StoreError,
+                edax.CodecError,
                 2,
                 2,
                 2,
             ),
-            id="terminal_failure_with_failing_complete_releases_the_claim",
+            id="terminal_failure_with_failing_complete_shows_the_handlers_verdict",
         ),
     ],
 )

@@ -117,6 +117,14 @@ const ID_PATH: &str = "id";
 /// (an unsorted query keeps input order and takes no cursor) and on docs lacking `id` (the tiebreak
 /// resolves to null for every row — callers wanting tie-free paging must give docs a unique `id`).
 /// Applied identically by [`query_json`] and [`encode_cursor`] so a minted cursor matches the order.
+///
+/// Public as [`effective_sort`]: a backend translating a `Query` into its own dialect has to order by
+/// the same keys the reference applier does, tiebreak included, or its pages disagree with the kernel
+/// at every tie.
+pub fn effective_sort(sort: &[SortKey]) -> Vec<SortKey> {
+    tiebroken(sort)
+}
+
 fn tiebroken(sort: &[SortKey]) -> Vec<SortKey> {
     let mut keys = sort.to_vec();
     if !keys.is_empty() && keys.last().map(|k| k.path.as_str()) != Some(ID_PATH) {
@@ -147,9 +155,25 @@ pub fn encode_cursor(doc: &Value, keys: &[SortKey]) -> String {
     B64.encode(bytes)
 }
 
-fn decode_cursor(s: &str) -> Result<Vec<Value>, String> {
+fn decode_tuple(s: &str) -> Result<Vec<Value>, String> {
     let bytes = B64.decode(s).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+/// Decode a keyset cursor into the value tuple it carries, aligned to `keys`. The inverse of
+/// [`encode_cursor`], and the piece a backend needs to turn `Query::after` into the bound values of
+/// its own `WHERE` clause without re-deriving the wire format from prose.
+///
+/// `keys` is tiebroken first, so pass the query's declared sort and get back one value per key the
+/// page is actually ordered by. A short tuple pads with `null` and a long one is truncated, which is
+/// exactly what [`after_cursor`] does when it compares — a cursor minted under a different sort is
+/// therefore read the same way the reference applier reads it, rather than rejected here and accepted
+/// there.
+pub fn decode_cursor(cursor: &str, keys: &[SortKey]) -> Result<Vec<Value>, String> {
+    let keys = tiebroken(keys);
+    let mut tuple = decode_tuple(cursor)?;
+    tuple.resize(keys.len(), NULL.clone());
+    Ok(tuple)
 }
 
 /// Whether a document sorts strictly after the cursor tuple under the given keys. An equal tuple is
@@ -176,7 +200,7 @@ pub fn query_json(query: &[u8], docs: &[u8]) -> Result<Vec<u8>, String> {
     // An unsorted query has no order to resume from, so its cursor is ignored rather than rejected.
     if !sort.is_empty() {
         if let Some(cursor) = &q.after {
-            let tuple = decode_cursor(cursor)?;
+            let tuple = decode_tuple(cursor)?;
             rows.retain(|d| after_cursor(&sort, d, &tuple));
         }
     }
@@ -187,6 +211,20 @@ pub fn query_json(query: &[u8], docs: &[u8]) -> Result<Vec<u8>, String> {
         page.truncate(l);
     }
     serde_json::to_vec(&page).map_err(|e| e.to_string())
+}
+
+/// Boundary helper: decode a cursor into its value tuple under `sort` (JSON in, JSON array out).
+pub fn decode_cursor_json(cursor: &[u8], sort: &[u8]) -> Result<Vec<u8>, String> {
+    let cursor = std::str::from_utf8(cursor).map_err(|e| e.to_string())?;
+    let keys: Vec<SortKey> = serde_json::from_slice(sort).map_err(|e| e.to_string())?;
+    let tuple = decode_cursor(cursor, &keys)?;
+    serde_json::to_vec(&tuple).map_err(|e| e.to_string())
+}
+
+/// Boundary helper: the sort keys a page is actually ordered by, tiebreak included (JSON in, out).
+pub fn effective_sort_json(sort: &[u8]) -> Result<Vec<u8>, String> {
+    let keys: Vec<SortKey> = serde_json::from_slice(sort).map_err(|e| e.to_string())?;
+    serde_json::to_vec(&effective_sort(&keys)).map_err(|e| e.to_string())
 }
 
 /// Boundary helper: encode the next-page cursor from a document and the sort keys (both JSON).
@@ -481,11 +519,22 @@ mod tests {
         let doc = serde_json::to_vec(&json!({"id": "a", "n": 1})).unwrap();
         let cursor = String::from_utf8(encode_cursor_json(&doc, &sort).unwrap()).unwrap();
         assert_eq!(
-            decode_cursor(&cursor).unwrap(),
+            decode_tuple(&cursor).unwrap(),
             vec![json!(1), json!("a")],
             "id tiebreak is in the tuple"
         );
+        // The boundary the bindings call: the same tuple, aligned to the tiebroken sort.
+        let tuple: Vec<Value> =
+            serde_json::from_slice(&decode_cursor_json(cursor.as_bytes(), &sort).unwrap()).unwrap();
+        assert_eq!(tuple, vec![json!(1), json!("a")]);
+        assert_eq!(
+            String::from_utf8(effective_sort_json(&sort).unwrap()).unwrap(),
+            r#"[{"path":"n","desc":false},{"path":"id","desc":false}]"#,
+            "the sort a page is really ordered by"
+        );
         assert!(encode_cursor_json(b"not json", &sort).is_err());
         assert!(encode_cursor_json(&doc, b"not json").is_err());
+        assert!(decode_cursor_json(b"not base64!", &sort).is_err());
+        assert!(decode_cursor_json(cursor.as_bytes(), b"not json").is_err());
     }
 }

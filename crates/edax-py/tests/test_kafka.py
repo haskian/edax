@@ -217,10 +217,17 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
         await c.send_and_wait("t", body)
 
     handled: list[str] = []
-    dead: list[tuple[str, bytes, str]] = []
+    dead: list[tuple[str, bytes, str, str]] = []
 
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        dead.append((delivery.envelope.event.name, bytes(delivery.envelope.event.data), str(err)))
+        dead.append(
+            (
+                delivery.envelope.event.name,
+                bytes(delivery.envelope.event.data),
+                str(err),
+                delivery.envelope.id,
+            )
+        )
 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=lambda env: handled.append(env.id), on_dead=on_dead
@@ -236,7 +243,23 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
 
     assert handled == ["0", "2"], "the poison message must never reach a handler"
     assert len(dead) == 1
-    name, payload, message = dead[0]
+    name, payload, message, poison_id = dead[0]
     assert (name, payload) == (UNDECODABLE, POISON_BYTES)  # the raw bytes reach the dead-letter sink
     assert "offset 1 did not decode" in message
+    assert poison_id == "t/0/1", "topic and partition qualify the offset"
     assert c.commits[-1] == 3, "the watermark never advanced past the poison message"
+
+
+async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
+    """The offset is per partition, so the bare offset is not an identity. Two poison messages at
+    offset 0 on different partitions would share one envelope id, and a dead-letter queue keyed on it
+    — the natural key, and the one `idempotent_by_id` uses — keeps the first and rejects the second
+    as a `PayloadMismatch`. Silently: the first one wins.
+    """
+    c = _MultiPartitionClient([KafkaMsg("t", 0, 0, POISON_BYTES), KafkaMsg("t", 1, 0, POISON_BYTES)])
+    k = KafkaConsumer(c, _SchemaSerializer())
+    # The id is built in `poll`; the test above already pins that a poison delivery reaches `on_dead`
+    # carrying it, so there is nothing a dispatcher and a consumer loop would add here.
+    ids = [delivered(await k.poll()).envelope.id for _ in range(2)]
+
+    assert ids == ["t/0/0", "t/1/0"], "one id per partition, not one shared offset"

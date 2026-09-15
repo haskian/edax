@@ -15,6 +15,14 @@ ignore_merge_commits = true
 # just passed.
 skip_ci = "[skip ci]"
 
+# A bump must rewrite the version literals in the tree, or the tag says 0.1.0 while every artefact
+# still says 0.0.1. `cargo check` re-locks the workspace so `Cargo.lock` lands in the bump commit
+# rather than dirtying the next one.
+pre_bump_hooks = [
+    "python3 scripts/set_version.py {{version}}",
+    "cargo check --workspace --locked --quiet",
+]
+
 [changelog]
 path = "CHANGELOG.md"
 template = "remote"

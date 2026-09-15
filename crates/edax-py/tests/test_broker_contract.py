@@ -129,6 +129,7 @@ class RunCase:
     returns: bool  # run() returned (end of stream) rather than raising CancelledError
     dead: list  # event names the dead-letter hook saw
     on_dead: bool = True  # wire the dispatcher's dead-letter hook
+    sink_raises: bool = False  # the dead-letter sink is unreachable, the usual reason one fails
     max_queue: int = 0  # 0 = unbounded; a small queue makes `submit` block
     start: bool = True  # an unstarted dispatcher drains nothing, so its queue stays full
 
@@ -159,6 +160,12 @@ class RunCase:
             RunCase(["poison", None], False, [], ["nack"], True, [], on_dead=False),
             id="undecodable_without_a_hook_is_nacked_never_dropped",
         ),
+        # A DLQ outage must not stop the consumer. The poison stays unsettled, exactly as the
+        # dispatcher route leaves it, so the broker redelivers and the sink gets another try.
+        pytest.param(
+            RunCase(["poison", "d", None], False, [1], ["ack"], True, [UNDECODABLE], sink_raises=True),
+            id="undecodable_with_a_raising_sink_is_left_unsettled_and_the_loop_continues",
+        ),
     ],
 )
 async def test_consumer_loop_run_branches(case: RunCase) -> None:
@@ -184,7 +191,11 @@ async def test_consumer_loop_run_branches(case: RunCase) -> None:
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
         assert isinstance(err, edax.CodecError) and err.terminal
         assert bytes(delivery.envelope.event.data) == POISON_BYTES, "the raw payload must survive"
+        # Recorded before the raise: `dead` is what the sink saw, so it doubles as the call count and
+        # the raising row still proves the sink was reached exactly once.
         dead.append(delivery.envelope.event.name)
+        if case.sink_raises:
+            raise edax.StoreError("dead-letter sink unavailable")
 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=2,

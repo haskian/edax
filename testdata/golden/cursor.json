@@ -1,0 +1,242 @@
+[
+  {
+    "document": {
+      "age": 36,
+      "id": "user-1"
+    },
+    "expected_cursor": "WzM2LCJ1c2VyLTEiXQ==",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "age"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      36,
+      "user-1"
+    ],
+    "sort": [
+      {
+        "path": "age"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "a",
+      "n": 4,
+      "s": "open"
+    },
+    "expected_cursor": "WyJvcGVuIiw0LCJhIl0=",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "s"
+      },
+      {
+        "desc": true,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      "open",
+      4,
+      "a"
+    ],
+    "sort": [
+      {
+        "path": "s"
+      },
+      {
+        "desc": true,
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "z",
+      "n": 1
+    },
+    "expected_cursor": "WzEsInoiXQ==",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      1,
+      "z"
+    ],
+    "sort": [
+      {
+        "path": "n"
+      },
+      {
+        "path": "id"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "only"
+    },
+    "expected_cursor": "WyJvbmx5Il0=",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      "only"
+    ],
+    "sort": [
+      {
+        "path": "id"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "user-2"
+    },
+    "expected_cursor": "W251bGwsInVzZXItMiJd",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "missing"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      null,
+      "user-2"
+    ],
+    "sort": [
+      {
+        "path": "missing"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "t1",
+      "v": {
+        "k": [
+          1,
+          "two",
+          true,
+          null
+        ]
+      }
+    },
+    "expected_cursor": "W3siayI6WzEsInR3byIsdHJ1ZSxudWxsXX0sInQxIl0=",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "v"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      {
+        "k": [
+          1,
+          "two",
+          true,
+          null
+        ]
+      },
+      "t1"
+    ],
+    "sort": [
+      {
+        "path": "v"
+      }
+    ]
+  },
+  {
+    "document": {
+      "age": 1,
+      "id": "user-3"
+    },
+    "expected_cursor": "W10=",
+    "expected_effective_sort": [],
+    "expected_tuple": [],
+    "sort": []
+  },
+  {
+    "document": null,
+    "expected_cursor": "W10=",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "a"
+      },
+      {
+        "desc": false,
+        "path": "b"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      null,
+      null,
+      null
+    ],
+    "sort": [
+      {
+        "path": "a"
+      },
+      {
+        "path": "b"
+      }
+    ]
+  },
+  {
+    "document": null,
+    "expected_cursor": "WzEsMiwzLDRd",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "a"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      1,
+      2
+    ],
+    "sort": [
+      {
+        "path": "a"
+      }
+    ]
+  }
+]

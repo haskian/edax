@@ -154,23 +154,26 @@ class EventStore(Protocol):
 
 
 class EventCodec(Protocol):
-    """Bridges a domain event and its marshaled :class:`~edax.aggregate.Event` (name/version/bytes)."""
+    """Bridges a domain event and its marshaled :class:`~edax.aggregate.Event` (name/version/bytes).
+    Parameters are positional-only, so an implementation may name them after its own event type."""
 
-    def marshal(self, event: Any) -> Event: ...
-    def unmarshal(self, event: Event) -> Any: ...
+    def marshal(self, event: Any, /) -> Event: ...
+    def unmarshal(self, event: Event, /) -> Any: ...
 
 
 class AggregateCodec(Protocol[A]):
     """Bridges an aggregate and its snapshot bytes. Generic in the aggregate, so :class:`Repository` hands
-    your own class back with no downcast."""
+    your own class back with no downcast. Parameters are positional-only, so an implementation may name
+    them after its own aggregate: a structural match compares parameter *names* otherwise, and
+    ``dump(self, account)`` would not satisfy ``dump(self, agg)``."""
 
     type: str
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> A:
+    def load(self, id: str, version: int, data: Optional[bytes], /) -> A:
         """Rebuild an aggregate at ``version``; ``data is None`` means none stored yet (empty at v0)."""
         ...
 
-    def dump(self, agg: A) -> bytes: ...
+    def dump(self, agg: A, /) -> bytes: ...
 
 
 class Repository(Generic[A]):

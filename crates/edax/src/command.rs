@@ -54,7 +54,9 @@ pub trait IdempotencyStore<O> {
     /// Never fold it into a `Prior` record; the middleware reads that as a cached, terminal failure.
     fn claim(&self, tx: &mut Self::Tx, key: &str, payload_hash: u64) -> Result<Claim<O>, crate::Error>;
     /// Write the terminal record for `key`, replacing the pending claim. [`crate::Error::Store`] for a backend
-    /// failure; the middleware answers it by releasing the claim so the key does not stay pending.
+    /// failure; the middleware answers it by releasing the claim so the key does not stay pending. A fenced
+    /// store that refuses the write because the claim was taken over must keep its fence: that release
+    /// follows, and an unfenced one would delete the claim that replaced this one.
     fn complete(&self, tx: &mut Self::Tx, key: &str, record: Record<O>) -> Result<(), crate::Error>;
     /// Drop `key`, releasing the claim so a transient failure can retry. Idempotent: releasing an
     /// absent key is not a failure.
@@ -245,12 +247,16 @@ where
             }
             Ok(Err(e)) => {
                 // Terminal failure: cache it so a redelivery replays it. Transient failure: release
-                // the claim so a retry (or redelivery) can re-run the handler.
-                if terminal(&e) {
-                    complete_or_release(store, tx, key, Record::failed(hash, e.to_string())).map_err(lift)?;
+                // the claim so a retry (or redelivery) can re-run the handler. Either write can be
+                // refused — a handle the handler's own failed statement already aborted — and the
+                // handler's error is the verdict the caller and the dispatcher act on, so a refused
+                // compensation is dropped here exactly as the panic arm below drops it. The host's
+                // rollback or the store's retention frees the claim instead.
+                let _ = if terminal(&e) {
+                    complete_or_release(store, tx, key, Record::failed(hash, e.to_string()))
                 } else {
-                    store.release(tx, key).map_err(lift)?;
-                }
+                    store.release(tx, key)
+                };
                 Err(e)
             }
             // A panic is not a value the record can replay, so treat it as transient: release the claim
@@ -739,11 +745,7 @@ mod tests {
             },
         ];
         for c in cases {
-            let store = Arc::new(CountingStore {
-                inner: MemStore::default(),
-                claims: Arc::new(Counter::default()),
-                releases: Arc::new(Counter::default()),
-            });
+            let store = Arc::new(FaultStore::default());
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
             let mut bus: CommandBus<NotJson, i64> =
@@ -876,11 +878,7 @@ mod tests {
             },
         ];
         for c in cases {
-            let store = Arc::new(CountingStore {
-                inner: MemStore::default(),
-                claims: Arc::new(Counter::default()),
-                releases: Arc::new(Counter::default()),
-            });
+            let store = Arc::new(FaultStore::default());
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
             let errors = c.errors;
@@ -928,10 +926,10 @@ mod tests {
         // of that key would read a pending record and fail with `InProgress` forever.
         let claims = Arc::new(Counter::default());
         let releases = Arc::new(Counter::default());
-        let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> = Arc::new(CountingStore {
-            inner: MemStore::default(),
+        let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> = Arc::new(FaultStore {
             claims: Arc::clone(&claims),
             releases: Arc::clone(&releases),
+            ..Default::default()
         });
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
@@ -1014,25 +1012,42 @@ mod tests {
         assert_eq!(calls.get(), 1); // handler never re-ran
     }
 
-    /// Counts claims so the nesting order is observable: `idempotent` outside, `retry` inside means
-    /// every attempt runs under **one** claim. Swapped, each retry would take (and release) its own.
-    struct CountingStore {
+    /// The guard's test store: counts every seam call, and fails the ones it is told to. The counts
+    /// make the guard's own behaviour observable — how many claims a nesting order takes, whether a
+    /// compensation was attempted at all. `claim_fails` is a ledger the guard cannot reach;
+    /// `settle_fails` is a SQL ledger whose compensating write is refused once the handler's own
+    /// failed statement has aborted the transaction they share.
+    #[derive(Default)]
+    struct FaultStore {
         inner: MemStore,
         claims: Arc<Counter>,
+        completes: Arc<Counter>,
         releases: Arc<Counter>,
+        claim_fails: bool,
+        settle_fails: bool,
     }
 
-    impl IdempotencyStore<i64> for CountingStore {
+    impl IdempotencyStore<i64> for FaultStore {
         type Tx = MemoryTx;
         fn claim(&self, tx: &mut MemoryTx, key: &str, payload_hash: u64) -> Result<Claim<i64>, crate::Error> {
             self.claims.set(self.claims.get() + 1);
+            if self.claim_fails {
+                return Err(crate::Error::Store("could not reach the ledger".into()));
+            }
             self.inner.claim(tx, key, payload_hash)
         }
         fn complete(&self, tx: &mut MemoryTx, key: &str, record: Record<i64>) -> Result<(), crate::Error> {
+            self.completes.set(self.completes.get() + 1);
+            if self.settle_fails {
+                return Err(crate::Error::Store("current transaction is aborted".into()));
+            }
             self.inner.complete(tx, key, record)
         }
         fn release(&self, tx: &mut MemoryTx, key: &str) -> Result<(), crate::Error> {
             self.releases.set(self.releases.get() + 1);
+            if self.settle_fails {
+                return Err(crate::Error::Store("current transaction is aborted".into()));
+            }
             self.inner.release(tx, key)
         }
     }
@@ -1041,15 +1056,16 @@ mod tests {
     fn retry_inside_idempotent_shares_one_claim() {
         let claims = Arc::new(Counter::default());
         let releases = Arc::new(Counter::default());
-        let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> = Arc::new(CountingStore {
-            inner: MemStore::default(),
+        let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> = Arc::new(FaultStore {
             claims: Arc::clone(&claims),
             releases: Arc::clone(&releases),
+            ..Default::default()
         });
 
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
-        // Order matters: idempotent first (outermost), retry inside it.
+        // Order matters: idempotent first (outermost), retry inside it. Every attempt then runs under
+        // one claim; swapped, each retry would take and release its own, which the claim count shows.
         let mut bus: CommandBus<Pay, i64> = CommandBus::new()
             .with(idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())))
             .with(retry(2));
@@ -1080,26 +1096,6 @@ mod tests {
         assert_eq!(claims.get(), 2);
     }
 
-    /// A store that cannot take the claim at all, and counts what the guard did about it.
-    struct ClaimFails {
-        inner: MemStore,
-        releases: Arc<Counter>,
-    }
-
-    impl IdempotencyStore<i64> for ClaimFails {
-        type Tx = MemoryTx;
-        fn claim(&self, _tx: &mut MemoryTx, _key: &str, _hash: u64) -> Result<Claim<i64>, crate::Error> {
-            Err(crate::Error::Store("could not reach the ledger".into()))
-        }
-        fn complete(&self, tx: &mut MemoryTx, key: &str, record: Record<i64>) -> Result<(), crate::Error> {
-            self.inner.complete(tx, key, record)
-        }
-        fn release(&self, tx: &mut MemoryTx, key: &str) -> Result<(), crate::Error> {
-            self.releases.set(self.releases.get() + 1);
-            self.inner.release(tx, key)
-        }
-    }
-
     /// A claim that fails is reported as itself and never compensated. Nothing was taken, so there is
     /// nothing to release — and releasing would be worse than useless: the failure may be the backend
     /// reporting that *another* claimant holds the key, and the release would delete the winner's live
@@ -1110,7 +1106,7 @@ mod tests {
         let releases = Arc::new(Counter::default());
         let calls = Arc::new(Counter::default());
         let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> =
-            Arc::new(ClaimFails { inner: MemStore::default(), releases: Arc::clone(&releases) });
+            Arc::new(FaultStore { releases: Arc::clone(&releases), claim_fails: true, ..Default::default() });
 
         let calls_h = Arc::clone(&calls);
         let mut bus: CommandBus<Pay, i64> =
@@ -1131,5 +1127,59 @@ mod tests {
         assert!(matches!(store_error, crate::Error::Store(m) if m.contains("reach the ledger")), "got {store_error}");
         assert_eq!(releases.get(), 0, "a failed claim must not be compensated");
         assert_eq!(calls.get(), 0, "the handler must not run without a claim");
+    }
+
+    /// A compensation the store refuses must never replace the handler's error. That error is the
+    /// verdict `retry` and the dispatcher branch on, so letting the store's failure through re-types a
+    /// terminal domain error as a transient `Store` one: `retry` re-runs a deterministic failure and a
+    /// dispatcher nacks to `max_attempts` instead of dead-lettering on the first attempt. The panic arm
+    /// of `guarded` already drops a refused release for the same reason.
+    /// `tests/test_unit_of_work.py` pins the same rule for the Python SDK.
+    #[test]
+    fn a_refused_compensation_keeps_the_handlers_error() {
+        for terminal in [true, false] {
+            let completes = Arc::new(Counter::default());
+            let releases = Arc::new(Counter::default());
+            let calls = Arc::new(Counter::default());
+            let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> = Arc::new(FaultStore {
+                completes: Arc::clone(&completes),
+                releases: Arc::clone(&releases),
+                settle_fails: true,
+                ..Default::default()
+            });
+
+            let calls_h = Arc::clone(&calls);
+            let mut bus: CommandBus<Pay, i64> =
+                CommandBus::new().with(idempotent(store, |c: &Pay| Some(c.id.clone())));
+            bus.register(
+                "Pay",
+                Box::new(move |_c: &Pay| {
+                    calls_h.set(calls_h.get() + 1);
+                    // Codec is terminal, Store is transient: the two sides of the verdict.
+                    Err(Box::new(if terminal {
+                        crate::Error::Codec("the payload is malformed".into())
+                    } else {
+                        crate::Error::Store("the downstream service timed out".into())
+                    }) as HandlerError)
+                }),
+            )
+            .unwrap();
+
+            let err = bus.dispatch(&pay("k1", 5)).expect_err("the handler failed");
+            let CommandBusError::Handler(source) = err else { panic!("expected a wrapped failure") };
+            let seen = source.downcast_ref::<crate::Error>().expect("the SDK error survives the box");
+            // The handler's own error, with its own verdict — not the store's refusal.
+            if terminal {
+                assert!(matches!(seen, crate::Error::Codec(m) if m.contains("malformed")), "got {seen}");
+            } else {
+                assert!(matches!(seen, crate::Error::Store(m) if m.contains("timed out")), "got {seen}");
+            }
+            assert_eq!(is_terminal(seen), terminal, "the handler's verdict survived the refusal");
+            assert_eq!(calls.get(), 1, "the handler ran once");
+            // A terminal failure is compensated by `complete`, which falls back to `release` when
+            // refused; a transient failure only releases.
+            let want = if terminal { (1, 1) } else { (0, 1) };
+            assert_eq!((completes.get(), releases.get()), want, "the guard did compensate");
+        }
     }
 }

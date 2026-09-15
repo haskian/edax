@@ -134,6 +134,24 @@ pub fn encode_cursor(doc: &str, sort: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(codec_error)
 }
 
+/// Decode keyset cursor (base64 string) value tuple (JSON array string) sort keys (JSON string).
+///
+/// The inverse of [`encode_cursor`]: a backend turns `Query::after` into the bound values of its own
+/// `WHERE` clause without re-deriving the wire format. Aligned to the tiebroken sort, so a short
+/// tuple pads with null and a long one truncates, matching what the reference applier compares.
+pub fn decode_cursor(cursor: &str, sort: &str) -> Result<String, String> {
+    let out = edax_event::query::decode_cursor_json(cursor.as_bytes(), sort.as_bytes()).map_err(codec_error)?;
+    String::from_utf8(out).map_err(codec_error)
+}
+
+/// Sort keys a page ordered by (JSON string), `id` tiebreak appended sort keys (JSON string).
+///
+/// A backend ordering by the declared sort alone disagrees with the kernel at every tie.
+pub fn effective_sort(sort: &str) -> Result<String, String> {
+    let out = edax_event::query::effective_sort_json(sort.as_bytes()).map_err(codec_error)?;
+    String::from_utf8(out).map_err(codec_error)
+}
+
 // ---- upcast / causation --------------------------------------------------
 
 /// Ordered upcast steps from `from_version` to `to` given the available step versions.

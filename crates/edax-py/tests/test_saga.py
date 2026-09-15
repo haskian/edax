@@ -6,7 +6,7 @@ import pickle
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import edax
 import pytest
@@ -23,7 +23,7 @@ def env(aggregate_id: str, name: str) -> edax.EventEnvelope:
 @dataclass
 class ShipOrder:
     order_id: str
-    type: str = "ShipOrder"
+    type: ClassVar[str] = "ShipOrder"  # routing only: a class attribute stays out of the hash
 
 
 class OrderSaga:

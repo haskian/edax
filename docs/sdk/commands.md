@@ -67,6 +67,32 @@ so a genuine duplicate raises `PayloadMismatch`.
 A dataclass is read through its declared fields, defaults included. A command may be decoded off a
 queue with a defaulted field left implicit. It hashes as the one its constructor builds.
 
+
+### The key namespace is yours
+
+`type` stays out of the hash, so two *different* commands with the same business fields hash
+identically. `Deposit(account="x", amount=10)` and `Withdraw(account="x", amount=10)` are one hash.
+Reuse one idempotency key across them and the second dispatch replays the first one's cached result:
+no `PayloadMismatch`, no execution, and the money never moves.
+
+That is the rule working as designed. The hash is over the command value, and it must be, or a Rust
+service and a Python service would disagree about the same command. What the kernel cannot know is
+which keys belong together. Namespace the key yourself, by command type and by service:
+
+```python
+def key_of(cmd: Deposit) -> str:
+    # The command type scopes the key, so a reused request id cannot cross command types.
+    return f"billing/{cmd.type}/{cmd.request_id}"
+
+
+bus = CommandBus(idempotent(ledger, key=key_of))
+```
+
+The same applies to the ledger. `RedisIdempotencyStore(prefix=...)` defaults to `idem:` for every
+store, service and environment, so two services sharing one Redis collide on a bare request id. The
+collision is not silent, because it surfaces as a terminal `PayloadMismatch`. It still dead-letters
+an event that was never wrong. Give each service its own prefix.
+
 ## CommandBus
 
 | Operation | Rust | Python |
@@ -194,6 +220,13 @@ is the kernel's — see [`./errors.md`](./errors.md). Python catches `Exception`
 jitter so every language sleeps the same amounts. Failed attempt `i` sleeps `backoff_millis(i)`
 before attempt `i + 1`: 100ms, 200ms, 400ms, capped at 30s. Randomness stays out of the frozen
 kernel; add jitter host-side if many workers retry at once and overload a shared broker.
+
+**Size it before you rely on it.** A jitterless schedule means contenders that collide once collide
+again on the same boundary, which is the common case on a hot aggregate. Measured with 40 concurrent
+commands on one aggregate: `retry(5)` landed 33 of 40 in 1.61s, while a hand-written jittered loop
+landed all 40 in 0.41s. That is the schedule working as documented rather than a defect, but it makes
+`retry` the wrong tool for aggregate contention at any real concurrency. For `ConcurrencyError` on a
+contended aggregate, write your own jittered loop that opens a fresh unit of work per attempt.
 
 The Rust sleep blocks the calling thread. Wrap the dispatch in your async runtime for non-blocking
 retry.

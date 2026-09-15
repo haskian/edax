@@ -47,6 +47,22 @@ def test_golden_query() -> None:
             assert c["expected_cursor"] is None
 
 
+def test_golden_cursor() -> None:
+    """The decode half of the cursor contract, and the sort a page is really ordered by.
+
+    A backend binds `decode_cursor`'s tuple straight into its own keyset `WHERE` clause and orders by
+    `effective_sort`, so a binding that disagrees on either pages differently from the kernel while
+    every cursor still looks well formed.
+    """
+    for c in load("cursor.json"):
+        sort = c["sort"]
+        assert Q.effective_sort(sort) == c["expected_effective_sort"], c
+        assert Q.decode_cursor(c["expected_cursor"], sort) == c["expected_tuple"], c
+        if c["document"] is not None:
+            # Round trip: the cursor minted here is the one the vector pins.
+            assert Q.encode_cursor(c["document"], sort) == c["expected_cursor"], c
+
+
 @pytest.mark.parametrize(
     "branch, kwargs, want",
     [

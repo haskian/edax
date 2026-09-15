@@ -83,5 +83,8 @@ class KafkaConsumer(_ConsumerLoop):
         except Exception as e:  # noqa: BLE001 - whatever the serializer raises, it is one poison message
             poison = CodecError(f"kafka {msg.topic}/{msg.partition} offset {offset} did not decode: {e}")
             poison.__cause__ = e  # `raise ... from e` is unavailable: the error is carried, not raised
-            return UndecodableDelivery(msg.value, str(offset), ack, nack, poison)
+            # Topic, partition and offset together are the only identity a poison message has. The
+            # offset alone repeats on every partition, so two poison messages would share one id and
+            # a dead-letter queue keyed on it would keep the first and reject the second.
+            return UndecodableDelivery(msg.value, f"{msg.topic}/{msg.partition}/{offset}", ack, nack, poison)
         return Delivery(env, ack, nack)
