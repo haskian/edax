@@ -12,5 +12,7 @@ __pycache__/
 *.pyd
 *.egg-info/
 dist/
+# `doclint.py --extract` writes the marked documentation snippets here for `ty` to check.
+.doclint/
 
 .cocoindex_code

@@ -105,6 +105,7 @@ behind.
 An `Aggregate` folds events into state; a `Repository` rehydrates it from a snapshot plus the events
 after it, and appends the pending events back under optimistic concurrency.
 
+<!-- doclint: check -->
 ```python
 import asyncio
 from dataclasses import dataclass
@@ -168,6 +169,7 @@ A command bus routes by command type through a middleware chain. `idempotent` is
 claims the idempotency key in a ledger, so the second dispatch of one key replays the first outcome
 instead of running the handler again. `retry` sits inside it, so every attempt shares one claim.
 
+<!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass
@@ -225,6 +227,7 @@ the one the key was read from. Reuse the key with a different body and the guard
 snapshot and the outbox rows all enlist. They commit together, or they roll back together. The
 `Relay` then drains the transactional Outbox, and sees exactly one row: the replay wrote nothing.
 
+<!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass

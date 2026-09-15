@@ -50,6 +50,16 @@ jobs:
       - name: Lint the documentation
         run: python3 scripts/doclint.py
 
+      # Adopters copy documentation snippets verbatim, so the complete programs among them are held
+      # to the same type check as the SDK. Opt-in per fence, with `<!-- doclint: check -->`: most
+      # fences are fragments by design and would need a prelude to resolve at all. `--extract` exits
+      # non-zero when no fence carries the marker, so a marker lost in an edit fails here.
+      - name: Type-check the documentation snippets
+        run: |
+          python3 scripts/doclint.py --extract .doclint
+          mise exec -- ty check --python crates/edax-py/.venv \
+            --extra-search-path crates/edax-py/python .doclint/*.py
+
   test:
     name: pytest
     runs-on: ${{ inputs.runs-on }}
