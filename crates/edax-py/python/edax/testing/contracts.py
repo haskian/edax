@@ -146,6 +146,50 @@ class EventStoreContract:
         async with event_store.transaction() as tx:
             assert [e.sequence for e in await event_store.load(tx, agg)] == [1]
 
+    async def test_every_envelope_field_survives_the_round_trip(self, event_store: Any) -> None:
+        """A store that persists only the fields it recognises silently drops the rest.
+
+        `namespace` carries tenancy, `metadata` carries the correlation and causation ids the whole
+        tracing story depends on, and `timestamp` orders nothing but is read by humans. A column
+        missing for any of them loses data no replay can recover. Non-ASCII included, because a
+        latin-1 column passes every test written in English.
+        """
+        agg = _id("acct")
+        env = Envelope(
+            id=f"{agg}-Ticked-1",
+            aggregate_id=agg,
+            event=Event("Ticked", 3, b'{"n":1}'),
+            namespace={"tenant": "acme"},
+            metadata={"correlation_id": "corr-1", "note": "déjà-vu"},
+            sequence=1,
+            timestamp=1234567890,
+        )
+        async with event_store.transaction() as tx:
+            await event_store.append(tx, agg, 0, [env])
+            (got,) = await event_store.load(tx, agg)
+        assert got.id == env.id and got.aggregate_id == env.aggregate_id
+        assert (got.event.name, got.event.version, bytes(got.event.data)) == ("Ticked", 3, b'{"n":1}')
+        assert dict(got.namespace) == {"tenant": "acme"}, "namespace survived"
+        assert dict(got.metadata) == {"correlation_id": "corr-1", "note": "déjà-vu"}, "metadata survived"
+        assert got.timestamp == 1234567890 and got.sequence == 1
+
+    async def test_an_empty_append_still_checks_the_version(self, event_store: Any) -> None:
+        """`Repository.save` on an aggregate with nothing pending still calls `append`. It must remain
+        a compare-and-set: a store that shortcuts an empty batch lets a stale caller believe it holds
+        the current version, and the next save writes over someone else's work."""
+        agg = _id("acct")
+        async with event_store.transaction() as tx:
+            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+
+        async with event_store.transaction() as tx:
+            await event_store.append(tx, agg, 1, [])  # correct version, nothing to write
+            assert [e.sequence for e in await event_store.load(tx, agg)] == [1], "and added nothing"
+
+        # The part that matters: an empty batch is still compare-and-set, not a free pass.
+        async with event_store.transaction() as tx:
+            with pytest.raises(ConcurrencyError):
+                await event_store.append(tx, agg, 7, [])
+
     async def test_streams_are_independent(self, event_store: Any) -> None:
         """Versions are per aggregate. A store keying concurrency on a global sequence makes every
         aggregate contend with every other one."""
@@ -257,6 +301,8 @@ class ProjectionStoreContract:
 
     #: ``get_many`` pages identically to the kernel rather than being the backend's own dialect.
     supports_kernel_queries: bool = False
+    #: There is a unit of work to join. Requires a ``transactor`` fixture when true.
+    supports_transactions: bool = True
 
     async def test_an_absent_entity_reads_as_none(self, projection_store: Any) -> None:
         """ "``get`` returns the current committed row plus the ``tx``'s own writes, or ``None``." """
@@ -298,6 +344,23 @@ class ProjectionStoreContract:
         with pytest.raises(ConcurrencyError):
             await projection_store.save(stale)
         assert stale.version == 0, "the failed save left the version untouched"
+
+    async def test_get_sees_this_transactions_own_save(self, projection_store: Any, request: Any) -> None:
+        """ "`get` returns the current committed row plus the `tx`'s own writes."
+
+        A handler that saves and then re-reads inside one unit of work must see its own write, or it
+        decides on stale state and the second save conflicts with the first. Needs a `transactor`
+        fixture; declare `supports_transactions = False` if your store has no unit of work.
+        """
+        if not self.supports_transactions:
+            pytest.skip("backend declares no unit of work")
+        # Resolved lazily so a backend that skips this clause need not define the fixture at all.
+        transactor = request.getfixturevalue("transactor")
+        entity = Entity(_id("acct"), 0, {"balance": 1})
+        async with transactor.transaction() as tx:
+            await projection_store.save(entity, tx=tx)
+            seen = await projection_store.get(entity.id, tx=tx)
+            assert seen is not None and seen.document == {"balance": 1}, "its own uncommitted write"
 
     async def test_entities_are_independent(self, projection_store: Any) -> None:
         """Concurrency is per id. A store versioning the whole table serialises every read model."""
@@ -397,6 +460,29 @@ class IdempotencyStoreContract:
         prior = await idempotency_store.claim(key, payload)
         assert prior is not None and not prior.pending
         assert prior.error == "insufficient funds" and prior.result is None
+
+    async def test_completing_twice_is_idempotent(self, idempotency_store: Any) -> None:
+        """ "Both are idempotent." The guard can reach `complete` twice when a response is lost and
+        the caller retries, so the second write must settle on the same record rather than error."""
+        key, payload = _id("req"), 1234
+        await idempotency_store.claim(key, payload)
+        record = Record(payload, result={"balance": 42})
+        await idempotency_store.complete(key, record)
+        await idempotency_store.complete(key, record)
+        prior = await idempotency_store.claim(key, payload)
+        assert prior is not None and prior.result == {"balance": 42}
+
+    async def test_a_none_result_replays_as_a_success(self, idempotency_store: Any) -> None:
+        """A handler returning `None` succeeded. A store that cannot tell "completed with no value"
+        from "still pending" re-runs it on every redelivery, which is the whole failure this seam
+        exists to prevent — and `None` is the single most common handler return."""
+        key, payload = _id("req"), 1234
+        await idempotency_store.claim(key, payload)
+        await idempotency_store.complete(key, Record(payload, result=None))
+        prior = await idempotency_store.claim(key, payload)
+        assert prior is not None
+        assert not prior.pending, "a completed record, not a pending one"
+        assert prior.result is None and prior.error is None
 
     async def test_release_frees_the_key_for_a_retry(self, idempotency_store: Any) -> None:
         """A transient failure releases the claim so a retry can re-run. After a release the key is

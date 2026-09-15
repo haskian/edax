@@ -43,6 +43,10 @@ class TestMemoryProjectionStore(ProjectionStoreContract):
     def projection_store(self, db: MemoryTransactor) -> Any:
         return MemoryProjectionStore(db)
 
+    @pytest.fixture
+    def transactor(self, db: MemoryTransactor) -> Any:
+        return db
+
 
 class TestMemorySagaStore(SagaStoreContract):
     @pytest.fixture

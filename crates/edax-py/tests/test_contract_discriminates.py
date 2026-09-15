@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import pytest
+from edax.aggregate import Envelope
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -108,6 +109,48 @@ class UnversionedDelete(_Delegating):
             await self._inner.delete(id, instance.version, tx)
 
 
+class DropsMetadata(_Delegating):
+    """Persists the columns it recognised and quietly drops `metadata`. The correlation and causation
+    ids go with it, so tracing dies at the first replay and nothing reports an error."""
+
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
+        stripped = []
+        for e in events:
+            stripped.append(
+                Envelope(
+                    id=e.id,
+                    aggregate_id=e.aggregate_id,
+                    event=e.event,
+                    namespace=dict(e.namespace),
+                    metadata={},
+                    sequence=e.sequence,
+                    timestamp=e.timestamp,
+                )
+            )
+        await self._inner.append(tx, aggregate_id, expected, stripped)
+
+
+class ShortcutsEmptyAppend(_Delegating):
+    """Returns early for an empty batch instead of checking the version. A stale caller then believes
+    it holds the current version, and its next save overwrites someone else's work."""
+
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
+        if not events:
+            return
+        await self._inner.append(tx, aggregate_id, expected, events)
+
+
+class NoneResultReadsAsPending(_Delegating):
+    """Cannot tell "completed with no value" from "still pending" — the classic mistake of storing
+    the result column as NULL and inferring pending from it. A handler returning `None` then re-runs
+    on every redelivery."""
+
+    async def complete(self, key: str, record: Record, tx: Any = None) -> None:
+        if record.result is None and record.error is None:
+            return  # "nothing to store", so the pending claim stays
+        await self._inner.complete(key, record, tx)
+
+
 @pytest.fixture
 def db() -> MemoryTransactor:
     return MemoryTransactor()
@@ -161,3 +204,18 @@ async def test_a_signed_payload_hash_column_is_caught(db: MemoryTransactor) -> N
 async def test_an_unversioned_saga_delete_is_caught(db: MemoryTransactor) -> None:
     store = UnversionedDelete(MemorySagaStore(db))
     await _fails(SagaStoreContract().test_delete_is_versioned_and_removes_the_instance(store))
+
+
+async def test_dropped_metadata_is_caught(db: MemoryTransactor) -> None:
+    store = DropsMetadata(MemoryEventStore(db))
+    await _fails(EventStoreContract().test_every_envelope_field_survives_the_round_trip(store))
+
+
+async def test_an_empty_append_that_skips_the_version_check_is_caught(db: MemoryTransactor) -> None:
+    store = ShortcutsEmptyAppend(MemoryEventStore(db))
+    await _fails(EventStoreContract().test_an_empty_append_still_checks_the_version(store))
+
+
+async def test_a_none_result_left_pending_is_caught(db: MemoryTransactor) -> None:
+    store = NoneResultReadsAsPending(MemoryIdempotencyStore(db))
+    await _fails(IdempotencyStoreContract().test_a_none_result_replays_as_a_success(store))
