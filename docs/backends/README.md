@@ -272,25 +272,68 @@ orderings and the guarantee each one buys.
 another database rather than quietly auto-commit. `MemoryIdempotencyStore` declares `True`.
 `RedisIdempotencyStore` declares `False`.
 
-### 5. Run the contract suites against it
+### 5. Run the packaged conformance suite against it
 
-Several suites in `crates/edax-py/tests/` execute a seam contract rather than one backend's
-internals. Point them at your store and they become your acceptance tests.
+`edax.testing` ships the seam contracts as executable suites. Subclass one per seam you implement,
+give it a fixture, and the clauses on this page become your acceptance tests:
+
+```python
+import pytest
+from edax.testing import EventStoreContract, IdempotencyStoreContract
+
+
+class TestPostgresEventStore(EventStoreContract):
+    @pytest.fixture
+    async def event_store(self, pool):
+        await truncate(pool)
+        return PostgresEventStore(pool)
+
+
+class TestRedisLedger(IdempotencyStoreContract):
+    joins_transaction = False  # a ledger of its own, so no rollback frees the claim
+
+    @pytest.fixture
+    async def idempotency_store(self, conn):
+        return RedisIdempotencyStore(conn)
+```
+
+Install with `pip install edax[test]` and set `asyncio_mode = "auto"` in your pytest configuration.
+Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not collected.
+
+| Contract | Fixture | Covers |
+|---|---|---|
+| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, an honoured `limit` |
+| `ProjectionStoreContract` | `projection_store` | round trip, compare-and-set on `version`, the version advancing in place on success and *not* advancing on a conflict, independence per id |
+| `SagaStoreContract` | `saga_store` | an unknown correlation reading `None`, state round trip, compare-and-set on concurrent folds, a versioned delete |
+| `IdempotencyStoreContract` | `idempotency_store` | a free key won, a second claim losing and reading the winner's record, a completed result and a cached failure replaying, release freeing the key, releasing an absent key, the payload hash surviving as unsigned 64-bit, and a rollback freeing the claim when the ledger joins |
+
+Backends differ legitimately, so each contract carries capability flags and skips the clauses that
+cannot apply: `supports_rollback`, `supports_snapshots`, `supports_outbox`, `joins_transaction`,
+`supports_kernel_queries`. The defaults describe a transactional SQL backend, the strictest case.
+Loosen them deliberately: every flag you turn off is a guarantee your callers lose.
+
+`edax.testing.faults` wraps any store to inject the failure a dict cannot fake. `LostResponse` lets
+the write **land** and then raises as though the reply never arrived. `Refusing` fails without
+writing. Both delegate rather than subclass, so they work over your store as well as the in-tree
+ones.
+
+The suite is not exhaustive, and one clause it cannot reach matters. Compare-and-set done by reading
+in Python and then writing passes every single-threaded test here. It loses updates under real
+concurrency. Get it from the database, per step 1.
+
+#### Beyond the packaged suite
+
+These in-tree suites go further than the package does, and are worth reading rather than running:
 
 | Suite | What it executes | Rust mirror |
 |---|---|---|
-| `test_broker_contract.py` | the `Producer` / `Consumer` contract over every in-tree adapter, parameterized by a rig fixture: per-key order through `Relay.drain()`, nack redelivers, ack settles, plus a Hypothesis property over random drain histories | — |
-| `test_model.py` (`P2`) | the `claim` / `complete` / `release` contract over random operation histories, parameterized `["memory", "redis"]`, against a pure reference model | `crates/edax/tests/model.rs` |
-| `test_transactor.py` (second half) | the `Transactor` contract: a raise leaves nothing behind, a rolled-back claim releases its key, a transaction reads its own writes that nobody else sees, a commit lands every participant together | `crates/edax/tests/transaction.rs` |
-| `test_unit_of_work.py` | both guard orderings, one case per failure window, asserting how many times the handler ran *and* whether its write is visible | `crates/edax/tests/unit_of_work.rs` |
-| `test_store.py`, `test_projection.py`, `test_saga.py` | per-seam behaviour against the shipped in-memory stores | `crates/edax/tests/model.rs` |
+| `test_broker_contract.py` | the `Producer` / `Consumer` contract over every in-tree adapter, parameterized by a rig fixture | — |
+| `test_model.py` (`P2`) | the `claim` / `complete` / `release` contract over random operation histories against a pure reference model | `crates/edax/tests/model.rs` |
+| `test_unit_of_work.py` | both guard orderings, one case per failure window | `crates/edax/tests/unit_of_work.rs` |
 
 `test_redis.py` and `test_kafka.py` are backend-specific by design: they cover what only that
 technology can get wrong (the fence, the commit watermark), and defer the seam contract to the
 suites above.
-
-Write your own fault cases from `crates/edax-py/tests/conftest.py`. The `Flaky*` stores there model
-the failure a dict cannot fake: the write **lands** and the response is **lost**.
 
 ## What a backend must never do
 
