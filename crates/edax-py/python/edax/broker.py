@@ -7,11 +7,14 @@ order and the dispatcher pool keeps them serialized on one worker. See ``docs/ba
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Callable, Optional, Protocol
 
 from ._async import maybe_await
 from .aggregate import Event, EventEnvelope
 from .dispatcher import AckFn, Delivery, KeyOrderedDispatcher
+
+logger = logging.getLogger("edax.broker")
 
 KeyFn = Callable[[EventEnvelope], str]
 
@@ -110,7 +113,22 @@ class _ConsumerLoop:
             if delivery is None:
                 return
             if isinstance(delivery, UndecodableDelivery):
-                await _dead_letter(dispatcher, delivery)
+                try:
+                    await _dead_letter(dispatcher, delivery)
+                except asyncio.CancelledError:
+                    # Same rule as the `submit` branch below: settle what `poll` took before leaving.
+                    await delivery.nack()
+                    raise
+                except Exception:
+                    # The sink failed, not the loop. Same outcome as a raising `on_dead` on the
+                    # dispatcher route: the message stays unsettled, the broker redelivers it on its
+                    # session timeout or a restart, and the sink gets another try. Nacking instead
+                    # would re-read every offset above the poison on a seeking transport, and the
+                    # poison route has no attempt budget to stop it.
+                    logger.exception(
+                        "edax consumer: dead-lettering poison message %s failed; the loop continues",
+                        delivery.envelope.id,
+                    )
                 continue
             try:
                 await dispatcher.submit(delivery)

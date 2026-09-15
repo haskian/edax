@@ -193,7 +193,10 @@ It deliberately leaves the rest to the host:
 - **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.kernel()` is the kernel's
   envelope format, `"json"` or `"msgpack"`.
 - **Dead-lettering.** `KeyOrderedDispatcher`'s `max_attempts` and `on_dead` own that; a producer's
-  `publish` fits `on_dead` directly.
+  `publish` fits `on_dead` directly. A sink that raises leaves the message unsettled and the consumer
+  running, the same outcome the dispatcher route gives. The broker redelivers on its session timeout
+  or a restart, so the sink gets another try. Until then the commit watermark stays pinned at that
+  offset, because `ack` commits the lowest unsettled one.
 
 ## Testing it
 

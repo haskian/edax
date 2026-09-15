@@ -129,6 +129,7 @@ class RunCase:
     returns: bool  # run() returned (end of stream) rather than raising CancelledError
     dead: list  # event names the dead-letter hook saw
     on_dead: bool = True  # wire the dispatcher's dead-letter hook
+    sink_raises: bool = False  # the dead-letter sink is unreachable, the usual reason one fails
     max_queue: int = 0  # 0 = unbounded; a small queue makes `submit` block
     start: bool = True  # an unstarted dispatcher drains nothing, so its queue stays full
 
@@ -159,6 +160,12 @@ class RunCase:
             RunCase(["poison", None], False, [], ["nack"], True, [], on_dead=False),
             id="undecodable_without_a_hook_is_nacked_never_dropped",
         ),
+        # A DLQ outage must not stop the consumer. The poison stays unsettled, exactly as the
+        # dispatcher route leaves it, so the broker redelivers and the sink gets another try.
+        pytest.param(
+            RunCase(["poison", "d", None], False, [1], ["ack"], True, [], sink_raises=True),
+            id="undecodable_with_a_raising_sink_is_left_unsettled_and_the_loop_continues",
+        ),
     ],
 )
 async def test_consumer_loop_run_branches(case: RunCase) -> None:
@@ -181,9 +188,15 @@ async def test_consumer_loop_run_branches(case: RunCase) -> None:
         env = envs.pop(0)
         return edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack"))
 
+    sink_calls = 0
+
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
+        nonlocal sink_calls
+        sink_calls += 1
         assert isinstance(err, edax.CodecError) and err.terminal
         assert bytes(delivery.envelope.event.data) == POISON_BYTES, "the raw payload must survive"
+        if case.sink_raises:
+            raise edax.StoreError("dead-letter sink unavailable")
         dead.append(delivery.envelope.event.name)
 
     dispatcher = edax.KeyOrderedDispatcher(
@@ -208,6 +221,8 @@ async def test_consumer_loop_run_branches(case: RunCase) -> None:
     assert settled == case.settled  # every polled delivery reached settlement
     assert dead == case.dead
     assert task.done() and (not task.cancelled()) is case.returns
+    if case.sink_raises:
+        assert sink_calls == 1, "the sink was tried once and its failure did not end the loop"
 
 
 step = st.tuples(st.integers(0, 2), st.integers(1, 3), st.integers(1, 4))  # (agg, n events, drain limit)
