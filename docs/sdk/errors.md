@@ -48,8 +48,11 @@ flowchart LR
 - a stored hash outside the 64-bit range.
 - a Python Kafka payload that will not decode; the consumer returns an `UndecodableDelivery` for it.
 
-An `UndecodableDelivery` carries a handler that raises the terminal error. The dispatcher
-dead-letters it and acks it. A payload that will not decode is never lost and never crash-loops.
+An `UndecodableDelivery` carries a handler that raises the terminal error. With a dead-letter sink
+wired the dispatcher routes it there and acks it, so a payload that will not decode is never lost and
+never crash-loops. Without a sink it nacks and comes back forever, as every dead delivery does — see
+[consuming.md](./consuming.md). A sink that raises leaves the message unsettled and the consumer
+running, so the broker redelivers and the sink gets another try.
 
 `edax::Error` is `#[non_exhaustive]` and holds the eight rows above. `CommandBusError` holds only
 the two ways a *dispatch* itself fails. Python has no `CommandBusError`: `HandlerNotFound` is raised
@@ -119,6 +122,35 @@ poisoned key plus lost work is not.
 `from_runtime` keeps the whole message, code included, when it cannot parse the code. Nothing is
 then silently mislabeled as a concurrency conflict. An operator can still read the code off the log
 line.
+
+
+### Your own errors are transient unless you say otherwise
+
+The fall-through matters more than it looks. `is_terminal` is `getattr(e, "terminal", False)` in
+Python and a `false` return in Rust. **Every domain error a host defines is therefore transient by
+default.** Transient is the safe side under at-least-once. A wrong terminal verdict drops work,
+while a wrong transient one only repeats it. It is rarely what a business rule wants.
+
+An insufficient balance will not become sufficient by running the handler again. Left transient,
+`retry(3)` re-runs the rule three times. A `KeyOrderedDispatcher` nacks it until `max_attempts`
+rather than dead-lettering on the first attempt. The guard releases the claim instead of caching the
+failure, so every redelivery re-executes it.
+
+Opt in:
+
+```python
+class InsufficientFunds(Exception):
+    """Deterministic: running the handler again cannot change the answer."""
+
+    terminal: ClassVar[bool] = True
+```
+
+Rust hosts get the same effect by returning an `edax::Error` whose code the kernel already
+classifies, or by wrapping their own error in one.
+
+Rule of thumb: if re-running the handler with the same input cannot produce a different outcome, the
+error is terminal. Validation failures, business-rule violations and unknown identifiers are
+terminal. Timeouts, deadlocks, and anything naming a dependency are not.
 
 ## What each consumer does with the verdict
 

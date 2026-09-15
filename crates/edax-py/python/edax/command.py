@@ -253,7 +253,12 @@ def idempotent(
     :class:`~edax.errors.InProgress` while the winner is in flight. A transient handler failure releases the
     claim so a retry can re-run. ``unit_of_work`` hands the guard the transaction, which is what lets a
     failed commit release the claim (see :func:`_guarded`); place this guard outside :func:`retry`, unless
-    you pass it and then inside. See ``docs/sdk/idempotency.md``."""
+    you pass it and then inside.
+
+    ``key`` owns its own namespace. The command *type* is deliberately outside the payload hash, so two
+    different commands carrying the same business fields hash identically and one reused key replays the
+    wrong command's cached result. Scope the key by command type, and by service where a ledger is shared.
+    See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``."""
 
     def mw(next_: Handler) -> Handler:
         async def handler(cmd: Command) -> Any:

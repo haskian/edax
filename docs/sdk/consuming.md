@@ -64,6 +64,13 @@ worker each.
 - **Per-key order holds for successful deliveries only.** A nack requeues the delivery at the broker
   tail. Same-key deliveries already queued on that worker run first. So a nack reorders the key. The
   dispatcher does not police that; the handler must tolerate it.
+- **A nack can reorder keys that never failed.** On a transport where a nack is a seek, the seek goes
+  to the lowest unsettled offset. Every message above it is re-read. That includes messages of other
+  keys that were in flight and would have succeeded. One failing key therefore costs duplicate
+  deliveries and reordering across its neighbours. Measured on Kafka with 20 injected nacks in 600
+  events: 37-50% duplicate deliveries, and a third of the reordered keys had never failed. This is
+  the transport's semantics rather than the dispatcher's. It is why every handler wants to be
+  idempotent, not only the ones that fail.
 
 A second `start` raises: a second task draining one queue would consume it concurrently and break
 per-key order.

@@ -45,6 +45,25 @@ cannot tell a lost insert response from another claimant holding this key. Relea
 case would delete the winner's live claim. A claim whose response was lost is settled by retention
 instead.
 
+
+## The key prefix
+
+Every key the store writes is `{prefix}{key}`, and `prefix` defaults to `"idem:"` — the same default
+for every store, every service and every environment. Two services sharing one Redis therefore share
+a key space, and a bare request id that both use is one claim.
+
+The collision is loud rather than silent: the two commands hash differently, so the loser gets a
+terminal `PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though,
+and nothing in the guard can tell that apart from a genuine key reuse.
+
+```python
+ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:")
+```
+
+Give each service and environment its own prefix. Namespacing the *key* by command type is a
+separate job and belongs to your key function — see
+[commands.md](../sdk/commands.md#the-key-namespace-is-yours).
+
 ## Two TTLs
 
 One shared value cannot bound both states. A pending claim and a terminal record fail in opposite

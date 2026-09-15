@@ -180,8 +180,27 @@ It deliberately leaves the rest to the host:
   `AIOKafkaConsumer` yourself. The adapters take an already-started, already-subscribed client.
 - **Durability.** The `acks` setting decides how strong the ack that `send_and_wait` waits for is.
   The `Producer` contract asks for leader ack or stronger; configure it.
-- **Committing.** The adapter issues its own commits. If the client also commits on a timer, it
-  commits the fetch position, which is the exact bug the watermark exists to avoid.
+- **Committing.** The adapter issues its own commits, and the consumer it is handed must not issue
+  any of its own. `aiokafka` commits on a timer by default, so this is the one setting you cannot
+  leave alone. `enable_auto_commit` defaults to `True`, and it commits the *fetch* position, which
+  runs ahead of what has been handled. That is the exact bug the watermark exists to avoid. An offset
+  still on a worker is reported as done, and a restart never redelivers it.
+
+  ```python
+  from aiokafka import AIOKafkaConsumer
+
+  consumer = AIOKafkaConsumer(
+      "orders",
+      bootstrap_servers="localhost:9092",
+      group_id="billing",
+      enable_auto_commit=False,  # the adapter commits the watermark; a timer would commit ahead of it
+      auto_offset_reset="earliest",
+  )
+  await consumer.start()
+  ```
+
+  Pass the started consumer to `KafkaConsumer(consumer, serializer)`. Nothing in `edax` sets this for
+  you, because the adapter never constructs your client.
 - **Timeouts.** `getone` blocks until a message arrives, by design. Per-request deadlines are the
   client's `request_timeout_ms`.
 - **Rebalance.** The watermark bookkeeping holds only while the partition is assigned. A partition

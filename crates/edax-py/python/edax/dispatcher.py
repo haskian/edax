@@ -121,7 +121,10 @@ class KeyOrderedDispatcher:
                 else:
                     await maybe_await(self.handler(item))  # bare envelope: no settlement
             except Exception:
-                logger.exception("edax dispatcher: settling a delivery failed; worker continues")
+                # Named per arm: a bare envelope is fire-and-forget, so nothing settles it and
+                # "settling failed" would send an operator to the wrong layer.
+                what = "settling a delivery" if isinstance(item, Delivery) else "a fire-and-forget handler"
+                logger.exception("edax dispatcher: %s failed; worker continues", what)
             finally:
                 queue.task_done()
 
@@ -135,8 +138,7 @@ class KeyOrderedDispatcher:
             # attempt budget. Nacking at once would poll the broker until the claim's TTL.
             step = self._contended.get(env_id, 0)
             self._contended[env_id] = step + 1
-            await _sleep(_edax.backoff_millis(step) / 1000)
-            await delivery.nack()
+            await self._nack_after_backoff(delivery, step)
             return
         except Exception as e:  # noqa: BLE001 - handler failed -> nack or dead-letter
             self._contended.pop(env_id, None)
@@ -152,24 +154,30 @@ class KeyOrderedDispatcher:
                 )
                 # on_dead raising propagates before any ack/nack: the broker redelivers.
                 await maybe_await(self._on_dead(delivery, e))
-                await self._ack_or_log(delivery, env_id)
+                await self._ack_or_log(delivery)
                 self._attempts.pop(env_id, None)
                 return
             # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
             # Recorded whatever the ceiling, so the backoff below grows across redeliveries: with the
             # default `max_attempts=0` an unrecorded attempt is always 1 and the wait a flat first step.
             self._attempts[env_id] = attempt
-            # Transient failure: one step of the kernel's schedule before handing the delivery back, as
-            # the InProgress arm does. Nacking at once has a handler on a downed dependency polling the
-            # broker as fast as it redelivers, and on a seeking transport every nack re-reads the tail.
-            await _sleep(_edax.backoff_millis(attempt - 1) / 1000)
-            await delivery.nack()
+            # Transient failure: waited the same way as the InProgress arm, one step of the kernel's
+            # schedule before handing the delivery back.
+            await self._nack_after_backoff(delivery, attempt - 1)
             return
-        await self._ack_or_log(delivery, env_id)
+        await self._ack_or_log(delivery)
         self._contended.pop(env_id, None)
         self._attempts.pop(env_id, None)
 
-    async def _ack_or_log(self, delivery: Delivery, env_id: str) -> None:
+    async def _nack_after_backoff(self, delivery: Delivery, step: int) -> None:
+        """Wait one step of the kernel's backoff schedule, then nack. Both failure arms wait: nacking at
+        once has a handler on a downed dependency polling the broker as fast as it redelivers, and on a
+        seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
+        therefore every key routed to it — per-key ordering forbids skipping ahead."""
+        await _sleep(_edax.backoff_millis(step) / 1000)
+        await delivery.nack()
+
+    async def _ack_or_log(self, delivery: Delivery) -> None:
         """Ack, or report the failure as what it is: a settlement problem, not a handler failure.
 
         The handler already did its work, so this is not ``on_dead``'s business either — a dead-letter
@@ -182,7 +190,7 @@ class KeyOrderedDispatcher:
         except Exception:
             logger.warning(
                 "edax dispatcher: ack of %s failed after a successful handler; the broker will redeliver it",
-                env_id,
+                delivery.envelope.id,
                 exc_info=True,
             )
 

@@ -224,6 +224,25 @@ The guard takes the recoverable cost.
 `InProgress` is not a failed attempt. See
 [consuming](./consuming.md#inprogress-is-contention-not-a-failed-attempt).
 
+### `CachedFailure` is reachable in one mode only
+
+The same handler code has two replay semantics, decided by the ledger rather than by the code.
+
+Under a **shared ledger** a terminal failure is never cached. The `failed` record is written inside
+the transaction the handler's failure rolls back, so it disappears with the work. The key is free,
+and a client retrying a permanently failing request re-executes the handler every time. Under an
+**own ledger** the same failure survives its own commit, so the next dispatch of that key raises
+`CachedFailure` and the handler never runs again.
+
+Neither is wrong. A shared ledger buys effectively-once for state in that database and pays for it by
+not remembering failures. An own ledger remembers failures and pays at-least-once for the work. But
+the difference is invisible at the call site, so a service that swaps its ledger changes its replay
+behaviour without changing a line of handler code.
+
+`CachedFailure` also carries only `str(e)` — the message, not the type. Anything a caller derives
+from the error class, an HTTP status in particular, is lost on replay. Map the status from the
+message, or keep the mapping outside the guard.
+
 ## Every failure window
 
 Rows 1 to 9 are the case table of `test_unit_of_work.py`, one case per window. "Runs" and "landed"
