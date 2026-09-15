@@ -89,7 +89,7 @@ per-key order.
 | Ambient unit of work | Rust has none; the host threads its own handle | the worker clears `_current_tx` so a handler cannot inherit the transaction of whoever started the dispatcher |
 
 The Python worker clearing `_current_tx` is not housekeeping. A task copies its creator's context. A
-dispatcher started inside `with_tx` would otherwise hand every handler that caller's transaction.
+dispatcher started inside `transaction` would otherwise hand every handler that caller's transaction.
 That happens long after the commit and from a second task, which the `Transactor` contract forbids.
 A worker is its own unit-of-work boundary.
 
@@ -311,7 +311,7 @@ elsewhere. An unbounded queue plus a slow handler grows memory without limit.
 ## See also
 
 - [idempotency.md](./idempotency.md) — what the guard claims, both modes, and every failure window.
-- [transactions.md](./transactions.md) — `Transactor`, `current_tx`, `with_tx`, and
+- [transactions.md](./transactions.md) — `Transactor`, `current_tx`, `transaction`, and
   `joins_transaction`.
 - [errors.md](./errors.md) — the terminal/transient taxonomy the dispatcher branches on.
 - [sagas.md](./sagas.md) — a `SagaRunner` plugged into the router as an event handler.

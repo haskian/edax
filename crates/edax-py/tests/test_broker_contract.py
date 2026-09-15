@@ -52,7 +52,7 @@ def make_rig(request: Any) -> Callable[[], Rig]:
 async def _append(store: MemoryEventStore, versions: dict[int, int], agg: int, n: int) -> list[str]:
     v = versions.get(agg, 0)
     envs = [build_envelope(agg_id(agg), "Tick", v + i + 1) for i in range(n)]
-    async with edax.with_tx(store) as tx:
+    async with edax.transaction(store) as tx:
         await store.append(tx, agg_id(agg), v, envs)
     versions[agg] = v + n
     return [e.id for e in envs]

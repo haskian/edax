@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn with_tx_threads_one_tx_to_events_and_projection() {
+    fn transaction_threads_one_tx_to_events_and_projection() {
         // Both stores over one transactor: a store built standalone has a database of its own, and
         // the event store's `tx` would be unknown to it.
         let db = MemoryTransactor::new();
@@ -645,7 +645,7 @@ mod tests {
 
         // A body that returns Err rolls back (no panic, error propagates), and its writes vanish.
         // Free-fn form is equivalent.
-        let out = crate::with_tx(&events, |tx| {
+        let out = crate::transaction(&events, |tx| {
             events.append(tx, "a", 1, &[env("a", 2)])?;
             Err::<(), _>(Error::Store("boom".into()))
         });

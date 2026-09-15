@@ -18,7 +18,7 @@ from edax._async import maybe_await
 from edax.backend.memory import InMemoryBroker, MemoryIdempotencyStore
 from edax.command import Record
 from edax.router import EventHandler, EventMiddleware, idempotent_by_id
-from edax.store import Tx, current_tx, with_tx
+from edax.store import Tx, current_tx, transaction
 
 DEPOSITED = (
     b'{"account_id":"acct-1","amount_cents":4200,"currency":"USD","occurred_at":"2024-05-01T12:00:00Z"}'
@@ -182,7 +182,7 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
 
 
 # =========================================================================
-# the claim joins the ambient with_tx: it commits with the handler's writes, or rolls back with them
+# the claim joins the ambient transaction: it commits with the handler's writes, or rolls back with them
 # =========================================================================
 
 
@@ -250,7 +250,7 @@ async def test_claim_enlists_in_the_ambient_tx(
     guarded = idempotent_by_id(store)(handler)
     env = deposited()
     try:
-        async with with_tx(store):
+        async with transaction(store):
             await maybe_await(guarded(env))  # no tx threaded: the store reads current_tx()
             assert env.id not in store.records  # staged, not landed
             if body_raises:

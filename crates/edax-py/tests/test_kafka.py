@@ -10,31 +10,21 @@ from typing import Any, Optional
 
 import edax
 import pytest
-from conftest import FakeKafkaClient, KafkaMsg, TopicPartition, build_envelope, delivered
+from conftest import (
+    FakeKafkaClient,
+    IdSerializer,
+    KafkaMsg,
+    TopicPartition,
+    build_envelope,
+    delivered,
+    kafka_consumer,
+)
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.broker import UNDECODABLE
 
 
-class _Serializer:
-    """Decodes the fake client's payload (the message body doubles as the envelope id). The
-    consumer never encodes, so `encode` exists only to complete the seam."""
-
-    def encode(self, env: edax.EventEnvelope) -> bytes:
-        return env.id.encode()
-
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
-        return build_envelope("a", "Tick", 1, id=wire.decode())
-
-
-async def _consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
-    c = FakeKafkaClient()
-    for i in range(n):
-        await c.send_and_wait("t", str(i).encode())
-    return c, KafkaConsumer(c, _Serializer())
-
-
 async def test_out_of_order_ack_commits_watermark_only() -> None:
-    c, k = await _consumer(3)
+    c, k = await kafka_consumer(3)
     d0, d1, d2 = [delivered(await k.poll()) for _ in range(3)]
     await d2.ack()
     await d1.ack()
@@ -44,7 +34,7 @@ async def test_out_of_order_ack_commits_watermark_only() -> None:
 
 
 async def test_nack_keeps_offset_in_flight_until_redelivered() -> None:
-    c, k = await _consumer(3)
+    c, k = await kafka_consumer(3)
     d0, d1, d2 = [delivered(await k.poll()) for _ in range(3)]
     await d1.ack()
     await d0.nack()
@@ -59,7 +49,7 @@ async def test_nack_keeps_offset_in_flight_until_redelivered() -> None:
 async def test_second_nack_rewinds_to_the_lowest_unsettled_offset() -> None:
     # Two nacks out of order: seeking to the later offset would move the fetch position past the
     # earlier one, which would then never redeliver and would pin the watermark forever.
-    c, k = await _consumer(3)
+    c, k = await kafka_consumer(3)
     d0, d1, d2 = [delivered(await k.poll()) for _ in range(3)]
     await d0.nack()
     await d2.nack()
@@ -102,7 +92,7 @@ async def test_watermark_is_tracked_per_partition() -> None:
             KafkaMsg("t", 1, 1, b"p1-1"),
         ]
     )
-    k = KafkaConsumer(c, _Serializer())
+    k = KafkaConsumer(c, IdSerializer())
     p0_0, p1_0, p0_1, p1_1 = [delivered(await k.poll()) for _ in range(4)]
     tp0, tp1 = TopicPartition("t", 0), TopicPartition("t", 1)
 
@@ -169,7 +159,7 @@ async def test_the_commit_guard_never_steps_backwards() -> None:
     c = _GatedCommitClient()
     for i in range(4):
         await c.send_and_wait("t", str(i).encode())
-    k = KafkaConsumer(c, _Serializer())
+    k = KafkaConsumer(c, IdSerializer())
     d0, d1, _d2, d3 = [delivered(await k.poll()) for _ in range(4)]
     tp = TopicPartition("t", 0)
 

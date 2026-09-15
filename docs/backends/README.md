@@ -218,14 +218,14 @@ and `SagaStore` take `tx` last and optional. Resolve an optional one in this ord
 order:
 
 1. the `tx` the caller passed.
-2. `edax.store.current_tx()`, the innermost active `with_tx`.
+2. `edax.store.current_tx()`, the innermost active `transaction`.
 3. no transaction — auto-commit.
 
 Refuse a handle that is not yours. Enlisting "anyway" silently drops the atomicity the caller asked
 for. The in-memory backend raises `BadHandle` on a foreign handle.
 `test_transactor.py::test_a_memory_store_refuses_a_foreign_tx` asserts it.
 
-A `Repository` inside `async with with_tx(store)` joins the ambient transaction rather than opening
+A `Repository` inside `async with transaction(store)` joins the ambient transaction rather than opening
 a nested one, so a backend never needs savepoints.
 
 ### 3. Map your client's errors onto the taxonomy
@@ -361,7 +361,7 @@ Three smaller prohibitions follow from the same rule.
 - [redis](./redis.md) — a ledger that cannot join your transaction, and the fence that follows.
 - [kafka](./kafka.md) — the broker seam over a client you own.
 - [kernels](../kernels/README.md) — what a backend must never re-decide.
-- [transactions](../sdk/transactions.md) — `Transactor`, `current_tx`, `with_tx`,
+- [transactions](../sdk/transactions.md) — `Transactor`, `current_tx`, `transaction`,
   `joins_transaction`.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [errors](../sdk/errors.md) — the taxonomy your client's errors map onto.

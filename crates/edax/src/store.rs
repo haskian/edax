@@ -39,7 +39,7 @@ pub trait Transactor {
     where
         Self: Sized,
     {
-        with_tx(self, body)
+        transaction(self, body)
     }
 }
 
@@ -72,7 +72,7 @@ impl<T: Transactor> Drop for Rollback<'_, T> {
 
 /// The free-function form of [`Transactor::transaction`]. A panic in `body` rolls back and keeps
 /// unwinding; the caller sees the panic, the backend sees a settled transaction.
-pub fn with_tx<T, R>(tr: &T, body: impl FnOnce(&mut T::Tx) -> Result<R, Error>) -> Result<R, Error>
+pub fn transaction<T, R>(tr: &T, body: impl FnOnce(&mut T::Tx) -> Result<R, Error>) -> Result<R, Error>
 where
     T: Transactor,
 {
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn with_tx_branches() {
+    fn transaction_branches() {
         // The boundary's whole contract: commit on a clean exit, roll back on a raise, exactly one of
         // the two and only after `begin` succeeded. A spy pins *which* one ran and in what order;
         // what a commit or rollback does to the data is the memory backend's own test.
@@ -583,7 +583,7 @@ mod tests {
         ];
         for c in cases {
             let spy = Spy { begin: c.begin, commit: c.commit, log: RefCell::new(Vec::new()) };
-            let got = with_tx(&spy, |_tx| (c.body)());
+            let got = transaction(&spy, |_tx| (c.body)());
             assert_eq!(spy.log.borrow().as_slice(), c.want_log, "{}", c.name);
             match c.want {
                 Ok(value) => assert_eq!(got.ok(), Some(value), "{}", c.name),
@@ -756,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_inside_with_tx_rolls_back_and_frees_the_stream() {
+    fn a_panic_inside_transaction_rolls_back_and_frees_the_stream() {
         // Without the drop guard the token stays in the adapter's open map, which holds the
         // stream's keys forever: every later append on it would fail with `Concurrency`.
         let store = MemoryEventStore::new();
@@ -776,7 +776,7 @@ mod tests {
                 panic!("the handler blew up mid-transaction");
             });
         }));
-        assert!(unwound.is_err(), "the panic keeps unwinding past with_tx");
+        assert!(unwound.is_err(), "the panic keeps unwinding past transaction");
 
         // Rolled back, so the stream is still at version 0 and the same append lands.
         let second = store.append(&mut MemoryTx::auto_commit(), "acct-panic", 0, &[deposit(1)]);

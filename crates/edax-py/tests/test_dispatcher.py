@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 import edax
 import pytest
-from conftest import build_envelope, delivered, sequence_of
+from conftest import assert_logged, build_envelope, delivered, sequence_of
 from edax._async import maybe_await
 from edax.backend.memory import InMemoryBroker
 
@@ -224,9 +224,7 @@ async def test_worker_settlement_branches(case: SettleCase, caplog: pytest.LogCa
     assert settled.get(first.id, []) == case.settled
     assert settled[second.id] == ["ack"]
     assert dead.count(first.id) == case.dead
-    logged = [r.getMessage() for r in caplog.records if r.name == "edax.dispatcher"]
-    assert len(logged) == len(case.want_log), logged
-    assert all(want in got for want, got in zip(case.want_log, logged)), logged
+    assert_logged(caplog, "edax.dispatcher", case.want_log)
     # Whatever the branch did, the per-envelope bookkeeping below it ran: a raising ack swallowed in
     # the worker's catch-all instead would leave both maps holding the id forever.
     assert first.id not in dispatcher._attempts and first.id not in dispatcher._contended

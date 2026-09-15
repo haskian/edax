@@ -37,7 +37,7 @@ pub use edax_core::{guid, ErrorCode};
 // `edax_event`. No SDK code path calls `should_apply`: the host owns where the last-applied sequence lives.
 pub use edax_event::{originate, propagate, should_apply, CAUSATION_ID, CORRELATION_ID};
 pub use saga::{Saga, SagaInstance, SagaRunner, SagaStore};
-pub use store::{with_tx, EventStore, Relay, Repository, Snapshot, Transactor};
+pub use store::{transaction, EventStore, Relay, Repository, Snapshot, Transactor};
 
 /// What can go wrong saving, loading or handling an event or a command. The taxonomy is part of the store
 /// contract: `Concurrency` only for a version conflict, `Store` for a backend failure (retried), `Codec` for a

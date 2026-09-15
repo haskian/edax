@@ -254,9 +254,9 @@ aborts before you wire `retry` inside a transaction. The in-memory transactor do
 will not warn you.
 
 The same rule applies to any transaction that encloses the attempts. That includes one the host
-opened around `dispatch`. On such a backend, put the retry outside the `with_tx` block too. The
+opened around `dispatch`. On such a backend, put the retry outside the `transaction` block too. The
 in-memory transactor has no abort-on-first-failure rule — a failure the retry catches never reaches
-the `with_tx` block, so the unit of work stays usable.
+the `transaction` block, so the unit of work stays usable.
 
 `idempotent_in` is the Rust form that reads a host-supplied transaction handle; `unit_of_work` is
 the Python form. Their guarantees are [`./idempotency.md`](./idempotency.md)'s subject, not this
@@ -273,7 +273,7 @@ bus.register("Deposit", deposit)
 
 
 async def submit(request_id: str, account_id: str, amount: int) -> int:
-    async with with_tx(db):  # claim, events, snapshot, outbox: one commit, or one rollback
+    async with transaction(db):  # claim, events, snapshot, outbox: one commit, or one rollback
         return await bus.dispatch(Deposit(account_id, amount, request_id))
 ```
 
@@ -303,7 +303,7 @@ outbox rows therefore join the same unit of work.
 
 ```mermaid
 flowchart TB
-    A["submit: with_tx opens the unit of work"] --> B["CommandBus.dispatch routes on the type name"]
+    A["submit: transaction opens the unit of work"] --> B["CommandBus.dispatch routes on the type name"]
     B --> C["guard: hash the whole command value"]
     C --> D["ledger: claim the key, enlisted in the unit of work"]
     D -- "claim lost" --> R["replay the record, or the verdict error"]
@@ -317,7 +317,7 @@ flowchart TB
     J --> L["Relay.drain publishes the committed outbox rows"]
 ```
 
-Read it in order. `with_tx(db)` begins the unit of work. The guard hashes the command and claims
+Read it in order. `transaction(db)` begins the unit of work. The guard hashes the command and claims
 `request_id` inside that transaction. The handler loads the aggregate and applies the event. It
 calls `Repository.save`, which appends the events, the snapshot and their outbox rows atomically.
 The guard writes the terminal record. The block exits and one commit lands all of it. A raising
@@ -331,7 +331,7 @@ again. It does not replay an outcome that never landed.
 
 - [Idempotency](./idempotency.md) — what the guard guarantees, both modes and every failure window.
 - [Errors](./errors.md) — the terminal / transient taxonomy `retry` and the guard branch on.
-- [Transactions](./transactions.md) — `Transactor`, `current_tx`, `with_tx`, `joins_transaction`.
+- [Transactions](./transactions.md) — `Transactor`, `current_tx`, `transaction`, `joins_transaction`.
 - [Aggregates](./aggregates.md) — `Repository.save`, optimistic concurrency on append.
 - [Outbox](./outbox.md) — the rows `Repository.save` writes and how `Relay` drains them.
 - [Consuming](./consuming.md) — `KeyOrderedDispatcher` and the same guard on the consume path.

@@ -283,7 +283,7 @@ source, because none of them can be.
 
 - [../sdk/idempotency.md](../sdk/idempotency.md) — both guards, both modes, every failure window
   inside the claim.
-- [../sdk/transactions.md](../sdk/transactions.md) — `Transactor`, `current_tx`, `with_tx`,
+- [../sdk/transactions.md](../sdk/transactions.md) — `Transactor`, `current_tx`, `transaction`,
   `joins_transaction`.
 - [../sdk/outbox.md](../sdk/outbox.md) — outbox rows, `Relay`, `pump`, and the change data capture
   (CDC) alternative.

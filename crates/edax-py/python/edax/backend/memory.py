@@ -56,7 +56,7 @@ class MemoryTx:
 
 
 class MemoryTransactor:
-    """:class:`~edax.store.Transactor` over the native in-memory database. ``async with with_tx(t) as tx``
+    """:class:`~edax.store.Transactor` over the native in-memory database. ``async with transaction(t) as tx``
     opens a unit of work: every store built over this transactor stages its writes under ``tx``, reads its
     own staged writes back, and nobody else sees them until the block exits cleanly. An exception rolls them
     all back. Isolation is by exclusion, not by blocking: a key one open transaction wrote is held until it
@@ -123,7 +123,7 @@ class MemoryEventStore:
     """:class:`~edax.store.EventStore` over the native store: events + snapshots + outbox. Events
     cross as the native :class:`~edax.aggregate.EventEnvelope` in both directions. An
     ``EventStore`` is a :class:`~edax.store.Transactor`: ``transaction()`` is the
-    :class:`MemoryTransactor`'s, so ``async with with_tx(store)`` opens the database's unit of
+    :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the database's unit of
     work. The outbox is read by the relay outside any transaction and holds committed rows only."""
 
     def __init__(self, transactor: Optional[MemoryTransactor] = None) -> None:
