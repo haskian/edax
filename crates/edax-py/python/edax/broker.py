@@ -91,9 +91,9 @@ async def _dead_letter(dispatcher: KeyOrderedDispatcher, poison: UndecodableDeli
     """Settle a poison message through the dispatcher's dead-letter hook, the route a terminal handler
     failure takes. The ack is the point: without it the transport's watermark pins on the message and the
     consumer crash-loops after every restart. With no hook wired the message nacks, loud but never lost."""
-    # Read directly, because routing the poison message through `submit` would hand a handler an envelope
-    # with no event in it.
-    on_dead = dispatcher._on_dead
+    # Read through the public accessor, because routing the poison message through `submit` would hand a
+    # handler an envelope with no event in it.
+    on_dead = dispatcher.on_dead
     if on_dead is None:
         await poison.nack()
         return

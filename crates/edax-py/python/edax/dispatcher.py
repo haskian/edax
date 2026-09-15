@@ -95,6 +95,13 @@ class KeyOrderedDispatcher:
         # failed attempt, and the same unbounded-entry caveat applies.
         self._contended: dict[str, int] = {}
 
+    @property
+    def on_dead(self) -> Optional[DeadLetterFn]:
+        """The dead-letter sink, or ``None``. A :class:`~edax.broker.Consumer` that must settle a message
+        no handler may see — a payload that will not decode — routes it here, the same exit a terminal
+        handler failure takes. Set at construction: workers read it, so it is not swapped mid-run."""
+        return self._on_dead
+
     def _worker_index(self, aggregate_id: str) -> int:
         return _edax.partition(aggregate_id, len(self._queues))
 
@@ -114,7 +121,7 @@ class KeyOrderedDispatcher:
                 else:
                     await maybe_await(self.handler(item))  # bare envelope: no settlement
             except Exception:
-                logger.exception("edax dispatcher: event handling failed; worker continues")
+                logger.exception("edax dispatcher: settling a delivery failed; worker continues")
             finally:
                 queue.task_done()
 
@@ -145,7 +152,7 @@ class KeyOrderedDispatcher:
                 )
                 # on_dead raising propagates before any ack/nack: the broker redelivers.
                 await maybe_await(self._on_dead(delivery, e))
-                await delivery.ack()
+                await self._ack_or_log(delivery, env_id)
                 self._attempts.pop(env_id, None)
                 return
             # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
@@ -158,9 +165,26 @@ class KeyOrderedDispatcher:
             await _sleep(_edax.backoff_millis(attempt - 1) / 1000)
             await delivery.nack()
             return
-        await delivery.ack()
+        await self._ack_or_log(delivery, env_id)
         self._contended.pop(env_id, None)
         self._attempts.pop(env_id, None)
+
+    async def _ack_or_log(self, delivery: Delivery, env_id: str) -> None:
+        """Ack, or report the failure as what it is: a settlement problem, not a handler failure.
+
+        The handler already did its work, so this is not ``on_dead``'s business either — a dead-letter
+        queue would then hold an event that was handled successfully. Unsettled means the broker
+        redelivers, and an idempotent handler absorbs that. Swallowed here rather than in the worker's
+        catch-all so the bookkeeping below it still runs and the log names the real cause.
+        """
+        try:
+            await delivery.ack()
+        except Exception:
+            logger.warning(
+                "edax dispatcher: ack of %s failed after a successful handler; the broker will redeliver it",
+                env_id,
+                exc_info=True,
+            )
 
     def start(self) -> None:
         if self._tasks:

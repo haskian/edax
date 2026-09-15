@@ -80,6 +80,54 @@ async def test_transient_dead_letters_after_max_attempts(slept: list[float]) -> 
     assert dlq.empty()
 
 
+async def test_a_failing_ack_is_logged_as_a_settlement_problem_not_a_handler_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The handler succeeded, so "event handling failed" names the wrong layer and sends an operator
+    to debug handlers instead of commits — a rebalance or a broker outage produces one such line per
+    delivery. The swallow itself is deliberate (the broker redelivers and an idempotent handler
+    absorbs it), and `on_dead` must not see it: the DLQ would hold a successfully handled event.
+    """
+    dead: list[str] = []
+
+    async def handler(env: edax.EventEnvelope) -> None:
+        return None
+
+    async def failing_ack() -> None:
+        raise edax.StoreError("the partition was revoked")
+
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=handler, on_dead=lambda d, e: dead.append(d.envelope.id)
+    )
+    dispatcher.start()
+    env = build_envelope("acct-1", "Tick", 1)
+    with caplog.at_level("WARNING", logger="edax.dispatcher"):
+        await dispatcher.submit(edax.Delivery(env, failing_ack, lambda: None))
+        await dispatcher._queues[dispatcher._worker_index("acct-1")].join()
+    await dispatcher.stop()
+
+    records = [r for r in caplog.records if r.name == "edax.dispatcher"]
+    assert len(records) == 1, "one line, from the settlement site rather than the worker catch-all"
+    assert "after a successful handler" in records[0].getMessage()
+    assert dead == [], "a handled event must never reach the dead-letter queue"
+    # The bookkeeping below the ack still ran, which the worker's catch-all would have skipped.
+    assert env.id not in dispatcher._attempts and env.id not in dispatcher._contended
+
+
+async def test_on_dead_is_readable_through_the_public_accessor() -> None:
+    """`broker.py` must settle a poison message through the same sink a terminal handler failure
+    takes, and an out-of-tree `Consumer` needs a supported way to reach it."""
+
+    async def sink(delivery: edax.Delivery, err: BaseException) -> None:
+        return None
+
+    async def handler(env: edax.EventEnvelope) -> None:
+        return None
+
+    assert edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink).on_dead is sink
+    assert edax.KeyOrderedDispatcher(workers=1, handler=handler).on_dead is None
+
+
 async def test_terminal_dead_letters_on_first_failure(slept: list[float]) -> None:
     broker, dlq = InMemoryBroker(), InMemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
