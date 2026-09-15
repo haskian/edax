@@ -181,42 +181,30 @@ async def test_repository_load_joins_ambient_tx() -> None:
     assert tr.committed == 1
 
 
-@dataclass
-class NestCase:
-    name: str
-    same_transactor: bool  # the inner transaction() runs on the outer's transactor
-    refused: bool
-    committed: int  # units of work the *outer* transactor committed
-
-
 @pytest.mark.parametrize(
-    "case",
-    [
-        NestCase("same transactor is refused", same_transactor=True, refused=True, committed=1),
-        NestCase("another database still nests", same_transactor=False, refused=False, committed=1),
-    ],
-    ids=lambda c: c.name,
+    "same_transactor",
+    [True, False],
+    ids=["same transactor is refused", "another database still nests"],
 )
-async def test_nesting_a_transaction_on_one_transactor_is_refused(case: NestCase) -> None:
+async def test_nesting_a_transaction_on_one_transactor_is_refused(same_transactor: bool) -> None:
     # Nobody writes transaction() inside transaction() on purpose; they call one service function
     # that opens a unit of work from another that already did. The inner one commits on its own
     # clean exit and the outer rollback cannot take it back, so the guard refuses it. Two
     # transactors are two databases: nesting them is legitimate, and neither commit is atomic with
     # the other's.
     outer = CountingTransactor()
-    inner = outer if case.same_transactor else CountingTransactor()
+    inner = outer if same_transactor else CountingTransactor()
     async with transaction(outer) as tx:
-        if case.refused:
+        if same_transactor:
             with pytest.raises(edax.BadHandle, match="already has one open"):
                 async with transaction(inner):
                     pass  # pragma: no cover - the guard raises before the body runs
         else:
             async with transaction(inner):
                 assert current_tx() is not None
+            assert (inner.committed, inner.rolled_back) == (1, 0), "the second database committed"
         assert current_tx() == tx, "a refused or finished inner block leaves the outer tx ambient"
-    assert (outer.committed, outer.rolled_back) == (case.committed, 0)
-    if not case.same_transactor:
-        assert (inner.committed, inner.rolled_back) == (1, 0)
+    assert (outer.committed, outer.rolled_back) == (1, 0), "one unit of work either way"
 
 
 async def test_one_transactor_opens_a_second_unit_of_work_after_the_first_closes() -> None:

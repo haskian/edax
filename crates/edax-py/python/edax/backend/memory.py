@@ -114,11 +114,6 @@ class MemoryTransactor:
         )
 
 
-# The page size `unpublished_count` reads under: `i32` in the native signature, so the largest value
-# that crosses the boundary. An in-memory outbox that deep has lost its relay, not its count.
-_MAX_BACKLOG = 2**31 - 1
-
-
 def _own(transactor: Optional[MemoryTransactor]) -> MemoryTransactor:
     """The given transactor, else a database of the store's own."""
     return transactor if transactor is not None else MemoryTransactor()
@@ -183,8 +178,8 @@ class MemoryEventStore:
         """How many committed unmarked outbox rows are waiting."""
         # The native store has no count call, so this reads the backlog and measures it. Linear in the
         # backlog, which a test-sized outbox can afford; a durable store answers with `SELECT count(*)`
-        # and never pages the rows at all.
-        return len(await self.unpublished(_MAX_BACKLOG))
+        # and never pages the rows at all. The limit is the largest `i32` the native signature takes.
+        return len(await self.unpublished(2**31 - 1))
 
 
 class MemoryIdempotencyStore:
