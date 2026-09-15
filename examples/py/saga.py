@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import edax
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore
@@ -27,7 +27,7 @@ from edax.saga import Completed, SagaRunner
 @dataclass
 class Fulfill:
     order_id: str
-    type: str = "Fulfill"
+    type: ClassVar[str] = "Fulfill"  # routing only: a class attribute stays out of the hash
 
 
 def fulfill_key(cmd: Any) -> str:
