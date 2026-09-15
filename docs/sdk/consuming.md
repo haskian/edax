@@ -114,7 +114,7 @@ stateDiagram-v2
     [*] --> received : the Consumer backend builds a Delivery
     received --> running : the worker takes it off its queue
     running --> acked : handler returned
-    running --> nacked : handler raised, attempt budget has room
+    running --> nacked : handler raised, attempt budget has room, after one backoff step
     running --> nacked : InProgress, after one backoff step
     running --> dead_lettered : terminal, or budget exhausted, and on_dead is set
     nacked --> redelivered : the broker requeues the message
@@ -175,9 +175,9 @@ restart — neither in-tree backend reads one from its client, so both report `0
 |---|---|---|
 | Returned | ack | ack |
 | Raised, terminal error | `on_dead`, then ack — on the first attempt, whatever `max_attempts` says | nack, redelivered forever |
-| Raised, transient error, attempt below `max_attempts` | nack | nack |
+| Raised, transient error, attempt below `max_attempts` | sleep one backoff step, then nack | same |
 | Raised, transient error, attempt reaches `max_attempts` | `on_dead`, then ack | nack, redelivered forever |
-| `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | nack, redelivered forever |
+| `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
 | Raised `InProgress` | sleep one backoff step, then nack; the budget is untouched | same |
 
 Terminal versus transient is the kernel's verdict, read through `err.terminal`. See
@@ -207,7 +207,10 @@ then nacks. This is the one home for that rule; other pages link here.
 The schedule is `min(100 * 2^step, 30000)` milliseconds, deterministic and without jitter so it is
 identical across languages. The step is tracked per envelope id, separately from the attempt map.
 Nacking at once instead would make the broker redeliver in a tight loop until the claim's dedup
-window expires.
+window expires. An ordinary transient failure waits the same way, for the same reason. A handler
+failing on a downed dependency would otherwise poll the broker as fast as it redelivers. On a
+seeking transport such as Kafka every nack also re-reads the partition tail. The two differ only in
+that a transient failure does spend an attempt.
 
 **The ceiling.** The wait blocks that worker, and therefore every aggregate id routed to it. That is
 deliberate: skipping ahead is exactly what per-key ordering forbids. A pool with more workers
@@ -215,9 +218,11 @@ narrows the effect but cannot remove it. If one contended key must never hold up
 pool.
 
 Both attempt maps grow by one entry per failing envelope id and shrink when that id is acked or
-dead-lettered. Entries for nacked messages that never come back stay until the id is seen again.
-Bound them with a time to live (TTL) or a least recently used (LRU) cache. That matters when a
-broker-side dead-letter queue steals them under sustained failure.
+dead-lettered. The attempt count is kept whatever `max_attempts` says, including `0`, so the backoff
+grows across redeliveries instead of repeating a flat first step. Entries for nacked messages that
+never come back stay until the id is seen again. Bound them with a time to live (TTL) or a least
+recently used (LRU) cache. That matters when a broker-side dead-letter queue steals them under
+sustained failure.
 
 ## EventRouter
 

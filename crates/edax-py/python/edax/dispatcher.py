@@ -17,6 +17,11 @@ from .store import _current_tx
 
 logger = logging.getLogger("edax.dispatcher")
 
+#: How a backoff step is waited out. The schedule is the kernel's and a host must not bend it, but a
+#: test asserting which steps were asked for should not pay them in wall time, so this is the seam a
+#: test patches. The Rust dispatcher takes the same injection through its builder.
+_sleep = asyncio.sleep
+
 Handler = Callable[[EventEnvelope], MaybeAwaitable[None]]
 AckFn = Callable[[], MaybeAwaitable[None]]
 DeadLetterFn = Callable[["Delivery", BaseException], MaybeAwaitable[None]]
@@ -61,9 +66,11 @@ class KeyOrderedDispatcher:
 
     A raising handler nacks unless ``on_dead`` is set. With it, a terminal error dead-letters on the first
     attempt whatever ``max_attempts`` says, and a transient one at the ``max_attempts``-th failed attempt
-    (``0`` disables the ceiling). :class:`~edax.errors.InProgress` never counts, because it is contention:
-    the delivery waits one backoff step and nacks, blocking that worker and every key routed to it, because
-    per-key ordering forbids skipping ahead. Attempt counting and sink behaviour: ``docs/sdk/consuming.md``.
+    (``0`` disables the ceiling). Every nack waits one step of the kernel's backoff schedule first, or a
+    handler failing on a downed dependency polls the broker as fast as it redelivers.
+    :class:`~edax.errors.InProgress` waits the same way but never counts, because it is contention rather
+    than a failed attempt. The wait blocks that worker and every key routed to it, because per-key ordering
+    forbids skipping ahead. Attempt counting and sink behaviour: ``docs/sdk/consuming.md``.
     """
 
     def __init__(
@@ -121,7 +128,7 @@ class KeyOrderedDispatcher:
             # attempt budget. Nacking at once would poll the broker until the claim's TTL.
             step = self._contended.get(env_id, 0)
             self._contended[env_id] = step + 1
-            await asyncio.sleep(_edax.backoff_millis(step) / 1000)
+            await _sleep(_edax.backoff_millis(step) / 1000)
             await delivery.nack()
             return
         except Exception as e:  # noqa: BLE001 - handler failed -> nack or dead-letter
@@ -142,14 +149,18 @@ class KeyOrderedDispatcher:
                 self._attempts.pop(env_id, None)
                 return
             # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
-            if self._max_attempts:
-                self._attempts[env_id] = attempt
+            # Recorded whatever the ceiling, so the backoff below grows across redeliveries: with the
+            # default `max_attempts=0` an unrecorded attempt is always 1 and the wait a flat first step.
+            self._attempts[env_id] = attempt
+            # Transient failure: one step of the kernel's schedule before handing the delivery back, as
+            # the InProgress arm does. Nacking at once has a handler on a downed dependency polling the
+            # broker as fast as it redelivers, and on a seeking transport every nack re-reads the tail.
+            await _sleep(_edax.backoff_millis(attempt - 1) / 1000)
             await delivery.nack()
             return
         await delivery.ack()
         self._contended.pop(env_id, None)
-        if self._max_attempts:
-            self._attempts.pop(env_id, None)
+        self._attempts.pop(env_id, None)
 
     def start(self) -> None:
         if self._tasks:

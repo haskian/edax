@@ -88,8 +88,10 @@ type DeadLetterHook = dyn Fn(DeadLetter) -> Result<(), Error> + Send + Sync;
 ///
 /// Ordering holds for successful deliveries only: a nack requeues the delivery at the broker's tail, behind
 /// same-key deliveries already on this worker, so a handler that must not see its key out of order has to
-/// reject a stale event itself ([`should_apply`](crate::should_apply)). [`Error::InProgress`] never counts
-/// toward [`DispatcherBuilder::max_attempts`] and blocks every key on this worker until the peer's claim expires.
+/// reject a stale event itself ([`should_apply`](crate::should_apply)). Every nack waits one step of the
+/// kernel's backoff schedule first, or a handler failing on a downed dependency spins the broker as fast as
+/// it redelivers. [`Error::InProgress`] waits the same way but never counts toward
+/// [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim expires.
 pub struct KeyOrderedDispatcher {
     senders: Vec<Queue>,
     workers: Vec<JoinHandle<()>>,
@@ -124,6 +126,7 @@ pub struct DispatcherBuilder {
     max_attempts: u32,
     queue_depth: usize,
     on_dead: Option<Arc<DeadLetterHook>>,
+    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
 }
 
 impl DispatcherBuilder {
@@ -160,6 +163,17 @@ impl DispatcherBuilder {
         self
     }
 
+    /// Replace the backoff wait. Test-only: the schedule is the kernel's and a host must not bend it,
+    /// but a test asserting which steps were asked for should not pay them in wall time.
+    #[cfg(test)]
+    fn sleeper<F>(mut self, sleeper: F) -> Self
+    where
+        F: Fn(Duration) + Send + Sync + 'static,
+    {
+        self.sleeper = Arc::new(sleeper);
+        self
+    }
+
     /// Spawn `max(1, workers)` worker threads, each draining its own channel through the handler.
     pub fn build(self) -> KeyOrderedDispatcher {
         let n = self.workers.max(1);
@@ -182,6 +196,7 @@ impl DispatcherBuilder {
                 on_dead: self.on_dead.clone(),
                 attempts: HashMap::new(),
                 contended: HashMap::new(),
+                sleeper: Arc::clone(&self.sleeper),
             };
             senders.push(sender);
             let name = format!("edax-worker-{i}");
@@ -216,6 +231,7 @@ impl KeyOrderedDispatcher {
             max_attempts: 0,
             queue_depth: DEFAULT_QUEUE_DEPTH,
             on_dead: None,
+            sleeper: Arc::new(std::thread::sleep),
         }
     }
 
@@ -263,6 +279,10 @@ struct Worker {
     /// Backoff step per message currently losing a claim race. Separate from `attempts` because
     /// contention is not a failed attempt; same unbounded-entry caveat.
     contended: HashMap<String, u32>,
+    /// How a backoff step is waited out. Injectable so a test can assert the schedule it was asked
+    /// for instead of paying it in wall time: the table below covers several transient rows, and a
+    /// real sleep would make the suite spend seconds proving arithmetic.
+    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
 }
 
 impl Worker {
@@ -308,7 +328,7 @@ impl Worker {
     /// schedule, then redeliver without touching the budget.
     fn on_contended(&mut self, id: String, on_nack: Box<dyn FnOnce() + Send>) {
         let step = self.contended.entry(id).or_insert(0);
-        std::thread::sleep(Duration::from_millis(backoff_millis(*step)));
+        (self.sleeper)(Duration::from_millis(backoff_millis(*step)));
         *step += 1;
         run_settler(on_nack);
     }
@@ -345,9 +365,13 @@ impl Worker {
                 self.attempts.remove(&id);
             }
             _ => {
-                if self.max_attempts > 0 {
-                    self.attempts.insert(id, attempt);
-                }
+                // Recorded whatever the ceiling, so the backoff below grows across redeliveries: with
+                // the default `max_attempts = 0` an unrecorded attempt is always 1 and the wait a flat
+                // first step. The success path removes the entry either way.
+                self.attempts.insert(id, attempt);
+                // Same rule as `on_contended`: one step of the kernel's schedule before the nack, or a
+                // handler failing on a downed dependency spins the broker as fast as it redelivers.
+                (self.sleeper)(Duration::from_millis(backoff_millis(attempt.saturating_sub(1))));
                 run_settler(on_nack);
             }
         }
@@ -593,6 +617,9 @@ mod tests {
             on_dead: Option<&'static [Sink]>,
             want_settled: &'static [&'static str],
             want_dead: &'static [u32],
+            /// Backoff steps waited, in order. A nack costs one step of the kernel's schedule; an
+            /// ack and a dead-letter cost none.
+            want_slept: &'static [u64],
         }
         let cases = [
             Case {
@@ -603,6 +630,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:ack"],
                 want_dead: &[],
+                want_slept: &[],
             },
             Case {
                 name: "a terminal error dead-letters on the first attempt",
@@ -612,6 +640,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:ack"],
                 want_dead: &[1],
+                want_slept: &[],
             },
             Case {
                 name: "a transient error nacks for redelivery",
@@ -621,6 +650,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack"],
                 want_dead: &[],
+                want_slept: &[100],
             },
             Case {
                 name: "the max_attempts ceiling dead-letters a transient error",
@@ -630,6 +660,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:nack", "3:ack"],
                 want_dead: &[3],
+                want_slept: &[100, 200],
             },
             Case {
                 name: "max_attempts 0 disables the ceiling",
@@ -639,6 +670,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:nack", "3:nack", "4:nack"],
                 want_dead: &[],
+                want_slept: &[100, 200, 400, 800],
             },
             Case {
                 name: "max_attempts 0 still dead-letters a terminal error",
@@ -648,6 +680,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:ack"],
                 want_dead: &[1],
+                want_slept: &[],
             },
             Case {
                 name: "a broker-supplied attempt raises the effective count",
@@ -657,6 +690,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:ack"],
                 want_dead: &[3],
+                want_slept: &[],
             },
             Case {
                 name: "the in-process count wins over a lower broker count",
@@ -666,6 +700,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack"],
                 want_dead: &[3],
+                want_slept: &[200],
             },
             Case {
                 name: "a success resets the in-process count",
@@ -675,6 +710,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack", "3:nack", "4:nack"],
                 want_dead: &[],
+                want_slept: &[100, 100, 200],
             },
             Case {
                 name: "no on_dead nacks a terminal error rather than dropping it",
@@ -684,6 +720,7 @@ mod tests {
                 on_dead: None,
                 want_settled: &["1:nack"],
                 want_dead: &[],
+                want_slept: &[100],
             },
             Case {
                 name: "no on_dead nacks at the ceiling rather than dropping",
@@ -693,6 +730,7 @@ mod tests {
                 on_dead: None,
                 want_settled: &["1:nack", "2:nack"],
                 want_dead: &[],
+                want_slept: &[100, 200],
             },
             Case {
                 name: "on_dead returning Err leaves the delivery unsettled",
@@ -702,6 +740,7 @@ mod tests {
                 on_dead: Some(&[Sink::Err]),
                 want_settled: &[],
                 want_dead: &[1],
+                want_slept: &[],
             },
             Case {
                 name: "on_dead panicking leaves the delivery unsettled",
@@ -711,6 +750,7 @@ mod tests {
                 on_dead: Some(&[Sink::Panic]),
                 want_settled: &[],
                 want_dead: &[1],
+                want_slept: &[],
             },
             Case {
                 name: "a redelivery after a failed on_dead retries the sink at the same attempt",
@@ -720,6 +760,7 @@ mod tests {
                 on_dead: Some(&[Sink::Panic, Sink::Ok]),
                 want_settled: &["1:nack", "3:ack"],
                 want_dead: &[2, 2],
+                want_slept: &[100],
             },
             Case {
                 name: "a panicking handler is transient, not terminal",
@@ -729,6 +770,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack"],
                 want_dead: &[],
+                want_slept: &[100],
             },
             Case {
                 name: "a panicking handler counts toward the ceiling",
@@ -738,6 +780,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack"],
                 want_dead: &[2],
+                want_slept: &[100],
             },
         ];
         for c in cases {
@@ -756,7 +799,11 @@ mod tests {
                     Outcome::Panic => panic!("handler bug"),
                 }
             };
-            let mut builder = KeyOrderedDispatcher::builder(1, handler).max_attempts(c.max_attempts);
+            let slept: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+            let recorder = Arc::clone(&slept);
+            let mut builder = KeyOrderedDispatcher::builder(1, handler)
+                .max_attempts(c.max_attempts)
+                .sleeper(move |d: Duration| recorder.lock().unwrap().push(d.as_millis() as u64));
             if let Some(sinks) = c.on_dead {
                 let dead = Arc::clone(&dead);
                 builder = builder.on_dead(move |letter: DeadLetter| {
@@ -786,6 +833,7 @@ mod tests {
             consumer.stop();
             assert_eq!(*settled.lock().unwrap(), c.want_settled, "{}: settlements", c.name);
             assert_eq!(*dead.lock().unwrap(), c.want_dead, "{}: on_dead attempts", c.name);
+            assert_eq!(*slept.lock().unwrap(), c.want_slept, "{}: backoff steps", c.name);
         }
     }
 

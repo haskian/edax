@@ -23,6 +23,7 @@ import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Union
+from unittest import mock
 
 import edax
 import pytest
@@ -600,7 +601,15 @@ async def _replay_dispatcher(workers: int, max_attempts: int, with_dead: bool, s
 def test_dispatcher_keeps_per_aggregate_fifo(
     workers: int, max_attempts: int, with_dead: bool, submits: list[Submit]
 ) -> None:
-    asyncio.run(_replay_dispatcher(workers, max_attempts, with_dead, submits))
+    # The property under test is settlement order, not timing, and every nack waits one step of the
+    # kernel's backoff schedule. Paid for real across a hundred examples that is minutes of sleeping.
+    # `test_dispatcher.py` asserts the schedule itself. Patched with a plain context manager rather
+    # than `monkeypatch`, whose function scope Hypothesis rejects for a generated test.
+    async def no_wait(seconds: float) -> None:
+        return None
+
+    with mock.patch.object(edax.dispatcher, "_sleep", no_wait):
+        asyncio.run(_replay_dispatcher(workers, max_attempts, with_dead, submits))
 
 
 # =========================================================================

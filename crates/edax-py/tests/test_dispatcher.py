@@ -18,6 +18,20 @@ from edax._async import maybe_await
 from edax.backend.memory import InMemoryBroker
 
 
+@pytest.fixture
+def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the dispatcher's backoff waits instead of paying them. A nack sleeps one step of the
+    kernel's schedule, so a test walking three redeliveries would otherwise spend 700 ms proving
+    arithmetic."""
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(edax.dispatcher, "_sleep", fake_sleep)
+    return waits
+
+
 async def _drive(broker: InMemoryBroker, dispatcher: edax.KeyOrderedDispatcher, polls: int) -> int:
     """Poll ``polls`` times; wrap each delivery's ``on_nack`` to count it; submit and wait for the
     worker to settle before the next poll. Returns the nack count. (Tests use one worker, so the lone
@@ -41,7 +55,7 @@ async def _drive(broker: InMemoryBroker, dispatcher: edax.KeyOrderedDispatcher, 
     return nacks
 
 
-async def test_transient_dead_letters_after_max_attempts() -> None:
+async def test_transient_dead_letters_after_max_attempts(slept: list[float]) -> None:
     broker, dlq = InMemoryBroker(), InMemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
@@ -57,6 +71,8 @@ async def test_transient_dead_letters_after_max_attempts() -> None:
     await dispatcher.stop()
 
     assert nacks == 2  # nacked on attempts 1 and 2, dead-lettered on 3
+    # Each nack waits one step; the dead-letter on attempt 3 waits none.
+    assert slept == [edax.backoff_millis(i) / 1000 for i in range(2)]
     assert broker.empty()  # acked (parked in the DLQ), not requeued
     dead = delivered(await dlq.poll())
     assert dead.envelope.aggregate_id == "acct-1"
@@ -64,7 +80,7 @@ async def test_transient_dead_letters_after_max_attempts() -> None:
     assert dlq.empty()
 
 
-async def test_terminal_dead_letters_on_first_failure() -> None:
+async def test_terminal_dead_letters_on_first_failure(slept: list[float]) -> None:
     broker, dlq = InMemoryBroker(), InMemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
@@ -80,11 +96,12 @@ async def test_terminal_dead_letters_on_first_failure() -> None:
     await dispatcher.stop()
 
     assert nacks == 0  # terminal short-circuits before max_attempts, no nack
+    assert slept == [], "a dead-letter is not a redelivery, so nothing waits"
     assert broker.empty()
     assert not dlq.empty()
 
 
-async def test_default_nacks_forever_and_never_dead_letters() -> None:
+async def test_default_nacks_forever_and_never_dead_letters(slept: list[float]) -> None:
     broker, dlq = InMemoryBroker(), InMemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
@@ -100,6 +117,9 @@ async def test_default_nacks_forever_and_never_dead_letters() -> None:
     await dispatcher.stop()
 
     assert nacks == 3  # nacked every time (behaviour unchanged)
+    # The count is kept even with no ceiling, so the wait grows across redeliveries instead of
+    # repeating a flat first step.
+    assert slept == [edax.backoff_millis(i) / 1000 for i in range(3)]
     assert not broker.empty()  # still requeued, never acked
     assert dlq.empty()  # on_dead never fired
 
