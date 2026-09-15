@@ -10,6 +10,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, fields, is_dataclass
+from time import perf_counter_ns
 from typing import Any, Callable, Optional, Protocol
 
 import msgspec
@@ -25,7 +26,8 @@ from .errors import (  # re-exported: the command errors are part of this module
     PayloadMismatch,
     is_terminal,
 )
-from .store import Transactor, Tx, current_tx, with_tx
+from .observe import Observer, _wrap
+from .store import Transactor, Tx, _transaction, current_tx
 
 logger = logging.getLogger("edax.command")
 
@@ -246,6 +248,8 @@ def idempotent(
     store: IdempotencyStore,
     key: Callable[[Any], Optional[str]],
     unit_of_work: Optional[Transactor] = None,
+    *,
+    observer: Optional[Observer] = None,
 ) -> Middleware:
     """Deduplicate dispatches by idempotency key. ``key`` returns the key for a command, or ``None`` to
     bypass. The kernel binds the payload hash to the key, so reuse with a different payload raises
@@ -260,14 +264,21 @@ def idempotent(
     ``key`` owns its own namespace. The command *type* is deliberately outside the payload hash, so two
     different commands carrying the same business fields hash identically and one reused key replays the
     wrong command's cached result. Scope the key by command type, and by service where a ledger is shared.
-    See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``."""
+    See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
+
+    ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
+    a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
+    :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
+    observe = _wrap(observer)
 
     def mw(next_: Handler) -> Handler:
         async def handler(cmd: Command) -> Any:
             k = key(cmd)
             if k is None:
                 return await next_(cmd)
-            return await _guarded(store, k, _payload_hash(cmd), lambda: next_(cmd), unit_of_work)
+            return await _guarded(
+                store, cmd.type, k, _payload_hash(cmd), lambda: next_(cmd), unit_of_work, observe
+            )
 
         return handler
 
@@ -283,20 +294,22 @@ def joins_transaction(store: IdempotencyStore) -> bool:
 
 
 @asynccontextmanager
-async def _unit(unit_of_work: Optional[Transactor]) -> AsyncIterator[Optional[Tx]]:
+async def _unit(unit_of_work: Optional[Transactor], observe: Observer) -> AsyncIterator[Optional[Tx]]:
     if unit_of_work is None:
         yield None
     else:
-        async with with_tx(unit_of_work) as tx:
+        async with _transaction(unit_of_work, observe) as tx:
             yield tx
 
 
 async def _guarded(
     store: IdempotencyStore,
+    name: str,
     key: str,
     payload_hash: int,
     run: Callable[[], Awaitable[Any]],
-    unit_of_work: Optional[Transactor] = None,
+    unit_of_work: Optional[Transactor],
+    observe: Observer,
 ) -> Any:
     """Run ``run`` once under an atomic claim on ``key`` and return its result, or the cached one.
 
@@ -308,7 +321,11 @@ async def _guarded(
     would roll back with the work. A ledger of its own runs ``claim; begin; run; commit; complete``: two
     commits, at-least-once within the store's retention, ``complete`` last so the worst case is a re-run and
     not a ``done`` record for work that never landed. Any failure up to and including the commit releases the
-    claim. Failure windows: ``docs/sdk/idempotency.md``."""
+    claim. Failure windows: ``docs/sdk/idempotency.md``.
+
+    ``observe`` is the factory's already-guarded observer: a lost claim reports its verdict through
+    ``claim``, a won one reports how it ended through ``settled``, both under ``name``, the command type
+    or event name the guarded handler serves."""
     if unit_of_work is not None and current_tx() is not None:
         # The Transactor contract says the SDK never nests: a second unit of work would commit the claim
         # independently of the writes it guards. BadHandle, not StoreError, so the dispatcher dead-letters
@@ -318,34 +335,44 @@ async def _guarded(
             "either pass unit_of_work or open the transaction around the dispatch, not both"
         )
     if unit_of_work is not None and joins_transaction(store):
-        return await _guarded_in_one_commit(store, key, payload_hash, run, unit_of_work)
-    return await _guarded_around_the_work(store, key, payload_hash, run, unit_of_work)
+        return await _guarded_in_one_commit(store, name, key, payload_hash, run, unit_of_work, observe)
+    return await _guarded_around_the_work(store, name, key, payload_hash, run, unit_of_work, observe)
 
 
 async def _guarded_in_one_commit(
     store: IdempotencyStore,
+    name: str,
     key: str,
     payload_hash: int,
     run: Callable[[], Awaitable[Any]],
     unit_of_work: Transactor,
+    observe: Observer,
 ) -> Any:
     """``begin; claim; run; complete; commit``. The ledger shares the transaction, so every failure path
-    below is a rollback that drops the claim with the work."""
-    async with with_tx(unit_of_work):
+    below is a rollback that drops the claim with the work: reported as ``released``."""
+    async with _transaction(unit_of_work, observe):
         prior = await store.claim(key, payload_hash)
         if prior is not None:
-            return _replay(key, payload_hash, prior)
-        result = await run()
-        await store.complete(key, Record(payload_hash, result=result))
-        return result
+            return _replay(name, key, payload_hash, prior, observe)
+        started = perf_counter_ns()
+        how = "released"
+        try:
+            result = await run()
+            await store.complete(key, Record(payload_hash, result=result))
+            how = "completed"
+            return result
+        finally:
+            observe.settled(name, how, perf_counter_ns() - started)
 
 
 async def _guarded_around_the_work(
     store: IdempotencyStore,
+    name: str,
     key: str,
     payload_hash: int,
     run: Callable[[], Awaitable[Any]],
     unit_of_work: Optional[Transactor],
+    observe: Observer,
 ) -> Any:
     """``claim; begin; run; commit; complete``. The claim lands on its own, so every failure after
     it must be compensated by hand. With ``unit_of_work`` unset the middle is just ``run()``."""
@@ -353,37 +380,46 @@ async def _guarded_around_the_work(
     # reported contention, and releasing in the second case deletes the winner's live claim.
     prior = await store.claim(key, payload_hash)
     if prior is not None:
-        return _replay(key, payload_hash, prior)
+        return _replay(name, key, payload_hash, prior, observe)
 
     # Won the claim. From here every exit must settle the record, including a failure of the commit
     # itself — which is the whole reason the transaction is opened here and not around the caller.
+    started = perf_counter_ns()
+    how = "refused"  # what a raise out of the completion below means: the store would not take the record
     try:
-        async with _unit(unit_of_work):
-            result = await run()
-    except Exception as e:
-        await _settle_failure(store, key, Record(payload_hash, error=str(e)) if is_terminal(e) else None)
-        raise
-    except BaseException:
-        # Cancelled: nobody will complete this claim, so release it or every later dispatch raises
-        # InProgress. Shielded, or a second cancel would abandon the claim until its TTL expires.
-        await asyncio.shield(_settle_failure(store, key, None))
-        raise
-    await _complete_or_release(store, key, Record(payload_hash, result=result))
-    return result
+        try:
+            async with _unit(unit_of_work, observe):
+                result = await run()
+        except Exception as e:
+            record = Record(payload_hash, error=str(e)) if is_terminal(e) else None
+            how = await _settle_failure(store, key, record)
+            raise
+        except BaseException:
+            # Cancelled: nobody will complete this claim, so release it or every later dispatch raises
+            # InProgress. Shielded, or a second cancel would abandon the claim until its TTL expires.
+            how = await asyncio.shield(_settle_failure(store, key, None))
+            raise
+        await _complete_or_release(store, key, Record(payload_hash, result=result))
+        how = "completed"
+        return result
+    finally:
+        observe.settled(name, how, perf_counter_ns() - started)
 
 
-async def _settle_failure(store: IdempotencyStore, key: str, record: Optional[Record]) -> None:
+async def _settle_failure(store: IdempotencyStore, key: str, record: Optional[Record]) -> str:
     """Settle the claim after the handler failed: cache ``record``, or release when there is nothing to
-    cache. Never raises. The handler's exception is the verdict the caller, :func:`retry` and the
-    dispatcher act on, so a compensation the store refuses must not replace it. Inside the host's
-    transaction that refusal is usually the abort the handler's own failed statement caused, and the
-    host's rollback frees the claim; on a ledger of its own the claim stays pending until its retention
-    frees it. Either way the claim is settled by something other than this call."""
+    cache. Never raises; returns how the claim ended: ``cached``, ``released``, or ``refused`` when the
+    store would not take the compensation. The handler's exception is the verdict the caller,
+    :func:`retry` and the dispatcher act on, so a compensation the store refuses must not replace it.
+    Inside the host's transaction that refusal is usually the abort the handler's own failed statement
+    caused, and the host's rollback frees the claim; on a ledger of its own the claim stays pending until
+    its retention frees it. Either way the claim is settled by something other than this call."""
     try:
         if record is None:
             await store.release(key)
-        else:
-            await _complete_or_release(store, key, record)
+            return "released"
+        await _complete_or_release(store, key, record)
+        return "cached"
     except Exception:
         # Expected when the ledger shares a transaction the handler already aborted, so it is not news.
         expected = joins_transaction(store) and current_tx() is not None
@@ -394,12 +430,15 @@ async def _settle_failure(store: IdempotencyStore, key: str, record: Optional[Re
             key,
             exc_info=True,
         )
+        return "refused"
 
 
-def _replay(key: str, payload_hash: int, prior: Record) -> Any:
+def _replay(name: str, key: str, payload_hash: int, prior: Record, observe: Observer) -> Any:
     """Lost the claim: the kernel classifies the winner's record and this maps the verdict onto the SDK's
-    exceptions. Never releases, because the key belongs to the winner."""
+    exceptions. The observer hears the kernel's verdict verbatim, so no SDK renames it. Never
+    releases, because the key belongs to the winner."""
     verdict = _outcome(prior, payload_hash)
+    observe.claim(name, verdict)
     if verdict == "payload_mismatch":
         raise PayloadMismatch(key)
     if verdict == "in_progress":

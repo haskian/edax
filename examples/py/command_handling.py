@@ -4,7 +4,7 @@
                                                                           └─ outbox rows ─▶ Relay.drain ─▶ publish
 
 request_id is the idempotency key: stable across redeliveries, so the bus replays instead of applying
-twice; reuse with a different payload is rejected. with_tx wraps the dispatch so the idempotency
+twice; reuse with a different payload is rejected. transaction wraps the dispatch so the idempotency
 record, events, snapshot and outbox rows commit (or roll back) together: both stores are built over
 one MemoryTransactor, the unit of work every participant enlists in.
 
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Any, ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec, with_tx
+from edax import Aggregate, Relay, Repository, json_codec, transaction
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, PayloadMismatch, idempotent, retry
 
@@ -83,7 +83,7 @@ async def main() -> None:
     async def deposit(cmd: Deposit) -> int:
         acct = await repo.load(cmd.account_id)  # snapshot + replay
         acct.apply(Deposited(cmd.amount))
-        await repo.save(acct)  # joins the with_tx opened by submit via current_tx()
+        await repo.save(acct)  # joins the transaction opened by submit via current_tx()
         return acct.balance
 
     # idempotency outermost (one claim per request), retry inside it (retries share the claim).
@@ -91,7 +91,7 @@ async def main() -> None:
     bus.register("Deposit", deposit)
 
     async def submit(request_id: str, account_id: str, amount: int) -> int:
-        async with with_tx(db):  # claim, events, snapshot, outbox: one commit, or one rollback
+        async with transaction(db):  # claim, events, snapshot, outbox: one commit, or one rollback
             return await bus.dispatch(Deposit(account_id, amount, request_id))
 
     b1 = await submit("req-A", "acct-1", 100)

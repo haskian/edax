@@ -64,8 +64,8 @@ The `Transactor` Protocol has exactly one method, and a docstring that is the sp
 | scope | `transaction()` returns an async context manager. A clean exit **commits**; an exception **rolls back** and re-raises. |
 | isolation | Nothing written through the yielded `tx` is visible to other transactions before commit. |
 | one handle | The yielded `tx` is one backend handle that **every** participant store accepts. Writes through it are atomic as a set: all commit or none. |
-| read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `with_tx` sees the appended events. |
-| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` instead of opening a second one, so no savepoint support is needed. Nesting `with_tx` yourself is undefined. |
+| read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `transaction` sees the appended events. |
+| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` instead of opening a second one, so no savepoint support is needed. Nesting `transaction` yourself is undefined. |
 | threading | The handle is used from one asyncio task at a time; no thread safety required. |
 
 Rust states the same boundary as three methods plus a scoped helper:
@@ -80,12 +80,12 @@ pub trait Transactor {
 }
 ```
 
-`with_tx` is the free-function form. A table-driven test pins its branches. A clean body commits. A
+`transaction` is the free-function form. A table-driven test pins its branches. A clean body commits. A
 failing body rolls back and never commits. A refused commit surfaces and does not also roll back. A
 refused begin runs neither the body nor a rollback.
 
 An `EventStore` **is** a `Transactor` in both SDKs. The simplest wiring therefore needs no separate
-object. `async with with_tx(store)` opens the store's own unit of work. A backend may also implement
+object. `async with transaction(store)` opens the store's own unit of work. A backend may also implement
 `Transactor` standalone and hand the same handle to every store — which is what `MemoryTransactor`
 does.
 
@@ -105,21 +105,22 @@ Python adds a fifth: a **cancelled** task rolls back too. Cancellation is a `Bas
 
 ## Python: the ambient transaction
 
-Python's participants find the handle without it being threaded through every call. `with_tx`
+Python's participants find the handle without it being threaded through every call. `transaction`
 publishes the open handle in a `contextvars.ContextVar`, and `current_tx()` reads it:
 
 ```python
-@asynccontextmanager
-async def with_tx(transactor: Transactor) -> AsyncIterator[Tx]:
-    async with transactor.transaction() as tx:
-        token = _current_tx.set(tx)
-        try:
-            yield tx
-        finally:
-            _current_tx.reset(token)
+async with transactor.transaction() as tx:
+    token = _current_tx.set(tx)
+    try:
+        yield tx
+    finally:
+        _current_tx.reset(token)
 ```
 
-`transaction` is an alias for `with_tx`, so `async with edax.transaction(store):` reads naturally.
+The function and the `Transactor` method share the name on purpose: `async with edax.transaction(store):`
+opens the store's own unit of work and publishes it. `transaction(transactor, observer=...)` reports
+each unit of work as `committed` or `rolled_back` with its duration. See
+[observability.md](./observability.md).
 
 A participant resolves its handle in three steps. The memory backend's `token` is the reference
 implementation:
@@ -149,7 +150,7 @@ flowchart TB
 | Resolution | Meaning |
 |---|---|
 | the explicit `tx` argument | the caller threaded a handle; use it |
-| else the ambient `current_tx()` | a `with_tx` is open in this task; enlist in it |
+| else the ambient `current_tx()` | a `transaction` is open in this task; enlist in it |
 | else `_NO_TX` | outside any unit of work: the call lands at once and reads committed state only |
 | a handle of another transactor | `BadHandle`. The store never auto-commits silently. |
 
@@ -158,7 +159,7 @@ handle that names it. Use it for a reader that must look past an open unit of wo
 probing what has actually landed.
 
 `Repository` resolves the same way through `_enlist`: the explicit `tx`, else the ambient one, else
-a unit of work of its own. When it opens its own, it opens it through `with_tx`. The repository's
+a unit of work of its own. When it opens its own, it opens it through `transaction`. The repository's
 handle becomes the ambient one for the duration. A participant taking no explicit `tx` still joins
 it.
 
@@ -167,13 +168,13 @@ it.
 ```mermaid
 sequenceDiagram
     participant H as host
-    participant W as with_tx
+    participant W as transaction
     participant CV as ambient current_tx
     participant T as MemoryTransactor
     participant P as MemoryProjectionStore
     participant I as MemoryIdempotencyStore
 
-    H->>W: async with with_tx transactor
+    H->>W: async with transaction transactor
     activate W
     W->>T: transaction, begin
     T-->>W: tx, a MemoryTx holding the native token
@@ -209,7 +210,7 @@ write set under one lock, so no reader can observe half of it.
 A task copies its creator's context at creation. Three consequences, all pinned by
 `test_transactor.py::test_current_tx_is_per_task_not_process_wide`:
 
-- a task that already existed before the `with_tx` block never sees its handle.
+- a task that already existed before the `transaction` block never sees its handle.
 - a task created **inside** the block inherits the handle — and keeps it after the block exits,
   which the `Transactor` contract forbids.
 - the contextvar is reset on exit, so the handle never leaks past the call that owns it.
@@ -262,7 +263,7 @@ orderings and the guarantee each one buys.
 **A dispatcher worker clears the ambient transaction.** `KeyOrderedDispatcher` sets `_current_tx` to
 `None` as the first statement of every worker task:
 
-> A task copies its creator's context, so a dispatcher started inside `with_tx` would hand every
+> A task copies its creator's context, so a dispatcher started inside `transaction` would hand every
 > handler that caller's tx: long after it committed, and from a second task, which the `Transactor`
 > contract forbids. A worker is its own unit-of-work boundary.
 > — the `KeyOrderedDispatcher` worker contract

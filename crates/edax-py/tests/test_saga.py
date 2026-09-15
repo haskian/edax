@@ -249,7 +249,7 @@ class _OneTx:
 class RunnerCase:
     saga: Any
     tx: Any  # explicit tx passed to on_event
-    ambient: bool  # run inside with_tx(_OneTx())
+    ambient: bool  # run inside transaction(_OneTx())
     async_dispatch: bool
     racer: bool  # the dispatch callback writes the same instance first
     raises: Optional[type[BaseException]]
@@ -326,7 +326,7 @@ async def test_runner_branches(case: RunnerCase) -> None:
                 await runner.on_event(event, tx=case.tx)
 
     if case.ambient:
-        async with edax.with_tx(_OneTx()):
+        async with edax.transaction(_OneTx()):
             await run_event()
     else:
         await run_event()

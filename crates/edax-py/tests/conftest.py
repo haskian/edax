@@ -20,7 +20,14 @@ from unittest import mock
 
 import edax
 import pytest
-from edax.backend.memory import MemoryEventStore, MemoryProjectionStore, MemorySagaStore, MemoryTx
+from edax.backend.kafka import KafkaConsumer
+from edax.backend.memory import (
+    MemoryEventStore,
+    MemoryIdempotencyStore,
+    MemoryProjectionStore,
+    MemorySagaStore,
+    MemoryTx,
+)
 from edax.command import Record
 from edax.projection import Entity
 from edax.store import Tx
@@ -39,6 +46,22 @@ def sequence_of(env: edax.EventEnvelope) -> int:
     every envelope these tests build or store carries one, so a ``None`` here is a store defect."""
     assert env.sequence is not None, f"envelope {env.id} reached the handler without a sequence"
     return env.sequence
+
+
+def assert_logged(caplog: pytest.LogCaptureFixture, logger_name: str, fragments: Sequence[str]) -> None:
+    """``logger_name`` emitted exactly one record per fragment, in order, each containing its fragment."""
+    logged = [r.getMessage() for r in caplog.records if r.name == logger_name]
+    assert len(logged) == len(fragments), logged
+    assert all(want in got for want, got in zip(fragments, logged)), logged
+
+
+@dataclass
+class CreateUser:
+    email: str
+    # Unannotated, so it is a class attribute (out of `vars()` and out of the hashed payload) that
+    # still satisfies the `Command` protocol, whose `type` is a read-only property. `ClassVar[str]`
+    # is the declared form and satisfies it too; this case covers the bare attribute.
+    type = "user.create"
 
 
 def build_envelope(
@@ -169,7 +192,7 @@ class SplitLedger:
     compensates by hand instead of relying on a rollback."""
 
     def __init__(self) -> None:
-        from edax.backend.memory import MemoryIdempotencyStore, MemoryTransactor
+        from edax.backend.memory import MemoryTransactor
 
         self._db = MemoryTransactor()
         self._inner = MemoryIdempotencyStore(self._db)
@@ -182,6 +205,27 @@ class SplitLedger:
 
     async def release(self, key: str, tx: Optional[Tx] = None) -> None:
         await self._inner.release(key, tx=self._db.auto_commit())
+
+
+class RefusesToSettle:
+    """Mixin: every compensating write is refused, and counted so a test can prove the guard tried to
+    compensate rather than skipping it. A joining ledger refuses because the handler's own failed
+    statement has already aborted the transaction they share; a ledger of its own refuses because it
+    is unreachable. Same refusal either way, so one mixin serves both bases."""
+
+    refusals: int = 0
+
+    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
+        self.refusals += 1
+        raise edax.StoreError("the compensating write was refused")
+
+    async def release(self, key: str, tx: Optional[Any] = None) -> None:
+        self.refusals += 1
+        raise edax.StoreError("the compensating write was refused")
+
+
+class RefusingLedger(RefusesToSettle, MemoryIdempotencyStore):
+    """A joining ledger whose compensating writes are refused."""
 
 
 class FlakySagaStore(_LostResponse, MemorySagaStore):
@@ -423,3 +467,22 @@ class FakeKafkaClient:
     def settled(self) -> bool:
         """Committed watermark is past the whole log: nothing would redeliver on restart."""
         return bool(self.commits) and self.commits[-1] == len(self.log)
+
+
+class IdSerializer:
+    """Decodes the fake client's payload (the message body doubles as the envelope id). The
+    consumer never encodes, so `encode` exists only to complete the seam."""
+
+    def encode(self, env: edax.EventEnvelope) -> bytes:
+        return env.id.encode()
+
+    def decode(self, wire: bytes) -> edax.EventEnvelope:
+        return build_envelope("a", "Tick", 1, id=wire.decode())
+
+
+async def kafka_consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
+    """A fake client holding ``n`` messages (bodies ``"0"``..) and a :class:`KafkaConsumer` over it."""
+    c = FakeKafkaClient()
+    for i in range(n):
+        await c.send_and_wait("t", str(i).encode())
+    return c, KafkaConsumer(c, IdSerializer())

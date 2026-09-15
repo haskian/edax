@@ -23,7 +23,7 @@ from typing import Any, ClassVar, Optional
 
 import edax
 import pytest
-from conftest import BrokenCommitTransactor, SplitLedger
+from conftest import BrokenCommitTransactor, RefusesToSettle, RefusingLedger, SplitLedger
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
 from edax.command import CommandBus, Record, idempotent, joins_transaction
 from edax.projection import Entity
@@ -326,7 +326,7 @@ async def test_a_nested_unit_of_work_is_refused() -> None:
     inside the host's would commit the claim independently of the writes it guards, which is the
     split-store failure wearing a shared-store face — so it fails fast instead."""
     rig = Rig(shared=True)
-    async with edax.with_tx(rig.db):
+    async with edax.transaction(rig.db):
         with pytest.raises(edax.BadHandle, match="unit_of_work") as caught:
             await rig.dispatch()
     # Terminal: the wiring fails the same way on every redelivery, so a transient StoreError here
@@ -404,27 +404,6 @@ class InsufficientFunds(Exception):
     terminal: ClassVar[bool] = True
 
 
-class RefusesToSettle:
-    """Mixin: every compensating write is refused, and counted so a test can prove the guard tried to
-    compensate rather than skipping it. A joining ledger refuses because the handler's own failed
-    statement has already aborted the transaction they share; a ledger of its own refuses because it
-    is unreachable. Same refusal either way, so one mixin serves both bases."""
-
-    refusals: int = 0
-
-    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
-        self.refusals += 1
-        raise edax.StoreError("the compensating write was refused")
-
-    async def release(self, key: str, tx: Optional[Any] = None) -> None:
-        self.refusals += 1
-        raise edax.StoreError("the compensating write was refused")
-
-
-class RefusingLedger(RefusesToSettle, MemoryIdempotencyStore):
-    """A joining ledger whose compensating writes are refused."""
-
-
 class RefusingSplitLedger(RefusesToSettle, SplitLedger):
     """The split-store twin, where no rollback is coming and retention is what frees the key."""
 
@@ -482,7 +461,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
 
     with pytest.raises(type(case.handler_error)) as caught:
         if case.shared:
-            async with edax.with_tx(db):
+            async with edax.transaction(db):
                 await bus.dispatch(cmd)
         else:
             await bus.dispatch(cmd)

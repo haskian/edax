@@ -373,7 +373,7 @@ difference.
 
 ## See also
 
-- [transactions.md](./transactions.md) — the `Transactor` seam, `current_tx`, `with_tx` and
+- [transactions.md](./transactions.md) — the `Transactor` seam, `current_tx`, `transaction` and
   `joins_transaction` from the transaction's side.
 - [errors.md](./errors.md) — the terminal/transient taxonomy every branch above reads.
 - [commands.md](./commands.md) — the `CommandBus`, the middleware chain and where `retry` sits.

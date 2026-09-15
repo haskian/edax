@@ -5,6 +5,7 @@ serialized on one worker. See ``docs/backends/kafka.md``."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..aggregate import EventEnvelope, Serializer
@@ -30,6 +31,16 @@ class KafkaProducer:
         )
 
 
+@dataclass(frozen=True)
+class PartitionStats:
+    """One partition's consumer bookkeeping: offsets delivered but not yet settled, the highest offset
+    delivered, and the last committed watermark (``-1`` before the first commit)."""
+
+    unsettled: int
+    max_delivered: int
+    committed: int
+
+
 class KafkaConsumer(_ConsumerLoop):
     """Consumes a Kafka topic through a caller-owned, subscribed ``AIOKafkaConsumer``.
 
@@ -38,17 +49,34 @@ class KafkaConsumer(_ConsumerLoop):
     lowest offset still in flight, or one past the highest delivered when none remain. ``nack`` seeks the
     partition back for redelivery. The bookkeeping holds only while the partition is assigned: a revoked
     partition leaves its in-flight offsets unsettled here and the new owner redelivers them from the last
-    committed watermark, which is at-least-once. A payload the serializer rejects becomes an
-    :class:`~edax.broker.UndecodableDelivery` after its offset is booked, so the loop can dead-letter it and
-    the watermark advances past it. ``getone`` blocks by design; per-request deadlines are the client's."""
+    committed watermark, which is at-least-once; a rebalance listener calls :meth:`reset` for it. A payload
+    the serializer rejects becomes an :class:`~edax.broker.UndecodableDelivery` after its offset is booked,
+    so the loop can dead-letter it and the watermark advances past it. ``getone`` blocks by design;
+    per-request deadlines are the client's."""
 
     def __init__(self, client: Any, serializer: Serializer) -> None:
         self._client = client
         self._serializer = serializer
         # Per TopicPartition: unsettled offsets, the highest delivered, and the last committed watermark.
+        # `poll` books the first two together, so `_max_delivered` holds every partition seen.
         self._inflight: dict[Any, set[int]] = {}
         self._max_delivered: dict[Any, int] = {}
         self._committed: dict[Any, int] = {}
+
+    def stats(self) -> dict[Any, PartitionStats]:
+        """A snapshot of the bookkeeping, keyed by ``TopicPartition``, for a health check or a gauge."""
+        return {
+            tp: PartitionStats(len(self._inflight[tp]), max_delivered, self._committed.get(tp, -1))
+            for tp, max_delivered in self._max_delivered.items()
+        }
+
+    def reset(self, tp: Any) -> None:
+        """Drop the bookkeeping for a revoked partition. Its unsettled offsets are the new owner's to
+        redeliver from the last committed watermark, and a stale watermark here would otherwise refuse
+        a lower, correct commit if the partition is assigned back."""
+        self._inflight.pop(tp, None)
+        self._max_delivered.pop(tp, None)
+        self._committed.pop(tp, None)
 
     async def poll(self) -> Optional[Delivery]:
         from aiokafka import TopicPartition  # lazy: the base package imports no broker library
@@ -86,5 +114,6 @@ class KafkaConsumer(_ConsumerLoop):
             # Topic, partition and offset together are the only identity a poison message has. The
             # offset alone repeats on every partition, so two poison messages would share one id and
             # a dead-letter queue keyed on it would keep the first and reject the second.
-            return UndecodableDelivery(msg.value, f"{msg.topic}/{msg.partition}/{offset}", ack, nack, poison)
+            message_id = f"{msg.topic}/{msg.partition}/{offset}"
+            return UndecodableDelivery(msg.value, message_id, ack, nack, poison)
         return Delivery(env, ack, nack)

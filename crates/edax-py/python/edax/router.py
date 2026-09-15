@@ -13,6 +13,7 @@ from ._async import MaybeAwaitable, maybe_await
 from .aggregate import EventEnvelope
 from .command import IdempotencyStore, _guarded
 from .errors import AlreadyRegistered
+from .observe import Observer, _wrap
 from .store import Transactor
 
 EventHandler = Callable[[EventEnvelope], MaybeAwaitable[None]]
@@ -55,7 +56,12 @@ class EventRouter:
             await maybe_await(handler(env))
 
 
-def idempotent_by_id(store: IdempotencyStore, unit_of_work: Optional[Transactor] = None) -> EventMiddleware:
+def idempotent_by_id(
+    store: IdempotencyStore,
+    unit_of_work: Optional[Transactor] = None,
+    *,
+    observer: Optional[Observer] = None,
+) -> EventMiddleware:
     """Run a handler at most once per event ``id``, so a broker redelivery does not repeat its side effect.
     Composes anywhere a handler is accepted. The key is ``env.id``, the hash the kernel's over the raw
     ``event.data`` bytes. Without ``unit_of_work`` the store enlists in the ambient
@@ -66,12 +72,19 @@ def idempotent_by_id(store: IdempotencyStore, unit_of_work: Optional[Transactor]
     a completed event skips silently. A redelivery while another worker holds the claim raises transient
     :class:`~edax.errors.InProgress`; a transient handler failure releases the claim, a terminal one is
     cached and replays as terminal :class:`~edax.errors.CachedFailure`, and two events sharing an ``id``
-    with different bodies raise :class:`~edax.errors.PayloadMismatch`. See ``docs/sdk/consuming.md``."""
+    with different bodies raise :class:`~edax.errors.PayloadMismatch`. See ``docs/sdk/consuming.md``.
+
+    ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
+    a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
+    :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
+    observe = _wrap(observer)
 
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(env: EventEnvelope) -> None:
             hash_ = _edax.payload_hash(env.event.data)
-            await _guarded(store, env.id, hash_, lambda: maybe_await(next_(env)), unit_of_work)
+            await _guarded(
+                store, env.event.name, env.id, hash_, lambda: maybe_await(next_(env)), unit_of_work, observe
+            )
 
         return handler
 

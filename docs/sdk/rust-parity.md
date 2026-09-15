@@ -15,7 +15,7 @@ orchestration differs where the language does. This page is the one home for tho
 | consume path | `KeyOrderedDispatcher`, `EventRouter`, `idempotent_by_id`, `idempotent_by_id_in` | `KeyOrderedDispatcher`, `EventRouter`, `idempotent_by_id` |
 | saga | `Saga`, `SagaInstance`, `SagaRunner`, `SagaStore` | the same, plus `Completed` |
 | read side | `Entity`, `ProjectionStore`, `Query` | `Entity`, `ProjectionStore`, the `edax.query` and `edax.filter` modules |
-| transaction | `Transactor`, `with_tx` | `Transactor`, `transaction`, `with_tx`, `current_tx` |
+| transaction | `Transactor`, `transaction` | `Transactor`, `transaction`, `current_tx` |
 | host-called kernel decisions | `should_apply`, `originate`, `propagate`, `guid` | the same, plus `partition`, `rendezvous`, `payload_hash`, `upcast_plan`, `backoff_millis` |
 | guard owning the transaction | not implemented; the host publishes a handle provider to the `_in` form | `unit_of_work=` on both guards |
 | backends | in-memory, plus `InMemoryBroker` | in-memory, Redis, Kafka |
@@ -67,12 +67,12 @@ is the same thing with `T::default` as the provider.
 | how a participant finds the handle | explicit `tx=`, else `current_tx()` | explicit `&mut Tx`, or a provider closure |
 | where the ambient value lives | `contextvars.ContextVar` per asyncio task | nowhere; sync middleware has no task-local |
 | repository entry points | one `load` / `save` with `tx=None` | two: `load` / `load_in`, `save` / `save_in` |
-| scoped boundary | `async with with_tx(transactor)` | `transactor.transaction(body)` or `with_tx(&transactor, body)` |
+| scoped boundary | `async with transaction(transactor)` | `transactor.transaction(body)` or `transaction(&transactor, body)` |
 | what a rollback costs the caller | the aggregate was already reset: reload it | the same |
 
 Same contract, same four executed clauses, different wiring.
 
-`with_tx` rolls back if the body panics. A drop guard owns the rollback, so a panicking handler
+`transaction` rolls back if the body panics. A drop guard owns the rollback, so a panicking handler
 never leaves a token open and never holds its keys forever.
 
 ## The Rust command bus is Send and Sync
@@ -107,5 +107,5 @@ suites assert all of it, one per language, over the same case table.
 
 - [SDK map](./README.md) — the seams and the orchestration around them.
 - [Idempotency](./idempotency.md) — the two guard modes and every failure window.
-- [Transactions](./transactions.md) — `Transactor`, `current_tx` and `with_tx`.
+- [Transactions](./transactions.md) — `Transactor`, `current_tx` and `transaction`.
 - [Aggregates](./aggregates.md) — `Root`, `Version` and the save path.

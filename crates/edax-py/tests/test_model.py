@@ -246,7 +246,7 @@ class StoreReplay:
 
 async def _replay_store(history: list[StoreOp]) -> None:
     # No open unit of work: the model describes committed state, and an outbox drain reads only
-    # committed rows, so every op auto-commits (`tx=None` outside any `with_tx`).
+    # committed rows, so every op auto-commits (`tx=None` outside any `transaction`).
     r = StoreReplay(FlakyEventStore())
     for op in history:
         await r.step(op)

@@ -28,8 +28,9 @@ class Entity:
 
 class ProjectionStore(Protocol):
     """Stores read-model documents keyed by id, with optimistic concurrency and kernel-defined querying: the
-    read side's analogue of :class:`~edax.store.EventStore`. Pass the ``tx`` from :func:`~edax.store.with_tx`
-    to commit a projection write with the events that produced it. What a backend must guarantee:
+    read side's analogue of :class:`~edax.store.EventStore`. Pass the ``tx`` from
+    :func:`~edax.store.transaction` to commit a projection write with the events that produced it. What a
+    backend must guarantee:
 
     - Nothing in the SDK calls this store, only your handlers, so implement what you use.
     - *Optimistic concurrency.* ``save`` writes at ``version + 1`` only if the stored version still equals

@@ -66,7 +66,7 @@ async def main() -> None:
         balances[agg] += json.loads(env.event.data)["amount"]
         v = version[agg]
         data = json.dumps({"balance": balances[agg]}).encode()
-        async with edax.with_tx(store) as tx:
+        async with edax.transaction(store) as tx:
             await store.append(tx, agg, v, [_env(f"{agg}-ev-{v + 1}", agg, "Deposited", v + 1, data)])
         version[agg] = v + 1
         print(f"  handled {agg} -> balance {balances[agg]}")

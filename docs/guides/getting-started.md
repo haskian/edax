@@ -221,7 +221,7 @@ the one the key was read from. Reuse the key with a different body and the guard
 
 ### Step 3 — one transaction around the dispatch
 
-`with_tx` opens the unit of work and publishes it to `current_tx()`. The ledger, the events, the
+`transaction` opens the unit of work and publishes it to `current_tx()`. The ledger, the events, the
 snapshot and the outbox rows all enlist. They commit together, or they roll back together. The
 `Relay` then drains the transactional Outbox, and sees exactly one row: the replay wrote nothing.
 
@@ -230,7 +230,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
-from edax import Aggregate, Relay, Repository, json_codec, with_tx
+from edax import Aggregate, Relay, Repository, json_codec, transaction
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -252,7 +252,7 @@ async def main() -> None:
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit) -> int:
-        async with with_tx(db):  # claim, events, snapshot, outbox: one commit or one rollback
+        async with transaction(db):  # claim, events, snapshot, outbox: one commit or one rollback
             return await bus.dispatch(cmd)
 
     first = await submit(Deposit("acct-1", 100, "req-A"))
@@ -328,7 +328,7 @@ vector (`AGENTS.md`).
 2. [../sdk/commands.md](../sdk/commands.md) — the middleware chain from step 2, and `retry`.
 3. [../sdk/aggregates.md](../sdk/aggregates.md) — `Aggregate`, `Repository`, `EventStore`,
    optimistic concurrency.
-4. [../sdk/transactions.md](../sdk/transactions.md) — `Transactor`, `current_tx`, `with_tx`,
+4. [../sdk/transactions.md](../sdk/transactions.md) — `Transactor`, `current_tx`, `transaction`,
    `joins_transaction`.
 5. [../sdk/idempotency.md](../sdk/idempotency.md) — both guards, both modes, every failure window.
 6. [./delivery-guarantees.md](./delivery-guarantees.md) — the end-to-end matrix once the pieces are

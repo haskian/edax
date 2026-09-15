@@ -58,6 +58,7 @@ flowchart LR
 | [Sagas](sdk/sagas.md) | cross-aggregate workflows without a distributed transaction |
 | [Projections](sdk/projections.md) | read models, filters, sorting, the total order, keyset cursors |
 | [Errors](sdk/errors.md) | the taxonomy, and every path that branches on it |
+| [Observability](sdk/observability.md) | the `Observer`, `timing()`, the pull surface, the cardinality rule, the OTel mapping |
 | [Rust parity](sdk/rust-parity.md) | the name map, and where the two SDKs differ on purpose |
 
 ### Backends — bring your own
@@ -76,7 +77,7 @@ flowchart LR
 | [Getting started](guides/getting-started.md) | build it, then wire one command end to end |
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
-| [Examples](guides/examples.md) | a tour of the six runnable walkthroughs in `examples/py` |
+| [Examples](guides/examples.md) | a tour of the seven runnable walkthroughs in `examples/py` |
 
 ## Three things to know before you build
 
@@ -92,4 +93,4 @@ flowchart LR
 
 - [`README.md`](../README.md) — the project overview and quickstart.
 - [`AGENTS.md`](../AGENTS.md) — operational rules for working in this repository.
-- [`examples/py`](../examples/py) — six runnable walkthroughs, each ending in asserts.
+- [`examples/py`](../examples/py) — seven runnable walkthroughs, each ending in asserts.

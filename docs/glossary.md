@@ -50,7 +50,7 @@ committed state and published events cannot diverge. `Relay` and `pump` drain it
 ## Transactions
 
 **Unit of work** — one transaction boundary that several stores share. Opened with
-`edax.transaction(store)` or `with_tx(store)` in Python.
+`edax.transaction(store)` in Python.
 
 **Ambient transaction** — the open handle a Python participant finds through `current_tx()`, carried
 in a `contextvars` variable. Rust has none; a Rust host passes the handle explicitly or publishes it

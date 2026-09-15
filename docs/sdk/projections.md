@@ -95,7 +95,7 @@ a compare-and-set; two processes will interleave. Use `UPDATE ... WHERE version 
 affected row count, or a unique insert for version 1.
 
 *Enlist in the caller's transaction.* Every method takes an optional `tx`. With `tx` given, or with
-`current_tx()` set by an enclosing `with_tx`, the store runs inside that transaction; with neither,
+`current_tx()` set by an enclosing `transaction`, the store runs inside that transaction; with neither,
 it auto-commits. That is what lets a projection write commit with the events that produced it. See
 [transactions](./transactions.md).
 

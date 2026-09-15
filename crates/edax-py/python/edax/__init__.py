@@ -9,6 +9,7 @@ from . import (
     dispatcher,
     errors,
     filter,
+    observe,
     projection,
     query,
     router,
@@ -49,7 +50,7 @@ from .command import (
     idempotent,
     retry,
 )
-from .dispatcher import DeadLetterFn, Delivery, KeyOrderedDispatcher
+from .dispatcher import DeadLetterFn, Delivery, DispatcherStats, KeyOrderedDispatcher
 from .errors import (
     AlreadyRegistered,
     BadHandle,
@@ -63,11 +64,13 @@ from .errors import (
     StoreError,
     is_terminal,
 )
+from .observe import Observer, error_type, timing
 from .projection import Entity, ProjectionStore
 from .router import EventRouter, idempotent_by_id
 from .saga import Completed, Saga, SagaInstance, SagaRunner, SagaStore
 from .store import (
     AggregateCodec,
+    DrainStats,
     EventCodec,
     EventStore,
     Relay,
@@ -78,7 +81,6 @@ from .store import (
     current_tx,
     pump,
     transaction,
-    with_tx,
 )
 from .upcast import Upcaster
 
@@ -92,6 +94,7 @@ __all__ = [
     "dispatcher",
     "errors",
     "filter",
+    "observe",
     "projection",
     "query",
     "router",
@@ -146,6 +149,7 @@ __all__ = [
     "retry",
     # storage seam and orchestration
     "AggregateCodec",
+    "DrainStats",
     "EventCodec",
     "EventStore",
     "Relay",
@@ -156,14 +160,18 @@ __all__ = [
     "current_tx",
     "pump",
     "transaction",
-    "with_tx",
     # read side
     "Entity",
     "ProjectionStore",
     "EventRouter",
     "DeadLetterFn",
     "Delivery",
+    "DispatcherStats",
     "KeyOrderedDispatcher",
+    # observability (the seam, the timing middleware, the `error.type` rule)
+    "Observer",
+    "error_type",
+    "timing",
     # sagas
     "Completed",
     "Saga",

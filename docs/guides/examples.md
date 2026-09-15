@@ -1,11 +1,11 @@
 # Examples
 
-A tour of the six runnable programs in `examples/py`: what each one proves, which seams it wires,
+A tour of the seven runnable programs in `examples/py`: what each one proves, which seams it wires,
 and what it prints.
 
 Each example is a single file with a `main()`, an in-memory backend for every seam it needs, and
 asserts at the end. There is no test framework and no expected-output file: the program either exits
-`0` or raises. continuous integration (CI) runs all six.
+`0` or raises. continuous integration (CI) runs all seven.
 
 | Example | Proves | Doc |
 |---|---|---|
@@ -15,6 +15,7 @@ asserts at the end. There is no test framework and no expected-output file: the 
 | `outbox` | consume, handle, append to the outbox, relay, consume again | [sdk/outbox](../sdk/outbox.md) |
 | `saga` | committed events drive a process manager that emits commands | [sdk/sagas](../sdk/sagas.md) |
 | `projection_query` | a read model filtered, ordered and keyset-paged | [sdk/projections](../sdk/projections.md) |
+| `observability` | every Observer signal counted; handler latency timed; spans linked; gauges read | [sdk/observability](../sdk/observability.md) |
 
 ## Running them
 
@@ -99,7 +100,7 @@ of work. A relay then drains them.
 Seams wired: `Transactor` (`MemoryTransactor`), `EventStore` (`MemoryEventStore`),
 `IdempotencyStore` (`MemoryIdempotencyStore`), `Aggregate` plus a snapshot codec through
 `Repository`, the `CommandBus` middleware chain (`idempotent` outermost, `retry` inside it), and
-`Relay`. Both stores are built over the one transactor. So `with_tx(db)` around the dispatch makes
+`Relay`. Both stores are built over the one transactor. So `transaction(db)` around the dispatch makes
 the idempotency record, the events, the snapshot and the outbox rows commit or roll back together.
 
 `request_id` is the idempotency key. The same key with the same body replays; the same key with a
@@ -199,7 +200,7 @@ operation. Append the domain event inside a transaction. Relay the outbox to an 
 that topic back to verify.
 
 Seams wired: `Producer` and `Consumer` (`InMemoryBroker` is both), `EventStore` with its outbox
-(`MemoryEventStore`), `KeyOrderedDispatcher`, `with_tx`, and `Relay`. The input delivery is acked
+(`MemoryEventStore`), `KeyOrderedDispatcher`, `transaction`, and `Relay`. The input delivery is acked
 only after the append, which is what makes the pipeline at-least-once rather than lossy.
 
 ```
@@ -291,6 +292,37 @@ not reappear. `a4` (balance below the filter) and `a5` (not active) never show u
 Read with [sdk/projections](../sdk/projections.md), [kernels/filter](../kernels/filter.md) and
 [kernels/event](../kernels/event.md).
 
+## `observability`
+
+The telemetry seams: an `Observer` counts every signal it can emit and a `timing` middleware
+records handler latency. A stdlib tracer stand-in links each event to the `traceparent` its
+producer saved. All of it is plain values with no exporter and no dependency.
+
+Seams wired: `Observer` and `timing` (`edax.observe`) on a `CommandBus` with an `idempotent` guard,
+and on a `Consumer` feeding a `KeyOrderedDispatcher` whose handler is an `EventRouter` with
+`idempotent_by_id`, plus a `Relay`. One `Observer` subclass folds each signal into an in-memory
+counter. The command run reaches every claim verdict and every settlement the memory store can
+produce. The consume run reaches every delivery outcome, an ack that raises, a claim another worker
+holds, and a poison message the consumer loop dead-letters itself. The outbox run commits one unit
+of work, rolls one back, fails one drain, then drains.
+
+```
+commands:  3 claims lost, 3 settled (completed, cached, released); 6 dispatches timed
+queued:    depth=[2, 3] in_flight=0 idle=False
+drained:   depth=[0, 0] in_flight=0 attempts_tracked=1 contended_tracked=1 idle=True
+delivery:  ack=1 dead=1 nack=1 in_progress=1 unsettled=1; 1 poison dead-lettered by the loop; slowest handler 0.344 ms, backoff excluded
+relay:     1 drain failed (broker down), then published=1 lag=3.753 ms in 0.787 ms; transactions committed=1 rolled_back=1
+```
+
+The asserts pin every count and every span row. They also check that the reported `delivery`
+duration excludes the backoff wait. The number the dispatcher hands the `Observer` is the handler
+alone, so a slow retry schedule never inflates `messaging.process.duration`. The pull surface
+(`stats()`, `idle()`, `Relay.last`) is read after the consumer queued its stream and again after
+the dispatcher drains. The warnings on stderr are the log lines that carry the ids the metric
+labels must not.
+
+Read with [sdk/observability](../sdk/observability.md).
+
 ## Seams by example
 
 | Example | Seams exercised | Backend used | Doc |
@@ -301,6 +333,7 @@ Read with [sdk/projections](../sdk/projections.md), [kernels/filter](../kernels/
 | `outbox` | `Producer`, `Consumer`, `EventStore` + outbox, `KeyOrderedDispatcher`, `Relay`, `Transactor` | `memory` | [sdk/outbox](../sdk/outbox.md) |
 | `saga` | `SagaStore`, `EventRouter`, `KeyOrderedDispatcher`, `CommandBus`, `IdempotencyStore` | `memory` | [sdk/sagas](../sdk/sagas.md) |
 | `projection_query` | `ProjectionStore` | `memory` | [sdk/projections](../sdk/projections.md) |
+| `observability` | `Observer`, `timing`, `CommandBus`, `idempotent`, `Consumer`, `KeyOrderedDispatcher`, `EventRouter`, `idempotent_by_id`, `Relay` | `memory` | [sdk/observability](../sdk/observability.md) |
 
 Every example runs on the `memory` backend, so none of them needs a broker or a database. The
 durable backends are exercised by their own test suites, not from here.

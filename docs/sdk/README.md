@@ -36,7 +36,7 @@ at-least-once, which is why the guard and the version compare-and-set exist.
 | `EventStore` | `Repository` loads from snapshot plus replay, saves pending events under optimistic concurrency | [aggregates](aggregates.md) |
 | `EventStore` (outbox half) | `Relay.drain` polls it, `pump` feeds it from change data capture | [outbox](outbox.md) |
 | `IdempotencyStore` | `idempotent`, `idempotent_in`, `idempotent_by_id`, `idempotent_by_id_in` | [idempotency](idempotency.md) |
-| `Transactor` | `transaction`, `with_tx`, `current_tx` | [transactions](transactions.md) |
+| `Transactor` | `transaction`, `transaction`, `current_tx` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
 | `SagaStore` | `SagaRunner` correlates, folds, emits commands, persists at the loaded version | [sagas](sagas.md) |
 | `Producer`, `Consumer` | `KeyOrderedDispatcher` fans deliveries to workers by partition; `EventRouter` routes by event name | [consuming](consuming.md) |
@@ -118,4 +118,4 @@ promises: [delivery guarantees](../guides/delivery-guarantees.md).
 
 - [Architecture](../architecture.md) — why the kernel and SDK boundary sits where it does.
 - [Backends](../backends/README.md) — the seam contracts, and writing your own.
-- [Examples](../guides/examples.md) — six runnable walkthroughs.
+- [Examples](../guides/examples.md) — seven runnable walkthroughs.

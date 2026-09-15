@@ -11,12 +11,14 @@ import contextvars
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from time import perf_counter_ns
 from typing import Any, Callable, Generic, Optional, Protocol, TypeVar
 
 from . import _edax
 from ._async import MaybeAwaitable, maybe_await
 from .aggregate import Aggregate, Event, EventEnvelope, Version
 from .errors import ConcurrencyError
+from .observe import Observer, _wrap
 
 Tx = Any  # opaque backend transaction handle (a connection / transaction); the store defines it
 
@@ -26,6 +28,7 @@ A = TypeVar("A", bound=Aggregate)
 __all__ = [
     "AggregateCodec",
     "ConcurrencyError",  # the seam's conflict error
+    "DrainStats",
     "EventCodec",
     "EventStore",
     "Relay",
@@ -35,7 +38,6 @@ __all__ = [
     "current_tx",
     "pump",
     "transaction",
-    "with_tx",
 ]
 
 
@@ -50,7 +52,7 @@ class Transactor(Protocol):
     - The yielded ``tx`` is one backend handle every participant store accepts, atomic as a set.
     - A participant handed the same ``tx`` reads its own uncommitted writes.
     - The SDK never nests: stores join the ambient :func:`current_tx` rather than open a second unit of
-      work, so no savepoints are needed. Nesting ``with_tx`` yourself is undefined.
+      work, so no savepoints are needed. Nesting ``transaction`` yourself is undefined.
     - The handle is used from one asyncio task at a time; no thread safety required.
 
     :class:`~edax.backend.memory.MemoryTransactor` implements it, so a test can assert a raise left
@@ -65,25 +67,38 @@ _current_tx: contextvars.ContextVar[Optional[Tx]] = contextvars.ContextVar("edax
 
 
 def current_tx() -> Optional[Tx]:
-    """The tx of the innermost :func:`with_tx`, else ``None``. A store handed ``tx=None`` reads this."""
+    """The tx of the innermost :func:`transaction`, else ``None``. A store handed ``tx=None`` reads this."""
     return _current_tx.get()
 
 
 @asynccontextmanager
-async def with_tx(transactor: Transactor) -> AsyncIterator[Tx]:
+async def _transaction(transactor: Transactor, observe: Observer) -> AsyncIterator[Tx]:
+    """:func:`transaction` over an already-guarded observer, for the orchestration objects that hold one."""
+    started = perf_counter_ns()
+    outcome = "rolled_back"
+    try:
+        async with transactor.transaction() as tx:
+            token = _current_tx.set(tx)
+            try:
+                yield tx
+            finally:
+                _current_tx.reset(token)
+        outcome = "committed"
+    finally:
+        observe.transaction(outcome, perf_counter_ns() - started)
+
+
+def transaction(
+    transactor: Transactor, *, observer: Optional[Observer] = None
+) -> AbstractAsyncContextManager[Tx]:
     """Run a unit of work over ``transactor``: yield the tx, commit on clean exit, roll back if the body
     raises. The tx is published to :func:`current_tx` for the duration, so participants given no explicit tx
     join it. A task created inside the block keeps the tx after the block exits, which the
-    :class:`Transactor` contract forbids: start long-lived tasks outside a unit of work."""
-    async with transactor.transaction() as tx:
-        token = _current_tx.set(tx)
-        try:
-            yield tx
-        finally:
-            _current_tx.reset(token)
+    :class:`Transactor` contract forbids: start long-lived tasks outside a unit of work.
 
-
-transaction = with_tx
+    ``observer`` receives one :meth:`~edax.observe.Observer.transaction` per unit of work, ``committed`` or
+    ``rolled_back``, with its duration; ``None`` is the no-op observer."""
+    return _transaction(transactor, _wrap(observer))
 
 
 @dataclass
@@ -179,9 +194,13 @@ class AggregateCodec(Protocol[A]):
 class Repository(Generic[A]):
     """Loads aggregates (snapshot, then replay the rest) and saves them (append the pending events and a
     fresh snapshot in one transaction; the store also enqueues the outbox). ``load`` and ``save`` take an
-    optional ``tx``; without one they join the unit of work the caller opened with :func:`with_tx`, if any,
-    else run in their own, so the events commit with a projection or idempotency write in the same
-    transaction and nothing ever nests."""
+    optional ``tx``; without one they join the unit of work the caller opened with :func:`transaction`, if
+    any, else run in their own, so the events commit with a projection or idempotency write in the same
+    transaction and nothing ever nests.
+
+    ``observer`` receives one :meth:`~edax.observe.Observer.transaction` per unit of work the repository
+    opens itself. A call that joined the caller's ``tx`` reports nothing; that caller's :func:`transaction`
+    does. ``None`` is the no-op observer."""
 
     def __init__(
         self,
@@ -191,12 +210,14 @@ class Repository(Generic[A]):
         *,
         new_id: Optional[Callable[[], str]] = None,
         now: Optional[Callable[[], int]] = None,
+        observer: Optional[Observer] = None,
     ) -> None:
         self._store = store
         self._events = events
         self._aggregates = aggregates
         self._new_id = new_id or _edax.guid  # time-ordered id; override for a deterministic clock
         self._now = now or _edax.current_timestamp
+        self._observer = _wrap(observer)
 
     @asynccontextmanager
     async def _enlist(self, tx: Optional[Tx]) -> AsyncIterator[Tx]:
@@ -206,7 +227,7 @@ class Repository(Generic[A]):
         if tx is not None:
             yield tx
         else:
-            async with with_tx(self._store) as own:
+            async with _transaction(self._store, self._observer) as own:
                 yield own
 
     async def load(self, aggregate_id: str, *, tx: Optional[Tx] = None) -> A:
@@ -262,29 +283,57 @@ class Repository(Generic[A]):
 Publish = Callable[[EventEnvelope], MaybeAwaitable[None]]
 
 
+@dataclass(frozen=True)
+class DrainStats:
+    """What the last completed :meth:`Relay.drain` did. ``oldest_timestamp`` is the ``timestamp`` of
+    the oldest row in the batch, or ``None`` for an empty batch; against the reader's clock it is the
+    outbox lag a health check reads."""
+
+    published: int
+    duration_ns: int
+    oldest_timestamp: Optional[int]
+
+
 class Relay:
     """Drains the store's outbox to ``publish`` by polling: the transactional-outbox publisher. ``publish``
     may be sync or async, and must return only after the transport has durably accepted the event (a broker
     client's leader ack, or stronger). The batch is marked published once every row in it has been
     published, so a ``publish`` that returns earlier loses the event. One relay per store unless your
-    ``unpublished`` leases rows; for change data capture use :func:`pump`."""
+    ``unpublished`` leases rows; for change data capture use :func:`pump`.
 
-    def __init__(self, store: EventStore, publish: Publish) -> None:
+    Every completed drain is reported to ``observer`` (:meth:`~edax.observe.Observer.drain`) and kept in
+    :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed` and
+    leaves :attr:`last` as it was."""
+
+    def __init__(self, store: EventStore, publish: Publish, *, observer: Optional[Observer] = None) -> None:
         self._store = store
         self._publish = publish
+        self._observer = _wrap(observer)
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
+        #: The last completed drain, ``None`` until the first one finishes. A drain that raised leaves it.
+        self.last: Optional[DrainStats] = None
 
     async def drain(self, batch: int = 100) -> int:
         """Publish one batch; return how many. Concurrent calls on one relay are serialized, not
         overlapped."""
         async with self._draining:
-            rows = await self._store.unpublished(batch)
-            for env in rows:
-                await maybe_await(self._publish(env))
-            if rows:
-                await self._store.mark_published([env.id for env in rows])
+            started = perf_counter_ns()
+            try:
+                rows = await self._store.unpublished(batch)
+                for env in rows:
+                    await maybe_await(self._publish(env))
+                if rows:
+                    await self._store.mark_published([env.id for env in rows])
+            except Exception as e:
+                # Nothing was marked, so the batch is drained again; reported so a stuck relay is a
+                # counter, not only a log line at the caller.
+                self._observer.drain_failed(e)
+                raise
+            oldest = min((env.timestamp for env in rows), default=None)
+            self.last = DrainStats(len(rows), perf_counter_ns() - started, oldest)
+            self._observer.drain(self.last.published, self.last.duration_ns, self.last.oldest_timestamp)
             return len(rows)
 
 

@@ -48,7 +48,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
-from edax import Aggregate, Relay, Repository, json_codec, with_tx
+from edax import Aggregate, Relay, Repository, json_codec, transaction
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -105,7 +105,7 @@ async def main() -> None:
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit) -> int:
-        async with with_tx(db):  # events, snapshot, outbox, claim: one commit
+        async with transaction(db):  # events, snapshot, outbox, claim: one commit
             return await bus.dispatch(cmd)
 
     print(await submit(Deposit("acct-1", 100, "req-A")))  # 100

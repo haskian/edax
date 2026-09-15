@@ -36,7 +36,7 @@ classDiagram
 |---|---|---|
 | `MemoryTransactor` | `Transactor` | the transaction boundary; `transaction()` yields a `MemoryTx` |
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
-| `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `with_tx(store)` works |
+| `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works |
 | `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim; declares `joins_transaction = True` |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
 | `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency |
@@ -67,7 +67,7 @@ sequenceDiagram
     participant S as stores
     participant D as native database
 
-    H->>T: with_tx opens a unit of work
+    H->>T: transaction opens a unit of work
     activate T
     T->>D: begin
     D-->>T: token
@@ -194,7 +194,7 @@ pending.
 
 `MemoryTransactor.open_count()` reports how many transactions are still unsettled. A count that
 never returns to zero means a token was abandoned. Its keys are then a permanent conflict, not a
-held key another writer can wait out. Rust's `with_tx` rolls back if the body panics, so a panicking
+held key another writer can wait out. Rust's `transaction` rolls back if the body panics, so a panicking
 handler does not abandon a token.
 
 ## Limits
@@ -222,7 +222,7 @@ do" a durable broker reports.
 - [redis](./redis.md) — the cross-process ledger, and what changes when it cannot join your
   transaction.
 - [kafka](./kafka.md) — the broker seam over a real broker.
-- [transactions](../sdk/transactions.md) — `Transactor`, `current_tx`, `with_tx`,
+- [transactions](../sdk/transactions.md) — `Transactor`, `current_tx`, `transaction`,
   `joins_transaction`.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [testing](../guides/testing.md) — golden vectors, model tests, proptest and Hypothesis.

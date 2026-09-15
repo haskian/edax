@@ -10,6 +10,7 @@ from typing import Any, ClassVar, Optional
 import edax
 import msgspec
 import pytest
+from conftest import CreateUser
 from edax import command as C
 from edax.backend.memory import MemoryIdempotencyStore
 from edax.command import Record
@@ -347,15 +348,6 @@ def test_hash_is_independent_of_how_the_command_was_built(case: ConstructionCase
     expected = edax.payload_hash_json(msgspec.json.encode(DEFAULTED_ORDER))
     assert C._payload_hash(case.built) == expected
     assert C._payload_hash(case.decoded) == expected
-
-
-@dataclass
-class CreateUser:
-    email: str
-    # Unannotated, so it is a class attribute (out of `vars()` and out of the hashed payload) that
-    # still satisfies the `Command` protocol, whose `type` is a read-only property. `ClassVar[str]`
-    # is the declared form and satisfies it too; this case covers the bare attribute.
-    type = "user.create"
 
 
 async def test_bus_idempotency() -> None:
