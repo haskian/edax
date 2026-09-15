@@ -18,5 +18,15 @@ jobs:
   rust:
     uses: ./.github/workflows/rust.yml
 
+  # `requires-python = ">=3.9"` is a promise the suite has to keep. The floor is where a
+  # syntax or typing feature added later breaks first; the ceiling is where a dependency or a
+  # deprecation breaks first. Testing only the middle catches neither.
   python:
+    name: Python ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
     uses: ./.github/workflows/python.yml
+    with:
+      python-version: ${{ matrix.python-version }}
