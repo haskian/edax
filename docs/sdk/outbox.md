@@ -273,6 +273,27 @@ no count.
 
 Satisfy one of the two; the `EventStore` contract requires exactly that.
 
+## How deep is the backlog
+
+`Relay.last` is the lag of the drain that finished. It stands still when the relay does, so a dead
+relay and an idle system read the same from outside. The number that separates them is the depth of
+the outbox, and a store may offer it:
+
+```python
+async def unpublished_count(self) -> int:
+    """Committed unmarked rows waiting, outside any transaction."""
+```
+
+This is an optional seam method, not part of the `EventStore` Protocol: requiring it would break
+every store written before it existed. Read it with `getattr(store, "unpublished_count", None)`, and
+set `supports_unpublished_count = True` on your `EventStoreContract` subclass to run the clause that
+checks it. `MemoryEventStore` implements it.
+
+In SQL it is `SELECT count(*) FROM outbox WHERE published_at IS NULL`. On a large table prefer an
+estimate or a partial index over an exact scan on every scrape: the alert reads a trend, not a
+number. The depth is the correctness lag of every downstream projection and saga, so it belongs in
+the same dashboard as consumer lag.
+
 ## At-least-once publication
 
 The same envelope can reach the broker more than once. Three windows produce it:

@@ -1,8 +1,9 @@
 # edax
 
 > [!WARNING]
-> **Early alpha.** Version 0.0.1. The API is unstable and will change without notice, and nothing is
-> published to a package registry yet. Not ready for production. Build from source.
+> **Early alpha (0.0.x).** The API is unstable and will change without notice, and nothing is
+> published to a package registry yet. Not ready for production. Build from source. What a version
+> will promise once 0.1.0 is cut: [stability](docs/stability.md).
 
 **An ergonomic toolkit for building event-driven systems. Command Query Responsibility Segregation
 (CQRS) and event sourcing, with a Rust core and language software development kits (SDKs) that
@@ -43,6 +44,7 @@ or use the pinned [mise](https://mise.jdx.dev) toolchain — see
 A command bus with idempotency and retry, an event-sourced aggregate, and a transactional outbox.
 All of it commits as one unit of work.
 
+<!-- doclint: check -->
 ```python
 import asyncio
 from dataclasses import dataclass
@@ -153,9 +155,10 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 ## Status
 
-Version 0.0.1. The application programming interface (API) is not yet stable, and nothing is
+Early alpha. The application programming interface (API) is not yet stable, and nothing is
 published to a package registry. Build from source; see
-[getting started](docs/guides/getting-started.md).
+[getting started](docs/guides/getting-started.md). The version literal lives in `Cargo.toml` alone,
+so this page does not restate it; [stability](docs/stability.md) says what a version promises.
 
 Deliberately out of scope: durable event- and projection-store backends, transports beyond the
 Kafka adapter, and upcast transforms. The kernel plans an upcast, and your code rewrites the

@@ -174,6 +174,13 @@ class MemoryEventStore:
         with errors.mapped():
             await self._transactor._inner.mark_published(list(ids))
 
+    async def unpublished_count(self) -> int:
+        """How many committed unmarked outbox rows are waiting."""
+        # The native store has no count call, so this reads the backlog and measures it. Linear in the
+        # backlog, which a test-sized outbox can afford; a durable store answers with `SELECT count(*)`
+        # and never pages the rows at all. The limit is the largest `i32` the native signature takes.
+        return len(await self.unpublished(2**31 - 1))
+
 
 class MemoryIdempotencyStore:
     """:class:`~edax.command.IdempotencyStore` over the native atomic claim. Records cross as JSON.

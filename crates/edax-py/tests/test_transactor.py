@@ -181,18 +181,65 @@ async def test_repository_load_joins_ambient_tx() -> None:
     assert tr.committed == 1
 
 
+@pytest.mark.parametrize(
+    "same_transactor",
+    [True, False],
+    ids=["same transactor is refused", "another database still nests"],
+)
+async def test_nesting_a_transaction_on_one_transactor_is_refused(same_transactor: bool) -> None:
+    # Nobody writes transaction() inside transaction() on purpose; they call one service function
+    # that opens a unit of work from another that already did. The inner one commits on its own
+    # clean exit and the outer rollback cannot take it back, so the guard refuses it. Two
+    # transactors are two databases: nesting them is legitimate, and neither commit is atomic with
+    # the other's.
+    outer = CountingTransactor()
+    inner = outer if same_transactor else CountingTransactor()
+    async with transaction(outer) as tx:
+        if same_transactor:
+            with pytest.raises(edax.BadHandle, match="already has one open"):
+                async with transaction(inner):
+                    pass  # pragma: no cover - the guard raises before the body runs
+        else:
+            async with transaction(inner):
+                assert current_tx() is not None
+            assert (inner.committed, inner.rolled_back) == (1, 0), "the second database committed"
+        assert current_tx() == tx, "a refused or finished inner block leaves the outer tx ambient"
+    assert (outer.committed, outer.rolled_back) == (1, 0), "one unit of work either way"
+
+
+async def test_one_transactor_opens_a_second_unit_of_work_after_the_first_closes() -> None:
+    # The guard is about nesting, not about reuse: sequential units of work on one transactor are
+    # the ordinary case, so the ambient owner must be reset on exit, including after a rollback.
+    tr = CountingTransactor()
+    with pytest.raises(RuntimeError):
+        async with transaction(tr):
+            raise RuntimeError("boom")
+    async with transaction(tr):
+        pass
+    assert (tr.committed, tr.rolled_back) == (1, 1)
+
+
 async def test_dispatcher_workers_do_not_inherit_the_ambient_tx() -> None:
     # A worker task copies its creator's context. Started inside transaction, it would otherwise carry
     # that tx to every handler it ever runs: after the tx committed, and from a second task, which
     # the Transactor contract forbids. Each worker is its own unit-of-work boundary.
     seen: list[object] = []
-    dispatcher = KeyOrderedDispatcher(workers=1, handler=lambda env: seen.append(current_tx()))
     tr = CountingTransactor()
+
+    async def handle(env: EventEnvelope) -> None:
+        seen.append(current_tx())
+        # The worker inherits no owner either, so its own unit of work on that same transactor is
+        # not read as nesting inside the caller's.
+        async with transaction(tr):
+            pass
+
+    dispatcher = KeyOrderedDispatcher(workers=1, handler=handle)
     async with transaction(tr):
         dispatcher.start()
         await dispatcher.submit(build_envelope("acct-1", "Deposited", 1))
     await dispatcher.stop()
     assert seen == [None]
+    assert (tr.committed, tr.rolled_back) == (2, 0), "the caller's unit of work and the worker's"
 
 
 async def test_current_tx_is_per_task_not_process_wide() -> None:

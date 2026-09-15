@@ -15,7 +15,7 @@ from ._async import MaybeAwaitable, maybe_await
 from .aggregate import EventEnvelope
 from .errors import InProgress, is_terminal
 from .observe import Observer, _wrap, error_type
-from .store import _current_tx
+from .store import _current_transactor, _current_tx
 
 logger = logging.getLogger("edax.dispatcher")
 
@@ -155,6 +155,7 @@ class KeyOrderedDispatcher:
         # A task copies its creator's context, so a dispatcher started inside `transaction` would hand every
         # handler that caller's tx from a second task, which the Transactor contract forbids.
         _current_tx.set(None)
+        _current_transactor.set(None)
         while True:
             item = await queue.get()
             if item is _Stop.TOKEN:

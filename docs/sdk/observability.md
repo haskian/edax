@@ -294,6 +294,7 @@ from the loop's thread, with no locking.
 | `KeyOrderedDispatcher.stats()` | `DispatcherStats` | `queue_depth: list[int]` one entry per worker; `in_flight: int` items taken off a queue and not yet settled; `attempts_tracked: int` and `contended_tracked: int`, the sizes of the two failure maps; `running: bool` |
 | `KeyOrderedDispatcher.idle()` | `bool` | every queue empty and `in_flight == 0` |
 | `Relay.last` | `Optional[DrainStats]` | `published: int`, `duration_ns: int`, `oldest_timestamp: Optional[int]`; `None` until the first drain completes; a drain that raised leaves it |
+| `EventStore.unpublished_count()` | `int` | optional seam method: committed unmarked outbox rows waiting now. Absent on a store that does not implement it |
 | `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled; `max_delivered: int`; `committed: int` the last watermark, `-1` before the first commit |
 | `KafkaConsumer.reset(tp)` | — | drops the bookkeeping for a revoked partition; the rebalance listener calls it |
 
@@ -310,9 +311,18 @@ The health checks a host builds from them:
   when that id is settled. Steady growth means nacked ids that never come back.
 
 The relay reports the timestamp, not an age, so it needs no clock of its own and the subtraction
-happens once, where the reader's clock is. Note that `EventStore` has no `unpublished_count()`:
-adding one would break every third-party store. Read it through `getattr` if a backend offers it;
-otherwise `oldest_timestamp` is the lag signal.
+happens once, where the reader's clock is.
+
+- **Outbox depth.** `await store.unpublished_count()` is how many rows are waiting now. It answers
+  the question `Relay.last` cannot. `last` only moves when a drain completes. A relay that died, a
+  publisher that is failing, and an idle system with nothing to publish all leave it frozen at the
+  same value. A depth that grows while `last` stands still is a stalled relay.
+
+`unpublished_count` is an optional seam method, not part of the `EventStore` Protocol: requiring it
+would break every store written before it existed. Read it with `getattr(store, "unpublished_count",
+None)`, and declare `supports_unpublished_count = True` on your `EventStoreContract` subclass so the
+conformance clause runs. `MemoryEventStore` implements it. Without it, `oldest_timestamp` is the lag
+signal and depth is unavailable.
 
 ## Traces via metadata, and where request-scoped values go
 

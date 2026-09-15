@@ -69,6 +69,7 @@ is the same thing with `T::default` as the provider.
 | repository entry points | one `load` / `save` with `tx=None` | two: `load` / `load_in`, `save` / `save_in` |
 | scoped boundary | `async with transaction(transactor)` | `transactor.transaction(body)` or `transaction(&transactor, body)` |
 | what a rollback costs the caller | the aggregate was already reset: reload it | the same |
+| nesting a second unit of work | refused: `BadHandle` when the same transactor already has one open | not refused: with no ambient handle there is nothing to compare against |
 
 Same contract, same four executed clauses, different wiring.
 

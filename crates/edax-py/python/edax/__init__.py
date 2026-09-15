@@ -26,6 +26,9 @@ from ._edax import (
     payload_hash,
     payload_hash_json,
     rendezvous,
+    # Staleness only: `should_apply(5, 5)` is True, because an ordinal cannot tell a redelivery from
+    # a re-send. `idempotent_by_id` below is the dedup; this is the ordering check. See
+    # `docs/kernels/event.md`. The compiled binding is generated and carries no docstring of its own.
     should_apply,
     upcast_plan,
 )

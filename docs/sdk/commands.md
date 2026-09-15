@@ -88,10 +88,10 @@ def key_of(cmd: Deposit) -> str:
 bus = CommandBus(idempotent(ledger, key=key_of))
 ```
 
-The same applies to the ledger. `RedisIdempotencyStore(prefix=...)` defaults to `idem:` for every
-store, service and environment, so two services sharing one Redis collide on a bare request id. The
-collision is not silent, because it surfaces as a terminal `PayloadMismatch`. It still dead-letters
-an event that was never wrong. Give each service its own prefix.
+The same applies to the ledger. `RedisIdempotencyStore(conn, prefix=...)` requires the prefix, with
+no default, because two services sharing one Redis under one prefix collide on a bare request id.
+The collision is not silent, because it surfaces as a terminal `PayloadMismatch`. It still
+dead-letters an event that was never wrong. Give each service and environment its own prefix.
 
 ## CommandBus
 

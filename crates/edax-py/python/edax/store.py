@@ -17,7 +17,7 @@ from typing import Any, Callable, Generic, Optional, Protocol, TypeVar
 from . import _edax
 from ._async import MaybeAwaitable, maybe_await
 from .aggregate import Aggregate, Event, EventEnvelope, Version
-from .errors import ConcurrencyError
+from .errors import BadHandle, ConcurrencyError
 from .observe import Observer, _wrap
 
 Tx = Any  # opaque backend transaction handle (a connection / transaction); the store defines it
@@ -52,7 +52,8 @@ class Transactor(Protocol):
     - The yielded ``tx`` is one backend handle every participant store accepts, atomic as a set.
     - A participant handed the same ``tx`` reads its own uncommitted writes.
     - The SDK never nests: stores join the ambient :func:`current_tx` rather than open a second unit of
-      work, so no savepoints are needed. Nesting ``transaction`` yourself is undefined.
+      work, so no savepoints are needed. A second :func:`transaction` on the same transactor raises
+      :class:`~edax.errors.BadHandle` rather than opening one; a transactor over another database nests.
     - The handle is used from one asyncio task at a time; no thread safety required.
 
     :class:`~edax.backend.memory.MemoryTransactor` implements it, so a test can assert a raise left
@@ -64,6 +65,11 @@ class Transactor(Protocol):
 
 
 _current_tx: contextvars.ContextVar[Optional[Tx]] = contextvars.ContextVar("edax_current_tx", default=None)
+# Who opened the ambient tx, so a second `transaction()` on the same transactor is refused while one
+# over a *different* transactor (a second database) still nests legitimately.
+_current_transactor: contextvars.ContextVar[Optional[Transactor]] = contextvars.ContextVar(
+    "edax_current_transactor", default=None
+)
 
 
 def current_tx() -> Optional[Tx]:
@@ -74,15 +80,28 @@ def current_tx() -> Optional[Tx]:
 @asynccontextmanager
 async def _transaction(transactor: Transactor, observe: Observer) -> AsyncIterator[Tx]:
     """:func:`transaction` over an already-guarded observer, for the orchestration objects that hold one."""
+    if _current_transactor.get() is transactor:
+        # The Transactor contract says the SDK never nests. A second unit of work on the same transactor
+        # commits on its own clean exit, and the outer rollback cannot take those writes back. BadHandle,
+        # not StoreError, so a dispatcher dead-letters the wiring mistake instead of redelivering it.
+        # The check is by transactor identity: two transactors over one pool are two objects, so this
+        # catches composition of service functions, not every way to reach one database twice.
+        raise BadHandle(
+            "transaction() was opened while this transactor already has one open: the inner unit of work "
+            "would commit independently of the outer one. Pass the ambient tx down, or open the "
+            "transaction around both callers, not in each"
+        )
     started = perf_counter_ns()
     outcome = "rolled_back"
     try:
         async with transactor.transaction() as tx:
-            token = _current_tx.set(tx)
+            tx_token = _current_tx.set(tx)
+            owner_token = _current_transactor.set(transactor)
             try:
                 yield tx
             finally:
-                _current_tx.reset(token)
+                _current_tx.reset(tx_token)
+                _current_transactor.reset(owner_token)
         outcome = "committed"
     finally:
         observe.transaction(outcome, perf_counter_ns() - started)
@@ -95,6 +114,12 @@ def transaction(
     raises. The tx is published to :func:`current_tx` for the duration, so participants given no explicit tx
     join it. A task created inside the block keeps the tx after the block exits, which the
     :class:`Transactor` contract forbids: start long-lived tasks outside a unit of work.
+
+    Opening this while the same transactor already has a unit of work open raises
+    :class:`~edax.errors.BadHandle`: the inner one would commit on its own clean exit and the outer
+    rollback could not take it back. Two service functions that each open a unit of work compose by
+    passing the tx down, or by moving the :func:`transaction` out to their caller. A second transactor,
+    over another database, nests as before, and neither one's commit is atomic with the other's.
 
     ``observer`` receives one :meth:`~edax.observe.Observer.transaction` per unit of work, ``committed`` or
     ``rolled_back``, with its duration; ``None`` is the no-op observer."""
@@ -131,6 +156,13 @@ class EventStore(Protocol):
       at-least-once and downstream dedups by ``env.id``; ``mark_published`` is idempotent and durable. Both
       run outside any ``tx``. Poll them with :class:`Relay`, one per store unless ``unpublished`` leases the
       rows, or feed change data capture to :func:`pump`, where the stream position is the ack.
+    - *Backlog (optional).* ``async def unpublished_count(self) -> int`` returns how many committed
+      unmarked rows are waiting, outside any ``tx``: ``SELECT count(*)`` over the unmarked rows.
+      :attr:`Relay.last` reports the drains that finished, so it stops moving when the relay does, and a
+      stalled relay then looks exactly like an idle one. The depth is what tells them apart. It is not
+      declared on this Protocol, because a required method would break every store that predates it: a
+      host reads it with ``getattr``, and ``EventStoreContract.supports_unpublished_count`` runs its
+      clause for a store that has it.
     - *Errors.* :class:`ConcurrencyError` only for a version mismatch; any other failure raises
       :class:`~edax.errors.StoreError`, or :class:`~edax.errors.CodecError` for a marshal failure. Called
       from one asyncio loop; no thread safety required."""

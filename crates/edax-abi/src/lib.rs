@@ -31,6 +31,11 @@ pub fn rendezvous(aggregate_id: &str, n: u32) -> u32 {
 }
 
 /// Whether an incoming sequence should be applied given the stored one.
+///
+/// Staleness only, not dedup: the comparison is `stored <= incoming`, so a redelivery of the
+/// sequence already applied returns `true`. Guard the handler with `idempotent_by_id`, or a ledger
+/// keyed on the event id, when its effect is not itself idempotent. See
+/// [`edax_event::should_apply`] and `docs/kernels/event.md`.
 pub fn should_apply(stored: Option<u64>, incoming: Option<u64>) -> bool {
     edax_event::should_apply(stored, incoming)
 }
