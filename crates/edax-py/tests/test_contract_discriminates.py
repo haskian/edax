@@ -41,6 +41,23 @@ class InclusiveLoad(_Delegating):
         return rows
 
 
+class CountsPublishedRows(_Delegating):
+    """`unpublished_count` counts every outbox row, marked or not — `SELECT count(*)` without the
+    `WHERE published_at IS NULL`. The backlog then only ever grows, so the health check it exists
+    for is red forever."""
+
+    def __init__(self, inner: Any) -> None:
+        super().__init__(inner)
+        self._ever = 0
+
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
+        await self._inner.append(tx, aggregate_id, expected, events)
+        self._ever += len(list(events))
+
+    async def unpublished_count(self) -> int:
+        return self._ever
+
+
 class LeakyOutbox(_Delegating):
     """`unpublished` reads rows the transaction has not committed. A relay then publishes an event
     whose state change may still roll back."""
@@ -156,6 +173,12 @@ def db() -> MemoryTransactor:
     return MemoryTransactor()
 
 
+class _CountingContract(EventStoreContract):
+    """The backlog clause is optional, so it runs only for a suite that declares the capability."""
+
+    supports_unpublished_count = True
+
+
 async def _fails(coro: Any) -> None:
     """The contract method must fail. Every verdict counts: an assertion it caught, a `pytest.raises`
     that did not fire, or the store raising where the clause said it must not.
@@ -179,6 +202,11 @@ async def test_an_inclusive_load_is_caught(db: MemoryTransactor) -> None:
 async def test_an_outbox_leaking_uncommitted_rows_is_caught(db: MemoryTransactor) -> None:
     store = LeakyOutbox(MemoryEventStore(db), db)
     await _fails(EventStoreContract().test_the_outbox_never_shows_an_uncommitted_row(store))
+
+
+async def test_a_backlog_count_that_ignores_mark_published_is_caught(db: MemoryTransactor) -> None:
+    store = CountsPublishedRows(MemoryEventStore(db))
+    await _fails(_CountingContract().test_unpublished_count_tracks_what_is_waiting(store))
 
 
 async def test_a_version_that_does_not_advance_is_caught(db: MemoryTransactor) -> None:

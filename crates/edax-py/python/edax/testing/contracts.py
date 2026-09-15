@@ -82,6 +82,9 @@ class EventStoreContract:
     supports_snapshots: bool = True
     #: ``unpublished`` / ``mark_published`` are implemented (the transactional outbox).
     supports_outbox: bool = True
+    #: ``unpublished_count`` is implemented. Optional: a store that cannot count the backlog cheaply
+    #: leaves it out, and the host watches :attr:`~edax.store.Relay.last` alone.
+    supports_unpublished_count: bool = False
 
     async def test_an_empty_stream_is_version_zero(self, event_store: Any) -> None:
         """ "An aggregate's version is the ``sequence`` of its last stored event, ``0`` for an empty
@@ -286,6 +289,22 @@ class EventStoreContract:
         await event_store.mark_published([_id("never-existed")])  # unknown ids are ignored
         left = [e for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
         assert left == [], "marked rows stop coming back"
+
+    async def test_unpublished_count_tracks_what_is_waiting(self, event_store: Any) -> None:
+        """ "``unpublished_count`` is how deep the outbox is right now." A count that ignores
+        ``mark_published``, or counts uncommitted rows, reports a backlog that never drains and makes
+        the health check it exists for permanently red."""
+        if not (self.supports_outbox and self.supports_unpublished_count):
+            raise pytest.skip.Exception("backend declares no outbox or no backlog count")
+        agg = _id("acct")
+        # Deltas, not absolutes: the store may hold rows from other clauses in this suite.
+        before = await event_store.unpublished_count()
+        async with event_store.transaction() as tx:
+            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
+        assert await event_store.unpublished_count() - before == 2, "one row per appended event"
+        ids = [e.id for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
+        await event_store.mark_published(ids[:1])
+        assert await event_store.unpublished_count() - before == 1, "a marked row stops counting"
 
     async def test_unpublished_honours_its_limit(self, event_store: Any) -> None:
         """ "Up to ``limit`` committed unmarked rows." A store ignoring the limit hands a relay the

@@ -34,6 +34,8 @@ def db() -> MemoryTransactor:
 
 
 class TestMemoryEventStore(EventStoreContract):
+    supports_unpublished_count = True
+
     @pytest.fixture
     def event_store(self, db: MemoryTransactor) -> Any:
         return MemoryEventStore(db)
