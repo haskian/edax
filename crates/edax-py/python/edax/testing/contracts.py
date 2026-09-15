@@ -24,6 +24,11 @@ configuration (the ``test`` extra installs ``pytest-asyncio``).
 **Capabilities.** Backends differ in ways the contract allows, so a clause that cannot apply is
 skipped rather than failed. Declare them as class attributes on your subclass — the defaults describe
 a transactional SQL backend, which is the common case and the strictest.
+
+Those skips `raise pytest.skip.Exception(...)` rather than calling `pytest.skip(...)`, which is the
+same thing at runtime and reports identically. The call form does not type-check under pytest 8,
+whose `skip` is declared through a `_WithException` protocol a checker reads as taking no arguments
+at all — and pytest 8 is what Python 3.9 resolves, which this package supports.
 """
 
 from __future__ import annotations
@@ -204,7 +209,7 @@ class EventStoreContract:
         """ "a rollback removes all of them." This is what lets a failed handler leave no trace, and
         what the shared-ledger idempotency mode is built on."""
         if not self.supports_rollback:
-            pytest.skip("backend declares no rollback")
+            raise pytest.skip.Exception("backend declares no rollback")
         agg = _id("acct")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
@@ -217,7 +222,7 @@ class EventStoreContract:
         """ "``load_snapshot`` returns the latest snapshot or ``None``, and may lag the stream but
         never lead it." A snapshot ahead of the events replays state that was never committed."""
         if not self.supports_snapshots:
-            pytest.skip("backend declares no snapshot support")
+            raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             assert await event_store.load_snapshot(tx, agg) is None, "none stored yet"
@@ -232,7 +237,7 @@ class EventStoreContract:
     async def test_the_latest_snapshot_wins(self, event_store: Any) -> None:
         """ "the *latest* snapshot": a second save supersedes the first rather than accumulating."""
         if not self.supports_snapshots:
-            pytest.skip("backend declares no snapshot support")
+            raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
@@ -246,7 +251,7 @@ class EventStoreContract:
         """ "Within one ``append`` the event rows, their outbox rows and any snapshot saved in the same
         ``tx`` commit together." The outbox is what makes publishing atomic with the state change."""
         if not self.supports_outbox:
-            pytest.skip("backend declares no outbox")
+            raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 0, [envelope(agg, 1), envelope(agg, 2)])
@@ -257,7 +262,7 @@ class EventStoreContract:
         """ "``unpublished`` returns only *committed* unmarked rows." A relay that can see an
         uncommitted row publishes an event whose state change may still roll back."""
         if not (self.supports_outbox and self.supports_rollback):
-            pytest.skip("backend declares no outbox or no rollback")
+            raise pytest.skip.Exception("backend declares no outbox or no rollback")
         agg = _id("acct")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
@@ -270,7 +275,7 @@ class EventStoreContract:
         """ "``mark_published`` is idempotent; unknown ids are ignored." A relay is at-least-once, so
         it re-marks after a lost response, and a second mark must not be an error."""
         if not self.supports_outbox:
-            pytest.skip("backend declares no outbox")
+            raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 0, [envelope(agg, 1)])
@@ -286,7 +291,7 @@ class EventStoreContract:
         """ "Up to ``limit`` committed unmarked rows." A store ignoring the limit hands a relay the
         whole backlog in one batch, and the relay's duplicate window becomes the whole backlog."""
         if not self.supports_outbox:
-            pytest.skip("backend declares no outbox")
+            raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2, 3)])
@@ -353,7 +358,7 @@ class ProjectionStoreContract:
         fixture; declare `supports_transactions = False` if your store has no unit of work.
         """
         if not self.supports_transactions:
-            pytest.skip("backend declares no unit of work")
+            raise pytest.skip.Exception("backend declares no unit of work")
         # Resolved lazily so a backend that skips this clause need not define the fixture at all.
         transactor = request.getfixturevalue("transactor")
         entity = Entity(_id("acct"), 0, {"balance": 1})
@@ -524,7 +529,7 @@ class IdempotencyStoreContract:
         ``event_store`` fixture too, because the transaction has to come from somewhere.
         """
         if not self.joins_transaction:
-            pytest.skip("ledger declares joins_transaction = False")
+            raise pytest.skip.Exception("ledger declares joins_transaction = False")
         key = _id("req")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
