@@ -294,7 +294,7 @@ class TestRedisLedger(IdempotencyStoreContract):
 
     @pytest.fixture
     async def idempotency_store(self, conn):
-        return RedisIdempotencyStore(conn)
+        return RedisIdempotencyStore(conn, prefix="test:idem:")
 ```
 
 Install with `pip install edax[test]` and set `asyncio_mode = "auto"` in your pytest configuration.
@@ -302,14 +302,15 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 
 | Contract | Fixture | Covers |
 |---|---|---|
-| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, an honoured `limit` |
+| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, an honoured `limit`, and the backlog count when `supports_unpublished_count` is on |
 | `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and *not* advancing on a conflict, independence per id |
 | `SagaStoreContract` | `saga_store` | an unknown correlation reading `None`, state round trip, compare-and-set on concurrent folds, a versioned delete |
 | `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor unless `joins_transaction = False` | a free key won, a second claim losing and reading the winner's record, a completed result and a cached failure replaying, release freeing the key, releasing an absent key, the payload hash surviving as unsigned 64-bit, and a rollback freeing the claim when the ledger joins |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that
 cannot apply: `supports_rollback`, `supports_snapshots`, `supports_outbox`, `joins_transaction`,
-`supports_kernel_queries`. The defaults describe a transactional SQL backend, the strictest case.
+`supports_kernel_queries`, `supports_unpublished_count`. The defaults describe a transactional SQL
+backend, the strictest case.
 Loosen them deliberately: every flag you turn off is a guarantee your callers lose.
 
 `edax.testing.faults` wraps any store to inject the failure a dict cannot fake. `LostResponse` lets

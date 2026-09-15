@@ -48,13 +48,15 @@ instead.
 
 ## The key prefix
 
-Every key the store writes is `{prefix}{key}`, and `prefix` defaults to `"idem:"` — the same default
-for every store, every service and every environment. Two services sharing one Redis therefore share
-a key space, and a bare request id that both use is one claim.
+Every key the store writes is `{prefix}{key}`, and `prefix` is required: there is no default,
+because no default is right for every store, service and environment. Two services sharing one
+Redis under one prefix share a key space, and a bare request id that both use is one claim.
 
 The collision is loud rather than silent: the two commands hash differently, so the loser gets a
 terminal `PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though,
-and nothing in the guard can tell that apart from a genuine key reuse.
+and nothing in the guard can tell that apart from a genuine key reuse. That is why the parameter
+has no default: the decision belongs at wiring time, where the service and the environment are
+known.
 
 ```python
 ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:")

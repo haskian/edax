@@ -73,10 +73,14 @@ class RedisIdempotencyStore:
     def __init__(
         self,
         conn: RedisConn,
-        prefix: str = "idem:",
+        prefix: str,
         ttl_ms: int = 86_400_000,
         claim_ttl_ms: int = 300_000,
     ) -> None:
+        """``prefix`` is required and has no default: it is part of the ledger's identity, not a
+        cosmetic namespace. Two services sharing one Redis under one prefix share a key space, and a
+        request id both use is one claim. Name the service and the environment,
+        ``"billing:prod:idem:"``. A second SDK's store must use the same prefix to share the ledger."""
         self._conn = conn
         self._prefix = prefix
         self._ttl_ms = ttl_ms
