@@ -32,6 +32,7 @@ flowchart LR
 |---|---|
 | [Architecture](architecture.md) | why there is a kernel, how the crates fit, what the build pipeline generates |
 | [Glossary](glossary.md) | every term this documentation uses, defined once |
+| [Stability](stability.md) | what a version promises, which surfaces it covers, how a release is cut |
 
 ### Kernels — the shared decisions
 
