@@ -14,9 +14,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from edax.aggregate import Aggregate, Event, EventEnvelope
-from edax.backend.memory import MemoryEventStore, MemoryTransactor
-from edax.saga import Completed, SagaRunner
-from edax.store import Repository
+from edax.saga import Completed, Saga
+from edax.store import AggregateCodec, EventCodec
 
 
 class Account(Aggregate):
@@ -63,13 +62,9 @@ class OrderSaga:
         return Completed, []
 
 
-def wire() -> None:
-    db = MemoryTransactor()
-    Repository(MemoryEventStore(db), DepositCodec(), AccountCodec())
-    SagaRunner(OrderSaga(), _store(), dispatch=_dispatch)
-
-
-def _dispatch(command: Any) -> Any: ...
-
-
-def _store() -> Any: ...
+# Assigned against the Protocol rather than passed to a constructor: the subject is the seams'
+# parameter names, so binding one through `Repository` or `SagaRunner` would couple this fixture to
+# constructor signatures it does not check.
+aggregate_codec: AggregateCodec[Account] = AccountCodec()
+event_codec: EventCodec = DepositCodec()
+saga: Saga = OrderSaga()

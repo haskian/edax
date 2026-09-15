@@ -404,35 +404,29 @@ class InsufficientFunds(Exception):
     terminal: ClassVar[bool] = True
 
 
-class RefusingLedger(MemoryIdempotencyStore):
-    """A joining ledger whose compensating writes are refused, as a SQL ledger's are once the
-    handler's own failed statement has aborted the transaction they share. Counts the refusals so a
-    test can prove the guard tried to compensate rather than skipping it."""
+class RefusesToSettle:
+    """Mixin: every compensating write is refused, and counted so a test can prove the guard tried to
+    compensate rather than skipping it. A joining ledger refuses because the handler's own failed
+    statement has already aborted the transaction they share; a ledger of its own refuses because it
+    is unreachable. Same refusal either way, so one mixin serves both bases."""
 
-    def __init__(self, db: MemoryTransactor) -> None:
-        super().__init__(db)
-        self.refusals = 0
+    refusals: int = 0
 
     async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
         self.refusals += 1
-        raise edax.StoreError("current transaction is aborted")
+        raise edax.StoreError("the compensating write was refused")
 
     async def release(self, key: str, tx: Optional[Any] = None) -> None:
         self.refusals += 1
-        raise edax.StoreError("current transaction is aborted")
+        raise edax.StoreError("the compensating write was refused")
 
 
-class ReleaseRefusingSplitLedger(SplitLedger):
-    """A ledger of its own whose ``release`` is refused — the split-store twin of the case above,
-    where no rollback is coming and retention is what frees the key."""
+class RefusingLedger(RefusesToSettle, MemoryIdempotencyStore):
+    """A joining ledger whose compensating writes are refused."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.refusals = 0
 
-    async def release(self, key: str, tx: Optional[Any] = None) -> None:
-        self.refusals += 1
-        raise edax.StoreError("the ledger is unreachable")
+class RefusingSplitLedger(RefusesToSettle, SplitLedger):
+    """The split-store twin, where no rollback is coming and retention is what frees the key."""
 
 
 @dataclass
@@ -474,7 +468,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
     ``max_attempts`` instead of dead-lettering on the first attempt.
     """
     db = MemoryTransactor()
-    ledger: Any = RefusingLedger(db) if case.shared else ReleaseRefusingSplitLedger()
+    ledger: Any = RefusingLedger(db) if case.shared else RefusingSplitLedger()
     runs = 0
 
     async def handler(cmd: Deposit) -> None:

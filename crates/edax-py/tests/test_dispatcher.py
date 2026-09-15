@@ -8,7 +8,7 @@ the dead-letter queue.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import edax
@@ -16,20 +16,6 @@ import pytest
 from conftest import build_envelope, delivered, sequence_of
 from edax._async import maybe_await
 from edax.backend.memory import InMemoryBroker
-
-
-@pytest.fixture
-def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Record the dispatcher's backoff waits instead of paying them. A nack sleeps one step of the
-    kernel's schedule, so a test walking three redeliveries would otherwise spend 700 ms proving
-    arithmetic."""
-    waits: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        waits.append(seconds)
-
-    monkeypatch.setattr(edax.dispatcher, "_sleep", fake_sleep)
-    return waits
 
 
 async def _drive(broker: InMemoryBroker, dispatcher: edax.KeyOrderedDispatcher, polls: int) -> int:
@@ -78,40 +64,6 @@ async def test_transient_dead_letters_after_max_attempts(slept: list[float]) -> 
     assert dead.envelope.aggregate_id == "acct-1"
     await dead.ack()  # settle it: an unacked poll is still outstanding, as on a real broker
     assert dlq.empty()
-
-
-async def test_a_failing_ack_is_logged_as_a_settlement_problem_not_a_handler_failure(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """The handler succeeded, so "event handling failed" names the wrong layer and sends an operator
-    to debug handlers instead of commits — a rebalance or a broker outage produces one such line per
-    delivery. The swallow itself is deliberate (the broker redelivers and an idempotent handler
-    absorbs it), and `on_dead` must not see it: the DLQ would hold a successfully handled event.
-    """
-    dead: list[str] = []
-
-    async def handler(env: edax.EventEnvelope) -> None:
-        return None
-
-    async def failing_ack() -> None:
-        raise edax.StoreError("the partition was revoked")
-
-    dispatcher = edax.KeyOrderedDispatcher(
-        workers=1, handler=handler, on_dead=lambda d, e: dead.append(d.envelope.id)
-    )
-    dispatcher.start()
-    env = build_envelope("acct-1", "Tick", 1)
-    with caplog.at_level("WARNING", logger="edax.dispatcher"):
-        await dispatcher.submit(edax.Delivery(env, failing_ack, lambda: None))
-        await dispatcher._queues[dispatcher._worker_index("acct-1")].join()
-    await dispatcher.stop()
-
-    records = [r for r in caplog.records if r.name == "edax.dispatcher"]
-    assert len(records) == 1, "one line, from the settlement site rather than the worker catch-all"
-    assert "after a successful handler" in records[0].getMessage()
-    assert dead == [], "a handled event must never reach the dead-letter queue"
-    # The bookkeeping below the ack still ran, which the worker's catch-all would have skipped.
-    assert env.id not in dispatcher._attempts and env.id not in dispatcher._contended
 
 
 async def test_on_dead_is_readable_through_the_public_accessor() -> None:
@@ -186,6 +138,11 @@ class SettleCase:
     on_dead_raises: bool
     settled: list[str]  # settlement calls for the first message, in order
     dead: int  # on_dead invocations for the first message
+    # The `edax.dispatcher` lines this branch must log, in order, each as a fragment of the message.
+    # Which layer the message names is the point: an operator sent to debug handlers by a failed
+    # commit, or to debug commits by a failed handler, reads the wrong code for as long as the outage
+    # lasts.
+    want_log: list[str] = field(default_factory=list)
 
 
 @pytest.mark.parametrize(
@@ -194,16 +151,27 @@ class SettleCase:
         pytest.param(SettleCase(None, True, False, False, False, ["ack"], 0), id="sync_handler_is_acked"),
         pytest.param(SettleCase(None, False, True, False, False, [], 0), id="bare_envelope_is_never_settled"),
         pytest.param(
-            SettleCase(None, False, False, True, False, ["ack"], 0),
-            id="ack_raising_is_logged_and_the_worker_continues",
+            SettleCase(None, False, False, True, False, ["ack"], 0, want_log=["after a successful handler"]),
+            id="ack_raising_is_logged_as_a_settlement_problem_and_the_worker_continues",
         ),
         pytest.param(
-            SettleCase(edax.CodecError("terminal"), False, False, False, True, [], 1),
+            SettleCase(
+                edax.CodecError("terminal"),
+                False,
+                False,
+                False,
+                True,
+                [],
+                1,
+                # The dead-letter line names the sink; the catch-all below it names the layer that
+                # failed, which for a Delivery is settlement rather than the handler.
+                want_log=["dead-lettering", "settling a delivery failed"],
+            ),
             id="on_dead_raising_leaves_the_message_unsettled",
         ),
     ],
 )
-async def test_worker_settlement_branches(case: SettleCase) -> None:
+async def test_worker_settlement_branches(case: SettleCase, caplog: pytest.LogCaptureFixture) -> None:
     handled: list[str] = []
     settled: dict[str, list[str]] = {}
     dead: list[str] = []
@@ -242,19 +210,26 @@ async def test_worker_settlement_branches(case: SettleCase) -> None:
     )
     dispatcher.start()
     first = build_envelope("acct-1", "Deposited", 1, data=b'{"amount": 10}')
-    if case.bare_envelope:
-        await dispatcher.submit(first)
-    else:
-        await dispatcher.submit(delivery(first, case.ack_raises))
-    # A healthy second delivery on the same key proves the worker survived whatever the first did.
-    second = build_envelope("acct-1", "Deposited", 2, data=b'{"amount": 5}')
-    await dispatcher.submit(delivery(second, False))
-    await dispatcher.stop()
+    with caplog.at_level("WARNING", logger="edax.dispatcher"):
+        if case.bare_envelope:
+            await dispatcher.submit(first)
+        else:
+            await dispatcher.submit(delivery(first, case.ack_raises))
+        # A healthy second delivery on the same key proves the worker survived whatever the first did.
+        second = build_envelope("acct-1", "Deposited", 2, data=b'{"amount": 5}')
+        await dispatcher.submit(delivery(second, False))
+        await dispatcher.stop()
 
     assert handled == [first.id, second.id]
     assert settled.get(first.id, []) == case.settled
     assert settled[second.id] == ["ack"]
     assert dead.count(first.id) == case.dead
+    logged = [r.getMessage() for r in caplog.records if r.name == "edax.dispatcher"]
+    assert len(logged) == len(case.want_log), logged
+    assert all(want in got for want, got in zip(case.want_log, logged)), logged
+    # Whatever the branch did, the per-envelope bookkeeping below it ran: a raising ack swallowed in
+    # the worker's catch-all instead would leave both maps holding the id forever.
+    assert first.id not in dispatcher._attempts and first.id not in dispatcher._contended
 
 
 # =========================================================================

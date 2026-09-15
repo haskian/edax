@@ -112,28 +112,25 @@ class _ConsumerLoop:
             delivery = await self.poll()
             if delivery is None:
                 return
-            if isinstance(delivery, UndecodableDelivery):
-                try:
-                    await _dead_letter(dispatcher, delivery)
-                except asyncio.CancelledError:
-                    # Same rule as the `submit` branch below: settle what `poll` took before leaving.
-                    await delivery.nack()
-                    raise
-                except Exception:
-                    # The sink failed, not the loop. Same outcome as a raising `on_dead` on the
-                    # dispatcher route: the message stays unsettled, the broker redelivers it on its
-                    # session timeout or a restart, and the sink gets another try. Nacking instead
-                    # would re-read every offset above the poison on a seeking transport, and the
-                    # poison route has no attempt budget to stop it.
-                    logger.exception(
-                        "edax consumer: dead-lettering poison message %s failed; the loop continues",
-                        delivery.envelope.id,
-                    )
-                continue
             try:
-                await dispatcher.submit(delivery)
+                if isinstance(delivery, UndecodableDelivery):
+                    try:
+                        await _dead_letter(dispatcher, delivery)
+                    except Exception:
+                        # The sink failed, not the loop. Same outcome as a raising `on_dead` on the
+                        # dispatcher route: the message stays unsettled, the broker redelivers it on its
+                        # session timeout or a restart, and the sink gets another try. Nacking instead
+                        # would re-read every offset above the poison on a seeking transport, and the
+                        # poison route has no attempt budget to stop it.
+                        logger.exception(
+                            "edax consumer: dead-lettering poison message %s failed; the loop continues",
+                            delivery.envelope.id,
+                        )
+                else:
+                    await dispatcher.submit(delivery)
             except asyncio.CancelledError:
                 # Cancelled after `poll` took the message: settle it, or it stays unsettled until the
-                # broker session times out and the transport's watermark pins on it.
+                # broker session times out and the transport's watermark pins on it. One rule for both
+                # routes, so a change to it cannot land on only one.
                 await delivery.nack()
                 raise

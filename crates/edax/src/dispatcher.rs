@@ -327,9 +327,18 @@ impl Worker {
     /// spin the broker until the claim's TTL expires. Wait one step of the kernel's backoff
     /// schedule, then redeliver without touching the budget.
     fn on_contended(&mut self, id: String, on_nack: Box<dyn FnOnce() + Send>) {
-        let step = self.contended.entry(id).or_insert(0);
-        (self.sleeper)(Duration::from_millis(backoff_millis(*step)));
-        *step += 1;
+        let entry = self.contended.entry(id).or_insert(0);
+        let step = *entry;
+        *entry += 1;
+        self.nack_after_backoff(step, on_nack);
+    }
+
+    /// Wait one step of the kernel's backoff schedule, then nack. Both failure arms wait: nacking at
+    /// once has a handler on a downed dependency spinning the broker as fast as it redelivers, and on a
+    /// seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
+    /// therefore every key routed to it — per-key ordering forbids skipping ahead.
+    fn nack_after_backoff(&self, step: u32, on_nack: Box<dyn FnOnce() + Send>) {
+        (self.sleeper)(Duration::from_millis(backoff_millis(step)));
         run_settler(on_nack);
     }
 
@@ -369,10 +378,7 @@ impl Worker {
                 // the default `max_attempts = 0` an unrecorded attempt is always 1 and the wait a flat
                 // first step. The success path removes the entry either way.
                 self.attempts.insert(id, attempt);
-                // Same rule as `on_contended`: one step of the kernel's schedule before the nack, or a
-                // handler failing on a downed dependency spins the broker as fast as it redelivers.
-                (self.sleeper)(Duration::from_millis(backoff_millis(attempt.saturating_sub(1))));
-                run_settler(on_nack);
+                self.nack_after_backoff(attempt.saturating_sub(1), on_nack);
             }
         }
     }

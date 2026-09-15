@@ -163,7 +163,7 @@ class RunCase:
         # A DLQ outage must not stop the consumer. The poison stays unsettled, exactly as the
         # dispatcher route leaves it, so the broker redelivers and the sink gets another try.
         pytest.param(
-            RunCase(["poison", "d", None], False, [1], ["ack"], True, [], sink_raises=True),
+            RunCase(["poison", "d", None], False, [1], ["ack"], True, [UNDECODABLE], sink_raises=True),
             id="undecodable_with_a_raising_sink_is_left_unsettled_and_the_loop_continues",
         ),
     ],
@@ -188,16 +188,14 @@ async def test_consumer_loop_run_branches(case: RunCase) -> None:
         env = envs.pop(0)
         return edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack"))
 
-    sink_calls = 0
-
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        nonlocal sink_calls
-        sink_calls += 1
         assert isinstance(err, edax.CodecError) and err.terminal
         assert bytes(delivery.envelope.event.data) == POISON_BYTES, "the raw payload must survive"
+        # Recorded before the raise: `dead` is what the sink saw, so it doubles as the call count and
+        # the raising row still proves the sink was reached exactly once.
+        dead.append(delivery.envelope.event.name)
         if case.sink_raises:
             raise edax.StoreError("dead-letter sink unavailable")
-        dead.append(delivery.envelope.event.name)
 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=2,
@@ -221,8 +219,6 @@ async def test_consumer_loop_run_branches(case: RunCase) -> None:
     assert settled == case.settled  # every polled delivery reached settlement
     assert dead == case.dead
     assert task.done() and (not task.cancelled()) is case.returns
-    if case.sink_raises:
-        assert sink_calls == 1, "the sink was tried once and its failure did not end the loop"
 
 
 step = st.tuples(st.integers(0, 2), st.integers(1, 3), st.integers(1, 4))  # (agg, n events, drain limit)

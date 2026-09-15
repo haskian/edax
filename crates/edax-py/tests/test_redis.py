@@ -16,12 +16,21 @@ from edax.backend.redis import (
     _SET_IF_PREFIX,
     AsyncRedisClient,
     RedisIdempotencyStore,
+    _split,
 )
 from edax.command import Record, decode_record
 
 
-def store(conn: Optional[FakeRedis] = None) -> RedisIdempotencyStore:
-    return RedisIdempotencyStore(conn or FakeRedis(), prefix="idem:", ttl_ms=TTL_MS)
+def store(conn: Optional[FakeRedis] = None, claim_ttl_ms: Optional[int] = None) -> RedisIdempotencyStore:
+    """The store under test. ``claim_ttl_ms`` omitted keeps the backend's own default; the takeover
+    tests pass :data:`LAPSES` so the fake's clock can step past a claim without expiring its record."""
+    extra = {} if claim_ttl_ms is None else {"claim_ttl_ms": claim_ttl_ms}
+    return RedisIdempotencyStore(conn or FakeRedis(), prefix="idem:", ttl_ms=TTL_MS, **extra)
+
+
+#: A claim that lapses well inside the record's retention, so a takeover test can step the fake's clock
+#: past the claim without expiring the record it leaves behind.
+LAPSES = TTL_MS // 10
 
 
 # A real dispatch outcome, not a stand-in: the record the middleware caches for a completed command.
@@ -281,12 +290,12 @@ async def test_a_pending_claim_expires_on_the_claim_ttl_not_the_record_ttl() -> 
     ``claim_ttl_ms``, so a worker that dies mid-handler cannot block it for the record's whole
     retention — which is what one shared 24-hour value used to do."""
     conn = FakeRedis()
-    s = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    s = store(conn, claim_ttl_ms=LAPSES)
 
     assert await s.claim("order-7", RECORD.payload_hash) is None  # won, and then the worker dies
-    conn.now_ms += TTL_MS // 10 + 1  # past the claim TTL, far short of the record TTL
+    conn.now_ms += LAPSES + 1  # past the claim TTL, far short of the record TTL
 
-    other = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    other = store(conn, claim_ttl_ms=LAPSES)
     assert await other.claim("order-7", RECORD.payload_hash) is None, "the key is free again"
 
 
@@ -294,15 +303,13 @@ async def test_a_completed_record_outlives_the_claim_ttl() -> None:
     """The converse: once the outcome is recorded it must survive for the dedup window, or a
     redelivery inside that window re-runs the handler instead of replaying."""
     conn = FakeRedis()
-    s = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    s = store(conn, claim_ttl_ms=LAPSES)
 
     await s.claim("order-7", RECORD.payload_hash)
     await s.complete("order-7", RECORD)
-    conn.now_ms += TTL_MS // 10 + 1  # past the claim TTL
+    conn.now_ms += LAPSES + 1  # past the claim TTL
 
-    prior = await RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS).claim(
-        "order-7", RECORD.payload_hash
-    )
+    prior = await store(conn).claim("order-7", RECORD.payload_hash)
     assert prior == RECORD, "the terminal record still replays"
 
 
@@ -312,37 +319,37 @@ async def test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holder(
     carries belongs to a run nobody is waiting for any more — and it must say so rather than
     reporting a success it did not record."""
     conn = FakeRedis()
-    slow = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
-    fast = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    slow = store(conn, claim_ttl_ms=LAPSES)
+    fast = store(conn, claim_ttl_ms=LAPSES)
 
     assert await slow.claim("order-7", RECORD.payload_hash) is None
-    conn.now_ms += TTL_MS // 10 + 1  # the slow worker's claim lapses while it is still working
+    conn.now_ms += LAPSES + 1  # the slow worker's claim lapses while it is still working
     assert await fast.claim("order-7", RECORD.payload_hash) is None, "the second worker takes over"
 
     with pytest.raises(edax.StoreError, match="taken over"):
         await slow.complete("order-7", RECORD)
 
     held = await conn.get("idem:order-7")
-    assert held is not None and decode_record(held.decode()[32:]).pending, "still the new holder's"
+    assert held is not None and decode_record(_split(held)).pending, "still the new holder's"
 
     # And the new holder's own completion still works.
     await fast.complete("order-7", RECORD)
-    assert await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash) == RECORD
+    assert await store(conn).claim("order-7", RECORD.payload_hash) == RECORD
 
 
 async def test_a_worker_that_lost_its_claim_cannot_release_the_new_holders() -> None:
     """The same fence on the delete path, which is the one that silently loses work: an unfenced
     ``DEL`` here frees a key another worker is actively holding, so two handlers run for it."""
     conn = FakeRedis()
-    slow = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
-    fast = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    slow = store(conn, claim_ttl_ms=LAPSES)
+    fast = store(conn, claim_ttl_ms=LAPSES)
 
     await slow.claim("order-7", RECORD.payload_hash)
-    conn.now_ms += TTL_MS // 10 + 1
+    conn.now_ms += LAPSES + 1
     await fast.claim("order-7", RECORD.payload_hash)
 
     await slow.release("order-7")  # the lapsed worker gives up
-    prior = await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash)
+    prior = await store(conn).claim("order-7", RECORD.payload_hash)
     assert prior is not None and prior.pending, "the new holder's claim survived the stale release"
 
 
@@ -367,8 +374,8 @@ async def test_a_failed_release_keeps_the_fence_for_the_retry() -> None:
     no longer holding its token — and the retry then issues an unfenced ``DEL`` that frees whatever
     claim replaced it."""
     conn = FakeRedis()
-    slow = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
-    fast = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    slow = store(conn, claim_ttl_ms=LAPSES)
+    fast = store(conn, claim_ttl_ms=LAPSES)
 
     await slow.claim("order-7", RECORD.payload_hash)
     conn.fail = True
@@ -377,11 +384,11 @@ async def test_a_failed_release_keeps_the_fence_for_the_retry() -> None:
     conn.fail = False
 
     # The claim lapses and another worker takes it over before the release is retried.
-    conn.now_ms += TTL_MS // 10 + 1
+    conn.now_ms += LAPSES + 1
     await fast.claim("order-7", RECORD.payload_hash)
     await slow.release("order-7")
 
-    prior = await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash)
+    prior = await store(conn).claim("order-7", RECORD.payload_hash)
     assert prior is not None and prior.pending, "the retried release deleted the new holder's claim"
 
 
@@ -391,18 +398,18 @@ async def test_a_refused_complete_keeps_the_fence_for_the_compensating_release()
     lapsed worker holding none, and its ``release`` then issues the plain unconditional ``DEL`` that
     deletes the live claim of the worker which took the key over."""
     conn = FakeRedis()
-    slow = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
-    fast = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    slow = store(conn, claim_ttl_ms=LAPSES)
+    fast = store(conn, claim_ttl_ms=LAPSES)
 
     await slow.claim("order-7", RECORD.payload_hash)
-    conn.now_ms += TTL_MS // 10 + 1  # the slow worker's claim lapses while it is still working
-    await fast.claim("order-7", RECORD.payload_hash), "the second worker takes over"
+    conn.now_ms += LAPSES + 1  # the slow worker's claim lapses while it is still working
+    assert await fast.claim("order-7", RECORD.payload_hash) is None, "the second worker takes over"
 
     with pytest.raises(edax.StoreError, match="taken over"):
         await slow.complete("order-7", RECORD)
     await slow.release("order-7")  # what the guard does next
 
-    prior = await RedisIdempotencyStore(conn, prefix="idem:").claim("order-7", RECORD.payload_hash)
+    prior = await store(conn).claim("order-7", RECORD.payload_hash)
     assert prior is not None and prior.pending, "the compensating release deleted the new holder's claim"
     assert "order-7" not in slow._owned, "the token outlived the release that consumed it"
 
@@ -419,12 +426,12 @@ async def test_a_refused_complete_through_the_guard_does_not_free_the_new_holder
         type: ClassVar[str] = "Deposit"
 
     conn = FakeRedis()
-    ledger = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
-    taker = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10)
+    ledger = store(conn, claim_ttl_ms=LAPSES)
+    taker = store(conn, claim_ttl_ms=LAPSES)
 
     async def handler(cmd: Deposit) -> str:
         # The handler outruns its claim, and another worker takes the key over while it still runs.
-        conn.now_ms += TTL_MS // 10 + 1
+        conn.now_ms += LAPSES + 1
         assert await taker.claim(cmd.request_id, RECORD.payload_hash) is None
         return "done"
 
@@ -435,6 +442,6 @@ async def test_a_refused_complete_through_the_guard_does_not_free_the_new_holder
         await bus.dispatch(Deposit("req-A"))
 
     held = await conn.get("idem:req-A")
-    assert held is not None and decode_record(held.decode()[32:]).pending, (
+    assert held is not None and decode_record(_split(held)).pending, (
         "the guard's compensating release deleted the taker's live claim"
     )

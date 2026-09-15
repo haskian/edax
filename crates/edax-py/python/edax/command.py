@@ -136,7 +136,9 @@ class IdempotencyStore(Protocol):
       handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
       cannot block returns the holder's record as pending, reported as :class:`~edax.errors.InProgress`.
     - *Complete / release.* ``complete`` overwrites the key with the terminal record, ``release`` deletes it.
-      Both are idempotent; releasing an absent key is a no-op.
+      Both are idempotent; releasing an absent key is a no-op. A fenced backend that refuses a ``complete``
+      because the claim was taken over must keep its fence: the guard answers a refused ``complete`` with
+      ``release``, and an unfenced ``release`` would then delete the claim that replaced this one.
     - *Retention.* A record must outlive the longest window in which the same key can be redelivered.
     - *Record contents.* ``payload_hash`` is the kernel's unsigned 64-bit hash: store it losslessly, never a
       signed ``BIGINT``; one outside ``0 .. 2**64 - 1`` raises :class:`~edax.errors.CodecError`. ``result``

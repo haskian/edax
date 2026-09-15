@@ -257,19 +257,9 @@ async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
     as a `PayloadMismatch`. Silently: the first one wins.
     """
     c = _MultiPartitionClient([KafkaMsg("t", 0, 0, POISON_BYTES), KafkaMsg("t", 1, 0, POISON_BYTES)])
-    dead: list[str] = []
+    k = KafkaConsumer(c, _SchemaSerializer())
+    # The id is built in `poll`; the test above already pins that a poison delivery reaches `on_dead`
+    # carrying it, so there is nothing a dispatcher and a consumer loop would add here.
+    ids = [delivered(await k.poll()).envelope.id for _ in range(2)]
 
-    async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        dead.append(delivery.envelope.id)
-
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, on_dead=on_dead)
-    dispatcher.start()
-    task = asyncio.create_task(KafkaConsumer(c, _SchemaSerializer()).run(dispatcher))
-    for _ in range(200):  # bounded: a stalled loop must fail the assertion, not hang the suite
-        if len(dead) == 2:
-            break
-        await asyncio.sleep(0.005)
-    task.cancel()
-    await dispatcher.stop()
-
-    assert sorted(dead) == ["t/0/0", "t/1/0"], "one id per partition, not one shared offset"
+    assert ids == ["t/0/0", "t/1/0"], "one id per partition, not one shared offset"

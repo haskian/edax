@@ -13,9 +13,10 @@ import sys
 import types
 from collections import namedtuple
 from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, Optional
+from unittest import mock
 
 import edax
 import pytest
@@ -267,6 +268,30 @@ class FakeRedis:
 # =========================================================================
 # Model-test helpers: envelope comparison, expectation wrapping, a Counter aggregate
 # =========================================================================
+
+
+@contextmanager
+def recorded_backoff() -> Iterator[list[float]]:
+    """Record the dispatcher's backoff waits instead of paying them, yielding the seconds asked for.
+
+    Every nack waits one step of the kernel's schedule, so a test walking three redeliveries would
+    otherwise spend 700 ms proving arithmetic, and a Hypothesis run spends minutes. A context manager
+    rather than only a fixture: Hypothesis rejects a function-scoped fixture on a generated test.
+    """
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    with mock.patch.object(edax.dispatcher, "_sleep", fake_sleep):
+        yield waits
+
+
+@pytest.fixture
+def slept() -> Iterator[list[float]]:
+    """:func:`recorded_backoff` as a fixture, for the tests that do not generate their own cases."""
+    with recorded_backoff() as waits:
+        yield waits
 
 
 def expect(exc: Optional[type[BaseException]], match: Optional[str] = None) -> AbstractContextManager[Any]:
