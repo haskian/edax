@@ -245,12 +245,16 @@ where
             }
             Ok(Err(e)) => {
                 // Terminal failure: cache it so a redelivery replays it. Transient failure: release
-                // the claim so a retry (or redelivery) can re-run the handler.
-                if terminal(&e) {
-                    complete_or_release(store, tx, key, Record::failed(hash, e.to_string())).map_err(lift)?;
+                // the claim so a retry (or redelivery) can re-run the handler. Either write can be
+                // refused — a handle the handler's own failed statement already aborted — and the
+                // handler's error is the verdict the caller and the dispatcher act on, so a refused
+                // compensation is dropped here exactly as the panic arm below drops it. The host's
+                // rollback or the store's retention frees the claim instead.
+                let _ = if terminal(&e) {
+                    complete_or_release(store, tx, key, Record::failed(hash, e.to_string()))
                 } else {
-                    store.release(tx, key).map_err(lift)?;
-                }
+                    store.release(tx, key)
+                };
                 Err(e)
             }
             // A panic is not a value the record can replay, so treat it as transient: release the claim
@@ -1131,5 +1135,75 @@ mod tests {
         assert!(matches!(store_error, crate::Error::Store(m) if m.contains("reach the ledger")), "got {store_error}");
         assert_eq!(releases.get(), 0, "a failed claim must not be compensated");
         assert_eq!(calls.get(), 0, "the handler must not run without a claim");
+    }
+
+    /// A store that takes the claim but refuses to settle it, as a SQL ledger does once the handler's
+    /// own failed statement has aborted the transaction they share.
+    struct SettleFails {
+        inner: MemStore,
+        settles: Arc<Counter>,
+    }
+
+    impl IdempotencyStore<i64> for SettleFails {
+        type Tx = MemoryTx;
+        fn claim(&self, tx: &mut MemoryTx, key: &str, hash: u64) -> Result<Claim<i64>, crate::Error> {
+            self.inner.claim(tx, key, hash)
+        }
+        fn complete(&self, _tx: &mut MemoryTx, _key: &str, _r: Record<i64>) -> Result<(), crate::Error> {
+            self.settles.set(self.settles.get() + 1);
+            Err(crate::Error::Store("current transaction is aborted".into()))
+        }
+        fn release(&self, _tx: &mut MemoryTx, _key: &str) -> Result<(), crate::Error> {
+            self.settles.set(self.settles.get() + 1);
+            Err(crate::Error::Store("current transaction is aborted".into()))
+        }
+    }
+
+    /// A compensation the store refuses must never replace the handler's error. That error is the
+    /// verdict `retry` and the dispatcher branch on, so letting the store's failure through re-types a
+    /// terminal domain error as a transient `Store` one: `retry` re-runs a deterministic failure and a
+    /// dispatcher nacks to `max_attempts` instead of dead-lettering on the first attempt. The panic arm
+    /// of `guarded` already drops a refused release for the same reason.
+    /// `tests/test_unit_of_work.py` pins the same rule for the Python SDK.
+    #[test]
+    fn a_refused_compensation_keeps_the_handlers_error() {
+        for terminal in [true, false] {
+            let settles = Arc::new(Counter::default());
+            let calls = Arc::new(Counter::default());
+            let store: Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync> =
+                Arc::new(SettleFails { inner: MemStore::default(), settles: Arc::clone(&settles) });
+
+            let calls_h = Arc::clone(&calls);
+            let mut bus: CommandBus<Pay, i64> =
+                CommandBus::new().with(idempotent(store, |c: &Pay| Some(c.id.clone())));
+            bus.register(
+                "Pay",
+                Box::new(move |_c: &Pay| {
+                    calls_h.set(calls_h.get() + 1);
+                    // Codec is terminal, Store is transient: the two sides of the verdict.
+                    Err(Box::new(if terminal {
+                        crate::Error::Codec("the payload is malformed".into())
+                    } else {
+                        crate::Error::Store("the downstream service timed out".into())
+                    }) as HandlerError)
+                }),
+            )
+            .unwrap();
+
+            let err = bus.dispatch(&pay("k1", 5)).expect_err("the handler failed");
+            let CommandBusError::Handler(source) = err else { panic!("expected a wrapped failure") };
+            let seen = source.downcast_ref::<crate::Error>().expect("the SDK error survives the box");
+            // The handler's own error, with its own verdict — not the store's refusal.
+            if terminal {
+                assert!(matches!(seen, crate::Error::Codec(m) if m.contains("malformed")), "got {seen}");
+            } else {
+                assert!(matches!(seen, crate::Error::Store(m) if m.contains("timed out")), "got {seen}");
+            }
+            assert_eq!(is_terminal(seen), terminal, "the handler's verdict survived the refusal");
+            assert_eq!(calls.get(), 1, "the handler ran once");
+            // A terminal failure is compensated by `complete`, which falls back to `release` when
+            // refused, so it meets the refusing store twice; a transient failure only releases.
+            assert_eq!(settles.get(), if terminal { 2 } else { 1 }, "the guard did compensate");
+        }
     }
 }

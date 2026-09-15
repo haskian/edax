@@ -255,7 +255,7 @@ Windows outside that table, each pinned elsewhere:
 | the command will not serialize | nothing — `CodecError` is raised before any claim | fails the same way, still without a claim | `test_idempotent_branches[unencodable_payload_is_terminal_before_any_claim]` |
 | `claim` fails | unknown; see below | re-claims. If the insert had landed, `InProgress` until retention frees the key | `test_a_claim_that_raises_is_not_compensated` |
 | `complete` fails after a success | nothing — `_complete_or_release` releases instead | re-runs the handler | `test_idempotent_branches[success_with_failing_complete_releases_the_claim]` |
-| `complete` fails after a terminal failure | nothing — released | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_releases_the_claim]` |
+| `complete` fails after a terminal failure | nothing — released, and the caller sees the handler's error, not the store's | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_shows_the_handlers_verdict]` |
 | the handler's result will not serialize | nothing — terminal and released | re-runs the handler | `test_unserializable_result_is_terminal_and_releases_the_claim` |
 | the dispatch is cancelled mid-handler | nothing — the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
 | the dispatch is cancelled mid-`complete` | nothing — released | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_complete_releases_the_claim]` |
