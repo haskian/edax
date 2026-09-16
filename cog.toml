@@ -18,9 +18,13 @@ skip_ci = "[skip ci]"
 # A bump must rewrite the version literals in the tree, or the tag says 0.1.0 while every artefact
 # still says 0.0.1. `cargo check` re-locks the workspace so `Cargo.lock` lands in the bump commit
 # rather than dirtying the next one.
+#
+# Deliberately not `--locked`: Cargo.lock records the members' own versions, so set_version.py has
+# just made it stale, and `--locked` exists to forbid exactly the update that has to happen here.
+# It failed every bump at the hook, before any tag was cut.
 pre_bump_hooks = [
     "python3 scripts/set_version.py {{version}}",
-    "cargo check --workspace --locked --quiet",
+    "cargo check --workspace --quiet",
 ]
 
 [changelog]
