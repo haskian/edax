@@ -126,11 +126,15 @@ jobs:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      # --no-index: install the artifact just built, never a release from PyPI that happens to
-      # share its version.
+      # msgspec is a runtime dependency, so it has to come from the index. `--no-index` is only
+      # there to stop *edax* resolving to a PyPI release that happens to share this version, so the
+      # dependency is installed first and the wheel install finds it already satisfied. No floor
+      # here: pyproject.toml declares it, and the check is that the wheel's metadata agrees.
       - name: Install the wheel
         shell: bash
-        run: pip install --no-index --find-links dist edax
+        run: |
+          pip install msgspec
+          pip install --no-index --find-links dist edax
       - name: Import it and call the kernel
         shell: bash
         # Exercises the native module, not just the Python package: a wheel whose extension does
@@ -158,10 +162,14 @@ jobs:
         with:
           name: sdist
           path: dist
+      # Installed by path, not by name: that is what guarantees the sdist under test is the one
+      # just built, so the index stays open for the dependencies it needs — maturin to build it
+      # (`--no-index` starved the build backend too) and msgspec to import it. A `.tar.gz` is a
+      # source install by definition, so `--no-binary` says nothing extra.
       - name: Build and install from source
         shell: bash
         run: |
-          pip install --no-index --no-binary :all: --find-links dist edax
+          pip install dist/edax-*.tar.gz
           python -c "import edax; assert edax.backoff_millis(1) == 200; print('sdist ok')"
 
   publish:
