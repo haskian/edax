@@ -1,7 +1,7 @@
 //! Flat, plain-Rust API surface over the edax kernels and adapters.
 //!
 //! This crate holds no logic of its own: every function forwards to a kernel
-//! (`edax-core` / `edax-event` / `edax-cqrs`) or to an adapter (`edax-adapters`),
+//! (`edax-core` / `edax-event` / `edax-cqrs`) or to a backend (`edax-memory`),
 //! reshaping only at the edges so the surface is trivial to bind. alef extracts
 //! these signatures and emits the native binding from them, so the shapes here
 //! are chosen to map cleanly: fallible calls return `Result<_, String>` (the
@@ -72,15 +72,15 @@ pub fn current_timestamp() -> u64 {
 /// malformed JSON, an unknown wire format, undecodable bytes. Without a code a host falls back to a
 /// *transient* store error and retries a failure that repeats identically every time.
 ///
-/// Errors forwarded from `edax-adapters` already carry their own code (`concurrency` / `store` /
+/// Errors forwarded from `edax-memory` already carry their own code (`concurrency` / `store` /
 /// `codec` / `bad_handle`) and must not be tagged again: they cross through [`adapter_error`].
 fn codec_error(cause: impl std::fmt::Display) -> String {
     ErrorCode::Codec.tag(cause)
 }
 
-/// An adapter failure as the wire form. The adapters' typed error renders its own `"<code>: <message>"`
+/// A backend failure as the wire form. The kernel's typed error renders its own `"<code>: <message>"`
 /// through the kernel's tag, so its `Display` is the whole conversion — nothing is added here.
-fn adapter_error(cause: edax_adapters::AdapterError) -> String {
+fn adapter_error(cause: edax_core::AdapterError) -> String {
     cause.to_string()
 }
 
@@ -386,7 +386,7 @@ pub struct SnapshotResult {
 
 /// The token that names no transaction: a write under it lands at once and a read under it sees
 /// committed state only. The host passes it for a call outside any unit of work.
-pub const NO_TX: i64 = edax_adapters::NO_TX;
+pub const NO_TX: i64 = edax_memory::NO_TX;
 
 /// [`NO_TX`] as a call, because the generator binds functions and not constants. A host imports this
 /// instead of restating the value, so the token stays defined in one place.
@@ -405,7 +405,7 @@ pub fn no_tx() -> i64 {
 /// hands one out, every store method takes one, [`commit`](Self::commit) applies that transaction's
 /// writes on every seam atomically and [`rollback`](Self::rollback) drops them. Reads under a token
 /// see the transaction's own staged writes; other tokens and [`NO_TX`] see nothing of it before the
-/// commit. The journal itself lives in `edax-adapters`, so the host SDK keeps no transaction state
+/// commit. The journal itself lives in `edax-memory`, so the host SDK keeps no transaction state
 /// of its own: it holds the token across calls and hands it back. The seams are flattened onto this
 /// one object because the host's four store classes are views over one database, and one object is
 /// the shape the binding can share between them.
@@ -414,7 +414,7 @@ pub fn no_tx() -> i64 {
 /// snapshots cross as their raw `data` bytes; idempotency records, documents, saga state and query
 /// specs cross as JSON text.
 pub struct MemoryTransactor {
-    inner: Arc<edax_adapters::MemoryTransactor>,
+    inner: Arc<edax_memory::MemoryTransactor>,
 }
 
 // Store methods are async so the host awaits every store the same way regardless of backend; the
@@ -568,7 +568,7 @@ impl MemoryTransactor {
 
 /// A fresh in-memory database with every seam behind one transaction boundary.
 pub fn memory_transactor() -> MemoryTransactor {
-    MemoryTransactor { inner: Arc::new(edax_adapters::MemoryTransactor::new()) }
+    MemoryTransactor { inner: Arc::new(edax_memory::MemoryTransactor::new()) }
 }
 
 // ---- in-memory broker --------------------------------------------------
@@ -590,7 +590,7 @@ pub struct PollResult {
 /// cannot cross the binding): the host builds its own delivery whose ack / nack capture the token.
 /// Construct it with [`memory_broker`].
 pub struct MemoryBroker {
-    inner: Arc<edax_adapters::MemoryBroker>,
+    inner: Arc<edax_memory::MemoryBroker>,
 }
 
 // Synchronous, unlike the stores: the host's `empty()` is a synchronous predicate, and the peek is
@@ -606,7 +606,7 @@ impl MemoryBroker {
     pub fn try_poll(&self) -> PollResult {
         match self.inner.try_poll() {
             Some(d) => PollResult { present: true, token: d.token, envelope: record_from_envelope(d.envelope) },
-            None => PollResult { present: false, token: edax_adapters::NO_DELIVERY, envelope: empty_envelope() },
+            None => PollResult { present: false, token: edax_memory::NO_DELIVERY, envelope: empty_envelope() },
         }
     }
 
@@ -643,7 +643,7 @@ fn empty_envelope() -> EventEnvelope {
 
 /// A fresh in-memory broker.
 pub fn memory_broker() -> MemoryBroker {
-    MemoryBroker { inner: Arc::new(edax_adapters::MemoryBroker::new()) }
+    MemoryBroker { inner: Arc::new(edax_memory::MemoryBroker::new()) }
 }
 
 #[cfg(test)]
@@ -1247,7 +1247,7 @@ mod tests {
         // An empty poll is a present-less placeholder, never an error and never a live token.
         let none = broker.try_poll();
         assert!(!none.present);
-        assert_eq!((none.token, none.envelope.id.as_str()), (edax_adapters::NO_DELIVERY, ""));
+        assert_eq!((none.token, none.envelope.id.as_str()), (edax_memory::NO_DELIVERY, ""));
 
         broker.publish(envelope("evt-1", Some(1)));
         broker.publish(envelope("evt-1", Some(1))); // at-least-once: the same envelope republished

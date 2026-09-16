@@ -7,7 +7,7 @@
                                 Relay.drain ─▶ events broker.publish
 
 Same aggregate -> same worker, so the read-modify-write needs no lock. The input is acked only after
-the outbox append (at-least-once). InMemoryBroker is both Producer and Consumer; swap in
+the outbox append (at-least-once). MemoryBroker is both Producer and Consumer; swap in
 edax.backend.kafka over your own client for a real broker, the shape is identical.
 
 Run (from examples/py):
@@ -19,7 +19,7 @@ import json
 from collections import defaultdict
 
 import edax
-from edax.backend.memory import InMemoryBroker, MemoryEventStore
+from edax.backend.memory import MemoryBroker, MemoryEventStore
 
 # acct-a and acct-b each get two deposits; per-aggregate order is what we verify.
 REQUESTS = [("acct-a", 100), ("acct-b", 50), ("acct-a", 25), ("acct-b", 10)]
@@ -37,7 +37,7 @@ def _env(env_id: str, aggregate_id: str, name: str, seq: int, data: bytes) -> ed
     )
 
 
-async def _poll(broker: InMemoryBroker) -> edax.Delivery:
+async def _poll(broker: MemoryBroker) -> edax.Delivery:
     """Next delivery. ``Consumer.poll`` returns ``None`` at end of stream; here every message was
     published a few lines earlier, so ``None`` would mean the broker dropped one."""
     delivery = await broker.poll()
@@ -47,8 +47,8 @@ async def _poll(broker: InMemoryBroker) -> edax.Delivery:
 
 async def main() -> None:
     store = MemoryEventStore()  # emitted domain events + outbox
-    commands = InMemoryBroker()  # input topic
-    events = InMemoryBroker()  # output topic
+    commands = MemoryBroker()  # input topic
+    events = MemoryBroker()  # output topic
 
     # 1. publish input requests (plain producer path, no outbox)
     for i, (agg, amount) in enumerate(REQUESTS, 1):

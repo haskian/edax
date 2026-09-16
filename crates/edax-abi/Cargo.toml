@@ -12,5 +12,5 @@ description = "Flat, plain-Rust API surface over the edax kernels — the source
 edax-core.workspace = true
 edax-event.workspace = true
 edax-cqrs.workspace = true
-edax-adapters.workspace = true
+edax-memory.workspace = true
 serde_json = "1"

@@ -234,5 +234,5 @@ tree.
 - [outbox](../sdk/outbox.md) — outbox rows, `Relay`, `pump`, and where `publish` is called from.
 - [consuming](../sdk/consuming.md) — `KeyOrderedDispatcher`, `EventRouter`, and who calls `ack`.
 - [backends index](./README.md) — the seam contracts and the checklist for writing one.
-- [memory](./memory.md) — `InMemoryBroker`, the same seams with no infrastructure.
+- [memory](./memory.md) — `MemoryBroker`, the same seams with no infrastructure.
 - [delivery guarantees](../guides/delivery-guarantees.md) — the end-to-end guarantee matrix.

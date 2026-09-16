@@ -19,7 +19,7 @@ import edax
 import pytest
 from conftest import FakeKafkaClient, agg_id, build_envelope, delivered, sequence_of
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
-from edax.backend.memory import InMemoryBroker, MemoryEventStore
+from edax.backend.memory import MemoryBroker, MemoryEventStore
 from edax.broker import UNDECODABLE, UndecodableDelivery, _ConsumerLoop
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -33,7 +33,7 @@ class Rig:
 
 
 def _memory() -> Rig:
-    b = InMemoryBroker()
+    b = MemoryBroker()
     return Rig(b.publish, b, b.empty)  # ack is a no-op here: poll already took the message
 
 
@@ -257,7 +257,7 @@ async def test_in_memory_broker_reports_an_unsettled_delivery() -> None:
     Without this the in-memory rig flatters a dispatcher that drops a delivery — it would pass here
     and lose the message against a durable broker, which is the one bug the rig exists to catch.
     """
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
     assert not broker.empty()
 
@@ -272,7 +272,7 @@ async def test_the_same_id_in_flight_twice_needs_two_settlements() -> None:
     """The outbox republishes an envelope after a crash between `publish` and `mark_published`, so
     one id is legitimately in flight twice. Tracking ids in a set would collapse the two into one
     entry and report drained while a delivery is still outstanding."""
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     env = build_envelope(agg_id(0), "Deposited", 1)
     await broker.publish(env)
     await broker.publish(env)  # at-least-once: the same envelope, republished
@@ -289,7 +289,7 @@ async def test_the_same_id_in_flight_twice_needs_two_settlements() -> None:
 async def test_settling_a_delivery_twice_does_not_lose_an_outstanding_one() -> None:
     """A double ack from a buggy caller must not drive the count below what is really in flight,
     or the broker would report drained while another delivery is outstanding."""
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     for seq in (1, 2):
         await broker.publish(build_envelope(agg_id(0), "Deposited", seq))
     first, second = delivered(await broker.poll()), delivered(await broker.poll())
@@ -303,7 +303,7 @@ async def test_settling_a_delivery_twice_does_not_lose_an_outstanding_one() -> N
 
 
 async def test_in_memory_broker_nack_settles_and_requeues() -> None:
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
     delivery = delivered(await broker.poll())
     await delivery.nack()
@@ -316,7 +316,7 @@ async def test_in_memory_broker_nack_settles_and_requeues() -> None:
 async def test_in_memory_broker_poll_parks_until_a_message_arrives(wake: str) -> None:
     """The waiting is the one part Python owns over the native machine: a poll that finds nothing
     must park, and both ways a message can appear (a publish, a nack's requeue) must wake it."""
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     env = build_envelope(agg_id(0), "Deposited", 1)
     held: Optional[edax.Delivery] = None
     if wake == "nack":
@@ -341,7 +341,7 @@ async def test_in_memory_broker_poll_parks_until_a_message_arrives(wake: str) ->
 async def test_in_memory_broker_ack_after_nack_does_not_drop_the_redelivery() -> None:
     """At-least-once: a stale ack of an already-nacked delivery must settle nothing, or the
     requeued copy would vanish before anyone handled it."""
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
     first = delivered(await broker.poll())
     await first.nack()
@@ -372,7 +372,7 @@ async def test_memory_broker_warns_when_the_native_refuses_a_second_settlement(
 ) -> None:
     """The native machine refuses a second settlement of one token and says so with ``False``. The
     refusal is a caller bug, so it is logged rather than dropped."""
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     await broker.publish(build_envelope(agg_id(0), "Tick", 1))
     delivery = await broker.poll()
     assert delivery is not None

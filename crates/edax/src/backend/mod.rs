@@ -3,7 +3,7 @@
 pub mod broker;
 pub mod memory;
 
-pub use broker::InMemoryBroker;
+pub use broker::MemoryBroker;
 pub use memory::{
     MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
 };

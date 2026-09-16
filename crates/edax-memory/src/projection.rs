@@ -3,9 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use edax_core::AdapterError;
 use serde_json::Value;
 
-use crate::error::{codec_error, AdapterError};
 use crate::tx::{held_by_other, lock, store_view, versioned_row, Document, MemoryState, MemoryTransactor};
 
 /// In-memory `ProjectionStore` implementation for development and tests: read-model documents keyed
@@ -36,7 +36,7 @@ impl MemoryProjectionStore {
         // Parsed as an object, not any JSON value: [`get_many`](Self::get_many) injects the row key as
         // an `"id"` field, so a scalar or array document could be saved and then never queried. Reject
         // it at the write, where the caller can still fix it.
-        let doc: Document = serde_json::from_str(document_json).map_err(codec_error)?;
+        let doc: Document = serde_json::from_str(document_json).map_err(AdapterError::codec)?;
         lock(&self.state).write(tx, |committed, others, own| {
             if let Some((stored, _)) = held_by_other(others, |set| set.projections.get(id)) {
                 return Err(AdapterError::Concurrency { expected: version, stored: *stored });
@@ -76,11 +76,11 @@ impl MemoryProjectionStore {
                 })
                 .collect()
         })?;
-        let docs_bytes = serde_json::to_vec(&docs).map_err(codec_error)?;
+        let docs_bytes = serde_json::to_vec(&docs).map_err(AdapterError::codec)?;
         // A malformed query spec (or cursor) is a marshaling failure, so it carries the `codec` code:
         // unprefixed it would fall back to the host's transient store error and be retried forever.
-        let out = edax_event::query::query_json(query_json.as_bytes(), &docs_bytes).map_err(codec_error)?;
-        String::from_utf8(out).map_err(codec_error)
+        let out = edax_event::query::query_json(query_json.as_bytes(), &docs_bytes).map_err(AdapterError::codec)?;
+        String::from_utf8(out).map_err(AdapterError::codec)
     }
 }
 

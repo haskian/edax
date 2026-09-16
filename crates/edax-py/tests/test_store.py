@@ -16,7 +16,7 @@ from edax.store import ConcurrencyError
 
 
 def _repo() -> tuple[MemoryEventStore, edax.Repository[Counter]]:
-    store = MemoryEventStore()  # the shipped store, shared with every SDK via edax-adapters
+    store = MemoryEventStore()  # the shipped store, shared with every SDK via edax-memory
     return store, counter_repo(store, iter(range(1, 10_000)))
 
 

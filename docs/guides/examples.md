@@ -199,7 +199,7 @@ The transactional outbox end to end on the in-memory broker. Consume an input to
 operation. Append the domain event inside a transaction. Relay the outbox to an output topic. Read
 that topic back to verify.
 
-Seams wired: `Producer` and `Consumer` (`InMemoryBroker` is both), `EventStore` with its outbox
+Seams wired: `Producer` and `Consumer` (`MemoryBroker` is both), `EventStore` with its outbox
 (`MemoryEventStore`), `KeyOrderedDispatcher`, `transaction`, and `Relay`. The input delivery is acked
 only after the append, which is what makes the pipeline at-least-once rather than lossy.
 
@@ -341,7 +341,7 @@ durable backends are exercised by their own test suites, not from here.
 ## No broker example
 
 There is no Kafka example, and nothing here needs a broker running. `outbox.py` runs the full
-publish-and-consume shape over `InMemoryBroker`, and notes that `edax.backend.kafka` over your own
+publish-and-consume shape over `MemoryBroker`, and notes that `edax.backend.kafka` over your own
 client replaces it with no other change (`examples/py/outbox.py:10`). The adapters live at
 `crates/edax-py/python/edax/backend/kafka.py` and are covered by
 `crates/edax-py/tests/test_kafka.py` and the broker contract suite; see

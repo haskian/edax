@@ -1,10 +1,10 @@
 [package]
-name = "edax-adapters"
+name = "edax-memory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Concrete in-memory backend adapters for the edax seams"
+description = "In-memory stores and broker for the edax seams, shared by every SDK"
 
 [dependencies]
 edax-core = { workspace = true }

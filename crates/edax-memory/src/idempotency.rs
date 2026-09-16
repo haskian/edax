@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use edax_core::AdapterError;
 use serde_json::Value;
 
-use crate::error::{codec_error, AdapterError};
 use crate::tx::{held_by_other, lock, store_view, MemoryState, MemoryTransactor, WriteSet};
 
 /// In-memory idempotency store for development and tests: claim / complete / release over the
@@ -60,7 +60,7 @@ impl MemoryIdempotencyStore {
     /// over a `u64` never is, or if `tx` names no open transaction.
     pub fn claim(&self, tx: i64, key: &str, payload_hash: u64) -> Result<Option<Vec<u8>>, AdapterError> {
         let pending = edax_cqrs::Record::<Value>::pending(payload_hash);
-        let bytes = edax_cqrs::encode_record(&pending).map_err(codec_error)?;
+        let bytes = edax_cqrs::encode_record(&pending).map_err(AdapterError::codec)?;
         lock(&self.state).write(tx, |committed, others, own| {
             // A key another open transaction holds reads as pending; the committed record decides
             // once the holder ends.

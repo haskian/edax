@@ -318,5 +318,5 @@ elsewhere. An unbounded queue plus a slow handler grows memory without limit.
 - [outbox.md](./outbox.md) — the other end of the wire, where a `Relay` publishes what is consumed
   here.
 - [../backends/kafka.md](../backends/kafka.md) — the watermark commit and the seek-on-nack rules.
-- [../backends/memory.md](../backends/memory.md) — `InMemoryBroker`, the rig these tests drive.
+- [../backends/memory.md](../backends/memory.md) — `MemoryBroker`, the rig these tests drive.
 - [../guides/delivery-guarantees.md](../guides/delivery-guarantees.md) — the end-to-end matrix.

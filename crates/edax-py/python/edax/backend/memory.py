@@ -4,7 +4,7 @@
 stores are Python views over it. A store built with no transactor gets a database of its own; stores built
 over one transactor share it, so their writes under one ``tx`` commit or roll back together. The maps, the
 concurrency checks, the outbox, the atomic claim, the journal and the broker's settlement accounting live in
-the native ``edax-adapters`` crate, shared by every SDK; Python holds only the transaction's token. The
+the native ``edax-memory`` crate, shared by every SDK; Python holds only the transaction's token. The
 native objects are ``unsendable``: do not share one across OS threads."""
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from ..saga import SagaInstance
 from ..store import Snapshot, Tx, current_tx
 
 __all__ = [
-    "InMemoryBroker",
+    "MemoryBroker",
     "MemoryEventStore",
     "MemoryIdempotencyStore",
     "MemoryProjectionStore",
@@ -106,8 +106,8 @@ class MemoryTransactor:
         if isinstance(tx, MemoryTx) and tx.transactor is self:
             return tx.token
         # `BadHandle`, not `StoreError`: the same handle fails the same way on every retry, so a
-        # transient verdict would have a host redeliver a wiring mistake forever. The Rust adapter
-        # refuses an unknown token with the same terminal code (`edax_adapters::unknown_tx`).
+        # transient verdict would have a host redeliver a wiring mistake forever. The Rust store
+        # refuses an unknown token with the same terminal code (`edax_memory::unknown_tx`).
         raise BadHandle(
             f"tx {tx!r} is not a transaction of this MemoryTransactor: build every memory store "
             "that must commit together over one MemoryTransactor"
@@ -293,7 +293,7 @@ class MemorySagaStore:
             await self._transactor._inner.delete_saga(self._transactor.token(tx), id, version)
 
 
-class InMemoryBroker(_ConsumerLoop):
+class MemoryBroker(_ConsumerLoop):
     """Both :class:`~edax.broker.Producer` and :class:`~edax.broker.Consumer` over the native broker state
     machine, so ``Relay(store, broker.publish)`` and ``broker.run(dispatcher)`` talk without a broker.
     ``publish`` returns once the envelope is queued; FIFO gives per-key order; ``nack`` re-queues at the

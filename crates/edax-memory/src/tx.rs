@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use edax_core::AdapterError;
 use serde_json::{Map, Value};
 
-use crate::error::{codec_error, AdapterError};
 use crate::event::{MemoryEventStore, Snapshot};
 use crate::idempotency::MemoryIdempotencyStore;
 use crate::projection::MemoryProjectionStore;
@@ -25,7 +25,7 @@ pub(crate) fn versioned_row(id: &str, version: i64, payload_key: &str, payload: 
         ("version".to_owned(), Value::Number(version.into())),
         (payload_key.to_owned(), payload),
     ]));
-    serde_json::to_string(&row).map_err(codec_error)
+    serde_json::to_string(&row).map_err(AdapterError::codec)
 }
 
 /// Lock a store's state, recovering from poisoning instead of panicking.

@@ -20,7 +20,7 @@ pub mod hash;
 
 pub use backoff::backoff_millis;
 pub use clock::current_timestamp;
-pub use error::ErrorCode;
+pub use error::{AdapterError, ErrorCode};
 pub use filter::{eval, eval_json, Filter, Operator};
 pub use guid::guid;
 pub use hash::{fnv1a32, fnv1a64};

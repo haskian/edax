@@ -3,7 +3,7 @@ terminal short-circuit, and the ``on_dead`` hook.
 
 Drives an in-memory broker into the dispatcher pool one delivery at a time, waiting for the worker to
 settle each (ack or nack, hence redelivery) before the next poll, so the sequence is deterministic.
-Nacks are counted via a wrapper on ``Delivery.on_nack``; a second :class:`InMemoryBroker` stands in as
+Nacks are counted via a wrapper on ``Delivery.on_nack``; a second :class:`MemoryBroker` stands in as
 the dead-letter queue.
 """
 
@@ -15,10 +15,10 @@ import edax
 import pytest
 from conftest import assert_logged, build_envelope, delivered, sequence_of
 from edax._async import maybe_await
-from edax.backend.memory import InMemoryBroker
+from edax.backend.memory import MemoryBroker
 
 
-async def _drive(broker: InMemoryBroker, dispatcher: edax.KeyOrderedDispatcher, polls: int) -> int:
+async def _drive(broker: MemoryBroker, dispatcher: edax.KeyOrderedDispatcher, polls: int) -> int:
     """Poll ``polls`` times; wrap each delivery's ``on_nack`` to count it; submit and wait for the
     worker to settle before the next poll. Returns the nack count. (Tests use one worker, so the lone
     queue is ``_queues[_worker_index(...)]``.)"""
@@ -42,7 +42,7 @@ async def _drive(broker: InMemoryBroker, dispatcher: edax.KeyOrderedDispatcher, 
 
 
 async def test_transient_dead_letters_after_max_attempts(slept: list[float]) -> None:
-    broker, dlq = InMemoryBroker(), InMemoryBroker()
+    broker, dlq = MemoryBroker(), MemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
     async def handler(env: edax.EventEnvelope) -> None:
@@ -81,7 +81,7 @@ async def test_on_dead_is_readable_through_the_public_accessor() -> None:
 
 
 async def test_terminal_dead_letters_on_first_failure(slept: list[float]) -> None:
-    broker, dlq = InMemoryBroker(), InMemoryBroker()
+    broker, dlq = MemoryBroker(), MemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
     async def handler(env: edax.EventEnvelope) -> None:
@@ -102,7 +102,7 @@ async def test_terminal_dead_letters_on_first_failure(slept: list[float]) -> Non
 
 
 async def test_default_nacks_forever_and_never_dead_letters(slept: list[float]) -> None:
-    broker, dlq = InMemoryBroker(), InMemoryBroker()
+    broker, dlq = MemoryBroker(), MemoryBroker()
     await broker.publish(build_envelope("acct-1", "Boom", 1))
 
     async def handler(env: edax.EventEnvelope) -> None:

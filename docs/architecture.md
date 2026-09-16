@@ -64,7 +64,7 @@ flowchart LR
     core["edax-core<br/>primitives"]
     event["edax-event<br/>event kernel"]
     cqrs["edax-cqrs<br/>command kernel"]
-    adapters["edax-adapters<br/>in-memory stores"]
+    memory["edax-memory<br/>in-memory stores"]
     abi["edax-abi<br/>flat surface"]
     rust["crates/edax<br/>Rust SDK"]
     py["crates/edax-py<br/>Python binding"]
@@ -72,17 +72,17 @@ flowchart LR
 
     event --> core
     cqrs --> core
-    adapters --> core
-    adapters --> event
-    adapters --> cqrs
+    memory --> core
+    memory --> event
+    memory --> cqrs
     rust --> core
     rust --> event
     rust --> cqrs
-    rust --> adapters
+    rust --> memory
     abi --> core
     abi --> event
     abi --> cqrs
-    abi --> adapters
+    abi --> memory
     py --> abi
     golden -.->|"dev-dependency only"| event
 ```
@@ -92,13 +92,13 @@ flowchart LR
 | `edax-core` | hashing, backoff, the filter abstract syntax tree (AST) and evaluator, the error taxonomy, `guid`, `current_timestamp` |
 | `edax-event` | partition, codec, query, upcast, causation, dedup, the envelope shape |
 | `edax-cqrs` | canonical JSON, payload hash, command hash, the idempotency record and decision |
-| `edax-adapters` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
-| `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and adapters, holding no logic of its own |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
+| `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
 | `edax-golden` | the golden-vector harness, one writer and one reader for every kernel |
 
-`edax-adapters` needs a longer explanation. Both SDKs' in-memory backends are views over it, so the
+`edax-memory` needs a longer explanation. Both SDKs' in-memory backends are views over it, so the
 staging, the optimistic-concurrency checks and the transaction boundary are one implementation, not
 two that drift.
 
@@ -108,7 +108,7 @@ The Python native module is generated. The Python package is not.
 
 ```mermaid
 flowchart LR
-    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-adapters"] --> ABI["crates/edax-abi/src/lib.rs<br/>hand-written flat surface"]
+    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory"] --> ABI["crates/edax-abi/src/lib.rs<br/>hand-written flat surface"]
     ABI -->|"alef generate --lang python --clean"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
     ABI -->|"alef"| STUB["python/edax/_edax.pyi<br/>generated type stub, shipped"]
     GEN -->|"maturin develop"| SO["_edax native module"]

@@ -284,8 +284,8 @@ picked up from the ambient contextvar. The message names the fix: build every me
 commit together over one `MemoryTransactor`.
 
 `BadHandle` is **terminal**. The same handle fails the same way on every retry. A transient verdict
-would have the dispatcher redeliver a wiring mistake forever. The Rust adapter refuses an unknown
-transaction token with the same code (`edax_adapters::unknown_tx`), so both SDKs give a misrouted
+would have the dispatcher redeliver a wiring mistake forever. The Rust store refuses an unknown
+transaction token with the same code (`edax_memory::unknown_tx`), so both SDKs give a misrouted
 handle one verdict. See [errors.md](./errors.md).
 
 **Nesting is refused.** The SDK never opens a second unit of work inside an open one, and neither may

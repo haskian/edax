@@ -66,7 +66,7 @@ Run **both**. `cargo test` alone misses binding regressions; `pytest` alone miss
 ## The stale native module trap
 
 `pytest` never rebuilds `_edax`. It imports the `.so` that is already installed in the venv. Change
-anything under `edax-core`, `edax-event`, `edax-cqrs`, `edax-adapters` or `edax-abi` and run
+anything under `edax-core`, `edax-event`, `edax-cqrs`, `edax-memory` or `edax-abi` and run
 `pytest` without rebuilding, and the suite tests the *previously compiled* kernel: it passes green
 and proves nothing.
 
@@ -290,14 +290,14 @@ flowchart LR
         K2["edax-event"]
         K3["edax-cqrs"]
     end
-    ADP["edax-adapters<br/>in-memory backends"]
+    MEM["edax-memory<br/>in-memory backends"]
     ABI["crates/edax-abi/src/lib.rs<br/>flat plain-Rust surface<br/>HAND-WRITTEN"]
     GEN["crates/edax-py/src/lib.rs<br/>pyo3 module<br/>ALEF-GENERATED"]
     SO["_edax native module<br/>crates/edax-py/python/edax/_edax.abi3.so"]
     PKG["crates/edax-py/python/edax/<br/>the SDK<br/>HAND-WRITTEN"]
 
     kernels -->|"forwarded, never re-derived"| ABI
-    ADP -->|"forwarded"| ABI
+    MEM -->|"forwarded"| ABI
     ABI -->|"alef generate --lang python --clean"| GEN
     GEN -->|"maturin develop"| SO
     SO -->|"from . import _edax"| PKG

@@ -18,7 +18,7 @@ orchestration differs where the language does. This page is the one home for tho
 | transaction | `Transactor`, `transaction` | `Transactor`, `transaction`, `current_tx` |
 | host-called kernel decisions | `should_apply`, `originate`, `propagate`, `guid` | the same, plus `partition`, `rendezvous`, `payload_hash`, `upcast_plan`, `backoff_millis` |
 | guard owning the transaction | not implemented; the host publishes a handle provider to the `_in` form | `unit_of_work=` on both guards |
-| backends | in-memory, plus `InMemoryBroker` | in-memory, Redis, Kafka |
+| backends | in-memory, plus `MemoryBroker` | in-memory, Redis, Kafka |
 | concurrency | synchronous; dispatcher workers are operating-system threads | `asyncio`; workers are tasks |
 
 ## Codecs
@@ -87,7 +87,7 @@ shared across worker threads. The saga-to-command topology compiles.
 There is no Rust equivalent of Python's `unit_of_work=`. There is no `joins_transaction` and no
 one-commit guard. Two reasons:
 
-- No durable Rust backend ships. `crates/edax-adapters` holds in-memory stores only. Redis and Kafka
+- No durable Rust backend ships. `crates/edax-memory` holds in-memory stores only. Redis and Kafka
   backends live in the Python SDK. The two-commit split that `joins_transaction` describes has no
   Rust backend to describe.
 - The dispatcher spawns worker threads that share one handler. A guard that opened a transaction

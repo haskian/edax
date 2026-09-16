@@ -146,7 +146,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-event` | event-sourcing kernel: partition, codec, query, upcast, causation, dedup |
 | `crates/edax-cqrs` | command-side kernel: canonical bytes, payload hash, idempotency decision |
 | `crates/edax` | reference Rust SDK: aggregates, stores, `CommandBus`, dispatcher, saga |
-| `crates/edax-adapters` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `examples/py` | runnable walkthroughs |

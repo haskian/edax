@@ -121,7 +121,7 @@ The Rust SDK declares the same seams as traits: `Transactor`, `EventStore: Trans
   store that needs none uses `()`. Python has no such type, so a ledger declares `joins_transaction`
   instead.
 - There is no `Producer` / `Consumer` trait in Rust. The broker seam is the Python SDK's; the Rust
-  SDK ships only `InMemoryBroker` for dev and tests.
+  SDK ships only `MemoryBroker` for dev and tests.
 
 ## The seams and the backends that implement them today
 
@@ -177,8 +177,8 @@ classDiagram
         +poll()
         +run()
     }
-    Producer <|.. InMemoryBroker : memory
-    Consumer <|.. InMemoryBroker : memory
+    Producer <|.. MemoryBroker : memory
+    Consumer <|.. MemoryBroker : memory
     Producer <|.. KafkaProducer : kafka
     Consumer <|.. KafkaConsumer : kafka
 ```

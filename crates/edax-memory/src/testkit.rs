@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::AdapterError;
+use edax_core::AdapterError;
 
 /// One realistic envelope; every case overrides only the field under test.
 pub(crate) fn envelope(id: &str, sequence: Option<u64>) -> edax_event::EventEnvelope {

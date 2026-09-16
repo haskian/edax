@@ -77,6 +77,6 @@ Shape these at the `edax-abi` surface, never by hand-editing the generated `src/
 Run **both** the kernel tests and the Python tests — `cargo test` alone misses binding regressions.
 
 `pytest` does **not** rebuild the native module. After any change under `edax-core`, `edax-event`,
-`edax-cqrs`, `edax-adapters` or `edax-abi`, run `maturin develop` first or the Python suite passes
+`edax-cqrs`, `edax-memory` or `edax-abi`, run `maturin develop` first or the Python suite passes
 green against the previously compiled kernel and proves nothing. CI does this in the right order
 (`.github/workflows/python.yml`).
