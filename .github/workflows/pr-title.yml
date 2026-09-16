@@ -43,4 +43,10 @@ jobs:
       - name: Verify the PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: mise exec aqua:cocogitto/cocogitto -- cog verify "$PR_TITLE"
+        run: |
+          # cog reads user.name to attribute the message it prints, and panics outright when git
+          # has none — which a fresh runner never does. The value is cosmetic; only its absence
+          # matters, and the panic reads as a bad title rather than a missing config.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mise exec aqua:cocogitto/cocogitto -- cog verify "$PR_TITLE"
