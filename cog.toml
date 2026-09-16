@@ -1,5 +1,5 @@
-# Conventional-commit versioning. `cog bump --auto` reads the commits since the last tag,
-# picks the SemVer bump they imply, writes CHANGELOG.md and creates the tag.
+# Conventional-commit versioning. `cog bump` writes CHANGELOG.md and creates the tag; which
+# increment it is handed comes from version.yml, not from `--auto`. The policy is in AGENTS.md.
 
 # `v`-prefixed, because release.yml triggers on `v*`.
 tag_prefix = "v"
@@ -29,3 +29,8 @@ template = "remote"
 remote = "github.com"
 owner = "crtomirmajer"
 repository = "edax"
+
+# `versionbump!` is how a major is cut (see AGENTS.md). It has to be declared: cog refuses an
+# unregistered type outright, and its grammar rejects a hyphen, so `version-bump!` cannot parse.
+[commit_types]
+versionbump = { changelog_title = "Major version bump" }

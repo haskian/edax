@@ -10,18 +10,49 @@ on:
   # GitHub does not start a workflow from a ref pushed with GITHUB_TOKEN, so a bump would
   # tag the release and then publish nothing.
   workflow_call:
+    inputs:
+      ref:
+        description: Tag to build, e.g. `v0.1.0`.
+        type: string
+        required: true
 
 permissions:
   contents: read
+
+# `github.ref_name` on a tag push; the input when version.yml calls this, because a called workflow
+# inherits the caller's `github` context — there, the caller's SHA is the commit *before* the bump
+# commit that set_version.py wrote.
+env:
+  BUILD_REF: ${{ inputs.ref || github.ref_name }}
 
 jobs:
   # Publishing an artifact that fails its own test suite is not worth the convenience.
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # A wheel whose version disagrees with its tag cannot be unpublished — PyPI refuses to reuse a
+  # filename even after a delete. The tree is what decides that version (maturin reads the Cargo
+  # version; pyproject.toml declares it dynamic), so the tree is what gets checked, before the
+  # matrix runs. Catches a hand-pushed tag, which never ran scripts/set_version.py.
+  version:
+    name: Tag matches the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
+      - run: |
+          set -euo pipefail
+          declared="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')"
+          if [ "$declared" != "${BUILD_REF#v}" ]; then
+            echo "::error::$BUILD_REF was cut from a tree declaring $declared — run the bump, do not tag by hand"
+            exit 1
+          fi
+          echo "$BUILD_REF matches the tree"
+
   wheels:
     name: Wheel (${{ matrix.name }})
-    needs: ci
+    needs: [ci, version]
     runs-on: ${{ matrix.runs-on }}
     strategy:
       # One unsupported platform must not cancel the wheels that did build.
@@ -40,6 +71,8 @@ jobs:
           - { name: windows-x64, runs-on: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
       # Not ./.github/actions/setup: maturin-action owns the toolchain here, because it has to
       # cross-compile and to run inside the manylinux container. It reads rust-toolchain.toml.
       - uses: PyO3/maturin-action@v1
@@ -57,10 +90,12 @@ jobs:
 
   sdist:
     name: Source distribution
-    needs: ci
+    needs: [ci, version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BUILD_REF }}
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
@@ -83,7 +118,6 @@ jobs:
         runs-on: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.9", "3.13"]
     steps:
-      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}

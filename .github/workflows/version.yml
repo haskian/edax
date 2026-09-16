@@ -6,6 +6,10 @@ name: Version
 # Requires main to accept pushes from github-actions[bot] — either a bot bypass on the branch
 # protection rule, or an unprotected main. Without it the bump commit cannot land and the job
 # fails at the push, not at the bump.
+#
+# Requires merges to stay squash-only as well. That is what makes one commit on main equal one PR
+# title, so the title CI verified is the subject the increment is read from. A merge or rebase
+# merge puts unverified subjects on main.
 on:
   push:
     branches: [main]
@@ -31,9 +35,9 @@ jobs:
           fetch-depth: 0 # cog reads every commit back to the last tag
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: ./.github/actions/setup
-
-      - id: bump
+      # Which increment the commits imply is pure git, so it is decided before the toolchain is
+      # installed: roughly two pushes in five imply no release, and those pay nothing.
+      - id: increment
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -46,17 +50,50 @@ jobs:
             git push origin v0.0.0
           fi
 
-          # Non-zero means the commits since the last tag imply no release (docs, chore, ci).
-          # That is the ordinary case, not a failure.
-          if mise exec -- cog bump --auto --skip-ci; then
-            git push origin HEAD:main
-            git push origin --tags
-            echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "version=$(git describe --tags --abbrev=0 --match='v[0-9]*')" >> "$GITHUB_OUTPUT"
-          else
+          # Chosen here rather than by `cog bump --auto`, which majors on any `feat!` or
+          # `BREAKING CHANGE:` footer. The policy in AGENTS.md is narrower: only `versionbump!`
+          # cuts a major, and everything else is capped at minor however breaking it claims to be.
+          #
+          # Subjects, because merges are squash-only: one commit on main is one PR title, the same
+          # string the PR-title check verified. Merge commits carry no type of their own.
+          subjects="$(git log --no-merges --format=%s "$(git describe --tags --abbrev=0)..HEAD")"
+          marked='(\([^)]*\))?'    # optional scope, shared by all three so the grammar is written once
+
+          # A `versionbump:` that forgot its `!` means a major was intended. Silently shipping
+          # "no release" would leave the break untagged, so it is an error rather than a miss.
+          if grep -qE "^versionbump$marked:" <<<"$subjects"; then
+            echo "::error title=Missing \`!\`::A major is spelled \`versionbump!:\`. Retag the commit or amend the subject."
+            exit 1
+          fi
+
+          if   grep -qE "^versionbump$marked!:" <<<"$subjects"; then increment=--major
+          elif grep -qE "^feat$marked!?:"       <<<"$subjects"; then increment=--minor
+          elif grep -qE "^fix$marked!?:"        <<<"$subjects"; then increment=--patch
+          else increment=""
+          fi
+          echo "increment=$increment" >> "$GITHUB_OUTPUT"
+
+      - if: steps.increment.outputs.increment != ''
+        uses: ./.github/actions/setup
+
+      # No release-worthy commit since the last tag (docs, chore, ci, refactor, perf) is the
+      # ordinary case, not a failure — and cog's exit code cannot report it, because cog exits 0
+      # whether it bumped or not.
+      - id: bump
+        env:
+          INCREMENT: ${{ steps.increment.outputs.increment }}
+        run: |
+          set -euo pipefail
+          if [ -z "$INCREMENT" ]; then
             echo "released=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=No release::No commit since the last tag implies a version bump."
+            exit 0
           fi
+          mise exec -- cog bump "$INCREMENT" --skip-ci
+          git push origin HEAD:main
+          git push origin --tags
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "version=v$(mise exec -- cog get-version)" >> "$GITHUB_OUTPUT"
 
   # Same jobs a manually pushed `v*` tag would run: CI, wheels, then PyPI behind the `pypi`
   # environment. Called rather than triggered — see the note on release.yml's workflow_call.
@@ -70,4 +107,8 @@ jobs:
       contents: read
       id-token: write
     uses: ./.github/workflows/release.yml
+    # The tag, not the branch: the called workflow inherits this job's SHA, which is the commit
+    # before the bump, and would otherwise build and publish the previous version's tree.
+    with:
+      ref: ${{ needs.bump.outputs.version }}
     secrets: inherit
