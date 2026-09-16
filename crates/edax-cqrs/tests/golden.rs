@@ -1,6 +1,9 @@
-//! Golden vectors for the command-side kernel. Every binding's test suite reads the same files.
+//! Golden vectors for the command-and-query kernel — both the command side (canonical bytes,
+//! hashes, the idempotency decision and record) and the query side (filter, sort, cursors). Every
+//! binding's test suite reads the same files.
 //! Regenerate after an intentional change: `EDAX_REGEN=1 cargo test -p edax-cqrs --test golden`.
 
+use edax_cqrs::query::{decode_cursor, effective_sort, encode_cursor, query_json, SortKey};
 use edax_cqrs::{
     canonical_json, command_hash, decide, decode_record, encode_record, outcome, payload_hash, Record, State,
 };
@@ -193,8 +196,160 @@ fn idempotency_record_cases() -> Vec<Value> {
         .collect()
 }
 
+fn filter_cases() -> Vec<Value> {
+    use edax_cqrs::filter::{and, contains, eq, exists, gt, gte, is_in, lt, lte, ne, not, or, starts_with};
+    let cases: Vec<(edax_cqrs::Filter, Value)> = vec![
+        (eq("status", json!("open")), json!({"status": "open"})),
+        (eq("status", json!("open")), json!({"status": "closed"})),
+        (ne("status", json!("closed")), json!({"status": "open"})),
+        (ne("status", json!("x")), json!({})), // missing path -> false
+        (not(eq("status", json!("x"))), json!({})), // missing path -> true
+        (gt("total", json!(4200)), json!({"total": 5000})),
+        (gt("total", json!(4200)), json!({"total": 100})),
+        (gt("total", json!(4200)), json!({"total": "5000"})), // cross-type -> false
+        (eq("n", json!(1.0)), json!({"n": 1})), // numeric equality (1 == 1.0)
+        (is_in("status", vec![json!("open"), json!("closed")]), json!({"status": "open"})),
+        (is_in("status", vec![json!("a")]), json!({"status": "open"})),
+        (is_in("status", vec![json!("a")]), json!({})), // missing path -> false
+        (exists("p", true), json!({"p": 1})),
+        (exists("p", true), json!({"p": null})), // null is not present
+        (exists("p", false), json!({})), // missing -> complement true
+        (eq("address.city", json!("NYC")), json!({"address": {"city": "NYC"}})),
+        (eq("address.zip", json!("x")), json!({"address": {"city": "NYC"}})),
+        (
+            and(vec![eq("status", json!("open")), gt("total", json!(4200))]),
+            json!({"status": "open", "total": 5000}),
+        ),
+        (
+            and(vec![eq("status", json!("open")), gt("total", json!(9999))]),
+            json!({"status": "open", "total": 5000}),
+        ),
+        (
+            or(vec![eq("status", json!("closed")), gt("total", json!(4200))]),
+            json!({"status": "open", "total": 5000}),
+        ),
+        (gte("total", json!(5000)), json!({"total": 5000})),
+        (lt("name", json!("z")), json!({"name": "m"})),
+        (starts_with("sku", json!("INV-")), json!({"sku": "INV-2024-01"})),
+        (starts_with("sku", json!("ORD-")), json!({"sku": "INV-2024-01"})),
+        (starts_with("n", json!("5")), json!({"n": 5})), // non-string -> false
+        (contains("tags", json!("eu")), json!({"tags": ["paid", "eu"]})),
+        (contains("tags", json!("usd")), json!({"tags": ["paid", "eu"]})),
+        (contains("tags", json!("eu")), json!({"tags": "eu"})), // not an array -> false
+        (eq("a.b", json!("x")), json!({"a": 5})), // path descends through a non-object segment -> false
+        (lte("total", json!(5000)), json!({"total": 5000})), // <= at the equality boundary -> true
+        (and(vec![]), json!({})), // vacuous true
+        (or(vec![]), json!({})),  // vacuous false
+    ];
+    cases
+        .into_iter()
+        .map(|(f, doc)| {
+            json!({
+                "filter": serde_json::to_value(&f).unwrap(),
+                "document": doc,
+                "expected": edax_cqrs::eval(&f, &doc),
+            })
+        })
+        .collect()
+}
+
+fn query_cases() -> Vec<Value> {
+    // Each case pins the page and the cursor minted from its last row, so bindings verify both
+    // ordering/pagination and byte-identical cursor encoding.
+    let cases: Vec<(Value, Value)> = vec![
+        (json!({"sort": [{"path": "n"}]}), json!([{"n": 3}, {"n": 1}, {"n": 2}])),
+        (json!({"sort": [{"path": "n"}], "offset": 1, "limit": 2}), json!([{"n": 3}, {"n": 1}, {"n": 2}, {"n": 5}, {"n": 4}])),
+        (json!({"sort": [{"path": "n", "desc": true}]}), json!([{"n": 1}, {}, {"n": 3}])),
+        // Mixed types exercise the total type order: number < string < bool < array < object < null.
+        (json!({"sort": [{"path": "v"}]}), json!([{"v": "a"}, {"v": 2}, {"v": true}, {"v": null}, {"v": [1]}, {"v": {"k": 1}}])),
+        (
+            json!({"filter": {"compare": {"path": "s", "op": "eq", "value": "open"}}, "sort": [{"path": "n"}]}),
+            json!([{"s": "open", "n": 2}, {"s": "closed", "n": 1}, {"s": "open", "n": 1}]),
+        ),
+        (json!({"sort": [{"path": "n"}], "limit": 1, "after": "WzFd"}), json!([{"n": 1}, {"n": 2}, {"n": 3}])), // WzFd = base64("[1]")
+        // No sort: input order is preserved and the cursor is base64("[]") = "W10=".
+        (json!({}), json!([{"n": 3}, {"n": 1}, {"n": 2}])),
+        // Multi-key sort with a tie on the first key broken by the second; the cursor is a 2-tuple.
+        (json!({"sort": [{"path": "bal", "desc": true}, {"path": "id"}], "limit": 2}),
+            json!([{"id": "a", "bal": 150}, {"id": "b", "bal": 300}, {"id": "c", "bal": 150}])),
+        // Offset past the end: empty page, null cursor.
+        (json!({"sort": [{"path": "n"}], "offset": 5}), json!([{"n": 1}, {"n": 2}])),
+    ];
+    cases
+        .into_iter()
+        .map(|(q, docs)| {
+            let qb = serde_json::to_vec(&q).unwrap();
+            let db = serde_json::to_vec(&docs).unwrap();
+            let page: Vec<Value> = serde_json::from_slice(&query_json(&qb, &db).unwrap()).unwrap();
+            let sort: Vec<SortKey> = serde_json::from_value(q.get("sort").cloned().unwrap_or(json!([]))).unwrap();
+            let cursor = page.last().map(|row| encode_cursor(row, &sort));
+            json!({ "query": q, "documents": docs, "expected_page": page, "expected_cursor": cursor })
+        })
+        .collect()
+}
+
+fn cursor_cases() -> Vec<Value> {
+    // The round trip a backend depends on: a cursor minted from a row decodes back to the tuple its
+    // `WHERE` clause binds, under the sort the page is actually ordered by. Each case pins both
+    // halves, so a binding that decodes differently fails here rather than silently paging wrong.
+    let cases: Vec<(Value, Value)> = vec![
+        // The ordinary case: one declared key, `id` appended as the tiebreak.
+        (json!([{"path": "age"}]), json!({"id": "user-1", "age": 36})),
+        // Two declared keys; the tiebreak still lands last.
+        (json!([{"path": "s"}, {"path": "n", "desc": true}]), json!({"id": "a", "s": "open", "n": 4})),
+        // `id` already terminal: no second tiebreak is appended.
+        (json!([{"path": "n"}, {"path": "id"}]), json!({"id": "z", "n": 1})),
+        // Sorting on `id` alone is already tie-free.
+        (json!([{"path": "id"}]), json!({"id": "only"})),
+        // A missing sort path encodes as null and must decode back as null, not as an absent slot.
+        (json!([{"path": "missing"}]), json!({"id": "user-2"})),
+        // Every type the total order spans, so the tuple's JSON round trip is pinned for each.
+        (json!([{"path": "v"}]), json!({"id": "t1", "v": {"k": [1, "two", true, null]}})),
+        // An unsorted query has no order to resume from; the tiebreak is a no-op on an empty sort.
+        (json!([]), json!({"id": "user-3", "age": 1})),
+    ];
+    cases
+        .into_iter()
+        .map(|(sort, doc)| {
+            let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
+            let cursor = encode_cursor(&doc, &keys);
+            let decoded = decode_cursor(&cursor, &keys).unwrap();
+            json!({
+                "sort": sort,
+                "document": doc,
+                "expected_cursor": cursor,
+                "expected_effective_sort": effective_sort(&keys),
+                "expected_tuple": decoded,
+            })
+        })
+        .chain(
+            // Cursors that did not come from this sort. The applier pads a short tuple with null and
+            // ignores a long one, so the decoder must report exactly what the applier would compare.
+            [
+                (json!([{"path": "a"}, {"path": "b"}]), "W10=", json!([null, null, null])),
+                (json!([{"path": "a"}]), "WzEsMiwzLDRd", json!([1, 2])),
+            ]
+            .into_iter()
+            .map(|(sort, cursor, tuple)| {
+                let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
+                assert_eq!(json!(decode_cursor(cursor, &keys).unwrap()), tuple, "mismatched-arity case");
+                json!({
+                    "sort": sort,
+                    "document": Value::Null,
+                    "expected_cursor": cursor,
+                    "expected_effective_sort": effective_sort(&keys),
+                    "expected_tuple": tuple,
+                })
+            }),
+        )
+        .collect()
+}
+
 #[test]
 fn golden() {
+    write_or_check("filter.json", filter_cases());
+    write_or_check("query.json", query_cases());
+    write_or_check("cursor.json", cursor_cases());
     write_or_check("payload_hash.json", payload_hash_cases());
     write_or_check("canonical_payload_hash.json", canonical_payload_hash_cases());
     write_or_check("command_hash.json", command_hash_cases());

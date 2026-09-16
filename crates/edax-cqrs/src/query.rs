@@ -18,7 +18,7 @@
 //! only — two of them compare equal.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use edax_core::filter::{self, Filter};
+use crate::filter::{self, Filter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;

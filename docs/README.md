@@ -41,7 +41,7 @@ flowchart LR
 | [Kernels overview](kernels/README.md) | what the kernels own, and what they are forbidden to do |
 | [edax-core](kernels/core.md) | hashing, backoff, the clock, id generation, error codes |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
-| [edax-event](kernels/event.md) | partition, codec, query and cursors, upcast, causation, dedup |
+| [edax-event](kernels/event.md) | partition, codec, upcast, causation, dedup, sequence |
 | [edax-cqrs](kernels/cqrs.md) | canonical JSON, the command hash, the idempotency record and decision |
 | [edax-kafka](kernels/kafka.md) | the record key and headers, the media types, the token-settled offset watermark |
 | [edax-redis](kernels/redis.md) | the idempotency ledger's value layout, its owner token, and the fence scripts |

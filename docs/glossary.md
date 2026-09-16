@@ -159,7 +159,7 @@ The kernel's `ErrorCode` carries the verdict, so no SDK restates it. See [errors
 
 **Entity** — id, version, document. The version makes `save` a compare-and-set.
 
-**Filter** — the backend-neutral query abstract syntax tree (AST) in `edax-core`, plus the reference
+**Filter** — the backend-neutral query abstract syntax tree (AST) in `edax-cqrs`, plus the reference
 evaluator that pins the match verdict. A missing or null path makes a leaf false, which is why
 `ne(p, x)` and `not_(eq(p, x))` differ.
 

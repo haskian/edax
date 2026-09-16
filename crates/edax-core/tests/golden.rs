@@ -35,7 +35,15 @@ fn error_taxonomy_cases() -> Vec<Value> {
         .collect()
 }
 
+fn backoff_cases() -> Vec<Value> {
+    (0u32..12)
+        .chain([20, 63, 64, 100, 1000]) // 63/64 straddle the 1<<attempt shift boundary; all capped
+        .map(|a| json!({ "attempt": a, "expected_millis": edax_core::backoff_millis(a) }))
+        .collect()
+}
+
 #[test]
 fn golden() {
     write_or_check("error_taxonomy.json", error_taxonomy_cases());
+    write_or_check("backoff.json", backoff_cases());
 }

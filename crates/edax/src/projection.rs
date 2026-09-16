@@ -4,8 +4,8 @@ use serde_json::Value;
 
 use crate::Error;
 
-/// The read query shape and ordering key, re-exported from the kernel; see [`edax_event::Query`] for wire rules.
-pub use edax_event::{Query, SortKey};
+/// The read query shape and ordering key, re-exported from the kernel; see [`edax_cqrs::Query`] for wire rules.
+pub use edax_cqrs::{Query, SortKey};
 
 /// A read model at a point in time: the queryable `document` and the `version` it was loaded at (`0` if never
 /// saved). A save persists at `version + 1` only if the store is still at `version`, then advances it.
@@ -70,7 +70,7 @@ mod tests {
             assert_eq!(reparsed, spec, "case {i}: a field was lost between serialize and deserialize");
 
             let documents = serde_json::to_vec(&case["documents"]).expect("golden documents are JSON");
-            let page = edax_event::query_json(&bytes, &documents)
+            let page = edax_cqrs::query_json(&bytes, &documents)
                 .unwrap_or_else(|e| panic!("case {i}: the kernel rejected the spec: {e}"));
             let page: Value = serde_json::from_slice(&page).expect("a page is JSON");
             assert_eq!(page, case["expected_page"], "case {i}");
@@ -124,7 +124,7 @@ mod tests {
         let store = seeded_store();
         let mut tx = MemoryTx::auto_commit();
 
-        let filter = || Some(edax_core::filter::gte("age", json!(36)));
+        let filter = || Some(edax_cqrs::filter::gte("age", json!(36)));
         let sort = || vec![SortKey { path: "name".into(), desc: false }];
 
         let page = store
@@ -152,7 +152,7 @@ mod tests {
 
         let first = page(None);
         assert_eq!(field(&first, "id"), ["u3", "u0"]); // dot 29, then the first age-36 row by id
-        let cursor = edax_event::query::encode_cursor(first.last().expect("a full page"), &sort);
+        let cursor = edax_cqrs::encode_cursor(first.last().expect("a full page"), &sort);
         assert_eq!(field(&page(Some(cursor)), "id"), ["u2", "u1"]); // the other age-36 row, then bob
     }
 

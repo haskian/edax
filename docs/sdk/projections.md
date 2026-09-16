@@ -104,7 +104,7 @@ it auto-commits. That is what lets a projection write commit with the events tha
 | | Rust (`crates/edax/src/projection.rs`) | Python (`crates/edax-py/python/edax/projection.py`) |
 |---|---|---|
 | seam | `trait ProjectionStore` with associated `type Tx` | `Protocol ProjectionStore`, `tx` keyword argument |
-| query shape | `edax_event::Query`, re-exported not re-declared | a `dict` built by `edax.query.build_spec` |
+| query shape | `edax_cqrs::Query`, re-exported not re-declared | a `dict` built by `edax.query.build_spec` |
 | optional method | none — a trait has no optional items | `get_many` |
 | conflict | `Error::Concurrency { expected, stored }` | `ConcurrencyError` |
 

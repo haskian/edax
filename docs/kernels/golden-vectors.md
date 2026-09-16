@@ -52,7 +52,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 
 | File | Case shape | Pins | Kernel | Generator |
 |---|---|---|---|---|
-| `backoff.json` | `attempt`, `expected_millis` | 17 attempts including `63` / `64`, which straddle the `1 << attempt` shift boundary, and the cap | `edax-core` `backoff_millis` | `edax-event` `backoff_cases` |
+| `backoff.json` | `attempt`, `expected_millis` | 17 attempts including `63` / `64`, which straddle the `1 << attempt` shift boundary, and the cap | `edax-core` `backoff_millis` | `edax-core` `backoff_cases` |
 | `canonical_payload_hash.json` | `input`, `expected` | canonicalize-then-hash: key order, whitespace, non-ASCII, `1` versus `1.0`, nested sorting, `{}` | `edax-cqrs` | `edax-cqrs` `canonical_payload_hash_cases` |
 | `causation.json` | `parent_metadata`, `parent_event_id`, `expected` | which correlation and causation ids a child inherits from its parent | `edax-event` `propagate` | `edax-event` `causation_cases` |
 | `causation_originate.json` | `metadata`, `fresh_id`, `expected` | which of the two chain keys are generated when a root event starts a chain | `edax-event` `originate` | `edax-event` `originate_cases` |
@@ -60,7 +60,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `dedup.json` | `stored`, `incoming`, `expected` | apply-or-drop by sequence, including both `u64` ceiling cases | `edax-event` `should_apply` | `edax-event` `dedup_cases` |
 | `envelopes.json` | `envelope`, `json_hex`, `msgpack_hex` | exact wire bytes for four envelopes in both formats, with unicode and a `2^53 + 1` sequence | `edax-event` `encode_from_json` | `edax-event` `envelope_cases` |
 | `error_taxonomy.json` | `code`, `terminal`, `message`, `wire` | all nine codes, each one's terminal or transient verdict, and the `"<code>: "` wire framing | `edax-core` `ErrorCode` | `edax-core` `error_taxonomy_cases` |
-| `filter.json` | `filter`, `document`, `expected` | 32 filter evaluations: every operator, missing paths, cross-type compares, vacuous `and` / `or` | `edax-core` `eval` | `edax-event` `filter_cases` |
+| `filter.json` | `filter`, `document`, `expected` | 32 filter evaluations: every operator, missing paths, cross-type compares, vacuous `and` / `or` | `edax-cqrs` `eval` | `edax-cqrs` `filter_cases` |
 | `idempotency.json` | `prior`, `current`, `expected` | `proceed` / `replay` / `payload_mismatch`, including that a stored hash of `0` is a real prior | `edax-cqrs` `decide` | `edax-cqrs` `idempotency_cases` |
 | `idempotency_record.json` | `name`, `stored`, `current`, `payload_hash`, `state`, `outcome`, `encoded`, plus `result` or `error` | the record's wire shape, reading order, re-encoded bytes and replay verdict — 12 cases including a stored `null` result replaying as a success | `edax-cqrs` `Record` / `outcome` | `edax-cqrs` `idempotency_record_cases` |
 | `kafka_record.json` | `name`, `format`, `envelope`, `key`, `key_hex`, `value_hex`, `headers` | the record a published envelope becomes: the key rule and the four contract headers, in both formats, with an overridden key, an unsequenced envelope and unicode | `edax-kafka` `encode_record` | `edax-kafka` `kafka_record_cases` |
@@ -70,14 +70,11 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `redis_scripts.json` | `name`, `body` | both Lua fence bodies verbatim, so two SDKs registering them share one `EVALSHA` digest | `edax-redis` `FENCED_SET_SCRIPT` / `FENCED_DEL_SCRIPT` | `edax-redis` `script_cases` |
 | `partition.json` | `id`, `n`, `expected` | consistent-hash placement for six aggregate ids against five partition counts; `n = 0` clamps to 1 | `edax-event` `partition` | `edax-event` `partition_cases` |
 | `payload_hash.json` | `input`, `expected` | raw Fowler-Noll-Vo 1a (FNV-1a) over six byte strings, including `café ☕ 🦀` | `edax-cqrs` `payload_hash` | `edax-cqrs` `payload_hash_cases` |
-| `cursor.json` | `sort`, `document`, `expected_cursor`, `expected_effective_sort`, `expected_tuple` | the keyset cursor round trip: the `id` tiebreak, every type in the total order, a missing sort path, and a tuple whose arity does not match the sort | `edax-event` `encode_cursor` / `decode_cursor` / `effective_sort` |
-| `query.json` | `query`, `documents`, `expected_page`, `expected_cursor` | ordering, the total type order, offset, limit, `after`, and the byte-identical cursor generated from the last row | `edax-event` `query_json` / `encode_cursor` | `edax-event` `query_cases` |
+| `cursor.json` | `sort`, `document`, `expected_cursor`, `expected_effective_sort`, `expected_tuple` | the keyset cursor round trip: the `id` tiebreak, every type in the total order, a missing sort path, and a tuple whose arity does not match the sort | `edax-cqrs` `encode_cursor` / `decode_cursor` / `effective_sort` |
+| `query.json` | `query`, `documents`, `expected_page`, `expected_cursor` | ordering, the total type order, offset, limit, `after`, and the byte-identical cursor generated from the last row | `edax-cqrs` `query_json` / `encode_cursor` | `edax-cqrs` `query_cases` |
 | `rendezvous.json` | `id`, `n`, `expected` | rendezvous placement for six ids against six bucket counts | `edax-event` `rendezvous` | `edax-event` `rendezvous_cases` |
 | `sequence_batch.json` | `expected`, `sequences`, `error` | the dense-batch rule: accepted runs, an unsequenced envelope, a gap, a reorder, a repeat, the `i64` ceiling | `edax-event` `check_sequence_batch` | `edax-event` `sequence_batch_cases` |
 | `upcast.json` | `from`, `to`, `available`, `plan`, `error` | the planned step sequence, and which gap the error names when a step is missing | `edax-event` `upcast_plan` | `edax-event` `upcast_cases` |
-
-`filter.json` and `backoff.json` pin `edax-core` logic but are generated by the `edax-event` golden
-test, so they regenerate with the `edax-event` command.
 
 ### Who asserts each vector
 

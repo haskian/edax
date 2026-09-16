@@ -1,8 +1,11 @@
-//! edax-cqrs — the command-side consistency kernel.
+//! edax-cqrs — the command-and-query consistency kernel.
 //!
-//! The command bus (handler registration, typed dispatch, the middleware chain) is host-local
-//! ergonomics with no cross-language requirement, so it lives in the bindings. The kernel owns
-//! only the command-side decisions that must agree across languages and processes:
+//! Both sides of the separation the name describes. The command bus (handler registration, typed
+//! dispatch, the middleware chain) is host-local ergonomics with no cross-language requirement, so
+//! it lives in the bindings. The kernel owns only the decisions that must agree across languages
+//! and processes.
+//!
+//! Command side — what makes a command's identity:
 //!
 //! - [`canonical_json`] — re-emit JSON in a canonical form so the same logical command serializes
 //!   identically regardless of how the host produced it.
@@ -13,12 +16,33 @@
 //!   replay the cached outcome, or reject a payload mismatch.
 //! - [`Record`] / [`outcome`] — the stored idempotency record's wire shape, its reading order, and
 //!   the verdict a losing claimant reaches from it (in flight, cached failure, cached success).
+//!
+//! Query side — what a read model answers with:
+//!
+//! - [`filter`] — the backend-neutral filter AST and its evaluator, whose match decision must be
+//!   identical in every language.
+//! - [`query`] — sort and pagination semantics over the documents a filter selects, including the
+//!   keyset cursor format a page boundary is minted as.
+//!
+//! The two travel together because the query evaluates the filter: a read model that pages results
+//! needs both, and neither is an event-sourcing concern. Shared primitives (hashing, backoff, the
+//! error taxonomy) live in `edax-core`; the event-driven kernel is `edax-event`.
 
 // Every public item is a cross-language contract, so it states what it promises.
 #![warn(missing_docs)]
 
+pub mod filter;
+pub mod query;
 pub mod record;
 
+pub use filter::{eval, eval_json, Filter, Operator};
+// The whole query surface, not a subset: the binding crate reached past a partial re-export into
+// `query::` for the four cursor and sort entry points, which is how a module path became an
+// external contract.
+pub use query::{
+    decode_cursor, decode_cursor_json, effective_sort, effective_sort_json, encode_cursor,
+    encode_cursor_json, query_json, Query, SortKey,
+};
 pub use record::{decode_record, encode_record, outcome, Outcome, Record, State};
 
 /// Re-emit JSON in a canonical form (sorted object keys, minimal whitespace) so that two hosts

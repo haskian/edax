@@ -10,7 +10,6 @@ the two deliberate exceptions. The crate's whole dependency set is `serde`, `ser
 
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
-| `filter` | Does this document match this filter? | yes | `testdata/golden/filter.json` | `eval_filter` on the application binary interface (ABI); `edax_event::query`. See [filter.md](./filter.md) |
 | `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not exported; only its callers are |
 | `backoff` | How long before retry `n`? | yes | `testdata/golden/backoff.json` | `backoff_millis` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
@@ -51,7 +50,7 @@ Both dispatchers wait one step before nacking. See
 
 `testdata/golden/backoff.json` holds 17 cases: attempts 0 through 11, plus 20, 63, 64, 100 and 1000
 to pin the cap and the absence of overflow. The `test_edax.py::test_golden_backoff` asserts them.
-`backoff_cases` in the `edax-event` golden test derives the vector.
+`backoff_cases` in the `edax-core` golden test derives the vector.
 
 ## `hash`
 
@@ -166,7 +165,7 @@ verdict back off it.
 
 - [README.md](./README.md) — what the three kernels own and why the boundary sits there.
 - [filter.md](./filter.md) — the filter AST, its null rule and the two build surfaces.
-- [event.md](./event.md) — `edax-event`, which reuses `hash` for routing and `filter` for the read
+- [event.md](./event.md) — `edax-event`, which reuses `hash` for routing and owns the read
   side.
 - [cqrs.md](./cqrs.md) — `edax-cqrs`, which reuses `fnv1a64` as `payload_hash`.
 - [golden-vectors.md](./golden-vectors.md) — how `filter.json`, `backoff.json` and

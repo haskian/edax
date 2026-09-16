@@ -32,9 +32,9 @@ once real backends have been written against them. Pin a minor in your dependenc
 - The exact text of an exception message. The type and its taxonomy code are stable; the prose is not.
 - Log and observer output beyond the documented `Observer` methods.
 - The examples, the documentation and the test suite.
-- The Rust crates below the SDK: `edax-core`, `edax-event`, `edax-cqrs`, `edax-abi`. They are
-  published so the SDK can depend on them, and their surface follows the SDK's needs. Depend on
-  `edax` itself.
+- The Rust crates below the SDK: `edax-core`, `edax-event`, `edax-cqrs`, `edax-abi`. Nothing
+  publishes them — the release ships the `edax` Python wheel, and the SDK reaches them as path
+  dependencies. Their surface follows the SDK's needs. Depend on `edax` itself.
 
 ## Supported runtimes
 
