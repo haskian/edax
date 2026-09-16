@@ -1,0 +1,10 @@
+[
+  {
+    "body": "\nif redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then\n  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0\nend\nreturn 0\n",
+    "name": "fenced_set"
+  },
+  {
+    "body": "\nif redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then\n  return redis.call('DEL', KEYS[1])\nend\nreturn 0\n",
+    "name": "fenced_del"
+  }
+]

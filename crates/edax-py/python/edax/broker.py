@@ -23,10 +23,6 @@ KeyFn = Callable[[EventEnvelope], str]
 UNDECODABLE = "edax.undecodable"
 
 
-def _aggregate_key(env: EventEnvelope) -> str:
-    return env.aggregate_id
-
-
 class Producer(Protocol):
     """Publishes an envelope to the broker (encode + send). What an adapter must guarantee:
 

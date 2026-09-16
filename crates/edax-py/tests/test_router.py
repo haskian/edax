@@ -15,7 +15,7 @@ import edax
 import pytest
 from conftest import build_envelope, delivered
 from edax._async import maybe_await
-from edax.backend.memory import InMemoryBroker, MemoryIdempotencyStore
+from edax.backend.memory import MemoryBroker, MemoryIdempotencyStore
 from edax.command import Record
 from edax.router import EventHandler, EventMiddleware, idempotent_by_id
 from edax.store import Tx, current_tx, transaction
@@ -278,7 +278,7 @@ def _record(label: str, log: list[str], inner: Callable[[], Any]) -> Callable[[]
 
 
 async def test_redelivery_through_the_dispatcher_is_skipped_and_acked() -> None:
-    broker = InMemoryBroker()
+    broker = MemoryBroker()
     env = deposited()
     await broker.publish(env)
     await broker.publish(env)  # the broker redelivers after a lost ack

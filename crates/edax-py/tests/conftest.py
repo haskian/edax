@@ -20,7 +20,7 @@ from unittest import mock
 
 import edax
 import pytest
-from edax.backend.kafka import KafkaConsumer
+from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -433,7 +433,7 @@ _aiokafka = types.ModuleType("aiokafka")  # a real module: sys.modules holds mod
 _aiokafka.__dict__["TopicPartition"] = TopicPartition  # a module's __dict__ is its namespace
 sys.modules.setdefault("aiokafka", _aiokafka)
 
-KafkaMsg = namedtuple("KafkaMsg", "topic partition offset value")
+KafkaMsg = namedtuple("KafkaMsg", "topic partition offset key value headers")
 
 
 class FakeKafkaClient:
@@ -447,8 +447,14 @@ class FakeKafkaClient:
         self.commits: list[int] = []
         self.seeks: list[int] = []
 
-    async def send_and_wait(self, topic: str, value: bytes, key: bytes = b"") -> None:
-        self.log.append(KafkaMsg(topic, 0, len(self.log), value))
+    async def send_and_wait(
+        self,
+        topic: str,
+        value: bytes,
+        key: bytes = b"",
+        headers: Sequence[tuple[str, bytes]] = (),
+    ) -> None:
+        self.log.append(KafkaMsg(topic, 0, len(self.log), key, value, list(headers)))
 
     async def getone(self) -> KafkaMsg:
         if self.cursor == len(self.log):
@@ -470,8 +476,10 @@ class FakeKafkaClient:
 
 
 class IdSerializer:
-    """Decodes the fake client's payload (the message body doubles as the envelope id). The
-    consumer never encodes, so `encode` exists only to complete the seam."""
+    """A custom serializer whose wire form is the envelope id, under a media type of its own, so a
+    record it wrote routes back to it through the consumer's registry."""
+
+    media_type = "application/x-test-id"
 
     def encode(self, env: edax.EventEnvelope) -> bytes:
         return env.id.encode()
@@ -481,8 +489,11 @@ class IdSerializer:
 
 
 async def kafka_consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
-    """A fake client holding ``n`` messages (bodies ``"0"``..) and a :class:`KafkaConsumer` over it."""
+    """A fake client holding ``n`` messages (bodies ``"0"``..) and a :class:`KafkaConsumer` over it.
+    Published through a real :class:`KafkaProducer`, so every record carries the kernel's key and
+    headers rather than a bare value the consumer would have to guess at."""
     c = FakeKafkaClient()
+    producer = KafkaProducer(c, "t", serializer=IdSerializer())
     for i in range(n):
-        await c.send_and_wait("t", str(i).encode())
-    return c, KafkaConsumer(c, IdSerializer())
+        await producer.publish(build_envelope("a", "Tick", 1, id=str(i)))
+    return c, KafkaConsumer(c, serializer=IdSerializer())

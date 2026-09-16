@@ -12,6 +12,12 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Bytes as lowercase hexadecimal, the form a vector carries binary in: JSON has no byte string,
+/// and hex is the one encoding every binding reads back identically.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Set to any value to regenerate instead of assert. The documented form is `EDAX_REGEN=1`.
 pub const ENV_REGEN: &str = "EDAX_REGEN";
 

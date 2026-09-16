@@ -1,11 +1,12 @@
 //! Dev/test in-memory broker, single process, not durable. A thin wrapper over the shared
-//! `edax_adapters::MemoryBroker` state machine (queue, FIFO order, per-token settlement, unsettled
+//! `edax_memory::MemoryBroker` state machine (queue, FIFO order, per-token settlement, unsettled
 //! accounting). The adapter's poll is non-blocking, so this module adds a `Condvar` and
-//! [`InMemoryBroker::poll`] can block up to a timeout.
+//! [`MemoryBroker::poll`] can block up to a timeout.
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use edax_core::lock;
 use edax_event::EventEnvelope;
 
 use crate::dispatcher::Delivery;
@@ -19,26 +20,20 @@ use crate::dispatcher::Delivery;
 /// unsettled until it is acked or nacked, so [`empty`](Self::empty) reports the same "nothing left to do" a
 /// durable broker does. Nothing survives the process.
 #[derive(Clone, Default)]
-pub struct InMemoryBroker {
+pub struct MemoryBroker {
     inner: Arc<Inner>,
 }
 
 #[derive(Default)]
 struct Inner {
-    machine: edax_adapters::MemoryBroker,
+    machine: edax_memory::MemoryBroker,
     /// The lock the waiting side holds from its empty peek into `queued.wait`. A publisher takes it
     /// before notifying, so a message landing between a poller's peek and its wait cannot slip by
     /// unannounced: the publisher either sees the poller already waiting, or the poller's peek sees
     /// the message.
     wait: Mutex<()>,
-    /// Signals a queued envelope to a blocked [`InMemoryBroker::poll`].
+    /// Signals a queued envelope to a blocked [`MemoryBroker::poll`].
     queued: Condvar,
-}
-
-/// Take the wait lock, recovering from poisoning instead of panicking: a test that panicked while
-/// holding it must not turn every later assertion into a lock panic.
-fn lock(wait: &Mutex<()>) -> MutexGuard<'_, ()> {
-    wait.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Inner {
@@ -50,7 +45,7 @@ impl Inner {
     }
 }
 
-impl InMemoryBroker {
+impl MemoryBroker {
     pub fn new() -> Self {
         Self::default()
     }
@@ -197,7 +192,7 @@ mod tests {
             },
         ];
         for c in cases {
-            let broker = InMemoryBroker::new();
+            let broker = MemoryBroker::new();
             let mut held: Vec<Delivery> = Vec::new();
             let mut polled: Vec<String> = Vec::new();
             for step in c.steps {
@@ -224,7 +219,7 @@ mod tests {
     fn a_clone_shares_the_queue_and_a_blocked_poll_wakes_on_publish() {
         // The dead-letter use: the hook holds a clone on a worker thread and publishes into it,
         // while the test polls the original. The poll blocks until the publish lands.
-        let broker = InMemoryBroker::new();
+        let broker = MemoryBroker::new();
         let sink = broker.clone();
         let publisher = std::thread::spawn(move || sink.publish(envelope("a", 1)));
         let delivery = broker.poll(Duration::from_secs(2)).expect("the publish woke the poll");
@@ -239,7 +234,7 @@ mod tests {
     fn a_blocked_poll_wakes_on_nack() {
         // A nack requeues through the machine, so it must announce like a publish does or a poller
         // parked on the condvar sleeps through the redelivery until its timeout.
-        let broker = InMemoryBroker::new();
+        let broker = MemoryBroker::new();
         broker.publish(envelope("a", 1));
         let first = broker.poll(WAIT).expect("queued");
 
@@ -257,7 +252,7 @@ mod tests {
     fn an_unrepresentable_timeout_waits_without_a_deadline() {
         // `Instant::now() + Duration::MAX` overflows and panics, so the deadline must be absent
         // instead: the poll parks until a publish wakes it.
-        let broker = InMemoryBroker::new();
+        let broker = MemoryBroker::new();
         let sink = broker.clone();
         let publisher = std::thread::spawn(move || {
             std::thread::sleep(WAIT); // let the poller park before the publish lands
@@ -272,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_zero_timeout_is_a_non_blocking_peek() {
-        let broker = InMemoryBroker::new();
+        let broker = MemoryBroker::new();
         let started = Instant::now();
         assert!(broker.poll(Duration::ZERO).is_none());
         assert!(started.elapsed() < Duration::from_millis(50), "returned at once");

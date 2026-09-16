@@ -1,0 +1,330 @@
+[
+  {
+    "envelope": {
+      "aggregate_id": "agg-1",
+      "event": {
+        "data": "3q2+7w==",
+        "name": "InvoiceIssued",
+        "version": 1
+      },
+      "id": "evt-1",
+      "metadata": {
+        "trace": "abc-123"
+      },
+      "namespace": {
+        "tenant": "acme"
+      },
+      "sequence": 7,
+      "timestamp": 1700000000000000000
+    },
+    "format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "key": null,
+    "key_hex": "6167672d31",
+    "name": "json_keyed_by_aggregate_id",
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "agg-1",
+      "event": {
+        "data": "3q2+7w==",
+        "name": "InvoiceIssued",
+        "version": 1
+      },
+      "id": "evt-1",
+      "metadata": {
+        "trace": "abc-123"
+      },
+      "namespace": {
+        "tenant": "acme"
+      },
+      "sequence": 7,
+      "timestamp": 1700000000000000000
+    },
+    "format": "msgpack",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "key": null,
+    "key_hex": "6167672d31",
+    "name": "msgpack_keyed_by_aggregate_id",
+    "value_hex": "97a56576742d31a56167672d3193ad496e766f69636549737375656401c404deadbeef0781a674656e616e74a461636d6581a57472616365a76162632d313233cf17979cfe362a0000"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "agg-1",
+      "event": {
+        "data": "3q2+7w==",
+        "name": "InvoiceIssued",
+        "version": 1
+      },
+      "id": "evt-1",
+      "metadata": {
+        "trace": "abc-123"
+      },
+      "namespace": {
+        "tenant": "acme"
+      },
+      "sequence": 7,
+      "timestamp": 1700000000000000000
+    },
+    "format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "key": "tenant/acme",
+    "key_hex": "74656e616e742f61636d65",
+    "name": "json_key_override",
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "agg-1",
+      "event": {
+        "data": "3q2+7w==",
+        "name": "InvoiceIssued",
+        "version": 1
+      },
+      "id": "evt-1",
+      "metadata": {
+        "trace": "abc-123"
+      },
+      "namespace": {
+        "tenant": "acme"
+      },
+      "sequence": 7,
+      "timestamp": 1700000000000000000
+    },
+    "format": "msgpack",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "key": "tenant/acme",
+    "key_hex": "74656e616e742f61636d65",
+    "name": "msgpack_key_override",
+    "value_hex": "97a56576742d31a56167672d3193ad496e766f69636549737375656401c404deadbeef0781a674656e616e74a461636d6581a57472616365a76162632d313233cf17979cfe362a0000"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "agg-2",
+      "event": {
+        "data": "",
+        "name": "OrderPlaced",
+        "version": 2
+      },
+      "id": "evt-2",
+      "metadata": {},
+      "namespace": {},
+      "sequence": null,
+      "timestamp": 0
+    },
+    "format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d32"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "4f72646572506c61636564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "32"
+      }
+    ],
+    "key": null,
+    "key_hex": "6167672d32",
+    "name": "json_no_sequence_empty_payload",
+    "value_hex": "7b226964223a226576742d32222c226167677265676174655f6964223a226167672d32222c226576656e74223a7b226e616d65223a224f72646572506c61636564222c2276657273696f6e223a322c2264617461223a22227d2c2273657175656e6365223a6e756c6c2c226e616d657370616365223a7b7d2c226d65746164617461223a7b7d2c2274696d657374616d70223a307d"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "agg-2",
+      "event": {
+        "data": "",
+        "name": "OrderPlaced",
+        "version": 2
+      },
+      "id": "evt-2",
+      "metadata": {},
+      "namespace": {},
+      "sequence": null,
+      "timestamp": 0
+    },
+    "format": "msgpack",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d32"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "4f72646572506c61636564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "32"
+      }
+    ],
+    "key": null,
+    "key_hex": "6167672d32",
+    "name": "msgpack_no_sequence_empty_payload",
+    "value_hex": "97a56576742d32a56167672d3293ab4f72646572506c6163656402c400c0808000"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "café-7",
+      "event": {
+        "data": "8J+mgA==",
+        "name": "Paiement effectué",
+        "version": 3
+      },
+      "id": "evt-4",
+      "metadata": {
+        "acteur": "système"
+      },
+      "namespace": {
+        "région": "eu"
+      },
+      "sequence": 9007199254740993,
+      "timestamp": 1700000000000000000
+    },
+    "format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d34"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "506169656d656e742065666665637475c3a9"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "33"
+      }
+    ],
+    "key": null,
+    "key_hex": "636166c3a92d37",
+    "name": "json_unicode",
+    "value_hex": "7b226964223a226576742d34222c226167677265676174655f6964223a22636166c3a92d37222c226576656e74223a7b226e616d65223a22506169656d656e742065666665637475c3a9222c2276657273696f6e223a332c2264617461223a22384a2b6d67413d3d227d2c2273657175656e6365223a393030373139393235343734303939332c226e616d657370616365223a7b2272c3a967696f6e223a226575227d2c226d65746164617461223a7b22616374657572223a2273797374c3a86d65227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+  },
+  {
+    "envelope": {
+      "aggregate_id": "café-7",
+      "event": {
+        "data": "8J+mgA==",
+        "name": "Paiement effectué",
+        "version": 3
+      },
+      "id": "evt-4",
+      "metadata": {
+        "acteur": "système"
+      },
+      "namespace": {
+        "région": "eu"
+      },
+      "sequence": 9007199254740993,
+      "timestamp": 1700000000000000000
+    },
+    "format": "msgpack",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d34"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "506169656d656e742065666665637475c3a9"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "33"
+      }
+    ],
+    "key": null,
+    "key_hex": "636166c3a92d37",
+    "name": "msgpack_unicode",
+    "value_hex": "97a56576742d34a7636166c3a92d3793b2506169656d656e742065666665637475c3a903c404f09fa680cf002000000000000181a772c3a967696f6ea2657581a6616374657572a873797374c3a86d65cf17979cfe362a0000"
+  }
+]

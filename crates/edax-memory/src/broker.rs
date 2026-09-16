@@ -3,7 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
-use crate::tx::lock;
+use edax_core::{lock, TokenMint};
 
 /// A delivery handed out by [`MemoryBroker::try_poll`]: the envelope plus the token that settles it.
 #[derive(Clone, Debug, PartialEq)]
@@ -12,26 +12,17 @@ pub struct PolledDelivery {
     pub envelope: edax_event::EventEnvelope,
 }
 
-/// The token value no delivery ever carries, so a host's "no delivery" placeholder cannot alias a
-/// live one.
-pub const NO_DELIVERY: i64 = 0;
-
+#[derive(Default)]
 struct BrokerState {
     queue: VecDeque<edax_event::EventEnvelope>,
-    /// The token the next poll hands out. Monotonic, so a token names exactly one delivery for the
-    /// broker's whole life: a stale token (already settled) never aliases a live one.
-    next_token: i64,
+    /// The tokens polls hand out. Monotonic, so a token names exactly one delivery for the broker's
+    /// whole life: a stale token (already settled) never aliases a live one.
+    tokens: TokenMint,
     /// Polled deliveries not yet acked or nacked, by token. Keyed by token, not by envelope id:
     /// at-least-once puts the same id in flight twice (the outbox republishes after a crash between
     /// `publish` and `mark_published`), and each copy must settle on its own. Holding the envelope here
     /// is what lets `nack` requeue it without the host keeping a copy.
     unsettled: HashMap<i64, edax_event::EventEnvelope>,
-}
-
-impl Default for BrokerState {
-    fn default() -> Self {
-        Self { queue: VecDeque::new(), next_token: NO_DELIVERY + 1, unsettled: HashMap::new() }
-    }
 }
 
 /// In-memory broker state machine for development and tests: one FIFO queue plus the accounting of
@@ -64,10 +55,7 @@ impl MemoryBroker {
     pub fn try_poll(&self) -> Option<PolledDelivery> {
         let mut state = lock(&self.state);
         let envelope = state.queue.pop_front()?;
-        let token = state.next_token;
-        // Wrapping, not saturating: saturation would hand the same token out forever. A wrap needs
-        // 2^63 deliveries, and only matters if a token that old were still unsettled.
-        state.next_token = token.wrapping_add(1);
+        let token = state.tokens.issue();
         state.unsettled.insert(token, envelope.clone());
         Some(PolledDelivery { token, envelope })
     }
@@ -105,7 +93,10 @@ impl MemoryBroker {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use edax_core::NO_DELIVERY;
+
     use crate::testkit::envelope;
+
     /// One step of a broker scenario. `Poll` records what `try_poll` returned; the settle steps name
     /// the i-th polled delivery, and `AckToken` settles a raw token that no poll issued.
     enum Step {

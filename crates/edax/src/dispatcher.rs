@@ -845,14 +845,14 @@ mod tests {
 
     #[test]
     fn dead_letters_flow_into_a_second_broker_and_per_aggregate_order_holds() {
-        use crate::backend::InMemoryBroker;
+        use crate::backend::MemoryBroker;
         use std::time::Duration;
 
         // End to end through the in-memory broker: a terminal event dies into the DLQ, a transient
         // one is nacked, requeued and succeeds on redelivery, and every aggregate's deliveries are
         // handled in the order they were submitted, whatever the settlement path.
-        let broker = InMemoryBroker::new();
-        let dlq = InMemoryBroker::new();
+        let broker = MemoryBroker::new();
+        let dlq = MemoryBroker::new();
         let handled: Arc<Mutex<Vec<(String, u64)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&handled);
         let dead_sink = dlq.clone();

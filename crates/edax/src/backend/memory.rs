@@ -1,14 +1,15 @@
 //! Dev/test in-memory backends, single process, not durable. [`MemoryTransactor`] is the transaction
 //! boundary; [`MemoryEventStore`], [`MemoryProjectionStore`], [`MemoryIdempotencyStore`] and
-//! [`MemorySagaStore`] wrap the shared `edax-adapters` stores it hands out, converting only at the boundary:
+//! [`MemorySagaStore`] wrap the shared `edax-memory` stores it hands out, converting only at the boundary:
 //! `u64` versions to the adapters' `i64`, [`AdapterError`] to [`Error`], typed values to JSON or record
 //! bytes, and [`MemoryTx`] to the adapters' token. For production, bring stores backed by a real database.
 
 use std::marker::PhantomData;
 
-use edax_adapters::{AdapterError, NO_TX};
+use edax_core::AdapterError;
 use edax_cqrs::{decode_record, encode_record};
 use edax_event::EventEnvelope;
+use edax_memory::NO_TX;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -55,7 +56,7 @@ impl Default for MemoryTx {
     }
 }
 
-/// The transaction boundary of the in-memory backend over `edax_adapters::MemoryTransactor`: one database
+/// The transaction boundary of the in-memory backend over `edax_memory::MemoryTransactor`: one database
 /// whose four stores commit and roll back together. Open a unit of work with [`Transactor::transaction`] and
 /// thread the `&mut MemoryTx` to every store; appends, snapshots, projection rows, idempotency records and
 /// saga instances then land atomically on a clean exit or vanish on an error. Reads under the handle see its
@@ -65,7 +66,7 @@ impl Default for MemoryTx {
 /// [`Error::Concurrency`] at once, not a wait. Every transactor and every standalone `new()` store owns a database.
 #[derive(Clone, Default)]
 pub struct MemoryTransactor {
-    inner: edax_adapters::MemoryTransactor,
+    inner: edax_memory::MemoryTransactor,
 }
 
 impl MemoryTransactor {
@@ -112,7 +113,7 @@ impl Transactor for MemoryTransactor {
     }
 }
 
-/// In-memory [`EventStore`] for dev and tests over `edax_adapters::MemoryEventStore`. `Clone` shares one
+/// In-memory [`EventStore`] for dev and tests over `edax_memory::MemoryEventStore`. `Clone` shares one
 /// backing store (the inner is shared), so the same instance can hand to a
 /// [`Repository`](crate::Repository) and a [`Relay`](crate::Relay).
 ///
@@ -122,7 +123,7 @@ impl Transactor for MemoryTransactor {
 /// with the other stores.
 #[derive(Clone, Default)]
 pub struct MemoryEventStore {
-    inner: edax_adapters::MemoryEventStore,
+    inner: edax_memory::MemoryEventStore,
 }
 
 impl MemoryEventStore {
@@ -206,7 +207,7 @@ impl EventStore for MemoryEventStore {
     }
 }
 
-/// Dev/test in-memory [`ProjectionStore`] over `edax_adapters::MemoryProjectionStore`; `get_many` defers
+/// Dev/test in-memory [`ProjectionStore`] over `edax_memory::MemoryProjectionStore`; `get_many` defers
 /// to the query kernel. `Clone` shares one backing store. Not for production — bring a store whose
 /// `get_many` pushes the filter/sort/pagination down to its native query dialect.
 ///
@@ -214,7 +215,7 @@ impl EventStore for MemoryEventStore {
 /// so a projection write commits or rolls back with the events that produced it.
 #[derive(Clone, Default)]
 pub struct MemoryProjectionStore {
-    inner: edax_adapters::MemoryProjectionStore,
+    inner: edax_memory::MemoryProjectionStore,
 }
 
 impl MemoryProjectionStore {
@@ -271,7 +272,7 @@ impl ProjectionStore for MemoryProjectionStore {
 }
 
 /// In-process [`IdempotencyStore`] for a single service (dev/tests) over
-/// `edax_adapters::MemoryIdempotencyStore`, which holds the kernel's record bytes. The wrapper encodes the
+/// `edax_memory::MemoryIdempotencyStore`, which holds the kernel's record bytes. The wrapper encodes the
 /// host's typed `O` on [`complete`](IdempotencyStore::complete) and decodes it on
 /// [`claim`](IdempotencyStore::claim). Methods take `&self`, so it can be shared inside a middleware closure
 /// and across a [`KeyOrderedDispatcher`](crate::KeyOrderedDispatcher)'s worker threads. With `Tx = MemoryTx`
@@ -279,7 +280,7 @@ impl ProjectionStore for MemoryProjectionStore {
 /// A record the codec cannot write or read back is kept as a terminal failure naming the codec error, never
 /// dropped, so the next claimant gets [`Error::CachedFailure`]; a payload mismatch is still detected.
 pub struct MemoryIdempotencyStore<O> {
-    inner: edax_adapters::MemoryIdempotencyStore,
+    inner: edax_memory::MemoryIdempotencyStore,
     // `fn() -> O` rather than `O`: the store holds bytes, not an `O`, so it is `Send + Sync` whatever
     // `O` is — the consume path shares it across dispatcher worker threads.
     result: PhantomData<fn() -> O>,
@@ -287,7 +288,7 @@ pub struct MemoryIdempotencyStore<O> {
 
 impl<O> Default for MemoryIdempotencyStore<O> {
     fn default() -> Self {
-        Self { inner: edax_adapters::MemoryIdempotencyStore::new(), result: PhantomData }
+        Self { inner: edax_memory::MemoryIdempotencyStore::new(), result: PhantomData }
     }
 }
 
@@ -355,7 +356,7 @@ impl<O: Serialize + DeserializeOwned> IdempotencyStore<O> for MemoryIdempotencyS
     }
 }
 
-/// Dev/test in-memory [`SagaStore`] over `edax_adapters::MemorySagaStore`, which holds instance state
+/// Dev/test in-memory [`SagaStore`] over `edax_memory::MemorySagaStore`, which holds instance state
 /// as JSON. The wrapper serializes the host's typed `S` on `save` and deserializes it on `load`, so the
 /// optimistic-concurrency rule (a stale `save` or `delete` conflicts, an absent `delete` is a no-op) is
 /// the adapters' and shared with every SDK. `Clone` shares one backing store. Not for production — a
@@ -363,14 +364,14 @@ impl<O: Serialize + DeserializeOwned> IdempotencyStore<O> for MemoryIdempotencyS
 ///
 /// `Tx = MemoryTx`: a write under an open handle is staged until the [`MemoryTransactor`] commits.
 pub struct MemorySagaStore<S> {
-    inner: edax_adapters::MemorySagaStore,
+    inner: edax_memory::MemorySagaStore,
     // `fn() -> S` rather than `S`: the store holds JSON, not an `S`, so it is `Send + Sync` whatever `S` is.
     state: PhantomData<fn() -> S>,
 }
 
 impl<S> Default for MemorySagaStore<S> {
     fn default() -> Self {
-        Self { inner: edax_adapters::MemorySagaStore::new(), state: PhantomData }
+        Self { inner: edax_memory::MemorySagaStore::new(), state: PhantomData }
     }
 }
 

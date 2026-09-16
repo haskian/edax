@@ -136,7 +136,8 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 - [Delivery guarantees](docs/guides/delivery-guarantees.md) — at-least-once, dedup windows, and
   both idempotency guard modes.
 - [Backends](docs/backends/README.md) — the seam contracts, and the memory, Redis and Kafka
-  implementations.
+  implementations. A Kafka record, its four headers and the offset watermark that settles it are the
+  `edax-kafka` kernel's; the adapter only makes the client calls.
 
 ## Layout
 
@@ -146,7 +147,9 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-event` | event-sourcing kernel: partition, codec, query, upcast, causation, dedup |
 | `crates/edax-cqrs` | command-side kernel: canonical bytes, payload hash, idempotency decision |
 | `crates/edax` | reference Rust SDK: aggregates, stores, `CommandBus`, dispatcher, saga |
-| `crates/edax-adapters` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
+| `crates/edax-kafka` | Kafka kernel: the record key and headers, the media types, the offset watermark |
+| `crates/edax-redis` | Redis kernel: the idempotency ledger's value layout and its two fence scripts |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `examples/py` | runnable walkthroughs |

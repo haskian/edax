@@ -64,7 +64,9 @@ flowchart LR
     core["edax-core<br/>primitives"]
     event["edax-event<br/>event kernel"]
     cqrs["edax-cqrs<br/>command kernel"]
-    adapters["edax-adapters<br/>in-memory stores"]
+    memory["edax-memory<br/>in-memory stores"]
+    kafka["edax-kafka<br/>Kafka record + offsets kernel"]
+    redis["edax-redis<br/>Redis ledger kernel"]
     abi["edax-abi<br/>flat surface"]
     rust["crates/edax<br/>Rust SDK"]
     py["crates/edax-py<br/>Python binding"]
@@ -72,17 +74,22 @@ flowchart LR
 
     event --> core
     cqrs --> core
-    adapters --> core
-    adapters --> event
-    adapters --> cqrs
+    memory --> core
+    memory --> event
+    memory --> cqrs
+    kafka --> event
+    redis --> core
+    redis --> cqrs
     rust --> core
     rust --> event
     rust --> cqrs
-    rust --> adapters
+    rust --> memory
     abi --> core
     abi --> event
     abi --> cqrs
-    abi --> adapters
+    abi --> memory
+    abi --> kafka
+    abi --> redis
     py --> abi
     golden -.->|"dev-dependency only"| event
 ```
@@ -92,15 +99,24 @@ flowchart LR
 | `edax-core` | hashing, backoff, the filter abstract syntax tree (AST) and evaluator, the error taxonomy, `guid`, `current_timestamp` |
 | `edax-event` | partition, codec, query, upcast, causation, dedup, the envelope shape |
 | `edax-cqrs` | canonical JSON, payload hash, command hash, the idempotency record and decision |
-| `edax-adapters` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
-| `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and adapters, holding no logic of its own |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
+| `edax-kafka` | the Kafka record: the key rule, the four contract headers, the media types, the poison id, and the token-settled offset watermark |
+| `edax-redis` | the Redis ledger: the stored value layout, the owner token that fences it, and the two compare-and-write Lua scripts |
+| `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
 | `edax-golden` | the golden-vector harness, one writer and one reader for every kernel |
 
-`edax-adapters` needs a longer explanation. Both SDKs' in-memory backends are views over it, so the
-staging, the optimistic-concurrency checks and the transaction boundary are one implementation, not
-two that drift.
+The `edax-memory`, `edax-kafka` and `edax-redis` rows follow one rule, the same one each time. A
+backend's bytes, its names and its state decisions live in a kernel crate named `edax-<tech>`,
+pinned by golden vectors. Each SDK then ships only the client calls around that crate. The pattern
+has a name: **a protocol module in Rust, an input and output (I/O) shell per SDK.**
+
+Read the three crates that way. Both SDKs' in-memory backends are views over `edax-memory`, so the
+staging, the optimistic-concurrency checks and the transaction boundary are one implementation.
+`edax-kafka` owns the record a published envelope becomes and the offset watermark that settles it.
+`edax-redis` owns the value stored under an idempotency key and the Lua a fenced write runs. Neither
+crate links a client library, so the I/O stays in the SDK that has one.
 
 ## The build pipeline
 
@@ -108,7 +124,7 @@ The Python native module is generated. The Python package is not.
 
 ```mermaid
 flowchart LR
-    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-adapters"] --> ABI["crates/edax-abi/src/lib.rs<br/>hand-written flat surface"]
+    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis"] --> ABI["crates/edax-abi/src/lib.rs<br/>hand-written flat surface"]
     ABI -->|"alef generate --lang python --clean"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
     ABI -->|"alef"| STUB["python/edax/_edax.pyi<br/>generated type stub, shipped"]
     GEN -->|"maturin develop"| SO["_edax native module"]
@@ -155,7 +171,7 @@ across versions or languages, it belongs in a kernel with a golden vector.
 |---|---|---|
 | concurrency | synchronous, dispatcher workers are operating-system threads | `asyncio`, workers are tasks |
 | transaction handle | passed explicitly, or published by the host through a `Fn() -> Tx` provider | ambient, found through `current_tx()` in a `contextvars` variable |
-| backends shipped | in-memory only | in-memory, Redis, Kafka |
+| backends shipped | in-memory only; the `edax-kafka` and `edax-redis` kernels ship with no client shell over them | in-memory, Redis, Kafka |
 | guard that owns the transaction | not implemented | `unit_of_work=` on both guards |
 
 Neither difference is a feature gap in the kernels. Both SDKs call the same kernel functions, so a

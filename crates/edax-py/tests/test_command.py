@@ -975,7 +975,11 @@ async def test_concurrent_dispatches_of_one_key_run_the_handler_once() -> None:
     bus.register("user.create", handler)
     cmd = CreateUser("a@b.c")
     racers = [asyncio.create_task(bus.dispatch(cmd)) for _ in range(5)]
-    await asyncio.sleep(0)  # every racer reaches its claim before the winner is released
+    # The native claim resolves on another thread, so one loop turn does not put every racer past its
+    # claim. Release the winner only once the four losers have finished, or a late racer finds the
+    # done record and replays the result instead of losing.
+    while sum(t.done() for t in racers) < 4:
+        await asyncio.sleep(0)
     release.set()
     outcomes = await asyncio.gather(*racers, return_exceptions=True)
 

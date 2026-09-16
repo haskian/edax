@@ -114,31 +114,40 @@ must not overwrite the new holder's claim, and its `release` must not delete it.
 
 ### The owner token and the single-key layout
 
-Each claim writes a fresh 32-character hex token, `secrets.token_hex(16)`, in front of the kernel's
-record JSON, under one key `{prefix}{key}`:
+Each claim mints a fresh owner token from the kernel, `_edax.redis_owner()`. It is a universally
+unique identifier (UUID) version 7 in its simple form: 32 lowercase hexadecimal characters, no
+hyphens. Version 7 rather than random bytes, so tokens sort by mint time and a ledger dump reads in
+order. The store writes it in front of the kernel's record JSON, under one key `{prefix}{key}`:
 
 ```
 idem:order-7  ->  "<32 hex chars of owner token><kernel record JSON>"
 ```
 
+That layout is the `edax-redis` kernel's, not this adapter's, and
+`testdata/golden/redis_value.json` pins it. A second software development kit (SDK)'s Redis store
+must match it byte for byte to share a ledger. The store therefore calls `_edax.redis_claim_value`,
+`_edax.redis_record_value` and `_edax.redis_split_value` rather than slicing strings itself. See
+[kernels/redis.md](../kernels/redis.md).
+
 The store keeps the tokens for the claims *this instance* holds in `self._owned`, dropping each as
 it is settled. A key absent from that map was never won by this caller, so it has nothing to settle.
-Reading a prior record strips the first 32 characters, accepting `bytes`, `bytearray` or `str`
-because a client built with `decode_responses=True` answers with `str`.
+Reading a prior record hands the raw bytes to the kernel's `split_value`, after coercing a `str` to
+bytes because a client built with `decode_responses=True` answers with `str`. A value that is not
+UTF-8, or too short to hold a token, comes back as a terminal `CodecError`.
 
 **Why one key and not two.** A sibling key holding the token would have an expiry clock of its own.
 The two clocks drift apart. A claimant can then win the record while losing the owner. It holds a
 claim it can never complete or release. One key, one TTL, one atomic write.
 
-This layout is a **backend** convention, not a kernel one. It is what a second software development
-kit (SDK)'s Redis store would have to match byte for byte to share a ledger. It lives in the backend
-because no other binding ships one. When a second binding does ship one, the token belongs in the
-kernel's record instead.
-
 ### The compare-and-write
 
 Both fenced operations are one `EVAL`. A `GET` followed by a `SET` leaves exactly the gap the fence
 exists to close. The claim can expire and be taken over between the two calls.
+
+Both bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
+them byte for byte. They are printed here to read, never to copy. A client registers the source once
+and sends `EVALSHA` after, so an SDK that reformatted the script would cache a second digest for one
+fence.
 
 ```lua
 if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
@@ -273,8 +282,12 @@ class RedisConn(Protocol):
 `GET`, `SET ... PX ttl` and `DEL`. The two `*_if_prefix` operations **must be atomic**; a read
 followed by a write is the race they exist to close.
 
-`AsyncRedisClient` adapts a caller-owned `redis.asyncio.Redis`. Two details a reimplementation must
-copy:
+`AsyncRedisClient` adapts a caller-owned `redis.asyncio.Redis`. It registers both fence scripts once
+at construction, passing `register_script` the kernel's own script text from
+`_edax.redis_fenced_set_script()` and `_edax.redis_fenced_del_script()`. Every SDK therefore hashes
+the same bytes and shares one `EVALSHA` digest.
+
+Two more details a reimplementation must copy:
 
 - redis-py returns `True` when `SET ... NX` stored the value and `None` when it did not, so
   `set_nx_px` coerces with `bool(...)`. Reading `None` as "won" would run every handler twice.
@@ -289,6 +302,8 @@ against one reference model.
 ## See also
 
 - [backends index](./README.md) — the seam contracts and the checklist for writing one.
+- [kernels/redis.md](../kernels/redis.md) — the value layout, the owner token and the fence scripts,
+  decision by decision.
 - [memory](./memory.md) — the ledger that *does* join the transaction, and what that changes.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [transactions](../sdk/transactions.md) — `joins_transaction` and the two guard orderings.

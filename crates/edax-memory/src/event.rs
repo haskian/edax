@@ -3,8 +3,9 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crate::error::{codec_error, AdapterError};
-use crate::tx::{held_by_other, lock, sequence_of, store_view, MemoryState, MemoryTransactor};
+use edax_core::{lock, AdapterError};
+
+use crate::tx::{held_by_other, sequence_of, store_view, MemoryState, MemoryTransactor};
 
 /// A stored aggregate snapshot: the host-marshaled state plus its type and version.
 #[derive(Clone)]
@@ -76,7 +77,7 @@ impl MemoryEventStore {
             // taxonomy's codes encode *transience*, not failure kind, and `codec:` is the
             // deterministic-terminal slot.
             let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
-            edax_event::sequence::check_batch(expected_version, &sequences).map_err(codec_error)?;
+            edax_event::sequence::check_batch(expected_version, &sequences).map_err(AdapterError::codec)?;
             // An empty batch stages no tail, so it holds nothing: it was a version check only.
             if events.is_empty() {
                 return Ok(());

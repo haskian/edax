@@ -51,11 +51,11 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "edax"
 version = "0.0.1"
 dependencies = [
- "edax-adapters",
  "edax-core",
  "edax-cqrs",
  "edax-event",
  "edax-golden",
+ "edax-memory",
  "proptest",
  "rmp-serde",
  "serde",
@@ -66,20 +66,12 @@ dependencies = [
 name = "edax-abi"
 version = "0.0.1"
 dependencies = [
- "edax-adapters",
  "edax-core",
  "edax-cqrs",
  "edax-event",
- "serde_json",
-]
-
-[[package]]
-name = "edax-adapters"
-version = "0.0.1"
-dependencies = [
- "edax-core",
- "edax-cqrs",
- "edax-event",
+ "edax-kafka",
+ "edax-memory",
+ "edax-redis",
  "serde_json",
 ]
 
@@ -124,6 +116,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "edax-kafka"
+version = "0.0.1"
+dependencies = [
+ "edax-core",
+ "edax-event",
+ "edax-golden",
+ "serde_json",
+]
+
+[[package]]
+name = "edax-memory"
+version = "0.0.1"
+dependencies = [
+ "edax-core",
+ "edax-cqrs",
+ "edax-event",
+ "serde_json",
+]
+
+[[package]]
 name = "edax-py"
 version = "0.0.1"
 dependencies = [
@@ -133,6 +145,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "edax-redis"
+version = "0.0.1"
+dependencies = [
+ "edax-core",
+ "edax-cqrs",
+ "edax-golden",
+ "serde_json",
 ]
 
 [[package]]

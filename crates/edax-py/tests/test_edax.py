@@ -8,6 +8,7 @@ import edax
 import pytest
 from conftest import sequence_of
 from edax import _edax, causation
+from edax.aggregate import WireFormat
 from edax.causation import CAUSATION_ID, CORRELATION_ID, ensure_ids, originate, propagate
 
 GOLDEN = Path(__file__).resolve().parents[3] / "testdata" / "golden"
@@ -66,6 +67,137 @@ def test_golden_envelopes() -> None:
             assert wire.hex() == want, fmt
             # decode -> re-encode reproduces the same wire bytes
             assert ser.encode(ser.decode(wire)).hex() == want, fmt
+
+
+def _envelope_as_obj(env: edax.EventEnvelope) -> dict[str, Any]:
+    """The golden's envelope shape out of a native envelope, so a case compares one value instead of
+    seven fields. The native class has no ``__eq__``, so two envelopes never compare equal directly."""
+    return {
+        "id": env.id,
+        "aggregate_id": env.aggregate_id,
+        "event": {
+            "name": env.event.name,
+            "version": env.event.version,
+            "data": base64.b64encode(bytes(env.event.data)).decode(),
+        },
+        "namespace": dict(env.namespace),
+        "metadata": dict(env.metadata),
+        "timestamp": env.timestamp,
+        "sequence": env.sequence,
+    }
+
+
+def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
+    return [_edax.KafkaHeader(h["key"], bytes.fromhex(h["value_hex"])) for h in headers]
+
+
+def test_golden_kafka_record() -> None:
+    """The record a producer sends, built the way :class:`~edax.backend.kafka.KafkaProducer` builds
+    it: the serializer's bytes and media type into the kernel's record. A second SDK writing a
+    different key or header set would split the topic in two."""
+    for c in load("kafka_record.json"):
+        env = _envelope_from_obj(c["envelope"])
+        serializer = edax.kernel(c["format"])
+        record = _edax.kafka_record(env, serializer.encode(env), _edax.media_type(c["format"]), c["key"])
+        assert record.key.hex() == c["key_hex"], c["name"]
+        assert record.value.hex() == c["value_hex"], c["name"]
+        got = [(h.key, h.value.hex()) for h in record.headers]
+        assert got == [(h["key"], h["value_hex"]) for h in c["headers"]], c["name"]
+
+
+#: The consumer's registry, as a :class:`~edax.backend.kafka.KafkaConsumer` builds it from the
+#: serializers it was given: one media type per format, matched whole.
+_BY_MEDIA_TYPE: dict[str, WireFormat] = {_edax.media_type(fmt): fmt for fmt in ("json", "msgpack")}
+
+
+def test_golden_kafka_decode() -> None:
+    """The consumer side, walked the way :meth:`~edax.backend.kafka.KafkaConsumer.poll` walks it: the
+    first ``content-type`` picks the serializer, an absent one falls back to the default, and a media
+    type no serializer claims is refused instead of guessed at. Every failure is the terminal
+    ``CodecError``, so the consumer dead-letters the record instead of redelivering it forever."""
+    for c in load("kafka_decode.json"):
+        value, headers = bytes.fromhex(c["value_hex"]), _headers_from_obj(c["headers"])
+        content_type = _edax.kafka_content_type(headers)
+        fmt = _BY_MEDIA_TYPE.get(content_type) if content_type else c["default_format"]
+        got: dict[str, Any]
+        if fmt is None:
+            # No serializer claims it. The wording is the kernel's, which the golden pins.
+            got = {"error": f"unknown format: {content_type}"}
+        else:
+            try:
+                got = {"envelope": _envelope_as_obj(edax.kernel(fmt).decode(value))}
+            except edax.CodecError as e:
+                got = {"error": str(e)}
+        assert got == c["want"], c["name"]
+
+
+def test_golden_kafka_offsets() -> None:
+    """The offset tracker replayed step by step: settlement is by token, so a stale token from a
+    revoked partition decides nothing. Every scenario ends with the per-partition stats it left."""
+    for c in load("kafka_offsets.json"):
+        tracker = _edax.offset_tracker()  # fresh per scenario: tokens are per tracker
+        for i, step in enumerate(c["steps"]):
+            where = f"{c['name']} step {i} ({step['op']})"
+            op, want = step["op"], step["want"]
+            if op == "book":
+                assert tracker.book(step["topic"], step["partition"], step["offset"]) == want["token"], where
+            elif op == "ack":
+                decision = tracker.ack(step["token"])
+                assert (decision.commit, decision.offset) == (want["commit"], want["offset"]), where
+            elif op == "nack":
+                decision = tracker.nack(step["token"])
+                assert (decision.seek, decision.offset) == (want["seek"], want["offset"]), where
+            elif op == "committed":
+                assert tracker.committed(step["topic"], step["partition"], step["offset"]) is None, where
+            elif op == "reset":
+                assert tracker.reset(step["topic"], step["partition"]) is None, where
+            elif op == "stats":
+                rows = [
+                    {
+                        "topic": r.topic,
+                        "partition": r.partition,
+                        "unsettled": r.unsettled,
+                        "max_delivered": r.max_delivered,
+                        "committed": r.committed,
+                    }
+                    for r in tracker.stats().items
+                ]
+                assert rows == want["rows"], where
+            else:
+                raise AssertionError(f"{where}: unknown op")
+
+
+def test_golden_redis_value() -> None:
+    """The bytes under an idempotency key: ``<owner><record>``, and the split back out of them. A
+    second SDK that laid them out differently could not read this SDK's ledger."""
+    for c in load("redis_value.json"):
+        name, op = c["name"], c["op"]
+        if op == "claim":
+            assert _edax.redis_claim_value(c["owner"], c["payload_hash"]) == c["value"], name
+        elif op == "record":
+            assert _edax.redis_record_value(c["owner"], c["record_json"]) == c["value"], name
+        elif op == "split":
+            raw, want = bytes.fromhex(c["raw_hex"]), c["want"]
+            if "error" in want:
+                with pytest.raises(RuntimeError) as caught:
+                    _edax.redis_split_value(raw)
+                assert want["error"] in str(caught.value), name
+                continue
+            split = _edax.redis_split_value(raw)
+            assert (split.owner, split.record) == (want["owner"], want["record"]), name
+        else:
+            raise AssertionError(f"{name}: unknown op {op}")
+
+
+def test_golden_redis_scripts() -> None:
+    """The two Lua fence bodies, verbatim: EVALSHA hashes the source, so a byte of drift in either
+    one is a different script and a lost fence between SDKs."""
+    bodies = {
+        "fenced_set": _edax.redis_fenced_set_script(),
+        "fenced_del": _edax.redis_fenced_del_script(),
+    }
+    for c in load("redis_scripts.json"):
+        assert bodies[c["name"]] == c["body"], c["name"]
 
 
 def test_guid_is_well_formed_v7() -> None:

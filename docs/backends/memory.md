@@ -18,7 +18,7 @@ classDiagram
         +transactor
         +token
     }
-    class InMemoryBroker {
+    class MemoryBroker {
         +publish()
         +poll()
         +empty()
@@ -40,16 +40,16 @@ classDiagram
 | `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim; declares `joins_transaction = True` |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
 | `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency |
-| `InMemoryBroker` | `Producer` **and** `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure |
+| `MemoryBroker` | `Producer` **and** `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure |
 
 Only the waiting is Python's. The maps, the version checks, the outbox, the atomic claim, the
-transaction journal and the broker's settlement accounting live in the native `edax-adapters` crate.
+transaction journal and the broker's settlement accounting live in the native `edax-memory` crate.
 Every software development kit (SDK) shares them, so the two bindings cannot drift. The native
 objects are `unsendable`: do not share one across operating-system threads.
 
 The Rust SDK ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
 `MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryProjectionStore`, `MemorySagaStore` and
-`InMemoryBroker`. There `MemoryTx` is a plain `Copy` token and the no-transaction handle is
+`MemoryBroker`. There `MemoryTx` is a plain `Copy` token and the no-transaction handle is
 `MemoryTx::auto_commit()`, which is also its `Default`.
 
 ## The transaction is real
@@ -210,7 +210,7 @@ This is a development and test backend.
 | An abandoned token is a permanent conflict | a token neither committed nor rolled back is not a held key you can wait out. Its keys conflict for the process lifetime. Every SDK's scoped unit of work guarantees a commit or a rollback runs. |
 | `unsendable` native objects | keep one transactor's stores on one thread. |
 
-`InMemoryBroker` has matching limits. `publish` returns once the envelope is queued, not once it is
+`MemoryBroker` has matching limits. `publish` returns once the envelope is queued, not once it is
 durable. First in, first out (FIFO) gives per-key order. `nack` re-queues at the tail, possibly
 behind later same-key messages, which the `Consumer` contract permits. `empty()` is true only when
 nothing is queued *and* every polled delivery has been settled, which is the same "nothing left to

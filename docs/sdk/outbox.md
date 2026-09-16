@@ -341,7 +341,7 @@ published = await edax.Relay(store, events.publish).drain()
 
 `examples/py/outbox.py:63`. Two things to notice. The input delivery is acked only **after** the
 append commits, so a crash before the commit redelivers the input rather than dropping the work.
-`InMemoryBroker` is both `Producer` and `Consumer`. The same wiring runs against a real broker once
+`MemoryBroker` is both `Producer` and `Consumer`. The same wiring runs against a real broker once
 you swap in an adapter over your own client. The shape does not change.
 
 `examples/py/command_handling.py:108` shows the other half: the outbox holds exactly the events that

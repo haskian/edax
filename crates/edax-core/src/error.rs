@@ -10,7 +10,7 @@
 //!
 //! Failures cross a native binding as `"<code>: <message>"`. [`ErrorCode::tag`] is the one place
 //! that builds that string and [`ErrorCode::split`] the one place that takes it apart. Only some
-//! codes cross the wire today (the store adapters emit `concurrency`, `codec`, `store` and
+//! codes cross the wire today (the backend stores emit `concurrency`, `codec`, `store` and
 //! `bad_handle`); the
 //! others are raised inside an SDK. One enum covers both: a binding parses every code so a kind
 //! that starts crossing later needs no new parser, and terminality is pinned for all of them.
@@ -125,6 +125,67 @@ impl std::str::FromStr for ErrorCode {
     }
 }
 
+/// A failure of a backend store or broker. Typed, so a Rust consumer reads the fields instead of
+/// parsing them back out of a message. Four codes of the taxonomy are here — `concurrency`, `codec`,
+/// `store` and `bad_handle`; the rest are raised inside an SDK, never by a store.
+///
+/// `Display` is the one place that renders the `"<code>: <message>"` wire form, through
+/// [`ErrorCode::tag`]. A binding boundary calls `to_string()` and adds nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterError {
+    /// The expected version did not match the stored one: a concurrent writer got there first.
+    /// Versions are the stores' `i64`; the SDK converts at its seam.
+    Concurrency {
+        /// The version the caller wrote against.
+        expected: i64,
+        /// The version the store actually holds.
+        stored: i64,
+    },
+    /// A deterministic failure: malformed JSON, or a batch that fails the same way on every retry.
+    Codec(String),
+    /// The store failed for a reason other than a conflict. No in-memory store raises it; it is
+    /// the variant a durable store maps a backend failure to.
+    Store(String),
+    /// The transaction token names no open transaction: never begun, or already settled. Terminal,
+    /// because the same token fails the same way on every retry.
+    BadHandle(String),
+}
+
+impl AdapterError {
+    /// The kernel's code for this failure, which carries the terminal / transient verdict. Exhaustive: a new
+    /// variant must name its code.
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            AdapterError::Concurrency { .. } => ErrorCode::Concurrency,
+            AdapterError::Codec(_) => ErrorCode::Codec,
+            AdapterError::Store(_) => ErrorCode::Store,
+            AdapterError::BadHandle(_) => ErrorCode::BadHandle,
+        }
+    }
+
+    /// A deterministic marshaling failure, so a host does not retry it. The one constructor a
+    /// backend crate uses for a serializer's own error, which is why it takes any `Display`.
+    pub fn codec(cause: impl std::fmt::Display) -> Self {
+        AdapterError::Codec(cause.to_string())
+    }
+}
+
+impl std::fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let wire = match self {
+            AdapterError::Concurrency { expected, stored } => {
+                self.code().tag(format_args!("expected {expected}, stored {stored}"))
+            }
+            AdapterError::Codec(message) | AdapterError::Store(message) | AdapterError::BadHandle(message) => {
+                self.code().tag(message)
+            }
+        };
+        f.write_str(&wire)
+    }
+}
+
+impl std::error::Error for AdapterError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +265,62 @@ mod tests {
             "timeout".parse::<ErrorCode>(),
             Err("unknown error code: timeout".to_owned())
         );
+    }
+
+    #[test]
+    fn adapter_error_display_is_the_tagged_wire_form() {
+        // One case per variant. The wire string is what a binding crosses and what its parser
+        // (`ErrorCode::split`, Python's `from_runtime`) takes apart, so the round trip is pinned too.
+        struct Case {
+            name: &'static str,
+            error: AdapterError,
+            code: ErrorCode,
+            wire: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "concurrency_carries_both_versions_in_order",
+                error: AdapterError::Concurrency { expected: 3, stored: 4 },
+                code: ErrorCode::Concurrency,
+                wire: "concurrency: expected 3, stored 4",
+            },
+            Case {
+                name: "concurrency_renders_a_negative_version_as_is",
+                error: AdapterError::Concurrency { expected: -1, stored: i64::MAX },
+                code: ErrorCode::Concurrency,
+                wire: "concurrency: expected -1, stored 9223372036854775807",
+            },
+            Case {
+                name: "codec_is_terminal",
+                error: AdapterError::Codec("invalid type: string, expected u64".to_owned()),
+                code: ErrorCode::Codec,
+                wire: "codec: invalid type: string, expected u64",
+            },
+            Case {
+                name: "store_is_transient",
+                error: AdapterError::Store("connection to the event store was reset".to_owned()),
+                code: ErrorCode::Store,
+                wire: "store: connection to the event store was reset",
+            },
+            Case {
+                name: "bad_handle_names_the_token",
+                error: AdapterError::BadHandle("unknown transaction 7".to_owned()),
+                code: ErrorCode::BadHandle,
+                wire: "bad_handle: unknown transaction 7",
+            },
+            Case {
+                // The message may itself hold the separator; the code is still the first segment.
+                name: "codec_message_with_a_separator_inside",
+                error: AdapterError::codec("redis: connection reset"),
+                code: ErrorCode::Codec,
+                wire: "codec: redis: connection reset",
+            },
+        ];
+        for case in cases {
+            assert_eq!(case.error.code(), case.code, "{} code", case.name);
+            assert_eq!(case.error.to_string(), case.wire, "{} wire", case.name);
+            let message = case.wire.split_once(": ").map(|(_, m)| m);
+            assert_eq!(ErrorCode::split(case.wire), message.map(|m| (case.code, m)), "{} split", case.name);
+        }
     }
 }

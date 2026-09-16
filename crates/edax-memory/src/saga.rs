@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use edax_core::{lock, AdapterError};
 use serde_json::Value;
 
-use crate::error::{codec_error, AdapterError};
-use crate::tx::{held_by_other, lock, store_view, versioned_row, Committed, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{held_by_other, store_view, versioned_row, Committed, MemoryState, MemoryTransactor, WriteSet};
 
 /// In-memory saga instance store for development and tests: per-correlation state with optimistic
 /// concurrency on the version. State crosses as JSON text and may be any JSON value (a saga that keeps
@@ -54,7 +54,7 @@ impl MemorySagaStore {
     /// is an id another open transaction has written and not yet committed; malformed state JSON is a
     /// codec error and writes nothing.
     pub fn save(&self, tx: i64, id: &str, version: i64, state_json: &str) -> Result<i64, AdapterError> {
-        let state: Value = serde_json::from_str(state_json).map_err(codec_error)?;
+        let state: Value = serde_json::from_str(state_json).map_err(AdapterError::codec)?;
         lock(&self.state).write(tx, |committed, others, own| {
             refuse_held_saga(others, id, version)?;
             let stored = saga_row(committed, Some(own), id).map_or(0, |(v, _)| *v);

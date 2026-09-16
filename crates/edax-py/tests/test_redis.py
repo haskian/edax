@@ -10,15 +10,14 @@ from typing import Any, Callable, ClassVar, Optional
 import edax
 import pytest
 from conftest import TTL_MS, FakeRedis
-from edax.backend.redis import (
-    _CLAIM_ATTEMPTS,
-    _DEL_IF_PREFIX,
-    _SET_IF_PREFIX,
-    AsyncRedisClient,
-    RedisIdempotencyStore,
-    _split,
-)
+from edax import _edax
+from edax.backend.redis import _CLAIM_ATTEMPTS, AsyncRedisClient, RedisIdempotencyStore
 from edax.command import Record, decode_record
+
+# The fence bodies and the value layout are the `edax-redis` kernel's, pinned by its golden vectors;
+# the adapter registers exactly these, so a second SDK's EVALSHA hashes to the same script.
+SET_IF_PREFIX = _edax.redis_fenced_set_script()
+DEL_IF_PREFIX = _edax.redis_fenced_del_script()
 
 
 def store(conn: Optional[FakeRedis] = None, claim_ttl_ms: Optional[int] = None) -> RedisIdempotencyStore:
@@ -138,14 +137,36 @@ async def test_complete_of_an_unencodable_result_is_terminal() -> None:
     assert conn.map == {}  # nothing was written: the encode failed before the SET
 
 
-async def test_claim_of_an_unreadable_record_is_terminal() -> None:
-    """A stored record that will not decode fails the same way on every retry, so it is a terminal
+async def test_complete_under_a_malformed_owner_token_is_terminal() -> None:
+    """The kernel refuses to frame a value under a token it would never mint. That verdict is the
+    terminal ``CodecError``, not the transient ``StoreError`` the client guard hands out: a value the
+    kernel will not build is not built on the retry either."""
+    conn = FakeRedis()
+    s = store(conn)
+    await s.claim("order-7", RECORD.payload_hash)
+    s._owned["order-7"] = "not-a-fence-token"  # what a corrupted or foreign token would leave behind
+    with pytest.raises(edax.CodecError, match="owner token is") as caught:
+        await s.complete("order-7", RECORD)
+    assert caught.value.terminal is True
+
+
+@pytest.mark.parametrize(
+    "branch, stored, want",
+    [
+        # The record half will not parse; the owner token in front of it is well formed.
+        ("unreadable_record", OWNER.encode() + b"{not json", "unreadable"),
+        # The value is too short to carry an owner token at all, so the split itself refuses it.
+        ("shorter_than_the_owner_token", b"{not json", "shorter than the 32-character owner token"),
+    ],
+)
+async def test_claim_of_an_unreadable_value_is_terminal(branch: str, stored: bytes, want: str) -> None:
+    """A stored value that will not read back fails the same way on every retry, so it is a terminal
     ``CodecError``; retrying or replaying it would loop until the TTL."""
     conn = FakeRedis()
-    conn.map["idem:k1"] = (b"{not json", TTL_MS)
-    with pytest.raises(edax.CodecError, match="unreadable") as caught:
+    conn.map["idem:k1"] = (stored, TTL_MS)
+    with pytest.raises(edax.CodecError, match=want) as caught:
         await store(conn).claim("k1", 42)
-    assert caught.value.terminal is True
+    assert caught.value.terminal is True, branch
 
 
 class _RegisteredScript:
@@ -238,7 +259,7 @@ class _SpyRedisPy:
             [
                 (
                     "evalsha",
-                    (_SET_IF_PREFIX,),
+                    (SET_IF_PREFIX,),
                     {"keys": ["idem:order-7"], "args": [OWNER.encode(), RECORD_BYTES, TTL_MS]},
                 )
             ],
@@ -249,7 +270,7 @@ class _SpyRedisPy:
             "delete_if_prefix_lost_the_fence_is_false",
             _SpyRedisPy(script_returns=0),
             lambda c: c.delete_if_prefix("idem:order-7", OWNER.encode()),
-            [("evalsha", (_DEL_IF_PREFIX,), {"keys": ["idem:order-7"], "args": [OWNER.encode()]})],
+            [("evalsha", (DEL_IF_PREFIX,), {"keys": ["idem:order-7"], "args": [OWNER.encode()]})],
             False,
         ),
     ],
@@ -330,7 +351,9 @@ async def test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holder(
         await slow.complete("order-7", RECORD)
 
     held = await conn.get("idem:order-7")
-    assert held is not None and decode_record(_split(held)).pending, "still the new holder's"
+    assert held is not None and decode_record(_edax.redis_split_value(held).record).pending, (
+        "still the new holder's"
+    )
 
     # And the new holder's own completion still works.
     await fast.complete("order-7", RECORD)
@@ -359,12 +382,12 @@ async def test_the_fence_scripts_are_registered_once_not_shipped_per_call() -> N
     dispatch on the hot path."""
     client = _SpyRedisPy(script_returns=1)
     adapter = AsyncRedisClient(client)
-    assert client.registered == [_SET_IF_PREFIX, _DEL_IF_PREFIX]
+    assert client.registered == [SET_IF_PREFIX, DEL_IF_PREFIX]
 
     for _ in range(3):
         await adapter.set_px_if_prefix("idem:order-7", OWNER.encode(), RECORD_BYTES, TTL_MS)
         await adapter.delete_if_prefix("idem:order-7", OWNER.encode())
-    assert client.registered == [_SET_IF_PREFIX, _DEL_IF_PREFIX], "re-registered on a later call"
+    assert client.registered == [SET_IF_PREFIX, DEL_IF_PREFIX], "re-registered on a later call"
     assert len(client.calls) == 6
 
 
@@ -442,6 +465,6 @@ async def test_a_refused_complete_through_the_guard_does_not_free_the_new_holder
         await bus.dispatch(Deposit("req-A"))
 
     held = await conn.get("idem:req-A")
-    assert held is not None and decode_record(_split(held)).pending, (
+    assert held is not None and decode_record(_edax.redis_split_value(held).record).pending, (
         "the guard's compensating release deleted the taker's live claim"
     )

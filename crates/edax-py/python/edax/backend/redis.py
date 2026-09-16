@@ -4,11 +4,11 @@ caller-owned ``redis.asyncio.Redis``, so edax pulls no redis dependency. See ``d
 
 from __future__ import annotations
 
-import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, ClassVar, Optional, Protocol
 
+from .. import _edax, errors
 from ..command import Record, decode_record, encode_record
 from ..errors import StoreError
 from ..store import Tx
@@ -16,20 +16,11 @@ from ..store import Tx
 # Bounds the SET NX -> GET retry below. A loop with no ceiling would spin instead of failing.
 _CLAIM_ATTEMPTS = 3
 
-# The stored value is `<owner><record>`: a fixed-width hex fence token, then the kernel's record JSON. One
-# key, so one TTL governs both; a sibling key would let a claimant win the record, lose the owner, and hold a
-# claim it could never settle. A second SDK's Redis store must match this layout to share a ledger.
-_OWNER_HEX_LEN = 32
-
-
-def _new_owner() -> str:
-    return secrets.token_hex(_OWNER_HEX_LEN // 2)
-
-
-def _split(raw: Any) -> str:
-    """The record JSON out of a stored value, dropping the owner token."""
-    text = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
-    return text[_OWNER_HEX_LEN:]
+# The stored value is `<owner><record>`: a fixed-width hex fence token, then the kernel's record JSON. That
+# layout, the token's width and the two Lua fence scripts are the `edax-redis` kernel's, pinned by its
+# golden vectors, so a second SDK's Redis store shares the ledger by calling the same functions. One key, so
+# one TTL governs both halves; a sibling key would let a claimant win the record, lose the owner, and hold a
+# claim it could never settle.
 
 
 @contextmanager
@@ -96,8 +87,11 @@ class RedisIdempotencyStore:
         """Atomically claim ``key`` with a pending record under ``claim_ttl_ms``. ``None`` if this caller
         won, else the existing :class:`~edax.command.Record`."""
         rkey = self._key(key)
-        owner = _new_owner()
-        pending = (owner + encode_record(Record(payload_hash, pending=True))).encode()
+        owner = _edax.redis_owner()
+        with errors.mapped():
+            # Building the value is the kernel's, not the client's: a token it refuses is a terminal
+            # CodecError, never the transient StoreError an I/O failure gets.
+            pending = _edax.redis_claim_value(owner, payload_hash).encode()
         for _ in range(_CLAIM_ATTEMPTS):
             with _as_store_error("claim", key):
                 if await self._conn.set_nx_px(rkey, pending, self._claim_ttl_ms):
@@ -105,8 +99,14 @@ class RedisIdempotencyStore:
                     return None
                 raw = await self._conn.get(rkey)
             if raw is not None:
+                # A client opened with `decode_responses=True` answers text; the kernel splits bytes.
+                stored = raw.encode() if isinstance(raw, str) else bytes(raw)
+                with errors.mapped():
+                    # A value shorter than the owner token, or not UTF-8, is a terminal CodecError:
+                    # the same verdict an unreadable record gets, not a retried transient failure.
+                    record_json = _edax.redis_split_value(stored).record
                 # `decode_record` types an unreadable record as a terminal CodecError.
-                return decode_record(_split(raw))
+                return decode_record(record_json)
             # TTL expiry or a release dropped the winner's record between SET NX and GET. Nothing to
             # replay, so retry the claim rather than report "no prior".
         raise StoreError(f"redis claim {key!r}: record vanished on {_CLAIM_ATTEMPTS} attempts")
@@ -120,12 +120,21 @@ class RedisIdempotencyStore:
         owner = self._owned.get(key)
         if owner is None:
             # No claim of this caller's to fence against: a direct write, not a guarded dispatch.
+            with errors.mapped():
+                value = _edax.redis_record_value(_edax.redis_owner(), body).encode()
             with _as_store_error("complete", key):
-                await self._conn.set_px(self._key(key), (_new_owner() + body).encode(), self._ttl_ms)
+                await self._conn.set_px(self._key(key), value, self._ttl_ms)
             return
+        # Framed before the guard opens: a token the kernel refuses is a terminal CodecError, and
+        # `_as_store_error` would retag it as a transient StoreError and retry it forever.
+        with errors.mapped():
+            value = _edax.redis_record_value(owner, body).encode()
         with _as_store_error("complete", key):
             fenced = await self._conn.set_px_if_prefix(
-                self._key(key), owner.encode(), (owner + body).encode(), self._ttl_ms
+                self._key(key),
+                owner.encode(),
+                value,
+                self._ttl_ms,
             )
         if not fenced:
             # Loud on purpose: the outcome was not recorded, so the caller must not report success.
@@ -160,9 +169,10 @@ class AsyncRedisClient:
 
     def __init__(self, client: Any) -> None:
         self._client = client
-        # Registered once: EVALSHA per call, source only when the server reports NOSCRIPT.
-        self._set_if_prefix = client.register_script(_SET_IF_PREFIX)
-        self._del_if_prefix = client.register_script(_DEL_IF_PREFIX)
+        # Registered once: EVALSHA per call, source only when the server reports NOSCRIPT. Both bodies
+        # are the kernel's, so every SDK's EVALSHA hashes to the same script.
+        self._set_if_prefix = client.register_script(_edax.redis_fenced_set_script())
+        self._del_if_prefix = client.register_script(_edax.redis_fenced_del_script())
 
     async def get(self, key: str) -> Optional[bytes]:
         return await self._client.get(key)
@@ -182,19 +192,3 @@ class AsyncRedisClient:
 
     async def delete_if_prefix(self, key: str, prefix: bytes) -> bool:
         return bool(await self._del_if_prefix(keys=[key], args=[prefix]))
-
-
-# Compare-and-write in one round trip: a GET then a SET leaves the gap the fence exists to close.
-_SET_IF_PREFIX = """
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0
-end
-return 0
-"""
-
-_DEL_IF_PREFIX = """
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-"""

@@ -19,7 +19,7 @@ pub mod store;
 
 pub use aggregate::{Aggregate, AggregateCodec, EventCodec, Root};
 pub use backend::{
-    InMemoryBroker, MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor,
+    MemoryBroker, MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor,
     MemoryTx,
 };
 pub use codec::{Format, Json, JsonCodec, SerdeCodec};

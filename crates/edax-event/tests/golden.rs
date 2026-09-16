@@ -9,12 +9,8 @@
 
 use edax_event::query::{decode_cursor, effective_sort, encode_cursor, query_json, SortKey};
 use edax_event::{encode_from_json, Format};
-use edax_golden::write_or_check;
+use edax_golden::{hex, write_or_check};
 use serde_json::{json, Value};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 /// Every id against every `n` for one routing function. `n = 0` clamps to 1 (every id -> 0).
 fn routing_cases(ns: &[u32], route: fn(&str, u32) -> u32) -> Vec<Value> {
