@@ -25,8 +25,8 @@ use edax::{
     EventStore, IdempotencyStore, JsonCodec, KeyOrderedDispatcher, MemoryEventStore, MemoryIdempotencyStore,
     MemoryProjectionStore, MemoryTx, ProjectionStore, Query, Relay, Repository, Root,
 };
-use edax_cqrs::{command_hash, decide, Decision};
-use edax_event::{Event, EventEnvelope, Metadata, Namespace, SortKey};
+use edax_cqrs::{command_hash, decide, Decision, SortKey};
+use edax_event::{Event, EventEnvelope, Metadata, Namespace};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use serde::{Deserialize, Serialize};

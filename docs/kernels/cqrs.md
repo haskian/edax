@@ -1,12 +1,16 @@
-# The command-side kernel
+# The command-and-query kernel
 
-`crates/edax-cqrs` owns the command-side decisions that must agree across languages and processes.
-Which bytes a command's idempotency hash covers. What the stored record looks like. What a claimant
-does with a record it did not write.
+`crates/edax-cqrs` owns the decisions on both sides of the separation it is named for, wherever they
+must agree across languages and processes. On the command side: which bytes a command's idempotency
+hash covers, what the stored record looks like, what a claimant does with a record it did not write.
 
 The command bus itself is host-local ergonomics: handler registration, typed dispatch and the
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
-(SDKs), not here. The kernel is five decisions and one stored shape.
+(SDKs), not here. The command side is five decisions and one stored shape.
+
+The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
+match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
+and the two travel together because the query evaluates the filter.
 
 | Symbol | Decision it owns |
 |---|---|
@@ -277,3 +281,14 @@ The consequence matters for the guarantee. Every window, both modes and both gua
 - [`../sdk/commands.md`](../sdk/commands.md) — the `CommandBus` and middleware chain the kernel
   deliberately leaves to the SDKs.
 - [`../sdk/errors.md`](../sdk/errors.md) — which verdicts are terminal and what branches on them.
+
+## `query` — ordering and pagination
+
+The pipeline is `filter -> keyset(after) -> sort -> offset -> limit`. A backend may push all of it
+into native `WHERE`, `ORDER BY` and `LIMIT` clauses. The semantics stay the kernel's, and
+`query_json` is the reference applier the golden vectors pin.
+
+The total order over JSON values, the automatic `id` tiebreak and the cursor encoding are documented
+from the host's side in [../sdk/projections.md](../sdk/projections.md#querying). The Rust SDK
+re-exports the kernel's `Query` and `SortKey` rather than defining its own, so the spec and the
+applier cannot drift.

@@ -79,7 +79,7 @@ impl MemoryProjectionStore {
         let docs_bytes = serde_json::to_vec(&docs).map_err(AdapterError::codec)?;
         // A malformed query spec (or cursor) is a marshaling failure, so it carries the `codec` code:
         // unprefixed it would fall back to the host's transient store error and be retried forever.
-        let out = edax_event::query::query_json(query_json.as_bytes(), &docs_bytes).map_err(AdapterError::codec)?;
+        let out = edax_cqrs::query_json(query_json.as_bytes(), &docs_bytes).map_err(AdapterError::codec)?;
         String::from_utf8(out).map_err(AdapterError::codec)
     }
 }
@@ -217,7 +217,7 @@ mod tests {
             let page: Vec<Value> = serde_json::from_str(&store.get_many(NO_TX, &spec.to_string()).unwrap()).unwrap();
             let row = page.first().expect("one row per page").clone();
             seen.push(row["id"].as_str().expect("the injected row key").to_owned());
-            let cursor = edax_event::encode_cursor_json(row.to_string().as_bytes(), br#"[{"path":"age"}]"#).unwrap();
+            let cursor = edax_cqrs::encode_cursor_json(row.to_string().as_bytes(), br#"[{"path":"age"}]"#).unwrap();
             after = Some(String::from_utf8(cursor).expect("a cursor is base64 text"));
         }
         assert_eq!(seen, ids, "each page advances by exactly one row");

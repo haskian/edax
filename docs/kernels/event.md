@@ -12,7 +12,6 @@ Python service and a Rust service cannot drift.
 | `domain` | the envelope shape every binding shares | `envelopes.json` |
 | `partition` | which partition an aggregate id routes to | `partition.json`, `rendezvous.json` |
 | `codec` | the reproducible wire bytes for an envelope | `envelopes.json` |
-| `query` | read-side total order, stable sort, keyset cursors | `query.json` |
 | `upcast` | which `v -> v+1` steps run, in which order | `upcast.json` |
 | `causation` | `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `dedup` | the ignore-old decision for ordered delivery | `dedup.json` |
@@ -203,17 +202,6 @@ let back = Format::Msgpack.decode(&wire)?;
 maps. Decoding is fallible. The binding tags the failure with the `codec` error code. The host then
 raises a terminal `CodecError` instead of retrying a poison message forever.
 
-## `query` — ordering and pagination
-
-The pipeline is `filter -> keyset(after) -> sort -> offset -> limit`. A backend may push all of it
-into native `WHERE`, `ORDER BY` and `LIMIT` clauses. The semantics stay the kernel's, and
-`query_json` is the reference applier the golden vectors pin.
-
-The total order over JSON values, the automatic `id` tiebreak and the cursor encoding are documented
-from the host's side in [../sdk/projections.md](../sdk/projections.md#querying). The Rust SDK
-re-exports the kernel's `Query` and `SortKey` rather than defining its own, so the spec and the
-applier cannot drift.
-
 ## `upcast` — planning a version chain
 
 `upcast_plan(from, to, available)` returns `[from, from+1, ..., to-1]`, where step `v` upgrades a
@@ -385,9 +373,9 @@ commits leaves the high-water mark ahead of the state it claims to describe.
 
 - [kernels/core.md](./core.md) — `fnv1a32` and `fnv1a64` behind both routing functions, plus the
   error taxonomy.
-- [kernels/filter.md](./filter.md) — the filter abstract syntax tree (AST) that `query` evaluates.
-- [kernels/cqrs.md](./cqrs.md) — the command-side counterpart: `command_hash` and
-  idempotency-by-key.
+- [kernels/filter.md](./filter.md) — the filter abstract syntax tree (AST) the read side evaluates.
+- [kernels/cqrs.md](./cqrs.md) — the other kernel on top of `edax-core`: `command_hash` and
+  idempotency-by-key on the command side, `query` and cursors on the read side.
 - [kernels/golden-vectors.md](./golden-vectors.md) — how every vector cited here is generated and
   asserted.
 - [sdk/consuming.md](../sdk/consuming.md) — `KeyOrderedDispatcher`, the one caller of `partition`.

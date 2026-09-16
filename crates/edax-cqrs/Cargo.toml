@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-side consistency kernel for the edax polyglot toolkit"
+description = "Command-and-query consistency kernel for edax: idempotency, filter, query"
 
 [dependencies]
 edax-core.workspace = true
 serde.workspace = true
 serde_json = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 edax-golden.workspace = true

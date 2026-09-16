@@ -47,6 +47,12 @@ EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
 ```
 
+**One kernel crate per concern.** `edax-core` is primitives only — hash, backoff, clock, guid, the
+error taxonomy. `edax-event` is event-driven: partition, codec, causation, dedup, sequence, upcast.
+`edax-cqrs` is both halves of its name: the command side's idempotency decision *and* the read
+side's `filter` and `query`. Filter and query live together because the query evaluates the filter
+(`filter::resolve` and `value_cmp` are public for it) — never split them across crates.
+
 **One kernel crate per technology.** A Kafka or Redis decision two SDKs must match (record key,
 headers, media type, offset watermark, ledger value layout, fence script) belongs in `edax-kafka` or
 `edax-redis` with a golden vector, never in the Python adapter. The adapter is the input and output

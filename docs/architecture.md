@@ -24,8 +24,8 @@ flowchart TB
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
         C["edax-cqrs<br/>payload hash, idempotency decision"]
-        D["edax-event<br/>partition, codec, query<br/>upcast, causation, dedup"]
-        E["edax-core<br/>filter, hashing, backoff, error codes"]
+        D["edax-event<br/>partition, codec, sequence<br/>upcast, causation, dedup"]
+        E["edax-core<br/>hashing, backoff<br/>clock, guid, error codes"]
     end
 
     A -->|"implements the seams"| B
@@ -52,7 +52,7 @@ later as a dropped row or a double-charged customer. Two examples the kernel rem
   Canonicalization happens inside `edax-cqrs`, so neither SDK picks the bytes.
 - A filter leaf over a missing path. Making it true in one service and false in another silently
   changes which rows a page returns. `edax-core`'s evaluator pins the verdict
-  (`crates/edax-core/src/filter.rs`).
+  (`crates/edax-cqrs/src/filter.rs`).
 
 The kernels are pure, synchronous, and free of I/O, threads and callbacks. That is what makes them
 portable, testable without a harness, and cheap to pin with a vector file.
@@ -96,8 +96,8 @@ flowchart LR
 
 | Crate | What |
 |---|---|
-| `edax-core` | hashing, backoff, the filter abstract syntax tree (AST) and evaluator, the error taxonomy, `guid`, `current_timestamp` |
-| `edax-event` | partition, codec, query, upcast, causation, dedup, the envelope shape |
+| `edax-core` | hashing, backoff, the error taxonomy, `guid`, `current_timestamp` |
+| `edax-event` | partition, codec, upcast, causation, dedup, sequence, the envelope shape |
 | `edax-cqrs` | canonical JSON, payload hash, command hash, the idempotency record and decision |
 | `edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
 | `edax-kafka` | the Kafka record: the key rule, the four contract headers, the media types, the poison id, and the token-settled offset watermark |

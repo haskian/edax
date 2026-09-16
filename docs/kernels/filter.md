@@ -1,4 +1,4 @@
-# The filter kernel — `edax-core::filter`
+# The filter kernel — `edax-cqrs::filter`
 
 A sealed abstract syntax tree (AST) plus one reference evaluator. The bindings build filters and
 call `eval_json`. The match decision is made only here, so the null and missing-path rules cannot
@@ -102,7 +102,7 @@ fn present<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
     }
 }
 ```
-<sup>`edax_core::filter::eval`</sup>
+<sup>`edax_cqrs::filter::eval`</sup>
 
 A leaf that cannot find a value returns `false`. `Not` then negates that `false` to `true`. So `Ne`
 and `Not(Eq)` deliberately differ.
@@ -177,7 +177,7 @@ it.
 
 ## The two surfaces, side by side
 
-| | Rust — `edax_core::filter` | Python — `edax.filter` |
+| | Rust — `edax_cqrs::filter` | Python — `edax.filter` |
 |---|---|---|
 | Filter type | the typed `Filter` enum | `Filter = dict[str, Any]`, the kernel's canonical form |
 | Comparisons | `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `starts_with` | same names |
@@ -187,17 +187,17 @@ it.
 | Connectives | `and(Vec<Filter>)`, `or(Vec<Filter>)`, `not(Filter)` | `and_(*filters)`, `or_(*filters)`, `not_(filter)` |
 | Evaluate | `eval(&Filter, &Value) -> bool` | `matches(filter, document) -> bool` |
 | JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, String>` | used internally by `matches` |
-| Path helpers | `resolve`, `value_cmp` (public, shared with `edax-event::query`) | not exposed |
+| Path helpers | `resolve`, `value_cmp` (public, shared with `edax-cqrs::query` next door) | not exposed |
 
 ```rust
-use edax_core::filter::{and, eq, eval, gt};
+use edax_cqrs::filter::{and, eq, eval, gt};
 use serde_json::json;
 
 let doc = json!({"status": "open", "total": 5000});
 let f = and(vec![eq("status", json!("open")), gt("total", json!(4200))]);
 assert!(eval(&f, &doc));
 ```
-<sup>the `and_all_true` case of the `edax-core` filter suite; the same filter and document are a case in `testdata/golden/filter.json`</sup>
+<sup>the `and_all_true` case of the `edax-cqrs` filter suite; the same filter and document are a case in `testdata/golden/filter.json`</sup>
 
 ```python
 from edax.filter import and_, eq, gte
@@ -217,6 +217,7 @@ pins every constructor's output.
 ## See also
 
 - [edax-core](./core.md) — hashing, backoff, the clock and the error taxonomy.
-- [edax-event](./event.md) — the query kernel that composes a filter with sorting and paging.
+- [cqrs.md](./cqrs.md) — the rest of the crate: the query that composes a filter with sorting and
+  paging, and the command side's idempotency decision.
 - [../sdk/projections.md](../sdk/projections.md) — the host view: read models, filters and cursors.
 - [golden-vectors.md](./golden-vectors.md) — how `filter.json` is generated and asserted.

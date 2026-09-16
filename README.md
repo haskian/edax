@@ -143,9 +143,9 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 | Path | What |
 |---|---|
-| `crates/edax-core` | shared primitives: hashing, backoff, the query filter abstract syntax tree (AST) and evaluator |
-| `crates/edax-event` | event-sourcing kernel: partition, codec, query, upcast, causation, dedup |
-| `crates/edax-cqrs` | command-side kernel: canonical bytes, payload hash, idempotency decision |
+| `crates/edax-core` | shared primitives: hashing, backoff, the clock, id generation, the error taxonomy |
+| `crates/edax-event` | event-driven kernel: partition, codec, upcast, causation, dedup, sequence |
+| `crates/edax-cqrs` | command-and-query kernel: canonical bytes, payload hash, idempotency decision, the filter AST and evaluator, sort and cursor rules |
 | `crates/edax` | reference Rust SDK: aggregates, stores, `CommandBus`, dispatcher, saga |
 | `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
 | `crates/edax-kafka` | Kafka kernel: the record key and headers, the media types, the offset watermark |

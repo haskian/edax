@@ -123,18 +123,18 @@ pub fn split_error(wire: &str) -> SplitError {
 /// null/missing-path rules — is the kernel's. (The boundary is JSON text: alef has no object-passing
 /// for arbitrary values, so structured crossing isn't available here.)
 pub fn eval_filter(filter: &str, doc: &str) -> Result<bool, String> {
-    edax_core::eval_json(filter.as_bytes(), doc.as_bytes()).map_err(codec_error)
+    edax_cqrs::eval_json(filter.as_bytes(), doc.as_bytes()).map_err(codec_error)
 }
 
 /// Apply a read query (JSON string) to a JSON array of documents; returns the page as a JSON string.
 pub fn query(query: &str, docs: &str) -> Result<String, String> {
-    let out = edax_event::query::query_json(query.as_bytes(), docs.as_bytes()).map_err(codec_error)?;
+    let out = edax_cqrs::query_json(query.as_bytes(), docs.as_bytes()).map_err(codec_error)?;
     String::from_utf8(out).map_err(codec_error)
 }
 
 /// Encode a keyset cursor (base64 string) from a document (JSON string) and sort keys (JSON string).
 pub fn encode_cursor(doc: &str, sort: &str) -> Result<String, String> {
-    let out = edax_event::query::encode_cursor_json(doc.as_bytes(), sort.as_bytes()).map_err(codec_error)?;
+    let out = edax_cqrs::encode_cursor_json(doc.as_bytes(), sort.as_bytes()).map_err(codec_error)?;
     String::from_utf8(out).map_err(codec_error)
 }
 
@@ -144,7 +144,7 @@ pub fn encode_cursor(doc: &str, sort: &str) -> Result<String, String> {
 /// `WHERE` clause without re-deriving the wire format. Aligned to the tiebroken sort, so a short
 /// tuple pads with null and a long one truncates, matching what the reference applier compares.
 pub fn decode_cursor(cursor: &str, sort: &str) -> Result<String, String> {
-    let out = edax_event::query::decode_cursor_json(cursor.as_bytes(), sort.as_bytes()).map_err(codec_error)?;
+    let out = edax_cqrs::decode_cursor_json(cursor.as_bytes(), sort.as_bytes()).map_err(codec_error)?;
     String::from_utf8(out).map_err(codec_error)
 }
 
@@ -152,7 +152,7 @@ pub fn decode_cursor(cursor: &str, sort: &str) -> Result<String, String> {
 ///
 /// A backend ordering by the declared sort alone disagrees with the kernel at every tie.
 pub fn effective_sort(sort: &str) -> Result<String, String> {
-    let out = edax_event::query::effective_sort_json(sort.as_bytes()).map_err(codec_error)?;
+    let out = edax_cqrs::effective_sort_json(sort.as_bytes()).map_err(codec_error)?;
     String::from_utf8(out).map_err(codec_error)
 }
 

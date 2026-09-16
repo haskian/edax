@@ -80,7 +80,6 @@ name = "edax-core"
 version = "0.1.0"
 dependencies = [
  "edax-golden",
- "serde",
  "serde_json",
  "uuid",
 ]
@@ -89,6 +88,7 @@ dependencies = [
 name = "edax-cqrs"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "edax-core",
  "edax-golden",
  "serde",
