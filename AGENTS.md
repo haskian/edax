@@ -16,7 +16,7 @@ fresh checkout; `mise trust` if it complains).
 
 ```
 # Rust kernels + SDK (golden vectors run here)
-mise exec -- cargo test -p edax-core -p edax-event -p edax-cqrs -p edax
+mise exec -- cargo test -p edax-core -p edax-event -p edax-cqrs -p edax-kafka -p edax-redis -p edax
 
 # Python SDK (venv needs msgspec)
 cd crates/edax-py && mise exec -- uv venv && source .venv/bin/activate
@@ -43,7 +43,14 @@ contract: **golden wins** over a disagreeing test unless you're deliberately cha
 EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
 ```
+
+**One kernel crate per technology.** A Kafka or Redis decision two SDKs must match (record key,
+headers, media type, offset watermark, ledger value layout, fence script) belongs in `edax-kafka` or
+`edax-redis` with a golden vector, never in the Python adapter. The adapter is the input and output
+(I/O) shell: it calls the client and the kernel, and decides nothing on its own.
 
 `#[non_exhaustive]` goes on a kernel enum a host only *reads* — one whose new variant a host may
 refuse at runtime (`Format`, `Operator`, `Decision`, `CodecError`). It stays **off** an enum whose
@@ -77,6 +84,6 @@ Shape these at the `edax-abi` surface, never by hand-editing the generated `src/
 Run **both** the kernel tests and the Python tests — `cargo test` alone misses binding regressions.
 
 `pytest` does **not** rebuild the native module. After any change under `edax-core`, `edax-event`,
-`edax-cqrs`, `edax-memory` or `edax-abi`, run `maturin develop` first or the Python suite passes
-green against the previously compiled kernel and proves nothing. CI does this in the right order
-(`.github/workflows/python.yml`).
+`edax-cqrs`, `edax-memory`, `edax-kafka`, `edax-redis` or `edax-abi`, run `maturin develop` first or
+the Python suite passes green against the previously compiled kernel and proves nothing. CI does
+this in the right order (`.github/workflows/python.yml`).

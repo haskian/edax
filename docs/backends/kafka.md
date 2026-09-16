@@ -8,6 +8,11 @@ Kafka backs the two broker seams. The adapters bridge a client you construct and
 broker library. Install with `pip install edax[kafka]`. The broker seam is the Python software
 development kit (SDK)'s; the Rust SDK ships no `Producer` / `Consumer` trait.
 
+The adapters decide nothing about the wire. The record's key, its four headers, the media type
+naming the value, and the offset watermark all live in the `edax-kafka` kernel. Golden vectors pin
+them. This page is the client half; [kernels/kafka.md](../kernels/kafka.md) is the decisions
+themselves.
+
 ```mermaid
 classDiagram
     class Producer {
@@ -19,13 +24,33 @@ classDiagram
         +poll()
         +run()
     }
+    class edax_kafka {
+        <<kernel>>
+        +kafka_record()
+        +kafka_content_type()
+        +offset_tracker()
+    }
     Producer <|.. KafkaProducer
     Consumer <|.. KafkaConsumer
     KafkaProducer ..> AIOKafkaProducer : send_and_wait
     KafkaConsumer ..> AIOKafkaConsumer : getone, commit, seek
     KafkaProducer ..> Serializer : encode
     KafkaConsumer ..> Serializer : decode
+    KafkaProducer ..> edax_kafka : builds the record
+    KafkaConsumer ..> edax_kafka : reads the header, books the offset
 ```
+
+## Constructing them
+
+```
+KafkaProducer(client, topic, *, serializer=None, key=None, middleware=())
+KafkaConsumer(client, *, serializer=None, serializers=(), middleware=())
+```
+
+`client` is an already-started `AIOKafkaProducer` or an already-started, already-subscribed
+`AIOKafkaConsumer`. `serializer` defaults to `edax.kernel("json")` on both sides, and on the
+consumer it is also the default for a record that carries no `content-type` header. Everything after
+the `*` is keyword-only, so adding an argument later cannot shift a positional one.
 
 ## The `Producer` contract
 
@@ -35,7 +60,7 @@ Four promises, and each has a failure mode behind it.
 |---|---|---|
 | `publish` returns only after the broker has **durably accepted** the message — leader ack or stronger | returning early lets the relay mark the outbox row published before the message exists: a lost event | `await client.send_and_wait(...)`, never fire-and-forget |
 | On failure `publish` **raises** | the relay then leaves the whole batch unmarked and retries it next drain | the client's exception propagates unchanged; nothing is swallowed |
-| The message key is the **aggregate id** | a broker that orders per key delivers one aggregate's events in `sequence` order | `key=self._key(env).encode()`, defaulting to `_aggregate_key` |
+| The message key is the **aggregate id** | a broker that orders per key delivers one aggregate's events in `sequence` order | the kernel's key rule, applied inside `_edax.kafka_record`; the adapter passes `None` unless you gave it `key=` |
 | Delivery is **at-least-once** | a crash between publish and `mark_published` republishes the same envelope; consumers dedup by `env.id` | inherent to the outbox; see [outbox](../sdk/outbox.md) |
 
 `publish` is called serially by one relay, so it need not be thread-safe or reentrant.
@@ -44,11 +69,29 @@ The key is what preserves order, and it is the only thing that does. Kafka order
 partition, and the key chooses the partition, so one aggregate's events stay in one partition and
 arrive in the order they were published. Override it with `key=` if your partitioning differs, a
 tenant id for instance. Per-aggregate order then holds only if that key is still a function of the
-aggregate id.
+aggregate id. With no `key=` the adapter passes no override at all, so the default is the kernel's
+own rule and `testdata/golden/kafka_record.json` is what pins it.
 
 The durable-ack rule is asserted by a fake client whose `send` raises `"publish must await the
 broker ack (send_and_wait), not fire and forget"`. How strong that ack is remains the client's
 `acks` setting, and therefore yours.
+
+## Headers
+
+Every record the adapter publishes carries the same four headers, whatever serializer wrote the
+value. The kernel writes them; the adapter only hands them to the client.
+
+| Header | Value | A reader uses it to |
+|---|---|---|
+| `content-type` | the media type of the value bytes, for example `application/vnd.edax.envelope+json` | pick the serializer that decodes the value |
+| `edax-id` | the envelope id | dedup or trace without decoding the value |
+| `edax-event` | the event name | filter or route without decoding the value |
+| `edax-event-version` | the event version as ASCII decimal | plan an upcast without decoding the value |
+
+The set is closed. The aggregate id is the key already, the sequence is inside the value, and trace
+context is the host's own `traceparent`. Add a header of your own with record middleware, below.
+`testdata/golden/kafka_record.json` pins the four, so a consumer in another language reads the same
+names and the same bytes.
 
 ## The `Consumer` contract
 
@@ -69,6 +112,67 @@ Kafka keeps no per-message redelivery count, so `KafkaConsumer` leaves `Delivery
 default of `0`. The dispatcher's dead-letter ceiling then rests on an in-process counter, which
 resets on restart.
 
+## Custom serializers
+
+A `Serializer` names the media type it writes, as `content_type`. The producer puts that media type
+in the `content-type` header; the consumer reads the header back and routes the record to the
+serializer registered under it.
+
+```python
+import edax
+from edax.backend.kafka import KafkaConsumer
+
+consumer = KafkaConsumer(client, serializer=edax.kernel("json"), serializers=[ProtoSerializer()])
+```
+
+`serializer` is the default and claims its own media type like any other. `serializers` are the
+extra ones. Three rules follow, and each one has a failure behind it.
+
+- **Register the same media type in every SDK that reads the topic.** A custom format is a
+  cross-language agreement, and the media type is its name. Only the name is shared; the code that
+  encodes it stays per SDK.
+- **A media type no serializer claims is poison.** The consumer raises `CodecError` and the delivery
+  dead-letters. It never falls back to the default, because decoding msgpack bytes as the host's own
+  format is how a wrong envelope reaches a handler instead of the dead-letter sink.
+- **A record with no `content-type` header uses the default.** Anything published before this
+  kernel, or by a client that drops headers, still decodes.
+
+## Record middleware
+
+A middleware rewrites a record on its way to or from the broker. It is synchronous, and it takes
+bytes to bytes.
+
+<!-- doclint: check -->
+```python
+from edax.backend.kafka import KafkaHeader, KafkaRecord
+
+
+class Traceparent:
+    """Stamps one trace context on every published record."""
+
+    def __init__(self, traceparent: str) -> None:
+        self._value: bytes = traceparent.encode()
+
+    def on_publish(self, record: KafkaRecord) -> KafkaRecord:
+        headers = [*record.headers, KafkaHeader("traceparent", self._value)]
+        return KafkaRecord(record.key, record.value, headers)
+
+    def on_poll(self, record: KafkaRecord) -> KafkaRecord:
+        return record
+```
+
+Pass instances as `middleware=` to either adapter. `on_publish` runs in order, after the kernel has
+built the record and before the send. `on_poll` runs in reverse, after the fetch and before the
+content-type lookup. A pair of middlewares therefore wraps the record like an onion, and one that
+compresses or encrypts the value on the way out unwraps it on the way in. Rewrite `content-type`
+when you do, and restore it on the way in, so the consumer still routes to the serializer that wrote
+the bytes.
+
+Failures split the way the rest of the SDK splits them. A middleware that raises `CodecError` on
+poll marks the message poison, so it dead-letters. Any other exception propagates as transient and
+the message redelivers. An async hook, a key-management call for instance, is a later addition if a
+host asks for one.
+
 ## The offset-broker subtlety
 
 **On an offset broker an ack is a per-partition watermark. It is never "commit the current
@@ -81,19 +185,34 @@ which is past 7 — and therefore past 5, which is still running. The broker now
 handled. Restart the consumer and 5 is never redelivered. The message is lost, silently, and only
 under concurrency.
 
-The adapter commits the lowest unsettled offset instead, or one past the highest delivered when none
-remain:
+The consumer commits the lowest unsettled offset instead, or one past the highest delivered when none
+remain. **That state machine is the kernel's**, not the adapter's: `edax-kafka` keeps the
+bookkeeping and answers with a decision, and the adapter performs it.
 
 ```python
-watermark = min(inflight) if inflight else self._max_delivered[tp] + 1
-if watermark > self._committed.get(tp, -1):
-    await self._client.commit({tp: watermark})
+token = tracker.book(msg.topic, msg.partition, msg.offset)  # before decoding
+...
+decision = tracker.ack(token)
+if decision.commit:
+    await client.commit({tp: decision.offset})
+    tracker.committed(msg.topic, msg.partition, decision.offset)
 ```
 
-Three pieces of bookkeeping per `TopicPartition` make that work: the offsets delivered but
-unsettled, the highest offset delivered, and the last committed watermark. The last one is a
-monotonic guard — a commit reordered under asyncio at worst re-commits a lower safe watermark rather
-than moving backwards.
+Two properties follow from that shape.
+
+**Settlement is by token.** `book` returns a token naming one delivery, and `ack` and `nack` take
+that token, not a `(partition, offset)` pair. A token retires when its delivery settles, when a
+redelivery re-books the same offset, and when `reset` drops its partition. That closes the
+stale-settle hole coordinates leave open. Revoke a partition, call `reset(tp)` from your rebalance
+listener, get the partition assigned back, and re-book offset 5. The pre-revoke ack for 5 then
+arrives and settles nothing, so it cannot discard the fresh booking.
+
+**A commit is recorded only after the client confirms it.** `ack` returns the watermark; the adapter
+commits it and then calls `committed`. A commit that raised is therefore never recorded as done, and
+the next attempt at that offset is not refused. The monotonic guard lives in the kernel too: a
+commit reordered under asyncio at worst re-commits a lower safe watermark rather than moving
+backwards. `stats()` exposes the whole record per `TopicPartition`: unsettled count, highest offset
+delivered, and last committed watermark.
 
 ```mermaid
 sequenceDiagram
@@ -168,8 +287,8 @@ It needs five things from the client library:
 
 | Call | Used for |
 |---|---|
-| `await client.send_and_wait(topic, value=, key=)` | `publish`, with the broker's ack awaited |
-| `await client.getone()` | `poll`; the message must expose `topic`, `partition`, `offset`, `value` |
+| `await client.send_and_wait(topic, value=, key=, headers=)` | `publish`, with the broker's ack awaited; `headers` is a list of `(name, bytes)` pairs |
+| `await client.getone()` | `poll`; the message must expose `topic`, `partition`, `offset`, `value`, `key` and `headers` |
 | `await client.commit({tp: offset})` | committing a watermark for one `TopicPartition` |
 | `client.seek(tp, offset)` | redelivery on `nack`; synchronous |
 | `aiokafka.TopicPartition` | the bookkeeping key, imported lazily inside `poll` so the base package pulls no broker library |
@@ -199,18 +318,21 @@ It deliberately leaves the rest to the host:
   await consumer.start()
   ```
 
-  Pass the started consumer to `KafkaConsumer(consumer, serializer)`. Nothing in `edax` sets this for
-  you, because the adapter never constructs your client.
+  Pass the started consumer to `KafkaConsumer(consumer, serializer=...)`. Nothing in `edax` sets this
+  for you, because the adapter never constructs your client.
 - **Timeouts.** `getone` blocks until a message arrives, by design. Per-request deadlines are the
   client's `request_timeout_ms`.
 - **Rebalance.** The watermark bookkeeping holds only while the partition is assigned. A partition
   revoked while offsets are unsettled leaves them unsettled in the adapter. The new owner redelivers
   them from the last committed watermark, which is at-least-once. A late `commit` for that partition
-  fails rather than acking. Attach a rebalance listener to the client if you need the state dropped.
+  fails rather than acking. Attach a rebalance listener that calls `consumer.reset(tp)`. That drops
+  the partition's bookkeeping and retires its tokens.
 - **Topics and partitions.** Naming, partition count and retention are yours. Partition count bounds
   real parallelism; `workers` on the dispatcher is local parallelism only.
-- **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.kernel()` is the kernel's
-  envelope format, `"json"` or `"msgpack"`.
+- **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.kernel()` is the kernel's envelope
+  format, `"json"` or `"msgpack"`. The value bytes are the serializer's. The key, the four headers
+  and the media type in `content-type` stay the kernel's, so a custom format keeps the same record
+  shape.
 - **Dead-lettering.** `KeyOrderedDispatcher`'s `max_attempts` and `on_dead` own that; a producer's
   `publish` fits `on_dead` directly. A payload that will not decode reaches the sink as a stand-in
   envelope whose id is `topic/partition/offset`. An offset alone repeats on every partition, so two
@@ -225,14 +347,21 @@ The seam contract runs over every in-tree adapter, in-memory and Kafka alike, in
 `crates/edax-py/tests/test_broker_contract.py`: per-key order through `Relay.drain()`, nack
 redelivers, ack settles, plus a Hypothesis property over random drain histories. Kafka-only
 semantics — the commit watermark, the producer's key and topic — live in
-`crates/edax-py/tests/test_kafka.py`. Both run against a fake client, so they prove the adapter's
-own code, not Kafka's own semantics. Rebalance reordering and key-shared behavior stay out of the
-tree.
+`crates/edax-py/tests/test_kafka.py`, alongside the serializer registry and the middleware order.
+Both run against a fake client, so they prove the adapter's own code, not Kafka's own semantics.
+Rebalance reordering and key-shared behavior stay out of the tree.
+
+The kernel's own contract is replayed in `crates/edax-py/tests/test_edax.py`:
+`test_golden_kafka_record`, `test_golden_kafka_decode` and `test_golden_kafka_offsets` read
+`testdata/golden/` through `_edax`. Those three are what prove this SDK and a second one agree on
+the record and on the watermark.
 
 ## See also
 
 - [outbox](../sdk/outbox.md) — outbox rows, `Relay`, `pump`, and where `publish` is called from.
 - [consuming](../sdk/consuming.md) — `KeyOrderedDispatcher`, `EventRouter`, and who calls `ack`.
 - [backends index](./README.md) — the seam contracts and the checklist for writing one.
+- [kernels/kafka.md](../kernels/kafka.md) — the record, the headers, the media types and the offset
+  state machine, decision by decision.
 - [memory](./memory.md) — `MemoryBroker`, the same seams with no infrastructure.
 - [delivery guarantees](../guides/delivery-guarantees.md) — the end-to-end guarantee matrix.

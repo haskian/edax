@@ -6,8 +6,15 @@ exactly this.
 ## Layers
 
 **Kernel** — a pure Rust crate that decides something every service must agree on, bit for bit.
-`edax-core`, `edax-event`, `edax-cqrs`. No I/O, no threads, no callbacks, synchronous. See
-[kernels](kernels/README.md).
+`edax-core`, `edax-event`, `edax-cqrs`, plus the per-technology `edax-kafka` and `edax-redis`. No
+I/O, no threads, no callbacks, synchronous. See [kernels](kernels/README.md).
+
+**Protocol module** — a kernel crate named `edax-<tech>` that owns one technology's shared
+decisions: its bytes, its names and its state machines. `edax-kafka` and `edax-redis` are the two
+that ship. It links no client library.
+
+**I/O shell** — the per-SDK adapter over a protocol module. It calls the client and the kernel, and
+decides nothing in between. `edax.backend.kafka` and `edax.backend.redis` are the two Python ones.
 
 **SDK** — software development kit, the per-language layer that wires the kernels to a host's
 storage and transports. `crates/edax` (Rust) and `crates/edax-py/python/edax` (Python). The SDK
@@ -124,6 +131,11 @@ means "commit the current position".
 
 **Poison message** — a message that fails deterministically on every delivery, for example one that
 does not decode. It must reach the dead-letter path, never a redelivery loop.
+
+**Media type** — the name a wire format goes by between services, for example
+`application/vnd.edax.envelope+json`. A Kafka record carries it in the `content-type` header, and a
+consumer routes the record to the serializer registered under it. A media type no serializer claims
+makes the message poison, never a fallback.
 
 ## Failure
 

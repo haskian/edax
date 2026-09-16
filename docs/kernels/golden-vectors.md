@@ -17,7 +17,7 @@ drift in any binding fails that binding's build instead of production.
 
 ```mermaid
 flowchart TB
-  K["kernel: edax-core, edax-event, edax-cqrs"] --> G["tests/golden.rs derives the cases"]
+  K["kernel: edax-core, edax-event, edax-cqrs,<br/>edax-kafka, edax-redis"] --> G["tests/golden.rs derives the cases"]
   G --> W["edax_golden::write_or_check"]
   W -->|"EDAX_REGEN set: regenerate"| F["testdata/golden/*.json"]
   W -->|"env unset: assert"| F
@@ -63,6 +63,11 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `filter.json` | `filter`, `document`, `expected` | 32 filter evaluations: every operator, missing paths, cross-type compares, vacuous `and` / `or` | `edax-core` `eval` | `edax-event` `filter_cases` |
 | `idempotency.json` | `prior`, `current`, `expected` | `proceed` / `replay` / `payload_mismatch`, including that a stored hash of `0` is a real prior | `edax-cqrs` `decide` | `edax-cqrs` `idempotency_cases` |
 | `idempotency_record.json` | `name`, `stored`, `current`, `payload_hash`, `state`, `outcome`, `encoded`, plus `result` or `error` | the record's wire shape, reading order, re-encoded bytes and replay verdict — 12 cases including a stored `null` result replaying as a success | `edax-cqrs` `Record` / `outcome` | `edax-cqrs` `idempotency_record_cases` |
+| `kafka_record.json` | `name`, `format`, `envelope`, `key`, `key_hex`, `value_hex`, `headers` | the record a published envelope becomes: the key rule and the four contract headers, in both formats, with an overridden key, an unsequenced envelope and unicode | `edax-kafka` `encode_record` | `edax-kafka` `kafka_record_cases` |
+| `kafka_decode.json` | `name`, `default_format`, `value_hex`, `headers`, `want` | which format a fetched record names: the first `content-type` wins, an unknown one is refused, an absent one falls back to the default | `edax-kafka` `decode_record` | `edax-kafka` `kafka_decode_cases` |
+| `kafka_offsets.json` | `name`, `steps` of `op` plus `want` | the token-settled commit watermark replayed step by step: out-of-order acks, nack rewinds, per-partition isolation, the monotonic guard, and stale tokens after a reset | `edax-kafka` `OffsetTracker` | `edax-kafka` `kafka_offsets_cases` |
+| `redis_value.json` | `name`, `op`, the operands, and `value` or `want` | the ledger value `<owner><record>`: both writers, the width check, and every `split_value` branch | `edax-redis` `claim_value` / `record_value` / `split_value` | `edax-redis` `claim_cases`, `record_cases`, `split_cases` |
+| `redis_scripts.json` | `name`, `body` | both Lua fence bodies verbatim, so two SDKs registering them share one `EVALSHA` digest | `edax-redis` `FENCED_SET_SCRIPT` / `FENCED_DEL_SCRIPT` | `edax-redis` `script_cases` |
 | `partition.json` | `id`, `n`, `expected` | consistent-hash placement for six aggregate ids against five partition counts; `n = 0` clamps to 1 | `edax-event` `partition` | `edax-event` `partition_cases` |
 | `payload_hash.json` | `input`, `expected` | raw Fowler-Noll-Vo 1a (FNV-1a) over six byte strings, including `café ☕ 🦀` | `edax-cqrs` `payload_hash` | `edax-cqrs` `payload_hash_cases` |
 | `cursor.json` | `sort`, `document`, `expected_cursor`, `expected_effective_sort`, `expected_tuple` | the keyset cursor round trip: the `id` tiebreak, every type in the total order, a missing sort path, and a tuple whose arity does not match the sort | `edax-event` `encode_cursor` / `decode_cursor` / `effective_sort` |
@@ -96,6 +101,11 @@ test, so they regenerate with the `edax-event` command.
 | `rendezvous.json` | its generator | `test_kernel_extra.py::test_golden_rendezvous` |
 | `sequence_batch.json` | its generator | `test_edax.py::test_golden_sequence_batch` |
 | `upcast.json` | its generator | `test_kernel_extra.py::test_golden_upcast` |
+| `kafka_record.json` | its generator | `test_edax.py::test_golden_kafka_record` |
+| `kafka_decode.json` | its generator | `test_edax.py::test_golden_kafka_decode`, which also asserts the mapped terminal `CodecError` |
+| `kafka_offsets.json` | its generator | `test_edax.py::test_golden_kafka_offsets`, replaying every step through `_edax.offset_tracker()` |
+| `redis_value.json` | its generator | `test_edax.py::test_golden_redis_value` |
+| `redis_scripts.json` | its generator | `test_edax.py::test_golden_redis_scripts` |
 
 "Its generator" means the same `tests/golden.rs` function that writes the file asserts it whenever
 `EDAX_REGEN` is unset — one function, two modes.
@@ -115,6 +125,8 @@ Verbatim from `AGENTS.md:43`:
 EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
 ```
 
 Then read the diff. The files are pretty-printed with a stable key order, so `git diff` shows
@@ -124,7 +136,7 @@ To assert instead, drop the env var — the same tests run in assert mode as par
 suite (`AGENTS.md:19`):
 
 ```
-mise exec -- cargo test -p edax-core -p edax-event -p edax-cqrs -p edax
+mise exec -- cargo test -p edax-core -p edax-event -p edax-cqrs -p edax-kafka -p edax-redis -p edax
 ```
 
 ### Legitimate versus hiding a bug
@@ -172,6 +184,9 @@ Run both suites before you finish. `cargo test` alone misses binding regressions
 - [`./filter.md`](./filter.md) — the logic behind `filter.json`.
 - [`./event.md`](./event.md) — the logic behind `partition.json`, `rendezvous.json`,
   `envelopes.json`, `query.json`, `upcast.json`, `causation.json` and `dedup.json`.
+- [`./kafka.md`](./kafka.md) — the logic behind `kafka_record.json`, `kafka_decode.json` and
+  `kafka_offsets.json`.
+- [`./redis.md`](./redis.md) — the logic behind `redis_value.json` and `redis_scripts.json`.
 - [`../guides/testing.md`](../guides/testing.md) — golden vectors beside the model tests, proptest
   and Hypothesis.
 - [`../architecture.md`](../architecture.md) — why the kernels exist and how the native module is

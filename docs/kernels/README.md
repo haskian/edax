@@ -1,6 +1,6 @@
 # The kernels
 
-What the three pure Rust kernels own, why the boundary sits exactly there, and how each software
+What the five pure Rust kernels own, why the boundary sits exactly there, and how each software
 development kit (SDK) reaches them.
 
 The SDK **wires**; the kernel **decides** (`README.md:38`). A decision that must be identical in
@@ -25,6 +25,8 @@ flowchart LR
         CORE["edax-core<br/>filter · hash · backoff<br/>clock · guid · error"]
         EV["edax-event<br/>partition · codec · query<br/>upcast · causation · dedup"]
         CQ["edax-cqrs<br/>canonical_json · payload_hash<br/>command_hash · decide · Record"]
+        KAF["edax-kafka<br/>record · headers · media type<br/>offset watermark"]
+        RED["edax-redis<br/>ledger value · owner token<br/>fence scripts"]
     end
 
     APP -->|"calls a seam"| RS
@@ -37,9 +39,17 @@ flowchart LR
     ABI -->|"forwards, reshaping only"| CORE
     ABI --> EV
     ABI --> CQ
+    ABI --> KAF
+    ABI --> RED
     EV -->|"reuses hash and filter"| CORE
     CQ -->|"reuses hash"| CORE
+    KAF -->|"reuses the envelope codec"| EV
+    RED -->|"reuses the idempotency record"| CQ
 ```
+
+`edax-kafka` and `edax-redis` are the two per-technology kernels. Each one owns the bytes, names and
+state decisions a backend forces two SDKs to share, and each SDK ships only the client calls around
+it. The pattern has a name: a protocol module in Rust, an input and output (I/O) shell per SDK.
 
 The Rust SDK depends on `edax-core`, `edax-event` and `edax-cqrs` directly
 (`crates/edax/Cargo.toml`). The Python SDK reaches the same code through one extra hop.
@@ -114,6 +124,11 @@ assert it, and a byte of drift fails the build.
 | *Which* bytes does a command's hash cover? | `edax-cqrs` | `command_hash.json` | One SDK includes a field the other omits, so the same command looks like a payload mismatch |
 | Proceed, replay, or reject a payload mismatch? | `edax-cqrs` | `idempotency.json` | A reused key runs twice in one service and replays in another — a double-charged customer |
 | What does the stored record look like, and what verdict does a losing claimant read from it? | `edax-cqrs` | `idempotency_record.json` | A record written by one SDK is unreadable or read with the wrong outcome by another sharing the ledger |
+| What key and headers does a published envelope become on a topic? | `edax-kafka` | `kafka_record.json` | A consumer in another language cannot find the event name, or the key splits one aggregate across partitions and loses its order |
+| Which format does a fetched record name, and what if nobody knows it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong envelope reaches a handler |
+| Which offset may a consumer commit, and which token settles a delivery? | `edax-kafka` | `kafka_offsets.json` | A commit skips an offset still in flight, so a restart never redelivers it |
+| What bytes sit under an idempotency key in Redis? | `edax-redis` | `redis_value.json` | A ledger written by one SDK is unreadable by another sharing it, so both run the same command |
+| Which Lua does a fenced write run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
 
 Two vectors are derived by a different kernel's test than the one that owns the code. `filter.json`
 and `backoff.json` come from the `edax-event` golden test. `filter` and `backoff` themselves live in
@@ -122,23 +137,26 @@ crate, so the rule enforcing the contract cannot drift between kernels.
 
 ## Deterministic, and the two functions that are not
 
-Every kernel function is a pure function of its arguments, with two deliberate exceptions, both in
-`edax-core`:
+Every kernel function is a pure function of its arguments, with three deliberate exceptions:
 
 | Function | Source | Why it is not deterministic | What it guarantees instead |
 |---|---|---|---|
 | `guid` | `crates/edax-core/src/guid.rs` | Reads the clock and a random source to generate a universally unique identifier (UUID) v7 | Structural only: 8-4-4-4-12 lowercase hyphenated, version 7, RFC4122 variant, time-ordered prefix |
 | `current_timestamp` | `crates/edax-core/src/clock.rs` | Reads the wall clock, then bumps a process-local high-water mark | Strictly greater than every prior return in this process, even across an Network Time Protocol (NTP) step backwards |
+| `new_owner` | `crates/edax-redis/src/ledger.rs` | Mints a fresh UUID v7 fence token from the clock and a random source | Structural only: 32 lowercase hexadecimal characters, version 7, and distinct per call |
 
-Neither carries a golden vector, and both docstrings say so. They still belong in the kernel because
-the shape of what they produce is a cross-language contract. Every service must generate an id that
+None of the three carries a golden vector, and each docstring says so. They still belong in a kernel
+because the shape of what they produce is a cross-language contract. A token of the wrong width
+cannot fence a claim any other SDK wrote. Every service must generate an id that
 sorts the same way. Every service must generate a timestamp that never repeats. Otherwise event
-ordering and the outbox break. Both SDKs take them as overridable defaults, so a test can pin them:
-`Repository::with_clock` in Rust and the `new_id=` / `now=` constructor arguments in Python.
+ordering and the outbox break. Both SDKs take the first two as overridable defaults, so a test can
+pin them: `Repository::with_clock` in Rust and the `new_id=` / `now=` constructor arguments in
+Python.
 
-`current_timestamp` also holds the only mutable state in any kernel: one process-local `AtomicU64`
-high-water mark. It spans neither restarts nor machines, which is why the guarantee is monotonicity
-and not a value.
+`current_timestamp` also holds the only mutable state any kernel *function* keeps: one process-local
+`AtomicU64` high-water mark. It spans neither restarts nor machines, which is why the guarantee is
+monotonicity and not a value. `edax-kafka`'s `OffsetTracker` is mutable too, but the host owns that
+state: a consumer constructs its own tracker, and two trackers share nothing.
 
 ## Purity constraints
 
@@ -174,6 +192,10 @@ waiting.
 - [event.md](./event.md) — `edax-event`: partition, codec, query, upcast, causation, dedup, domain.
 - [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, payload and command hashes, the idempotency
   decision and record.
+- [kafka.md](./kafka.md) — `edax-kafka`: the record key and headers, the media types, the poison id,
+  and the token-settled offset watermark.
+- [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the two fence
+  scripts.
 - [golden-vectors.md](./golden-vectors.md) — how the contract is generated, asserted and
   regenerated.
 - [../architecture.md](../architecture.md) — the full layering and build pipeline these crates sit

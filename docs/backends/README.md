@@ -121,7 +121,8 @@ The Rust SDK declares the same seams as traits: `Transactor`, `EventStore: Trans
   store that needs none uses `()`. Python has no such type, so a ledger declares `joins_transaction`
   instead.
 - There is no `Producer` / `Consumer` trait in Rust. The broker seam is the Python SDK's; the Rust
-  SDK ships only `MemoryBroker` for dev and tests.
+  SDK ships only `MemoryBroker` for dev and tests. The `edax-kafka` and `edax-redis` kernels do ship
+  in Rust, so a Rust shell over them would start from the same decisions.
 
 ## The seams and the backends that implement them today
 
@@ -187,6 +188,30 @@ classDiagram
 covers the ledger only, as the worked example of a store that cannot join your transaction — see
 [redis](./redis.md). `kafka` covers the broker seam — see [kafka](./kafka.md). The base package
 depends on no broker or database library; `redis` and `kafka` wrap a client you own and construct.
+
+## Adding a backend
+
+Adding support for a new technology is four decisions. Writing a backend, below, is the seam-by-seam
+checklist you then work through.
+
+1. **Put every decision a second SDK must match in a kernel crate `edax-<tech>`, with a golden
+   vector.** That means bytes, names, and any state machine two processes settle against.
+   `edax-kafka` holds the Kafka record and the offset watermark. `edax-redis` holds the ledger value
+   and the fence scripts. A decision left in one SDK is one the next SDK copies by hand, and then
+   drifts from.
+2. **Write the SDK adapter as an input and output (I/O) shell.** It calls the client and the kernel,
+   and decides nothing in between. Keep orchestration there: key prefixes, retry bounds, time to
+   live (TTL) defaults, and the client seam itself. `edax.backend.redis.RedisConn` is that seam for
+   Redis.
+3. **Hold it to the contract tests.** The packaged suites in `edax.testing` cover the store seams.
+   `crates/edax-py/tests/test_broker_contract.py` is the pattern for a broker: one rig fixture per
+   adapter, one contract run over every rig. A technology-specific test then covers only what that
+   technology can get wrong.
+4. **Ship it as its own wheel when it needs its own release cadence.** Until then the base package
+   ships the module, and an extra installs the client. `edax[kafka]` and `edax[redis]` work that way
+   today. At the split the base wheel drops the module **and** `edax/backend/__init__.py` together.
+   That leaves `edax.backend` a namespace package, so the import path `edax.backend.<tech>` survives
+   the move. A namespace package buys nothing before that point, while one wheel ships both halves.
 
 ## Writing a backend
 
