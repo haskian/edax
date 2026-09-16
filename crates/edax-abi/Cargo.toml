@@ -13,4 +13,6 @@ edax-core.workspace = true
 edax-event.workspace = true
 edax-cqrs.workspace = true
 edax-memory.workspace = true
+edax-kafka.workspace = true
+edax-redis.workspace = true
 serde_json = "1"

@@ -69,7 +69,9 @@ dependencies = [
  "edax-core",
  "edax-cqrs",
  "edax-event",
+ "edax-kafka",
  "edax-memory",
+ "edax-redis",
  "serde_json",
 ]
 
