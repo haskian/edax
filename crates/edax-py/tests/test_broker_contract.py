@@ -39,7 +39,7 @@ def _memory() -> Rig:
 
 def _kafka() -> Rig:
     c, s = FakeKafkaClient(), edax.kernel()
-    return Rig(KafkaProducer(c, s, "t").publish, KafkaConsumer(c, s), c.settled)
+    return Rig(KafkaProducer(c, "t", serializer=s).publish, KafkaConsumer(c, serializer=s), c.settled)
 
 
 # A factory, not an instance: hypothesis re-runs the test body per example on one fixture value,

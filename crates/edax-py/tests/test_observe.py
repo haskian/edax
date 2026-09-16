@@ -438,7 +438,7 @@ class _Poisoned(_ConsumerLoop):
 async def _kafka_poison() -> tuple[FakeKafkaClient, UndecodableDelivery]:
     client = FakeKafkaClient()
     await client.send_and_wait("t", b"not an envelope")
-    poison = delivered(await KafkaConsumer(client, edax.kernel()).poll())
+    poison = delivered(await KafkaConsumer(client, serializer=edax.kernel()).poll())
     assert isinstance(poison, UndecodableDelivery)
     return client, poison
 

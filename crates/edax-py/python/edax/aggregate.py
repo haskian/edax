@@ -44,7 +44,17 @@ copyreg.dispatch_table[_edax.EventEnvelope] = lambda v: (
 
 
 class Serializer(Protocol):
-    """Turns envelopes to and from wire bytes. Supply your own for a format the lib doesn't ship."""
+    """Turns envelopes to and from wire bytes. Supply your own for a format the lib doesn't ship.
+
+    ``content_type`` is the media type that names the format on the wire: a Kafka record carries it
+    in the ``content-type`` header, and a consumer routes the record to the serializer registered
+    under it. A custom serializer therefore names a media type of its own, and must be registered
+    under that same media type in every SDK that reads the topic. A record whose media type no
+    serializer claims is poison there, never silently decoded with another format."""
+
+    # Read-only, so a plain class attribute and a computed property both satisfy it.
+    @property
+    def content_type(self) -> str: ...
 
     def encode(self, env: EventEnvelope) -> bytes: ...
     def decode(self, wire: bytes) -> EventEnvelope: ...
@@ -55,6 +65,12 @@ class KernelSerializer:
 
     def __init__(self, fmt: WireFormat = "json") -> None:
         self._fmt = fmt
+
+    @property
+    def content_type(self) -> str:
+        """The kernel's media type for this format, ``application/vnd.edax.envelope+{fmt}``."""
+        with errors.mapped():
+            return _edax.kafka_media_type(self._fmt)
 
     def encode(self, env: EventEnvelope) -> bytes:
         with errors.mapped():
