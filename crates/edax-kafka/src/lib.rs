@@ -24,7 +24,7 @@ pub mod offsets;
 pub mod record;
 
 pub use edax_core::NO_DELIVERY;
-pub use offsets::{AckDecision, NackDecision, OffsetTracker, PartitionStats};
+pub use offsets::{AckDecision, NackDecision, OffsetTracker, PartitionStats, NO_OFFSET};
 pub use record::{
     content_type, decode_record, encode_record, poison_id, record, KafkaHeader, KafkaRecord, CONTENT_TYPE,
     HEADER_EVENT, HEADER_EVENT_VERSION, HEADER_ID,

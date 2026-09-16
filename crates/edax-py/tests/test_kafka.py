@@ -267,6 +267,17 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
     assert c.commits[-1] == 3, "the watermark never advanced past the poison message"
 
 
+async def test_a_null_header_value_polls_as_empty_bytes() -> None:
+    """Kafka header values are nullable and aiokafka hands a null one over as ``None``. The kernel
+    header is bytes, so the shell coerces; before it did, the poll raised after booking the offset."""
+    c = FakeKafkaClient()
+    await KafkaProducer(c, "t", serializer=IdSerializer()).publish(build_envelope("a", "Tick", 1, id="0"))
+    c.log[0] = c.log[0]._replace(headers=[*c.log[0].headers, ("x-null", None)])
+    delivery = delivered(await KafkaConsumer(c, serializer=IdSerializer()).poll())
+    assert not isinstance(delivery, UndecodableDelivery)
+    assert delivery.envelope.id == "0"
+
+
 async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
     """The offset is per partition, so the bare offset is not an identity. Two poison messages at
     offset 0 on different partitions would share one envelope id, and a dead-letter queue keyed on it
@@ -498,6 +509,10 @@ async def test_record_middleware_branches(
         with pytest.raises(expected):
             await consumer.poll()
         assert calls == want_calls, branch
+        # Nacked, not dropped: the fetch position is back on the record so it redelivers, and the
+        # offset stays in flight so no later ack commits past it.
+        assert (client.seeks, client.cursor) == ([0], 0), branch
+        assert consumer.stats()[TopicPartition("t", 0)].unsettled == 1, branch
         return
 
     delivery = delivered(await consumer.poll())

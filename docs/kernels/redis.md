@@ -88,8 +88,7 @@ it, which is how a caller learns it lost its claim.
 **Both bodies are constants, byte for byte.** A client registers the source once and sends `EVALSHA`
 after, and that digest is taken over these exact bytes, leading newline included. An SDK that
 reformatted the script would cache a second digest for one fence, so the two SDKs would run two
-scripts on the server. `testdata/golden/redis_scripts.json` is the source of truth for the bodies,
-and a Rust unit test asserts that both scripts are the same guard over a different write.
+scripts on the server. `testdata/golden/redis_scripts.json` is the source of truth for the bodies.
 
 ## What stays in the SDK
 

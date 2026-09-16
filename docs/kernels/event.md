@@ -154,7 +154,10 @@ let owner = edax_event::rendezvous("acct-1", 8);
 ## `codec` — reproducible envelope bytes
 
 `Format` has two variants, `Json` and `Msgpack`. `Format::from_name` resolves `"json"` / `"msgpack"`
-and errors otherwise.
+and errors otherwise. `Format::media_type` names each variant's media type,
+`application/vnd.edax.envelope+json` or `application/vnd.edax.envelope+msgpack`, and
+`Format::from_media_type` resolves it back. Transports that carry a content type, such as the Kafka
+`content-type` header, use the pair. See `docs/kernels/kafka.md` for the vocabulary.
 
 | | `data` on the wire | Shape | Golden `evt-1` size |
 |---|---|---|---|

@@ -831,13 +831,6 @@ pub fn offset_tracker() -> OffsetTracker {
     OffsetTracker { inner: Arc::new(edax_kafka::OffsetTracker::new()) }
 }
 
-/// The token value no delivery ever carries, so a host's "no delivery" placeholder cannot alias a
-/// live one. It is the token a `present: false` [`PollResult`] carries and the one no
-/// [`OffsetTracker`] booking is issued. A call, because the generator binds functions and not
-/// constants; one value for both state machines, because both take it from `edax_core`.
-pub fn no_delivery() -> i64 {
-    edax_kafka::NO_DELIVERY
-}
 
 // ---- redis ---------------------------------------------------------------
 
@@ -1588,13 +1581,13 @@ mod tests {
         let five = tracker.book("orders", 0, 5);
         let six = tracker.book("orders", 0, 6);
         assert_ne!(five, six, "one token per delivery");
-        assert_ne!(five, no_delivery(), "a live token never aliases the placeholder");
+        assert_ne!(five, edax_kafka::NO_DELIVERY, "a live token never aliases the placeholder");
 
         let ack = tracker.ack(six);
         assert_eq!((ack.commit, ack.offset), (true, 5), "the watermark is the lowest still in flight");
         let nack = tracker.nack(five);
         assert_eq!((nack.seek, nack.offset), (true, 5));
-        let unknown = tracker.nack(no_delivery());
+        let unknown = tracker.nack(edax_kafka::NO_DELIVERY);
         assert_eq!((unknown.seek, unknown.offset), (false, -1), "a false decision carries the no-offset value");
 
         tracker.committed("orders", 0, 4);

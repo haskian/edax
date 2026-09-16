@@ -173,7 +173,8 @@ class KafkaConsumer(_ConsumerLoop):
             error.__cause__ = cause  # `raise ... from e` is unavailable: the error is carried, not raised
             return UndecodableDelivery(msg.value, poison_id, ack, nack, error)
 
-        value, headers = msg.value, [KafkaHeader(k, v) for k, v in (msg.headers or ())]
+        # A Kafka header value is nullable; aiokafka hands a null one over as `None`.
+        value, headers = msg.value, [KafkaHeader(k, v or b"") for k, v in (msg.headers or ())]
         if self._middleware:
             # The kernel record exists for the middleware to rewrite; building one with no middleware to
             # run would copy the payload and the headers across the binding for nothing.
@@ -185,6 +186,12 @@ class KafkaConsumer(_ConsumerLoop):
                 # Only a codec failure is poison here. A hook whose key service is down fails
                 # transiently, so anything else propagates and the message redelivers.
                 return poison(e)
+            except Exception:
+                # The offset is already booked. Left unsettled it pins the partition watermark, so
+                # every later ack commits nothing, and the fetch position has moved past the record,
+                # so it would never come back. Nack seeks back to it.
+                await nack()
+                raise
             value, headers = record.value, record.headers
 
         content_type = _edax.kafka_content_type(headers)

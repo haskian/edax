@@ -23,7 +23,7 @@ use edax_core::{lock, TokenMint};
 /// The offset that names no position: no partition state backs the decision, nothing has been
 /// delivered yet, or nothing has been committed yet. Below every real Kafka offset, which starts at
 /// 0, so a host comparing against it never mistakes it for progress.
-const NO_OFFSET: i64 = -1;
+pub const NO_OFFSET: i64 = -1;
 
 /// What [`OffsetTracker::ack`] tells the shell to do: commit `offset` as the partition's watermark,
 /// or nothing at all.
