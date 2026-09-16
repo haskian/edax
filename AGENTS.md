@@ -79,6 +79,32 @@ Shape these at the `edax-abi` surface, never by hand-editing the generated `src/
 - **Cross-language decisions stay in the kernel** — hash *canonical* bytes via `payload_hash_json` (the kernel canonicalizes); never canonicalize host-side: Python's `json.dumps(ensure_ascii=True)` diverges from serde on non-ASCII, breaking idempotency keys across SDKs.
 - **The boundary is what alef supports, not a free choice.** alef crosses data as either native `#[pyclass]` structs (envelopes — structured, no JSON) or JSON text (`String`/`Vec<u8>`). It has **no** object-passing for arbitrary values — a `serde_json::Value` param is silently coerced to a `String` (parsed with `unwrap_or_default`), so `filter`/`query` stay JSON-text. The generated wrappers *do* release the GIL — alef wraps each call in `py.detach` (pyo3 0.28's rename of `allow_threads`), 24 of them in `crates/edax-py/src/lib.rs` — but that is alef's choice, not a config knob. Killing the double-parse needs alef support (or modeling the type as a pyclass struct) — it is **not** a local fix; don't burn time faking it.
 
+## Conventional commits
+
+Every PR **title** must be a Conventional Commit — `feat(edax-py): ...`, `fix: ...`. The allowed
+types are cog's, plus whatever `cog.toml` registers; `mise exec -- cog verify "<title>"` is the
+authority, and `.github/workflows/pr-title.yml` runs it on every PR. Merges are squash-only, so the
+PR title *is* the commit that lands on main, and `version.yml` reads those titles to pick the release.
+
+| Title since the last tag | Release |
+| --- | --- |
+| `versionbump!:` | **major** — the only thing that cuts one |
+| `feat:` | minor |
+| `fix:` | patch |
+| any other type | none |
+
+**A major is deliberate and manual.** `!` and a `BREAKING CHANGE:` footer mark a break in the
+changelog but never bump the major — a breaking `feat!:` still releases a minor. To go to the next
+major, merge a PR titled `versionbump!: <why>` (scope allowed: `versionbump(kafka)!:`). The type is
+spelled without a hyphen because cog's grammar rejects one in a commit type: `version-bump!:` fails
+to parse, so `versionbump` is registered in `cog.toml` instead.
+
+There is **no version literal in `crates/edax-py/pyproject.toml`** — it declares `dynamic =
+["version"]` and maturin reads the Cargo version. Nothing reads the git tag at build time; the tag
+and the wheel agree only because `cog` runs `scripts/set_version.py` *before* it tags. So never hand-
+edit a version: run the bump. A hand-pushed tag builds a wheel carrying the old version, which the
+release's `version` job refuses before it builds anything.
+
 ## Before you finish
 
 Run **both** the kernel tests and the Python tests — `cargo test` alone misses binding regressions.

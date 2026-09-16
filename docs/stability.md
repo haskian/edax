@@ -51,10 +51,12 @@ one. The deprecation names its replacement. Python marks it with `DeprecationWar
 
 ## How a release is cut
 
-`cog bump --auto` reads the conventional commits since the last tag, picks the version they imply,
-writes `CHANGELOG.md` and creates the tag. `scripts/set_version.py` rewrites the two version
-literals in the tree, so the tag and the artefacts cannot disagree. Pushing the tag builds the
-wheels and publishes them. See [release.yml](../.github/workflows/release.yml).
+`cog bump` reads the conventional commits since the last tag and writes `CHANGELOG.md` and the tag.
+Which increment it is handed is [AGENTS.md's rule](../AGENTS.md): `versionbump!` for a major, `feat`
+for a minor, `fix` for a patch. A breaking `feat!` is still only a minor.
+`scripts/set_version.py` rewrites the two version literals in the tree, so the tag and the artefacts
+cannot disagree. The release refuses to build a tag whose tree declares a different version.
+Pushing the tag builds the wheels and publishes them. See [release.yml](../.github/workflows/release.yml).
 
 Publishing runs under a `pypi` GitHub environment with a required reviewer. The workflow cannot
 publish until that environment exists, so a tag pushed before it is created builds wheels and stops.

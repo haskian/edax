@@ -1,0 +1,52 @@
+name: PR title
+
+# Its own workflow, not a job in ci.yml: the thing under test is the title, so the check has to
+# re-run when the title is *edited*. `synchronize` is deliberately absent — pushing a commit
+# cannot change the answer.
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Merges are squash-only and GitHub takes the squash subject from the PR title, so the PR title is
+# the commit that lands on main, and version.yml reads it to pick the release. See AGENTS.md.
+jobs:
+  verify:
+    name: conventional commit
+    runs-on: ubuntu-latest
+    steps:
+      # cog needs cog.toml: `versionbump` is a registered type, not a built-in one.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            cog.toml
+            mise.toml
+          sparse-checkout-cone-mode: false
+
+      # Not ./.github/actions/setup: that installs the Rust toolchain, maturin and a cargo cache
+      # to run one regex. `install_args` still resolves the version from mise.toml, so the pin
+      # stays in one place.
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: aqua:cocogitto/cocogitto
+          cache: false # a 3 MB download beats a cache round trip
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+
+      # Through the environment, never interpolated into the script: a PR title is untrusted input.
+      - name: Verify the PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # cog reads user.name to attribute the message it prints, and panics outright when git
+          # has none — which a fresh runner never does. The value is cosmetic; only its absence
+          # matters, and the panic reads as a bad title rather than a missing config.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mise exec aqua:cocogitto/cocogitto -- cog verify "$PR_TITLE"
