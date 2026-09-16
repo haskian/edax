@@ -50,7 +50,16 @@ class Serializer(Protocol):
     in the ``content-type`` header, and a consumer routes the record to the serializer registered
     under it. A custom serializer therefore names a media type of its own, and must be registered
     under that same media type in every SDK that reads the topic. A record whose media type no
-    serializer claims is poison there, never silently decoded with another format."""
+    serializer claims is poison there, never silently decoded with another format.
+
+    The name ``content_type`` is the header's; the value is a media type (RFC 6838): the bare
+    ``type/subtype`` string with no ``; charset=...`` parameters, because the consumer matches it
+    as one exact string. Name a custom format in the vendor tree,
+    ``application/vnd.<you>.<format>+<syntax>``.
+    The kernel's own is ``application/vnd.edax.envelope+json``: ``vnd.`` marks a product-specific
+    format rather than an IANA standard like ``application/json``, and the ``+json`` suffix tells
+    generic tooling how to parse the bytes. Plain ``application/json`` would not tell an edax
+    envelope from any other JSON on a shared topic."""
 
     # Read-only, so a plain class attribute and a computed property both satisfy it.
     @property

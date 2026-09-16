@@ -17,14 +17,35 @@
 
 use edax_event::{CodecError, EventEnvelope, Format};
 
+// Vocabulary, because the two words below are not synonyms (RFC 9110 §8.3, RFC 6838):
+//
+// * `content-type` is a *header*. Its value is a media type, optionally followed by parameters
+//   such as `; charset=utf-8`. Functions here that read or write the header say `content_type`.
+// * A *media type* is the bare `type/subtype` string the header carries. Functions here that
+//   produce that string say `media_type`.
+//
+// Anatomy of `application/vnd.edax.envelope+json`:
+//
+// * `application/` — the top-level type for opaque, program-consumed data.
+// * `vnd.` — the vendor tree (RFC 6838 §3.2). Subtypes without a prefix are IANA standards such as
+//   `application/json`; `vnd.` marks a product-specific format. Registration with IANA is optional
+//   there and has not been done, which is fine for a private protocol. `x-` is the deprecated
+//   unregistered prefix and is not used.
+// * `edax.envelope` — the vendor and the format: an event envelope as `edax-event` encodes it.
+// * `+json` / `+msgpack` — the structured-syntax suffix (RFC 6839). It tells tooling that has
+//   never heard of edax how to parse the bytes, and it is why plain `application/json` is not
+//   used: that name could not tell an edax envelope from any other JSON on a shared topic, and the
+//   consumer's registry needs one exact string per serializer.
+
 /// The media type of an envelope encoded with [`Format::Json`]. Private: [`media_type`] is the one
 /// way in, so the mapping cannot be read here and written differently there.
 const MEDIA_TYPE_JSON: &str = "application/vnd.edax.envelope+json";
 /// The media type of an envelope encoded with [`Format::Msgpack`].
 const MEDIA_TYPE_MSGPACK: &str = "application/vnd.edax.envelope+msgpack";
 
-/// Header naming the wire format of the value bytes. Lower-case, the Kafka convention; the lookup
-/// in [`content_type`] is case-sensitive, so a producer must write it exactly like this.
+/// Header naming the wire format of the value bytes; the value is a media type (see the vocabulary
+/// note above). Lower-case, the Kafka convention and the CloudEvents Kafka binding's spelling; the
+/// lookup in [`content_type`] is case-sensitive, so a producer must write it exactly like this.
 pub const CONTENT_TYPE: &str = "content-type";
 /// Header carrying the envelope id, so a consumer can dedup or trace without decoding the value.
 pub const HEADER_ID: &str = "edax-id";
@@ -56,7 +77,8 @@ pub struct KafkaRecord {
     pub headers: Vec<KafkaHeader>,
 }
 
-/// The media type that names `format` on the wire. `Format` is `#[non_exhaustive]`: a variant this
+/// The media type that names `format` on the wire, `application/vnd.edax.envelope+<suffix>` (the
+/// vocabulary note at the top of this file explains each part). `Format` is `#[non_exhaustive]`: a variant this
 /// kernel does not know is a [`CodecError::UnknownFormat`], never a fallback, so a record can never
 /// carry a header that names the wrong codec. The change that adds a variant mints its media type here.
 pub fn media_type(format: Format) -> Result<&'static str, CodecError> {
@@ -92,7 +114,10 @@ pub fn record(env: &EventEnvelope, key: Option<&str>, value: Vec<u8>, content_ty
 /// The first [`CONTENT_TYPE`] header wins, matched case-sensitively: a record carrying two is
 /// ambiguous, and picking the first is the rule both sides can implement identically. A first
 /// header whose value is not UTF-8 is not a media type any lookup can match, so it reads as absent
-/// rather than reaching past it to a second one.
+/// rather than reaching past it to a second one. The value is returned whole: parameters such as
+/// `; charset=utf-8` are not stripped, so a registry keyed by media type will not match a header
+/// that carries them. No edax producer writes parameters; strip them here, pinned by a golden, the
+/// day a foreign producer does.
 pub fn content_type(headers: &[KafkaHeader]) -> Option<&str> {
     let header = headers.iter().find(|header| header.key == CONTENT_TYPE)?;
     std::str::from_utf8(&header.value).ok()

@@ -132,10 +132,17 @@ means "commit the current position".
 **Poison message** — a message that fails deterministically on every delivery, for example one that
 does not decode. It must reach the dead-letter path, never a redelivery loop.
 
-**Media type** — the name a wire format goes by between services, for example
-`application/vnd.edax.envelope+json`. A Kafka record carries it in the `content-type` header, and a
-consumer routes the record to the serializer registered under it. A media type no serializer claims
-makes the message poison, never a fallback.
+**Media type** — the name a wire format goes by between services (RFC 6838, once "MIME type"), for
+example `application/vnd.edax.envelope+json`. A Kafka record carries it in the `content-type` header,
+and a consumer routes the record to the serializer registered under it. A media type no serializer
+claims makes the message poison, never a fallback. Not a synonym for the header: `content-type` is
+the field name, the media type is its value.
+
+**Vendor tree (`vnd.`)** — the RFC 6838 prefix for a product-specific media type, as opposed to an
+IANA standard such as `application/json`. `application/vnd.edax.envelope+json` reads: vendor `edax`,
+format `envelope`, parse as JSON (the `+json` suffix, RFC 6839). Registration is optional in this
+tree and has not been done. A custom serializer names its format the same way,
+`application/vnd.<vendor>.<format>+<syntax>`.
 
 ## Failure
 

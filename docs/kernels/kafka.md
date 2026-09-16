@@ -63,6 +63,25 @@ case-sensitive. A producer that wrote `Content-Type` wrote a different header.
 | `Json` | `application/vnd.edax.envelope+json` |
 | `Msgpack` | `application/vnd.edax.envelope+msgpack` |
 
+Two words that are not synonyms. `content-type` is the *header*; its value is a *media type*
+(RFC 6838, once called a MIME type), optionally followed by parameters such as `; charset=utf-8`.
+Kernel functions that read or write the header say `content_type`; the one that mints the string
+says `media_type`. The kernel returns the header value whole and matches it as one exact string, so
+a header carrying parameters does not match; no edax producer writes any.
+
+What the string means, part by part:
+
+| Part | Meaning |
+|---|---|
+| `application/` | the top-level type for opaque, program-consumed data |
+| `vnd.` | the vendor tree (RFC 6838 §3.2): a product-specific format. Subtypes with no prefix are IANA standards such as `application/json`; `x-` is the deprecated unregistered prefix. Registering with IANA is optional in the vendor tree and has not been done |
+| `edax.envelope` | the vendor and the format: an event envelope as `edax-event` encodes it |
+| `+json`, `+msgpack` | the structured-syntax suffix (RFC 6839): tooling that never heard of edax still knows how to parse the bytes |
+
+Plain `application/json` is not used. It could not tell an edax envelope from any other JSON on a
+shared topic, and the consumer's registry needs one exact string per serializer. A custom serializer
+follows the same shape: `application/vnd.<vendor>.<format>+<syntax>`.
+
 `media_type(format)` is the one place that mapping lives, so it cannot be read here and written
 differently there. `Format` is `#[non_exhaustive]`. A variant this kernel does not know is a codec
 error, never a fallback, so a record can never carry a header naming the wrong codec. The change
