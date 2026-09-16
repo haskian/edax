@@ -1,0 +1,163 @@
+[
+  {
+    "default_format": "json",
+    "headers": [
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "name": "no_content_type_falls_back_to_the_default",
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d",
+    "want": {
+      "envelope": {
+        "aggregate_id": "agg-1",
+        "event": {
+          "data": "3q2+7w==",
+          "name": "InvoiceIssued",
+          "version": 1
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "namespace": {
+          "tenant": "acme"
+        },
+        "sequence": 7,
+        "timestamp": 1700000000000000000
+      }
+    }
+  },
+  {
+    "default_format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "name": "content_type_overrides_the_default",
+    "value_hex": "97a56576742d31a56167672d3193ad496e766f69636549737375656401c404deadbeef0781a674656e616e74a461636d6581a57472616365a76162632d313233cf17979cfe362a0000",
+    "want": {
+      "envelope": {
+        "aggregate_id": "agg-1",
+        "event": {
+          "data": "3q2+7w==",
+          "name": "InvoiceIssued",
+          "version": 1
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "namespace": {
+          "tenant": "acme"
+        },
+        "sequence": 7,
+        "timestamp": 1700000000000000000
+      }
+    }
+  },
+  {
+    "default_format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f782d70726f746f627566"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      }
+    ],
+    "name": "an_unknown_content_type_is_refused",
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d",
+    "want": {
+      "error": "unknown format: application/x-protobuf"
+    }
+  },
+  {
+    "default_format": "json",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "edax-id",
+        "value_hex": "6576742d31"
+      },
+      {
+        "key": "edax-event",
+        "value_hex": "496e766f696365497373756564"
+      },
+      {
+        "key": "edax-event-version",
+        "value_hex": "31"
+      },
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      }
+    ],
+    "name": "the_first_content_type_wins",
+    "value_hex": "97a56576742d31a56167672d3193ad496e766f69636549737375656401c404deadbeef0781a674656e616e74a461636d6581a57472616365a76162632d313233cf17979cfe362a0000",
+    "want": {
+      "envelope": {
+        "aggregate_id": "agg-1",
+        "event": {
+          "data": "3q2+7w==",
+          "name": "InvoiceIssued",
+          "version": 1
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "namespace": {
+          "tenant": "acme"
+        },
+        "sequence": 7,
+        "timestamp": 1700000000000000000
+      }
+    }
+  },
+  {
+    "default_format": "json",
+    "headers": [],
+    "name": "header_less_bytes_in_another_format_do_not_decode",
+    "value_hex": "97a56576742d31a56167672d3193ad496e766f69636549737375656401c404deadbeef0781a674656e616e74a461636d6581a57472616365a76162632d313233cf17979cfe362a0000",
+    "want": {
+      "error": "decode: expected value at line 1 column 1"
+    }
+  }
+]

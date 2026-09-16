@@ -1,0 +1,642 @@
+[
+  {
+    "name": "out_of_order_acks_commit_the_watermark_only",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "commit": true,
+          "offset": 0
+        }
+      },
+      {
+        "offset": 0,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "commit": false,
+          "offset": 0
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": true,
+          "offset": 3
+        }
+      },
+      {
+        "offset": 3,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 3,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_nack_keeps_its_offset_in_flight_until_the_redelivery_settles",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "commit": true,
+          "offset": 0
+        }
+      },
+      {
+        "offset": 0,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "nack",
+        "token": 1,
+        "want": {
+          "offset": 0,
+          "seek": true
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "commit": false,
+          "offset": 0
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": false,
+          "offset": -1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 4,
+        "want": {
+          "commit": true,
+          "offset": 3
+        }
+      },
+      {
+        "offset": 3,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 3,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_second_nack_rewinds_to_the_lowest_unsettled_offset",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "nack",
+        "token": 1,
+        "want": {
+          "offset": 0,
+          "seek": true
+        }
+      },
+      {
+        "op": "nack",
+        "token": 3,
+        "want": {
+          "offset": 0,
+          "seek": true
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": -1,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 3
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "two_partitions_settle_independently",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 1,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 1,
+        "topic": "t",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "op": "ack",
+        "token": 4,
+        "want": {
+          "commit": true,
+          "offset": 0
+        }
+      },
+      {
+        "offset": 0,
+        "op": "committed",
+        "partition": 1,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": true,
+          "offset": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "commit": true,
+          "offset": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "committed",
+        "partition": 1,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "nack",
+        "token": 3,
+        "want": {
+          "offset": 1,
+          "seek": true
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 1,
+              "max_delivered": 1,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 1
+            },
+            {
+              "committed": 2,
+              "max_delivered": 1,
+              "partition": 1,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the_guard_never_commits_a_watermark_already_recorded",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "offset": 3,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": true,
+          "offset": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "commit": true,
+          "offset": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "offset": 1,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 4,
+        "want": {
+          "commit": false,
+          "offset": 2
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 2,
+              "max_delivered": 3,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 1
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_partition_assigned_back_after_reset_ignores_its_stale_tokens",
+    "steps": [
+      {
+        "offset": 5,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 6,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "op": "reset",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "offset": 5,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": false,
+          "offset": -1
+        }
+      },
+      {
+        "op": "nack",
+        "token": 2,
+        "want": {
+          "offset": -1,
+          "seek": false
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "commit": true,
+          "offset": 6
+        }
+      },
+      {
+        "offset": 6,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 6,
+              "max_delivered": 5,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_token_no_booking_issued_settles_nothing",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 999,
+        "want": {
+          "commit": false,
+          "offset": -1
+        }
+      },
+      {
+        "op": "nack",
+        "token": 0,
+        "want": {
+          "offset": -1,
+          "seek": false
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": -1,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 1
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "committed_for_an_unbooked_partition_is_a_no_op",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 100,
+        "op": "committed",
+        "partition": 9,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "commit": true,
+          "offset": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 1,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

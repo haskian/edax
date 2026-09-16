@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-abi"]
+members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-abi"]
 
 [workspace.package]
 version = "0.0.1"
@@ -14,5 +14,7 @@ edax-core = { path = "crates/edax-core" }
 edax-event = { path = "crates/edax-event" }
 edax-cqrs = { path = "crates/edax-cqrs" }
 edax-memory = { path = "crates/edax-memory" }
+edax-kafka = { path = "crates/edax-kafka" }
+edax-redis = { path = "crates/edax-redis" }
 edax = { path = "crates/edax" }
 serde = { version = "1", features = ["derive"] }
