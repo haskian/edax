@@ -27,7 +27,7 @@ from conftest import (
     kafka_consumer,
 )
 from edax._async import maybe_await
-from edax.backend.kafka import KafkaConsumer, PartitionStats
+from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore
 from edax.broker import UndecodableDelivery, _ConsumerLoop
 from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS, timing
@@ -677,22 +677,28 @@ async def test_dispatcher_stats_count_the_failure_maps(slept: list[float]) -> No
     assert dispatcher.idle(), "a nacked message is the broker's again, not in flight here"
 
 
+def _stats(consumer: KafkaConsumer) -> dict[Any, tuple[int, int, int]]:
+    """``(unsettled, max_delivered, committed)`` per partition. ``stats()`` returns the kernel's own
+    ``PartitionStats`` rows, which are native objects with no ``__eq__``, so the fields compare."""
+    return {tp: (row.unsettled, row.max_delivered, row.committed) for tp, row in consumer.stats().items()}
+
+
 async def test_kafka_consumer_stats_track_inflight_across_ack_and_nack() -> None:
     _, consumer = await kafka_consumer(2)
     tp = TopicPartition("t", 0)
-    assert consumer.stats() == {}
+    assert _stats(consumer) == {}
     d0, d1 = [delivered(await consumer.poll()) for _ in range(2)]
-    assert consumer.stats() == {tp: PartitionStats(unsettled=2, max_delivered=1, committed=-1)}
+    assert _stats(consumer) == {tp: (2, 1, -1)}
 
     await d1.ack()  # out of order: 0 still in flight, so the watermark commits at 0
-    assert consumer.stats() == {tp: PartitionStats(unsettled=1, max_delivered=1, committed=0)}
+    assert _stats(consumer) == {tp: (1, 1, 0)}
     await d0.nack()  # stays in flight until its redelivery settles
-    assert consumer.stats() == {tp: PartitionStats(unsettled=1, max_delivered=1, committed=0)}
+    assert _stats(consumer) == {tp: (1, 1, 0)}
     await d0.ack()
-    assert consumer.stats() == {tp: PartitionStats(unsettled=0, max_delivered=1, committed=2)}
+    assert _stats(consumer) == {tp: (0, 1, 2)}
 
     consumer.reset(tp)
-    assert consumer.stats() == {}
+    assert _stats(consumer) == {}
     consumer.reset(tp)  # idempotent: a listener may revoke a partition it never saw
 
 

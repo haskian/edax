@@ -119,6 +119,7 @@ dependencies = [
 name = "edax-kafka"
 version = "0.0.1"
 dependencies = [
+ "edax-core",
  "edax-event",
  "edax-golden",
  "serde_json",
@@ -154,7 +155,6 @@ dependencies = [
  "edax-cqrs",
  "edax-golden",
  "serde_json",
- "uuid",
 ]
 
 [[package]]

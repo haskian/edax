@@ -8,7 +8,9 @@
 //! - [`offsets`] — the token-settled per-partition commit watermark an [`OffsetTracker`] hands a
 //!   consumer as [`AckDecision`] / [`NackDecision`] data, never as a callback
 //! - [`record`] — the record a published envelope becomes: the key rule, the four contract headers,
-//!   the media type that names the value's wire format, and the poison-message id
+//!   the `content-type` header that names the value's wire format (the media type itself is
+//!   `edax_event::Format::media_type`, since it names the codec and not the transport), and the
+//!   poison-message id
 //!
 //! Placement is not here: the client's partitioner still picks the partition from the key.
 
@@ -21,8 +23,9 @@
 pub mod offsets;
 pub mod record;
 
-pub use offsets::{AckDecision, NackDecision, OffsetTracker, PartitionStats, NO_DELIVERY};
+pub use edax_core::NO_DELIVERY;
+pub use offsets::{AckDecision, NackDecision, OffsetTracker, PartitionStats};
 pub use record::{
-    content_type, decode_record, encode_record, media_type, poison_id, record, KafkaHeader, KafkaRecord,
-    CONTENT_TYPE, HEADER_EVENT, HEADER_EVENT_VERSION, HEADER_ID,
+    content_type, decode_record, encode_record, poison_id, record, KafkaHeader, KafkaRecord, CONTENT_TYPE,
+    HEADER_EVENT, HEADER_EVENT_VERSION, HEADER_ID,
 };

@@ -46,24 +46,13 @@ copyreg.dispatch_table[_edax.EventEnvelope] = lambda v: (
 class Serializer(Protocol):
     """Turns envelopes to and from wire bytes. Supply your own for a format the lib doesn't ship.
 
-    ``content_type`` is the media type that names the format on the wire: a Kafka record carries it
-    in the ``content-type`` header, and a consumer routes the record to the serializer registered
-    under it. A custom serializer therefore names a media type of its own, and must be registered
-    under that same media type in every SDK that reads the topic. A record whose media type no
-    serializer claims is poison there, never silently decoded with another format.
-
-    The name ``content_type`` is the header's; the value is a media type (RFC 6838): the bare
-    ``type/subtype`` string with no ``; charset=...`` parameters, because the consumer matches it
-    as one exact string. Name a custom format in the vendor tree,
-    ``application/vnd.<you>.<format>+<syntax>``.
-    The kernel's own is ``application/vnd.edax.envelope+json``: ``vnd.`` marks a product-specific
-    format rather than an IANA standard like ``application/json``, and the ``+json`` suffix tells
-    generic tooling how to parse the bytes. Plain ``application/json`` would not tell an edax
-    envelope from any other JSON on a shared topic."""
+    Name a custom format ``application/vnd.<you>.<format>+<syntax>`` and register the serializer
+    under that same media type in every SDK that reads the topic; the media type is matched as one
+    exact string, with no parameters. ``docs/kernels/kafka.md`` has the vocabulary."""
 
     # Read-only, so a plain class attribute and a computed property both satisfy it.
     @property
-    def content_type(self) -> str: ...
+    def media_type(self) -> str: ...
 
     def encode(self, env: EventEnvelope) -> bytes: ...
     def decode(self, wire: bytes) -> EventEnvelope: ...
@@ -74,12 +63,15 @@ class KernelSerializer:
 
     def __init__(self, fmt: WireFormat = "json") -> None:
         self._fmt = fmt
+        # Resolved once, at wiring time: a format the kernel does not know fails here, where the
+        # traceback names the wiring, instead of on the first record published.
+        with errors.mapped():
+            self._media_type: str = _edax.media_type(fmt)
 
     @property
-    def content_type(self) -> str:
+    def media_type(self) -> str:
         """The kernel's media type for this format, ``application/vnd.edax.envelope+{fmt}``."""
-        with errors.mapped():
-            return _edax.kafka_media_type(self._fmt)
+        return self._media_type
 
     def encode(self, env: EventEnvelope) -> bytes:
         with errors.mapped():

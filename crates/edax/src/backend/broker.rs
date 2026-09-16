@@ -3,9 +3,10 @@
 //! accounting). The adapter's poll is non-blocking, so this module adds a `Condvar` and
 //! [`MemoryBroker::poll`] can block up to a timeout.
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use edax_core::lock;
 use edax_event::EventEnvelope;
 
 use crate::dispatcher::Delivery;
@@ -33,12 +34,6 @@ struct Inner {
     wait: Mutex<()>,
     /// Signals a queued envelope to a blocked [`MemoryBroker::poll`].
     queued: Condvar,
-}
-
-/// Take the wait lock, recovering from poisoning instead of panicking: a test that panicked while
-/// holding it must not turn every later assertion into a lock panic.
-fn lock(wait: &Mutex<()>) -> MutexGuard<'_, ()> {
-    wait.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Inner {

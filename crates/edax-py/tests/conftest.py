@@ -456,11 +456,6 @@ class FakeKafkaClient:
     ) -> None:
         self.log.append(KafkaMsg(topic, 0, len(self.log), key, value, list(headers)))
 
-    def append_raw(self, value: bytes) -> None:
-        """Append bytes no producer of ours wrote: a header-less record from another writer on the
-        topic, which is what a poison message on a shared topic looks like."""
-        self.log.append(KafkaMsg("t", 0, len(self.log), b"", value, []))
-
     async def getone(self) -> KafkaMsg:
         if self.cursor == len(self.log):
             await asyncio.Event().wait()  # end of log: block forever, tests never poll past it
@@ -484,7 +479,7 @@ class IdSerializer:
     """A custom serializer whose wire form is the envelope id, under a media type of its own, so a
     record it wrote routes back to it through the consumer's registry."""
 
-    content_type = "application/x-test-id"
+    media_type = "application/x-test-id"
 
     def encode(self, env: edax.EventEnvelope) -> bytes:
         return env.id.encode()

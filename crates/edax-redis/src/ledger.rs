@@ -20,19 +20,18 @@
 //! The bodies are constants, byte for byte, so two SDKs registering the script share one `EVALSHA`
 //! digest instead of each caching its own reformatting.
 
-use edax_core::AdapterError;
+use edax_core::{guid_simple, AdapterError};
 use edax_cqrs::{encode_record, Record};
-use uuid::Uuid;
 
 /// Width of the owner token in the stored value, in ASCII hex characters.
 pub const OWNER_LEN: usize = 32;
 
-/// A fresh fence token: a UUID v7 in its 32-character lowercase hex form, no hyphens.
+/// A fresh fence token: the kernel's id in its 32-character lowercase hex form, no hyphens.
 ///
 /// v7 rather than random bytes so tokens sort by mint time, which makes a ledger dump readable; the
 /// 74 random bits are what make two claimants distinguishable.
 pub fn new_owner() -> String {
-    Uuid::now_v7().simple().to_string()
+    guid_simple()
 }
 
 /// The stored value for a fresh claim: `owner` followed by the kernel's **pending** record for
@@ -180,16 +179,13 @@ mod tests {
         ]
     }
 
+    /// The token's *shape* is this kernel's business — the fence compares a fixed width — while
+    /// the id behind it is `edax_core::guid_simple`'s, tested there.
     #[test]
-    fn new_owner_is_a_lowercase_hex_v7() {
+    fn a_minted_token_is_one_the_fence_can_compare() {
         let owner = new_owner();
         assert_eq!(owner.len(), OWNER_LEN);
-        assert!(
-            owner.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "{owner} is not lowercase hex"
-        );
         assert_ne!(owner, new_owner(), "74 random bits -> distinct tokens");
-        assert_eq!(Uuid::parse_str(&owner).unwrap().get_version_num(), 7);
         // A minted token must pass the check the writers apply, or no claim could ever be written.
         assert_eq!(record_value(&owner, PENDING), Ok(format!("{owner}{PENDING}")));
     }
@@ -239,81 +235,5 @@ mod tests {
         }
         // A claim value is a record value over the kernel's pending record; the two agree by construction.
         assert_eq!(claim_value(OWNER, HASH), record_value(OWNER, PENDING));
-    }
-
-    #[test]
-    fn split_value_branches() {
-        struct Case {
-            name: &'static str,
-            raw: Vec<u8>,
-            /// `(owner, record)`, or the error's wire form.
-            want: Result<(&'static str, &'static str), &'static str>,
-        }
-        let cases = [
-            Case {
-                name: "claim_value_round_trips",
-                raw: claim_value(OWNER, HASH).unwrap().into_bytes(),
-                want: Ok((OWNER, PENDING)),
-            },
-            Case {
-                name: "owner_only_leaves_an_empty_record",
-                raw: OWNER.as_bytes().to_vec(),
-                want: Ok((OWNER, "")),
-            },
-            Case {
-                // Liberal on read: a token this kernel would not mint still reads back, so a ledger
-                // written by an older store (or another SDK) is never stranded.
-                name: "non_hex_owner_is_accepted_on_read",
-                raw: b"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz{}".to_vec(),
-                want: Ok(("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "{}")),
-            },
-            Case {
-                name: "one_byte_short_of_a_token",
-                raw: OWNER.as_bytes()[..OWNER_LEN - 1].to_vec(),
-                want: Err("codec: stored value is 31 bytes, shorter than the 32-character owner token"),
-            },
-            Case {
-                name: "empty",
-                raw: Vec::new(),
-                want: Err("codec: stored value is 0 bytes, shorter than the 32-character owner token"),
-            },
-            Case {
-                name: "not_utf8",
-                raw: [&b"0"[..], &[0xff], &b"0".repeat(30)[..]].concat(),
-                want: Err("codec: stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1"),
-            },
-            Case {
-                // Long enough in bytes, but a two-byte character straddles the token's width.
-                name: "multibyte_straddles_the_token_width",
-                raw: format!("{}é{PENDING}", "0".repeat(31)).into_bytes(),
-                want: Err("codec: stored value does not split into an owner token at 32 bytes"),
-            },
-        ];
-        for case in cases {
-            let got = split_value(&case.raw);
-            match case.want {
-                Ok((owner, record)) => {
-                    assert_eq!(got, Ok((owner.to_owned(), record.to_owned())), "{}", case.name)
-                }
-                Err(wire) => {
-                    let error = got.unwrap_err();
-                    assert_eq!(error.to_string(), wire, "{}", case.name);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_fence_scripts_are_byte_stable() {
-        // The digest a client registers is over these exact bytes, leading newline included: a
-        // reformatting here silently splits two SDKs onto two EVALSHA digests.
-        // Both scripts open with the same guard, so the fence compares exactly the width the value
-        // layout writes; only the write they protect differs.
-        const GUARD: &str = "\nif redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then\n";
-        const SET: &str = "  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0\n";
-        const DEL: &str = "  return redis.call('DEL', KEYS[1])\n";
-        for (name, script, write) in [("fenced_set", FENCED_SET_SCRIPT, SET), ("fenced_del", FENCED_DEL_SCRIPT, DEL)] {
-            assert_eq!(script, format!("{GUARD}{write}end\nreturn 0\n"), "{name}");
-        }
     }
 }

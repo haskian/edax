@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use edax_core::AdapterError;
+use edax_core::{lock, AdapterError};
 use serde_json::Value;
 
-use crate::tx::{held_by_other, lock, store_view, versioned_row, Document, MemoryState, MemoryTransactor};
+use crate::tx::{held_by_other, store_view, versioned_row, Document, MemoryState, MemoryTransactor};
 
 /// In-memory `ProjectionStore` implementation for development and tests: read-model documents keyed
 /// by id with optimistic concurrency, querying deferred to the kernel. Documents cross as JSON text.

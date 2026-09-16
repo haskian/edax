@@ -16,11 +16,9 @@
 //! failed is not recorded as one.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
-/// The token value no booking ever carries, so a host's "no delivery" placeholder cannot alias a
-/// live one.
-pub const NO_DELIVERY: i64 = 0;
+use edax_core::{lock, TokenMint};
 
 /// The offset that names no position: no partition state backs the decision, nothing has been
 /// delivered yet, or nothing has been committed yet. Below every real Kafka offset, which starts at
@@ -64,8 +62,9 @@ pub struct PartitionStats {
     pub committed: i64,
 }
 
-/// A partition of a topic. `String` and not `&str` because the state outlives every call.
-type PartitionKey = (String, i32);
+/// A partition of a topic. The topic is an `Arc<str>` and not a `String` because both the map and
+/// the booking that names it hold one: shared, it is allocated once per [`OffsetTracker::book`].
+type PartitionKey = (Arc<str>, i32);
 
 struct PartitionState {
     /// Booked but unsettled offsets, each with the token that settles it. Ordered, so the lowest —
@@ -99,28 +98,16 @@ struct Booking {
     offset: i64,
 }
 
+#[derive(Default)]
 struct Inner {
     /// Ordered by `(topic, partition)`, which is the order [`OffsetTracker::stats`] reports in.
     partitions: BTreeMap<PartitionKey, PartitionState>,
     /// Live tokens only. A token leaves on ack, on re-booking of its offset, and on reset of its
     /// partition; from then on it is stale and settles nothing.
     bookings: HashMap<i64, Booking>,
-    next_token: i64,
-}
-
-impl Default for Inner {
-    fn default() -> Self {
-        Self { partitions: BTreeMap::new(), bookings: HashMap::new(), next_token: NO_DELIVERY + 1 }
-    }
-}
-
-/// Lock the tracker state, recovering from poisoning instead of panicking.
-///
-/// This kernel runs inside a native binding, where an unwinding panic crosses the host language's
-/// FFI boundary. Nothing inside a guarded section here can panic, so the state behind a poisoned
-/// lock is still consistent — take it back rather than propagate a panic the host cannot catch.
-fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// The tokens bookings settle by, shared with the in-memory broker so both state machines
+    /// number their deliveries the same way.
+    tokens: TokenMint,
 }
 
 /// The per-partition commit watermark, behind a single lock. One tracker serves every partition a
@@ -149,11 +136,10 @@ impl OffsetTracker {
     /// for — takes a fresh token and retires the old one, so the redelivered copy settles once.
     pub fn book(&self, topic: &str, partition: i32, offset: i64) -> i64 {
         let mut inner = lock(&self.state);
-        let token = inner.next_token;
-        // Wrapping, not saturating: saturation would hand the same token out forever. A wrap needs
-        // 2^63 bookings, and only matters if a token that old were still unsettled.
-        inner.next_token = token.wrapping_add(1);
-        let key: PartitionKey = (topic.to_owned(), partition);
+        let token = inner.tokens.issue();
+        // One copy of the topic per call, not two: the map and the booking both hold the key, and
+        // cloning an `Arc` is a refcount bump rather than a second allocation.
+        let key: PartitionKey = (Arc::from(topic), partition);
         let state = inner.partitions.entry(key.clone()).or_default();
         let replaced = state.inflight.insert(offset, token);
         state.max_delivered = state.max_delivered.max(offset);
@@ -194,7 +180,7 @@ impl OffsetTracker {
     /// would refuse a lower, correct commit if it were assigned back.
     pub fn committed(&self, topic: &str, partition: i32, offset: i64) {
         let mut inner = lock(&self.state);
-        if let Some(state) = inner.partitions.get_mut(&(topic.to_owned(), partition)) {
+        if let Some(state) = inner.partitions.get_mut(&(Arc::from(topic), partition)) {
             state.committed = state.committed.max(offset);
         }
     }
@@ -226,7 +212,7 @@ impl OffsetTracker {
     /// and a token left live would settle a delivery the tracker no longer owns.
     pub fn reset(&self, topic: &str, partition: i32) {
         let mut inner = lock(&self.state);
-        let Some(state) = inner.partitions.remove(&(topic.to_owned(), partition)) else {
+        let Some(state) = inner.partitions.remove(&(Arc::from(topic), partition)) else {
             return;
         };
         for token in state.inflight.values() {
@@ -240,7 +226,7 @@ impl OffsetTracker {
             .partitions
             .iter()
             .map(|((topic, partition), state)| PartitionStats {
-                topic: topic.clone(),
+                topic: topic.to_string(),
                 partition: *partition,
                 // Saturating: `usize` is the machine's, `u64` is the contract's. They differ only
                 // on a 128-bit target, and never with this many offsets in flight.
@@ -258,162 +244,32 @@ impl OffsetTracker {
 mod tests {
     use super::*;
 
-    /// One step of a tracker scenario. The settle steps name the i-th token `Book` handed out;
-    /// `AckToken` / `NackToken` settle a raw token no booking issued.
-    enum Step {
-        Book(&'static str, i32, i64),
-        Ack(usize),
-        AckToken(i64),
-        Nack(usize),
-        NackToken(i64),
-        Committed(&'static str, i32, i64),
-        Reset(&'static str, i32),
-    }
-
-    /// `(topic, partition, unsettled, max_delivered, committed)` — `PartitionStats` without the
-    /// owned `String`, so a case can be a constant.
-    type StatsRow = (&'static str, i32, u64, i64, i64);
-
+    /// The branches `testdata/golden/kafka_offsets.json` does not reach. That file is the scenario
+    /// driver for this state machine — every settlement rule is a case there, replayed by every
+    /// binding — so what is left here is only what a golden scenario cannot express.
     #[test]
-    fn offset_settlement_branches() {
-        use Step::*;
-        struct Case {
-            name: &'static str,
-            steps: &'static [Step],
-            /// What each ack step returned, in order.
-            acked: &'static [AckDecision],
-            /// What each nack step returned, in order.
-            nacked: &'static [NackDecision],
-            /// The final `stats()`.
-            stats: &'static [StatsRow],
-        }
-        let cases = [
-            Case {
-                name: "an ack that empties the inflight set commits one past the highest delivered",
-                steps: &[Book("t", 0, 0), Ack(0)],
-                acked: &[AckDecision { commit: true, offset: 1 }],
-                nacked: &[],
-                stats: &[("t", 0, 0, 0, -1)],
-            },
-            Case {
-                name: "an out-of-order ack commits only up to the lowest offset still in flight",
-                steps: &[Book("t", 0, 0), Book("t", 0, 1), Ack(1)],
-                acked: &[AckDecision { commit: true, offset: 0 }],
-                nacked: &[],
-                stats: &[("t", 0, 1, 1, -1)],
-            },
-            Case {
-                // The guard: without it this ack would re-commit a watermark already recorded.
-                name: "an ack whose watermark is already committed refuses to step back",
-                steps: &[Book("t", 0, 0), Book("t", 0, 1), Book("t", 0, 2), Ack(0), Committed("t", 0, 1), Ack(2)],
-                acked: &[AckDecision { commit: true, offset: 1 }, AckDecision { commit: false, offset: 1 }],
-                nacked: &[],
-                stats: &[("t", 0, 1, 2, 1)],
-            },
-            Case {
-                // Two commits that returned out of order: the higher one stands.
-                name: "committed max-merges a late lower confirmation",
-                steps: &[
-                    Book("t", 0, 0),
-                    Book("t", 0, 1),
-                    Ack(0),
-                    Ack(1),
-                    Committed("t", 0, 2),
-                    Committed("t", 0, 1),
-                ],
-                acked: &[AckDecision { commit: true, offset: 1 }, AckDecision { commit: true, offset: 2 }],
-                nacked: &[],
-                stats: &[("t", 0, 0, 1, 2)],
-            },
-            Case {
-                name: "a nack seeks the lowest offset in flight, not the nacked one",
-                steps: &[Book("t", 0, 0), Book("t", 0, 1), Book("t", 0, 2), Nack(2), Nack(0)],
-                acked: &[],
-                nacked: &[NackDecision { seek: true, offset: 0 }, NackDecision { seek: true, offset: 0 }],
-                stats: &[("t", 0, 3, 2, -1)],
-            },
-            Case {
-                name: "a token no booking issued settles nothing",
-                steps: &[Book("t", 0, 0), AckToken(999), NackToken(NO_DELIVERY)],
-                acked: &[AckDecision { commit: false, offset: -1 }],
-                nacked: &[NackDecision { seek: false, offset: -1 }],
-                stats: &[("t", 0, 1, 0, -1)],
-            },
-            Case {
-                name: "reset drops the partition, so its tokens are stale",
-                steps: &[Book("t", 0, 5), Book("t", 0, 6), Reset("t", 0), Ack(0), NackToken(2)],
-                acked: &[AckDecision { commit: false, offset: -1 }],
-                nacked: &[NackDecision { seek: false, offset: -1 }],
-                stats: &[],
-            },
-            Case {
-                // The hole a `(partition, offset)` key leaves: the pre-revoke ack for 5 must not
-                // discard the booking the re-assignment made.
-                name: "a partition assigned back after reset ignores the pre-reset ack",
-                steps: &[Book("t", 0, 5), Reset("t", 0), Book("t", 0, 5), Ack(0), Ack(1)],
-                acked: &[AckDecision { commit: false, offset: -1 }, AckDecision { commit: true, offset: 6 }],
-                nacked: &[],
-                stats: &[("t", 0, 0, 5, -1)],
-            },
-            Case {
-                name: "re-booking an offset replaces its token, and the ack for the old one is stale",
-                steps: &[Book("t", 0, 0), Nack(0), Book("t", 0, 0), Ack(0), Ack(1)],
-                acked: &[AckDecision { commit: false, offset: -1 }, AckDecision { commit: true, offset: 1 }],
-                nacked: &[NackDecision { seek: true, offset: 0 }],
-                stats: &[("t", 0, 0, 0, -1)],
-            },
-            Case {
-                name: "committed for a partition nobody booked is a no-op",
-                steps: &[Book("t", 0, 0), Committed("t", 9, 100)],
-                acked: &[],
-                nacked: &[],
-                stats: &[("t", 0, 1, 0, -1)],
-            },
-            Case {
-                name: "each partition keeps its own watermark, and stats sorts by topic then partition",
-                steps: &[Book("u", 0, 4), Book("t", 1, 0), Book("t", 0, 0), Ack(1)],
-                acked: &[AckDecision { commit: true, offset: 1 }],
-                nacked: &[],
-                stats: &[("t", 0, 1, 0, -1), ("t", 1, 0, 0, -1), ("u", 0, 1, 4, -1)],
-            },
-        ];
-        for case in cases {
-            let tracker = OffsetTracker::new();
-            let mut tokens: Vec<i64> = Vec::new();
-            let mut acked: Vec<AckDecision> = Vec::new();
-            let mut nacked: Vec<NackDecision> = Vec::new();
-            for step in case.steps {
-                match step {
-                    Book(topic, partition, offset) => tokens.push(tracker.book(topic, *partition, *offset)),
-                    Ack(i) => acked.push(tracker.ack(tokens[*i])),
-                    AckToken(token) => acked.push(tracker.ack(*token)),
-                    Nack(i) => nacked.push(tracker.nack(tokens[*i])),
-                    NackToken(token) => nacked.push(tracker.nack(*token)),
-                    Committed(topic, partition, offset) => tracker.committed(topic, *partition, *offset),
-                    Reset(topic, partition) => tracker.reset(topic, *partition),
-                }
-            }
-            assert_eq!(acked, case.acked, "{}: ack decisions", case.name);
-            assert_eq!(nacked, case.nacked, "{}: nack decisions", case.name);
-            let stats = tracker.stats();
-            let got: Vec<(&str, i32, u64, i64, i64)> = stats
-                .iter()
-                .map(|s| (s.topic.as_str(), s.partition, s.unsettled, s.max_delivered, s.committed))
-                .collect();
-            assert_eq!(got, case.stats, "{}: stats()", case.name);
-        }
-    }
-
-    /// Tokens are the settlement identity, so they must be handed out in one deterministic,
-    /// never-repeating order — including for an offset booked twice.
-    #[test]
-    fn tokens_are_monotonic_and_never_the_placeholder() {
+    fn branches_the_golden_scenarios_do_not_reach() {
+        // A rebalance listener resets every revoked partition blindly, including ones this tracker
+        // never booked. That is a no-op and must leave the partitions it does own untouched.
         let tracker = OffsetTracker::new();
-        let booked: Vec<i64> = (0..4).map(|offset| tracker.book("t", (offset % 2) as i32, offset)).collect();
-        assert_eq!(booked, [1, 2, 3, 4], "tokens start at NO_DELIVERY + 1 and step by one");
-        assert!(booked.iter().all(|&token| token != NO_DELIVERY));
-        let again = tracker.book("t", 0, 0);
-        assert_eq!(again, 5, "a re-booked offset takes a fresh token, never the retired one");
-        assert!(!tracker.ack(booked[0]).commit, "the retired token is dead");
+        let token = tracker.book("t", 0, 4);
+        tracker.reset("t", 9);
+        tracker.reset("u", 0);
+        assert_eq!(tracker.ack(token), AckDecision { commit: true, offset: 5 }, "the booked partition still settles");
+        assert_eq!(tracker.stats().len(), 1, "only the partition that was booked is reported");
+
+        // The `u64` width of `unsettled` is the contract's, and `stats` reports a partition with
+        // nothing in flight rather than dropping it.
+        let stats = tracker.stats();
+        assert_eq!(
+            stats.first(),
+            Some(&PartitionStats {
+                topic: "t".to_owned(),
+                partition: 0,
+                unsettled: 0,
+                max_delivered: 4,
+                committed: NO_OFFSET
+            })
+        );
     }
 }

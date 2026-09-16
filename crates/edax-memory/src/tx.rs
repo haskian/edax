@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
-use edax_core::AdapterError;
+use edax_core::{lock, AdapterError};
 use serde_json::{Map, Value};
 
 use crate::event::{MemoryEventStore, Snapshot};
@@ -26,15 +26,6 @@ pub(crate) fn versioned_row(id: &str, version: i64, payload_key: &str, payload: 
         (payload_key.to_owned(), payload),
     ]));
     serde_json::to_string(&row).map_err(AdapterError::codec)
-}
-
-/// Lock a store's state, recovering from poisoning instead of panicking.
-///
-/// These adapters run inside a native binding, where an unwinding panic crosses the host language's
-/// FFI boundary. Nothing inside a guarded section here can panic, so the state behind a poisoned lock
-/// is still consistent — take it back rather than propagate a panic the host cannot catch.
-pub(crate) fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
-    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The token that names no transaction. A write made under it lands at once (auto-commit) and a

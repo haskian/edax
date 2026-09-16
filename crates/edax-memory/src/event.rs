@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use edax_core::AdapterError;
+use edax_core::{lock, AdapterError};
 
-use crate::tx::{held_by_other, lock, sequence_of, store_view, MemoryState, MemoryTransactor};
+use crate::tx::{held_by_other, sequence_of, store_view, MemoryState, MemoryTransactor};
 
 /// A stored aggregate snapshot: the host-marshaled state plus its type and version.
 #[derive(Clone)]

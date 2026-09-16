@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Kafka record and offset kernel for the edax seams, shared by every SDK"
 
 [dependencies]
+edax-core.workspace = true
 edax-event.workspace = true
 
 [dev-dependencies]

@@ -82,10 +82,12 @@ Plain `application/json` is not used. It could not tell an edax envelope from an
 shared topic, and the consumer's registry needs one exact string per serializer. A custom serializer
 follows the same shape: `application/vnd.<vendor>.<format>+<syntax>`.
 
-`media_type(format)` is the one place that mapping lives, so it cannot be read here and written
-differently there. `Format` is `#[non_exhaustive]`. A variant this kernel does not know is a codec
-error, never a fallback, so a record can never carry a header naming the wrong codec. The change
-that adds a variant mints its media type here.
+`edax_event::Format::media_type` is the one place that mapping lives, so it cannot be read here and
+written differently there. It sits with the codec, not with this kernel, because it names the
+*format* and not the transport. A media type is the same string over Kafka, over HTTP, or in a file.
+The change that adds a `Format` variant mints its media type in the same edit.
+`Format::from_media_type` refuses a media type edax never mints — a codec error, never a fallback,
+so a record can never decode as the wrong codec.
 
 ### Decoding: which format the record names
 
@@ -205,8 +207,8 @@ diff before committing it.
 
 | | Rust | Python |
 |---|---|---|
-| record | `edax_kafka::encode_record` / `decode_record` | `_edax.kafka_record`, `_edax.kafka_content_type`, `_edax.decode_kafka_record` |
-| media type | `edax_kafka::media_type` | `_edax.kafka_media_type`, behind `KernelSerializer.content_type` |
+| record | `edax_kafka::encode_record` / `decode_record` | `_edax.kafka_record`, `_edax.kafka_content_type` |
+| media type | `edax_event::Format::media_type` | `_edax.media_type`, behind `KernelSerializer.media_type` |
 | poison id | `edax_kafka::poison_id` | `_edax.kafka_poison_id` |
 | offsets | `edax_kafka::OffsetTracker` | `_edax.offset_tracker()` |
 

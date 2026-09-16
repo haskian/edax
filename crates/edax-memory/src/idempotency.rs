@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use edax_core::AdapterError;
+use edax_core::{lock, AdapterError};
 use serde_json::Value;
 
-use crate::tx::{held_by_other, lock, store_view, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{held_by_other, store_view, MemoryState, MemoryTransactor, WriteSet};
 
 /// In-memory idempotency store for development and tests: claim / complete / release over the
 /// transactor's map. Records are opaque JSON bytes. [`claim`](Self::claim) writes a *pending*

@@ -27,7 +27,8 @@ mod tx;
 #[cfg(test)]
 mod testkit;
 
-pub use broker::{MemoryBroker, PolledDelivery, NO_DELIVERY};
+pub use broker::{MemoryBroker, PolledDelivery};
+pub use edax_core::NO_DELIVERY;
 pub use event::{MemoryEventStore, Snapshot};
 pub use idempotency::MemoryIdempotencyStore;
 pub use projection::MemoryProjectionStore;

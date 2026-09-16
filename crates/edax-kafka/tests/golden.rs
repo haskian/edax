@@ -8,23 +8,11 @@
 //! Without the env var this test ASSERTS the committed files still match the code.
 
 use edax_event::{Event, EventEnvelope, Format, Metadata, Namespace};
-use edax_golden::write_or_check;
+use edax_golden::{hex, write_or_check};
 use edax_kafka::{
     content_type, decode_record, encode_record, record, KafkaHeader, KafkaRecord, OffsetTracker, CONTENT_TYPE,
 };
 use serde_json::{json, Value};
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The format name a binding selects by, the one `Format::from_name` reads.
-fn format_name(format: Format) -> &'static str {
-    match format {
-        Format::Msgpack => "msgpack",
-        _ => "json",
-    }
-}
 
 fn map(pairs: &[(&str, &str)]) -> Namespace {
     pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -70,10 +58,6 @@ fn unicode() -> EventEnvelope {
     }
 }
 
-fn header(key: &str, value: &[u8]) -> KafkaHeader {
-    KafkaHeader { key: key.to_owned(), value: value.to_vec() }
-}
-
 fn headers_json(headers: &[KafkaHeader]) -> Value {
     headers.iter().map(|h| json!({ "key": h.key, "value_hex": hex(&h.value) })).collect()
 }
@@ -98,7 +82,7 @@ fn kafka_record_cases() -> Vec<Value> {
     cases
         .into_iter()
         .map(|(name, format, key, env)| {
-            let rec = encode_record(format, &env, key).expect("a built-in format has a media type");
+            let rec = encode_record(format, &env, key);
             // The primitive path with the kernel's own bytes must build the identical record, or a
             // host serializer would get a different key or a different header set.
             assert_eq!(
@@ -108,7 +92,7 @@ fn kafka_record_cases() -> Vec<Value> {
             );
             json!({
                 "name": name,
-                "format": format_name(format),
+                "format": format.name(),
                 "key": key,
                 "envelope": envelope_json(&env),
                 "key_hex": hex(&rec.key),
@@ -122,8 +106,8 @@ fn kafka_record_cases() -> Vec<Value> {
 /// What a consumer makes of a fetched record: which format the headers select, and how a record it
 /// cannot read fails.
 fn kafka_decode_cases() -> Vec<Value> {
-    let json_record = encode_record(Format::Json, &base(), None).expect("json has a media type");
-    let msgpack_record = encode_record(Format::Msgpack, &base(), None).expect("msgpack has a media type");
+    let json_record = encode_record(Format::Json, &base(), None);
+    let msgpack_record = encode_record(Format::Msgpack, &base(), None);
     let without_content_type = |rec: &KafkaRecord| -> Vec<KafkaHeader> {
         rec.headers.iter().filter(|h| h.key != CONTENT_TYPE).cloned().collect()
     };
@@ -146,7 +130,7 @@ fn kafka_decode_cases() -> Vec<Value> {
             Format::Json,
             json_record.value.clone(),
             [
-                vec![header(CONTENT_TYPE, b"application/x-protobuf")],
+                vec![KafkaHeader::new(CONTENT_TYPE, b"application/x-protobuf")],
                 without_content_type(&json_record),
             ]
             .concat(),
@@ -156,8 +140,11 @@ fn kafka_decode_cases() -> Vec<Value> {
             "the_first_content_type_wins",
             Format::Json,
             msgpack_record.value.clone(),
-            [msgpack_record.headers.clone(), vec![header(CONTENT_TYPE, b"application/vnd.edax.envelope+json")]]
-                .concat(),
+            [
+                msgpack_record.headers.clone(),
+                vec![KafkaHeader::new(CONTENT_TYPE, b"application/vnd.edax.envelope+json")],
+            ]
+            .concat(),
         ),
         (
             // The fallback is not a guess: bytes that are not the default format still fail.
@@ -176,7 +163,7 @@ fn kafka_decode_cases() -> Vec<Value> {
             };
             json!({
                 "name": name,
-                "default_format": format_name(default),
+                "default_format": default.name(),
                 "value_hex": hex(&value),
                 "headers": headers_json(&headers),
                 "want": want,

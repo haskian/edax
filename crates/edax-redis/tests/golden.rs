@@ -8,7 +8,7 @@
 //! Without the env var this test ASSERTS the committed files still match the code.
 
 use edax_cqrs::{encode_record, Record};
-use edax_golden::write_or_check;
+use edax_golden::{hex, write_or_check};
 use edax_redis::{claim_value, record_value, split_value, FENCED_DEL_SCRIPT, FENCED_SET_SCRIPT};
 use serde_json::{json, Value};
 
@@ -19,10 +19,6 @@ const HASH: u64 = 11_258_580_006_047_770_801;
 const ZEROS: &str = "00000000000000000000000000000000";
 /// A token in the shape `new_owner` mints, so the vector shows a realistic value too.
 const MINTED: &str = "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d";
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
 
 /// A settled record's JSON, encoded by the kernel that owns the shape.
 fn encoded(record: &Record<Value>) -> String {

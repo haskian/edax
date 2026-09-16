@@ -88,7 +88,10 @@ class RedisIdempotencyStore:
         won, else the existing :class:`~edax.command.Record`."""
         rkey = self._key(key)
         owner = _edax.redis_owner()
-        pending = _edax.redis_claim_value(owner, payload_hash).encode()
+        with errors.mapped():
+            # Building the value is the kernel's, not the client's: a token it refuses is a terminal
+            # CodecError, never the transient StoreError an I/O failure gets.
+            pending = _edax.redis_claim_value(owner, payload_hash).encode()
         for _ in range(_CLAIM_ATTEMPTS):
             with _as_store_error("claim", key):
                 if await self._conn.set_nx_px(rkey, pending, self._claim_ttl_ms):
@@ -117,15 +120,20 @@ class RedisIdempotencyStore:
         owner = self._owned.get(key)
         if owner is None:
             # No claim of this caller's to fence against: a direct write, not a guarded dispatch.
-            with _as_store_error("complete", key):
+            with errors.mapped():
                 value = _edax.redis_record_value(_edax.redis_owner(), body).encode()
+            with _as_store_error("complete", key):
                 await self._conn.set_px(self._key(key), value, self._ttl_ms)
             return
+        # Framed before the guard opens: a token the kernel refuses is a terminal CodecError, and
+        # `_as_store_error` would retag it as a transient StoreError and retry it forever.
+        with errors.mapped():
+            value = _edax.redis_record_value(owner, body).encode()
         with _as_store_error("complete", key):
             fenced = await self._conn.set_px_if_prefix(
                 self._key(key),
                 owner.encode(),
-                _edax.redis_record_value(owner, body).encode(),
+                value,
                 self._ttl_ms,
             )
         if not fenced:

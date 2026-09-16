@@ -8,8 +8,7 @@ See ``docs/backends/kafka.md``."""
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from .. import _edax
 from ..aggregate import EventEnvelope, KernelSerializer, Serializer
@@ -17,9 +16,33 @@ from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery
 from ..errors import CodecError
 
+if TYPE_CHECKING:  # the base package imports no broker library; this name is for the annotations only
+    from aiokafka import TopicPartition
+
+__all__ = [
+    "KafkaConsumer",
+    "KafkaHeader",
+    "KafkaProducer",
+    "KafkaRecord",
+    "PartitionStats",
+    "RecordMiddleware",
+]
+
 # The kernel's record structs, re-exported here so a middleware builds one without importing `_edax`.
 KafkaRecord = _edax.KafkaRecord
 KafkaHeader = _edax.KafkaHeader
+#: One partition's consumer bookkeeping as the kernel reports it: ``unsettled`` offsets delivered and not
+#: yet settled, the highest ``max_delivered``, and the last ``committed`` watermark (``-1`` before the
+#: first commit), under the ``topic`` and ``partition`` they belong to.
+PartitionStats = _edax.PartitionStats
+
+
+def _topic_partition(topic: str, partition: int) -> TopicPartition:
+    """The client's own key type for a partition. Imported lazily, because the base package installs no
+    broker library and must import without one."""
+    from aiokafka import TopicPartition
+
+    return TopicPartition(topic, partition)
 
 
 class RecordMiddleware(Protocol):
@@ -64,7 +87,7 @@ class KafkaProducer:
         record = _edax.kafka_record(
             env,
             self._serializer.encode(env),
-            self._serializer.content_type,
+            self._serializer.media_type,
             self._key(env) if self._key else None,
         )
         for m in self._middleware:
@@ -77,31 +100,15 @@ class KafkaProducer:
         )
 
 
-@dataclass(frozen=True)
-class PartitionStats:
-    """One partition's consumer bookkeeping: offsets delivered but not yet settled, the highest offset
-    delivered, and the last committed watermark (``-1`` before the first commit)."""
-
-    unsettled: int
-    max_delivered: int
-    committed: int
-
-
 class KafkaConsumer(_ConsumerLoop):
     """Consumes a Kafka topic through a caller-owned, subscribed ``AIOKafkaConsumer``.
 
-    The dispatcher acks in worker order, not fetch order, so a bare ``commit()`` would skip past a
-    still-unacked offset and lose it on restart. Instead each poll books its offset with the
-    ``edax-kafka`` tracker and settles by the token it gets back: the kernel computes the watermark to
-    commit (the lowest offset still in flight, or one past the highest delivered when none remain),
-    refuses a token a later :meth:`reset` invalidated, and keeps the committed record monotonic.
-    ``nack`` seeks the partition back for redelivery. The bookkeeping holds only while the partition is
-    assigned: a revoked partition leaves its in-flight offsets unsettled here and the new owner
-    redelivers them from the last committed watermark, which is at-least-once; a rebalance listener
-    calls :meth:`reset` for it. A payload no serializer decodes becomes an
-    :class:`~edax.broker.UndecodableDelivery` after its offset is booked, so the loop can dead-letter it
-    and the watermark advances past it. ``getone`` blocks by design; per-request deadlines are the
-    client's."""
+    ``getone`` blocks by design; per-request deadlines are the client's. The offset bookkeeping holds
+    only while the partition is assigned, so a rebalance listener must call :meth:`reset` for a revoked
+    one. ``serializer`` is the default: it decodes a record that carries no ``content-type`` header and
+    claims its own media type in the registry, which ``serializers`` extends with one entry per media
+    type. ``middleware`` rewrites each record on the way in, in reverse order. See
+    ``docs/backends/kafka.md``."""
 
     def __init__(
         self,
@@ -115,20 +122,13 @@ class KafkaConsumer(_ConsumerLoop):
         # The default decodes a record that carries no `content-type` header at all, and claims its
         # own media type in the registry like every other serializer.
         self._default: Serializer = serializer or KernelSerializer("json")
-        self._by_type: dict[str, Serializer] = {s.content_type: s for s in (self._default, *serializers)}
+        self._by_type: dict[str, Serializer] = {s.media_type: s for s in (self._default, *serializers)}
         self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
         self._tracker = _edax.offset_tracker()
 
-    def stats(self) -> dict[Any, PartitionStats]:
+    def stats(self) -> dict[TopicPartition, PartitionStats]:
         """A snapshot of the bookkeeping, keyed by ``TopicPartition``, for a health check or a gauge."""
-        from aiokafka import TopicPartition  # lazy: the base package imports no broker library
-
-        return {
-            TopicPartition(row.topic, row.partition): PartitionStats(
-                row.unsettled, row.max_delivered, row.committed
-            )
-            for row in self._tracker.stats().items
-        }
+        return {_topic_partition(row.topic, row.partition): row for row in self._tracker.stats().items}
 
     def reset(self, tp: Any) -> None:
         """Drop the bookkeeping for a revoked partition. Its unsettled offsets are the new owner's to
@@ -137,14 +137,18 @@ class KafkaConsumer(_ConsumerLoop):
         self._tracker.reset(tp.topic, tp.partition)
 
     async def poll(self) -> Optional[Delivery]:
-        from aiokafka import TopicPartition  # lazy: the base package imports no broker library
-
         msg = await self._client.getone()
-        tp = TopicPartition(msg.topic, msg.partition)
-        offset = msg.offset
+        # `ack` and `nack` settle long after this frame returns; they capture these three, never `msg`,
+        # so an unsettled delivery does not pin a whole fetched record in memory.
+        topic, partition, offset = msg.topic, msg.partition, msg.offset
+        tp = _topic_partition(topic, partition)
         # Book the offset before decoding: an undecodable payload still has to be settled, and an unbooked
         # offset is either committed past by the next ack or replayed into the same failure forever.
-        token = self._tracker.book(msg.topic, msg.partition, offset)
+        token = self._tracker.book(topic, partition, offset)
+        # Topic, partition and offset together are the only identity a poison message has. The offset
+        # alone repeats on every partition, so two poison messages would share one id and a dead-letter
+        # queue keyed on it would keep the first and reject the second.
+        poison_id = _edax.kafka_poison_id(topic, partition, offset)
 
         async def ack() -> None:
             decision = self._tracker.ack(token)
@@ -153,7 +157,7 @@ class KafkaConsumer(_ConsumerLoop):
                 # Recorded only once the client's commit returned, so a failed commit is not counted as
                 # done. The monotonic guard that keeps a later, higher ack from being skipped by a
                 # commit that returned out of order is the kernel's.
-                self._tracker.committed(msg.topic, msg.partition, decision.offset)
+                self._tracker.committed(topic, partition, decision.offset)
 
         async def nack() -> None:
             # The offset stays in flight until its redelivered copy acks, so a later ack cannot commit past
@@ -163,26 +167,36 @@ class KafkaConsumer(_ConsumerLoop):
             if decision.seek:
                 self._client.seek(tp, decision.offset)
 
-        record = KafkaRecord(msg.key or b"", msg.value, [KafkaHeader(k, v) for k, v in (msg.headers or ())])
+        def poison(cause: BaseException) -> UndecodableDelivery:
+            """The fetched bytes as a dead-letterable delivery, settled by the offset already booked."""
+            error = CodecError(f"kafka {poison_id} did not decode: {cause}")
+            error.__cause__ = cause  # `raise ... from e` is unavailable: the error is carried, not raised
+            return UndecodableDelivery(msg.value, poison_id, ack, nack, error)
+
+        value, headers = msg.value, [KafkaHeader(k, v) for k, v in (msg.headers or ())]
+        if self._middleware:
+            # The kernel record exists for the middleware to rewrite; building one with no middleware to
+            # run would copy the payload and the headers across the binding for nothing.
+            record = KafkaRecord(msg.key or b"", value, headers)
+            try:
+                for m in reversed(self._middleware):
+                    record = m.on_poll(record)
+            except CodecError as e:
+                # Only a codec failure is poison here. A hook whose key service is down fails
+                # transiently, so anything else propagates and the message redelivers.
+                return poison(e)
+            value, headers = record.value, record.headers
+
+        content_type = _edax.kafka_content_type(headers)
+        serializer = self._by_type.get(content_type) if content_type else self._default
+        if serializer is None:
+            # Never fall back to the default: decoding msgpack bytes as the host's own format is how a
+            # wrong envelope reaches a handler instead of the dead-letter sink.
+            return poison(CodecError(f"no serializer for content type {content_type!r}"))
         try:
-            for m in reversed(self._middleware):
-                record = m.on_poll(record)
-            content_type = _edax.kafka_content_type(record.headers)
-            if content_type and content_type not in self._by_type:
-                # Never fall back to the default: decoding msgpack bytes as the host's own format is
-                # how a wrong envelope reaches a handler instead of the dead-letter sink.
-                raise CodecError(
-                    f"kafka {msg.topic}/{msg.partition} offset {offset}: "
-                    f"no serializer for content type {content_type!r}"
-                )
-            serializer = self._by_type[content_type] if content_type else self._default
-            env = serializer.decode(record.value)
-        except CodecError as e:
-            poison = CodecError(f"kafka {msg.topic}/{msg.partition} offset {offset} did not decode: {e}")
-            poison.__cause__ = e  # `raise ... from e` is unavailable: the error is carried, not raised
-            # Topic, partition and offset together are the only identity a poison message has. The
-            # offset alone repeats on every partition, so two poison messages would share one id and
-            # a dead-letter queue keyed on it would keep the first and reject the second.
-            message_id = _edax.kafka_poison_id(msg.topic, msg.partition, offset)
-            return UndecodableDelivery(msg.value, message_id, ack, nack, poison)
+            env = serializer.decode(value)
+        except Exception as e:  # noqa: BLE001 - every failure of a pure decode is terminal
+            # A third-party serializer raises its own error types, and a decode that fails once fails
+            # the same way on every redelivery, so the record is poison whatever it raised.
+            return poison(e)
         return Delivery(env, ack, nack)

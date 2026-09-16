@@ -9,7 +9,6 @@ description = "Redis idempotency-ledger kernel for the edax toolkit: value layou
 [dependencies]
 edax-core.workspace = true
 edax-cqrs.workspace = true
-uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
 edax-golden.workspace = true

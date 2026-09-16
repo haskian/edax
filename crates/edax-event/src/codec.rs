@@ -12,6 +12,12 @@
 use crate::domain::EventEnvelope;
 use std::fmt;
 
+/// The media type of an envelope encoded with [`Format::Json`]. Private, so the mapping cannot be
+/// read through [`Format::media_type`] here and written differently there.
+const MEDIA_TYPE_JSON: &str = "application/vnd.edax.envelope+json";
+/// The media type of an envelope encoded with [`Format::Msgpack`].
+const MEDIA_TYPE_MSGPACK: &str = "application/vnd.edax.envelope+msgpack";
+
 /// A built-in envelope serialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -29,6 +35,59 @@ impl Format {
             "json" => Ok(Format::Json),
             "msgpack" => Ok(Format::Msgpack),
             other => Err(CodecError::UnknownFormat(other.to_string())),
+        }
+    }
+
+    /// The name a binding selects this format by, the inverse of [`from_name`](Format::from_name).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Format::Json => "json",
+            Format::Msgpack => "msgpack",
+        }
+    }
+
+    // Vocabulary, because the two words below are not synonyms (RFC 9110 §8.3, RFC 6838):
+    //
+    // * `content-type` is a *header*. Its value is a media type, optionally followed by parameters
+    //   such as `; charset=utf-8`. Functions that read or write the header say `content_type`.
+    // * A *media type* is the bare `type/subtype` string the header carries. Functions that produce
+    //   that string say `media_type`.
+    //
+    // Anatomy of `application/vnd.edax.envelope+json`:
+    //
+    // * `application/` — the top-level type for opaque, program-consumed data.
+    // * `vnd.` — the vendor tree (RFC 6838 §3.2). Subtypes without a prefix are IANA standards such
+    //   as `application/json`; `vnd.` marks a product-specific format. Registration with IANA is
+    //   optional there and has not been done, which is fine for a private protocol. `x-` is the
+    //   deprecated unregistered prefix and is not used.
+    // * `edax.envelope` — the vendor and the format: an event envelope as `edax-event` encodes it.
+    // * `+json` / `+msgpack` — the structured-syntax suffix (RFC 6839). It tells tooling that has
+    //   never heard of edax how to parse the bytes, and it is why plain `application/json` is not
+    //   used: that name could not tell an edax envelope from any other JSON on a shared topic, and
+    //   the consumer's registry needs one exact string per serializer.
+
+    /// The media type that names this format on the wire, `application/vnd.edax.envelope+<suffix>`
+    /// (the vocabulary note above explains each part). It names the *codec*, not the transport, so
+    /// any transport that carries a type — a Kafka `content-type` header, an HTTP request — uses
+    /// this one string. Infallible: the match is exhaustive here, in the crate that defines
+    /// `Format`, so the change that adds a variant mints its media type in the same edit.
+    pub fn media_type(&self) -> &'static str {
+        match self {
+            Format::Json => MEDIA_TYPE_JSON,
+            Format::Msgpack => MEDIA_TYPE_MSGPACK,
+        }
+    }
+
+    /// The inverse of [`media_type`](Format::media_type): the only media types edax mints.
+    ///
+    /// Anything else is a [`CodecError::UnknownFormat`] and never a fallback, so a consumer reading
+    /// a producer rollout it does not know refuses one message instead of decoding it as the wrong
+    /// format. The string must match whole: parameters such as `; charset=utf-8` are not stripped.
+    pub fn from_media_type(media_type: &str) -> Result<Format, CodecError> {
+        match media_type {
+            MEDIA_TYPE_JSON => Ok(Format::Json),
+            MEDIA_TYPE_MSGPACK => Ok(Format::Msgpack),
+            other => Err(CodecError::UnknownFormat(other.to_owned())),
         }
     }
 
@@ -184,9 +243,27 @@ mod tests {
         }
     }
 
+    /// Both vocabularies round-trip, so the name a binding selects by and the media type a record
+    /// carries cannot drift from the format they resolve to.
+    #[test]
+    fn every_format_round_trips_through_its_name_and_its_media_type() {
+        for fmt in [Format::Json, Format::Msgpack] {
+            assert_eq!(Format::from_name(fmt.name()).unwrap(), fmt);
+            assert_eq!(Format::from_media_type(fmt.media_type()).unwrap(), fmt);
+            // The suffix is the structured-syntax one (RFC 6839), so tooling that never heard of
+            // edax still knows how to parse the bytes.
+            assert_eq!(fmt.media_type(), format!("application/vnd.edax.envelope+{}", fmt.name()));
+        }
+    }
+
     #[test]
     fn malformed_input_is_rejected() {
         assert!(Format::from_name("protobuf").is_err(), "unknown format name");
+        assert!(Format::from_media_type("application/json").is_err(), "a media type edax never mints");
+        assert!(
+            Format::from_media_type("application/vnd.edax.envelope+json; charset=utf-8").is_err(),
+            "parameters are not stripped, so the string must match whole"
+        );
         assert!(
             Format::Json.decode(b"not json").is_err(),
             "json wire bytes are not json"

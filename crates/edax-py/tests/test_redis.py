@@ -137,6 +137,19 @@ async def test_complete_of_an_unencodable_result_is_terminal() -> None:
     assert conn.map == {}  # nothing was written: the encode failed before the SET
 
 
+async def test_complete_under_a_malformed_owner_token_is_terminal() -> None:
+    """The kernel refuses to frame a value under a token it would never mint. That verdict is the
+    terminal ``CodecError``, not the transient ``StoreError`` the client guard hands out: a value the
+    kernel will not build is not built on the retry either."""
+    conn = FakeRedis()
+    s = store(conn)
+    await s.claim("order-7", RECORD.payload_hash)
+    s._owned["order-7"] = "not-a-fence-token"  # what a corrupted or foreign token would leave behind
+    with pytest.raises(edax.CodecError, match="owner token is") as caught:
+        await s.complete("order-7", RECORD)
+    assert caught.value.terminal is True
+
+
 @pytest.mark.parametrize(
     "branch, stored, want",
     [

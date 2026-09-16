@@ -7,7 +7,8 @@ from typing import Any, Optional
 import edax
 import pytest
 from conftest import sequence_of
-from edax import _edax, causation, errors
+from edax import _edax, causation
+from edax.aggregate import WireFormat
 from edax.causation import CAUSATION_ID, CORRELATION_ID, ensure_ids, originate, propagate
 
 GOLDEN = Path(__file__).resolve().parents[3] / "testdata" / "golden"
@@ -91,34 +92,43 @@ def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
 
 
 def test_golden_kafka_record() -> None:
-    """The record a producer sends: key rule, value bytes and the four contract headers. A second
-    SDK writing a different key or header set would split the topic in two."""
+    """The record a producer sends, built the way :class:`~edax.backend.kafka.KafkaProducer` builds
+    it: the serializer's bytes and media type into the kernel's record. A second SDK writing a
+    different key or header set would split the topic in two."""
     for c in load("kafka_record.json"):
         env = _envelope_from_obj(c["envelope"])
-        record = _edax.encode_kafka_record(c["format"], env, c["key"])
+        serializer = edax.kernel(c["format"])
+        record = _edax.kafka_record(env, serializer.encode(env), _edax.media_type(c["format"]), c["key"])
         assert record.key.hex() == c["key_hex"], c["name"]
         assert record.value.hex() == c["value_hex"], c["name"]
         got = [(h.key, h.value.hex()) for h in record.headers]
         assert got == [(h["key"], h["value_hex"]) for h in c["headers"]], c["name"]
 
 
+#: The consumer's registry, as a :class:`~edax.backend.kafka.KafkaConsumer` builds it from the
+#: serializers it was given: one media type per format, matched whole.
+_BY_MEDIA_TYPE: dict[str, WireFormat] = {_edax.media_type(fmt): fmt for fmt in ("json", "msgpack")}
+
+
 def test_golden_kafka_decode() -> None:
-    """The consumer side: the first ``content-type`` picks the format, an absent one falls back to
-    the default, and an unknown one is refused instead of guessed at."""
+    """The consumer side, walked the way :meth:`~edax.backend.kafka.KafkaConsumer.poll` walks it: the
+    first ``content-type`` picks the serializer, an absent one falls back to the default, and a media
+    type no serializer claims is refused instead of guessed at. Every failure is the terminal
+    ``CodecError``, so the consumer dead-letters the record instead of redelivering it forever."""
     for c in load("kafka_decode.json"):
         value, headers = bytes.fromhex(c["value_hex"]), _headers_from_obj(c["headers"])
-        want = c["want"]
-        if "envelope" in want:
-            env = _edax.decode_kafka_record(c["default_format"], value, headers)
-            assert _envelope_as_obj(env) == want["envelope"], c["name"]
-            continue
-        with pytest.raises(RuntimeError) as caught:
-            _edax.decode_kafka_record(c["default_format"], value, headers)
-        assert want["error"] in str(caught.value), c["name"]
-        # The same failure through the SDK's mapper is the terminal CodecError, so the consumer
-        # dead-letters the record instead of redelivering it as a transient fault forever.
-        with pytest.raises(edax.CodecError), errors.mapped():
-            _edax.decode_kafka_record(c["default_format"], value, headers)
+        content_type = _edax.kafka_content_type(headers)
+        fmt = _BY_MEDIA_TYPE.get(content_type) if content_type else c["default_format"]
+        got: dict[str, Any]
+        if fmt is None:
+            # No serializer claims it. The wording is the kernel's, which the golden pins.
+            got = {"error": f"unknown format: {content_type}"}
+        else:
+            try:
+                got = {"envelope": _envelope_as_obj(edax.kernel(fmt).decode(value))}
+            except edax.CodecError as e:
+                got = {"error": str(e)}
+        assert got == c["want"], c["name"]
 
 
 def test_golden_kafka_offsets() -> None:

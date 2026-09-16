@@ -78,8 +78,7 @@ fn codec_error(cause: impl std::fmt::Display) -> String {
     ErrorCode::Codec.tag(cause)
 }
 
-/// A backend failure as the wire form. The kernel's typed error renders its own `"<code>: <message>"`
-/// through the kernel's tag, so its `Display` is the whole conversion — nothing is added here.
+/// A backend failure as the wire form: the kernel's typed error already renders `"<code>: <message>"`.
 fn adapter_error(cause: edax_core::AdapterError) -> String {
     cause.to_string()
 }
@@ -365,6 +364,14 @@ pub fn decode_envelope(format: &str, wire: &[u8]) -> Result<EventEnvelope, Strin
     Ok(record_from_envelope(env))
 }
 
+/// The media type naming `format` (`"json"` or `"msgpack"`) on the wire: the string a transport that
+/// carries a type — a Kafka `content-type` header, an HTTP request — puts there. It names the codec
+/// and not the transport, so it lives here and not with the Kafka record. See
+/// [`edax_event::Format::media_type`].
+pub fn media_type(format: &str) -> Result<String, String> {
+    Ok(resolve(format)?.media_type().to_owned())
+}
+
 // ---- in-memory stores behind one transaction boundary ---------------------
 
 /// A loaded page of envelopes. A single struct wrapping the `Vec` so an `async` method can return it:
@@ -648,9 +655,9 @@ pub fn memory_broker() -> MemoryBroker {
 
 // ---- kafka ---------------------------------------------------------------
 
-/// One Kafka record header, mirroring the kernel's `edax_kafka::KafkaHeader`. The value crosses as
-/// bytes and not text: a foreign header on the same topic may carry anything, and the boundary hands
-/// it back unchanged rather than lose it.
+/// One Kafka record header. The value crosses as bytes and not text: a foreign header on the same
+/// topic may carry anything, and the boundary hands it back unchanged rather than lose it. See
+/// [`edax_kafka::KafkaHeader`].
 pub struct KafkaHeader {
     /// The header name, as the client hands it over.
     pub key: String,
@@ -658,10 +665,8 @@ pub struct KafkaHeader {
     pub value: Vec<u8>,
 }
 
-/// One Kafka record — what a producer sends, or what a consumer fetched — minus the client's own
-/// coordinates (topic, partition, offset), which stay with the host's IO shell. [`kafka_record`]
-/// builds one from the host's value bytes and [`encode_kafka_record`] from the kernel codec; the host
-/// builds one itself to hand a fetched record to [`kafka_content_type`] / [`decode_kafka_record`].
+/// One Kafka record, minus the client's own coordinates (topic, partition, offset), which stay with
+/// the host's IO shell. See [`edax_kafka::KafkaRecord`].
 pub struct KafkaRecord {
     /// The partitioning key: the aggregate id, or the host's override. UTF-8 bytes.
     pub key: Vec<u8>,
@@ -671,7 +676,7 @@ pub struct KafkaRecord {
     pub headers: Vec<KafkaHeader>,
 }
 
-/// Binding headers -> the kernel's, for a media-type lookup or a decode.
+/// Binding headers -> the kernel's.
 fn kernel_headers(headers: Vec<KafkaHeader>) -> Vec<edax_kafka::KafkaHeader> {
     headers
         .into_iter()
@@ -692,17 +697,8 @@ fn record_from_kafka_record(record: edax_kafka::KafkaRecord) -> KafkaRecord {
     }
 }
 
-/// The media type naming `format` (`"json"` or `"msgpack"`) on the wire, for a record's
-/// `content-type` header. A format the kernel does not mint a media type for is a `codec:` error and
-/// never a fallback, so a record cannot carry a header that names the wrong codec.
-pub fn kafka_media_type(format: &str) -> Result<String, String> {
-    edax_kafka::media_type(resolve(format)?).map(|media_type| media_type.to_owned()).map_err(codec_error)
-}
-
-/// Build the record for `envelope` from value bytes the host already encoded, so a host serializer
-/// keeps the kernel's key rule and header set whatever the bytes are; `content_type` names the format
-/// of `value`. `key` overrides the partitioning key; `None` uses the aggregate id, which is what keeps
-/// one aggregate's events on one partition and therefore in order.
+/// Build the record for `envelope` from value bytes the host already encoded; `content_type` names
+/// the format of `value` and `key` overrides the partitioning key. See [`edax_kafka::record`].
 // `key` is optional, so it trails `content_type` — alef moves optional parameters to the end of the
 // generated signature, and the surface order must match for the generated call to line up.
 pub fn kafka_record(
@@ -725,44 +721,13 @@ pub fn kafka_content_type(headers: Vec<KafkaHeader>) -> String {
     edax_kafka::content_type(&headers).unwrap_or_default().to_owned()
 }
 
-/// Build the record for `envelope` with the kernel codec end to end: the value encoded in `format`
-/// and the matching media type in the header.
-pub fn encode_kafka_record(
-    format: &str,
-    envelope: EventEnvelope,
-    key: Option<String>,
-) -> Result<KafkaRecord, String> {
-    let env = envelope_from_record(envelope);
-    let record = edax_kafka::encode_record(resolve(format)?, &env, key.as_deref()).map_err(codec_error)?;
-    Ok(record_from_kafka_record(record))
-}
-
-/// Decode a fetched record back to its envelope.
-///
-/// The record's own `content-type` decides the format; a media type the kernel does not mint is a
-/// `codec:` (terminal) error and never a silent fallback, so a producer rollout the consumer cannot
-/// read becomes one poison message instead of a stream of decode failures. A record naming no
-/// readable media type falls back to `default_format`, so a header-less record still decodes.
-pub fn decode_kafka_record(
-    default_format: &str,
-    value: &[u8],
-    headers: Vec<KafkaHeader>,
-) -> Result<EventEnvelope, String> {
-    let default = resolve(default_format)?;
-    let headers = kernel_headers(headers);
-    let env = edax_kafka::decode_record(default, value, &headers).map_err(codec_error)?;
-    Ok(record_from_envelope(env))
-}
-
-/// The identity of a message that did not decode: `"{topic}/{partition}/{offset}"`. A poison message
-/// has no envelope and so no id, and the offset alone repeats on every partition — a dead-letter
-/// queue keyed on the offset would keep one partition's poison and reject another's.
+/// The identity of a message that did not decode: `"{topic}/{partition}/{offset}"`. See
+/// [`edax_kafka::poison_id`].
 pub fn kafka_poison_id(topic: &str, partition: i32, offset: i64) -> String {
     edax_kafka::poison_id(topic, partition, offset)
 }
 
-/// What [`OffsetTracker::ack`] tells the host to do: commit `offset` as the partition's watermark, or
-/// nothing at all.
+/// What [`OffsetTracker::ack`] tells the host to do. See [`edax_kafka::AckDecision`].
 pub struct AckDecision {
     /// True when the watermark is higher than the last one the host reported committed.
     pub commit: bool,
@@ -770,8 +735,7 @@ pub struct AckDecision {
     pub offset: i64,
 }
 
-/// What [`OffsetTracker::nack`] tells the host to do: seek the partition back to `offset` so the
-/// delivery comes again, or nothing at all.
+/// What [`OffsetTracker::nack`] tells the host to do. See [`edax_kafka::NackDecision`].
 pub struct NackDecision {
     /// True when the partition should be sought back.
     pub seek: bool,
@@ -800,15 +764,9 @@ pub struct PartitionStatsPage {
     pub items: Vec<PartitionStats>,
 }
 
-/// The consumer's offset bookkeeping: one commit watermark per partition, settled by token.
-///
-/// A dispatcher acks in worker order, not in fetch order, so a bare commit would skip past an offset
-/// still in flight and lose it on restart. [`ack`](Self::ack) instead names a watermark — the lowest
-/// offset still in flight, or one past the highest delivered when none remain — and the host performs
-/// the commit, then reports it back with [`committed`](Self::committed), so a client commit that
-/// failed is not recorded as one. Settlement is by token, like the broker's deliveries: a token names
-/// one delivery for the tracker's whole life, so an ack from before a rebalance settles nothing.
-/// Construct it with [`offset_tracker`].
+/// The consumer's offset bookkeeping: one commit watermark per partition, settled by token. Every
+/// decision is data the host performs, never a callback across the boundary. Construct it with
+/// [`offset_tracker`]. See [`edax_kafka::OffsetTracker`].
 pub struct OffsetTracker {
     inner: Arc<edax_kafka::OffsetTracker>,
 }
@@ -826,31 +784,25 @@ impl OffsetTracker {
         self.inner.book(topic, partition, offset)
     }
 
-    /// Settle `token` as handled and report the watermark the host should commit. A stale or unknown
-    /// token commits nothing.
+    /// Settle `token` as handled and report the watermark the host should commit.
     pub fn ack(&self, token: i64) -> AckDecision {
         let decision = self.inner.ack(token);
         AckDecision { commit: decision.commit, offset: decision.offset }
     }
 
-    /// Record that the client committed `offset` on this partition. Max-merge, so two commits that
-    /// returned out of order leave the higher watermark recorded; a no-op for a partition never
-    /// booked or since reset.
+    /// Record that the client committed `offset` on this partition.
     pub fn committed(&self, topic: &str, partition: i32, offset: i64) {
         self.inner.committed(topic, partition, offset);
     }
 
-    /// Settle `token` as failed and report the offset the host should seek the partition to. The
-    /// offset stays in flight until its redelivered copy settles, so a later ack cannot commit past
-    /// it. A stale or unknown token seeks nothing.
+    /// Settle `token` as failed and report the offset the host should seek the partition to.
     pub fn nack(&self, token: i64) -> NackDecision {
         let decision = self.inner.nack(token);
         NackDecision { seek: decision.seek, offset: decision.offset }
     }
 
-    /// Drop a revoked partition's bookkeeping and retire its tokens; the new owner redelivers its
-    /// unsettled offsets from the last committed watermark. A partition that is not assigned is a
-    /// no-op, not an error, so a rebalance listener calls this for every revoked partition blindly.
+    /// Drop a revoked partition's bookkeeping and retire its tokens. A partition that is not
+    /// assigned is a no-op, so a rebalance listener calls this for every revoked partition blindly.
     pub fn reset(&self, topic: &str, partition: i32) {
         self.inner.reset(topic, partition);
     }
@@ -882,16 +834,15 @@ pub fn offset_tracker() -> OffsetTracker {
 /// The token value no delivery ever carries, so a host's "no delivery" placeholder cannot alias a
 /// live one. It is the token a `present: false` [`PollResult`] carries and the one no
 /// [`OffsetTracker`] booking is issued. A call, because the generator binds functions and not
-/// constants; a test pins the broker's kernel and the Kafka kernel to this one value.
+/// constants; one value for both state machines, because both take it from `edax_core`.
 pub fn no_delivery() -> i64 {
     edax_kafka::NO_DELIVERY
 }
 
 // ---- redis ---------------------------------------------------------------
 
-/// A stored Redis ledger value taken apart: the fence token that owns the claim, and the idempotency
-/// record behind it. A struct rather than a tuple, like [`SplitError`]: the generator sanitizes a
-/// tuple return to `Vec<String>` and loses the field names.
+/// A stored Redis ledger value taken apart. A struct rather than a tuple, like [`SplitError`]: the
+/// generator sanitizes a tuple return to `Vec<String>` and loses the field names.
 pub struct RedisValue {
     /// The owner token the value carries, whatever its width — read back liberally so a ledger an
     /// older store wrote stays readable.
@@ -900,49 +851,41 @@ pub struct RedisValue {
     pub record: String,
 }
 
-/// A fresh fence token for a claim: a UUID v7 in its 32-character lowercase hex form.
-///
-/// Minted by the kernel and not by the host, so every SDK's token has the width the fence scripts
-/// compare. Non-deterministic.
+/// A fresh fence token for a claim, minted by the kernel and never by the host so every SDK's token
+/// has the width the fence scripts compare. Non-deterministic. See [`edax_redis::new_owner`].
 pub fn redis_owner() -> String {
     edax_redis::new_owner()
 }
 
-/// The stored value for a fresh claim: `owner` followed by the kernel's **pending** record for
-/// `payload_hash`, under one key so one TTL governs both halves. Whoever loses the race reads the
-/// winner's pending record and learns the key is in flight rather than unseen. A token of the wrong
-/// width is a `codec:` error: it could only fence a prefix of someone else's claim.
+/// The stored value for a fresh claim, written with `SET NX PX`. See [`edax_redis::claim_value`].
 pub fn redis_claim_value(owner: &str, payload_hash: u64) -> Result<String, String> {
     edax_redis::claim_value(owner, payload_hash).map_err(adapter_error)
 }
 
-/// The stored value for a settled claim: `owner` followed by `record_json` as the host encoded it
-/// (with [`encode_idempotency_record`]), passed through untouched so a result never round-trips
-/// through a second serializer.
+/// The stored value for a settled claim, over `record_json` as the host encoded it (with
+/// [`encode_idempotency_record`]). See [`edax_redis::record_value`].
 pub fn redis_record_value(owner: &str, record_json: &str) -> Result<String, String> {
     edax_redis::record_value(owner, record_json).map_err(adapter_error)
 }
 
-/// Take a stored value apart into its owner token and its record.
-///
-/// Strict about the frame — a value that is not UTF-8, or too short to hold a token, is a `codec:`
-/// error because no claimant could ever settle it — and liberal about the token itself.
+/// Take a stored value apart into its owner token and its record. A frame no claimant could ever
+/// settle is a `codec:` (terminal) error. See [`edax_redis::split_value`].
 pub fn redis_split_value(raw: &[u8]) -> Result<RedisValue, String> {
     let (owner, record) = edax_redis::split_value(raw).map_err(adapter_error)?;
     Ok(RedisValue { owner, record })
 }
 
-/// The Lua that sets a key's value only while it still carries the caller's owner token, refreshing
-/// the TTL: `KEYS[1]` is the key, `ARGV` is the token, the new value and the TTL in milliseconds.
-/// Returns `1` when the write landed, `0` when the key is absent or another claimant holds it. The
-/// body is the kernel's byte for byte, so two SDKs registering it share one `EVALSHA` digest.
+/// The Lua that sets a key's value only while it still carries the caller's owner token: `KEYS[1]`
+/// is the key, `ARGV` is the token, the new value and the TTL in milliseconds. The body is the
+/// kernel's byte for byte, so two SDKs registering it share one `EVALSHA` digest. See
+/// [`edax_redis::FENCED_SET_SCRIPT`].
 pub fn redis_fenced_set_script() -> String {
     edax_redis::FENCED_SET_SCRIPT.to_owned()
 }
 
 /// The Lua that deletes a key only while it still carries the caller's owner token: `KEYS[1]` is the
-/// key, `ARGV[1]` is the token. Returns `1` when the delete landed, `0` when the key is absent or
-/// another claimant holds it. Byte for byte the kernel's, like [`redis_fenced_set_script`].
+/// key, `ARGV[1]` is the token. Byte for byte the kernel's, like [`redis_fenced_set_script`]. See
+/// [`edax_redis::FENCED_DEL_SCRIPT`].
 pub fn redis_fenced_del_script() -> String {
     edax_redis::FENCED_DEL_SCRIPT.to_owned()
 }
@@ -1334,6 +1277,8 @@ mod tests {
                 let back = decode_envelope(format, &wire).unwrap();
                 assert_same_envelope(&back, &record, &format!("{format} sequence={:?}", record.sequence));
             }
+            // The name the host selects by resolves to the media type a transport puts on the wire.
+            assert_eq!(media_type(format).as_deref(), Ok(format!("application/vnd.edax.envelope+{format}").as_str()));
         }
     }
 
@@ -1344,7 +1289,7 @@ mod tests {
         // Every deterministic marshaling failure must name its cause *and* carry the taxonomy code, or
         // the host falls back to a transient store error and retries a failure that always repeats.
         let valid_doc = r#"{"id":"user-1","age":36}"#;
-        let cases: [(&str, Result<(), String>, &str); 17] = [
+        let cases: [(&str, Result<(), String>, &str); 14] = [
             ("filter_is_not_json", eval_filter("{not json}", valid_doc).map(|_| ()), "key must be a string"),
             ("filter_is_not_a_filter", eval_filter(r#"{"nope":1}"#, valid_doc).map(|_| ()), "unknown variant"),
             ("document_is_not_json", eval_filter(r#"{"exists":{"path":"id","exists":true}}"#, "nope").map(|_| ()), "expected ident"),
@@ -1376,31 +1321,11 @@ mod tests {
                 "invalid type: string",
             ),
             (
-                // The four Kafka failures. A media type no producer should ever write, a header no
-                // consumer can read, and bytes that are not the format the header names: all three
-                // repeat identically on redelivery, so all three carry the terminal code.
-                "kafka_format_is_not_a_format",
-                kafka_media_type("protobuf").map(|_| ()),
+                // A format name no kernel knows repeats identically on every retry, so it carries
+                // the terminal code rather than a transient one the host would retry.
+                "media_type_format_is_not_a_format",
+                media_type("protobuf").map(|_| ()),
                 "unknown format: protobuf",
-            ),
-            (
-                "kafka_encode_format_is_not_a_format",
-                encode_kafka_record("protobuf", envelope("evt-1", Some(7)), None).map(|_| ()),
-                "unknown format: protobuf",
-            ),
-            (
-                "kafka_content_type_is_not_a_media_type",
-                decode_kafka_record("json", b"{}", vec![KafkaHeader {
-                    key: "content-type".to_owned(),
-                    value: b"application/xml".to_vec(),
-                }])
-                .map(|_| ()),
-                "unknown format: application/xml",
-            ),
-            (
-                "kafka_value_is_not_the_named_format",
-                decode_kafka_record("json", b"not an envelope", Vec::new()).map(|_| ()),
-                "decode",
             ),
             (
                 // The Redis failures cross through `adapter_error`, not `codec_error` — the kernel
@@ -1616,173 +1541,88 @@ mod tests {
         headers.iter().map(|header| KafkaHeader { key: header.key.clone(), value: header.value.clone() }).collect()
     }
 
-    /// One header, for the cases that build a fetched record by hand.
-    fn header(key: &str, value: &[u8]) -> KafkaHeader {
-        KafkaHeader { key: key.to_owned(), value: value.to_vec() }
-    }
-
+    /// What the boundary adds to the record kernel: the envelope and the record cross as structs,
+    /// so every field survives both conversions. The key rule and the header set are the kernel's,
+    /// pinned by `testdata/golden/kafka_record.json`.
     #[test]
-    fn kafka_record_binds_key_headers_and_round_trips() {
-        struct Case {
-            name: &'static str,
-            format: &'static str,
-            /// The host's key override, or `None` for the kernel's default key rule.
-            key: Option<&'static str>,
-            want_key: &'static str,
-            want_media_type: &'static str,
-            /// A consumer default that disagrees with the record, so only the header can decode it.
-            other_format: &'static str,
-        }
-        let cases = [
-            Case {
-                name: "json_defaults_the_key_to_the_aggregate_id",
-                format: "json",
-                key: None,
-                want_key: "invoice-7",
-                want_media_type: "application/vnd.edax.envelope+json",
-                other_format: "msgpack",
-            },
-            Case {
-                name: "msgpack_takes_the_hosts_key_override",
-                format: "msgpack",
-                key: Some("eu-west/invoice-7"),
-                want_key: "eu-west/invoice-7",
-                want_media_type: "application/vnd.edax.envelope+msgpack",
-                other_format: "json",
-            },
-        ];
-        for case in cases {
-            assert_eq!(kafka_media_type(case.format).as_deref(), Ok(case.want_media_type), "{}", case.name);
+    fn kafka_record_crosses_the_record_structurally() {
+        let record = kafka_record(envelope("evt-1", Some(7)), b"<invoice/>".to_vec(), "application/xml", None);
+        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the kernel's key rule, on the host's record");
+        assert_eq!(record.value.as_slice(), b"<invoice/>".as_slice(), "the host's own bytes, untouched");
+        let headers: Vec<(&str, &[u8])> =
+            record.headers.iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
+        assert_eq!(
+            headers,
+            [
+                ("content-type", b"application/xml".as_slice()),
+                ("edax-id", b"evt-1".as_slice()),
+                ("edax-event", b"InvoiceIssued".as_slice()),
+                ("edax-event-version", b"1".as_slice()),
+            ],
+            "a host serializer keeps the contract headers"
+        );
 
-            let record = encode_kafka_record(case.format, envelope("evt-1", Some(7)), case.key.map(str::to_owned))
-                .expect(case.name);
-            assert_eq!(record.key, case.want_key.as_bytes(), "{} key", case.name);
+        // `key` trails the required parameters because alef moves an optional one to the end; a
+        // surface that listed it earlier would bind the host's override to the wrong argument.
+        let key = Some("eu-west/invoice-7".to_owned());
+        let overridden = kafka_record(envelope("evt-1", Some(7)), Vec::new(), "application/xml", key);
+        assert_eq!(overridden.key, b"eu-west/invoice-7");
 
-            // The four contract headers, in the kernel's order: a consumer routing on the event name
-            // or planning an upcast never has to decode the value first.
-            let headers: Vec<(&str, &[u8])> =
-                record.headers.iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
-            assert_eq!(
-                headers,
-                [
-                    ("content-type", case.want_media_type.as_bytes()),
-                    ("edax-id", b"evt-1".as_slice()),
-                    ("edax-event", b"InvoiceIssued".as_slice()),
-                    ("edax-event-version", b"1".as_slice()),
-                ],
-                "{} headers",
-                case.name
-            );
-            assert_eq!(kafka_content_type(copy_headers(&record.headers)), case.want_media_type, "{}", case.name);
-
-            // The header names the format, so a consumer whose default disagrees still decodes it...
-            let via_header =
-                decode_kafka_record(case.other_format, &record.value, copy_headers(&record.headers)).expect(case.name);
-            assert_same_envelope(&via_header, &envelope("evt-1", Some(7)), case.name);
-            // ...and a record that arrives with no headers at all falls back to that default.
-            let via_default = decode_kafka_record(case.format, &record.value, Vec::new()).expect(case.name);
-            assert_same_envelope(&via_default, &envelope("evt-1", Some(7)), case.name);
-        }
-
-        // The primitive path: the host's bytes and the host's media type, with the kernel's key rule
-        // and header set still applied.
-        let host = kafka_record(envelope("evt-1", Some(7)), b"<invoice/>".to_vec(), "application/xml", None);
-        assert_eq!((host.key.as_slice(), host.value.as_slice()), (b"invoice-7".as_slice(), b"<invoice/>".as_slice()));
-        assert_eq!(kafka_content_type(copy_headers(&host.headers)), "application/xml");
-        assert_eq!(host.headers.len(), 4, "a host serializer keeps the contract headers");
-
-        // No readable media type crosses as an empty string, not an error and not a guess.
+        // The media type crosses as a string, and no readable one crosses as `""` — never an
+        // `Option`, because a media type is never empty and the host branches on "is there one".
+        assert_eq!(kafka_content_type(copy_headers(&record.headers)), "application/xml");
         assert_eq!(kafka_content_type(Vec::new()), "", "no headers at all");
-        assert_eq!(kafka_content_type(vec![header("edax-id", b"evt-1")]), "", "no content-type header");
-        assert_eq!(kafka_content_type(vec![header("Content-Type", b"application/json")]), "", "case-sensitive");
-        assert_eq!(kafka_content_type(vec![header("content-type", &[0xff, 0xfe])]), "", "not UTF-8");
-
-        // A media type the kernel does not mint is one poison message, never a silent fallback to the
-        // consumer's default.
-        let unknown = decode_kafka_record("json", b"{}", vec![header("content-type", b"application/xml")])
-            .map(|_| ())
-            .unwrap_err();
-        assert_eq!(unknown, "codec: unknown format: application/xml");
 
         // Topic, partition and offset together are the identity of a message that has no envelope.
         assert_eq!(kafka_poison_id("orders", 3, 42), "orders/3/42");
-        assert_ne!(kafka_poison_id("orders", 3, 42), kafka_poison_id("orders", 4, 42), "the offset alone repeats");
     }
 
+    /// What the boundary adds to the offset kernel: three structs — both decisions and the stats
+    /// page — cross field for field. The watermark rules themselves are the kernel's, pinned by
+    /// `testdata/golden/kafka_offsets.json`.
     #[test]
-    fn offset_tracker_settles_by_token() {
+    fn offset_tracker_crosses_its_decisions_structurally() {
         let tracker = offset_tracker();
         assert!(tracker.stats().items.is_empty(), "nothing is assigned before the first booking");
-        assert_eq!(no_delivery(), edax_memory::NO_DELIVERY, "one placeholder token value across both kernels");
 
-        // Two offsets in flight; the higher settles first, so the commit stops at the lower one.
         let five = tracker.book("orders", 0, 5);
         let six = tracker.book("orders", 0, 6);
         assert_ne!(five, six, "one token per delivery");
         assert_ne!(five, no_delivery(), "a live token never aliases the placeholder");
 
-        let partial = tracker.ack(six);
-        assert_eq!((partial.commit, partial.offset), (true, 5), "the watermark is the lowest still in flight");
-        tracker.committed("orders", 0, 5);
-
-        let drained = tracker.ack(five);
-        assert_eq!((drained.commit, drained.offset), (true, 7), "nothing in flight: one past the highest delivered");
-        tracker.committed("orders", 0, 7);
-
-        // A token settles once: the second ack belongs to a delivery already settled.
-        let stale = tracker.ack(five);
-        assert_eq!((stale.commit, stale.offset), (false, -1), "a stale token commits nothing");
-
-        // A nack seeks back to the lowest in flight — not to its own offset, which would strand a
-        // lower one — and leaves the offset unsettled so no later ack commits past it.
-        let seven = tracker.book("orders", 0, 7);
-        let eight = tracker.book("orders", 0, 8);
-        let seek = tracker.nack(eight);
-        assert_eq!((seek.seek, seek.offset), (true, 7));
+        let ack = tracker.ack(six);
+        assert_eq!((ack.commit, ack.offset), (true, 5), "the watermark is the lowest still in flight");
+        let nack = tracker.nack(five);
+        assert_eq!((nack.seek, nack.offset), (true, 5));
         let unknown = tracker.nack(no_delivery());
-        assert_eq!((unknown.seek, unknown.offset), (false, -1), "an unknown token seeks nothing");
+        assert_eq!((unknown.seek, unknown.offset), (false, -1), "a false decision carries the no-offset value");
 
-        // One partition's progress never settles another's, and the rows are ordered.
-        tracker.book("orders", 1, 0);
+        tracker.committed("orders", 0, 4);
         let page = tracker.stats();
         let rows: Vec<(&str, i32, u64, i64, i64)> = page
             .items
             .iter()
             .map(|row| (row.topic.as_str(), row.partition, row.unsettled, row.max_delivered, row.committed))
             .collect();
-        assert_eq!(rows, [("orders", 0, 2, 8, 7), ("orders", 1, 1, 0, -1)]);
+        assert_eq!(rows, [("orders", 0, 1, 6, 4)]);
 
-        // A revoked partition's bookkeeping goes, and its tokens with it: the new owner redelivers
-        // from the last committed watermark.
         tracker.reset("orders", 0);
-        let after_reset = tracker.ack(seven);
-        assert_eq!((after_reset.commit, after_reset.offset), (false, -1), "a reset partition's token settles nothing");
-        assert_eq!(tracker.stats().items.len(), 1, "only the partition still assigned is reported");
-        tracker.reset("orders", 9); // never assigned: a no-op, so a rebalance listener resets blindly
-        tracker.committed("orders", 9, 4); // same, so a commit for a revoked partition records nothing
-        assert_eq!(tracker.stats().items.len(), 1);
+        assert!(tracker.stats().items.is_empty(), "a revoked partition leaves no row behind");
     }
 
     // ---- redis -------------------------------------------------------------
 
+    /// What the boundary adds to the ledger kernel: the split value crosses as a struct, so the
+    /// token and the record behind it arrive as named fields. The value layout is the kernel's,
+    /// pinned by `testdata/golden/redis_value.json`.
     #[test]
-    fn redis_ledger_binds_the_kernel() {
-        // The fence compares the first 32 bytes of the value, so the token is fixed-width lowercase
-        // hex and minted by the kernel, never by the host.
+    fn redis_value_crosses_as_owner_and_record() {
         let owner = redis_owner();
-        assert_eq!(owner.len(), 32);
-        assert!(owner.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{owner}");
-        assert_ne!(owner, redis_owner(), "two claimants are distinguishable");
+        assert_eq!(owner.len(), 32, "the width the fence scripts compare");
 
-        // A claim stores the kernel's pending record behind the token, under one key and one TTL.
         let claim = redis_claim_value(&owner, HASH).unwrap();
         let claimed = redis_split_value(claim.as_bytes()).unwrap();
         assert_eq!(claimed.owner, owner);
-        assert_eq!(
-            claimed.record,
-            r#"{"payload_hash":11234062831410934249,"result":null,"error":null,"pending":true}"#,
-            "the record half is edax-cqrs's own encoder, not a hand-formatted copy"
-        );
         assert_eq!(decode_idempotency_record(&claimed.record).unwrap().state, "pending");
 
         // A settled record is passed through untouched, so a result never round-trips through a
@@ -1791,21 +1631,5 @@ mod tests {
         let settled = redis_record_value(&owner, &done).unwrap();
         let read_back = redis_split_value(settled.as_bytes()).unwrap();
         assert_eq!((read_back.owner.as_str(), read_back.record.as_str()), (owner.as_str(), done.as_str()));
-
-        // A value nobody could ever fence is terminal, not a store hiccup to retry.
-        for (name, got) in [
-            ("value_is_shorter_than_a_token", redis_split_value(b"deadbeef")),
-            ("value_is_not_utf8", redis_split_value(&[0xff; 48])),
-        ] {
-            let message = got.map(|_| ()).expect_err(name);
-            assert!(message.starts_with("codec: "), "{name}: {message}");
-        }
-
-        // Both Lua bodies cross verbatim, so two SDKs registering them land on one EVALSHA digest.
-        assert_eq!(redis_fenced_set_script(), edax_redis::FENCED_SET_SCRIPT);
-        assert_eq!(redis_fenced_del_script(), edax_redis::FENCED_DEL_SCRIPT);
-        for script in [redis_fenced_set_script(), redis_fenced_del_script()] {
-            assert!(script.contains("GETRANGE"), "the fence reads the token's width: {script}");
-        }
     }
 }

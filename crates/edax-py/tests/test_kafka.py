@@ -204,16 +204,17 @@ async def test_the_commit_guard_never_steps_backwards() -> None:
 
 class _SchemaSerializer:
     """Decodes a numeric body. Anything else is a payload this consumer has no schema for: the
-    poison message a producer rollout leaves on the topic."""
+    poison message a producer rollout leaves on the topic. It refuses with a plain ``ValueError``,
+    the way a third-party serializer raises its own error type rather than the SDK's."""
 
-    content_type = "application/x-test-schema"
+    media_type = "application/x-test-schema"
 
     def encode(self, env: edax.EventEnvelope) -> bytes:
         return env.id.encode()
 
     def decode(self, wire: bytes) -> edax.EventEnvelope:
         if not wire.isdigit():
-            raise edax.CodecError(f"no schema for {wire[:16]!r}")
+            raise ValueError(f"no schema for {wire[:16]!r}")
         return build_envelope("acct-1", "Tick", 1, id=wire.decode())
 
 
@@ -228,7 +229,7 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
     c = FakeKafkaClient()
     producer = KafkaProducer(c, "t", serializer=_SchemaSerializer())
     await producer.publish(build_envelope("acct-1", "Tick", 1, id="0"))
-    c.append_raw(POISON_BYTES)  # another writer's bytes, no headers of ours
+    await c.send_and_wait("t", POISON_BYTES)  # another writer's bytes, no headers of ours
     await producer.publish(build_envelope("acct-1", "Tick", 1, id="2"))
 
     handled: list[str] = []
@@ -261,7 +262,7 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
     assert len(dead) == 1
     name, payload, message, poison_id = dead[0]
     assert (name, payload) == (UNDECODABLE, POISON_BYTES)  # the raw bytes reach the dead-letter sink
-    assert "offset 1 did not decode" in message
+    assert "t/0/1 did not decode" in message
     assert poison_id == "t/0/1", "topic and partition qualify the offset"
     assert c.commits[-1] == 3, "the watermark never advanced past the poison message"
 
@@ -290,7 +291,7 @@ class _UpperSerializer:
     """A second serializer on the same topic, under a media type of its own. Its decode tags the id,
     so the envelope names the serializer that produced it and a wrong route cannot pass unseen."""
 
-    content_type = "application/x-test-upper"
+    media_type = "application/x-test-upper"
 
     def encode(self, env: edax.EventEnvelope) -> bytes:
         return env.id.upper().encode()
@@ -422,20 +423,23 @@ class _Raising:
 
 Stack = Callable[[list[str]], list[RecordMiddleware]]
 
-ID_TYPE = IdSerializer.content_type
+ID_TYPE = IdSerializer.media_type
+
+
+#: What the consumer made of the record coming back: the decoded envelope id, the text of the poison
+#: error the delivery carries, or the exception type ``poll`` propagated instead of returning.
+Want = tuple[str, Any]
 
 
 @pytest.mark.parametrize(
-    "branch, stack, want_calls, want_wire, want_id, want_poison, want_raises",
+    "branch, stack, want_calls, want_wire, want",
     [
         pytest.param(
             "publish_runs_in_order_and_poll_in_reverse",
             lambda calls: [_Tag("a", calls), _Tag("b", calls)],
             ["publish:a", "publish:b", "poll:b", "poll:a"],
             (ID_TYPE, b"evt-1", ["x-a", "x-b"]),
-            "evt-1",
-            None,
-            None,
+            ("ok", "evt-1"),
             id="order_is_onion",
         ),
         pytest.param(
@@ -443,9 +447,7 @@ ID_TYPE = IdSerializer.content_type
             lambda calls: [_Boxing(ID_TYPE, calls)],
             ["publish:box", "poll:box"],
             (_Boxing.BOXED, base64.b64encode(b"evt-1"), []),
-            "evt-1",
-            None,
-            None,
+            ("ok", "evt-1"),
             id="round_trip",
         ),
         pytest.param(
@@ -453,9 +455,7 @@ ID_TYPE = IdSerializer.content_type
             lambda calls: [_Raising(edax.CodecError("cannot unbox"), calls)],
             ["publish:raise"],
             (ID_TYPE, b"evt-1", []),
-            None,
-            "cannot unbox",
-            None,
+            ("poison", "cannot unbox"),
             id="codec_error_is_poison",
         ),
         pytest.param(
@@ -463,9 +463,7 @@ ID_TYPE = IdSerializer.content_type
             lambda calls: [_Raising(RuntimeError("key service unreachable"), calls)],
             ["publish:raise"],
             (ID_TYPE, b"evt-1", []),
-            None,
-            None,
-            RuntimeError,
+            ("raises", RuntimeError),
             id="other_error_propagates",
         ),
     ],
@@ -475,9 +473,7 @@ async def test_record_middleware_branches(
     stack: Stack,
     want_calls: list[str],
     want_wire: tuple[str, bytes, list[str]],
-    want_id: Optional[str],
-    want_poison: Optional[str],
-    want_raises: Optional[type[BaseException]],
+    want: Want,
 ) -> None:
     """One stack published and polled through the same fake, so each case pins what its middleware
     changed on the wire and what the consumer made of it coming back."""
@@ -497,17 +493,18 @@ async def test_record_middleware_branches(
     assert [k for k, _ in sent.headers if k.startswith("x-")] == want_extra, branch
 
     consumer = KafkaConsumer(client, serializer=IdSerializer(), middleware=middleware)
-    if want_raises is not None:
-        with pytest.raises(want_raises):
+    kind, expected = want
+    if kind == "raises":
+        with pytest.raises(expected):
             await consumer.poll()
         assert calls == want_calls, branch
         return
 
     delivery = delivered(await consumer.poll())
     assert calls == want_calls, branch
-    if want_poison is None:
+    if kind == "ok":
         assert not isinstance(delivery, UndecodableDelivery), branch
-        assert delivery.envelope.id == want_id, branch
+        assert delivery.envelope.id == expected, branch
     else:
         assert isinstance(delivery, UndecodableDelivery), branch
-        assert want_poison in str(delivery.error), branch
+        assert expected in str(delivery.error), branch

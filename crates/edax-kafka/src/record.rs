@@ -10,6 +10,9 @@
 //! metadata copies (trace propagation is the host's own `traceparent`). Add a header only with a
 //! reader for it: every header costs bytes on every record.
 //!
+//! The `content-type` header names the codec and not the transport, so the string itself is
+//! `edax_event::Format::media_type`'s and any transport that carries a type uses the same one.
+//!
 //! Reserved for later: `partition: Option<u32>` on [`KafkaRecord`], filled from
 //! `edax_event::partition(aggregate_id, n)` when a shell passes a partition count. It is **not
 //! built** — today the client's partitioner places the record by key, which already keeps one
@@ -17,35 +20,10 @@
 
 use edax_event::{CodecError, EventEnvelope, Format};
 
-// Vocabulary, because the two words below are not synonyms (RFC 9110 §8.3, RFC 6838):
-//
-// * `content-type` is a *header*. Its value is a media type, optionally followed by parameters
-//   such as `; charset=utf-8`. Functions here that read or write the header say `content_type`.
-// * A *media type* is the bare `type/subtype` string the header carries. Functions here that
-//   produce that string say `media_type`.
-//
-// Anatomy of `application/vnd.edax.envelope+json`:
-//
-// * `application/` — the top-level type for opaque, program-consumed data.
-// * `vnd.` — the vendor tree (RFC 6838 §3.2). Subtypes without a prefix are IANA standards such as
-//   `application/json`; `vnd.` marks a product-specific format. Registration with IANA is optional
-//   there and has not been done, which is fine for a private protocol. `x-` is the deprecated
-//   unregistered prefix and is not used.
-// * `edax.envelope` — the vendor and the format: an event envelope as `edax-event` encodes it.
-// * `+json` / `+msgpack` — the structured-syntax suffix (RFC 6839). It tells tooling that has
-//   never heard of edax how to parse the bytes, and it is why plain `application/json` is not
-//   used: that name could not tell an edax envelope from any other JSON on a shared topic, and the
-//   consumer's registry needs one exact string per serializer.
-
-/// The media type of an envelope encoded with [`Format::Json`]. Private: [`media_type`] is the one
-/// way in, so the mapping cannot be read here and written differently there.
-const MEDIA_TYPE_JSON: &str = "application/vnd.edax.envelope+json";
-/// The media type of an envelope encoded with [`Format::Msgpack`].
-const MEDIA_TYPE_MSGPACK: &str = "application/vnd.edax.envelope+msgpack";
-
-/// Header naming the wire format of the value bytes; the value is a media type (see the vocabulary
-/// note above). Lower-case, the Kafka convention and the CloudEvents Kafka binding's spelling; the
-/// lookup in [`content_type`] is case-sensitive, so a producer must write it exactly like this.
+/// Header naming the wire format of the value bytes; the value is a media type (the vocabulary note
+/// on [`Format::media_type`] separates the two words). Lower-case, the Kafka convention and the
+/// CloudEvents Kafka binding's spelling; the lookup in [`content_type`] is case-sensitive, so a
+/// producer must write it exactly like this.
 pub const CONTENT_TYPE: &str = "content-type";
 /// Header carrying the envelope id, so a consumer can dedup or trace without decoding the value.
 pub const HEADER_ID: &str = "edax-id";
@@ -65,6 +43,13 @@ pub struct KafkaHeader {
     pub value: Vec<u8>,
 }
 
+impl KafkaHeader {
+    /// One header, copied out of borrowed parts.
+    pub fn new(key: &str, value: &[u8]) -> Self {
+        KafkaHeader { key: key.to_owned(), value: value.to_vec() }
+    }
+}
+
 /// One Kafka record: what a producer sends and what a consumer fetched, minus the client's own
 /// coordinates (topic, partition, offset), which the IO shell holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,18 +62,6 @@ pub struct KafkaRecord {
     pub headers: Vec<KafkaHeader>,
 }
 
-/// The media type that names `format` on the wire, `application/vnd.edax.envelope+<suffix>` (the
-/// vocabulary note at the top of this file explains each part). `Format` is `#[non_exhaustive]`: a variant this
-/// kernel does not know is a [`CodecError::UnknownFormat`], never a fallback, so a record can never
-/// carry a header that names the wrong codec. The change that adds a variant mints its media type here.
-pub fn media_type(format: Format) -> Result<&'static str, CodecError> {
-    match format {
-        Format::Json => Ok(MEDIA_TYPE_JSON),
-        Format::Msgpack => Ok(MEDIA_TYPE_MSGPACK),
-        other => Err(CodecError::UnknownFormat(format!("{other:?}"))),
-    }
-}
-
 /// Build the record for `env` from value bytes the caller already encoded.
 ///
 /// `key` overrides the partitioning key; `None` uses the aggregate id, which is what keeps one
@@ -96,15 +69,14 @@ pub fn media_type(format: Format) -> Result<&'static str, CodecError> {
 /// `value`, so a host serializer must carry a media type of its own and register it in every SDK
 /// that reads the topic.
 pub fn record(env: &EventEnvelope, key: Option<&str>, value: Vec<u8>, content_type: &str) -> KafkaRecord {
-    let header = |key: &str, value: &[u8]| KafkaHeader { key: key.to_owned(), value: value.to_vec() };
     KafkaRecord {
         key: key.unwrap_or(&env.aggregate_id).as_bytes().to_vec(),
         value,
         headers: vec![
-            header(CONTENT_TYPE, content_type.as_bytes()),
-            header(HEADER_ID, env.id.as_bytes()),
-            header(HEADER_EVENT, env.event.name.as_bytes()),
-            header(HEADER_EVENT_VERSION, env.event.version.to_string().as_bytes()),
+            KafkaHeader::new(CONTENT_TYPE, content_type.as_bytes()),
+            KafkaHeader::new(HEADER_ID, env.id.as_bytes()),
+            KafkaHeader::new(HEADER_EVENT, env.event.name.as_bytes()),
+            KafkaHeader::new(HEADER_EVENT_VERSION, env.event.version.to_string().as_bytes()),
         ],
     }
 }
@@ -124,9 +96,9 @@ pub fn content_type(headers: &[KafkaHeader]) -> Option<&str> {
 }
 
 /// Build the record for `env` with the kernel codec: [`Format::encode`] for the value and
-/// [`media_type`] for the header.
-pub fn encode_record(format: Format, env: &EventEnvelope, key: Option<&str>) -> Result<KafkaRecord, CodecError> {
-    Ok(record(env, key, format.encode(env), media_type(format)?))
+/// [`Format::media_type`] for the header. Infallible, like both of those.
+pub fn encode_record(format: Format, env: &EventEnvelope, key: Option<&str>) -> KafkaRecord {
+    record(env, key, format.encode(env), format.media_type())
 }
 
 /// Decode a fetched record back to its envelope.
@@ -138,19 +110,10 @@ pub fn encode_record(format: Format, env: &EventEnvelope, key: Option<&str>) -> 
 /// kernel, or by a client that drops headers — still decodes.
 pub fn decode_record(default: Format, value: &[u8], headers: &[KafkaHeader]) -> Result<EventEnvelope, CodecError> {
     let format = match content_type(headers) {
-        Some(media_type) => format_of(media_type)?,
+        Some(media_type) => Format::from_media_type(media_type)?,
         None => default,
     };
     format.decode(value)
-}
-
-/// The inverse of [`media_type`]: the only two media types a record may name.
-fn format_of(media_type: &str) -> Result<Format, CodecError> {
-    match media_type {
-        MEDIA_TYPE_JSON => Ok(Format::Json),
-        MEDIA_TYPE_MSGPACK => Ok(Format::Msgpack),
-        other => Err(CodecError::UnknownFormat(other.to_owned())),
-    }
 }
 
 /// The identity of a message that did not decode: `"{topic}/{partition}/{offset}"`.
@@ -177,26 +140,28 @@ mod tests {
             headers: Vec<KafkaHeader>,
             expected: Option<&'static str>,
         }
-        let header = |key: &str, value: &[u8]| KafkaHeader { key: key.to_owned(), value: value.to_vec() };
+        let header = KafkaHeader::new;
+        let json = Format::Json.media_type();
+        let msgpack = Format::Msgpack.media_type();
         let cases = [
             Case { name: "absent", headers: vec![header(HEADER_ID, b"evt-1")], expected: None },
             Case {
                 name: "present",
-                headers: vec![header(CONTENT_TYPE, MEDIA_TYPE_MSGPACK.as_bytes())],
-                expected: Some(MEDIA_TYPE_MSGPACK),
+                headers: vec![header(CONTENT_TYPE, msgpack.as_bytes())],
+                expected: Some(msgpack),
             },
             Case {
                 name: "the first of two wins",
                 headers: vec![
-                    header(CONTENT_TYPE, MEDIA_TYPE_MSGPACK.as_bytes()),
-                    header(CONTENT_TYPE, MEDIA_TYPE_JSON.as_bytes()),
+                    header(CONTENT_TYPE, msgpack.as_bytes()),
+                    header(CONTENT_TYPE, json.as_bytes()),
                 ],
-                expected: Some(MEDIA_TYPE_MSGPACK),
+                expected: Some(msgpack),
             },
             Case {
                 // A client that upper-cased the name wrote a different header, not this one.
                 name: "the name is matched case-sensitively",
-                headers: vec![header("Content-Type", MEDIA_TYPE_JSON.as_bytes())],
+                headers: vec![header("Content-Type", json.as_bytes())],
                 expected: None,
             },
             Case {
@@ -204,7 +169,7 @@ mod tests {
                 name: "a non-UTF-8 first value is no media type",
                 headers: vec![
                     header(CONTENT_TYPE, &[0xff, 0xfe]),
-                    header(CONTENT_TYPE, MEDIA_TYPE_JSON.as_bytes()),
+                    header(CONTENT_TYPE, json.as_bytes()),
                 ],
                 expected: None,
             },

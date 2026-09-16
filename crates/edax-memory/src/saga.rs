@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use edax_core::AdapterError;
+use edax_core::{lock, AdapterError};
 use serde_json::Value;
 
-use crate::tx::{held_by_other, lock, store_view, versioned_row, Committed, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{held_by_other, store_view, versioned_row, Committed, MemoryState, MemoryTransactor, WriteSet};
 
 /// In-memory saga instance store for development and tests: per-correlation state with optimistic
 /// concurrency on the version. State crosses as JSON text and may be any JSON value (a saga that keeps

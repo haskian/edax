@@ -114,7 +114,7 @@ resets on restart.
 
 ## Custom serializers
 
-A `Serializer` names the media type it writes, as `content_type`. The producer puts that media type
+A `Serializer` names the media type it writes, as `media_type`. The producer puts that media type
 in the `content-type` header; the consumer reads the header back and routes the record to the
 serializer registered under it.
 
