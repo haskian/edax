@@ -74,6 +74,10 @@ enlist in the caller's transaction. It defaults to `False`, which is the safe si
 
 **Ledger** — the `IdempotencyStore` the guard writes to.
 
+**Idempotency key** — the string one intent is claimed under. There is no command id. On the command
+path the key is a command *field* the host's `key` function reads, which makes it the request id a
+client retries with. On the consume path it is the envelope's `id`.
+
 **Claim** — the atomic insert-if-absent that reserves an idempotency key. It must be linearizable
 across processes, never a read then a write.
 
@@ -172,10 +176,19 @@ the ordered steps and rejects a gap; your code rewrites the payload.
 **Causation** — `correlation_id` and `causation_id` propagation, carried in metadata so the wire
 format is untouched.
 
+**Correlation id (metadata)** — `metadata["correlation_id"]`, constant across one logical flow. Not
+the same thing as a saga's instance key, below.
+
 ## Patterns
 
 **Process manager** — the same thing this documentation calls a saga: a workflow that correlates
 events, keeps its own state, and emits commands.
+
+**Saga instance key** — what `Saga.correlation_id(env)` returns: which running instance this event
+belongs to, and the id the `SagaStore` is keyed by. It shares a word with the metadata
+`correlation_id` and is a different value — that one names a flow, this one names stored state.
+Nothing derives either from the other. It is often the aggregate id; see
+[sagas](sdk/sagas.md#the-correlation-rule).
 
 ## Abbreviations
 

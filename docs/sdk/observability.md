@@ -340,12 +340,20 @@ propagate.inject(carrier)  # writes `traceparent` from the current span
 await repo.save(account, metadata={**ensure_ids(), **carrier})
 ```
 
-**The rule.** Request-scoped values go in `metadata`, never on the command. That covers the
-correlation id, the trace context and the `Idempotency-Key` header. The command's instance fields
-*are* the idempotency hash. A retry that carries a fresh correlation id in a command field hashes
-differently. It meets the stored record under the same key and raises `PayloadMismatch` for a
-request that was a legitimate duplicate. The command is the business intent; the metadata is the
-request.
+**The rule.** A command field must be **deterministic across every legitimate retry of the same
+intent**. The command's instance fields *are* the idempotency hash. So a value minted fresh per
+attempt hashes differently, meets the stored record under the same key, and raises
+`PayloadMismatch` for a request that was a legitimate duplicate. Everything else about the request
+goes in `metadata`.
+
+| Value | Where it goes | Why |
+|---|---|---|
+| the client's `Idempotency-Key` | a command field | the guard reads the key *from the command value* — `idempotent(store, key)` is handed the command, not the metadata. The client sends one key per intent, so a retry repeats it |
+| a server-minted correlation id, `traceparent` | `metadata` | fresh per attempt, so it would change the hash |
+| the causing event's id and correlation, on a saga-emitted command | either | stable per redelivery — see [sagas](./sagas.md#carrying-the-chain-across-the-hop) |
+
+The command is the business intent; the metadata is the request. What decides the split is not
+"request-scoped or not", it is whether a retry of the same intent produces the same bytes.
 
 The same rule answers the inversion-of-control question. There is no dependency injection hook on
 the `CommandBus`. Middleware is the seam: close over what a handler needs at registration, and read

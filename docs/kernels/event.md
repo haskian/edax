@@ -281,7 +281,7 @@ sequenceDiagram
   participant E as event evt-7
   participant C2 as second command
   C1->>C1: originate({}, fresh_id="corr-1")
-  Note over C1: correlation_id = corr-1<br/>causation_id = corr-1 (a root causes itself)
+  Note over C1: correlation_id = corr-1<br/>causation_id = corr-1 (a root has no causing event)
   C1->>E: emits evt-7 with the parent's metadata
   E->>E: propagate(parent_metadata, parent_event_id="evt-7")
   Note over E: correlation_id = corr-1 — COPIED<br/>causation_id = evt-7 — REPLACED by the parent's event id
@@ -294,6 +294,13 @@ The rule that `causation_id` becomes the parent's **event id**, not the parent's
 what keeps the chain a graph rather than a flat list. `testdata/golden/causation.json` fixes it: a
 parent with `{correlation_id: corr-1, causation_id: evt-1}` and id `evt-2` yields `{correlation_id:
 corr-1, causation_id: evt-2}`.
+
+A root's `causation_id` is the only one that names no event. `fresh_id` is minted before any
+envelope exists, so `originate` points it at the chain the root opens rather than claiming an id
+that was never an event's. That makes `causation_id == correlation_id` **not** a root marker: the
+first case of `causation.json`, `propagate({}, "evt-root")`, gives a first *child* the same equality
+with a real event id. A walker stops when a `causation_id` matches no stored event, never on the
+equality.
 
 ```python
 from edax.causation import ensure_ids, propagate
