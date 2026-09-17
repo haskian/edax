@@ -30,7 +30,7 @@ flowchart LR
 | `Completed` | `edax.saga` | the Python sentinel a `handle` returns to finish and remove the instance |
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
-to a `KeyOrderedDispatcher`, and `CommandBus.dispatch` as its `dispatch` (`examples/py/saga.py:80`).
+to a `KeyOrderedDispatcher`, and `CommandBus.dispatch` as its `dispatch` (`examples/py/saga.py:94`).
 
 ### The correlation rule
 
@@ -42,8 +42,12 @@ to a `KeyOrderedDispatcher`, and `CommandBus.dispatch` as its `dispatch` (`examp
   event costs nothing and writes nothing.
 
 The correlation id is the saga's own key, not the aggregate id — that is the whole point of a saga.
-It is often *derived* from the aggregate id, as in `examples/py/saga.py:41`, and that choice has a
+It is often *derived* from the aggregate id, as in `examples/py/saga.py:50`, and that choice has a
 concurrency consequence, below.
+
+It is also **not** the `correlation_id` in the envelope's metadata. That one names a logical flow
+and travels with the events; this one names a stored saga instance. They share a word and nothing
+else — no code reads one to produce the other. The chain in metadata is the next section.
 
 ### handle
 
@@ -61,6 +65,52 @@ return would be indistinguishable from completion. The `none_state_is_saved_not_
 `test_saga.py::test_runner_branches` pins it. The sentinel is an enum member, so its identity
 survives `copy`, `deepcopy` and `pickle`. A saga's state may travel through a snapshot. `new_state
 is Completed` must still hold afterwards.
+
+### Carrying the chain across the hop
+
+A saga is where a causation chain would otherwise break. `handle` returns commands, not metadata, so
+the `correlation_id` and `causation_id` on `env` reach the emitted command only if you put them
+there. Two ways, both sound.
+
+**As command fields.** The default: explicit, and it survives a queue.
+
+```python
+@dataclass
+class Fulfill:
+    order_id: str
+    correlation_id: str  # the flow this intent belongs to
+    causation_id: str  # the id of the event that caused it
+    type: ClassVar[str] = "Fulfill"
+
+def handle(self, state: Any, env: edax.Envelope) -> tuple[Any, list]:
+    chain = propagate(env.metadata, env.id)  # returns exactly the two keys
+    return Completed, [Fulfill(env.aggregate_id, **chain)]
+```
+
+The handler then stamps what it was handed onto the events it writes:
+`await repo.save(order, metadata={"correlation_id": c.correlation_id, "causation_id": c.causation_id})`.
+
+This does not break idempotency. A command field must be the same on every legitimate retry of one
+intent, the rule in
+[observability](./observability.md#traces-via-metadata-and-where-request-scoped-values-go). The
+causing event is exactly that. A redelivery hands the saga the *same* envelope, same `id` and same
+metadata, from the outbox and from the broker alike. The hash is unchanged, so the retry replays
+instead of raising `PayloadMismatch`.
+
+The real hazard is identity, not hashing. Chain ids in fields widen what the command **is**. Say two
+different events can legitimately cause one intent. They now build two different commands. A key
+that ignores the cause makes the second one a `PayloadMismatch` under the first one's record. So key
+on the cause too, or keep the cause out of the command. `examples/py/saga.py` keys on `order_id`
+alone, because exactly one event type causes `Fulfill`.
+
+**Or through a middleware seam.** Keep the command a pure business intent and carry `env` beside it.
+An event middleware wraps `SagaRunner.on_event` and puts the envelope where the command handler can
+read it. Python has the `contextvar` precedent of `current_tx`. Rust can use a thread-local, because
+the bus dispatch runs synchronously on the worker thread. The handler then calls `propagate` itself.
+Rust's `SagaRunner::run` takes `dispatch` per call, so a closure over `env` is enough there.
+
+Nothing stamps the chain for you at either end. `Repository.save` copies the metadata you pass and
+never calls `originate`, so a root event with no `ensure_ids()` has no chain at all.
 
 ### SagaStore
 
@@ -135,7 +185,7 @@ stateDiagram-v2
 ## The example, step by step
 
 `examples/py/saga.py` runs an order saga: `Created` opens an instance, `Paid` emits `Fulfill` and
-completes. The stream contains a redelivered `Paid` for `order-1` (`examples/py/saga.py:62`). The
+completes. The stream contains a redelivered `Paid` for `order-1` (`examples/py/saga.py:74`). The
 example submits bare envelopes, so there is no broker settlement — the redelivery is the same
 envelope submitted twice.
 
@@ -173,11 +223,11 @@ sequenceDiagram
 the first:
 
 1. *The completion already landed.* The instance is gone, so `handle` takes its no-live-instance
-   branch and returns no command (`examples/py/saga.py:48`), and the store's delete of an absent
+   branch and returns no command (`examples/py/saga.py:59`), and the store's delete of an absent
    instance is a no-op. The command bus is never reached.
 2. *The completion had not landed yet* — a crash between dispatch and persist. The instance is still
    open, `handle` emits `Fulfill` a second time, and the bus's `idempotent` guard keyed on
-   `fulfill:{order_id}` deduplicates it (`examples/py/saga.py:73`). This is the window the "dispatch
+   `fulfill:{order_id}` deduplicates it (`examples/py/saga.py:85`). This is the window the "dispatch
    first, then persist" ordering deliberately leaves open.
 
 Mechanism 1 is the saga's own logic, which every host writes. Mechanism 2 is the guard, and it is

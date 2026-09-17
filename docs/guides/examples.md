@@ -239,27 +239,32 @@ Seams wired: `SagaStore` (`MemorySagaStore`), `SagaRunner`, `EventRouter`, `KeyO
 and a `CommandBus` behind the `idempotent` guard. `OrderSaga` waits for `Paid`, emits `Fulfill`, and
 returns `Completed`. `partition(aggregate_id)` pins each order to one worker, so `Created` lands
 before `Paid` without a lock. The runner dispatches before it persists, so the stream includes a
-redelivered `Paid` to prove that is survivable.
+redelivered `Paid` to prove that is survivable. `Fulfill` also carries the causation chain across the
+hop, as [sdk/sagas](../sdk/sagas.md#carrying-the-chain-across-the-hop) describes.
 
 ```
-fulfilled: ['order-1', 'order-2']
+fulfilled: [('order-2', 'corr-order-2', 'order-2-Paid'), ('order-1', 'corr-order-1', 'order-1-Paid')]
 
-ok: saga fulfilled each order once (concurrent, redelivery tolerated)
+ok: saga fulfilled each order once (concurrent, redelivery tolerated), chain intact
 ```
 
 The `fulfilled:` order varies between runs: the two orders are different aggregate ids and run on
 different workers.
 
-The assertion that carries it (`examples/py/saga.py:92`):
+The assertion that carries it (`examples/py/saga.py:108`):
 
 ```python
-assert sorted(fulfilled) == ["order-1", "order-2"], fulfilled
+assert sorted(fulfilled) == [
+    ("order-1", "corr-order-1", "order-1-Paid"),
+    ("order-2", "corr-order-2", "order-2-Paid"),
+], fulfilled
 ```
 
 `sorted` because cross-order arrival is unordered by design; the content is the point. Each order
 was fulfilled exactly once across five events, one of which was a duplicate `Paid`. Two mechanisms
 had to hold: the saga returns `Completed` with no commands for a `Paid` with no live instance, and
-the bus is idempotent under `fulfill:{order_id}`.
+the bus is idempotent under `fulfill:{order_id}`. The two extra fields prove the third: the flow id
+came from the `Paid` event's metadata, and the causation id is that event's own id.
 
 Read with [sdk/sagas](../sdk/sagas.md), [sdk/commands](../sdk/commands.md) and
 [sdk/consuming](../sdk/consuming.md).
