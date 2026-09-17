@@ -82,6 +82,7 @@ class Fulfill:
     causation_id: str  # the id of the event that caused it
     type: ClassVar[str] = "Fulfill"
 
+
 def handle(self, state: Any, env: edax.Envelope) -> tuple[Any, list]:
     chain = propagate(env.metadata, env.id)  # returns exactly the two keys
     return Completed, [Fulfill(env.aggregate_id, **chain)]
