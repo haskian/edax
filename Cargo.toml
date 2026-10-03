@@ -5,7 +5,7 @@ members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crate
 exclude = ["crates/edax-cqrs/feature-check"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/crtomirmajer/edax"

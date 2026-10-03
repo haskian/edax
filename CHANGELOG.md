@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.2.0](https://github.com/crtomirmajer/edax/compare/88e611c13041143e088e174432bbb97742913c19..v0.2.0) - 2026-10-03
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) address the nine-crate review (104 findings) (#15) - ([a7896aa](https://github.com/crtomirmajer/edax/commit/a7896aa3577d976a32f68b85945c95d8f5486a1f)) - Črtomir Majer
+#### Documentation
+- fix the command-field rule and document the saga causation hop (#14) - ([882ddb2](https://github.com/crtomirmajer/edax/commit/882ddb2f5005bd2987327c0c6e8e4e481c197be3)) - Črtomir Majer
+#### Continuous Integration
+- let the release smoke tests fetch dependencies from the index (#12) - ([45cc793](https://github.com/crtomirmajer/edax/commit/45cc79385243ed8aabf0f8f3e4f795fe1cc2ec9e)) - Črtomir Majer
+#### Refactoring
+- (**kernels**) move filter and query into edax-cqrs (#13) - ([88e611c](https://github.com/crtomirmajer/edax/commit/88e611c13041143e088e174432bbb97742913c19)) - Črtomir Majer
+
+- - -
+
 ## [v0.1.0](https://github.com/crtomirmajer/edax/compare/1440e10672bbf3f858c178a1e1c796d55158b53c..v0.1.0) - 2026-09-16
 #### Features
 - (**edax-py**) observability seam — Observer plus timing middleware, no deps (#6) - ([a9fc898](https://github.com/crtomirmajer/edax/commit/a9fc898504166d601b7d62874dc18b602b413909)) - Črtomir Majer
