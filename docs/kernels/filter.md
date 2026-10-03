@@ -241,12 +241,12 @@ assert!(eval(&f, &doc));
 from edax.filter import and_, eq, gte
 from edax.query import sort_key
 
-flt = and_(gte("balance", 100), eq("status", "active"))
-sort = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as tiebreak
+only = and_(gte("balance", 100), eq("status", "active"))
+order = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as the tiebreak
 
-page1 = await store.get_many(filter=flt, sort=sort, limit=2)
+page = await store.get_many(filter=only, sort=order, limit=2)
 ```
-<sup>`examples/py/projection_query.py`</sup>
+<sup>`examples/py/11_projection_query.py`</sup>
 
 The Python constructors are the only part of filtering the SDK owns: which dict key and which op
 name each one emits. A wrong key would pass the golden vectors unnoticed, so a separate table test

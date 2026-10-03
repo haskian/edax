@@ -355,6 +355,8 @@ contract also runs under `P2` of `test_model.py`, parameterized over `["memory",
 - [kernels/redis.md](../kernels/redis.md) — the key, the value, the handle, the scripts and the reply
   verdicts, decision by decision.
 - [memory](./memory.md) — the ledger that *does* join the transaction, and what that changes.
+- `examples/py/16_redis_ledger.py` — the guard over this store, against a real Redis when
+  `EDAX_REDIS_URL` is set.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [transactions](../sdk/transactions.md) — `joins_transaction` and the two guard orderings.
 - [errors](../sdk/errors.md) — why `CodecError` is terminal and `StoreError` is not.

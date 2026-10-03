@@ -192,6 +192,7 @@ mid-handler. Worker B claims and runs. A's late `complete` is refused, and B's o
 staged by an open unit of work is not committed, so it does not lapse. The same contract clauses run over
 `MemoryLedger` and the Redis store (`test_contract_memory.py`, `test_redis.py`). `test_memory_ledger.py`
 drives each scenario through the guard over both and asserts the same outcome.
+`examples/py/15_lease_takeover.py` walks through the takeover one step at a time.
 
 ## Isolation by exclusion, and `masked_pending`
 

@@ -179,8 +179,8 @@ sequenceDiagram
 published = await edax.Relay(store, events.publish).drain()
 ```
 
-`examples/py/outbox.py:81`. `drain` publishes one batch and returns how many rows it settled. To keep
-draining, run the relay's own loop rather than writing one:
+As in `examples/py/07_outbox_relay.py`. `drain` publishes one batch and returns how many rows it
+settled. To keep draining, run the relay's own loop rather than writing one:
 
 ```python
 stop = asyncio.Event()
@@ -372,35 +372,30 @@ What catches the duplicate is downstream, never the relay:
 
 ## Worked example
 
+`examples/py/07_outbox_relay.py` saves two events, fails one drain while the broker is down, then
+drains again. The rows wait out the outage and go out once, oldest first:
+
 ```python
-async def handle(env: edax.EventEnvelope) -> None:
-    # same aggregate -> same worker -> serialized: no lock around this read-modify-write
-    agg = env.aggregate_id
-    balances[agg] += json.loads(env.event.data)["amount"]
-    v = version[agg]
-    data = json.dumps({"balance": balances[agg]}).encode()
-    async with edax.transaction(store) as tx:
-        await store.append(tx, agg, v, [_env(f"{agg}-ev-{v + 1}", agg, "Deposited", v + 1, data)])
-    version[agg] = v + 1
+account = await repo.load("acct-1")
+account.apply(Deposited(100), Deposited(50))
+await repo.save(account)  # the events and their outbox rows, in one commit
 
+try:
+    await Relay(store, broker_down, pacing=fast).drain()  # raises; every row stays
+except ConnectionError:
+    ...
 
-dispatcher = edax.KeyOrderedDispatcher(workers=4, handler=handle)
-dispatcher.start()
-for _ in REQUESTS:
-    await dispatcher.submit(await _poll(commands))  # worker acks after the append
-await dispatcher.stop()
-
-published = await edax.Relay(store, events.publish).drain()
+relay = Relay(store, publish)
+await relay.drain()  # publishes both rows, in order
 ```
 
-`examples/py/outbox.py:63`. Two things to notice. The input delivery is acked only **after** the
-append commits, so a crash before the commit redelivers the input rather than dropping the work.
-`MemoryBroker` is both `Producer` and `Consumer`. The same wiring runs against a real broker once
-you swap in an adapter over your own client. The shape does not change.
+`examples/py/17_kafka.py` drains the outbox into a `KafkaProducer` and consumes the topic with a
+`KafkaConsumer`. With `EDAX_KAFKA_BOOTSTRAP` unset it runs the same shape on `MemoryBroker`, which is
+both `Producer` and `Consumer`.
 
-`examples/py/command_handling.py:114` shows the other half: the outbox holds exactly the events that
-committed. A dispatch that replayed from the idempotency ledger, one rejected for a payload mismatch,
-and an attempt that failed after its save and rolled back wrote nothing at all.
+`examples/py/05_idempotent_commands.py` shows the other half: only committed events reach the
+outbox. A dispatch that replayed from the idempotency ledger, and one rejected for a payload
+mismatch, append nothing. The stream ends at version 1, so the outbox holds one row.
 
 ## See also
 

@@ -191,8 +191,9 @@ class TestPostgresEventStore(EventStoreContract):
 ```
 
 Install it with `pip install edax[test]`. Full seam-by-seam coverage, the capability flags, and the
-fault wrappers are in [the backend guide](../backends/README.md). Two properties are worth knowing
-before you rely on it:
+fault wrappers are in [the backend guide](../backends/README.md). `examples/py/18_contract_kit.py`
+runs `ProjectionStoreContract` over a dict-backed store in about forty lines. Some properties are
+worth knowing before you rely on it:
 
 - **It is proved to discriminate.** `crates/edax-py/tests/test_contract_discriminates.py` breaks one
   clause per case, the way a real backend breaks it. A signed column for an unsigned hash, `>=` where
@@ -232,7 +233,8 @@ before you rely on it:
 
 The in-tree suites use these and nothing else; `tests/test_faults.py` proves each one fires once where
 armed. `MemoryLedger.expire(key)` and `MemoryIdempotencyStore.expire(key)` are the memory side of a TTL
-running out, for takeover tests.
+running out, for takeover tests. `examples/py/15_lease_takeover.py` rehearses that takeover, and
+`examples/py/19_fault_injection.py` drives a handler through `BrokenCommit(db, "lost_response")`.
 
 ## Contract suites a host can reuse
 

@@ -116,4 +116,4 @@ promises: [delivery guarantees](../guides/delivery-guarantees.md).
 
 - [Architecture](../architecture.md) — why the kernel and SDK boundary sits where it does.
 - [Backends](../backends/README.md) — the seam contracts, and writing your own.
-- [Examples](../guides/examples.md) — seven runnable walkthroughs.
+- [Examples](../../examples/py/README.md) — nineteen runnable examples, one idea each, in learning order.

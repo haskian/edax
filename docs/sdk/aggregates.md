@@ -53,7 +53,7 @@ class Account(Aggregate):
             self.balance += event.amount
 ```
 
-`examples/py/command_handling.py:32`. `transition` is a pure fold: no I/O, no validation, no
+`examples/py/03_snapshots.py`. `transition` is a pure fold: no I/O, no validation, no
 raising. The decision to emit an event belongs to the handler. `transition` only applies one that
 has already been decided. It also runs on every replay of history that was valid once.
 
@@ -83,7 +83,7 @@ raised to the current shape on load. Every unmarshal asks the kernel's `upcast_p
 an upcaster for the name. A payload from a **newer** writer than the codec's `version` raises
 `CodecError` instead of decoding silently under the older schema. A name with no upcaster reads an
 older payload as it is. `Upcaster.step` refuses a second transform for one version
-(`AlreadyRegistered`).
+(`AlreadyRegistered`). `examples/py/04_upcasting.py` reads a version 1 event as version 2.
 
 Rust's `JsonRegistryCodec::<AccountEvent>::new(version)` is the same registry: one event name per
 variant of the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
@@ -99,16 +99,16 @@ class AccountCodec:
     type = "Account"
 
     def load(self, id: str, version: int, data: bytes | None) -> Account:
-        a = Account(id, version)
+        account = Account(id, version)
         if data is not None:
-            a.balance = int(data.decode())
-        return a
+            account.balance = int(data.decode())
+        return account
 
-    def dump(self, agg: Account) -> bytes:
-        return str(agg.balance).encode()
+    def dump(self, account: Account) -> bytes:
+        return str(account.balance).encode()
 ```
 
-`examples/py/command_handling.py:42`. `data is None` means no snapshot is stored yet, so rebuild the
+`examples/py/03_snapshots.py`. `data is None` means no snapshot is stored yet, so rebuild the
 aggregate empty at version 0.
 
 Every codec failure — an unregistered event name, an unwritable payload, a missing upcast step — is
@@ -269,7 +269,7 @@ Two ways to avoid the race rather than lose it:
 
 - Route by aggregate id so one writer owns one aggregate at a time. `KeyOrderedDispatcher` does this
   — same aggregate id, same worker, so the read-modify-write needs no lock
-  (`examples/py/outbox.py:64`). See [consuming](./consuming.md).
+  (`examples/py/08_consume_events.py`). See [consuming](./consuming.md).
 - Wrap the dispatch in `retry` so a conflict is retried with a fresh load. See
   [commands](./commands.md).
 
@@ -293,7 +293,8 @@ multiple of `n`: `1` (the default) on every save that writes an event, `0` never
 (`snapshot_due`, pinned by `testdata/golden/snapshot_due.json`). Raise the interval when `dump` gets
 expensive or the state gets large: every snapshot is a second write in the save's unit of work.
 Correctness does not depend on it. The replay always folds the tail after whatever version the snapshot
-carries.
+carries. `examples/py/03_snapshots.py` saves seven versions under `snapshot_every=3` and loads from the
+snapshot at version 6.
 
 `save_snapshot` keeps the higher version: an older snapshot arriving late never replaces a newer one,
 and one past the stream's version is refused as `CodecError`. It commits in the same `tx` as the

@@ -139,16 +139,15 @@ landed. The redelivery replays a success that did not happen. The work is silent
 land, so the redelivery repeats it. A repeat is recoverable by an idempotent handler; silent loss is
 not.
 
-`examples/py/event_idempotency.py` runs both modes and asserts the difference, including the
-commit-lands-reply-lost window (`CommitLosesItsReply`).
+`examples/py/10_idempotent_events.py` runs the shared mode. `examples/py/19_fault_injection.py`
+runs the own-ledger mode through the commit-lands-reply-lost window, with `BrokenCommit` from
+`edax.testing.faults`.
 
 ```python
-# examples/py/event_idempotency.py — shared unit of work
-db = MemoryTransactor()  # one database for both participants
-projections = MemoryProjectionStore(db)
-guard = idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db)
-router = edax.EventRouter(guard)
-router.register("Deposited", deposit_handler(projections, calls))
+# examples/py/10_idempotent_events.py — one database for the ledger and the read model
+db = MemoryTransactor()
+balances = MemoryProjectionStore(db)
+router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db))
 ```
 
 ## The record lifecycle
@@ -332,7 +331,7 @@ both. So `retry` refuses to run while any `transaction` is open, and goes outsid
 `unit_of_work`. [Commands](./commands.md#where-retry-sits-relative-to-the-guard) states the rule.
 
 ```python
-# examples/py/command_handling.py:97 — retry outermost, the guard owns the unit of work.
+# examples/py/05_idempotent_commands.py — retry outermost, the guard owns the unit of work.
 bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), key=request_id_of, unit_of_work=db))
 ```
 
@@ -368,8 +367,7 @@ holding the key, the payload hash and the outcome.
 
 It is **not** the transactional Inbox. The Inbox persists the message *body* and acks the broker
 before processing, which decouples the handler from the broker. edax stores no message body, and the
-guard runs synchronously in the delivery path, so the handler cannot be decoupled that way
-(`examples/py/event_idempotency.py:16`).
+guard runs synchronously in the delivery path, so the handler cannot be decoupled that way.
 
 **The ceiling.** In shared mode, database state in that one database can be effectively-once: the
 claim and the write are one commit. Nothing outside that database is covered. An email, a text

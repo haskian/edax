@@ -93,7 +93,7 @@ Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
 Submitting a bare envelope instead of a `Delivery` runs the handler and settles nothing — the
-fire-and-forget path used by `examples/py/saga.py`.
+fire-and-forget path.
 
 **Worker health.** A handler that raises `asyncio.CancelledError` because it awaited a future
 someone else cancelled fails its delivery, not its worker: the delivery is nacked like a transient
@@ -210,6 +210,8 @@ restart — neither in-tree backend reads one from its client, so both report `0
 
 Terminal versus transient is the kernel's verdict, read through `err.terminal`. See
 [errors.md](./errors.md).
+`examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
+that passes, and one that reaches `max_attempts`.
 
 **Dead-lettering needs `on_dead`.** Without a sink a dead delivery still nacks and comes back —
 never a silent drop, but also never bounded. A terminal error dead-letters on the *first* attempt
@@ -280,7 +282,8 @@ async def deposited(env: edax.EventEnvelope) -> None: ...
 bus = edax.KeyOrderedDispatcher(4, router.dispatch)
 ```
 
-From `examples/py/event_handling.py:58`.
+`examples/py/08_consume_events.py` runs this shape without the guard.
+`examples/py/10_idempotent_events.py` adds the guard over a shared unit of work.
 
 - **Registration is by event name.** `register(name, handler)`, or the `on(name)` decorator, which
   returns the bare function rather than the wrapped one.

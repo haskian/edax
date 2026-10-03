@@ -1,13 +1,15 @@
 # Runnable env for the Python examples. `uv sync` here builds the local edax SDK (maturin), so the
 # examples run without a manual maturin/pip dance:
 #
-#   cd examples/py && uv sync && uv run python outbox.py
+#   cd examples/py && uv sync && uv run python 01_command_bus.py
 [project]
 name = "edax-examples"
 version = "0"
 requires-python = ">=3.10"
 dependencies = [
-    "edax",  # local edax SDK; msgspec comes transitively. No example uses a broker client.
+    # The local edax SDK. `test` brings pytest for 18 and 19. `redis` and `kafka` bring the clients
+    # 16 and 17 use when EDAX_REDIS_URL or EDAX_KAFKA_BOOTSTRAP is set.
+    "edax[kafka,redis,test]",
 ]
 
 [tool.uv.sources]

@@ -441,4 +441,6 @@ the partition and the watermark.
 - [kernels/kafka.md](../kernels/kafka.md) — the record, the header, placement, the media types and
   the offset state machine, decision by decision.
 - [memory](./memory.md) — `MemoryBroker`, the same seams with no infrastructure.
+- `examples/py/17_kafka.py` — the outbox relay into `KafkaProducer`, a `KafkaConsumer` with a
+  `KafkaDeadLetterSink`, against a real broker when `EDAX_KAFKA_BOOTSTRAP` is set.
 - [delivery guarantees](../guides/delivery-guarantees.md) — the end-to-end guarantee matrix.

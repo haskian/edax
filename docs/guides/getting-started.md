@@ -278,8 +278,8 @@ state in that database. A ledger that lives in a *different* database cannot joi
 and the guarantee drops to at-least-once with a dedup window — see
 [delivery-guarantees.md](./delivery-guarantees.md).
 
-`examples/py/command_handling.py` is the fuller version of this, with the `PayloadMismatch` case and
-deterministic ids so its asserts hold.
+`examples/py/05_idempotent_commands.py` is the fuller version of this, with the `PayloadMismatch`
+case. The [examples README](../../examples/py/README.md) goes on from there, one idea per file.
 
 ## The build pipeline
 
@@ -348,8 +348,7 @@ vector (`AGENTS.md`).
 
 ## See also
 
-- [./examples.md](./examples.md) — a tour of `examples/py`, including `event_idempotency`, the one
-  to read for guarantees.
+- [./examples.md](./examples.md) — how the examples in `examples/py` run, and how CI checks them.
 - [./testing.md](./testing.md) — the three test layers and the commands to run them all.
 - [../kernels/golden-vectors.md](../kernels/golden-vectors.md) — the cross-language contract and how
   to regenerate it.

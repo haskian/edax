@@ -121,9 +121,10 @@ different body and the guard raises `PayloadMismatch`. A retry re-runs a whole u
 handler inside one, so `retry` goes outside a guard given `unit_of_work`. The kernel makes that decision, not the SDK,
 so a Rust service sharing the store reaches the same verdict.
 
-Runnable versions of this and five more walkthroughs are in [`examples/py`](examples/py):
-`command_handling`, `event_handling`, `event_idempotency`, `outbox`, `saga`, `projection_query`.
-Each one ends in asserts, so a clean exit is the test. Continuous integration (CI) runs them all.
+Nineteen runnable examples, one idea each, take it from here in learning order. The
+[examples README](examples/py/README.md) lists them, from `01_command_bus.py` to
+`19_fault_injection.py`. Each one ends in asserts, so a clean exit is the test. Continuous
+integration (CI) runs them all.
 
 ## Documentation
 
@@ -151,7 +152,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its four scripts, and the verdict on a Redis reply |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
-| `examples/py` | runnable walkthroughs |
+| `examples/py` | nineteen runnable examples in learning order; start at its [README](examples/py/README.md) |
 | `docs` | the full documentation set. Start at [`docs/README.md`](docs/README.md) |
 | `testdata/golden` | cross-language consistency vectors |
 

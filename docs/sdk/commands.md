@@ -272,7 +272,7 @@ file's.
 
 ## The recommended wiring
 
-From `examples/py/command_handling.py:95`:
+The wiring `examples/py/05_idempotent_commands.py` runs:
 
 ```python
 # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
@@ -285,7 +285,7 @@ async def submit(request_id: str, account_id: str, amount: int) -> int:
     return await bus.dispatch(Deposit(account_id, amount, request_id))  # no transaction around it
 ```
 
-The key function reads the command's own field (`examples/py/command_handling.py:66`):
+The key function reads the command's own field, as in the same example:
 
 ```python
 def request_id_of(cmd: Any) -> str:
@@ -303,8 +303,9 @@ The handler never runs twice for one committed outcome.
 
 The example's unit of work is opened by the guard, because it was given `unit_of_work=db`. The
 idempotency store and the event store are built over one `MemoryTransactor`. The claim, the events,
-the snapshot and the outbox rows therefore join the same unit of work. The example fails one attempt
-after its save and asserts that the rolled-back event never reaches the outbox.
+the snapshot and the outbox rows therefore join the same unit of work.
+`examples/py/06_errors_and_retry.py` fails one attempt after its write and asserts that the write
+rolled back: the retry starts from committed state.
 
 ## One `submit()` end to end
 

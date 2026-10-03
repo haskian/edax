@@ -176,6 +176,9 @@ Err(edax::Terminal::new(InsufficientFunds { balance, requested }).into())
 
 The guard caches either as `rejected`, so a replay in any SDK names the code.
 
+`examples/py/06_errors_and_retry.py` retries a transient error and stops at once on a `Rejected`
+subclass. `examples/py/09_dead_letters.py` shows the same split in a dispatcher with `on_dead`.
+
 Rule of thumb: if re-running the handler with the same input cannot produce a different outcome, the
 error is terminal. Validation failures, business-rule violations and unknown identifiers are
 terminal. Timeouts, deadlocks, and anything naming a dependency are not.

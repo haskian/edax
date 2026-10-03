@@ -115,17 +115,16 @@ which is shared by `edax.query.query` and by every backend's `get_many` so the t
 ## Keeping a projection up to date
 
 An event handler folds an envelope into an `Entity`. This is the handler from
-`examples/py/event_idempotency.py:58`, unedited:
+`examples/py/10_idempotent_events.py`, without the failure that example injects:
 
 ```python
-async def handle(env: edax.EventEnvelope) -> None:
-    calls.append(env.id)
-    entity = await projections.get(env.aggregate_id)
-    if entity is None:
-        entity = Entity(env.aggregate_id, 0, {"id": env.aggregate_id, "balance": 0})
-    amount = int(env.event.data)
-    entity.document["balance"] = entity.document["balance"] + abs(amount)
-    await projections.save(entity)  # joins the guard's unit of work via current_tx(db)
+@router.on("Deposited")
+async def add_deposit(envelope: EventEnvelope) -> None:
+    row = await balances.get(envelope.aggregate_id)
+    if row is None:
+        row = Entity(envelope.aggregate_id, 0, {"balance": 0})
+    row.document["balance"] += json.loads(envelope.event.data)["amount"]
+    await balances.save(row)  # joins the guard's transaction
 ```
 
 Read it in four steps. Load the entity by aggregate id. Seed version `0` when the row does not
@@ -134,9 +133,10 @@ exist, so the first `save` is an insert. Fold the event into the document. Save,
 
 That fold is `balance + amount`, which is not idempotent: a redelivered envelope applied twice
 double-counts. The guard is what stops it, and what the guard is worth depends on whether the claim
-and this `save` commit together. `examples/py/event_idempotency.py` runs both modes and asserts the
-difference — balance `100` with a shared unit of work, balance `200` with a ledger of its own. See
-[idempotency](./idempotency.md).
+and this `save` commit together. `examples/py/10_idempotent_events.py` shares one unit of work and
+asserts each deposit counted once. `examples/py/19_fault_injection.py` puts the ledger in a database
+of its own. There a lost commit reply runs the handler twice, so its fold records the deposits it
+applied. See [idempotency](./idempotency.md).
 
 ## Querying
 
@@ -251,19 +251,19 @@ Each of these is a terminal `CodecError`:
 
 ### A paging loop
 
-Built from `examples/py/projection_query.py`, which does the same two pages explicitly and asserts
+Built from `examples/py/11_projection_query.py`, which runs this loop and asserts
 `["a1", "a2"]` then `["a3", "a6"]` — page 2 resumed past a tie on `balance`.
 
 ```python
 from edax.filter import and_, eq, gte
 from edax.query import sort_key
 
-flt = and_(gte("balance", 100), eq("status", "active"))
-sort = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as tiebreak
+only = and_(gte("balance", 100), eq("status", "active"))
+order = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as the tiebreak
 
 after = None
 while True:
-    page = await store.get_many(filter=flt, sort=sort, limit=2, after=after)
+    page = await store.get_many(filter=only, sort=order, limit=2, after=after)
     for doc in page.rows:
         ...  # handle the row
     if page.next is None:
@@ -348,7 +348,7 @@ What a reader should do about it:
   [`Repository`](./aggregates.md) and let its optimistic version reject the stale decision. A
   projection read cannot.
 - **Do not promise read-your-writes** unless the projection `save` shares a unit of work with the
-  write, as `shared_unit_of_work` in `examples/py/event_idempotency.py:122` does. Sharing a
+  write, as `examples/py/10_idempotent_events.py` does. Sharing a
   transactor is the only arrangement here that closes the gap.
 - **Return the version.** `Entity.version` is monotonic per row, so a caller can tell an unchanged
   document from a refreshed one, and a client can refuse to go backwards.
@@ -368,4 +368,4 @@ What a reader should do about it:
 - [sdk/idempotency](./idempotency.md) — what stops a redelivered event folding twice.
 - [sdk/errors](./errors.md) — transient against terminal, and what branches on it.
 - [backends/memory](../backends/memory.md) — `MemoryProjectionStore`, the reference implementation.
-- [guides/examples](../guides/examples.md) — `projection_query.py` end to end.
+- [guides/examples](../guides/examples.md) — `11_projection_query.py` end to end.

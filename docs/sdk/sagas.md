@@ -34,7 +34,7 @@ flowchart LR
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
 to a `KeyOrderedDispatcher`. It takes a command codec, `json_codec({"Fulfill": Fulfill})`, to put the
-commands in the outbox. `runner.relay(bus.dispatch, on_dead=sink)` sends them (`examples/py/saga.py`).
+commands in the outbox. `runner.relay(bus.dispatch, on_dead=sink)` sends them (`examples/py/13_saga.py`).
 Pass `on_dead`: without a sink, a command that fails terminally is handed back on every drain, and
 the rows behind it wait. In Rust, the codec is a `RegistryCodec` over the command enum, and
 `Relay::<_, SagaCommand>::new(store).on_dead(sink)` with `runner.command(row)` sends them.
@@ -49,7 +49,7 @@ the rows behind it wait. In Rust, the codec is a `RegistryCodec` over the comman
   event costs nothing and writes nothing.
 
 The correlation id is the saga's own key, not the aggregate id — that is the whole point of a saga.
-It is often *derived* from the aggregate id, as in `examples/py/saga.py:50`, and that choice has a
+It is often *derived* from the aggregate id, as in `examples/py/13_saga.py`, and that choice has a
 concurrency consequence, below.
 
 It is also **not** the `correlation_id` in the envelope's metadata. That one names a logical flow
@@ -108,8 +108,8 @@ instead of raising `PayloadMismatch`.
 The real hazard is identity, not hashing. Chain ids in fields widen what the command **is**. Say two
 different events can legitimately cause one intent. They now build two different commands. A key
 that ignores the cause makes the second one a `PayloadMismatch` under the first one's record. So key
-on the cause too, or keep the cause out of the command. `examples/py/saga.py` keys on `order_id`
-alone, because exactly one event type causes `Fulfill`.
+on the cause too, or keep the cause out of the command. `examples/py/13_saga.py` keys on
+`order_id` alone, because exactly one event type causes `ShipOrder`.
 
 **Or through a middleware seam.** Keep the command a pure business intent and carry `env` beside it.
 An event middleware wraps `SagaRunner.on_event` and puts the envelope where the command handler can
@@ -208,33 +208,34 @@ stateDiagram-v2
 
 ## The example, step by step
 
-`examples/py/saga.py` runs an order saga: `Created` opens an instance, `Paid` emits `Fulfill` and
-completes. The stream contains a redelivered `Paid` for `order-1`. The example submits bare
-envelopes, so there is no broker settlement — the redelivery is the same envelope submitted twice.
+`examples/py/13_saga.py` runs an order saga. `OrderPlaced` opens an instance, and `PaymentReceived`
+emits `ShipOrder` and completes it. The example hands `PaymentReceived` over twice. It calls
+`runner.on_event` directly, so there is no broker settlement: the redelivery is the same envelope
+handed over again.
 
 ```mermaid
 sequenceDiagram
-    participant D as KeyOrderedDispatcher
+    participant EX as the example
     participant RU as SagaRunner
     participant ST as MemorySagaStore
     participant RL as Relay
     participant CB as CommandBus with idempotent
-    D->>RU: order-1 Created
+    EX->>RU: order-1 OrderPlaced
     RU->>ST: load order-1
     ST-->>RU: none, so state is None at version 0
-    RU->>ST: save the string open at version 0, now version 1
-    D->>RU: order-1 Paid
+    RU->>ST: save the string awaiting payment at version 0, now version 1
+    EX->>RU: order-1 PaymentReceived
     RU->>ST: load order-1
-    ST-->>RU: state open at version 1
-    Note over RU: handle returns Completed plus one Fulfill command
-    RU->>ST: complete at version 1 with Fulfill as order-1:2:0, now version 2
-    D->>RU: order-1 Paid redelivered
+    ST-->>RU: state awaiting payment at version 1
+    Note over RU: handle returns Completed plus one ShipOrder command
+    RU->>ST: complete at version 1 with ShipOrder as order-1:2:0, now version 2
+    EX->>RU: order-1 PaymentReceived redelivered
     RU->>ST: load order-1
     ST-->>RU: completed at version 2
     Note over RU: no fold, no write, no command
     RL->>ST: unpublished
     ST-->>RL: order-1:2:0
-    RL->>CB: dispatch Fulfill order-1
+    RL->>CB: dispatch ShipOrder order-1
     RL->>ST: mark order-1:2:0 published
 ```
 

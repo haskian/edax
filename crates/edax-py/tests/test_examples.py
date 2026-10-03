@@ -58,6 +58,8 @@ def test_no_example_command_hashes_its_type(path: Path) -> None:
 async def test_every_example_runs_to_its_ok_marker(path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Every example ends in asserts and a final ``ok:`` line. Run here as well as in CI's examples
     step, so a change that breaks the documented wiring fails the suite a developer runs, not only a
-    later CI job. Every example runs on the in-memory backends, so none needs a broker."""
+    later CI job. Every example runs on the in-memory backends by default. `16_redis_ledger` and
+    `17_kafka` switch to a real server when ``EDAX_REDIS_URL`` or ``EDAX_KAFKA_BOOTSTRAP`` names one, as
+    CI's test job does."""
     await load(path).main()
     assert "\nok:" in capsys.readouterr().out, f"{path.name} did not reach its ok: marker"

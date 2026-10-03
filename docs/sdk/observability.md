@@ -668,5 +668,5 @@ after `cmd.type`, and `edax.command.type` in place of the `messaging.*` attribut
 - [Outbox](./outbox.md) — the drain `Relay.last` describes.
 - [Errors](./errors.md) — the taxonomy `error_type` reads its codes from.
 - [kafka](../backends/kafka.md) — the watermark `PartitionStats` reports.
-- `examples/py/observability.py` — a counting observer reaching every signal, `timing()`, a
-  `traceparent` link and the pull surface, with no telemetry library.
+- `examples/py/14_observability.py` — an observer that prints the claim, settlement, transaction
+  and drain signals, beside `timing()` and `Relay.last`, with no telemetry library.
