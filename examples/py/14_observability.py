@@ -32,7 +32,7 @@ from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, Memory
 
 
 class PrintingObserver(Observer):
-    """Prints and keeps every signal. A real one feeds Prometheus or OpenTelemetry instead."""
+    """Prints and keeps every signal. A real one feeds OpenTelemetry instead."""
 
     def __init__(self) -> None:
         self.signals: list[str] = []

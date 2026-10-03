@@ -16,7 +16,7 @@ flowchart LR
     T["transaction, Repository, the guards"] -->|"transaction(outcome, duration_ns)"| OBS
     R["Relay"] -->|"drain(published, duration_ns, oldest_timestamp), drain_failed(error)"| OBS
     L["consumer loop, any Consumer"] -->|"undecodable(message_id, error)"| OBS
-    OBS --> EXP["host adapter: Prometheus, OTel, a dict"]
+    OBS --> EXP["host adapter: OpenTelemetry, a dict"]
     D -->|"stats(), idle()"| PULL["health check"]
     R -->|"last"| PULL
     K["KafkaConsumer"] -->|"stats()"| PULL
@@ -252,7 +252,7 @@ from edax import (
     transaction,
 )
 
-observer = PrometheusObserver()  # yours; see the adapters below
+observer = OtelObserver()  # yours; see the adapter below
 
 repo = Repository(store, events, aggregates, observer=observer)
 bus = CommandBus(idempotent(ledger, key=request_id_of, observer=observer))
@@ -449,81 +449,6 @@ Durations cross as nanoseconds. OTel histograms take seconds, so every adapter d
 
 None of these ship, and edax imports none of their libraries. They live in your application, next
 to your meter provider, and you may rename every instrument. Each block is complete.
-
-### Prometheus
-
-```python
-# yourapp/telemetry/prometheus.py
-import logging
-
-from prometheus_client import Counter, Gauge, Histogram
-
-from edax import Observer
-from edax.observe import DURATION_BUCKETS, error_type
-
-logger = logging.getLogger(__name__)
-BUCKETS = list(DURATION_BUCKETS)
-
-# `handler` is the command type or the event name: a closed set, so a safe label.
-DELIVERIES = Counter("edax_deliveries_total", "Settled deliveries", ["handler", "outcome", "error_type"])
-PROCESS = Histogram(
-    "edax_process_duration_seconds", "Handler time per delivery", ["handler", "outcome"], buckets=BUCKETS
-)
-ATTEMPTS = Histogram(
-    "edax_delivery_attempt", "Attempt a delivery settled at", ["handler", "outcome"], buckets=[1, 2, 3, 5, 10]
-)
-CLAIMS_LOST = Counter("edax_claims_lost_total", "Claims lost to a prior record", ["handler", "verdict"])
-CLAIM_HELD = Histogram(
-    "edax_claim_held_seconds", "Won claims, claim to settlement", ["handler", "how"], buckets=BUCKETS
-)
-SETTLEMENT_FAILED = Counter(
-    "edax_settlement_failures_total", "Acks or nacks that raised", ["handler", "error_type"]
-)
-TRANSACTIONS = Histogram(
-    "edax_transaction_seconds", "Units of work, begin to end", ["outcome"], buckets=BUCKETS
-)
-DRAINS = Histogram("edax_drain_duration_seconds", "Relay drains", buckets=BUCKETS)
-DRAIN_FAILED = Counter("edax_drain_failures_total", "Drains that raised before marking", ["error_type"])
-PUBLISHED = Counter("edax_published_total", "Envelopes the relay published")
-# A timestamp, the Prometheus idiom: the lag is `time() - edax_outbox_oldest_timestamp_seconds`.
-OUTBOX_OLDEST = Gauge("edax_outbox_oldest_timestamp_seconds", "Oldest row in the last drained batch")
-UNDECODABLE = Counter("edax_undecodable_total", "Poison messages", ["error_type"])
-
-
-class PrometheusObserver(Observer):
-    def claim(self, name: str, verdict: str) -> None:
-        CLAIMS_LOST.labels(handler=name, verdict=verdict).inc()
-
-    def settled(self, name: str, how: str, duration_ns: int) -> None:
-        CLAIM_HELD.labels(handler=name, how=how).observe(duration_ns / 1e9)
-
-    def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
-    ) -> None:
-        DELIVERIES.labels(handler=name, outcome=outcome, error_type=error_type or "").inc()
-        PROCESS.labels(handler=name, outcome=outcome).observe(duration_ns / 1e9)
-        ATTEMPTS.labels(handler=name, outcome=outcome).observe(attempt)
-
-    def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
-        SETTLEMENT_FAILED.labels(handler=name, error_type=error_type(error)).inc()
-        logger.warning("settlement of %s failed", event_id, exc_info=error)  # the id goes here only
-
-    def transaction(self, outcome: str, duration_ns: int) -> None:
-        TRANSACTIONS.labels(outcome=outcome).observe(duration_ns / 1e9)
-
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        DRAINS.observe(duration_ns / 1e9)
-        PUBLISHED.inc(published)
-        if oldest_timestamp is not None:
-            OUTBOX_OLDEST.set(oldest_timestamp / 1e9)
-
-    def drain_failed(self, error: BaseException) -> None:
-        DRAIN_FAILED.labels(error_type=error_type(error)).inc()
-
-    def undecodable(self, message_id: str, error: BaseException) -> None:
-        UNDECODABLE.labels(error_type=error_type(error)).inc()
-        logger.warning("poison message %s", message_id, exc_info=error)
-```
 
 ### OpenTelemetry
 
