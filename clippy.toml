@@ -1,0 +1,5 @@
+# A test asserts on the value it just built; a panic there is the failure report. These keep the
+# workspace's no-panic lints (`[workspace.lints.clippy]`) off test code only.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-indexing-slicing-in-tests = true

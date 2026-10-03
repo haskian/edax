@@ -5,12 +5,13 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, fields
-from typing import Any, Optional
+from typing import Any
 
 import edax
 import pytest
 from conftest import Counter, CounterCodec, Tick, TickEvents, build_envelope, counter_repo
 from edax import EventEnvelope, Relay, pump
+from edax._owned import ThreadBound
 from edax.backend.memory import MemoryEventStore
 from edax.store import ConcurrencyError
 
@@ -27,7 +28,7 @@ async def test_reload_via_snapshot() -> None:
     await repo.save(a)  # snapshots at version 2
     b = await repo.load("acct-2")
     assert b.n == 15
-    assert b.sequence.initial == 2
+    assert b.version.initial == 2
 
 
 async def test_load_pure_replay_no_snapshot() -> None:
@@ -45,7 +46,7 @@ async def test_load_pure_replay_no_snapshot() -> None:
         )
     a = await repo.load("acct-3")  # no snapshot -> replays both events
     assert a.n == 10
-    assert a.sequence.initial == 2
+    assert a.version.initial == 2
 
 
 async def test_stale_expected_version_raises() -> None:
@@ -118,7 +119,7 @@ async def test_repository_save_branches(case: SaveCase) -> None:
     published = [e.id for e in await store.unpublished()]
 
     agg = await repo.load("acct-1")
-    assert agg.sequence.initial == case.loaded_version
+    assert agg.version.initial == case.loaded_version
     agg.apply(*[Tick(t) for t in case.ticks])
 
     envs = await repo.save(agg)
@@ -126,15 +127,18 @@ async def test_repository_save_branches(case: SaveCase) -> None:
     assert all(e.aggregate_id == "acct-1" for e in envs)
     # The aggregate is reset to exactly what was stored, so a second save is a no-op, not a replay.
     assert agg.pending == []
-    assert agg.sequence.initial == case.loaded_version + len(case.ticks)
-    assert agg.sequence.updates == 0
+    assert agg.version.initial == case.loaded_version + len(case.ticks)
+    assert agg.version.updates == 0
     # Every appended event is queued for publication; an empty save adds nothing to the outbox.
     assert [e.id for e in await store.unpublished()] == published + [e.id for e in envs]
-    # A snapshot is written even with nothing pending, at the aggregate's current version, tagged
-    # with the codec's aggregate type.
+    # A save that crosses a version snapshots at the aggregate's current version, tagged with the codec's
+    # aggregate type; one with nothing pending crosses none and leaves the snapshot where it was.
     snap = await store.load_snapshot(None, "acct-1")
-    assert snap is not None and snap.version == case.loaded_version + len(case.ticks)
-    assert snap.type_name == CounterCodec.type
+    if case.loaded_version + len(case.ticks) == 0:
+        assert snap is None, "nothing was ever pending, so nothing was snapshotted"
+    else:
+        assert snap is not None and snap.version == case.loaded_version + len(case.ticks)
+        assert snap.type_name == CounterCodec.type
     assert (await repo.load("acct-1")).n == case.loaded_version + sum(case.ticks)
 
 
@@ -163,7 +167,7 @@ async def test_a_failed_commit_leaves_the_aggregate_holding_its_pending_events()
         await repo.save(agg)
 
     assert [t.v for t in agg.pending] == [10, 5], "a failed commit must not consume the pending events"
-    assert agg.sequence.initial == 0 and agg.sequence.updates == 2
+    assert agg.version.initial == 0 and agg.version.updates == 2
     assert await store.load(None, "acct-commit-fails") == []
 
 
@@ -193,6 +197,9 @@ async def test_snapshot_type_name_crosses_the_native_boundary() -> None:
     assert [f.name for f in fields(edax.Snapshot)] == ["aggregate_id", "type_name", "version", "data"]
 
     store = MemoryEventStore()
+    await store.append(
+        None, "acct-9", 0, [build_envelope("acct-9", "Tick", seq, data=b"14") for seq in (1, 2, 3)]
+    )
     stored = edax.Snapshot("acct-9", "Counter", 3, b"42")
     await store.save_snapshot(None, stored)
     assert await store.load_snapshot(None, "acct-9") == stored
@@ -202,7 +209,7 @@ class ScriptedStore:
     """An EventStore whose reads are fixed by the test: the SDK must tolerate what a backend
     returns, including an envelope with no ``sequence``."""
 
-    def __init__(self, snapshot: Optional[edax.Snapshot], events: list[EventEnvelope]) -> None:
+    def __init__(self, snapshot: edax.Snapshot | None, events: list[EventEnvelope]) -> None:
         self._snapshot = snapshot
         self._events = events
 
@@ -210,7 +217,7 @@ class ScriptedStore:
     async def transaction(self) -> AsyncIterator[None]:
         yield None
 
-    async def load_snapshot(self, tx: Any, aggregate_id: str) -> Optional[edax.Snapshot]:
+    async def load_snapshot(self, tx: Any, aggregate_id: str) -> edax.Snapshot | None:
         return self._snapshot
 
     async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
@@ -219,10 +226,11 @@ class ScriptedStore:
 
 @dataclass
 class LoadCase:
-    snapshot: Optional[tuple[int, int]]  # (version, counter total) of the stored snapshot
-    tail: list[Optional[int]]  # the sequence of each event `load` returns
-    total: int  # the rehydrated Counter's n
+    snapshot: tuple[str, int, bytes] | None  # (type name, version, data) of the stored snapshot
+    tail: list[int | None]  # the sequence of each event `load` returns, each a Tick of 1
+    total: int | None  # the rehydrated Counter's n, or None when the load must fail
     version: int  # the rehydrated aggregate's sequence.initial
+    error: str = ""  # the CodecError's message when the load fails
 
 
 @pytest.mark.parametrize(
@@ -230,14 +238,37 @@ class LoadCase:
     [
         pytest.param(LoadCase(None, [], 0, 0), id="empty_stream_with_no_snapshot_is_version_zero"),
         pytest.param(LoadCase(None, [1, 2], 2, 2), id="no_snapshot_replays_the_whole_stream"),
-        pytest.param(LoadCase((2, 20), [3], 21, 3), id="snapshot_replays_only_the_tail"),
-        pytest.param(LoadCase((2, 20), [], 20, 2), id="snapshot_with_nothing_after_it_is_the_version"),
-        pytest.param(LoadCase((2, 20), [None], 21, 2), id="event_without_a_sequence_leaves_the_version"),
+        pytest.param(LoadCase(("Counter", 2, b"20"), [3], 21, 3), id="snapshot_replays_only_the_tail"),
+        pytest.param(
+            LoadCase(("Counter", 2, b"20"), [], 20, 2), id="snapshot_with_nothing_after_it_is_the_version"
+        ),
+        # A snapshot is a cache: one this codec cannot use is skipped and the stream replays from 0.
+        pytest.param(
+            LoadCase(("Ledger", 2, b"20"), [1, 2, 3], 3, 3), id="another_types_snapshot_replays_from_zero"
+        ),
+        pytest.param(
+            LoadCase(("Counter", 2, b"not a number"), [1, 2, 3], 3, 3),
+            id="unloadable_snapshot_replays_from_zero",
+        ),
+        # The kernel's dense-run rule on the loaded tail: a store that breaks the gap-free promise
+        # fails the load instead of folding the wrong state.
+        pytest.param(
+            LoadCase(None, [1, 3], None, 0, "envelope 1 has sequence 3, expected 2"),
+            id="a_gap_fails_the_load",
+        ),
+        pytest.param(
+            LoadCase(None, [1, 1], None, 0, "envelope 1 has sequence 1, expected 2"),
+            id="a_repeat_fails_the_load",
+        ),
+        pytest.param(
+            LoadCase(("Counter", 2, b"20"), [None], None, 0, "envelope 0 has no sequence"),
+            id="an_unsequenced_event_fails_the_load",
+        ),
     ],
 )
 async def test_repository_load_branches(case: LoadCase) -> None:
     snapshot = (
-        edax.Snapshot("acct-1", "Counter", case.snapshot[0], str(case.snapshot[1]).encode())
+        edax.Snapshot("acct-1", case.snapshot[0], case.snapshot[1], case.snapshot[2])
         if case.snapshot is not None
         else None
     )
@@ -247,10 +278,14 @@ async def test_repository_load_branches(case: LoadCase) -> None:
     ]
     repo = counter_repo(ScriptedStore(snapshot, tail), iter(range(1, 10)))
 
+    if case.total is None:
+        with pytest.raises(edax.CodecError, match=case.error):
+            await repo.load("acct-1")
+        return
     agg = await repo.load("acct-1")
-    assert agg.n == case.total  # every returned event is folded in, sequence or not
-    assert agg.sequence.initial == case.version
-    assert agg.sequence.updates == 0  # replay must not queue the events as pending again
+    assert agg.n == case.total  # every returned event is folded in
+    assert agg.version.initial == case.version
+    assert agg.version.updates == 0  # replay must not queue the events as pending again
     assert agg.pending == []
 
 
@@ -272,10 +307,10 @@ async def test_repository_defaults_to_the_kernel_id_and_clock() -> None:
 @dataclass
 class PumpCase:
     ids: list[str]
-    fail_at: Optional[str]  # publish raises on this id
+    fail_at: str | None  # publish raises on this id
     sync_publish: bool
     published: list[str]
-    raises: Optional[type[BaseException]]
+    raises: type[BaseException] | None
     count: int
 
 
@@ -353,10 +388,10 @@ async def test_relay_empty_outbox_does_not_mark() -> None:
 def test_aggregate_apply_zero_events_leaves_sequence_and_pending() -> None:
     a = Counter("acct-9", initial=4)
     a.apply()
-    assert a.sequence == edax.Version(4, 0) and a.sequence.current == 4
+    assert a.version == edax.Version(4, 0) and a.version.current == 4
     assert a.pending == []
     a.apply(Tick(1))
-    assert a.sequence == edax.Version(4, 1) and a.sequence.current == 5
+    assert a.version == edax.Version(4, 1) and a.version.current == 5
     assert a.pending == [Tick(1)] and a.n == 1
 
 
@@ -397,10 +432,10 @@ class _FailingOutbox:
     def __init__(self, raised: str) -> None:
         self._raised = raised
 
-    async def unpublished(self, limit: int) -> Any:
+    def unpublished(self, limit: int) -> Any:
         raise RuntimeError(self._raised)
 
-    async def mark_published(self, ids: list[str]) -> None:
+    def mark_published(self, ids: list[str]) -> None:
         raise RuntimeError(self._raised)
 
 
@@ -429,8 +464,138 @@ async def test_outbox_calls_map_native_errors_like_every_other_call(case: Outbox
     """The two outbox calls go through ``errors.mapped()`` too, so a host sees one taxonomy and
     not a bare ``RuntimeError`` from these two alone."""
     store = MemoryEventStore()
-    store._transactor._inner = _FailingOutbox(case.raised)  # ty: ignore[invalid-assignment]
+    store._transactor._native = ThreadBound(_FailingOutbox(case.raised), "MemoryTransactor")  # ty: ignore[invalid-assignment]
     args: list[Any] = [] if case.call == "unpublished" else [["evt-1"]]
 
     with pytest.raises(case.expected):
         await getattr(store, case.call)(*args)
+
+
+@pytest.mark.parametrize(
+    "every, saves, want",
+    [
+        (1, [1, 1, 1], [1, 2, 3]),
+        (2, [1, 1, 1, 1], [None, 2, 2, 4]),
+        (3, [2, 2, 2], [None, 4, 6]),
+        (0, [1, 1], [None, None]),
+        (1, [0], [None]),
+    ],
+    ids=["every_save", "every_second_version", "a_save_that_jumps_past_a_multiple", "never", "an_empty_save"],
+)
+async def test_snapshot_every_snapshots_when_the_version_crosses_a_multiple(
+    every: int, saves: list[int], want: list[int | None]
+) -> None:
+    """09#F12: a snapshot on every save doubled the writes; the policy snapshots when a save carries the
+    version across a multiple of ``snapshot_every``, and the stream replays from it."""
+    store = MemoryEventStore()
+    repo = edax.Repository(store, TickEvents(), CounterCodec(), snapshot_every=every)
+    got: list[int | None] = []
+    for n in saves:
+        agg = await repo.load("acct-1")
+        agg.apply(*[Tick(1) for _ in range(n)])
+        await repo.save(agg)
+        snap = await store.load_snapshot(None, "acct-1")
+        got.append(None if snap is None else snap.version)
+    assert got == want
+    assert (await repo.load("acct-1")).n == sum(saves), "a stale or absent snapshot still replays the rest"
+
+
+def test_a_negative_snapshot_interval_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least 0, got -1"):
+        edax.Repository(MemoryEventStore(), TickEvents(), CounterCodec(), snapshot_every=-1)
+
+
+# =========================================================================
+# 09#F12: Relay.run, the loop every adopter wrote by hand
+# =========================================================================
+
+
+async def _outbox_with(n: int) -> MemoryEventStore:
+    store = MemoryEventStore()
+    repo = counter_repo(store, iter(range(1, 1000)))
+    agg = Counter("acct-1")
+    agg.apply(*[Tick(1) for _ in range(n)])
+    await repo.save(agg)
+    return store
+
+
+async def test_run_drains_back_to_back_until_stopped() -> None:
+    store = await _outbox_with(5)
+    sent: list[str] = []
+    stop = asyncio.Event()
+
+    def publish(env: edax.EventEnvelope) -> None:
+        sent.append(env.id)
+        if len(sent) == 5:
+            stop.set()
+
+    relay = edax.Relay(store, publish)
+    await asyncio.wait_for(relay.run(batch=2, idle_s=60, stop=stop), 5)  # never idles while rows flow
+    assert len(sent) == 5 and await store.unpublished() == []
+
+
+async def test_run_returns_at_once_when_already_stopped() -> None:
+    store = await _outbox_with(1)
+    stop = asyncio.Event()
+    stop.set()
+    sent: list[str] = []
+    await edax.Relay(store, lambda env: sent.append(env.id)).run(stop=stop)
+    assert sent == [], "a stopped relay drains nothing"
+
+
+async def test_run_idles_until_stop_and_wakes_for_it() -> None:
+    """Nothing to publish: the loop waits ``idle_s`` or until ``stop``, whichever comes first."""
+    store = MemoryEventStore()
+    stop = asyncio.Event()
+    relay = edax.Relay(store, lambda env: None)
+    task = asyncio.create_task(relay.run(idle_s=60, stop=stop))
+    await asyncio.sleep(0)
+    assert relay.last is not None and relay.last.published == 0, "it drained once and found nothing"
+    stop.set()
+    await asyncio.wait_for(task, 1)  # woke for the stop, not after 60 s
+
+
+async def test_run_idles_again_after_the_idle_wait_times_out() -> None:
+    store = MemoryEventStore()
+    stop = asyncio.Event()
+    drains = 0
+
+    class Counting(edax.Relay):
+        async def drain(self, batch: int = 100) -> int:
+            nonlocal drains
+            drains += 1
+            if drains == 3:
+                stop.set()
+            return await super().drain(batch)
+
+    await asyncio.wait_for(Counting(store, lambda env: None).run(idle_s=0.001, stop=stop), 5)
+    assert drains == 3
+
+
+async def test_run_without_stop_runs_until_cancelled() -> None:
+    relay = edax.Relay(MemoryEventStore(), lambda env: None)
+    task = asyncio.create_task(relay.run(idle_s=60))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_run_survives_a_failed_drain(caplog: pytest.LogCaptureFixture, slept: list[int]) -> None:
+    """A row that will not publish: the drain waits its backoff step and raises, and the loop logs it and
+    drains again, so one bad row never ends the relay."""
+    store = await _outbox_with(1)
+    stop = asyncio.Event()
+    attempts = 0
+
+    def publish(env: edax.EventEnvelope) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionError("broker unreachable")
+        stop.set()
+
+    await asyncio.wait_for(edax.Relay(store, publish).run(stop=stop, idle_s=60), 5)
+    assert attempts == 3 and slept == [0, 1], "two failed drains, each waiting its own backoff step"
+    assert caplog.text.count("drain failed; the next drain retries it") == 2
+    assert await store.unpublished() == []

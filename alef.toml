@@ -10,11 +10,16 @@
 # marker (PEP 561) — we commit the generated binding so checkers don't need to regenerate it. The shipped
 # copy has alef's `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.
 #
-# Regenerate with --clean ONLY: `alef generate --lang python --clean`. A plain incremental
+# Regenerate with `scripts/regenerate_binding.sh`. It runs `alef generate --lang python --clean` and
+# then refreshes the shipped stub (the body of `.alef/_edax.pyi` under a fixed PEP 561 header, without
+# alef's `# alef:hash:` lines, so alef's cleanup ignores it). --clean ONLY: a plain incremental
 # `alef generate` is destructive here — on a cache hit it skips re-emitting `src/lib.rs` / the stub but
 # still runs cleanup, deleting them; `--clean` re-emits everything so cleanup has nothing to orphan.
-# After a regen, refresh the shipped stub (strip the alef header so cleanup ignores it):
-#   tail -n +6 crates/edax-py/.alef/_edax.pyi  -> body, under a hand-written PEP 561 header.
+#
+# alef also writes `crates/edax-abi-py/Cargo.toml` on every run, at a path it hardcodes as
+# `crates/<crate>-py/` with no setting to move it. That manifest is not a workspace member and nothing
+# builds it; the real binding manifest is `crates/edax-py/Cargo.toml`. It stays tracked because alef
+# would recreate it after any deletion.
 
 [workspace]
 languages = ["python"]

@@ -6,17 +6,17 @@ the chain composes the wrapper once for every handler the router calls.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 import edax
 import pytest
 from conftest import build_envelope, delivered
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker, MemoryIdempotencyStore
-from edax.command import Record
+from edax.command import Claimed, Record, Won
 from edax.router import EventHandler, EventMiddleware, idempotent_by_id
 from edax.store import Tx, current_tx, transaction
 
@@ -89,19 +89,19 @@ class CountingStore(MemoryIdempotencyStore):
         self.claims = 0
         self.releases = 0
 
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Tx] = None) -> Optional[Record]:
+    async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         self.claims += 1
         return await super().claim(key, payload_hash, tx)
 
-    async def release(self, key: str, tx: Optional[Tx] = None) -> None:
+    async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         self.releases += 1
-        await super().release(key, tx)
+        await super().release(key, handle, tx)
 
 
 @dataclass
 class IdCase:
-    errors: list[Optional[BaseException]]  # per handler run; None = return normally
-    raises: list[Optional[type[BaseException]]]  # per delivery
+    errors: list[BaseException | None]  # per handler run; None = return normally
+    raises: list[type[BaseException] | None]  # per delivery
     calls: int  # handler runs after two deliveries
     claims: int
     releases: int
@@ -168,10 +168,10 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
     # call it inside its own try or the claim is left pending and the failure never cached.
     guarded = idempotent_by_id(store)(run if case.sync else async_handler)
     if case.held:
-        assert await store.claim(deposited().id, edax.payload_hash(DEPOSITED)) is None
+        assert isinstance(await store.claim(deposited().id, edax.payload_hash(DEPOSITED)), Won)
         store.claims = 0
 
-    for env, raises in zip([deposited(), deposited(case.redelivered)], case.raises):
+    for env, raises in zip([deposited(), deposited(case.redelivered)], case.raises, strict=True):
         if raises is None:
             assert await maybe_await(guarded(env)) is None
         else:
@@ -192,8 +192,8 @@ class TxIdempotencyStore:
     that tx and land only on commit, so a rollback drops the claim like a database would."""
 
     # `None` is a released key, which `release` writes straight into `records` when no tx is open.
-    records: dict[str, Optional[Record]] = field(default_factory=dict)
-    staged: dict[str, dict[str, Optional[Record]]] = field(default_factory=dict)  # tx -> key -> record
+    records: dict[str, Record | None] = field(default_factory=dict)
+    staged: dict[str, dict[str, Record | None]] = field(default_factory=dict)  # tx -> key -> record
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[str]:
@@ -211,22 +211,22 @@ class TxIdempotencyStore:
                 else:
                     self.records[key] = record
 
-    def _view(self, tx: Optional[Tx]) -> dict[str, Optional[Record]]:
-        tx = tx if tx is not None else current_tx()
+    def _view(self, tx: Tx | None) -> dict[str, Record | None]:
+        tx = tx if tx is not None else current_tx(self)
         return self.staged[tx] if tx is not None else self.records
 
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Tx] = None) -> Optional[Record]:
+    async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         view = self._view(tx)
         prior = view.get(key) if key in view else self.records.get(key)
         if prior is not None:
             return prior
         view[key] = Record(payload_hash, pending=True)
-        return None
+        return Won()
 
-    async def complete(self, key: str, record: Record, tx: Optional[Tx] = None) -> None:
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         self._view(tx)[key] = record
 
-    async def release(self, key: str, tx: Optional[Tx] = None) -> None:
+    async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         self._view(tx)[key] = None
 
 
@@ -251,7 +251,7 @@ async def test_claim_enlists_in_the_ambient_tx(
     env = deposited()
     try:
         async with transaction(store):
-            await maybe_await(guarded(env))  # no tx threaded: the store reads current_tx()
+            await maybe_await(guarded(env))  # no tx threaded: the store reads current_tx(itself)
             assert env.id not in store.records  # staged, not landed
             if body_raises:
                 raise RuntimeError("a later write in the same unit of work failed")

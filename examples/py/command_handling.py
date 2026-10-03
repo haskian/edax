@@ -1,12 +1,13 @@
 """Command handling (CQRS write side) with a transactional outbox.
 
-    submit ─▶ CommandBus(idempotent, retry) ─▶ handler ─▶ Repository.save ─┬─ events + snapshot
+    submit ─▶ CommandBus(retry, idempotent) ─▶ handler ─▶ Repository.save ─┬─ events + snapshot
                                                                           └─ outbox rows ─▶ Relay.drain ─▶ publish
 
 request_id is the idempotency key: stable across redeliveries, so the bus replays instead of applying
-twice; reuse with a different payload is rejected. transaction wraps the dispatch so the idempotency
-record, events, snapshot and outbox rows commit (or roll back) together: both stores are built over
-one MemoryTransactor, the unit of work every participant enlists in.
+twice; reuse with a different payload is rejected. The guard opens the unit of work itself
+(`unit_of_work=db`), so the idempotency record, events, snapshot and outbox rows commit (or roll
+back) together: both stores are built over one MemoryTransactor. retry sits outside the guard, so a
+transient failure rolls the whole attempt back and the next attempt starts from committed state.
 
 Run:  maturin develop -m crates/edax-py/Cargo.toml  &&  python examples/py/command_handling.py
 """
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from itertools import count
 from typing import Any, ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec, transaction
+from edax import Aggregate, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, PayloadMismatch, idempotent, retry
 
@@ -80,19 +81,24 @@ async def main() -> None:
         now=lambda: 0,
     )
 
+    blips = {"req-B": 1}  # a downstream call that fails once, after the save, for req-B
+
     async def deposit(cmd: Deposit) -> int:
         acct = await repo.load(cmd.account_id)  # snapshot + replay
         acct.apply(Deposited(cmd.amount))
-        await repo.save(acct)  # joins the transaction opened by submit via current_tx()
+        await repo.save(acct)  # joins the unit of work the guard opened, via current_tx(db)
+        if blips.get(cmd.request_id, 0):
+            blips[cmd.request_id] -= 1
+            raise ConnectionError("notification service blip after the save")  # transient
         return acct.balance
 
-    # idempotency outermost (one claim per request), retry inside it (retries share the claim).
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+    # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
+    # attempt rolls back whole. retry refuses to run inside an open transaction.
+    bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), key=request_id_of, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(request_id: str, account_id: str, amount: int) -> int:
-        async with transaction(db):  # claim, events, snapshot, outbox: one commit, or one rollback
-            return await bus.dispatch(Deposit(account_id, amount, request_id))
+        return await bus.dispatch(Deposit(account_id, amount, request_id))  # no transaction around it
 
     b1 = await submit("req-A", "acct-1", 100)
     b2 = await submit("req-A", "acct-1", 100)  # same key + body -> replay
@@ -101,16 +107,17 @@ async def main() -> None:
         raise AssertionError("expected PayloadMismatch")
     except PayloadMismatch:
         pass
-    b3 = await submit("req-B", "acct-1", 50)
+    b3 = await submit("req-B", "acct-1", 50)  # attempt 1 saves e2, then fails: rolled back whole
     print(f"req-A -> {b1}, req-A retry -> {b2}, req-B -> {b3}")
     assert (b1, b2, b3) == (100, 100, 150), (b1, b2, b3)
 
-    # Outbox holds exactly the two committed events; the replay and the clash wrote nothing.
+    # Outbox holds exactly the two committed events; the replay, the clash and the rolled-back
+    # attempt (e2) wrote nothing.
     published: list[str] = []
     relay = Relay(store, publish=lambda env: published.append(env.id))
     n = await relay.drain()
     print(f"drained {published}")
-    assert published == ["e1", "e2"], published
+    assert published == ["e1", "e3"], published
     assert n == 2 and await relay.drain() == 0
 
     print("\nok: idempotent command applied once, outbox drained")

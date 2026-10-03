@@ -58,5 +58,25 @@
       "correlation_id": "corr-1",
       "trace": "t-9"
     }
+  },
+  {
+    "expected": {
+      "causation_id": "",
+      "correlation_id": ""
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "correlation_id": ""
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "",
+      "correlation_id": "fresh-1"
+    },
+    "fresh_id": "fresh-1",
+    "metadata": {
+      "causation_id": ""
+    }
   }
 ]

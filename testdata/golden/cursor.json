@@ -4,7 +4,8 @@
       "age": 36,
       "id": "user-1"
     },
-    "expected_cursor": "WzM2LCJ1c2VyLTEiXQ==",
+    "error": null,
+    "expected_cursor": "eyJzIjoiMzMxMDcwOWU2YTg4ZGFlYiIsInYiOlszNiwidXNlci0xIl19",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -19,6 +20,7 @@
       36,
       "user-1"
     ],
+    "name": null,
     "sort": [
       {
         "path": "age"
@@ -31,7 +33,8 @@
       "n": 4,
       "s": "open"
     },
-    "expected_cursor": "WyJvcGVuIiw0LCJhIl0=",
+    "error": null,
+    "expected_cursor": "eyJzIjoiZWI5Y2Y0ZDIzZjJmMzFhNSIsInYiOlsib3BlbiIsNCwiYSJdfQ",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -51,6 +54,7 @@
       4,
       "a"
     ],
+    "name": null,
     "sort": [
       {
         "path": "s"
@@ -66,7 +70,8 @@
       "id": "z",
       "n": 1
     },
-    "expected_cursor": "WzEsInoiXQ==",
+    "error": null,
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJ6Il19",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -81,6 +86,7 @@
       1,
       "z"
     ],
+    "name": null,
     "sort": [
       {
         "path": "n"
@@ -94,7 +100,8 @@
     "document": {
       "id": "only"
     },
-    "expected_cursor": "WyJvbmx5Il0=",
+    "error": null,
+    "expected_cursor": "eyJzIjoiYzE1ZjFmMjRiMGVhZTFiMSIsInYiOlsib25seSJdfQ",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -104,6 +111,7 @@
     "expected_tuple": [
       "only"
     ],
+    "name": null,
     "sort": [
       {
         "path": "id"
@@ -112,9 +120,33 @@
   },
   {
     "document": {
+      "id": "only"
+    },
+    "error": null,
+    "expected_cursor": "eyJzIjoiYzMwNGQyZmZkNjIyOWZlYSIsInYiOlsib25seSJdfQ",
+    "expected_effective_sort": [
+      {
+        "desc": true,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      "only"
+    ],
+    "name": null,
+    "sort": [
+      {
+        "desc": true,
+        "path": "id"
+      }
+    ]
+  },
+  {
+    "document": {
       "id": "user-2"
     },
-    "expected_cursor": "W251bGwsInVzZXItMiJd",
+    "error": null,
+    "expected_cursor": "eyJzIjoiZTQyODAwZjZjYjVmODNjYyIsInYiOltudWxsLCJ1c2VyLTIiXX0",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -129,6 +161,7 @@
       null,
       "user-2"
     ],
+    "name": null,
     "sort": [
       {
         "path": "missing"
@@ -143,11 +176,13 @@
           1,
           "two",
           true,
-          null
+          null,
+          "café ☕"
         ]
       }
     },
-    "expected_cursor": "W3siayI6WzEsInR3byIsdHJ1ZSxudWxsXX0sInQxIl0=",
+    "error": null,
+    "expected_cursor": "eyJzIjoiODU3ZGQ4MWM1YzNiZDk1YSIsInYiOlt7ImsiOlsxLCJ0d28iLHRydWUsbnVsbCwiY2Fmw6kg4piVIl19LCJ0MSJdfQ",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -164,11 +199,13 @@
           1,
           "two",
           true,
-          null
+          null,
+          "café ☕"
         ]
       },
       "t1"
     ],
+    "name": null,
     "sort": [
       {
         "path": "v"
@@ -177,25 +214,15 @@
   },
   {
     "document": {
-      "age": 1,
-      "id": "user-3"
+      "id": "~~~",
+      "q": "x?>"
     },
-    "expected_cursor": "W10=",
-    "expected_effective_sort": [],
-    "expected_tuple": [],
-    "sort": []
-  },
-  {
-    "document": null,
-    "expected_cursor": "W10=",
+    "error": null,
+    "expected_cursor": "eyJzIjoiNDM5ZjQ4MjMxNmYyODdiNyIsInYiOlsieD8-Iiwifn5-Il19",
     "expected_effective_sort": [
       {
         "desc": false,
-        "path": "a"
-      },
-      {
-        "desc": false,
-        "path": "b"
+        "path": "q"
       },
       {
         "desc": false,
@@ -203,39 +230,231 @@
       }
     ],
     "expected_tuple": [
-      null,
-      null,
-      null
+      "x?>",
+      "~~~"
     ],
+    "name": null,
     "sort": [
       {
-        "path": "a"
+        "path": "q"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": 9007199254740992,
+      "n": -9007199254740992
+    },
+    "error": null,
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlstOTAwNzE5OTI1NDc0MDk5Miw5MDA3MTk5MjU0NzQwOTkyXX0",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
       },
       {
-        "path": "b"
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      -9007199254740992,
+      9007199254740992
+    ],
+    "name": null,
+    "sort": [
+      {
+        "path": "n"
       }
     ]
   },
   {
     "document": null,
-    "expected_cursor": "WzEsMiwzLDRd",
+    "error": "codec: cursor was minted under another sort",
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJhIl19",
     "expected_effective_sort": [
       {
         "desc": false,
-        "path": "a"
+        "path": "s"
       },
       {
         "desc": false,
         "path": "id"
       }
     ],
-    "expected_tuple": [
-      1,
-      2
-    ],
+    "expected_tuple": null,
+    "name": "decode_under_another_key",
     "sort": [
       {
-        "path": "a"
+        "path": "s"
+      }
+    ]
+  },
+  {
+    "document": null,
+    "error": "codec: cursor was minted under another sort",
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJhIl19",
+    "expected_effective_sort": [
+      {
+        "desc": true,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "decode_under_another_direction",
+    "sort": [
+      {
+        "desc": true,
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": null,
+    "error": "codec: cursor was minted under another sort",
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJhIl19",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "s"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "decode_under_one_key_more",
+    "sort": [
+      {
+        "path": "n"
+      },
+      {
+        "path": "s"
+      }
+    ]
+  },
+  {
+    "document": null,
+    "error": "codec: an unsorted query has no order to resume from, so it takes no cursor",
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJhIl19",
+    "expected_effective_sort": [],
+    "expected_tuple": null,
+    "name": "decode_without_a_sort",
+    "sort": []
+  },
+  {
+    "document": null,
+    "error": "codec: cursor is not base64url: Invalid padding",
+    "expected_cursor": "W1tdXQ==",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "decode_standard_base64",
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "user-3"
+    },
+    "error": "codec: an unsorted query has no order to resume from, so it takes no cursor",
+    "expected_cursor": null,
+    "expected_effective_sort": [],
+    "expected_tuple": null,
+    "name": "encode_without_a_sort",
+    "sort": []
+  },
+  {
+    "document": {
+      "n": 1
+    },
+    "error": "codec: a keyset cursor needs a non-null `id` on the row it resumes after",
+    "expected_cursor": null,
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "encode_from_a_row_without_an_id",
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": null,
+      "n": 1
+    },
+    "error": "codec: a keyset cursor needs a non-null `id` on the row it resumes after",
+    "expected_cursor": null,
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "encode_from_a_row_with_a_null_id",
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "a",
+      "n": 9007199254740993
+    },
+    "error": "codec: integer at byte 29 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "expected_cursor": null,
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "encode_a_sort_value_past_2_pow_53",
+    "sort": [
+      {
+        "path": "n"
       }
     ]
   }

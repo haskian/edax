@@ -65,7 +65,8 @@ The `Transactor` Protocol has exactly one method, and a docstring that is the sp
 | isolation | Nothing written through the yielded `tx` is visible to other transactions before commit. |
 | one handle | The yielded `tx` is one backend handle that **every** participant store accepts. Writes through it are atomic as a set: all commit or none. |
 | read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `transaction` sees the appended events. |
-| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` instead of opening a second one, so no savepoint support is needed. A second `transaction` on the same transactor raises `BadHandle`. |
+| no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` of their own transactor instead of opening a second one, so no savepoint support is needed. A second `transaction` on the same transactor raises `BadHandle`; one over another database nests, and each database's stores see only its own unit of work. |
+| identity | An object whose `transaction()` only delegates to another transactor names that transactor as its `transactor` attribute, so `transaction(store)` and `transaction(store.transactor)` open the same unit of work and every store over the database finds it. |
 | threading | The handle is used from one asyncio task at a time; no thread safety required. |
 
 Rust states the same boundary as three methods plus a scoped helper:
@@ -73,6 +74,7 @@ Rust states the same boundary as three methods plus a scoped helper:
 ```rust
 pub trait Transactor {
     type Tx;
+    fn identity(&self) -> usize; // the database; defaults to the transactor's address
     fn begin(&self) -> Result<Self::Tx, Error>;
     fn commit(&self, tx: Self::Tx) -> Result<(), Error>;
     fn rollback(&self, tx: Self::Tx);
@@ -82,7 +84,9 @@ pub trait Transactor {
 
 `transaction` is the free-function form. A table-driven test pins its branches. A clean body commits. A
 failing body rolls back and never commits. A refused commit surfaces and does not also roll back. A
-refused begin runs neither the body nor a rollback.
+refused begin runs neither the body nor a rollback. A unit of work opened on a database that already has
+one open on the thread is refused with `BadHandle` before it begins; `identity` decides which database.
+So `Repository::save` inside a host's body can never commit apart from the host. `save_in` joins instead.
 
 An `EventStore` **is** a `Transactor` in both SDKs. The simplest wiring therefore needs no separate
 object. `async with transaction(store)` opens the store's own unit of work. A backend may also implement
@@ -106,16 +110,24 @@ Python adds a fifth: a **cancelled** task rolls back too. Cancellation is a `Bas
 ## Python: the ambient transaction
 
 Python's participants find the handle without it being threaded through every call. `transaction`
-publishes the open handle in a `contextvars.ContextVar`, and `current_tx()` reads it:
+publishes the open handle in a `contextvars.ContextVar`, keyed by the database it belongs to, and
+`current_tx(transactor)` reads the one of that database:
 
 ```python
+database = id(_database(transactor))  # follows `.transactor` to the transactor that owns the database
 async with transactor.transaction() as tx:
-    token = _current_tx.set(tx)
+    token = _ambient.set({**_ambient.get(), database: tx})
     try:
         yield tx
     finally:
-        _current_tx.reset(token)
+        _ambient.reset(token)
 ```
+
+Keyed, not one slot. With one slot, `transaction(orders)` around `transaction(audit)` handed every
+orders store the audit handle. Memory refused it as foreign. A SQL store that does not check would have
+written through the other database's connection. Now each store asks for its own database's tx. So two
+databases nest, and each commits or rolls back on its own.
+`test_transactor.py::test_two_databases_nest_and_each_store_joins_its_own` runs all four outcomes.
 
 The function and the `Transactor` method share the name on purpose: `async with edax.transaction(store):`
 opens the store's own unit of work and publishes it. `transaction(transactor, observer=...)` reports
@@ -126,9 +138,9 @@ A participant resolves its handle in three steps. The memory backend's `token` i
 implementation:
 
 ```python
-def token(self, tx: Optional[Tx]) -> int:
+def token(self, tx: Tx | None) -> int:
     if tx is None:
-        tx = current_tx()
+        tx = current_tx(self)
     if tx is None:
         return _NO_TX
     if isinstance(tx, MemoryTx) and tx.transactor is self:
@@ -140,7 +152,7 @@ def token(self, tx: Optional[Tx]) -> int:
 flowchart TB
     A["a store call with tx"] --> B{"tx given?"}
     B -->|"yes"| D{"a handle of this transactor?"}
-    B -->|"no"| C{"current_tx set?"}
+    B -->|"no"| C{"current_tx of this database set?"}
     C -->|"yes, the ambient one"| D
     C -->|"no"| E["_NO_TX: land at once, read committed state only"]
     D -->|"yes"| F["stage the write in that unit of work"]
@@ -150,7 +162,7 @@ flowchart TB
 | Resolution | Meaning |
 |---|---|
 | the explicit `tx` argument | the caller threaded a handle; use it |
-| else the ambient `current_tx()` | a `transaction` is open in this task; enlist in it |
+| else the ambient `current_tx(transactor)` | a `transaction` over this store's database is open in this task; enlist in it. Another database's is invisible here. |
 | else `_NO_TX` | outside any unit of work: the call lands at once and reads committed state only |
 | a handle of another transactor | `BadHandle`. The store never auto-commits silently. |
 
@@ -158,8 +170,8 @@ flowchart TB
 handle that names it. Use it for a reader that must look past an open unit of work, such as a test
 probing what has actually landed.
 
-`Repository` resolves the same way through `_enlist`: the explicit `tx`, else the ambient one, else
-a unit of work of its own. When it opens its own, it opens it through `transaction`. The repository's
+`Repository` resolves the same way through `_enlist`: the explicit `tx`, else the ambient one of its
+store's database, else a unit of work of its own. When it opens its own, it opens it through `transaction`. The repository's
 handle becomes the ambient one for the duration. A participant taking no explicit `tx` still joins
 it.
 
@@ -187,7 +199,7 @@ sequenceDiagram
     P->>T: stage the projection row
 
     H->>I: claim key, no tx argument
-    I->>CV: current_tx
+    I->>CV: current_tx of its transactor
     CV-->>I: the same tx
     I->>T: token of that tx
     T-->>I: the same open token
@@ -260,8 +272,8 @@ orderings and the guarantee each one buys.
 
 ## Boundary rules
 
-**A dispatcher worker clears the ambient transaction.** `KeyOrderedDispatcher` sets `_current_tx` to
-`None` as the first statement of every worker task:
+**A dispatcher worker clears the ambient transaction.** `KeyOrderedDispatcher` empties the ambient
+map as the first statement of every worker task:
 
 > A task copies its creator's context, so a dispatcher started inside `transaction` would hand every
 > handler that caller's tx: long after it committed, and from a second task, which the `Transactor`
@@ -279,8 +291,8 @@ the guard never sees. This is why the consume-path guards take `unit_of_work=` â
 
 **A foreign handle raises `BadHandle`.** A handle from another transactor names a unit of work this
 store's database knows nothing about. Enlisting anyway would silently drop the atomicity the caller
-asked for. The store fails fast instead. That holds whether the handle was passed explicitly or
-picked up from the ambient contextvar. The message names the fix: build every memory store that must
+asked for. The store fails fast instead. The ambient contextvar never hands a store another database's
+handle, so this is the explicit path. The message names the fix: build every memory store that must
 commit together over one `MemoryTransactor`.
 
 `BadHandle` is **terminal**. The same handle fails the same way on every retry. A transient verdict
@@ -302,7 +314,7 @@ one connection pool are two identities and are not caught; one transactor per da
 this assumes. Neither nested commit is atomic with the other's: two databases cannot commit
 together, so treat that pair as a [saga](./sagas.md).
 
-The idempotency guard enforces its own case. Given `unit_of_work=` while `current_tx()` is already
+The idempotency guard enforces its own case. Given `unit_of_work=` while any `transaction` is already
 set, it raises `BadHandle` rather than committing the claim independently of the writes it guards.
 
 **Isolation in the memory backend is by exclusion, not by blocking.** A key one open transaction

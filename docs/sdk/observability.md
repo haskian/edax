@@ -50,17 +50,24 @@ labels it with `error_type(error)`, never with its message.
 |---|---|---|---|
 | `claim(name, verdict)` | `idempotent`, `idempotent_by_id` | `CLAIM_VERDICTS`: `succeeded`, `in_progress`, `payload_mismatch`, `failed` | a dispatch lost the idempotency claim to a prior record, and this is the kernel's verdict on it, verbatim |
 | `settled(name, how, duration_ns)` | `idempotent`, `idempotent_by_id` | `SETTLEMENTS`: `completed`, `released`, `cached`, `refused` | the winner's claim reached its terminal state; the duration is claim held to settlement, handler included |
-| `delivery(name, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `unsettled` | the dispatcher settled a delivery; `attempt` tells a ceiling nack from a first nack; the duration is the handler alone, never the backoff wait; `error_type` is what the handler raised, `None` when it returned |
-| `settlement_failed(name, event_id, error)` | `KeyOrderedDispatcher` | — | an ack or a nack raised after the handler ran; the broker will redeliver |
+| `delivery(name, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `sink_failed`, `stale`, `unsettled` | the dispatcher settled a delivery; `attempt` tells a ceiling nack from a first nack; the duration is the handler alone, never the backoff wait; `error_type` is what the handler raised, `None` when it returned |
+| `settlement_failed(name, event_id, error)` | `KeyOrderedDispatcher` | — | an ack or a nack raised after the handler ran; a log broker brings it back only after a rebalance or a restart |
 | `transaction(outcome, duration_ns)` | `transaction`, `Repository`, the guards given a `unit_of_work` | `TRANSACTIONS`: `committed`, `rolled_back` | a unit of work ended; `rolled_back` covers a raising body and a failing commit, since nothing landed either way |
-| `drain(published, duration_ns, oldest_timestamp)` | `Relay` | — | a batch was published and marked; `oldest_timestamp` is the `timestamp` of the oldest row, `None` for an empty batch |
-| `drain_failed(error)` | `Relay` | — | a drain raised before it marked the batch; the rows wait for the next drain, and the error re-raises to the caller |
+| `drain(published, duration_ns, oldest_timestamp)` | `Relay` | — | a batch was published and marked; `oldest_timestamp` is the `timestamp` of the oldest row, `None` for an empty batch. `Relay.last.dead_lettered` counts the rows moved to `on_dead` |
+| `drain_failed(error)` | `Relay` | — | a drain raised; the rows it published are marked, the failing row and those behind it wait for the next drain, and the error re-raises to the caller |
 | `undecodable(message_id, error)` | the consumer loop, for any `Consumer` | — | a polled payload the serializer rejected: a poison message |
 
 ### Method by method
 
 Each entry says when the method fires, what its arguments mean, what to read from it, and what it
-is not. The outcome strings are defined once, in `edax.observe`, and quoted here.
+is not. The outcome strings are defined once, in `edax.observe`, and quoted here. Each set is also a
+`Literal` type: `ClaimVerdict`, `Settlement`, `DeliveryOutcome`, `TransactionOutcome`, `HandlerOutcome`.
+The hooks are annotated with it, and the tuple is `get_args` of it. A checker then catches a branch on a
+string the SDK never sends.
+
+Hooks are synchronous. An `async def` hook returns a coroutine nobody awaits, so its metric would vanish.
+The SDK closes that coroutine and logs an error naming the hook, and the work it measured carries on.
+Hand the value to a task or queue of your own instead.
 
 The four methods that happen inside a handler take `name` first. It is the command type,
 `cmd.type`, on the command bus, and the event name, `env.event.name`, on the consume path. That is
@@ -92,7 +99,8 @@ verdict. It reports once, through `settled`, when its claim ends. So `claim` cou
 #### `settled(name, how, duration_ns)`: the winner's claim ended
 
 A guarded dispatch won the claim, ran, and its claim reached a terminal state. This fires once per
-winning dispatch, after the ledger write that ends the claim, whether that write succeeded or not.
+winning dispatch, after the ledger write that ends the claim, whether that write succeeded or not. On a shared ledger that write is the
+commit, so `completed` is reported only once the commit has landed; a failed commit reports `released`.
 The `how` says what the ledger holds now, and so what the next dispatch of the same key will find.
 
 | `how` | What happened | What the next dispatch finds |
@@ -121,10 +129,14 @@ once per `Delivery`, after the ack, the nack or the dead-letter, even if that se
 | `nack` | the handler raised; nacked after one backoff step | redelivers it |
 | `dead` | `on_dead` took it; acked | forgets it; the sink has it |
 | `in_progress` | the handler raised `InProgress`: another worker holds the claim; nacked after one backoff step, no attempt spent | redelivers it |
-| `unsettled` | the settlement itself raised: `on_dead`, the ack or the nack; neither acked nor nacked | redelivers it when its session times out |
+| `sink_failed` | `on_dead` raised; nacked after one backoff step, the attempt recorded | redelivers it, and the sink gets another try |
+| `stale` | the transport retired it — a nack rewound its partition, or a rebalance took the partition — before or while the handler ran; not settled | redelivers it behind the earlier event of its key |
+| `unsettled` | the ack or the nack itself raised; neither landed | a log broker brings it back after a rebalance or a restart |
 
 `nack` is a transient error below the `max_attempts` ceiling, or any error when no `on_dead` is
-wired. `dead` is a terminal error on any attempt, or a transient one at the ceiling.
+wired. `dead` is a terminal error on any attempt, or a transient one at the ceiling. A `stale` rate
+follows the nack rate on a log broker: each nack retires the partition's queued copies. Its
+`duration_ns` is `0` when the handler never ran.
 
 `attempt` is which attempt this delivery was, from `1`, so a nack at the ceiling is told from a
 first nack. Bucket it in a histogram at `1, 2, 3, 5, 10`. Never label by it. `duration_ns` is the
@@ -140,14 +152,14 @@ reports it; time that path with `timing()`. **Not** the settlement's own failure
 #### `settlement_failed(name, event_id, error)`: the ack or the nack raised
 
 The handler ran, and then the ack or the nack itself raised. The delivery is now neither acked nor
-nacked, and the broker redelivers it when its session times out. This fires at most once per
+nacked. A log broker brings it back only after a rebalance or a restart. This fires at most once per
 delivery, before `delivery` reports that same delivery as `unsettled`.
 
 `event_id` is for the log line, never a label. `error` is the transport's exception; label by
 `error_type(error)`. Read a non-zero rate as broker or commit trouble, not handler trouble: the
 work itself finished. An idempotent handler absorbs the redelivery.
 
-**Not** fired when `on_dead` raises. That is a sink failure, reported as `unsettled` alone.
+**Not** fired when `on_dead` raises. That is a sink failure, reported as `sink_failed`.
 
 #### `transaction(outcome, duration_ns)`: a unit of work ended
 
@@ -180,9 +192,10 @@ your clock minus the value. A batch that stays old is a relay that cannot keep u
 
 #### `drain_failed(error)`: a drain raised before marking
 
-A `Relay` drain raised in `unpublished`, `publish` or `mark_published`. Nothing was marked, so the
-same rows come back on the next drain and delivery stays at-least-once. This fires once per failed
-drain, before the error re-raises to the caller.
+A `Relay` drain raised in `unpublished`, `publish` or `mark_published`. The rows it published before
+the failure are marked; the failing row and the rows behind it come back on the next drain, and
+delivery stays at-least-once. A row handed back waits its backoff step first. This fires once per
+failed drain, before the error re-raises to the caller.
 
 Label by `error_type(error)`. Read a sustained rate as a relay that is stuck, and pair it with the
 `oldest_timestamp` gauge going stale.
@@ -218,6 +231,7 @@ so wire it outermost to include the guard, or inside the guard to exclude it.
 | How often does a failure retry, and how often does it give up? | `delivery` with `nack` and `dead`, by `error_type` |
 | How many attempts does a message need? | the `attempt` histogram on `delivery` |
 | Is the broker or the commit failing after the work is done? | `settlement_failed`, and `delivery` with `unsettled` |
+| Is the dead-letter route down? | `delivery` with `sink_failed` |
 | Is the ledger healthy? | `settled` with `refused` |
 | How long do we hold a database connection? | `transaction` |
 | Is the outbox falling behind? | `drain` with `oldest_timestamp`, and `drain_failed` |
@@ -291,12 +305,12 @@ from the loop's thread, with no locking.
 
 | Read | Type | Fields |
 |---|---|---|
-| `KeyOrderedDispatcher.stats()` | `DispatcherStats` | `queue_depth: list[int]` one entry per worker; `in_flight: int` items taken off a queue and not yet settled; `attempts_tracked: int` and `contended_tracked: int`, the sizes of the two failure maps; `running: bool` |
+| `KeyOrderedDispatcher.stats()` | `DispatcherStats` | `queue_depth: list[int]` one entry per worker; `in_flight: int` items taken off a queue and not yet settled; `attempts_tracked: int` and `contended_tracked: int`, the sizes of the two failure maps; `running: bool`, true only while every worker is alive; `workers_alive: int`; `handling: int` handlers running right now, which a rebalance waits on |
 | `KeyOrderedDispatcher.idle()` | `bool` | every queue empty and `in_flight == 0` |
-| `Relay.last` | `Optional[DrainStats]` | `published: int`, `duration_ns: int`, `oldest_timestamp: Optional[int]`; `None` until the first drain completes; a drain that raised leaves it |
+| `Relay.last` | `DrainStats | None` | `published: int`, `duration_ns: int`, `oldest_timestamp: int | None`; `None` until the first drain completes; a drain that raised leaves it |
 | `EventStore.unpublished_count()` | `int` | optional seam method: committed unmarked outbox rows waiting now. Absent on a store that does not implement it |
-| `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled; `max_delivered: int`; `committed: int` the last watermark, `-1` before the first commit |
-| `KafkaConsumer.reset(tp)` | — | drops the bookkeeping for a revoked partition; the rebalance listener calls it |
+| `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled, retired ones included; `live: int` of those, the ones a handler may still settle; `max_delivered: int | None`; `committed: int | None` the last watermark, `None` before the first commit |
+| `KafkaConsumer.reset(tp)` | — | drops the bookkeeping for a revoked partition and retires its deliveries; `rebalance_listener()` calls it |
 
 The health checks a host builds from them:
 
@@ -372,7 +386,7 @@ the kernel clock that stamped the envelope.
 ```python
 def aged(record: Callable[[str, int], None]) -> EventMiddleware:
     def mw(next_: EventHandler) -> EventHandler:
-        async def handler(env: Envelope) -> None:
+        async def handler(env: EventEnvelope) -> None:
             record(env.event.name, edax.current_timestamp() - env.timestamp)  # nanoseconds
             result = next_(env)
             if inspect.isawaitable(result):
@@ -442,7 +456,6 @@ provider, and you are free to rename every instrument. Each block is complete.
 ```python
 # yourapp/telemetry/prometheus.py
 import logging
-from typing import Optional
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -486,7 +499,7 @@ class PrometheusObserver(Observer):
         CLAIM_HELD.labels(handler=name, how=how).observe(duration_ns / 1e9)
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: Optional[str]
+        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
     ) -> None:
         DELIVERIES.labels(handler=name, outcome=outcome, error_type=error_type or "").inc()
         PROCESS.labels(handler=name, outcome=outcome).observe(duration_ns / 1e9)
@@ -499,7 +512,7 @@ class PrometheusObserver(Observer):
     def transaction(self, outcome: str, duration_ns: int) -> None:
         TRANSACTIONS.labels(outcome=outcome).observe(duration_ns / 1e9)
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: Optional[int]) -> None:
+    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
         DRAINS.observe(duration_ns / 1e9)
         PUBLISHED.inc(published)
         if oldest_timestamp is not None:
@@ -517,7 +530,6 @@ class PrometheusObserver(Observer):
 
 ```python
 # yourapp/telemetry/otel.py
-from typing import Optional
 
 from opentelemetry import metrics
 
@@ -568,7 +580,7 @@ class OtelObserver(Observer):
         claim_held.record(duration_ns / 1e9, {"edax.handler": name, "edax.settlement": how})
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: Optional[str]
+        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
     ) -> None:
         attrs = {
             **SYSTEM,
@@ -590,7 +602,7 @@ class OtelObserver(Observer):
     def transaction(self, outcome: str, duration_ns: int) -> None:
         transactions.record(duration_ns / 1e9, {"edax.outcome": outcome})
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: Optional[int]) -> None:
+    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
         attrs = {**SYSTEM, "messaging.operation.type": "send"}
         sent.add(published, attrs)
         drains.record(duration_ns / 1e9, attrs)
@@ -617,7 +629,7 @@ import inspect
 from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
-from edax import Envelope
+from edax import EventEnvelope
 from edax.observe import error_type
 from edax.router import EventHandler
 
@@ -625,7 +637,7 @@ tracer = trace.get_tracer("edax")
 
 
 def traced(next_: EventHandler) -> EventHandler:
-    async def handler(env: Envelope) -> None:
+    async def handler(env: EventEnvelope) -> None:
         parent = propagate.extract(env.metadata)  # the `traceparent` saved with the event
         attrs = {"messaging.system": "kafka", "messaging.operation.type": "process"}
         with tracer.start_as_current_span(

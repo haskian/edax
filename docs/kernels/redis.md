@@ -1,127 +1,187 @@
 # The Redis kernel — `edax-redis`
 
-The Redis idempotency-ledger kernel: the bytes stored under a key, and the Lua a fenced write runs.
+The Redis idempotency-ledger kernel: the key, the bytes stored under it, the Lua each write runs,
+and what a reply means.
 
-A Redis ledger's bytes are a cross-language contract. Two software development kits (SDKs) pointed
-at one key space must agree on what a stored value looks like, and on the script a fenced write
-runs. Otherwise one takes over a claim the other still holds. `edax-redis` holds exactly those
-bytes. It links no Redis client library, so every SDK ships only the client calls around it.
+A Redis ledger is a cross-language contract. Software development kits (SDKs) that share one key
+space must agree on four things. They are the key, the stored value, the script each write runs, and
+what a reply means. Otherwise one takes over a claim another still holds. `edax-redis` holds exactly
+those decisions. It links no Redis client library, so every SDK ships only the client calls around
+it and the TTL values it was configured with.
 
-| Module | Owns | Golden vector |
+| Module | Owns | Golden vectors |
 |---|---|---|
-| `ledger` | the stored value's layout, the owner token, the two fence scripts | `redis_value.json`, `redis_scripts.json` |
+| `ledger` | the key, the refused settings, the stored value's layout, the claim handle, the claim outcome | `redis_value.json`, `redis_ledger.json` |
+| `scripts` | the four Lua bodies, and the verdict on a Redis error reply | `redis_scripts.json`, `redis_fence.json`, `redis_ledger.json` |
+
+## The key
+
+`ledger_key(prefix, key)` is `{prefix}{key}` as UTF-8 bytes. Two SDKs that composed it differently
+would never meet on one ledger, and nothing would fail: both would run every command. So the
+composition is the kernel's, not each SDK's. `check_prefix` refuses an empty prefix, which would put
+every service sharing a Redis into one key space.
+
+No separator is added, so concatenation is not injective: prefix `billing:` with key `prod:x` is the
+key prefix `billing:prod:` gives `x`. Distinct services take prefixes neither of which starts with
+the other.
+
+`check_ttl(name, ttl_ms)` refuses a TTL outside 1 to 2^53 - 1 milliseconds, the largest integer
+every SDK language's number type holds exactly. Redis refuses a zero or negative TTL on every write,
+so a store checks its TTLs when it is built. Both refusals are a terminal `bad_handle` error.
 
 ## The value
 
-One key, `{prefix}{key}`, holds the owner token followed by the idempotency record:
+One key holds the layout version, the owner token, then the idempotency record:
 
 ```
-idem:order-7  ->  "<32 hex characters of owner token><kernel record JSON>"
+idem:order-7  ->  "1" + "<32 hex characters of owner token>" + "<kernel record JSON>"
 ```
 
 **Why one key and not two.** A sibling key holding the token would expire on a clock of its own. The
 two clocks drift apart. A claimant could then win the record, lose the owner, and hold a claim it
 can never settle. One key means one time to live (TTL) governs both halves.
 
+**Why a version byte.** A later layout must be refused by name, not split at the wrong place. The
+unversioned layout of edax 0.1 starts with the token's first hexadecimal digit, so this kernel
+refuses it as layout version `'0'`.
+
 | Function | Builds |
 |---|---|
-| `claim_value(owner, payload_hash)` | the owner plus the kernel's **pending** record for that hash |
-| `record_value(owner, record_json)` | the owner plus a settled record the caller already encoded |
-| `split_value(raw)` | the same value read back apart into `(owner, record)` |
+| `new_claim(payload_hash)` | a claim value under a fresh owner token |
+| `claim_value(owner, payload_hash)` | the same, with the owner given: version, owner, the kernel's **pending** record |
+| `settled_value(claim, record_json)` | the claim's own owner, then a settled record the caller already encoded |
+| `split_value(raw)` | a stored value read back apart into `(owner, record)` |
 
 The record half has exactly one author. `claim_value` asks `edax-cqrs` for the pending record's
-bytes, and `record_value` passes the caller's bytes through untouched. A host that already holds a
+bytes, and `settled_value` passes the caller's bytes through untouched. A host that already holds a
 record's bytes must not re-encode them here, or the result would round-trip through a second
 serializer on its way to the ledger. `testdata/golden/idempotency_record.json` keeps pinning that
 record's wire shape.
 
-## The owner token
+## The owner token and the claim handle
 
 `new_owner()` mints a universally unique identifier (UUID) version 7 in its simple form: 32
 lowercase hexadecimal characters, no hyphens. Version 7 rather than random bytes, so tokens sort by
-mint time and a ledger dump reads in order. The 74 random bits are what make two claimants
-distinguishable.
+mint time and a ledger dump reads in order. A 42-bit counter shared within a process and 32 random
+bits are what make two claimants distinguishable (see [core.md](./core.md)).
 
-The two writers validate the token before they build a value. A token of another width would match a
-prefix of someone else's, because the fence compares a fixed width. A token with a non-hexadecimal
-byte is one this kernel did not mint. Both are a codec error naming the width, never the token
-itself: the token is the capability that authorizes overwriting a claim.
+**The claim value is the claim's handle.** The claimant writes it, the store returns it as
+`Won(handle)`, and every later write compares the stored value with it **exactly**. A claim that
+lapsed and was taken over holds another value, so its old owner settles nothing. A settled record
+holds another value too, so a late release never deletes the outcome of committed work. No width is
+chosen by the caller, so no prefix of a token can match another's.
+
+`check_claim(claim)` refuses a handle this kernel never minted. It refuses a handle with no layout
+version, and one too short. It refuses an owner token that is not 32 lowercase hexadecimal characters,
+and a record half that is not a pending record. `settled_value` applies the same check. The scripts
+would only fail to match such a handle, so refusing it names the wiring mistake instead. Upper case is refused rather than folded, because
+the scripts compare bytes. The token never appears in a message: inside a claim value it authorizes
+settling that claim.
 
 `split_value` is strict about the frame and liberal about the token. It refuses a value that is not
-UTF-8, and one too short to hold a token, because neither can be settled by anyone. It accepts a
-token this kernel would not mint, so a ledger written by an older store stays readable. What the
-record half says is the record decoder's business, not this function's.
+UTF-8, carries another layout version, or is too short to hold a token, because none of those can be
+settled by anyone. It accepts a token this kernel would not mint, so the record behind it is never
+stranded.
 
 | `split_value` input | Result |
 |---|---|
 | a value this kernel wrote | `(owner, record)` |
-| the owner alone | that owner, and an empty record |
+| the version and owner alone | that owner, and an empty record |
 | a 32-character owner this kernel would not mint | accepted, because reading is liberal |
-| fewer than 32 characters, or empty | codec error naming the width |
+| no layout version, or another one | codec error naming the version |
+| fewer than 32 characters after the version | codec error naming the width |
+| empty | codec error |
 | bytes that are not UTF-8 | codec error naming the offending index |
-| a multibyte character straddling character 32 | codec error, since the token is ASCII and this value is not one |
+| a multibyte character straddling the token's width | codec error, since the token is ASCII and this value is not one |
 
-## The fence
+## The claim outcome
 
-A claim can lapse and be taken over. The lapsed worker's `complete` must not overwrite the new
-holder's claim, and its `release` must not delete it. Both settle through a compare-and-write.
+`claim_outcome(reply, claim)` reads the claim script's reply:
 
-```lua
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0
-end
-return 0
-```
+| Reply | Outcome |
+|---|---|
+| nil, the key was free | `Won` |
+| the caller's own claim value | `Won`: the first send landed, its reply was lost, and the client sent the script again |
+| any other value | `Prior(record_json)`, the record that holds the key |
+| a value `split_value` refuses | codec error |
 
-```lua
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-```
+The second row is why the outcome is a kernel decision. redis-py re-sends a command whose reply was
+lost by default. A store that read its own claim as someone else's would report `InProgress` with no
+handler running, until the claim lapsed.
 
-`GETRANGE` reads only the token's width, compares it to the caller's token, and writes only on a
-match. A `GET` followed by a `SET` would leave exactly the gap the fence exists to close. Both
-scripts return `1` when the write landed and `0` when the key is absent or another claimant holds
-it, which is how a caller learns it lost its claim.
+## The scripts
 
-**Both bodies are constants, byte for byte.** A client registers the source once and sends `EVALSHA`
+Every write is one script, so the compare and the write are one atomic step. A `GET` followed by a
+`SET` from the client would leave exactly the gap the fence exists to close.
+
+| Constant | `ARGV` | Does |
+|---|---|---|
+| `CLAIM_SCRIPT` | claim value, claim TTL | writes the claim if the key is free; replies nil, or the value the key holds |
+| `COMPLETE_SCRIPT` | handle, settled value, record TTL | writes the settled value if the key holds the handle or already holds the settled value; replies `1` or `0` |
+| `RELEASE_SCRIPT` | handle | deletes the key if it holds the handle; replies `1` or `0` |
+| `EXTEND_SCRIPT` | handle, claim TTL | resets the TTL if the key holds the handle; replies `1` or `0` |
+
+Every script is idempotent, so a client that re-sends one after a lost reply gets the answer the
+first send would have had. Each touches one key, `KEYS[1]`, so each is safe on Redis Cluster.
+
+**The bodies are constants, byte for byte.** A client registers the source once and sends `EVALSHA`
 after, and that digest is taken over these exact bytes, leading newline included. An SDK that
-reformatted the script would cache a second digest for one fence, so the two SDKs would run two
-scripts on the server. `testdata/golden/redis_scripts.json` is the source of truth for the bodies.
+reformatted a script would cache a second digest for one fence, so two SDKs would run two scripts on
+the server. `testdata/golden/redis_scripts.json` is the source of truth for the bodies.
+
+**What each script does is a vector too.** `testdata/golden/redis_fence.json` has one row per case.
+A row holds the key's value and TTL before, the script and its arguments, and the reply, value and
+TTL after. The
+expectations are written out by hand in the generator, not computed: no Rust code re-implements the
+scripts. Each SDK replays the rows against a server that runs Lua. Python runs them against fakeredis
+and, given `EDAX_REDIS_URL`, against a live Redis.
+
+## The reply verdict
+
+`reply_error(reply)` turns a Redis error reply, prefix included, into the kernel's error:
+
+| Prefix | Code | Why |
+|---|---|---|
+| `WRONGTYPE` | `codec`, terminal | the key holds something the ledger cannot read |
+| `ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS` | `bad_handle`, terminal | a refused command, script or credential fails the same way every time |
+| anything else | `store`, transient | a passing server state (`READONLY` during a failover, `LOADING`, `BUSY`, `OOM`, `TRYAGAIN`) or a prefix the kernel does not know |
+
+The unknown-prefix default is transient, the core default: a wrongly transient failure is redelivered
+loudly, a wrongly terminal one is dead-lettered.
 
 ## What stays in the SDK
 
-The kernel owns bytes. Everything around them is orchestration, and each SDK keeps its own:
+The kernel owns every decision two SDKs must make the same way. Each SDK keeps only the input and
+output (I/O):
 
-- key composition, `{prefix}{key}`, and the prefix itself.
-- the two TTL defaults, for a pending claim and for a settled record.
-- the bound on the claim retry loop.
-- the `complete` and `release` decision trees, including which failure keeps the token.
+- the two TTL values, for a pending claim and for a settled record, and their defaults.
+- the per-call deadline, and the heartbeat that schedules `EXTEND_SCRIPT`.
 - the connection seam, `RedisConn` in Python, and the client it adapts.
-
-That split is the same rule the other backend kernels follow: a protocol module in Rust, an input
-and output (I/O) shell per SDK.
 
 ## The golden vectors
 
 | File | Case shape | What it pins |
 |---|---|---|
-| `redis_value.json` | `name`, `op`, plus the operands and `value` or `want` | seventeen cases across `claim`, `record` and `split`: a pending claim, a hash at both `u64` ends, a cached success and failure, a non-ASCII result, and every `split_value` branch |
-| `redis_scripts.json` | `name`, `body` | both Lua bodies verbatim, so a second SDK's `EVALSHA` digest matches |
+| `redis_value.json` | `name`, `op`, the operands, `value` or `want` | `claim`, `settled` and `split`: a pending claim, a hash at both `u64` ends, a cached success and failure, a non-ASCII result, and every `split_value` branch |
+| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `ttl`, `handle`, `outcome` and `reply`: every refusal and every outcome row above |
+| `redis_scripts.json` | `name`, `body` | the four Lua bodies verbatim, so every SDK's `EVALSHA` digest matches |
+| `redis_fence.json` | `name`, `initial`, `script`, `args`, `want_reply`, `want_value`, `want_ttl_ms` | what each script does to a key, including a lost reply re-sent, a takeover, and malformed handles |
 
 Regenerate with `EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden`, and read the
-diff before committing it. A change to either file is a compatibility event: live ledgers already
-hold values in the old layout, and clients already cache the old digest.
+diff before committing it. A change to any file is a compatibility event: live ledgers already hold
+values in the old layout, and clients already cache the old digests.
 
 ## How each SDK reaches it
 
 | | Rust | Python |
 |---|---|---|
-| mint a token | `edax_redis::new_owner` | `_edax.redis_owner()` |
-| build a value | `claim_value`, `record_value` | `_edax.redis_claim_value`, `_edax.redis_record_value` |
-| read one back | `split_value` | `_edax.redis_split_value` |
-| the fence bodies | `FENCED_SET_SCRIPT`, `FENCED_DEL_SCRIPT` | `_edax.redis_fenced_set_script()`, `_edax.redis_fenced_del_script()` |
+| the key | `ledger_key`, `check_prefix` | `_edax.redis_ledger_key`, `_edax.redis_check_prefix` |
+| a setting | `check_ttl` | `_edax.redis_check_ttl` |
+| a claim value | `new_claim`, `claim_value` | `_edax.redis_new_claim`, `_edax.redis_claim_value` |
+| a settled value | `settled_value`, `check_claim` | `_edax.redis_settled_value`, `_edax.redis_check_claim` |
+| read one back | `split_value`, `claim_outcome` | `_edax.redis_split_value`, `_edax.redis_claim_outcome` |
+| the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_claim_script()` and the three siblings |
+| a reply error | `reply_error` | `_edax.redis_reply_error` |
 
 The Rust SDK ships the kernel and no client shell. The Redis ledger lives in the Python SDK:
 `RedisIdempotencyStore` in `edax.backend.redis` calls the client and these functions. Read
@@ -129,9 +189,8 @@ The Rust SDK ships the kernel and no client shell. The Redis ledger lives in the
 
 ## See also
 
-- [backends/redis.md](../backends/redis.md) — the store: the two TTLs, the fence in use, and the
-  failure windows it leaves.
-- [kernels/cqrs.md](./cqrs.md) — the idempotency record whose bytes fill the value's second half.
-- [kernels/golden-vectors.md](./golden-vectors.md) — how the two vectors here are generated and
-  asserted.
+- [backends/redis.md](../backends/redis.md) — the store: the two TTLs, lease renewal, the handle in
+  use, durability, and the failure windows it leaves.
+- [kernels/cqrs.md](./cqrs.md) — the idempotency record whose bytes fill the value's last part.
+- [kernels/golden-vectors.md](./golden-vectors.md) — how the vectors here are generated and asserted.
 - [sdk/idempotency.md](../sdk/idempotency.md) — the guard that claims, completes and releases.

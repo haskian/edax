@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Ergonomic Rust SDK over the edax kernels: aggregates, storage seam, command bus, consumer, and sagas"
+description = "Reference model of the edax SDK in Rust: an executable specification of the seams, not a deployable SDK"
+# A reference model, not a product: nothing publishes it and nothing depends on it. It holds the Python SDK's
+# orchestration to the kernels from a second language. See docs/stability.md.
+publish = false
 
 [dependencies]
 edax-core.workspace = true
@@ -22,3 +25,6 @@ msgpack = ["dep:rmp-serde"]
 [dev-dependencies]
 edax-golden.workspace = true
 proptest = "1"
+
+[lints]
+workspace = true

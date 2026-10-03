@@ -1,19 +1,21 @@
 # The Redis backend
 
 `RedisIdempotencyStore`: a cross-process ledger, the two time-to-live values (TTLs) it needs, and
-the fence that keeps a lapsed worker from overwriting its successor.
+the claim handle that keeps a lapsed worker from overwriting its successor.
 
 Redis backs one seam, `IdempotencyStore`. It is the worked example of a ledger that **cannot** join
 the caller's transaction. Everything below follows from that one fact. The guard must compensate by
 hand. The guarantee drops to at-least-once with a dedup window. A claim that can expire needs a
-fence. Install with `pip install edax[redis]`; the client is yours to construct.
+fence. Install with `pip install edax[redis]`; the client is yours to construct, with redis-py 8 or
+later.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : claim wins SET NX, under claim_ttl_ms
-    pending --> done : complete, fenced, under ttl_ms
+    [*] --> pending : the claim script wins, under claim_ttl_ms
+    pending --> pending : extend with this claim's handle, under claim_ttl_ms
+    pending --> done : complete with this claim's handle, under ttl_ms
     pending --> failed : complete with a terminal error, under ttl_ms
-    pending --> [*] : release, fenced
+    pending --> [*] : release with this claim's handle
     pending --> [*] : claim_ttl_ms expires, so the key is free again
     done --> [*] : ttl_ms expires, so the dedup window closed
     failed --> [*] : ttl_ms expires, so the dedup window closed
@@ -40,17 +42,16 @@ runs the own-ledger mode of [idempotency](../sdk/idempotency.md#the-two-modes).
 `done` record for work that never landed, which is silent loss. After it, the worst case is a re-run
 on redelivery. Every failure up to and including the commit releases the claim.
 
-One asymmetry is worth knowing: a claim that *raises* is deliberately not compensated. The guard
-cannot tell a lost insert response from another claimant holding this key. Releasing in the second
-case would delete the winner's live claim. A claim whose response was lost is settled by retention
+One asymmetry is worth knowing: a claim that *raises* is not compensated. It returned no handle, so
+there is nothing to release with. A claim whose reply was lost for good is settled by its claim TTL
 instead.
-
 
 ## The key prefix
 
-Every key the store writes is `{prefix}{key}`, and `prefix` is required: there is no default,
-because no default is right for every store, service and environment. Two services sharing one
-Redis under one prefix share a key space, and a bare request id that both use is one claim.
+Every key the store writes is the kernel's `ledger_key(prefix, key)`: `{prefix}{key}` as UTF-8
+bytes. `prefix` is required, and an empty one is refused: no default is right for every store,
+service and environment. Two services sharing one Redis under one prefix share a key space, and a
+bare request id that both use is one claim.
 
 The collision is loud rather than silent: the two commands hash differently, so the loser gets a
 terminal `PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though,
@@ -61,6 +62,14 @@ known.
 ```python
 ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:")
 ```
+
+Two pitfalls follow from plain concatenation:
+
+- No separator is added, and concatenation is not injective. Prefix `billing:` with key
+  `prod:idem:x` is the same key as prefix `billing:prod:idem:` with key `x`. Give distinct services
+  prefixes neither of which starts with the other.
+- A `{...}` hash tag in the prefix pins every ledger key to one Redis Cluster slot. That slot's
+  shard then serves the whole ledger.
 
 Give each service and environment its own prefix. Namespacing the *key* by command type is a
 separate job and belongs to your key function — see
@@ -76,7 +85,7 @@ turns a replay into a re-run.
 
 - Default `300_000`, five minutes.
 - It bounds how long a pending claim blocks its key.
-- Too small: a second worker takes over a claim whose holder is still working.
+- Too small, with no heartbeat: a second worker takes over a claim whose holder is still working.
 - Those two runs then overlap.
 - Too large: a worker that dies during the handler blocks that key until the claim lapses.
 - Every redelivery meanwhile raises `InProgress`.
@@ -86,115 +95,125 @@ turns a replay into a re-run.
 - Default `86_400_000`, twenty-four hours.
 - It bounds the dedup window for a terminal record.
 - Too small: a redelivery inside the window re-runs the handler instead of replaying.
-- Too large: records accumulate. That is all.
+- Too large: records accumulate. See [Durability](#durability) for sizing.
 
-Read `RedisIdempotencyStore.__init__` for the defaults.
+Both are whole milliseconds from 1 to 2^53 - 1, checked by the kernel's `check_ttl` when the store is
+built. A zero, negative or fractional TTL raises the terminal `BadHandle` there, rather than failing
+every write on the server.
 
 `claim` writes the pending record under `claim_ttl_ms`; `complete` writes the terminal record under
 `ttl_ms`. **Retention starts at completion**, not at the claim: `complete` issues a fresh `SET ...
 PX ttl_ms`, so the dedup window is measured from the moment the outcome was recorded. A completed
-record therefore outlives the claim TTL.
-`test_redis.py::test_a_completed_record_outlives_the_claim_ttl` asserts that.
-`test_a_pending_claim_expires_on_the_claim_ttl_not_the_record_ttl` asserts the converse.
-
-**`claim_ttl_ms` must exceed the longest handler run.** A handler that outruns it loses its claim
-while still working. There is no lease extension. This store cannot renew a claim the way
-`ChangeMessageVisibility` renews an Amazon Simple Queue Service (SQS) receipt. This setting is the
-only defence. The default is a tuning value, not a constant. It is anchored to a broker's own poll
-interval. Kafka's `max.poll.interval.ms` is also five minutes. A handler that outruns one outruns
-the other too.
+record therefore outlives the claim TTL. `test_redis.py::test_complete_branches` asserts both TTLs.
 
 Past the record TTL the key is gone and the same command wins a fresh claim and re-runs; size
 `ttl_ms` past the longest redelivery window.
 
-## The fence
+## Lease renewal
+
+One number cannot both exceed the slowest handler run and free a crashed worker's key quickly. So
+the store can renew a claim while it is held:
+
+```python
+ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:", claim_ttl_ms=30_000, heartbeat=True)
+```
+
+With `heartbeat=True` the store renews each won claim every `claim_ttl_ms / 3` through the kernel's
+extend script, until `complete` or `release` settles it. A crashed worker stops renewing, so its key
+frees within `claim_ttl_ms`. `extend(key, handle)` is the same renewal, for a caller that schedules
+its own.
+
+A renewal carries the claim's handle like every other write. Once another worker holds the key, the
+old owner's renewal is refused: the store logs that the claim was lost and stops renewing. A
+transient failure is retried on the next beat; a terminal one stops the renewal.
+
+Renewal narrows the window; it does not close it. A worker paused longer than `claim_ttl_ms` (a
+garbage-collection pause, a frozen virtual machine) learns nothing until it wakes, and by then the
+key may be another worker's. Checking the lease with the local clock is unsafe across such a pause.
+Only a check by the downstream resource closes the gap (see [the limit](#the-limit-this-fences-the-ledger-only)).
+
+## The claim handle
 
 A claim that can expire can be taken over. When the lapsed worker finally finishes, its `complete`
 must not overwrite the new holder's claim, and its `release` must not delete it.
 
-### The owner token and the single-key layout
+### The value and the handle
 
-Each claim mints a fresh owner token from the kernel, `_edax.redis_owner()`. It is a universally
-unique identifier (UUID) version 7 in its simple form: 32 lowercase hexadecimal characters, no
-hyphens. Version 7 rather than random bytes, so tokens sort by mint time and a ledger dump reads in
-order. The store writes it in front of the kernel's record JSON, under one key `{prefix}{key}`:
+Each claim writes one value under one key, `{prefix}{key}`:
 
 ```
-idem:order-7  ->  "<32 hex chars of owner token><kernel record JSON>"
+idem:order-7  ->  "1" + "<32 hex chars of owner token>" + "<kernel record JSON>"
 ```
+
+The first byte is the layout version, `1`. A reader refuses any other version by name rather than
+splitting it at the wrong place. The owner token is a universally unique identifier (UUID) version 7
+in its simple form: 32 lowercase hexadecimal characters, no hyphens, minted fresh for every claim.
 
 That layout is the `edax-redis` kernel's, not this adapter's, and
 `testdata/golden/redis_value.json` pins it. A second software development kit (SDK)'s Redis store
-must match it byte for byte to share a ledger. The store therefore calls `_edax.redis_claim_value`,
-`_edax.redis_record_value` and `_edax.redis_split_value` rather than slicing strings itself. See
+must match it byte for byte to share a ledger. The store therefore calls the kernel for every byte:
+`redis_new_claim`, `redis_settled_value`, `redis_claim_outcome`. See
 [kernels/redis.md](../kernels/redis.md).
 
-The store keeps the tokens for the claims *this instance* holds in `self._owned`, dropping each as
-it is settled. A key absent from that map was never won by this caller, so it has nothing to settle.
-Reading a prior record hands the raw bytes to the kernel's `split_value`, after coercing a `str` to
-bytes because a client built with `decode_responses=True` answers with `str`. A value that is not
-UTF-8, or too short to hold a token, comes back as a terminal `CodecError`.
+**The claim value is the handle.** `claim` returns `Won(handle)`, and `handle` is the exact value
+the claim wrote. `complete`, `release` and `extend` each send it, and each script writes only while
+the key still holds that exact value. Nothing is kept in the store instance. Two claims on one key
+in one process are two handles, so a takeover inside one process is fenced like one across two.
 
 **Why one key and not two.** A sibling key holding the token would have an expiry clock of its own.
 The two clocks drift apart. A claimant can then win the record while losing the owner. It holds a
 claim it can never complete or release. One key, one TTL, one atomic write.
 
-### The compare-and-write
+### The scripts
 
-Both fenced operations are one `EVAL`. A `GET` followed by a `SET` leaves exactly the gap the fence
-exists to close. The claim can expire and be taken over between the two calls.
+Every write is one script, so the compare and the write are one atomic step. A `GET` followed by a
+`SET` from the client leaves exactly the gap the fence exists to close.
 
-Both bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
-them byte for byte. They are printed here to read, never to copy. A client registers the source once
-and sends `EVALSHA` after, so an SDK that reformatted the script would cache a second digest for one
-fence.
+The four bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
+them byte for byte. A client registers each source once and sends `EVALSHA` after, so an SDK that
+reformatted a script would cache a second digest for one fence.
+`testdata/golden/redis_fence.json` pins what each one does, row by row, and `test_redis.py` replays
+those rows against fakeredis and against a live server.
 
-```lua
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0
-end
-return 0
-```
+| Script | Arguments | Writes | Replies |
+|---|---|---|---|
+| claim | the claim value, the claim TTL | the claim, if the key is free | nil when it wrote, else the value the key holds |
+| complete | the handle, the settled value, the record TTL | the settled value, if the key holds the handle or already holds the settled value | `1` when it wrote, `0` otherwise |
+| release | the handle | deletes the key, if it holds the handle | `1` when it deleted, `0` otherwise |
+| extend | the handle, the claim TTL | resets the TTL, if the key holds the handle | `1` when it renewed, `0` otherwise |
 
-```lua
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-```
-
-`GETRANGE` reads only the token's width, compares it to the caller's token, and writes only on a
-match. Both return `0` when the key is absent or carries a different prefix, which is how a caller
-learns its claim was taken over.
+Every script is idempotent, so a client that sends one again after a lost reply gets the answer the
+first send would have had. Each touches one key, so each is safe on Redis Cluster.
 
 ### What each operation does with it
 
+#### `claim`
+
+- The kernel's `claim_outcome` reads the reply. Nil means won.
+- A reply **equal to the caller's own claim value** also means won. The first send landed, its
+  reply was lost, and redis-py's default retry sent the script again.
+- Any other value is the record that holds the key: pending (`InProgress`), or settled (a replay).
+
 #### `complete`
 
-- Holding the claim: `set_px_if_prefix` under `ttl_ms`.
-- On a `False` return it raises `StoreError`, and it keeps its token.
-- A `False` return means the outcome was not recorded, so the caller must not report success.
-- The token is kept because the guard answers a refused `complete` with `release`. That `release`
-  must stay fenced, or its `DEL` would delete the claim that replaced this one.
-- Holding no claim: a plain `SET ... PX ttl_ms` with a fresh token.
-- That is a direct write, not a guarded dispatch. The seam's plain `complete` means exactly that.
+- Writes the settled value under `ttl_ms` while the key holds the handle.
+- A re-sent complete finds its own settled value and writes it again, so it succeeds.
+- A `0` reply raises `StoreError`: the claim lapsed, and the key is free or another worker's. The
+  outcome was not recorded, so the caller must not report success.
 
 #### `release`
 
-- Holding the claim: `delete_if_prefix` deletes its own claim and nothing else.
-- Holding no claim: a plain unconditional `DEL`.
-- That is an out-of-band delete, or a cleanup after a `complete` that already landed.
+- Deletes the key while it holds the handle, and nothing else.
+- A release after the claim's own `complete` landed finds the settled value, not the handle, so it
+  deletes nothing. That is the guard's compensation after a lost `complete` reply: the record of
+  committed work survives, and the redelivery replays it instead of re-running the handler.
+- A release after a takeover finds the new holder's claim and deletes nothing.
 
-`complete` refuses to overwrite a taken-over claim. The outcome it carries belongs to a run nobody
-is waiting for any more. Erasing the new holder's claim would destroy an outcome another worker is
-still producing. It raises on purpose.
-`test_redis.py::test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holders` asserts it.
+#### Malformed handles
 
-`release` is the path that silently loses work when it is unfenced. A bare `DEL` frees a key another
-worker is actively holding. Two handlers then run for it. This is why a refused `complete` keeps its
-token. The compensating `release` that follows is then fenced, and its `delete_if_prefix` is a
-no-op against the new holder's prefix.
-`test_redis.py::test_a_refused_complete_keeps_the_fence_for_the_compensating_release` asserts it.
+- `complete`, `release` and `extend` refuse a handle the kernel never minted before any I/O: empty,
+  truncated, a bare token, an upper-case token, a settled value. Each is a terminal `CodecError`.
+- `test_redis.py::test_a_handle_the_kernel_never_minted_is_refused_before_any_io` asserts every one.
 
 ### Two workers racing a claim TTL expiry
 
@@ -205,25 +224,28 @@ sequenceDiagram
     participant R as Redis
     participant F as fast worker
 
-    S->>R: SET NX idem:order-7 = owner-A + pending, PX claim_ttl_ms
-    R-->>S: won the claim
+    S->>R: claim script: write claim A, PX claim_ttl_ms
+    R-->>S: nil, so the claim is won and its handle is A
     activate S
     Note over S: the handler is still running
     Note over R: claim_ttl_ms expires, so the key is gone
-    F->>R: SET NX idem:order-7 = owner-B + pending, PX claim_ttl_ms
-    R-->>F: won the claim, because the key was free
+    F->>R: claim script: write claim B, PX claim_ttl_ms
+    R-->>F: nil, so the claim is won and its handle is B
     activate F
-    S->>R: EVAL set_px_if_prefix with prefix owner-A
-    R-->>S: 0, because the stored value starts with owner-B
+    S->>R: complete script with handle A
+    R-->>S: 0, because the key holds B
+    S->>R: release script with handle A, the guard's compensation
+    R-->>S: 0, so B's claim is untouched
     deactivate S
     Note over S: raise StoreError, the claim was taken over<br/>the slow worker must not report success
-    F->>R: EVAL set_px_if_prefix with prefix owner-B, PX ttl_ms
+    F->>R: complete script with handle B, PX ttl_ms
     R-->>F: 1, the terminal record is stored
     deactivate F
 ```
 
-Without the fence, step 9 would overwrite the fast worker's live claim. The outcome it writes is one
-nobody is waiting for. A later replay would return it.
+The same holds when both workers are tasks of one process on one store instance.
+`test_redis.py::test_two_dispatches_on_one_bus_settle_only_the_live_claim` asserts it through the
+guard.
 
 ## The limit: this fences the ledger only
 
@@ -238,72 +260,100 @@ key and nothing else.
   gateway. Nor over an email, nor a write to a table with no version column. Give those their own
   idempotency key in the remote system, or their own compare-and-set.
 
-Sizing `claim_ttl_ms` above the longest handler run is what keeps the window from opening at all.
-The fence is the second line, not the first.
+A monotonic fencing token, one the downstream resource could compare, needs a counter that outlives
+the expiring key. The store does not keep one yet: no caller needs it, and the handle already fences
+the ledger. Sizing `claim_ttl_ms` above the longest handler run, or renewing the lease, is what keeps
+the window from opening at all. The fence is the second line, not the first.
+
+## Durability
+
+The ledger is only as durable as the Redis behind it. Four things can drop or shorten a claim or a
+record without any error reaching the store.
+
+- **Failover.** Redis replicates asynchronously. A claim or a `done` record the primary acknowledged
+  can be missing on the replica promoted after it fails. A second worker then wins the key, or a
+  redelivery re-runs the handler. Treat failover as one more at-least-once window.
+  `test_redis.py::test_an_acknowledged_claim_lost_in_a_failover_is_one_more_at_least_once_window`
+  shows the ledger stays consistent through it.
+- **`WAIT` does not fix that.** Sending `WAIT` after a write makes the loss less likely. It does not
+  make Redis a strongly consistent store, so the store does not send it.
+- **Eviction.** Every ledger key carries a TTL, so the `volatile-*` and `allkeys-*` eviction policies
+  may evict live claims and records under memory pressure. Dedup is then lost silently. Run the
+  ledger's database with `maxmemory-policy noeviction`, where a full database refuses writes with a
+  transient `OOM` error instead.
+- **The server clock.** The TTL is relative on the wire, so client clock skew does not matter. Redis
+  stores the expiry as an absolute time and checks it against the server's own clock. A forward step
+  of that clock expires every pending claim at once, and a promoted replica applies its own clock.
+  Keep NTP slewing, not stepping, on the Redis hosts.
+
+**Sizing.** The number of keys is bounded by `ttl_ms` times the dispatch rate. At 1,000 dispatches
+per second and the 24-hour default that is about 86 million keys. At roughly 200 bytes per key,
+which is an estimate, that is about 17 GB.
 
 ## Errors
 
 | Situation | Raised | Kind |
 |---|---|---|
-| any client failure — connection reset, timeout | `StoreError`, naming the operation and the key, chaining the client's exception | transient: the claim is released and retried |
-| a stored record that will not decode | `CodecError` | terminal: retrying would loop until the TTL |
+| a refused setting: an empty prefix, a TTL that is not a positive whole number, a sync client | `BadHandle`, when the store or adapter is built | terminal |
+| a connection failure, a client timeout, a passing server state (`READONLY` during a failover, `LOADING`, `BUSY`, `OOM`) | `StoreError`, naming the operation and the key | transient: the claim is released and retried |
+| no reply within `op_timeout_ms` | `StoreError`, "no reply within N ms" | transient |
+| `WRONGTYPE`: something other than a ledger value under the key | `CodecError` | terminal |
+| a refused command or credential (`ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS`) | `BadHandle` | terminal |
+| a stored value that will not decode, or is not UTF-8 | `CodecError` | terminal: retrying would loop until the TTL |
 | a result the record codec cannot serialize | `CodecError`, raised **before** any write | terminal |
-| the key vanishes between `SET NX` and `GET`, three times | `StoreError`, "record vanished on 3 attempts" | transient |
+| a handle the kernel never minted | `CodecError`, raised **before** any write | terminal |
 
-Client calls are wrapped by `_as_store_error`;
-`test_redis.py::test_client_failure_maps_to_store_error` asserts the mapped cases.
-`test_claim_of_an_unreadable_record_is_terminal` and
-`test_complete_of_an_unencodable_result_is_terminal` assert the terminal ones.
+A Redis error reply is classified by the kernel's `reply_error`, from the reply's prefix, so every SDK
+sharing a ledger gives it one verdict. `test_redis.py::test_a_client_failure_carries_the_kernels_verdict`
+asserts each row.
 
 `complete` encodes the record before it touches Redis. An unencodable result stays the terminal
 `CodecError`. It is not retyped as a transient `StoreError` and redelivered forever.
 
-The `SET NX` then `GET` retry exists because the winner's record can vanish between the two calls —
-the TTL expiring, or a concurrent release. Treating a missing record as "no prior" would report a
-win that never happened, so the claim retries instead. The loop is bounded by `_CLAIM_ATTEMPTS = 3`;
-a key that never materializes fails fast rather than spinning the dispatch.
+### The deadline
+
+`op_timeout_ms` (default `5_000`) bounds each script call, the client's own retries included. redis-py
+8 sends a command up to eleven times on a connection error, each with a five-second socket timeout,
+so one call could otherwise block for about a minute. Under the SDK's `retry` and a dispatcher's
+redelivery those retries multiply. The deadline makes the store, not the client, own the bound.
+
+A deadline that fires does not undo the call. The script may still run once the server answers, so a
+timed-out `complete` can land after the caller saw `StoreError`. The guard's release then finds the
+settled value and deletes nothing, and the redelivery replays it.
+`test_redis_live.py::test_settlement_sent_into_a_frozen_server_never_loses_a_landed_record` asserts it
+against a paused server.
 
 ## The `RedisConn` seam
 
-The store is written against a six-method Protocol, not against a client. Any async Redis client
-fits, and the tests run against an in-memory fake with a settable clock:
+The store is written against a one-method Protocol, not against a client:
 
 ```python
 class RedisConn(Protocol):
-    async def get(self, key: str) -> Optional[bytes]: ...
-    async def set_px(self, key: str, value: bytes, ttl_ms: int) -> None: ...
-    async def set_nx_px(self, key: str, value: bytes, ttl_ms: int) -> bool: ...
-    async def delete(self, key: str) -> None: ...
-    async def set_px_if_prefix(self, key: str, prefix: bytes, value: bytes, ttl_ms: int) -> bool: ...
-    async def delete_if_prefix(self, key: str, prefix: bytes) -> bool: ...
+    async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[ScriptArg]) -> Any: ...
 ```
 
-`set_nx_px` is the atomic claim (`SET key value NX PX ttl`). `get`, `set_px` and `delete` are plain
-`GET`, `SET ... PX ttl` and `DEL`. The two `*_if_prefix` operations **must be atomic**; a read
-followed by a write is the race they exist to close.
+`script` is one of the four kernel bodies, which the store passes as given. A connection sends it as
+is, so every connection runs the kernel's bytes and none re-derives the fence. A connection may raise
+an `EdaxError` for a failure it can classify; the store types anything else as transient
+`StoreError`.
 
-`AsyncRedisClient` adapts a caller-owned `redis.asyncio.Redis`. It registers both fence scripts once
-at construction, passing `register_script` the kernel's own script text from
-`_edax.redis_fenced_set_script()` and `_edax.redis_fenced_del_script()`. Every SDK therefore hashes
-the same bytes and shares one `EVALSHA` digest.
+`AsyncRedisClient` adapts a caller-owned `redis.asyncio.Redis` or `RedisCluster` (redis-py 8 or
+later). It registers each script on first use, so every call sends a digest. It refuses a sync client
+when built. It hands a Redis error reply, prefix included, to the kernel's `reply_error`. redis-py
+strips a known prefix from the message and keeps it in `status_code`, which is why redis-py 8 is
+the floor.
 
-Two more details a reimplementation must copy:
-
-- redis-py returns `True` when `SET ... NX` stored the value and `None` when it did not, so
-  `set_nx_px` coerces with `bool(...)`. Reading `None` as "won" would run every handler twice.
-- The per-call timeout is the client's, not the adapter's. Construct the client with
-  `socket_timeout` and `socket_connect_timeout` set, or a dispatch blocks on the claim for as long
-  as the socket hangs.
-
-The claim, complete and release contract runs against this store under `P2` of `test_model.py`. That
-property is parameterized over `["memory", "redis"]`. The same random histories check both backends
-against one reference model.
+The fast test suite runs this store against fakeredis, which runs each script in an embedded Lua
+interpreter, so no test re-implements the fence. With `EDAX_REDIS_URL` set the same tests also run
+against that server. `test_redis_live.py` then adds the faults only a real server has: a reply
+dropped on the wire, real-time lease expiry, a paused container. The claim, complete and release
+contract also runs under `P2` of `test_model.py`, parameterized over `["memory", "redis"]`.
 
 ## See also
 
 - [backends index](./README.md) — the seam contracts and the checklist for writing one.
-- [kernels/redis.md](../kernels/redis.md) — the value layout, the owner token and the fence scripts,
-  decision by decision.
+- [kernels/redis.md](../kernels/redis.md) — the key, the value, the handle, the scripts and the reply
+  verdicts, decision by decision.
 - [memory](./memory.md) — the ledger that *does* join the transaction, and what that changes.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [transactions](../sdk/transactions.md) — `joins_transaction` and the two guard orderings.

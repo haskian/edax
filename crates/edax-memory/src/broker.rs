@@ -1,241 +1,528 @@
-//! The in-memory broker: a queue with per-delivery settlement tokens. Not a store participant.
+//! The in-memory broker: a partitioned log with consumer groups, settled through the Kafka kernel's
+//! [`OffsetTracker`]. Not a store participant.
+//!
+//! It models what a log-based broker does to a handler, so a handler that only survives a queue
+//! fails here and not first in production:
+//! - a nack rewinds the partition, so the nacked message *and every later one*, acked or not, come
+//!   back, in order (the tracker retires the copies already handed out, see
+//!   [`is_live`](MemoryBroker::is_live));
+//! - [`crash`](MemoryBroker::crash) drops a group's in-flight work and redelivers everything above
+//!   its committed watermark, the way a consumer restart or a rebalance does;
+//! - each consumer group reads every message, so a projection and a saga on one broker do not
+//!   compete for them;
+//! - order holds per partition, and so per key, not across keys once there are several partitions.
+//!
+//! A group commits on every ack that moves its watermark: in memory a commit costs nothing. Nothing
+//! is ever deleted from the log, which suits a test and not a long-running process.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
-use edax_core::{lock, TokenMint};
+use edax_core::{lock, Error};
+use edax_event::EventEnvelope;
+use edax_kafka::{partition_for, AckDecision, NackDecision, OffsetTracker};
 
-/// A delivery handed out by [`MemoryBroker::try_poll`]: the envelope plus the token that settles it.
+/// The topic name the groups' trackers book under: the broker is one topic.
+const TOPIC: &str = "memory";
+
+/// A delivery handed out by [`MemoryBroker::try_poll`]: the envelope, where it sits in the log, and
+/// the token that settles it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolledDelivery {
     pub token: i64,
-    pub envelope: edax_event::EventEnvelope,
+    pub partition: i32,
+    pub offset: i64,
+    pub envelope: EventEnvelope,
 }
 
-#[derive(Default)]
+/// One consumer group's view of the log: what it has fetched, what it has committed, and the
+/// tracker that settles its deliveries.
+struct Group {
+    tracker: OffsetTracker,
+    /// The partition of each live token, so a nack knows which fetch position to rewind. The
+    /// tracker answers with the offset only, because a Kafka shell already holds the partition.
+    live: HashMap<i64, usize>,
+    /// The next offset to fetch, per partition.
+    position: Vec<i64>,
+    /// The committed watermark, per partition: where a crash resumes.
+    committed: Vec<i64>,
+    /// The partition the next poll looks at first, so one busy partition cannot starve the others.
+    next: usize,
+}
+
+impl Group {
+    fn new(partitions: usize) -> Self {
+        Self {
+            tracker: OffsetTracker::new(),
+            live: HashMap::new(),
+            position: vec![0; partitions],
+            committed: vec![0; partitions],
+            next: 0,
+        }
+    }
+
+    /// Commit what the tracker says is due. A commit here cannot fail, so it is recorded at once.
+    fn commit(&mut self) {
+        for due in self.tracker.due() {
+            if let Some(committed) = usize::try_from(due.partition).ok().and_then(|p| self.committed.get_mut(p)) {
+                *committed = due.offset;
+                self.tracker.committed(TOPIC, due.partition, due.offset);
+            }
+        }
+    }
+}
+
 struct BrokerState {
-    queue: VecDeque<edax_event::EventEnvelope>,
-    /// The tokens polls hand out. Monotonic, so a token names exactly one delivery for the broker's
-    /// whole life: a stale token (already settled) never aliases a live one.
-    tokens: TokenMint,
-    /// Polled deliveries not yet acked or nacked, by token. Keyed by token, not by envelope id:
-    /// at-least-once puts the same id in flight twice (the outbox republishes after a crash between
-    /// `publish` and `mark_published`), and each copy must settle on its own. Holding the envelope here
-    /// is what lets `nack` requeue it without the host keeping a copy.
-    unsettled: HashMap<i64, edax_event::EventEnvelope>,
+    /// One append-only log per partition.
+    log: Vec<Vec<EventEnvelope>>,
+    groups: BTreeMap<String, Group>,
 }
 
-/// In-memory broker state machine for development and tests: one FIFO queue plus the accounting of
-/// polled-but-unsettled deliveries, behind a single lock. Non-blocking by design: [`try_poll`](Self::try_poll)
-/// returns at once, and each SDK adds only its own waiting (a `Condvar`, an asyncio event) on top —
-/// the one part a broker cannot share, because a blocking call across the binding would stall the
-/// host's event loop. Settlement is data, not a callback: a poll hands out a token, and
-/// [`ack`](Self::ack) / [`nack`](Self::nack) settle by it, so no closure has to cross the boundary.
+/// In-memory broker state machine for development and tests, behind a single lock. Non-blocking by
+/// design: [`try_poll`](Self::try_poll) returns at once, and each SDK adds only its own waiting (a
+/// `Condvar`, an asyncio event) on top — the one part a broker cannot share, because a blocking call
+/// across the binding would stall the host's event loop. Settlement is data, not a callback: a poll
+/// hands out a token, and [`ack`](Self::ack) / [`nack`](Self::nack) settle by it.
 ///
-/// [`is_empty`](Self::is_empty) is true only when nothing is queued *and* every polled delivery has
-/// been settled, the same "nothing left to do" a durable broker reports. Without that a dispatcher that
-/// dropped a delivery would pass here and lose the message against Kafka: the in-memory rig
-/// would flatter exactly the bug it exists to catch.
-#[derive(Default)]
+/// [`is_empty`](Self::is_empty) is true only when a group has committed past every message, the
+/// same "nothing left to do" a durable broker reports. Without that a dispatcher that dropped a
+/// delivery would pass here and lose the message against Kafka: the in-memory rig would flatter
+/// exactly the bug it exists to catch.
 pub struct MemoryBroker {
     state: Mutex<BrokerState>,
 }
 
+impl Default for MemoryBroker {
+    /// One partition: one total order, which is what a test that has not thought about partitions
+    /// expects.
+    fn default() -> Self {
+        Self { state: Mutex::new(BrokerState { log: vec![Vec::new()], groups: BTreeMap::new() }) }
+    }
+}
+
 impl MemoryBroker {
+    /// A broker with one partition.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Queue `envelope` at the tail.
-    pub fn publish(&self, envelope: edax_event::EventEnvelope) {
-        lock(&self.state).queue.push_back(envelope);
+    /// A broker with `partitions` partitions; a key lands on Kafka's partition for it
+    /// ([`partition_for`]). `0` is a `codec` error.
+    pub fn with_partitions(partitions: u32) -> Result<Self, Error> {
+        // `partition_for` owns the refusal of zero partitions; asking it once keeps one message.
+        partition_for(b"", partitions)?;
+        let count = usize::try_from(partitions).map_err(Error::codec)?;
+        Ok(Self { state: Mutex::new(BrokerState { log: vec![Vec::new(); count], groups: BTreeMap::new() }) })
     }
 
-    /// Take the head of the queue as an unsettled delivery, or `None` at once when the queue is empty.
-    pub fn try_poll(&self) -> Option<PolledDelivery> {
+    /// Append `envelope` to its key's partition. Every group sees it.
+    pub fn publish(&self, envelope: EventEnvelope) {
         let mut state = lock(&self.state);
-        let envelope = state.queue.pop_front()?;
-        let token = state.tokens.issue();
-        state.unsettled.insert(token, envelope.clone());
-        Some(PolledDelivery { token, envelope })
-    }
-
-    /// Settle the delivery `token` as handled: the broker drops it. Returns `false` and changes
-    /// nothing if the token is not outstanding (already settled, or never issued), so the outstanding
-    /// count only ever falls by deliveries really in flight.
-    pub fn ack(&self, token: i64) -> bool {
-        lock(&self.state).unsettled.remove(&token).is_some()
-    }
-
-    /// Settle the delivery `token` as failed: its envelope is requeued at the tail, and the next poll
-    /// hands it out again under a fresh token. Returns `false` and requeues nothing if the token is not
-    /// outstanding.
-    pub fn nack(&self, token: i64) -> bool {
-        let mut state = lock(&self.state);
-        match state.unsettled.remove(&token) {
-            Some(envelope) => {
-                state.queue.push_back(envelope);
-                true
-            }
-            None => false,
+        let count = u32::try_from(state.log.len()).unwrap_or(u32::MAX);
+        // The broker always has a partition, so `partition_for` cannot refuse; the fallback is the first.
+        let partition = partition_for(envelope.aggregate_id.as_bytes(), count).unwrap_or(0);
+        if let Some(log) = usize::try_from(partition).ok().and_then(|p| state.log.get_mut(p)) {
+            log.push(envelope);
         }
     }
 
-    /// True only when nothing is queued *and* every polled delivery has been settled.
-    pub fn is_empty(&self) -> bool {
+    /// Fetch the next message for `group` as an unsettled delivery, or `None` at once when the
+    /// group has fetched everything. A group polled for the first time starts at the beginning of
+    /// the log, so a late subscriber still sees every message.
+    pub fn try_poll(&self, group: &str) -> Result<Option<PolledDelivery>, Error> {
+        let mut state = lock(&self.state);
+        let BrokerState { log, groups } = &mut *state;
+        let group = groups.entry(group.to_owned()).or_insert_with(|| Group::new(log.len()));
+        for step in 0..log.len() {
+            let p = (group.next + step) % log.len();
+            let (Some(records), Some(position)) = (log.get(p), group.position.get_mut(p)) else {
+                continue;
+            };
+            let Some(envelope) = usize::try_from(*position).ok().and_then(|o| records.get(o)) else {
+                continue;
+            };
+            let partition = i32::try_from(p).map_err(Error::codec)?;
+            let offset = *position;
+            let token = group.tracker.book(TOPIC, partition, offset)?;
+            *position = offset.saturating_add(1);
+            group.live.insert(token, p);
+            group.next = (p + 1) % log.len();
+            return Ok(Some(PolledDelivery { token, partition, offset, envelope: envelope.clone() }));
+        }
+        Ok(None)
+    }
+
+    /// Settle `token` of `group` as handled, and commit the group's watermark if it moved. `false`
+    /// and nothing changes if the token is not live: already settled, never issued, or retired by a
+    /// nack or a crash.
+    pub fn ack(&self, group: &str, token: i64) -> bool {
+        let mut state = lock(&self.state);
+        let Some(group) = state.groups.get_mut(group) else {
+            return false;
+        };
+        match group.tracker.ack(token) {
+            AckDecision::Settled => {
+                group.live.remove(&token);
+                group.commit();
+                true
+            }
+            AckDecision::Stale => false,
+        }
+    }
+
+    /// Settle `token` of `group` as failed: the group's fetch position on that partition rewinds to
+    /// the lowest unsettled offset, so it and every later message come back, and every delivery of
+    /// the partition already handed out is retired. `false` and nothing changes if the token is not
+    /// live.
+    pub fn nack(&self, group: &str, token: i64) -> bool {
+        let mut state = lock(&self.state);
+        let Some(group) = state.groups.get_mut(group) else {
+            return false;
+        };
+        let Some(&partition) = group.live.get(&token) else {
+            return false;
+        };
+        // `live` holds exactly the tracker's live tokens, so the `Stale` arm is unreachable; it answers
+        // like an unknown token rather than panicking.
+        match group.tracker.nack(token) {
+            NackDecision::Seek(target) => {
+                // The rewind retired every token of the partition, so none of them is live here either.
+                group.live.retain(|_, p| *p != partition);
+                if let Some(position) = group.position.get_mut(partition) {
+                    *position = target;
+                }
+                true
+            }
+            NackDecision::Stale => false,
+        }
+    }
+
+    /// Whether `token` of `group` still settles its delivery. A dispatcher skips a delivery that is
+    /// not live: a nack or a crash retired it, and its message comes back by a later poll.
+    pub fn is_live(&self, group: &str, token: i64) -> bool {
+        lock(&self.state).groups.get(group).is_some_and(|group| group.tracker.is_live(token))
+    }
+
+    /// Simulate the death of `group`'s consumer, or a rebalance: every delivery it holds is retired,
+    /// and every message above its committed watermark is fetched again. A group never polled is a
+    /// no-op: it starts at the beginning anyway.
+    pub fn crash(&self, group: &str) {
+        let mut state = lock(&self.state);
+        if let Some(group) = state.groups.get_mut(group) {
+            for partition in 0..group.position.len() {
+                group.tracker.reset(TOPIC, i32::try_from(partition).unwrap_or(i32::MAX));
+            }
+            group.live.clear();
+            group.position.clone_from(&group.committed);
+        }
+    }
+
+    /// True only when `group` has committed past every message in the log: nothing queued, nothing
+    /// in flight. A group never polled is empty only while the log is.
+    pub fn is_empty(&self, group: &str) -> bool {
         let state = lock(&self.state);
-        state.queue.is_empty() && state.unsettled.is_empty()
+        match state.groups.get(group) {
+            Some(group) => state
+                .log
+                .iter()
+                .zip(&group.committed)
+                .all(|(records, &committed)| i64::try_from(records.len()).is_ok_and(|len| len == committed)),
+            None => state.log.iter().all(Vec::is_empty),
+        }
     }
 }
 
 #[cfg(test)]
-// A test asserts on the value it just built; a panic there is the failure report.
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use edax_core::NO_DELIVERY;
+    use edax_core::NO_TOKEN;
 
     use crate::testkit::envelope;
 
-    /// One step of a broker scenario. `Poll` records what `try_poll` returned; the settle steps name
-    /// the i-th polled delivery, and `AckToken` settles a raw token that no poll issued.
+    const G: &str = "projection";
+    const H: &str = "saga";
+
+    /// An envelope of aggregate `agg` with id `"{agg}-{seq}"`, so a key's order reads off the ids.
+    fn keyed(agg: &str, seq: u64) -> EventEnvelope {
+        EventEnvelope { aggregate_id: agg.to_owned(), ..envelope(&format!("{agg}-{seq}"), Some(seq)) }
+    }
+
+    /// One step of a broker scenario. `Poll` records what `try_poll` returned for a group; the
+    /// settle and liveness steps name the i-th delivery polled, in that delivery's own group.
     enum Step {
         Publish(&'static str, u64),
-        Poll,
+        Poll(&'static str),
         Ack(usize),
         Nack(usize),
-        AckToken(i64),
+        AckToken(&'static str, i64),
+        NackToken(&'static str, i64),
+        Live(usize),
+        Crash(&'static str),
+    }
+
+    struct Case {
+        name: &'static str,
+        steps: &'static [Step],
+        /// Envelope ids each `Poll` produced, in order; `None` for an empty poll.
+        polled: &'static [Option<&'static str>],
+        /// What each settle and liveness step returned, in order.
+        answers: &'static [bool],
+        /// `is_empty` per group at the end.
+        empty: &'static [(&'static str, bool)],
+    }
+
+    fn run(broker: &MemoryBroker, case: &Case) {
+        let mut held: Vec<(&str, PolledDelivery)> = Vec::new();
+        let mut polled: Vec<Option<String>> = Vec::new();
+        let mut answers: Vec<bool> = Vec::new();
+        for step in case.steps {
+            match step {
+                Step::Publish(agg, seq) => broker.publish(keyed(agg, *seq)),
+                Step::Poll(group) => match broker.try_poll(group).expect("a poll never fails here") {
+                    Some(d) => {
+                        polled.push(Some(d.envelope.id.clone()));
+                        held.push((group, d));
+                    }
+                    None => polled.push(None),
+                },
+                Step::Ack(i) => answers.push(broker.ack(held[*i].0, held[*i].1.token)),
+                Step::Nack(i) => answers.push(broker.nack(held[*i].0, held[*i].1.token)),
+                Step::AckToken(group, token) => answers.push(broker.ack(group, *token)),
+                Step::NackToken(group, token) => answers.push(broker.nack(group, *token)),
+                Step::Live(i) => answers.push(broker.is_live(held[*i].0, held[*i].1.token)),
+                Step::Crash(group) => broker.crash(group),
+            }
+        }
+        let want: Vec<Option<String>> = case.polled.iter().map(|id| id.map(str::to_owned)).collect();
+        assert_eq!(polled, want, "{}: polled ids", case.name);
+        assert_eq!(answers, case.answers, "{}: settle and liveness answers", case.name);
+        for (group, empty) in case.empty {
+            assert_eq!(broker.is_empty(group), *empty, "{}: is_empty({group})", case.name);
+        }
     }
 
     #[test]
-    fn broker_settlement_branches() {
+    fn broker_branches() {
         use Step::*;
-        struct Case {
-            name: &'static str,
-            steps: &'static [Step],
-            /// Envelope ids `Poll` produced, in order; `None` for an empty poll.
-            polled: &'static [Option<&'static str>],
-            /// What each settle step returned, in order.
-            settled: &'static [bool],
-            empty: bool,
-        }
         let cases = [
-            Case { name: "a new broker is empty and try_poll returns nothing at once", steps: &[Poll], polled: &[None], settled: &[], empty: true },
-            Case { name: "a published envelope makes it non-empty", steps: &[Publish("a", 1)], polled: &[], settled: &[], empty: false },
+            Case {
+                name: "a new broker is empty and try_poll returns nothing at once",
+                steps: &[Poll(G)],
+                polled: &[None],
+                answers: &[],
+                empty: &[(G, true)],
+            },
+            Case {
+                name: "a published envelope makes every group non-empty, polled or not",
+                steps: &[Publish("a", 1)],
+                polled: &[],
+                answers: &[],
+                empty: &[(G, false), (H, false)],
+            },
             Case {
                 name: "a polled delivery is unsettled, so still non-empty",
-                steps: &[Publish("a", 1), Poll],
+                steps: &[Publish("a", 1), Poll(G)],
                 polled: &[Some("a-1")],
-                settled: &[],
-                empty: false,
+                answers: &[],
+                empty: &[(G, false)],
             },
             Case {
-                name: "ack settles it",
-                steps: &[Publish("a", 1), Poll, Ack(0)],
+                name: "ack settles and commits it",
+                steps: &[Publish("a", 1), Poll(G), Ack(0)],
                 polled: &[Some("a-1")],
-                settled: &[true],
-                empty: true,
+                answers: &[true],
+                empty: &[(G, true)],
             },
             Case {
-                name: "nack requeues it at the tail",
-                steps: &[Publish("a", 1), Publish("a", 2), Poll, Nack(0), Poll, Poll],
-                polled: &[Some("a-1"), Some("a-2"), Some("a-1")],
-                settled: &[true],
-                empty: false,
+                // Kafka's seek-back: the nacked message and the later one, already acked, both come
+                // back, in order. The duplicate of an acked message is the at-least-once hazard a
+                // queue that requeues at the tail never produces.
+                name: "a nack rewinds and redelivers every later message, acked or not, in order",
+                steps: &[Publish("a", 1), Publish("a", 2), Poll(G), Poll(G), Ack(1), Nack(0), Poll(G), Poll(G), Poll(G)],
+                polled: &[Some("a-1"), Some("a-2"), Some("a-1"), Some("a-2"), None],
+                answers: &[true, true],
+                empty: &[(G, false)],
             },
             Case {
-                name: "a nacked then acked delivery is settled",
-                steps: &[Publish("a", 1), Poll, Nack(0), Poll, Ack(1)],
+                // The copy of a-2 handed out before the rewind is dead: running it would apply a-2
+                // ahead of the redelivered a-1.
+                name: "a nack retires every delivery of its partition already handed out",
+                steps: &[Publish("a", 1), Publish("a", 2), Poll(G), Poll(G), Nack(0), Live(1), Ack(1), Nack(1)],
+                polled: &[Some("a-1"), Some("a-2")],
+                answers: &[true, false, false, false],
+                empty: &[(G, false)],
+            },
+            Case {
+                name: "a redelivered copy is live and settles",
+                steps: &[Publish("a", 1), Poll(G), Nack(0), Poll(G), Live(1), Ack(1)],
                 polled: &[Some("a-1"), Some("a-1")],
-                settled: &[true, true],
-                empty: true,
+                answers: &[true, true, true],
+                empty: &[(G, true)],
             },
             Case {
                 // Fails against a set of envelope ids: one ack would clear the single entry and the
                 // broker would report drained with a delivery still outstanding.
-                name: "the same id in flight twice needs two settlements",
-                steps: &[Publish("a", 1), Publish("a", 1), Poll, Poll, Ack(0)],
+                name: "the same id published twice needs two settlements",
+                steps: &[Publish("a", 1), Publish("a", 1), Poll(G), Poll(G), Ack(0)],
                 polled: &[Some("a-1"), Some("a-1")],
-                settled: &[true],
-                empty: false,
+                answers: &[true],
+                empty: &[(G, false)],
             },
             Case {
-                name: "the same id in flight twice is drained by two settlements",
-                steps: &[Publish("a", 1), Publish("a", 1), Poll, Poll, Ack(0), Ack(1)],
+                name: "the same id published twice is drained by two settlements",
+                steps: &[Publish("a", 1), Publish("a", 1), Poll(G), Poll(G), Ack(1), Ack(0)],
                 polled: &[Some("a-1"), Some("a-1")],
-                settled: &[true, true],
-                empty: true,
+                answers: &[true, true],
+                empty: &[(G, true)],
             },
             Case {
-                // Fails against an unguarded counter: the second ack would drive it to zero while
-                // the second delivery is still in flight.
                 name: "settling the same delivery twice is refused and loses nothing",
-                steps: &[Publish("a", 1), Publish("a", 2), Poll, Poll, Ack(0), Ack(0)],
+                steps: &[Publish("a", 1), Publish("a", 2), Poll(G), Poll(G), Ack(0), Ack(0)],
                 polled: &[Some("a-1"), Some("a-2")],
-                settled: &[true, false],
-                empty: false,
+                answers: &[true, false],
+                empty: &[(G, false)],
             },
             Case {
-                name: "after a refused double ack the real outstanding delivery still settles",
-                steps: &[Publish("a", 1), Publish("a", 2), Poll, Poll, Ack(0), Ack(0), Ack(1)],
-                polled: &[Some("a-1"), Some("a-2")],
-                settled: &[true, false, true],
-                empty: true,
-            },
-            Case {
-                // At-least-once: a stale ack after a nack must not drop the requeued envelope.
-                name: "ack after nack of the same token does not drop the requeued envelope",
-                steps: &[Publish("a", 1), Poll, Nack(0), Ack(0), Poll],
+                // At-least-once: a stale ack after a nack must not drop the redelivery.
+                name: "ack after nack of the same token does not drop the redelivery",
+                steps: &[Publish("a", 1), Poll(G), Nack(0), Ack(0), Poll(G)],
                 polled: &[Some("a-1"), Some("a-1")],
-                settled: &[true, false],
-                empty: false,
+                answers: &[true, false],
+                empty: &[(G, false)],
             },
             Case {
-                name: "nack twice requeues once",
-                steps: &[Publish("a", 1), Poll, Nack(0), Nack(0), Poll, Poll],
+                name: "nack twice rewinds once",
+                steps: &[Publish("a", 1), Poll(G), Nack(0), Nack(0), Poll(G), Poll(G)],
                 polled: &[Some("a-1"), Some("a-1"), None],
-                settled: &[true, false],
-                empty: false,
+                answers: &[true, false],
+                empty: &[(G, false)],
             },
             Case {
-                name: "a token no poll issued settles nothing",
-                steps: &[Publish("a", 1), Poll, AckToken(999), AckToken(NO_DELIVERY)],
+                name: "a token no poll issued settles nothing, in a group or outside any",
+                steps: &[
+                    Publish("a", 1),
+                    Poll(G),
+                    AckToken(G, 999),
+                    AckToken(G, NO_TOKEN),
+                    AckToken("nobody", 1),
+                    NackToken(G, 999),
+                    NackToken("nobody", 1),
+                ],
                 polled: &[Some("a-1")],
-                settled: &[false, false],
-                empty: false,
+                answers: &[false, false, false, false, false],
+                empty: &[(G, false)],
             },
             Case {
-                name: "polling keeps FIFO order across keys",
-                steps: &[Publish("a", 1), Publish("b", 1), Publish("a", 2), Poll, Poll, Poll],
+                name: "one partition keeps one total order across keys",
+                steps: &[Publish("a", 1), Publish("b", 1), Publish("a", 2), Poll(G), Poll(G), Poll(G)],
                 polled: &[Some("a-1"), Some("b-1"), Some("a-2")],
-                settled: &[],
-                empty: false,
+                answers: &[],
+                empty: &[(G, false)],
+            },
+            Case {
+                // The consumer died holding a-2 and a-3: their tokens are dead, and the group
+                // resumes from its commit, so both come back and a-1 does not.
+                name: "a crash redelivers everything above the committed watermark",
+                steps: &[
+                    Publish("a", 1),
+                    Publish("a", 2),
+                    Publish("a", 3),
+                    Poll(G),
+                    Poll(G),
+                    Poll(G),
+                    Ack(0),
+                    Crash(G),
+                    Live(1),
+                    Ack(2),
+                    Poll(G),
+                    Poll(G),
+                    Poll(G),
+                ],
+                polled: &[Some("a-1"), Some("a-2"), Some("a-3"), Some("a-2"), Some("a-3"), None],
+                answers: &[true, false, false],
+                empty: &[(G, false)],
+            },
+            Case {
+                // Acked out of order, so the watermark stayed at the unsettled a-1: the crash
+                // redelivers a-2 too, which was handled — the duplicate a restart produces.
+                name: "a crash redelivers an acked message above an unsettled one",
+                steps: &[Publish("a", 1), Publish("b", 1), Poll(G), Poll(G), Ack(1), Crash(G), Poll(G), Poll(G)],
+                polled: &[Some("a-1"), Some("b-1"), Some("a-1"), Some("b-1")],
+                answers: &[true],
+                empty: &[(G, false)],
+            },
+            Case {
+                name: "a crash of a group never polled is a no-op",
+                steps: &[Publish("a", 1), Crash(G), Poll(G)],
+                polled: &[Some("a-1")],
+                answers: &[],
+                empty: &[(G, false)],
+            },
+            Case {
+                // Fan-out: a projection and a saga each get every message, and settle on their own.
+                name: "every group reads every message",
+                steps: &[Publish("a", 1), Poll(G), Poll(H), Ack(0), Poll(G), Poll(H)],
+                polled: &[Some("a-1"), Some("a-1"), None, None],
+                answers: &[true],
+                empty: &[(G, true), (H, false)],
+            },
+            Case {
+                name: "a token is its own group's: another group's ack settles nothing",
+                steps: &[Publish("a", 1), Poll(G), Poll(H), AckToken(H, 999), Ack(1)],
+                polled: &[Some("a-1"), Some("a-1")],
+                answers: &[false, true],
+                empty: &[(G, false), (H, true)],
+            },
+            Case {
+                name: "a group polled late starts at the beginning",
+                steps: &[Publish("a", 1), Publish("a", 2), Poll(G), Ack(0), Poll(G), Ack(1), Poll(H), Poll(H)],
+                polled: &[Some("a-1"), Some("a-2"), Some("a-1"), Some("a-2")],
+                answers: &[true, true],
+                empty: &[(G, true), (H, false)],
             },
         ];
-        for c in cases {
-            let broker = MemoryBroker::new();
-            let mut held: Vec<i64> = Vec::new();
-            let mut polled: Vec<Option<String>> = Vec::new();
-            let mut settled: Vec<bool> = Vec::new();
-            for step in c.steps {
-                match step {
-                    Publish(agg, seq) => broker.publish(envelope(&format!("{agg}-{seq}"), Some(*seq))),
-                    Poll => match broker.try_poll() {
-                        Some(d) => {
-                            polled.push(Some(d.envelope.id.clone()));
-                            held.push(d.token);
-                        }
-                        None => polled.push(None),
-                    },
-                    Ack(i) => settled.push(broker.ack(held[*i])),
-                    Nack(i) => settled.push(broker.nack(held[*i])),
-                    AckToken(token) => settled.push(broker.ack(*token)),
-                }
+        for case in &cases {
+            run(&MemoryBroker::new(), case);
+        }
+    }
+
+    #[test]
+    fn partitions_keep_order_per_key_and_rewind_alone() {
+        assert_eq!(
+            MemoryBroker::with_partitions(0).err().map(|e| e.to_string()),
+            edax_kafka::partition_for(b"", 0).err().map(|e| e.to_string()),
+            "zero partitions is the placement kernel's refusal"
+        );
+        let broker = MemoryBroker::with_partitions(4).expect("four partitions");
+        // Kafka's placement, so a key lands where a Java producer would put it.
+        let keys = ["a", "b", "c", "d", "e", "f"];
+        for seq in 1..=3 {
+            for key in keys {
+                broker.publish(keyed(key, seq));
             }
-            let want: Vec<Option<String>> = c.polled.iter().map(|id| id.map(str::to_owned)).collect();
-            assert_eq!(polled, want, "{}: polled ids", c.name);
-            assert_eq!(settled, c.settled, "{}: settle results", c.name);
-            assert_eq!(broker.is_empty(), c.empty, "{}: is_empty()", c.name);
+        }
+        let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut held: Vec<PolledDelivery> = Vec::new();
+        while let Some(d) = broker.try_poll(G).expect("poll") {
+            seen.entry(d.envelope.aggregate_id.clone()).or_default().push(d.envelope.id.clone());
+            let want = u32::try_from(d.partition).expect("partition");
+            assert_eq!(partition_for(d.envelope.aggregate_id.as_bytes(), 4).ok(), Some(want), "Kafka's placement");
+            held.push(d);
+        }
+        for key in keys {
+            assert_eq!(seen[key], [format!("{key}-1"), format!("{key}-2"), format!("{key}-3")], "per-key order");
+        }
+        // Round robin: the first polls visit every partition that holds a message before any repeats.
+        let used: std::collections::BTreeSet<i32> = held.iter().map(|d| d.partition).collect();
+        let first_round: std::collections::BTreeSet<i32> = held.iter().take(used.len()).map(|d| d.partition).collect();
+        assert!(used.len() > 1, "the keys spread over several partitions");
+        assert_eq!(first_round, used, "one busy partition does not starve the others");
+
+        // A nack rewinds its own partition only: the other partitions' deliveries stay live.
+        let first = held.first().expect("polled").clone();
+        assert!(broker.nack(G, first.token));
+        for d in &held[1..] {
+            assert_eq!(broker.is_live(G, d.token), d.partition != first.partition, "{}", d.envelope.id);
         }
     }
 
@@ -243,38 +530,38 @@ mod tests {
     fn broker_tokens_are_unique_per_delivery_and_never_the_placeholder() {
         let broker = MemoryBroker::new();
         broker.publish(envelope("evt-1", Some(1)));
-        let first = broker.try_poll().expect("queued");
-        assert_ne!(first.token, NO_DELIVERY, "a live delivery never carries the placeholder token");
+        let first = broker.try_poll(G).expect("poll").expect("queued");
+        assert_ne!(first.token, NO_TOKEN, "a live delivery never carries the placeholder token");
+        assert_eq!((first.partition, first.offset), (0, 0));
         assert_eq!(first.envelope, envelope("evt-1", Some(1)), "the envelope crosses field for field");
 
         // A redelivery is a new delivery: it settles by its own token, not the stale one.
-        assert!(broker.nack(first.token));
-        let again = broker.try_poll().expect("requeued");
+        assert!(broker.nack(G, first.token));
+        let again = broker.try_poll(G).expect("poll").expect("redelivered");
         assert_ne!(again.token, first.token);
-        assert!(!broker.ack(first.token), "the stale token is dead");
-        assert!(broker.ack(again.token));
-        assert!(broker.is_empty());
+        assert!(!broker.ack(G, first.token), "the stale token is dead");
+        assert!(broker.ack(G, again.token));
+        assert!(broker.is_empty(G));
     }
 
-    /// The queue and the accounting sit behind one lock, so contending pollers each get a distinct
-    /// delivery and nothing is handed out twice or lost.
+    /// The log and the accounting sit behind one lock, so contending pollers of one group each get
+    /// a distinct delivery and nothing is handed out twice or lost.
     #[test]
-    fn concurrent_polls_hand_each_envelope_out_once() {
+    fn concurrent_polls_hand_each_message_out_once() {
         let broker = MemoryBroker::new();
         for seq in 1..=4 {
             broker.publish(envelope(&format!("evt-{seq}"), Some(seq)));
         }
         let mut deliveries: Vec<PolledDelivery> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..8).map(|_| s.spawn(|| broker.try_poll())).collect();
+            let handles: Vec<_> = (0..8).map(|_| s.spawn(|| broker.try_poll(G).expect("poll"))).collect();
             handles.into_iter().filter_map(|h| h.join().expect("poller thread")).collect()
         });
-        deliveries.sort_by_key(|d| d.token);
+        deliveries.sort_by_key(|d| d.offset);
         assert_eq!(deliveries.iter().map(|d| d.envelope.id.as_str()).collect::<Vec<_>>(), ["evt-1", "evt-2", "evt-3", "evt-4"]);
-        assert!(deliveries.windows(2).all(|w| w[0].token < w[1].token), "tokens are distinct and monotonic");
-        assert!(!broker.is_empty(), "all four are unsettled");
+        assert!(!broker.is_empty(G), "all four are unsettled");
         for d in &deliveries {
-            assert!(broker.ack(d.token));
+            assert!(broker.ack(G, d.token));
         }
-        assert!(broker.is_empty());
+        assert!(broker.is_empty(G));
     }
 }

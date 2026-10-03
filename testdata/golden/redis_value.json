@@ -4,86 +4,86 @@
     "op": "claim",
     "owner": "00000000000000000000000000000000",
     "payload_hash": 11258580006047770801,
-    "value": "00000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"pending\":true}"
+    "value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
     "name": "minted_owner_token",
     "op": "claim",
     "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
     "payload_hash": 11258580006047770801,
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"pending\":true}"
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
     "name": "hash_at_u64_max",
     "op": "claim",
     "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
     "payload_hash": 18446744073709551615,
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":18446744073709551615,\"result\":null,\"error\":null,\"pending\":true}"
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":18446744073709551615,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
     "name": "hash_zero",
     "op": "claim",
     "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
     "payload_hash": 0,
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":0,\"result\":null,\"error\":null,\"pending\":true}"
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":0,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "cached_success",
-    "op": "record",
-    "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
-    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"pending\":false}",
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"pending\":false}"
+    "op": "settled",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "cached_success_with_null_result",
-    "op": "record",
-    "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
-    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"pending\":false}",
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"pending\":false}"
+    "op": "settled",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}",
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "cached_failure",
-    "op": "record",
-    "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
-    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}",
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":\"codec: bad payload\",\"pending\":false}"
+    "op": "settled",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}",
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "non_ascii_result",
-    "op": "record",
-    "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
-    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":{\"note\":\"café ☕ 🦀\"},\"error\":null,\"pending\":false}",
-    "value": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"note\":\"café ☕ 🦀\"},\"error\":null,\"pending\":false}"
+    "op": "settled",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":{\"note\":\"café ☕ 🦀\"},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"note\":\"café ☕ 🦀\"},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "empty_record",
-    "op": "record",
-    "owner": "00000000000000000000000000000000",
+    "op": "settled",
     "record_json": "",
-    "value": "00000000000000000000000000000000"
+    "value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d"
   },
   {
     "name": "claim_value_round_trips",
     "op": "split",
-    "raw_hex": "30303030303030303030303030303030303030303030303030303030303030307b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a6e756c6c2c226572726f72223a6e756c6c2c2270656e64696e67223a747275657d",
+    "raw_hex": "3130303030303030303030303030303030303030303030303030303030303030307b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a6e756c6c2c226572726f72223a6e756c6c2c226572726f725f636f6465223a6e756c6c2c2270656e64696e67223a747275657d",
     "want": {
       "owner": "00000000000000000000000000000000",
-      "record": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"pending\":true}"
+      "record": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
     }
   },
   {
-    "name": "record_value_round_trips",
+    "name": "settled_value_round_trips",
     "op": "split",
-    "raw_hex": "30313930623563386531663337633462396132643565366637613862396330647b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a7b2262616c616e63655f63656e7473223a343230307d2c226572726f72223a6e756c6c2c2270656e64696e67223a66616c73657d",
+    "raw_hex": "3130313930623563386531663337633462396132643565366637613862396330647b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a7b226163636f756e745f6964223a22616363742d31222c2262616c616e63655f63656e7473223a343230307d2c226572726f72223a6e756c6c2c226572726f725f636f6465223a6e756c6c2c2270656e64696e67223a66616c73657d",
     "want": {
       "owner": "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d",
-      "record": "{\"payload_hash\":11258580006047770801,\"result\":{\"balance_cents\":4200},\"error\":null,\"pending\":false}"
+      "record": "{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
     }
   },
   {
     "name": "owner_only_leaves_an_empty_record",
     "op": "split",
-    "raw_hex": "3030303030303030303030303030303030303030303030303030303030303030",
+    "raw_hex": "313030303030303030303030303030303030303030303030303030303030303030",
     "want": {
       "owner": "00000000000000000000000000000000",
       "record": ""
@@ -92,18 +92,34 @@
   {
     "name": "non_hex_owner_is_accepted_on_read",
     "op": "split",
-    "raw_hex": "7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7b7d",
+    "raw_hex": "317a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7b7d",
     "want": {
       "owner": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
       "record": "{}"
     }
   },
   {
+    "name": "unversioned_value_is_refused",
+    "op": "split",
+    "raw_hex": "30313930623563386531663337633462396132643565366637613862396330647b7d",
+    "want": {
+      "error": "codec: stored value has layout version '0'; this kernel reads version '1'"
+    }
+  },
+  {
+    "name": "another_layout_version_is_refused",
+    "op": "split",
+    "raw_hex": "3230313930623563386531663337633462396132643565366637613862396330647b7d",
+    "want": {
+      "error": "codec: stored value has layout version '2'; this kernel reads version '1'"
+    }
+  },
+  {
     "name": "one_byte_short_of_a_token",
     "op": "split",
-    "raw_hex": "30303030303030303030303030303030303030303030303030303030303030",
+    "raw_hex": "3130303030303030303030303030303030303030303030303030303030303030",
     "want": {
-      "error": "codec: stored value is 31 bytes, shorter than the 32-character owner token"
+      "error": "codec: stored value has no 32-character owner token"
     }
   },
   {
@@ -111,13 +127,13 @@
     "op": "split",
     "raw_hex": "",
     "want": {
-      "error": "codec: stored value is 0 bytes, shorter than the 32-character owner token"
+      "error": "codec: stored value is empty"
     }
   },
   {
     "name": "not_utf8",
     "op": "split",
-    "raw_hex": "30ff303030303030303030303030303030303030303030303030303030303030",
+    "raw_hex": "31ff30303030303030303030303030303030303030303030303030303030303030",
     "want": {
       "error": "codec: stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1"
     }
@@ -125,9 +141,9 @@
   {
     "name": "multibyte_straddles_the_token_width",
     "op": "split",
-    "raw_hex": "30303030303030303030303030303030303030303030303030303030303030c3a97b7d",
+    "raw_hex": "3130303030303030303030303030303030303030303030303030303030303030c3a97b7d",
     "want": {
-      "error": "codec: stored value does not split into an owner token at 32 bytes"
+      "error": "codec: stored value has no 32-character owner token"
     }
   }
 ]

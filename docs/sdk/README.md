@@ -102,12 +102,10 @@ implementing.
 
 ## Rust and Python parity
 
-Both SDKs call the same kernels, so every shared decision matches. The orchestration differs where
-the language does. [Rust parity](rust-parity.md) is the one home for the name map and the
-differences.
-
-Two asymmetries are deliberate, not gaps. Rust has no ambient transaction, and Rust has no guard
-that owns the transaction.
+The Rust `edax` crate is a reference model, not a deployable SDK. It holds this SDK's orchestration to
+the same kernels from a second language. [Rust parity](rust-parity.md) says what it covers and where it
+differs on purpose. It has no ambient transaction: a nested unit of work on one database is refused
+instead. And it has no guard that owns the transaction.
 
 ## Where to start
 

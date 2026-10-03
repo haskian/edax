@@ -5,5 +5,6 @@ pub mod memory;
 
 pub use broker::MemoryBroker;
 pub use memory::{
-    MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
+    MemoryEventStore, MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemorySagaStore, MemoryTransactor,
+    MemoryTx,
 };

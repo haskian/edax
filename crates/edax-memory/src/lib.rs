@@ -8,15 +8,17 @@
 //! [`MemoryEventStore`], [`MemoryProjectionStore`], [`MemoryIdempotencyStore`] and [`MemorySagaStore`]
 //! are views over one transactor, so a claim, a projection row and a saga instance commit or roll
 //! back with the events they belong to. [`MemoryBroker`] is separate: a broker is not a store
-//! participant. A failure is a typed [`edax_core::AdapterError`], one variant per code these stores
-//! emit: `concurrency`, `codec`, `store` and `bad_handle` of the kernel's
-//! [`ErrorCode`](edax_core::ErrorCode) taxonomy. Its `Display` is the
-//! `"<code>: <message>"` wire form a binding crosses and every SDK maps to its typed errors. Bring a
-//! durable store to production; a cross-process store like Redis is each SDK's own concern.
+//! participant. A failure is the kernel's [`edax_core::Error`], carrying one of the codes these
+//! stores emit: `concurrency`, `codec`, `store` and `bad_handle` of the
+//! [`ErrorCode`](edax_core::ErrorCode) taxonomy. Its `Display` is the `"<code>: <message>"` wire form
+//! a binding crosses and every SDK maps to its typed errors.
+//!
+//! The API is typed: versions are the kernel's `u64`, documents and saga state are JSON values, and a
+//! query is the kernel's [`Query`](edax_cqrs::Query). JSON text is a binding's boundary shape, so
+//! the binding converts to them, not this crate. The idempotency store's claims are fenced on a handle,
+//! as Redis fences on the claim value, and [`MemoryIdempotencyStore::expire`] lapses one, so a test can
+//! rehearse a takeover. Bring a durable store to production; the cross-process ledger is `edax-redis`.
 
-// These stores run inside a native binding: an unwinding panic crosses the host language's FFI
-// boundary, where it cannot be caught. Every fallible step returns `AdapterError` instead.
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 mod broker;
 mod event;
@@ -28,9 +30,8 @@ mod tx;
 mod testkit;
 
 pub use broker::{MemoryBroker, PolledDelivery};
-pub use edax_core::NO_DELIVERY;
 pub use event::{MemoryEventStore, Snapshot};
-pub use idempotency::MemoryIdempotencyStore;
-pub use projection::MemoryProjectionStore;
-pub use saga::MemorySagaStore;
-pub use tx::{MemoryTransactor, NO_TX};
+pub use idempotency::{Claimed, MemoryIdempotencyStore};
+pub use projection::{MemoryProjectionStore, Versioned};
+pub use saga::{MemorySagaStore, SagaRow};
+pub use tx::{Document, MemoryTransactor, NO_TX};

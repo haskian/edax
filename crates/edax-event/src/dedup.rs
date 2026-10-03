@@ -1,37 +1,26 @@
-//! Staleness (ignore-old) decision for ordered consumers.
+//! The consumer's deduplication input: which key and which hash an event's idempotency guard
+//! claims, pinned by `testdata/golden/event_idempotency.json`.
 //!
-//! A consumer keeps the highest sequence it has processed per aggregate. Before handling an
-//! event it asks: should I apply this, or is it stale (a redelivery / out-of-order older event)?
-//!
-//! This is distinct from command idempotency-by-key (`edax-cqrs`): here a stale event is dropped by
-//! comparing per-aggregate sequence; there a duplicate command is replayed by comparing a key.
+//! Ordering is a different question with a different answer: [`crate::staleness`] skips an event
+//! older than the per-aggregate watermark by comparing sequences; this module names the message so
+//! a ledger can tell a redelivery of one event from a second event.
 
-/// Returns whether an incoming event should be applied given the last-applied sequence.
-///
-/// - no sequence on the event  -> always apply (nothing to order against)
-/// - nothing stored yet         -> apply
-/// - stored strictly greater    -> drop (stale); else apply
-///
-/// The comparison is strict `>`: an event whose sequence equals the stored one is re-applied, so
-/// an at-least-once handler stays responsible for its own effect-idempotency on the boundary case.
-pub fn should_apply(stored: Option<u64>, incoming: Option<u64>) -> bool {
-    match (stored, incoming) {
-        (Some(stored), Some(incoming)) => stored <= incoming,
-        _ => true,
-    }
+use crate::domain::EventEnvelope;
+
+/// What an event's idempotency guard claims: the key and the payload hash bound to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventIdempotency<'a> {
+    /// The envelope id. A message id, not the content: two events with equal bodies are still two
+    /// events, and a redelivery of one carries the same id.
+    pub key: &'a str,
+    /// FNV-1a over the raw `event.data` bytes, the same function as `edax_cqrs::payload_hash`. Raw,
+    /// not canonical: the producer encoded the bytes once and every redelivery carries them as is,
+    /// so two bodies under one id are a different payload even when they mean the same.
+    pub payload_hash: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn idempotency_rules() {
-        assert!(should_apply(None, None));
-        assert!(should_apply(Some(5), None));
-        assert!(should_apply(None, Some(0)));
-        assert!(should_apply(Some(5), Some(6)));
-        assert!(should_apply(Some(5), Some(5))); // equal -> apply (strict >)
-        assert!(!should_apply(Some(5), Some(4))); // stale -> drop
-    }
+/// The key and hash an idempotency guard claims for `env`. One rule for every SDK, so two consumers
+/// of one stream sharing a ledger bind the same key to the same hash.
+pub fn event_idempotency(env: &EventEnvelope) -> EventIdempotency<'_> {
+    EventIdempotency { key: &env.id, payload_hash: edax_core::fnv1a64(&env.event.data) }
 }

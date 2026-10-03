@@ -4,6 +4,13 @@
 //! `idempotent_in`, a projection store, a saga store, all over one `MemoryTransactor`. The Python
 //! suite runs the same four (`tests/test_transactor.py`), because the contract is cross-language.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "an integration test's helpers panic as its failure report, like the tests that call them"
+)]
+
 mod support;
 
 use support::Shared;
@@ -11,9 +18,9 @@ use support::Shared;
 use std::sync::Arc;
 
 use edax::{
-    idempotent_in, Aggregate, AggregateCodec, Command, CommandBus, Entity, Error, EventCodec, EventStore,
+    idempotent_in, Aggregate, AggregateCodec, Command, CommandBus, Entity, Error, ErrorCode, EventCodec, EventStore, HandlerError,
     IdempotencyStore, MemoryEventStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
-    ProjectionStore, Repository, Root, SagaStore, Transactor,
+    Outbox, ProjectionStore, Repository, Root, SagaStore, Transactor,
 };
 use edax_event::Event;
 use serde::Serialize;
@@ -49,8 +56,8 @@ impl EventCodec for AccountEvents {
         Ok(Event { name: "Deposited".into(), version: 1, data: e.0.to_string().into_bytes() })
     }
     fn unmarshal(&self, raw: &Event) -> Result<Deposited, Error> {
-        let text = std::str::from_utf8(&raw.data).map_err(|e| Error::Codec(e.to_string()))?;
-        text.parse().map(Deposited).map_err(|e: std::num::ParseIntError| Error::Codec(e.to_string()))
+        let text = std::str::from_utf8(&raw.data).map_err(Error::codec)?;
+        text.parse().map(Deposited).map_err(Error::codec)
     }
 }
 
@@ -63,9 +70,9 @@ impl AggregateCodec for AccountCodec {
     fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<Account, Error> {
         let balance = match data {
             Some(bytes) => std::str::from_utf8(bytes)
-                .map_err(|e| Error::Codec(e.to_string()))?
+                .map_err(Error::codec)?
                 .parse()
-                .map_err(|e: std::num::ParseIntError| Error::Codec(e.to_string()))?,
+                .map_err(Error::codec)?,
             None => 0,
         };
         Ok(Account { root: Root::new(id, version), balance })
@@ -107,7 +114,7 @@ struct Rig {
     /// The handle the guard and the handler enlist in: the host sets it for the dispatch.
     current: Arc<Shared<MemoryTx>>,
     calls: Arc<Shared<usize>>,
-    bus: CommandBus<Deposit, i64>,
+    bus: CommandBus,
 }
 
 type MemoryIdempotencyStore = edax::MemoryIdempotencyStore<i64>;
@@ -121,24 +128,22 @@ fn rig() -> Rig {
     let calls = Arc::new(Shared::default());
 
     let provider = Arc::clone(&current);
-    let mut bus: CommandBus<Deposit, i64> = CommandBus::new().with(idempotent_in(
+    let guard = idempotent_in(
         Arc::clone(&claims) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
         |c: &Deposit| Some(c.request_id.clone()),
         move |_: &Deposit| provider.get(),
-    ));
+    );
     let (handler_repo, handler_tx, handler_calls) = (Arc::clone(&repo), Arc::clone(&current), Arc::clone(&calls));
-    bus.register(
-        "Deposit",
-        Box::new(move |cmd: &Deposit| {
-            handler_calls.set(handler_calls.get() + 1);
-            let mut tx = handler_tx.get();
-            let mut account = handler_repo.load_in(&mut tx, &cmd.account_id)?;
-            account.apply(Deposited(cmd.amount));
-            handler_repo.save_in(&mut tx, &mut account)?;
-            Ok(account.balance)
-        }),
-    )
-    .expect("one handler");
+    let handler: edax::Handler<Deposit, i64> = Box::new(move |cmd: &Deposit| {
+        handler_calls.set(handler_calls.get() + 1);
+        let mut tx = handler_tx.get();
+        let mut account = handler_repo.load_in(&mut tx, &cmd.account_id)?;
+        account.apply(Deposited(cmd.amount));
+        handler_repo.save_in(&mut tx, &mut account)?;
+        Ok(account.balance)
+    });
+    let mut bus = CommandBus::new();
+    bus.register("Deposit", edax::wrap(handler, vec![guard])).expect("one handler");
 
     Rig { projections: db.projection_store(), sagas: db.saga_store(), db, events, claims, repo, current, calls, bus }
 }
@@ -151,18 +156,18 @@ fn next_id() -> String {
 
 impl Rig {
     /// Dispatch `cmd` with the guard and the handler enlisted in `tx`.
-    fn dispatch_in(&self, tx: MemoryTx, cmd: &Deposit) -> Result<i64, Error> {
+    fn dispatch_in(&self, tx: MemoryTx, cmd: &Deposit) -> Result<i64, HandlerError> {
         self.current.set(tx);
         let out = self.bus.dispatch(cmd);
         self.current.set(MemoryTx::auto_commit());
-        out.map_err(|e| Error::Store(e.to_string()))
+        out
     }
 
     /// Stage one write on every participant under `tx`, through the SDK's own orchestration.
-    fn write_everything(&self, tx: &mut MemoryTx) -> Result<(), Error> {
+    fn write_everything(&self, tx: &mut MemoryTx) -> Result<(), HandlerError> {
         self.dispatch_in(*tx, &deposit("req-A", 100))?;
         self.projections.save(tx, &mut Entity { id: "acct-1".into(), version: 0, document: json!({"balance": 100}) })?;
-        self.sagas.save(tx, "order-1", &"open".to_string(), 0)?;
+        self.sagas.save(tx, "order-1", &"open".to_string(), 0, &[])?;
         Ok(())
     }
 
@@ -174,7 +179,7 @@ impl Rig {
             // A losing claim proves the key is taken; a winning one must be undone, or the probe
             // itself would take the key.
             let probe = self.db.begin().expect("a probe transaction");
-            let taken = !matches!(self.claims.claim(&mut { probe }, "req-A", 0), Ok(edax::Claim::Won));
+            let taken = !matches!(self.claims.claim(&mut { probe }, "req-A", 0), Ok(edax::Claim::Won(_)));
             self.db.rollback(probe);
             taken
         };
@@ -206,9 +211,9 @@ fn an_error_inside_a_transaction_leaves_nothing_behind() {
     let rig = rig();
     let out = rig.db.transaction(|tx| {
         rig.write_everything(tx)?;
-        Err::<(), _>(Error::Store("a later write in the same unit of work failed".into()))
+        Err::<(), HandlerError>(Error::store("a later write in the same unit of work failed").into())
     });
-    assert!(matches!(out, Err(Error::Store(_))), "got {out:?}");
+    assert!(matches!(&out, Err(e) if e.downcast_ref::<Error>().is_some_and(|e| e.code == ErrorCode::Store)), "got {out:?}");
     assert_eq!(rig.calls.get(), 1, "the handler ran once");
     assert_eq!(rig.visible(), NOTHING);
 }
@@ -220,7 +225,7 @@ fn a_rolled_back_claim_releases_the_key_so_the_next_dispatch_reruns_the_handler(
     let rig = rig();
     let out = rig.db.transaction(|tx| {
         rig.dispatch_in(*tx, &deposit("req-A", 100))?;
-        Err::<(), _>(Error::Store("a later write in the same unit of work failed".into()))
+        Err::<(), HandlerError>(Error::store("a later write in the same unit of work failed").into())
     });
     assert!(out.is_err());
     assert_eq!(rig.calls.get(), 1);
@@ -247,9 +252,12 @@ fn a_transaction_reads_its_own_uncommitted_writes_which_nobody_else_sees() {
             rig.repo.save_in(tx, &mut account)?;
             assert_eq!(rig.repo.load_in(tx, "acct-1")?.balance, 40, "read-your-writes through the repository");
             assert_eq!(rig.events.load(tx, "acct-1", 0)?.len(), 1, "read-your-writes through the store");
-            assert_eq!(rig.repo.load("acct-1")?.balance, 0, "a load in its own unit of work sees committed state");
+            let outside = rig.repo.load_in(&mut MemoryTx::auto_commit(), "acct-1")?;
+            assert_eq!(outside.balance, 0, "an auto-commit read sees committed state");
+            // `load` opens a unit of work of its own, which this open one on the same database refuses.
+            assert!(rig.repo.load("acct-1").is_err_and(|e| e.code == ErrorCode::BadHandle), "a nested unit of work");
             assert_eq!(rig.visible(), NOTHING, "nothing is visible outside before the commit");
-            Ok(())
+            Ok::<(), Error>(())
         })
         .expect("clean unit of work");
     assert_eq!(rig.repo.load("acct-1").expect("load").balance, 40, "visible once committed");
@@ -263,7 +271,7 @@ fn a_commit_makes_every_participants_write_visible_together() {
         .transaction(|tx| {
             rig.write_everything(tx)?;
             assert_eq!(rig.visible(), HELD, "nothing landed before the commit; the claim key is held");
-            Ok(())
+            Ok::<(), HandlerError>(())
         })
         .expect("clean unit of work");
     assert_eq!(rig.visible(), EVERYTHING);
@@ -285,7 +293,7 @@ impl Transactor for CommitFails {
 
     fn commit(&self, tx: MemoryTx) -> Result<(), Error> {
         self.0.rollback(tx); // nothing lands
-        Err(Error::Store("commit failed; nothing landed".into()))
+        Err(Error::store("commit failed; nothing landed"))
     }
 
     fn rollback(&self, tx: MemoryTx) {
@@ -315,7 +323,9 @@ impl EventStore for CommitFails {
     ) -> Result<(), Error> {
         self.0.append(tx, aggregate_id, expected_version, events)
     }
+}
 
+impl Outbox<edax_event::EventEnvelope> for CommitFails {
     fn unpublished(&self, limit: usize) -> Result<Vec<edax_event::EventEnvelope>, Error> {
         self.0.unpublished(limit)
     }
@@ -339,7 +349,7 @@ fn a_failed_commit_leaves_the_aggregate_holding_its_pending_events() {
     account.apply(Deposited(5));
 
     let err = repo.save(&mut account).expect_err("the commit fails");
-    assert!(matches!(err, Error::Store(_)), "got {err:?}");
+    assert!(matches!(err, Error { code: ErrorCode::Store, .. }), "got {err:?}");
     assert_eq!(account.root().pending().len(), 2, "a failed commit must not consume the pending events");
     assert_eq!(account.root().version, 0);
     // Read through the honest view: the repository's own `load` would fail on the same commit.
@@ -359,10 +369,67 @@ fn save_in_a_callers_transaction_resets_before_the_caller_commits() {
     let out: Result<(), Error> = rig.db.transaction(|tx| {
         rig.repo.save_in(tx, &mut account)?;
         assert!(account.root().pending().is_empty(), "reset as soon as the store accepts the writes");
-        Err(Error::Store("a later write in the same unit of work failed".into()))
+        Err(Error::store("a later write in the same unit of work failed"))
     });
 
-    assert!(matches!(out, Err(Error::Store(_))), "got {out:?}");
+    assert!(matches!(out, Err(Error { code: ErrorCode::Store, .. })), "got {out:?}");
     assert!(account.root().pending().is_empty(), "the rollback cannot put them back");
     assert_eq!(rig.repo.load("acct-caller-tx").expect("load").balance, 0, "nothing landed");
+}
+
+/// A repository call that opens its own unit of work, made inside a host's body on the same database,
+/// would commit on its own clean exit, and the host's rollback could not take it back (07#F4). It is
+/// refused before anything begins, whichever way the host's body then ends, so nothing it wrote
+/// commits apart from the host. The `_in` form joins the open unit of work instead.
+#[test]
+fn a_unit_of_work_opened_inside_a_host_body_on_the_same_database_is_refused() {
+    type Nested = fn(&Rig) -> Result<(), Error>;
+    struct Case {
+        name: &'static str,
+        nested: Nested,
+    }
+    let cases: [Case; 4] = [
+        Case {
+            name: "repository_save",
+            nested: |rig| {
+                let mut account = rig.repo.load_in(&mut MemoryTx::auto_commit(), "acct-1")?;
+                account.apply(Deposited(40));
+                rig.repo.save(&mut account).map(|_| ())
+            },
+        },
+        Case { name: "repository_load", nested: |rig| rig.repo.load("acct-1").map(|_| ()) },
+        Case { name: "the_event_store_as_transactor", nested: |rig| rig.events.transaction(|_| Ok::<_, Error>(())) },
+        Case { name: "a_clone_of_the_transactor", nested: |rig| rig.db.clone().transaction(|_| Ok::<_, Error>(())) },
+    ];
+    for case in cases {
+        for host_commits in [true, false] {
+            let name = format!("{} (host commits: {host_commits})", case.name);
+            let rig = rig();
+            let out = rig.db.transaction(|tx| {
+                let mut row = Entity { id: "acct-1".into(), version: 0, document: json!({"balance": 40}) };
+                rig.projections.save(tx, &mut row)?;
+                let refused = (case.nested)(&rig);
+                assert!(refused.as_ref().is_err_and(|e| e.code == ErrorCode::BadHandle), "{name}: {refused:?}");
+                if host_commits { Ok(()) } else { Err(Error::store("the host's later write failed")) }
+            });
+            assert_eq!(out.is_ok(), host_commits, "{name}");
+            assert!(rig.events.load(&mut MemoryTx::auto_commit(), "acct-1", 0).unwrap().is_empty(), "{name}: no event committed");
+            let row = rig.projections.get(&mut MemoryTx::auto_commit(), "acct-1").unwrap();
+            assert_eq!(row.is_some(), host_commits, "{name}: the host's own write followed the host");
+        }
+    }
+
+    // Two databases nest: a unit of work on another one commits on its own, as it always did.
+    let rig = rig();
+    let other = MemoryTransactor::new();
+    let other_events = other.event_store();
+    let other_repo = Repository::new(other_events.clone(), AccountEvents, AccountCodec).with_clock(next_id, || 0);
+    let out: Result<(), Error> = rig.db.transaction(|_| {
+        let mut account = other_repo.load("acct-9")?;
+        account.apply(Deposited(5));
+        other_repo.save(&mut account)?;
+        Err(Error::store("the outer database rolls back"))
+    });
+    assert!(out.is_err());
+    assert_eq!(other_events.load(&mut MemoryTx::auto_commit(), "acct-9", 0).unwrap().len(), 1, "the other database committed");
 }

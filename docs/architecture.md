@@ -100,7 +100,7 @@ flowchart LR
 | `edax-event` | partition, codec, upcast, causation, dedup, sequence, the envelope shape |
 | `edax-cqrs` | canonical JSON, payload hash, command hash, the idempotency record and decision |
 | `edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, written once and shared by both SDKs |
-| `edax-kafka` | the Kafka record: the key rule, the four contract headers, the media types, the poison id, and the token-settled offset watermark |
+| `edax-kafka` | the Kafka record: the key rule, the `content-type` header, broker placement (Java murmur2), the media types, the poison id, and the token-settled offset watermark |
 | `edax-redis` | the Redis ledger: the stored value layout, the owner token that fences it, and the two compare-and-write Lua scripts |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
@@ -170,7 +170,7 @@ across versions or languages, it belongs in a kernel with a golden vector.
 | | Rust SDK | Python SDK |
 |---|---|---|
 | concurrency | synchronous, dispatcher workers are operating-system threads | `asyncio`, workers are tasks |
-| transaction handle | passed explicitly, or published by the host through a `Fn() -> Tx` provider | ambient, found through `current_tx()` in a `contextvars` variable |
+| transaction handle | passed explicitly, or published by the host through a `Fn() -> Tx` provider | ambient, found through `current_tx(transactor)` in a `contextvars` map keyed by database |
 | backends shipped | in-memory only; the `edax-kafka` and `edax-redis` kernels ship with no client shell over them | in-memory, Redis, Kafka |
 | guard that owns the transaction | not implemented | `unit_of_work=` on both guards |
 

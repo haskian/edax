@@ -7,10 +7,10 @@
 # which pytest resolves by rootdir but a type checker will not guess.
 root = ["crates/edax-py/python", "crates/edax-py/tests"]
 python = "crates/edax-py/.venv"
-# The floor the package actually supports (abi3-py39, requires-python >=3.9), not whatever the
-# local interpreter happens to be — otherwise a 3.10-only construct type-checks here and breaks
-# for a user on 3.9.
-python-version = "3.9"
+# The floor the package actually supports (abi3-py310, requires-python >=3.10), not whatever the
+# local interpreter happens to be — otherwise a 3.11-only construct type-checks here and breaks
+# for a user on 3.10.
+python-version = "3.10"
 
 [src]
 include = ["crates/edax-py/python", "crates/edax-py/tests", "examples/py"]

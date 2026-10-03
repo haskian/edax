@@ -17,7 +17,6 @@ and the two travel together because the query evaluates the filter.
 | `canonical_json` | the one byte form of a JSON value, whatever encoder produced it |
 | `payload_hash` | the stable 64-bit hash of bytes, Fowler-Noll-Vo 1a (FNV-1a) |
 | `command_hash` | *which* bytes a command's hash covers |
-| `decide` | proceed, replay, or reject a reused key |
 | `Record` / `State` | the stored record's wire shape and reading order |
 | `outcome` | the verdict a losing claimant reaches from a record |
 
@@ -25,20 +24,23 @@ and the two travel together because the query evaluates the filter.
 
 ## `canonical_json` — one byte form per value
 
-Two hosts can serialize the same logical command differently. Key order, whitespace and string
-escaping are all an encoder's free choice. If those bytes reach the hash, one command binds to two
-idempotency keys and a genuine duplicate looks like a new request.
+Two hosts can serialize the same logical command differently. Key order, whitespace, string escaping
+and number spelling are all an encoder's free choice. If those bytes reach the hash, one command binds
+to two idempotency keys and a genuine duplicate looks like a new request.
 
-The kernel removes the choice. `canonical_json` parses the JSON and re-emits it through one parser
-and one serializer, so the canonical form is whatever that pair emits — the same in every binding.
-Object keys come out sorted because `serde_json::Map` is a `BTreeMap` here, with no `preserve_order`
-feature.
+The kernel removes the choice. `canonical_json` writes the JSON Canonicalization Scheme, **RFC 8785**
+(JCS), through the `serde_json_canonicalizer` crate. The form is a published standard, so a third SDK
+can reproduce it with any JCS library, and it is the same in every build. Cargo unifies features
+across a whole build, so one crate anywhere in an adopter's graph that enables
+`serde_json/preserve_order`, `arbitrary_precision` or `float_roundtrip` changes how `serde_json` reads
+the input. The JCS writer does not depend on any of them, and `crates/edax-cqrs/feature-check`
+replays the golden vectors with all three features on, in CI.
 
 ### The divergence it prevents
 
 Python's `json.dumps(ensure_ascii=True)` escapes the `é` in `café` to the six characters `\u00e9`.
 serde emits the same string as raw UTF-8. Hash those two spellings and the same command gets two
-idempotency hashes — one per language. The rule is stated as a binding constraint in `AGENTS.md:67`:
+idempotency hashes — one per language. The rule is stated as a binding constraint in `AGENTS.md`:
 never canonicalize host-side; hash canonical bytes through the application binary interface (ABI)'s
 `payload_hash_json`, which canonicalizes in the kernel first. The kernel's own test case pins it,
 and `testdata/golden/canonical_payload_hash.json` carries `{"name":"café"}` so a binding that
@@ -46,13 +48,25 @@ escapes it fails.
 
 ### Numbers
 
-Numbers keep the form they were written in. `1` and `1.0` are distinct canonical values and hash
-differently, so no binding may coerce one to the other. The golden vector carries both `{"n":1}` and
-`{"n":1.0}` as separate cases with different hashes.
+RFC 8785 writes every number as an IEEE 754 double, in the ECMAScript form. So numbers are canonical
+**by value**, not by spelling. `2`, `2.0`, `2e0` and `20e-1` are one number and hash alike. A Python
+`amount: float` built with `2` and the same command decoded off a queue as `2.0` bind to one key. A
+JavaScript or Go producer, whose encoder writes a whole float as `2`, agrees with both. The filter
+already treated `2 == 2.0`; the hash agrees with it.
 
-**The wide-integer caveat.** An integer outside `i64`/`u64` range is carried as a 64-bit float. Two
-such integers that round to the same float share an idempotency hash. A payload that needs exact
-integers wider than 64 bits must carry them as strings.
+- `-0` prints as `0`, `1.10` as `1.1`, `0.000001` as `0.000001`, `1.5e-7` as `1.5e-7`.
+- A whole double below `1e21` is written out: `1e20` is `100000000000000000000`. From `1e21` it takes
+  an exponent: `1e+21`.
+- A number too large for a double (`1e400`) is a `codec` error, never silently infinity.
+
+**The 2^53 rule (the kernel's own).** A double holds every integer up to 2^53 exactly and rounds the
+ones past it. So JCS would write `9007199254740993` as `9007199254740992`, and two ids one apart
+would share a hash. So an **integer literal whose magnitude exceeds 2^53** is a terminal `codec`
+error, at any depth. The kernel reads the input text before `serde_json` parses it, so
+`arbitrary_precision` cannot hide a wide literal. A number written as a float (`9007199254740993.0`,
+`1e20`) is a float, and rounds as one. A payload that carries wider integers (a 64-bit id, a
+snowflake) must carry them as strings. One consequence: the canonical text of a whole float between
+2^53 and `1e21` is an integer literal past 2^53, so canonicalizing it a second time is refused.
 
 ### What is data and what is formatting
 
@@ -62,11 +76,19 @@ integers wider than 64 bits must carry them as strings.
 | `{"address":{"zip":"10001","city":"NYC"}}` | nested keys sorted too | sorting is recursive |
 | `{"tags":["paid","eu"]}` | unchanged | array order is data |
 | `{"age":36,"age":37}` | `{"age":37}` | a duplicate key keeps the last value |
-| `{"name":"café"}` | raw UTF-8, unescaped | escaping is formatting |
-| `{"email":"a@b.c",}` | error naming line and column | the parser does not accept JSON-ish text |
-| `{"total":1e400}` | error, `number out of range` | never coerced to `null`, which would collide |
+| `{"ｱ":1,"🦀":2,"é":3,"Z":4}` | `{"Z":4,"é":3,"🦀":2,"ｱ":1}` | keys sort by their UTF-16 code units (RFC 8785), so U+1F980 sorts before U+FF71 |
+| `{"name":"café"}`, `{"name":"caf\u00e9"}` | raw UTF-8, unescaped | an escape is decoded first: escaping is formatting |
+| `"\b\u0001\"\\"` | `"\b\u0001\"\\"` | `"`, `\` and control characters are escaped, by name where JSON has one |
+| `{"n":[2,2.0,-0.0,1.10]}` | `{"n":[2,2,0,1.1]}` | numbers by value |
+| `{"id":9007199254740993}` | `codec` error | an integer a double would round |
+| `{"email":"a@b.c",}` | `codec` error naming the line and column | the parser does not accept JSON-ish text |
+| `{"total":1e400}` | `codec` error, `out of range` | never coerced to `null`, which would collide |
+| `"\ud800"` | `codec` error | a string must be valid Unicode |
 
-Every row is a case in the kernel's own table-driven test.
+Every row is a case in the kernel's own table-driven test, and `testdata/golden/canonical_json.json`
+carries the input, the canonical text (or the error) and the hash for every SDK to check. A keyset
+cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint, so a sort
+value past 2^53 cannot be minted into a cursor either.
 
 ---
 
@@ -137,15 +159,24 @@ written in one language replays identically in the other.
 Wire shape — flat JSON, fixed key order:
 
 ```json
-{"payload_hash": 11234062831410934249, "result": null, "error": null, "pending": true}
+{"payload_hash": 11234062831410934249, "result": null, "error": null, "error_code": null, "pending": true}
 ```
 
 | Field | Type | Set when | Missing on read |
 |---|---|---|---|
 | `payload_hash` | unsigned 64-bit integer | always | required — a missing or non-integer hash is a codec error |
 | `result` | any JSON | `done` | reads as `null` |
-| `error` | string or null | `failed` | reads as absent |
+| `error` | string or null | `failed`: the failure's message, without its code | reads as absent |
+| `error_code` | string or null | `failed`: the failure's taxonomy code | reads as no code; so does a `null` or a code this kernel does not know |
 | `pending` | bool | always | reads as `false` — records written before the field existed |
+
+A failed record keeps its code **beside** the message rather than inside an `error` object. A reader
+that predates the field ignores it and still reads the failure, so a shared ledger stays readable
+through a rolling deploy. A replay keeps the original code in every SDK. `cached_failure(code,
+message)` is the error a losing claimant raises: terminal, with the original failure's wire form as
+its message (`"cached_failure: codec: bad payload"`). An empty `error` is still a failure; only `null` means
+"not failed". `encode_record_fields` builds the record from flat fields for a binding and refuses a code
+the taxonomy does not know.
 
 **Reading order: `pending` wins, then `error`, then `result`**. The precedence is written down in
 exactly one place, `State::from_wire`, so a foreign writer that over-specifies a record cannot make
@@ -205,18 +236,14 @@ the claim is already taken and a dropped record would strand the key.
 
 ---
 
-## `decide` and `outcome` — the verdicts
+## `outcome` — the verdict
 
-`decide(prior, current)` takes the stored payload hash for the key (`None` if the key is unseen) and
-this command's hash. It returns one of three names, and `Decision::as_str` is the single source of
-truth for the string form across bindings.
-
-A stored hash of `0` is a real prior, not "absent". `testdata/golden/idempotency.json` pins that
-with two cases: `prior = 0, current = 0` replays; `prior = 0` against any other hash is a mismatch.
-Six cases in all, asserted in Python by `edax.idempotency_decision`.
+There is no separate "proceed or replay" call. A claimant that *wins* the claim proceeds; there is no
+record to judge. A stored hash of `0` is a real hash, not "absent": `idempotency_record.json` pins
+that a record stored under `0` mismatches any other command and replays against itself.
 
 `outcome(prior, current)` is what a claimant that *lost* the claim does with the winner's record. It
-checks the hash first, through `decide`, so a mismatched payload is rejected even while the winner
+checks the hash first, so a mismatched payload is rejected even while the winner
 is still in progress. Only then does the record's state decide. The four variants are the whole
 classification, so adding one is a wire-format change that should break every SDK at compile time
 rather than fall into a catch-all.
@@ -241,15 +268,24 @@ flowchart TB
 |---|---|---|---|---|
 | any | differs | `payload_mismatch` | `PayloadMismatch(key)` | terminal |
 | `pending` | matches | `in_progress` | `InProgress(key)` | transient |
-| `failed` | matches | `failed` | `CachedFailure(error)` | terminal |
+| `failed` | matches | `failed` | `CachedFailure` with the original wire form (`cached_failure`) | terminal |
 | `done` | matches | `succeeded` | the cached result is returned | — |
 
 The mapping is one `match` in Rust and one `if` chain in Python. Neither re-derives the verdict;
-both call the kernel and translate. `testdata/golden/idempotency_record.json` holds twelve cases
-covering every state, the three mismatch-beats-state cases, the two older-writer shapes and the
-absent-`result` shape. Each case carries `stored`, `current`, `payload_hash`, `state`, `outcome` and
-`encoded`, so a binding must decode to the same fields, re-emit the same bytes, and reach the same
-verdict.
+both call the kernel and translate. `testdata/golden/idempotency_record.json` covers every state and
+the three mismatch-beats-state cases. It also covers the two older-writer shapes, the absent-`result`
+shape, a coded failure, an empty message and an unknown `error_code`. One row is a host rejection
+written the way the Rust SDK's guard writes it. Each case carries `stored`, `current`,
+`payload_hash`, `state`, `outcome` and `encoded`, plus `error`, `error_code` and `replay` for a
+failure. A binding must decode to the same fields, re-emit the same bytes, reach the same verdict and
+raise the same replay.
+
+The winner's half of the table is `settle(code) -> Cache(code) | Release`. After the handler failed,
+a won claim caches the failure under its code when the kernel's verdict for that code is terminal.
+It releases the claim for anything else: a transient code, or no code (a host's own error, a panic,
+a cancellation). Both guards ask it (`edax_cqrs::settle`; Python `errors.code_of` through
+`idempotency_settle`), so two SDKs guarding one ledger cache the same failures.
+`testdata/golden/idempotency_settle.json` pins one row per code and the uncoded failure.
 
 ---
 
@@ -274,7 +310,7 @@ The consequence matters for the guarantee. Every window, both modes and both gua
 
 - [`../sdk/idempotency.md`](../sdk/idempotency.md) — both guards, both modes, and every failure
   window the kernel deliberately does not close.
-- [`./golden-vectors.md`](./golden-vectors.md) — how `command_hash.json`, `idempotency.json` and
+- [`./golden-vectors.md`](./golden-vectors.md) — how `command_hash.json` and
   `idempotency_record.json` are generated and asserted.
 - [`./core.md`](./core.md) — `fnv1a64` behind `payload_hash`, backoff, and the error taxonomy
   `PayloadMismatch` / `InProgress` / `CachedFailure` come from.
@@ -288,7 +324,26 @@ The pipeline is `filter -> keyset(after) -> sort -> offset -> limit`. A backend 
 into native `WHERE`, `ORDER BY` and `LIMIT` clauses. The semantics stay the kernel's, and
 `query_json` is the reference applier the golden vectors pin.
 
-The total order over JSON values, the automatic `id` tiebreak and the cursor encoding are documented
-from the host's side in [../sdk/projections.md](../sdk/projections.md#querying). The Rust SDK
-re-exports the kernel's `Query` and `SortKey` rather than defining its own, so the spec and the
-applier cannot drift.
+`query` answers with a `Page { rows, next }`. `next` is the cursor minted from the last row under
+the query's own sort. It is set only while rows follow the page, and never for an unsorted query.
+A caller therefore never restates the sort to build one.
+
+| Decision | Rule |
+|---|---|
+| total order | number < string < bool < array < object < null; numbers by value (exact for two integers), strings by code point, bools `false < true` |
+| tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends there; `TIEBREAK_PATH` names it |
+| cursor | `base64url_nopad(canonical_json({"s": <fingerprint>, "v": [<sort-key values>]}))`; the fingerprint is the `payload_hash` of the canonical effective sort, as 16 hex digits |
+| replay | `decode_cursor` refuses a cursor whose fingerprint is not the query's sort, a forged arity, and any cursor on an unsorted query, each as `codec` |
+| mint | `encode_cursor` refuses an empty sort and a row whose `id` is missing or `null`, so tied rows can never be dropped silently |
+| spec | `Query`, `SortKey` and every filter node refuse unknown fields; sort paths follow the filter's path rule; integer literals wider than 64 bits are refused |
+
+The cursor is written in the canonical form, so it is the same text whatever `serde_json` features a
+build turns on. It is URL-safe base64 with no padding, so it survives a URL query string. A cursor
+from before this rule (standard base64 of a bare tuple) is refused, not misread. Paging under
+concurrent inserts and deletes neither skips nor repeats a row present throughout, as long as rows
+do not change their sort key. A proptest in `query.rs` and a Hypothesis twin through the binding
+check that. `testdata/golden/query.json` and `cursor.json` pin the bytes and every refusal.
+
+The total order, the tiebreak and the cursor are documented from the host's side in
+[../sdk/projections.md](../sdk/projections.md#keyset-cursors). The Rust SDK re-exports the kernel's
+`Query`, `SortKey` and `Page` rather than defining its own, so the spec and the applier cannot drift.

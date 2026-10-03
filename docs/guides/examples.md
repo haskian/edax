@@ -99,24 +99,25 @@ of work. A relay then drains them.
 
 Seams wired: `Transactor` (`MemoryTransactor`), `EventStore` (`MemoryEventStore`),
 `IdempotencyStore` (`MemoryIdempotencyStore`), `Aggregate` plus a snapshot codec through
-`Repository`, the `CommandBus` middleware chain (`idempotent` outermost, `retry` inside it), and
-`Relay`. Both stores are built over the one transactor. So `transaction(db)` around the dispatch makes
-the idempotency record, the events, the snapshot and the outbox rows commit or roll back together.
+`Repository`, the `CommandBus` middleware chain (`retry` outermost, `idempotent` inside it), and
+`Relay`. Both stores are built over the one transactor. The guard is given `unit_of_work=db`, so each
+attempt's idempotency record, events, snapshot and outbox rows commit or roll back together.
 
 `request_id` is the idempotency key. The same key with the same body replays; the same key with a
 different body raises `PayloadMismatch`.
 
 ```
 req-A -> 100, req-A retry -> 100, req-B -> 150
-drained ['e1', 'e2']
+drained ['e1', 'e3']
 
 ok: idempotent command applied once, outbox drained
 ```
 
-The assertion that carries it (`examples/py/command_handling.py:113`):
+The assertion that carries it (`examples/py/command_handling.py:120`). `e2` is the event of the
+`req-B` attempt that failed after its save: it rolled back with its claim, and the retry saved `e3`.
 
 ```python
-assert published == ["e1", "e2"], published
+assert published == ["e1", "e3"], published
 ```
 
 Two events for three accepted dispatches plus one rejected one. The replayed `req-A` ran no handler
@@ -238,8 +239,9 @@ complete.
 Seams wired: `SagaStore` (`MemorySagaStore`), `SagaRunner`, `EventRouter`, `KeyOrderedDispatcher`,
 and a `CommandBus` behind the `idempotent` guard. `OrderSaga` waits for `Paid`, emits `Fulfill`, and
 returns `Completed`. `partition(aggregate_id)` pins each order to one worker, so `Created` lands
-before `Paid` without a lock. The runner dispatches before it persists, so the stream includes a
-redelivered `Paid` to prove that is survivable. `Fulfill` also carries the causation chain across the
+before `Paid` without a lock. The runner saves each step's state and commands in one write, and
+`runner.relay(bus.dispatch)` sends the committed commands afterwards. The stream includes a
+redelivered `Paid`: it finds the completed instance's tombstone and is ignored. `Fulfill` also carries the causation chain across the
 hop, as [sdk/sagas](../sdk/sagas.md#carrying-the-chain-across-the-hop) describes.
 
 ```

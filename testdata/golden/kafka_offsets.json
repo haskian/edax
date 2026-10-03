@@ -30,11 +30,22 @@
         }
       },
       {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
         "op": "ack",
         "token": 3,
         "want": {
-          "commit": true,
-          "offset": 0
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
         }
       },
       {
@@ -45,19 +56,232 @@
         "want": {}
       },
       {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
         "op": "ack",
         "token": 2,
         "want": {
-          "commit": false,
-          "offset": 0
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
         }
       },
       {
         "op": "ack",
         "token": 1,
         "want": {
-          "commit": true,
-          "offset": 3
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 3,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "offset": 3,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 3,
+              "live": 0,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_nack_rewinds_the_partition_and_retires_every_token",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "nack",
+        "token": 1,
+        "want": {
+          "decision": "seek",
+          "offset": 0
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 1,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 2,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 3,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "stale"
+        }
+      },
+      {
+        "op": "nack",
+        "token": 3,
+        "want": {
+          "decision": "stale"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 3
+            }
+          ]
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 5
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 6
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 4,
+        "want": {
+          "live": true
+        }
+      },
+      {
+        "op": "ack",
+        "token": 4,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 5,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 6,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 3,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
         }
       },
       {
@@ -73,6 +297,7 @@
           "rows": [
             {
               "committed": 3,
+              "live": 0,
               "max_delivered": 2,
               "partition": 0,
               "topic": "t",
@@ -84,7 +309,7 @@
     ]
   },
   {
-    "name": "a_nack_keeps_its_offset_in_flight_until_the_redelivery_settles",
+    "name": "a_seek_rebooks_offsets_already_acked",
     "steps": [
       {
         "offset": 0,
@@ -117,31 +342,30 @@
         "op": "ack",
         "token": 2,
         "want": {
-          "commit": true,
-          "offset": 0
+          "decision": "settled"
         }
-      },
-      {
-        "offset": 0,
-        "op": "committed",
-        "partition": 0,
-        "topic": "t",
-        "want": {}
       },
       {
         "op": "nack",
         "token": 1,
         "want": {
-          "offset": 0,
-          "seek": true
+          "decision": "seek",
+          "offset": 0
         }
       },
       {
-        "op": "ack",
-        "token": 3,
+        "op": "stats",
         "want": {
-          "commit": false,
-          "offset": 0
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 2,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 2
+            }
+          ]
         }
       },
       {
@@ -154,34 +378,69 @@
         }
       },
       {
-        "op": "ack",
-        "token": 1,
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
         "want": {
-          "commit": false,
-          "offset": -1
+          "token": 5
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 6
+        }
+      },
+      {
+        "op": "ack",
+        "token": 5,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
         }
       },
       {
         "op": "ack",
         "token": 4,
         "want": {
-          "commit": true,
-          "offset": 3
+          "decision": "settled"
         }
       },
       {
-        "offset": 3,
-        "op": "committed",
-        "partition": 0,
-        "topic": "t",
-        "want": {}
+        "op": "ack",
+        "token": 6,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 3,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
       },
       {
         "op": "stats",
         "want": {
           "rows": [
             {
-              "committed": 3,
+              "committed": null,
+              "live": 0,
               "max_delivered": 2,
               "partition": 0,
               "topic": "t",
@@ -224,18 +483,27 @@
       },
       {
         "op": "nack",
-        "token": 1,
+        "token": 3,
         "want": {
-          "offset": 0,
-          "seek": true
+          "decision": "seek",
+          "offset": 0
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 4
         }
       },
       {
         "op": "nack",
-        "token": 3,
+        "token": 4,
         "want": {
-          "offset": 0,
-          "seek": true
+          "decision": "seek",
+          "offset": 0
         }
       },
       {
@@ -243,7 +511,8 @@
         "want": {
           "rows": [
             {
-              "committed": -1,
+              "committed": null,
+              "live": 0,
               "max_delivered": 2,
               "partition": 0,
               "topic": "t",
@@ -255,7 +524,7 @@
     ]
   },
   {
-    "name": "two_partitions_settle_independently",
+    "name": "two_partitions_settle_and_rewind_independently",
     "steps": [
       {
         "offset": 0,
@@ -297,8 +566,7 @@
         "op": "ack",
         "token": 4,
         "want": {
-          "commit": true,
-          "offset": 0
+          "decision": "settled"
         }
       },
       {
@@ -312,23 +580,46 @@
         "op": "ack",
         "token": 1,
         "want": {
-          "commit": true,
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "nack",
+        "token": 3,
+        "want": {
+          "decision": "seek",
           "offset": 1
         }
       },
       {
-        "offset": 1,
-        "op": "committed",
-        "partition": 0,
-        "topic": "t",
-        "want": {}
+        "op": "is_live",
+        "token": 2,
+        "want": {
+          "live": true
+        }
       },
       {
         "op": "ack",
         "token": 2,
         "want": {
-          "commit": true,
-          "offset": 2
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "t"
+            },
+            {
+              "offset": 2,
+              "partition": 1,
+              "topic": "t"
+            }
+          ]
         }
       },
       {
@@ -339,11 +630,16 @@
         "want": {}
       },
       {
-        "op": "nack",
-        "token": 3,
+        "offset": 1,
+        "op": "committed",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "due",
         "want": {
-          "offset": 1,
-          "seek": true
+          "rows": []
         }
       },
       {
@@ -352,6 +648,7 @@
           "rows": [
             {
               "committed": 1,
+              "live": 0,
               "max_delivered": 1,
               "partition": 0,
               "topic": "t",
@@ -359,6 +656,7 @@
             },
             {
               "committed": 2,
+              "live": 0,
               "max_delivered": 1,
               "partition": 1,
               "topic": "t",
@@ -412,16 +710,14 @@
         "op": "ack",
         "token": 1,
         "want": {
-          "commit": true,
-          "offset": 1
+          "decision": "settled"
         }
       },
       {
         "op": "ack",
         "token": 2,
         "want": {
-          "commit": true,
-          "offset": 2
+          "decision": "settled"
         }
       },
       {
@@ -439,11 +735,22 @@
         "want": {}
       },
       {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
         "op": "ack",
         "token": 4,
         "want": {
-          "commit": false,
-          "offset": 2
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
         }
       },
       {
@@ -452,6 +759,7 @@
           "rows": [
             {
               "committed": 2,
+              "live": 1,
               "max_delivered": 3,
               "partition": 0,
               "topic": "t",
@@ -490,6 +798,19 @@
         "want": {}
       },
       {
+        "op": "is_live",
+        "token": 1,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
         "offset": 5,
         "op": "book",
         "partition": 0,
@@ -502,24 +823,33 @@
         "op": "ack",
         "token": 1,
         "want": {
-          "commit": false,
-          "offset": -1
+          "decision": "stale"
         }
       },
       {
         "op": "nack",
         "token": 2,
         "want": {
-          "offset": -1,
-          "seek": false
+          "decision": "stale"
         }
       },
       {
         "op": "ack",
         "token": 3,
         "want": {
-          "commit": true,
-          "offset": 6
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 6,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
         }
       },
       {
@@ -535,6 +865,7 @@
           "rows": [
             {
               "committed": 6,
+              "live": 0,
               "max_delivered": 5,
               "partition": 0,
               "topic": "t",
@@ -561,16 +892,28 @@
         "op": "ack",
         "token": 999,
         "want": {
-          "commit": false,
-          "offset": -1
+          "decision": "stale"
         }
       },
       {
         "op": "nack",
         "token": 0,
         "want": {
-          "offset": -1,
-          "seek": false
+          "decision": "stale"
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 999,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 0,
+        "want": {
+          "live": false
         }
       },
       {
@@ -578,7 +921,8 @@
         "want": {
           "rows": [
             {
-              "committed": -1,
+              "committed": null,
+              "live": 1,
               "max_delivered": 0,
               "partition": 0,
               "topic": "t",
@@ -609,11 +953,29 @@
         "want": {}
       },
       {
+        "offset": 7,
+        "op": "committed",
+        "partition": 0,
+        "topic": "u",
+        "want": {}
+      },
+      {
         "op": "ack",
         "token": 1,
         "want": {
-          "commit": true,
-          "offset": 1
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
         }
       },
       {
@@ -629,9 +991,457 @@
           "rows": [
             {
               "committed": 1,
+              "live": 0,
               "max_delivered": 0,
               "partition": 0,
               "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "reset_of_an_unknown_partition_or_topic_is_a_no_op",
+    "steps": [
+      {
+        "offset": 4,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 1,
+        "topic": "v",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 2,
+        "topic": "v",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "reset",
+        "partition": 9,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "reset",
+        "partition": 0,
+        "topic": "u",
+        "want": {}
+      },
+      {
+        "op": "reset",
+        "partition": 2,
+        "topic": "v",
+        "want": {}
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 5,
+              "partition": 0,
+              "topic": "t"
+            },
+            {
+              "offset": 1,
+              "partition": 1,
+              "topic": "v"
+            }
+          ]
+        }
+      },
+      {
+        "op": "reset",
+        "partition": 1,
+        "topic": "v",
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 5,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 4,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "an_offset_gap_commits_past_the_gap",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 5,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 6,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 5,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "the_highest_offset_saturates_the_watermark",
+    "steps": [
+      {
+        "offset": 9223372036854775807,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 9223372036854775807,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_negative_offset_is_refused",
+    "steps": [
+      {
+        "offset": -7,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "error": "codec: offset -7 on t/0 is negative: a partition's offsets start at 0"
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "topics_report_in_byte_order",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "été",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 1,
+        "topic": "b",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "b",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "B",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "a",
+        "want": {
+          "token": 5
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 4,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 5,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "B"
+            },
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "a"
+            },
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "b"
+            },
+            {
+              "offset": 1,
+              "partition": 1,
+              "topic": "b"
+            },
+            {
+              "offset": 1,
+              "partition": 0,
+              "topic": "été"
+            }
+          ]
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "B",
+              "unsettled": 0
+            },
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "a",
+              "unsettled": 0
+            },
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "b",
+              "unsettled": 0
+            },
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 1,
+              "topic": "b",
+              "unsettled": 0
+            },
+            {
+              "committed": null,
+              "live": 0,
+              "max_delivered": 0,
+              "partition": 0,
+              "topic": "été",
               "unsettled": 0
             }
           ]

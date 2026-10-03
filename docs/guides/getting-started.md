@@ -11,7 +11,7 @@ passing Python test.
 ```mermaid
 flowchart LR
     A["mise install"] -->|"pins uv, maturin, ruff, ty"| B["mise exec -- uv venv"]
-    B -->|"creates crates/edax-py/.venv"| C["uv pip install msgspec pytest pytest-asyncio hypothesis"]
+    B -->|"creates crates/edax-py/.venv"| C["uv pip install msgspec pytest pytest-asyncio hypothesis redis fakeredis aiokafka"]
     C -->|"runtime and test deps"| D["mise exec -- maturin develop"]
     D -->|"compiles and installs the _edax native module"| E["pytest"]
     D -->|"same kernels, no build step needed"| F["cargo test --workspace"]
@@ -32,7 +32,7 @@ comes from the alef-generated `rust-toolchain.toml`, which mise reads as an idio
 ```sh
 cd crates/edax-py
 mise exec -- uv venv && source .venv/bin/activate
-mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 mise exec -- maturin develop
 ```
 
@@ -110,7 +110,6 @@ after it, and appends the pending events back under optimistic concurrency.
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
 
 from edax import Aggregate, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryTransactor
@@ -134,7 +133,7 @@ class Account(Aggregate):
 class AccountCodec:  # how the aggregate snapshots
     type = "Account"
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> Account:
+    def load(self, id: str, version: int, data: bytes | None) -> Account:
         account = Account(id, version)
         if data is not None:
             account.balance = int(data)
@@ -154,7 +153,7 @@ async def main() -> None:
     await repo.save(account)
 
     reloaded = await repo.load("acct-1")
-    print(reloaded.balance, reloaded.sequence.current)  # 100 1
+    print(reloaded.balance, reloaded.version.current)  # 100 1
 
 
 asyncio.run(main())
@@ -164,21 +163,22 @@ asyncio.run(main())
 `expected_version` and writes a fresh snapshot. Replay during `load` calls `transition` instead, so
 a replayed event is never re-queued.
 
-### Step 2 — a `CommandBus` with `idempotent` and `retry`
+### Step 2 — a `CommandBus` with `idempotent`
 
 A command bus routes by command type through a middleware chain. `idempotent` is the guard: it
 claims the idempotency key in a ledger, so the second dispatch of one key replays the first outcome
-instead of running the handler again. `retry` sits inside it, so every attempt shares one claim.
+instead of running the handler again. `retry` waits for Step 3, because a retry must re-run a whole
+unit of work.
 
 <!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 from edax import Aggregate, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
-from edax.command import CommandBus, idempotent, retry
+from edax.command import CommandBus, idempotent
 
 # ... Deposited, Account and AccountCodec exactly as in step 1 ...
 
@@ -206,8 +206,7 @@ async def main() -> None:
         await repo.save(account)
         return account.balance
 
-    # guard outermost (one claim per request), retry inside it (retries share that claim)
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of))
     bus.register("Deposit", deposit)
 
     first = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
@@ -222,19 +221,22 @@ asyncio.run(main())
 the one the key was read from. Reuse the key with a different body and the guard raises
 `PayloadMismatch`.
 
-### Step 3 — one transaction around the dispatch
+### Step 3 — one unit of work per dispatch, and `retry` around it
 
-`transaction` opens the unit of work and publishes it to `current_tx()`. The ledger, the events, the
-snapshot and the outbox rows all enlist. They commit together, or they roll back together. The
-`Relay` then drains the transactional Outbox, and sees exactly one row: the replay wrote nothing.
+Pass `unit_of_work=db` and the guard opens the unit of work and publishes it to `current_tx(db)`. The
+ledger, the events, the snapshot and the outbox rows all enlist. They commit together, or they roll
+back together. `retry` goes outside the guard, so a failed attempt rolls back whole and the next one
+starts from committed state. `retry` refuses to run inside an open transaction: a second attempt
+there would apply the first attempt's staged writes again. The `Relay` then drains the
+transactional Outbox, and sees exactly one row: the replay wrote nothing.
 
 <!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec, transaction
+from edax import Aggregate, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -249,15 +251,16 @@ async def main() -> None:
     async def deposit(cmd: Deposit) -> int:
         account = await repo.load(cmd.account_id)
         account.apply(Deposited(cmd.amount))
-        await repo.save(account)  # joins the ambient unit of work via current_tx()
+        await repo.save(account)  # joins the guard's unit of work via current_tx(db)
         return account.balance
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+    # claim, events, snapshot, outbox: one commit or one rollback per attempt
+    ledger = MemoryIdempotencyStore(db)
+    bus = CommandBus(retry(3), idempotent(ledger, key=request_id_of, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit) -> int:
-        async with transaction(db):  # claim, events, snapshot, outbox: one commit or one rollback
-            return await bus.dispatch(cmd)
+        return await bus.dispatch(cmd)  # no transaction around the dispatch
 
     first = await submit(Deposit("acct-1", 100, "req-A"))
     second = await submit(Deposit("acct-1", 100, "req-A"))

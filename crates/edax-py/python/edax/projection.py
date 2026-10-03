@@ -6,11 +6,11 @@ pagination down to native SQL, so two services page it identically. See ``docs/s
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 from .errors import ConcurrencyError
 from .filter import Filter
-from .query import Document, SortKey
+from .query import Page, SortKey
 from .store import Tx
 
 __all__ = ["ConcurrencyError", "Entity", "ProjectionStore"]
@@ -40,17 +40,20 @@ class ProjectionStore(Protocol):
       auto-commit.
     - *Reads.* ``get`` returns the current committed row plus the ``tx``'s own writes, or ``None``.
     - *Queries (optional).* A conforming ``get_many`` pages identically to the kernel: the filter operators'
-      semantics, the fixed total order over JSON types with stable multi-key sort, and keyset resume strictly
-      after the cursor tuple. Documents need a unique ``"id"`` field. A backend may instead treat the spec as
-      its own dialect, and then cursors are not portable across services.
+      semantics, the fixed total order over JSON types with stable multi-key sort, keyset resume strictly
+      after the cursor tuple, and a :class:`~edax.query.Page` whose ``next`` is minted with
+      :func:`~edax.query.encode_cursor` from the last row when more rows follow. Read ``after`` with
+      :func:`~edax.query.decode_cursor`, which refuses a cursor minted under another sort. Documents need a
+      unique ``"id"`` field. A backend may instead treat the spec as its own dialect, and then cursors are
+      not portable across services.
     - *Errors.* :class:`~edax.errors.ConcurrencyError` only for a version mismatch, else ``StoreError``.
     """
 
-    async def get(self, id: str, tx: Optional[Tx] = None) -> Optional[Entity]:
+    async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
         """The current entity, or ``None`` if absent."""
         ...
 
-    async def save(self, entity: Entity, tx: Optional[Tx] = None) -> None:
+    async def save(self, entity: Entity, tx: Tx | None = None) -> None:
         """Persist at ``entity.version + 1`` if the stored version still equals ``entity.version``, else
         raise :class:`~edax.errors.ConcurrencyError`. On success ``entity.version`` advances."""
         ...
@@ -58,12 +61,13 @@ class ProjectionStore(Protocol):
     async def get_many(
         self,
         *,
-        filter: Optional[Filter] = None,
-        sort: Optional[list[SortKey]] = None,
+        filter: Filter | None = None,
+        sort: list[SortKey] | None = None,
         offset: int = 0,
-        limit: Optional[int] = None,
-        after: Optional[str] = None,
-        tx: Optional[Tx] = None,
-    ) -> list[Document]:
-        """Documents selected by filter -> keyset(``after``) -> sort -> offset -> limit."""
+        limit: int | None = None,
+        after: str | None = None,
+        tx: Tx | None = None,
+    ) -> Page:
+        """The page selected by filter -> keyset(``after``) -> sort -> offset -> limit, with the cursor
+        that resumes after it."""
         ...

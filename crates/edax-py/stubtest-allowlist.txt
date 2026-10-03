@@ -1,0 +1,40 @@
+# mypy.stubtest allowlist for the alef-generated `_edax.pyi`, checked against the built module in CI.
+# Only alef's own conventions are listed. Anything else stubtest reports is drift between the shipped
+# stub and the module, and fails the build.
+#
+# alef writes a field-shaped `__init__`; a PyO3 class constructs through `__new__`.
+edax\._edax\.\w+\.__(init|new)__
+# The runtime module carries `__all__`; the stub does not declare one.
+edax\._edax\.__all__
+# alef marks no pyclass `@final` or `@disjoint_base`, and stubtest reports both on the class itself.
+# One line per class, so a class the ABI adds is a deliberate addition here.
+edax\._edax\.BackoffPolicy
+edax\._edax\.Event
+edax\._edax\.EventEnvelope
+edax\._edax\.EventIdempotency
+edax\._edax\.IdempotencyRecord
+edax\._edax\.KafkaDeadLetterSource
+edax\._edax\.KafkaDue
+edax\._edax\.KafkaHeader
+edax\._edax\.KafkaRecord
+edax\._edax\.KafkaRoute
+edax\._edax\.MemoryBroker
+edax\._edax\.MemoryClaim
+edax\._edax\.MemoryTransactor
+edax\._edax\.NackDecision
+edax\._edax\.OffsetTracker
+edax\._edax\.PartitionStats
+edax\._edax\.PollResult
+edax\._edax\.ProjectionRow
+edax\._edax\.RedisValue
+edax\._edax\.Retries
+edax\._edax\.RetriesTracked
+edax\._edax\.RetryVerdict
+edax\._edax\.SagaCommand
+edax\._edax\.SagaRow
+edax\._edax\.SagaWrite
+edax\._edax\.SnapshotResult
+edax\._edax\.SplitError
+# `edax.aggregate` gives the envelope's two dictionaries a key-ordered read-only property at import (the
+# native getter iterates in a per-process order); the stub keeps alef's field declaration.
+edax\._edax\.EventEnvelope\.(namespace|metadata)

@@ -62,7 +62,7 @@ flowchart LR
 | [Projections](sdk/projections.md) | read models, filters, sorting, the total order, keyset cursors |
 | [Errors](sdk/errors.md) | the taxonomy, and every path that branches on it |
 | [Observability](sdk/observability.md) | the `Observer`, `timing()`, the pull surface, the cardinality rule, the OTel mapping |
-| [Rust parity](sdk/rust-parity.md) | the name map, and where the two SDKs differ on purpose |
+| [Rust parity](sdk/rust-parity.md) | the Rust reference model: what it holds to the kernels, and where it differs on purpose |
 
 ### Backends — bring your own
 

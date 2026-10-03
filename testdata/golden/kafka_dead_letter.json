@@ -1,0 +1,478 @@
+[
+  {
+    "error": "codec: bad payload",
+    "name": "keeps_key_value_and_headers_verbatim",
+    "offset": 42,
+    "partition": 3,
+    "record": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    },
+    "topic": "orders",
+    "want": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f7264657273"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "33"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "3432"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "636f6465633a20626164207061796c6f6164"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "source": {
+        "error": "codec: bad payload",
+        "offset": 42,
+        "partition": 3,
+        "topic": "orders"
+      },
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    }
+  },
+  {
+    "error": "codec: no envelope",
+    "name": "a_keyless_tombstone_stays_empty",
+    "offset": 0,
+    "partition": 0,
+    "record": {
+      "headers": [],
+      "key_hex": "",
+      "value_hex": ""
+    },
+    "topic": "orders",
+    "want": {
+      "headers": [
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f7264657273"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "30"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "30"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "636f6465633a206e6f20656e76656c6f7065"
+        }
+      ],
+      "key_hex": "",
+      "source": {
+        "error": "codec: no envelope",
+        "offset": 0,
+        "partition": 0,
+        "topic": "orders"
+      },
+      "value_hex": ""
+    }
+  },
+  {
+    "error": "rejected: montant négatif",
+    "name": "non_ascii_topic_and_error",
+    "offset": 7,
+    "partition": 0,
+    "record": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    },
+    "topic": "commandes-é",
+    "want": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "636f6d6d616e6465732dc3a9"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "30"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "37"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "72656a65637465643a206d6f6e74616e74206ec3a96761746966"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "source": {
+        "error": "rejected: montant négatif",
+        "offset": 7,
+        "partition": 0,
+        "topic": "commandes-é"
+      },
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    }
+  },
+  {
+    "error": "",
+    "name": "extreme_coordinates",
+    "offset": 9223372036854775807,
+    "partition": 2147483647,
+    "record": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    },
+    "topic": "t",
+    "want": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "74"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "32313437343833363437"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "39323233333732303336383534373735383037"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": ""
+        }
+      ],
+      "key_hex": "6167672d31",
+      "source": {
+        "error": "",
+        "offset": 9223372036854775807,
+        "partition": 2147483647,
+        "topic": "t"
+      },
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    }
+  },
+  {
+    "error": "store: still failing",
+    "name": "dead_lettered_twice_reads_the_last_source",
+    "offset": 5,
+    "partition": 0,
+    "record": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f7264657273"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "33"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "3432"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "636f6465633a20756e6b6e6f776e20666f726d61743a206170706c69636174696f6e2f782d70726f746f627566"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    },
+    "topic": "orders-retry",
+    "want": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f7264657273"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "33"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "3432"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "636f6465633a20756e6b6e6f776e20666f726d61743a206170706c69636174696f6e2f782d70726f746f627566"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f72646572732d7265747279"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "30"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "35"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "73746f72653a207374696c6c206661696c696e67"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "source": {
+        "error": "store: still failing",
+        "offset": 5,
+        "partition": 0,
+        "topic": "orders-retry"
+      },
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c226576656e74223a7b226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d227d2c2273657175656e6365223a372c226e616d657370616365223a7b2274656e616e74223a2261636d65227d2c226d65746164617461223a7b227472616365223a226162632d313233227d2c2274696d657374616d70223a313730303030303030303030303030303030307d"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f6a736f6e"
+      }
+    ],
+    "name": "no_dead_letter_headers",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      }
+    ],
+    "name": "a_missing_offset",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "7a65726f"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      }
+    ],
+    "name": "a_partition_that_is_not_a_number",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      }
+    ],
+    "name": "a_missing_partition",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "2d"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      }
+    ],
+    "name": "an_offset_that_is_not_a_number",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      }
+    ],
+    "name": "a_missing_error",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "ff"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      }
+    ],
+    "name": "a_topic_that_is_not_utf8",
+    "want": {
+      "source": null
+    }
+  }
+]

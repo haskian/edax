@@ -1,0 +1,215 @@
+[
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "write": "nothing"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "completed",
+      "version": 4
+    },
+    "want": {
+      "write": "ignore"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "completed",
+      "version": 4
+    },
+    "want": {
+      "write": "ignore"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "completed",
+      "version": 4
+    },
+    "want": {
+      "write": "ignore"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "completed",
+      "version": 4
+    },
+    "want": {
+      "write": "ignore"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "complete"
+    }
+  },
+  {
+    "command_id": "order-7:1:0",
+    "correlation_id": "order-7",
+    "index": 0,
+    "version": 1
+  },
+  {
+    "command_id": "order-7:2:1",
+    "correlation_id": "order-7",
+    "index": 1,
+    "version": 2
+  },
+  {
+    "command_id": "a:1:2:0",
+    "correlation_id": "a:1",
+    "index": 0,
+    "version": 2
+  },
+  {
+    "command_id": ":1:0",
+    "correlation_id": "",
+    "index": 0,
+    "version": 1
+  },
+  {
+    "command_id": "café:18446744073709551615:18446744073709551615",
+    "correlation_id": "café",
+    "index": 18446744073709551615,
+    "version": 18446744073709551615
+  }
+]

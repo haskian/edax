@@ -30,22 +30,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Optional
+from typing import Any
 
 import edax
 from edax import Entity
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
-from edax.command import Record
+from edax.command import Claimed, Record
 from edax.router import idempotent_by_id
 
 ACCOUNT = "acct-1"
 
 
-def deposit(amount: int, seq: int) -> edax.Envelope:
+def deposit(amount: int, seq: int) -> edax.EventEnvelope:
     """One Deposited event. `id` is what the guard claims, so it must be stable across redeliveries."""
-    return edax.Envelope(
+    return edax.EventEnvelope(
         id=f"{ACCOUNT}-deposit-{seq}",
         aggregate_id=ACCOUNT,
         event=edax.Event("Deposited", 1, str(amount).encode()),
@@ -57,18 +57,18 @@ def deposit(amount: int, seq: int) -> edax.Envelope:
 
 def deposit_handler(
     projections: MemoryProjectionStore, calls: list[str]
-) -> Callable[[edax.Envelope], Awaitable[None]]:
+) -> Callable[[edax.EventEnvelope], Awaitable[None]]:
     """A handler with one side effect: it adds the deposit to the account's read model. `calls`
     records every invocation, so an assert can tell a skipped redelivery from a repeated one."""
 
-    async def handle(env: edax.Envelope) -> None:
+    async def handle(env: edax.EventEnvelope) -> None:
         calls.append(env.id)
         entity = await projections.get(env.aggregate_id)
         if entity is None:
             entity = Entity(env.aggregate_id, 0, {"id": env.aggregate_id, "balance": 0})
         amount = int(env.event.data)
         entity.document["balance"] = entity.document["balance"] + abs(amount)
-        await projections.save(entity)  # joins the guard's unit of work via current_tx()
+        await projections.save(entity)  # joins the guard's unit of work via current_tx(db)
         if amount < 0:  # a handler that writes and *then* fails, so the rollback has work to undo
             raise RuntimeError("the handler failed after writing")
 
@@ -109,14 +109,14 @@ class LedgerOfItsOwn:
         self._db = MemoryTransactor()
         self._inner = MemoryIdempotencyStore(self._db)
 
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Any] = None) -> Optional[Record]:
+    async def claim(self, key: str, payload_hash: int, tx: Any | None = None) -> Claimed:
         return await self._inner.claim(key, payload_hash, tx=self._db.auto_commit())
 
-    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
-        await self._inner.complete(key, record, tx=self._db.auto_commit())
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any | None = None) -> None:
+        await self._inner.complete(key, handle, record, tx=self._db.auto_commit())
 
-    async def release(self, key: str, tx: Optional[Any] = None) -> None:
-        await self._inner.release(key, tx=self._db.auto_commit())
+    async def release(self, key: str, handle: bytes, tx: Any | None = None) -> None:
+        await self._inner.release(key, handle, tx=self._db.auto_commit())
 
 
 async def shared_unit_of_work() -> None:
@@ -128,7 +128,7 @@ async def shared_unit_of_work() -> None:
     router = edax.EventRouter(guard)
     router.register("Deposited", deposit_handler(projections, calls))
 
-    async def deliver(env: edax.Envelope) -> None:
+    async def deliver(env: edax.EventEnvelope) -> None:
         await router.dispatch(env)  # the guard opens the unit of work; the handler joins it
 
     first, failing = deposit(100, 1), deposit(-50, 2)
@@ -163,7 +163,7 @@ async def ledger_of_its_own() -> None:
     router = edax.EventRouter(idempotent_by_id(LedgerOfItsOwn(), unit_of_work=unit))
     router.register("Deposited", deposit_handler(projections, calls))
 
-    async def deliver(env: edax.Envelope) -> None:
+    async def deliver(env: edax.EventEnvelope) -> None:
         await router.dispatch(env)
 
     first, second = deposit(100, 1), deposit(50, 2)

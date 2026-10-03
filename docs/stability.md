@@ -19,11 +19,11 @@ once real backends have been written against them. Pin a minor in your dependenc
 
 | Surface | Promise |
 |---|---|
-| Names exported from `edax` (Python) and `edax::` (Rust) | The stable API. Breaks only in a minor. |
-| Kernel decisions: partition, payload hash, idempotency verdict, filter order, upcast plan | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
+| Names exported from `edax` (Python) | The stable API. Breaks only in a minor. |
+| Kernel decisions: local partition and Kafka placement, the canonical form (RFC 8785) and the payload and command hashes, the idempotency record, verdict and settle, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
 | The envelope wire format | Pinned by golden vectors. Old bytes stay readable. |
-| The Redis key layout | A cross-SDK contract: two services share a ledger only while it holds. |
-| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
+| The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is refused by name. |
+| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
 | The conformance suites in `edax.testing` | A new clause may fail a backend that passed before, so clauses are added in a minor. |
 
 ## What is not covered
@@ -32,22 +32,28 @@ once real backends have been written against them. Pin a minor in your dependenc
 - The exact text of an exception message. The type and its taxonomy code are stable; the prose is not.
 - Log and observer output beyond the documented `Observer` methods.
 - The examples, the documentation and the test suite.
-- The Rust crates below the SDK: `edax-core`, `edax-event`, `edax-cqrs`, `edax-abi`. Nothing
-  publishes them — the release ships the `edax` Python wheel, and the SDK reaches them as path
-  dependencies. Their surface follows the SDK's needs. Depend on `edax` itself.
+- The Rust crates. Nothing publishes them. The release ships the `edax` Python wheel, which reaches them
+  as path dependencies, and their surface follows the Python SDK's needs. That includes the Rust `edax`
+  crate (`crates/edax`), which is a **reference model**, not a deployable SDK. It is synchronous and ships
+  in-memory backends only. It exists so a second language holds the Python orchestration to the kernels,
+  through twin test suites over the same case tables and golden vectors. It is `publish = false`. It gains
+  a feature only when a shared decision needs a second implementation to pin it. See
+  [Rust and Python parity](sdk/rust-parity.md).
 
 ## Supported runtimes
 
-Python 3.9 and later. The wheel is `abi3-py39`, so one wheel serves every later interpreter.
+Python 3.10 and later. The wheel is `abi3-py310`, so one wheel serves every later interpreter.
 
-Rust: the channel pinned in `rust-toolchain.toml`. A minimum supported Rust version is not yet
-declared; raising the pin is a minor release.
+Rust: the channel pinned in `rust-toolchain.toml`, for building the kernels the wheel links. A minimum
+supported Rust version is not declared, because no Rust crate is published.
 
 ## Deprecation
 
-A name that is going away is marked deprecated in one minor and removed no earlier than the next
-one. The deprecation names its replacement. Python marks it with `DeprecationWarning`, Rust with
-`#[deprecated]`.
+Before 1.0 there is no deprecation cycle: a minor removes or renames a name outright, and the
+changelog names the replacement. edax keeps no compatibility aliases while the seams are young.
+
+From 1.0, a name that is going away is marked deprecated in one minor and removed no earlier than the
+next one. The deprecation names its replacement. Python marks it with `DeprecationWarning`.
 
 ## How a release is cut
 

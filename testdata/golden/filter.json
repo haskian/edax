@@ -3,6 +3,7 @@
     "document": {
       "status": "open"
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -10,12 +11,14 @@
         "path": "status",
         "value": "open"
       }
-    }
+    },
+    "name": "eq_matches"
   },
   {
     "document": {
       "status": "closed"
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -23,12 +26,14 @@
         "path": "status",
         "value": "open"
       }
-    }
+    },
+    "name": "eq_differs"
   },
   {
     "document": {
       "status": "open"
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -36,10 +41,12 @@
         "path": "status",
         "value": "closed"
       }
-    }
+    },
+    "name": "ne_differs"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -47,10 +54,12 @@
         "path": "status",
         "value": "x"
       }
-    }
+    },
+    "name": "ne_on_a_missing_path_is_false"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": true,
     "filter": {
       "not": {
@@ -60,12 +69,14 @@
           "value": "x"
         }
       }
-    }
+    },
+    "name": "not_eq_on_a_missing_path_is_true"
   },
   {
     "document": {
       "total": 5000
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -73,12 +84,14 @@
         "path": "total",
         "value": 4200
       }
-    }
+    },
+    "name": "gt_greater"
   },
   {
     "document": {
       "total": 100
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -86,12 +99,14 @@
         "path": "total",
         "value": 4200
       }
-    }
+    },
+    "name": "gt_less"
   },
   {
     "document": {
       "total": "5000"
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -99,12 +114,14 @@
         "path": "total",
         "value": 4200
       }
-    }
+    },
+    "name": "gt_across_types_is_false"
   },
   {
     "document": {
       "n": 1
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -112,12 +129,44 @@
         "path": "n",
         "value": 1.0
       }
-    }
+    },
+    "name": "eq_is_numeric_1_equals_1_0"
+  },
+  {
+    "document": {
+      "n": 9007199254740992
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "n",
+        "value": 9007199254740993
+      }
+    },
+    "name": "eq_wide_integers_are_exact"
+  },
+  {
+    "document": {
+      "n": 9007199254740993
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "n",
+        "value": 9007199254740992
+      }
+    },
+    "name": "gt_wide_integers_are_exact"
   },
   {
     "document": {
       "status": "open"
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "in": {
@@ -127,12 +176,14 @@
           "closed"
         ]
       }
-    }
+    },
+    "name": "in_hits"
   },
   {
     "document": {
       "status": "open"
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "in": {
@@ -141,10 +192,12 @@
           "a"
         ]
       }
-    }
+    },
+    "name": "in_misses"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": false,
     "filter": {
       "in": {
@@ -153,41 +206,76 @@
           "a"
         ]
       }
-    }
+    },
+    "name": "in_on_a_missing_path_is_false"
+  },
+  {
+    "document": {
+      "status": "open"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "in": {
+        "path": "status",
+        "values": []
+      }
+    },
+    "name": "in_empty_matches_nothing"
   },
   {
     "document": {
       "p": 1
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "exists": {
         "exists": true,
         "path": "p"
       }
-    }
+    },
+    "name": "exists_present"
   },
   {
     "document": {
       "p": null
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "exists": {
         "exists": true,
         "path": "p"
       }
-    }
+    },
+    "name": "exists_null_is_not_present"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": true,
     "filter": {
       "exists": {
         "exists": false,
         "path": "p"
       }
-    }
+    },
+    "name": "exists_false_on_missing"
+  },
+  {
+    "document": {},
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "not": {
+        "exists": {
+          "exists": false,
+          "path": "p"
+        }
+      }
+    },
+    "name": "not_exists_on_missing_is_false"
   },
   {
     "document": {
@@ -195,6 +283,7 @@
         "city": "NYC"
       }
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -202,7 +291,8 @@
         "path": "address.city",
         "value": "NYC"
       }
-    }
+    },
+    "name": "nested_path"
   },
   {
     "document": {
@@ -210,6 +300,7 @@
         "city": "NYC"
       }
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -217,13 +308,64 @@
         "path": "address.zip",
         "value": "x"
       }
-    }
+    },
+    "name": "nested_missing_key"
+  },
+  {
+    "document": {
+      "a": 5
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "a.b",
+        "value": "x"
+      }
+    },
+    "name": "path_through_a_non_object"
+  },
+  {
+    "document": {
+      "tags": [
+        "eu"
+      ]
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "tags.0",
+        "value": "eu"
+      }
+    },
+    "name": "a_numeric_segment_is_a_key_not_an_index"
+  },
+  {
+    "document": {
+      "tags": {
+        "0": "eu"
+      }
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "tags.0",
+        "value": "eu"
+      }
+    },
+    "name": "a_numeric_segment_reads_an_object_key"
   },
   {
     "document": {
       "status": "open",
       "total": 5000
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "and": [
@@ -242,13 +384,15 @@
           }
         }
       ]
-    }
+    },
+    "name": "and_all"
   },
   {
     "document": {
       "status": "open",
       "total": 5000
     },
+    "error_code": null,
     "expected": false,
     "filter": {
       "and": [
@@ -267,13 +411,15 @@
           }
         }
       ]
-    }
+    },
+    "name": "and_one_false"
   },
   {
     "document": {
       "status": "open",
       "total": 5000
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "or": [
@@ -292,12 +438,14 @@
           }
         }
       ]
-    }
+    },
+    "name": "or_one_true"
   },
   {
     "document": {
       "total": 5000
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -305,119 +453,14 @@
         "path": "total",
         "value": 5000
       }
-    }
-  },
-  {
-    "document": {
-      "name": "m"
     },
-    "expected": true,
-    "filter": {
-      "compare": {
-        "op": "lt",
-        "path": "name",
-        "value": "z"
-      }
-    }
-  },
-  {
-    "document": {
-      "sku": "INV-2024-01"
-    },
-    "expected": true,
-    "filter": {
-      "compare": {
-        "op": "starts_with",
-        "path": "sku",
-        "value": "INV-"
-      }
-    }
-  },
-  {
-    "document": {
-      "sku": "INV-2024-01"
-    },
-    "expected": false,
-    "filter": {
-      "compare": {
-        "op": "starts_with",
-        "path": "sku",
-        "value": "ORD-"
-      }
-    }
-  },
-  {
-    "document": {
-      "n": 5
-    },
-    "expected": false,
-    "filter": {
-      "compare": {
-        "op": "starts_with",
-        "path": "n",
-        "value": "5"
-      }
-    }
-  },
-  {
-    "document": {
-      "tags": [
-        "paid",
-        "eu"
-      ]
-    },
-    "expected": true,
-    "filter": {
-      "contains": {
-        "path": "tags",
-        "value": "eu"
-      }
-    }
-  },
-  {
-    "document": {
-      "tags": [
-        "paid",
-        "eu"
-      ]
-    },
-    "expected": false,
-    "filter": {
-      "contains": {
-        "path": "tags",
-        "value": "usd"
-      }
-    }
-  },
-  {
-    "document": {
-      "tags": "eu"
-    },
-    "expected": false,
-    "filter": {
-      "contains": {
-        "path": "tags",
-        "value": "eu"
-      }
-    }
-  },
-  {
-    "document": {
-      "a": 5
-    },
-    "expected": false,
-    "filter": {
-      "compare": {
-        "op": "eq",
-        "path": "a.b",
-        "value": "x"
-      }
-    }
+    "name": "gte_at_the_boundary"
   },
   {
     "document": {
       "total": 5000
     },
+    "error_code": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -425,20 +468,439 @@
         "path": "total",
         "value": 5000
       }
-    }
+    },
+    "name": "lte_at_the_boundary"
+  },
+  {
+    "document": {
+      "name": "m"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "name",
+        "value": "z"
+      }
+    },
+    "name": "lt_strings"
+  },
+  {
+    "document": {
+      "s": "Z"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "s",
+        "value": "a"
+      }
+    },
+    "name": "strings_order_upper_before_lower"
+  },
+  {
+    "document": {
+      "s": "ｱ"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "s",
+        "value": "🦀"
+      }
+    },
+    "name": "strings_order_by_code_point_not_utf16"
+  },
+  {
+    "document": {
+      "s": "café"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "s",
+        "value": "café"
+      }
+    },
+    "name": "strings_are_not_normalized"
+  },
+  {
+    "document": {
+      "t": "2024-01-01T00:00:00.500000Z"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "t",
+        "value": "2024-01-01T00:00:00Z"
+      }
+    },
+    "name": "timestamp_without_a_fraction_sorts_after_one_with"
+  },
+  {
+    "document": {
+      "t": "2024-01-01T00:30:00+01:00"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "t",
+        "value": "2024-01-01T00:00:00Z"
+      }
+    },
+    "name": "timestamp_with_an_offset_sorts_by_wall_time"
+  },
+  {
+    "document": {
+      "sku": "INV-2024-01"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "sku",
+        "value": "INV-"
+      }
+    },
+    "name": "starts_with_prefix"
+  },
+  {
+    "document": {
+      "sku": "INV-2024-01"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "sku",
+        "value": "ORD-"
+      }
+    },
+    "name": "starts_with_other_prefix"
+  },
+  {
+    "document": {
+      "n": 5
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "n",
+        "value": "5"
+      }
+    },
+    "name": "starts_with_non_string"
+  },
+  {
+    "document": {
+      "tags": [
+        "paid",
+        "eu"
+      ]
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "eu"
+      }
+    },
+    "name": "contains_member"
+  },
+  {
+    "document": {
+      "tags": [
+        "paid",
+        "eu"
+      ]
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "usd"
+      }
+    },
+    "name": "contains_non_member"
+  },
+  {
+    "document": {
+      "tags": "eu"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "contains": {
+        "path": "tags",
+        "value": "eu"
+      }
+    },
+    "name": "contains_needs_an_array"
+  },
+  {
+    "document": {
+      "v": [
+        1
+      ]
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "contains": {
+        "path": "v",
+        "value": 1.0
+      }
+    },
+    "name": "contains_is_numeric"
+  },
+  {
+    "document": {
+      "v": [
+        1,
+        null
+      ]
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "contains": {
+        "path": "v",
+        "value": null
+      }
+    },
+    "name": "contains_null_element"
+  },
+  {
+    "document": {
+      "a": [
+        1
+      ]
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "a",
+        "value": [
+          1.0
+        ]
+      }
+    },
+    "name": "eq_nested_array_is_numeric"
+  },
+  {
+    "document": {
+      "o": {
+        "x": [
+          2
+        ]
+      }
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "o",
+        "value": {
+          "x": [
+            2.0
+          ]
+        }
+      }
+    },
+    "name": "eq_nested_object_is_numeric"
+  },
+  {
+    "document": {
+      "a": [
+        1
+      ]
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "a",
+        "value": [
+          1,
+          1
+        ]
+      }
+    },
+    "name": "eq_array_length_differs"
+  },
+  {
+    "document": {
+      "b": true
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "b",
+        "value": false
+      }
+    },
+    "name": "gt_true_over_false"
+  },
+  {
+    "document": {
+      "b": false
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lte",
+        "path": "b",
+        "value": true
+      }
+    },
+    "name": "lte_false_under_true"
+  },
+  {
+    "document": {
+      "b": true
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "gt",
+        "path": "b",
+        "value": 0
+      }
+    },
+    "name": "bool_against_number_is_unordered"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": true,
     "filter": {
       "and": []
-    }
+    },
+    "name": "and_empty_is_true"
   },
   {
     "document": {},
+    "error_code": null,
     "expected": false,
     "filter": {
       "or": []
-    }
+    },
+    "name": "or_empty_is_false"
+  },
+  {
+    "document": {
+      "p": null
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "p",
+        "value": null
+      }
+    },
+    "name": "refused_null_comparand"
+  },
+  {
+    "document": {
+      "p": 1
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "in": {
+        "path": "p",
+        "values": [
+          1,
+          null
+        ]
+      }
+    },
+    "name": "refused_null_in_member"
+  },
+  {
+    "document": {},
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "exists": {
+        "exists": true,
+        "path": ""
+      }
+    },
+    "name": "refused_empty_path"
+  },
+  {
+    "document": {
+      "a": {
+        "": {
+          "b": 1
+        }
+      }
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "a..b",
+        "value": 1
+      }
+    },
+    "name": "refused_dotted_empty_segment"
+  },
+  {
+    "document": {
+      "p": 1
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "op": "eq",
+        "path": "p",
+        "vlaue": 1
+      }
+    },
+    "name": "refused_unknown_field"
+  },
+  {
+    "document": {
+      "p": 1
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "near": {
+        "path": "p"
+      }
+    },
+    "name": "refused_unknown_node"
   }
 ]

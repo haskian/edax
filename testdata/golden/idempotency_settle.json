@@ -1,0 +1,46 @@
+[
+  {
+    "cache": null,
+    "code": null
+  },
+  {
+    "cache": null,
+    "code": "concurrency"
+  },
+  {
+    "cache": "codec",
+    "code": "codec"
+  },
+  {
+    "cache": null,
+    "code": "store"
+  },
+  {
+    "cache": "payload_mismatch",
+    "code": "payload_mismatch"
+  },
+  {
+    "cache": null,
+    "code": "in_progress"
+  },
+  {
+    "cache": "cached_failure",
+    "code": "cached_failure"
+  },
+  {
+    "cache": "handler_not_found",
+    "code": "handler_not_found"
+  },
+  {
+    "cache": "already_registered",
+    "code": "already_registered"
+  },
+  {
+    "cache": "bad_handle",
+    "code": "bad_handle"
+  },
+  {
+    "cache": "rejected",
+    "code": "rejected"
+  }
+]

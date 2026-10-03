@@ -42,7 +42,7 @@ vectors](kernels/golden-vectors.md).
 message key.
 
 **Envelope** — the wire form of a stored event: the event itself plus id, aggregate id, sequence,
-namespace, metadata and timestamp. `EventEnvelope` in Rust, `edax.Envelope` in Python.
+namespace, metadata and timestamp. `EventEnvelope` in Rust, `edax.EventEnvelope` in Python.
 
 **Optimistic concurrency** — `EventStore.append` and `ProjectionStore.save` are database-enforced
 compare-and-set operations on a version. A stale writer gets `ConcurrencyError` and nothing is
@@ -59,7 +59,7 @@ committed state and published events cannot diverge. `Relay` and `pump` drain it
 **Unit of work** — one transaction boundary that several stores share. Opened with
 `edax.transaction(store)` in Python.
 
-**Ambient transaction** — the open handle a Python participant finds through `current_tx()`, carried
+**Ambient transaction** — the open handle a Python participant finds through `current_tx(transactor)`, keyed by its database, carried
 in a `contextvars` variable. Rust has none; a Rust host passes the handle explicitly or publishes it
 through a `Fn() -> Tx` provider.
 
@@ -100,8 +100,13 @@ Redis ledger beside your aggregate database. Two independent commits cannot be m
 **Claim TTL** — how long a `pending` claim survives without a `complete`. It bounds how long a
 crashed worker blocks a key.
 
-**Fence** — a token a claimant holds and presents on `complete` or `release`. The store applies the
-call only when the token matches, so a losing claimant cannot settle the winner's claim.
+**Claim handle** — what a won claim returns (`Won(handle)`, `Claim::Won(ClaimHandle)`) and the
+claimant presents on `complete`, `release` and `extend`. In the Redis ledger it is the exact value the
+claim wrote.
+
+**Fence** — the check a store applies to a claim handle. The call writes only while the key still
+holds that exact claim. A claimant whose claim lapsed then cannot settle the new holder's claim, and a
+late release cannot delete a settled record.
 
 **Idempotent Consumer** — the pattern edax implements: a dedup table beside the business change.
 

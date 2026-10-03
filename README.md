@@ -1,9 +1,9 @@
 # edax
 
 > [!WARNING]
-> **Early alpha (0.0.x).** The API is unstable and will change without notice, and nothing is
+> **Early alpha (0.x).** The API is unstable and a minor release may break it, and nothing is
 > published to a package registry yet. Not ready for production. Build from source. What a version
-> will promise once 0.1.0 is cut: [stability](docs/stability.md).
+> promises: [stability](docs/stability.md).
 
 **An ergonomic toolkit for building event-driven systems. Command Query Responsibility Segregation
 (CQRS) and event sourcing, with a Rust core and language software development kits (SDKs) that
@@ -19,8 +19,8 @@ SDK **wires**. The kernel **decides**. Neither layer re-derives the other's job.
 
 ## Install
 
-Nothing is published to a registry yet, so install from the Git source. Both SDKs build the Rust
-kernel from source, so a [Rust toolchain](https://rustup.rs) must be on your `PATH`.
+Nothing is published to a registry yet, so install from the Git source. The Python SDK builds the
+Rust kernel from source, so a [Rust toolchain](https://rustup.rs) must be on your `PATH`.
 
 **Python ([uv](https://docs.astral.sh/uv/)):** `maturin` builds the native extension automatically.
 
@@ -28,12 +28,9 @@ kernel from source, so a [Rust toolchain](https://rustup.rs) must be on your `PA
 uv pip install "git+https://github.com/crtomirmajer/edax#subdirectory=crates/edax-py"
 ```
 
-**Rust ([cargo](https://doc.rust-lang.org/cargo/)):**
-
-```toml
-[dependencies]
-edax = { git = "https://github.com/crtomirmajer/edax" }
-```
+Python is the supported SDK. The Rust `edax` crate is a reference model (`publish = false`) that
+holds the Python orchestration to the kernels from a second language; see
+[Rust and Python parity](docs/sdk/rust-parity.md).
 
 Working inside a checkout instead? Point `uv` at the local path (`uv pip install ./crates/edax-py`),
 or use the pinned [mise](https://mise.jdx.dev) toolchain — see
@@ -48,9 +45,9 @@ All of it commits as one unit of work.
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec, transaction
+from edax import Aggregate, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -81,7 +78,7 @@ class Account(Aggregate):
 class AccountCodec:  # how the aggregate snapshots
     type = "Account"
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> Account:
+    def load(self, id: str, version: int, data: bytes | None) -> Account:
         account = Account(id, version)
         if data is not None:
             account.balance = int(data)
@@ -99,16 +96,17 @@ async def main() -> None:
     async def deposit(cmd: Deposit) -> int:
         account = await repo.load(cmd.account_id)  # snapshot + replay
         account.apply(Deposited(cmd.amount))
-        await repo.save(account)  # joins the ambient transaction
+        await repo.save(account)  # joins the unit of work the guard opened
         return account.balance
 
-    # idempotency outermost (one claim per request), retry inside it (retries share that claim)
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=lambda c: c.request_id), retry(3))
+    # The guard opens the unit of work: claim, events, snapshot and outbox commit together.
+    # retry sits outside it, so a failed attempt rolls back whole before the next one starts.
+    ledger = MemoryIdempotencyStore(db)
+    bus = CommandBus(retry(3), idempotent(ledger, key=lambda c: c.request_id, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit) -> int:
-        async with transaction(db):  # events, snapshot, outbox, claim: one commit
-            return await bus.dispatch(cmd)
+        return await bus.dispatch(cmd)  # no transaction around it: retry refuses to run inside one
 
     print(await submit(Deposit("acct-1", 100, "req-A")))  # 100
     print(await submit(Deposit("acct-1", 100, "req-A")))  # 100, replayed, not deposited twice
@@ -119,7 +117,8 @@ async def main() -> None:
 ```
 
 Dispatch `req-A` twice and the second call replays the first outcome. Reuse the key with a
-different body and the guard raises `PayloadMismatch`. The kernel makes that decision, not the SDK,
+different body and the guard raises `PayloadMismatch`. A retry re-runs a whole unit of work, never a
+handler inside one, so `retry` goes outside a guard given `unit_of_work`. The kernel makes that decision, not the SDK,
 so a Rust service sharing the store reaches the same verdict.
 
 Runnable versions of this and five more walkthroughs are in [`examples/py`](examples/py):
@@ -136,20 +135,20 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 - [Delivery guarantees](docs/guides/delivery-guarantees.md) — at-least-once, dedup windows, and
   both idempotency guard modes.
 - [Backends](docs/backends/README.md) — the seam contracts, and the memory, Redis and Kafka
-  implementations. A Kafka record, its four headers and the offset watermark that settles it are the
+  implementations. A Kafka record, its header, its partition and the offset watermark that settles it are the
   `edax-kafka` kernel's; the adapter only makes the client calls.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/edax-core` | shared primitives: hashing, backoff, the clock, id generation, the error taxonomy |
-| `crates/edax-event` | event-driven kernel: partition, codec, upcast, causation, dedup, sequence |
-| `crates/edax-cqrs` | command-and-query kernel: canonical bytes, payload hash, idempotency decision, the filter AST and evaluator, sort and cursor rules |
-| `crates/edax` | reference Rust SDK: aggregates, stores, `CommandBus`, dispatcher, saga |
-| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary |
-| `crates/edax-kafka` | Kafka kernel: the record key and headers, the media types, the offset watermark |
-| `crates/edax-redis` | Redis kernel: the idempotency ledger's value layout and its two fence scripts |
+| `crates/edax-core` | shared primitives: hashing, backoff, the clock, id generation, the error taxonomy, a poison-tolerant lock, settlement tokens |
+| `crates/edax-event` | event-driven kernel: local fan-out, codec, upcast, causation, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
+| `crates/edax-cqrs` | command-and-query kernel: canonical bytes (RFC 8785), payload and command hash, the idempotency record, outcome and settle, the filter AST and evaluator, sort and cursor rules |
+| `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, and a partitioned broker log with consumer groups |
+| `crates/edax-kafka` | Kafka kernel: the record key and header, broker placement, the media-type route, the dead-letter record, the offset watermark |
+| `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its four scripts, and the verdict on a Redis reply |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `examples/py` | runnable walkthroughs |

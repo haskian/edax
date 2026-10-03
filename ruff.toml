@@ -1,7 +1,7 @@
 # One config for every Python file in the repo: the SDK, its tests, and the examples.
 # A second config per directory is a second set of rules to keep in sync.
 
-target-version = "py39" # crates/edax-py/pyproject.toml declares requires-python >=3.9
+target-version = "py310" # crates/edax-py/pyproject.toml declares requires-python >=3.10
 line-length = 110
 
 exclude = [
@@ -24,12 +24,6 @@ select = [
 ]
 
 ignore = [
-    # PEP 604 (`X | None`) in annotations. Every module has `from __future__ import annotations`,
-    # so these are strings at definition time — but `dataclass` and `msgspec.Struct` resolve them
-    # at runtime, and `eval("str | None")` raises on 3.9, which `abi3-py39` and requires-python
-    # both genuinely target. `Optional` stays until the floor moves to 3.10.
-    "UP007",
-    "UP045",
     # The single `__all__` is grouped by concern under comment headers (submodules, kernel
     # functions, errors) and sorted within each group. One flat alphabetical list would read
     # worse, not better.

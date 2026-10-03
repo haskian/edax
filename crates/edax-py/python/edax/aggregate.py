@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copyreg
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 
 from . import _edax, errors
 
@@ -12,35 +12,91 @@ from . import _edax, errors
 # parallel dataclass or field-by-field marshaling. Field types live in `_edax.pyi`.
 Event = _edax.Event
 EventEnvelope = _edax.EventEnvelope
-Envelope = EventEnvelope  # the alias callers construct with: `edax.Envelope(...)`
 
+#: The names the kernel selects a format by. A `Literal` so a type checker catches a typo; it cannot be
+#: read from the kernel, so the import checks every name against it instead.
 WireFormat = Literal["json", "msgpack"]
 
 
-# The native classes have no __reduce__, so copy/pickle need these copyreg reducers (e.g. to hand
-# an envelope to a ProcessPoolExecutor). Value `==`, repr and hash are type slots Python cannot
-# add to a native class; those need the binding to emit `#[pyclass(frozen, eq, hash, str)]`.
-def _rebuild_event(name: str, version: int, data: bytes) -> Event:
-    return _edax.Event(name, version, data)
+def _check_every_wire_format_is_the_kernels() -> None:
+    """Fail the import if a name in :data:`WireFormat` is one the kernel does not resolve."""
+    for name in get_args(WireFormat):
+        with errors.mapped():
+            _edax.media_type(name)
 
 
-def _rebuild_envelope(
-    id: str,
-    aggregate_id: str,
-    event: Event,
-    namespace: dict[str, str],
-    metadata: dict[str, str],
-    timestamp: int,
-    sequence: int | None,
-) -> EventEnvelope:
-    return _edax.EventEnvelope(id, aggregate_id, event, namespace, metadata, timestamp, sequence)
+_check_every_wire_format_is_the_kernels()
 
 
-copyreg.dispatch_table[_edax.Event] = lambda e: (_rebuild_event, (e.name, e.version, e.data))
-copyreg.dispatch_table[_edax.EventEnvelope] = lambda v: (
-    _rebuild_envelope,
-    (v.id, v.aggregate_id, v.event, v.namespace, v.metadata, v.timestamp, v.sequence),
-)
+# The binding emits each class with no value semantics: `==` is identity, so a getter's fresh copy is
+# not equal to itself, and `namespace` / `metadata` come back in a per-process hash order. The classes
+# are heap types, so the SDK gives them value semantics here, once, at import: equality and hashing by
+# value, a repr naming the fields, the public module, sorted dictionaries (the kernel's own order on the
+# wire), and copy/pickle reducers. The classes still cannot be subclassed; compose instead.
+_ENVELOPE_FIELDS = ("id", "aggregate_id", "event", "namespace", "metadata", "timestamp", "sequence")
+_EVENT_FIELDS = ("name", "version", "data")
+_SAGA_COMMAND_FIELDS = ("id", "correlation_id", "command", "timestamp")
+
+
+def _sorted_dict(getter: Any) -> property:
+    """A property returning the native getter's dictionary sorted by key, so its order is the same in every
+    process: by code point, which is the order of the kernel's UTF-8 keys on the wire."""
+
+    def read(self: Any) -> dict[str, str]:
+        return dict(sorted(getter.__get__(self, type(self)).items()))
+
+    return property(read, doc=getter.__doc__)
+
+
+def _value(fields: tuple[str, ...], obj: Any) -> tuple[Any, ...]:
+    """``obj`` as the tuple of its fields, recursively: what equality and the hash compare."""
+    out: list[Any] = []
+    for name in fields:
+        v = getattr(obj, name)
+        if isinstance(v, dict):
+            v = tuple(v.items())  # already sorted by the property above
+        elif isinstance(v, _edax.Event):
+            v = _value(_EVENT_FIELDS, v)
+        out.append(v)
+    return tuple(out)
+
+
+def _give_value_semantics(cls: Any, fields: tuple[str, ...]) -> None:
+    for name in ("namespace", "metadata"):
+        if name in fields:
+            setattr(cls, name, _sorted_dict(cls.__dict__[name]))
+
+    def eq(self: Any, other: object) -> object:  # a bool, or NotImplemented for another type
+        if type(other) is not type(self):
+            return NotImplemented
+        same: bool = _value(fields, self) == _value(fields, other)
+        return same
+
+    def hash_(self: Any) -> int:
+        return hash(_value(fields, self))
+
+    def repr_(self: Any) -> str:
+        shown = ", ".join(f"{name}={getattr(self, name)!r}" for name in fields)
+        return f"{cls.__name__}({shown})"
+
+    cls.__eq__ = eq
+    cls.__hash__ = hash_
+    cls.__repr__ = repr_
+    cls.__module__ = "edax"
+    copyreg.dispatch_table[cls] = lambda v: (
+        cls,
+        tuple(getattr(v, name) for name in _constructor_order(fields)),
+    )
+
+
+def _constructor_order(fields: tuple[str, ...]) -> tuple[str, ...]:
+    """The binding's constructor puts an optional parameter last, so ``sequence`` trails the envelope's."""
+    return tuple(f for f in fields if f != "sequence") + (("sequence",) if "sequence" in fields else ())
+
+
+_give_value_semantics(_edax.Event, _EVENT_FIELDS)
+_give_value_semantics(_edax.EventEnvelope, _ENVELOPE_FIELDS)
+_give_value_semantics(_edax.SagaCommand, _SAGA_COMMAND_FIELDS)
 
 
 class Serializer(Protocol):
@@ -75,29 +131,13 @@ class KernelSerializer:
 
     def encode(self, env: EventEnvelope) -> bytes:
         with errors.mapped():
-            return _edax.encode_envelope(
-                self._fmt,
-                env.id,
-                env.aggregate_id,
-                env.event.name,
-                env.event.version,
-                env.event.data,
-                env.namespace,
-                env.metadata,
-                env.timestamp,
-                env.sequence,
-            )
+            return _edax.encode_envelope(self._fmt, env)
 
     def decode(self, wire: bytes) -> EventEnvelope:
         # mapped() turns the kernel's `codec:` tag into the terminal CodecError, so a poison
         # message dead-letters instead of reading as a transient RuntimeError.
         with errors.mapped():
             return _edax.decode_envelope(self._fmt, wire)
-
-
-def kernel(fmt: WireFormat = "json") -> KernelSerializer:
-    """The default serializer over the kernel wire format."""
-    return KernelSerializer(fmt)
 
 
 @dataclass
@@ -116,11 +156,12 @@ class Version:
 
 
 class Aggregate:
-    """Base for an event-sourced aggregate."""
+    """Base for an event-sourced aggregate. ``version`` is where it stands: ``version.initial`` is what it was
+    loaded at, ``version.current`` counts the events applied since."""
 
     def __init__(self, id: str, initial: int = 0) -> None:
         self.id = id
-        self.sequence = Version(initial)
+        self.version = Version(initial)
         self.pending: list[Any] = []
 
     def transition(self, event: Any) -> None:  # pragma: no cover - overridden
@@ -129,5 +170,5 @@ class Aggregate:
     def apply(self, *events: Any) -> None:
         for e in events:
             self.transition(e)
-            self.sequence = self.sequence.increment()
+            self.version = self.version.increment()
             self.pending.append(e)

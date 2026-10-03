@@ -1,14 +1,22 @@
 //! The write-side storage seam: an [`EventStore`] you implement against your own database, plus
 //! the orchestration over it — a [`Repository`] that rehydrates and persists aggregates, and a
-//! [`Relay`] that drains the outbox to a publisher.
+//! [`Relay`] that drains an [`Outbox`] to a publisher.
 //!
-//! The outbox lives on [`EventStore`] rather than in a seam of its own: a transactional outbox is
-//! only worth the name if the event rows and the to-publish rows commit together, and one store is
-//! the only place that atomicity can be guaranteed.
+//! The event outbox is a supertrait of [`EventStore`] rather than a seam of its own: a transactional
+//! outbox is only worth the name if the event rows and the to-publish rows commit together, and one
+//! store is the only place that atomicity can be guaranteed. A saga store has an outbox of its own,
+//! for the commands its steps decided, and the same [`Relay`] drains it.
 
-use edax_event::{EventEnvelope, Metadata, Namespace};
+use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::sync::Mutex;
 
-use crate::{Aggregate, AggregateCodec, Error, EventCodec};
+use edax_core::lock;
+use edax_event::{EventEnvelope, Failure, Metadata, Namespace, Retries, SagaCommand, Verdict};
+
+use crate::command::{code_of, is_terminal, HandlerError};
+use crate::pacing::Pacing;
+use crate::{Aggregate, AggregateCodec, Error, ErrorCode, EventCodec};
 
 /// A marshaled aggregate at a given version, so a load can skip replaying the whole stream.
 #[derive(Clone, Debug)]
@@ -29,13 +37,25 @@ pub trait Transactor {
     /// Backend transaction handle (a connection / transaction). Use `()` for a store that needs none.
     type Tx;
 
+    /// The database this transactor opens units of work on. Two transactors over one database must
+    /// return the same value, so [`transaction`] can refuse a second unit of work on it while one is
+    /// open on this thread. The default, the transactor's address, holds only for a transactor that is
+    /// its database; one that shares a pool with others overrides it (the memory backend returns its
+    /// database's).
+    fn identity(&self) -> usize {
+        std::ptr::from_ref(self).addr()
+    }
+
     fn begin(&self) -> Result<Self::Tx, Error>;
     fn commit(&self, tx: Self::Tx) -> Result<(), Error>;
     fn rollback(&self, tx: Self::Tx);
 
     /// Scoped unit of work: run `body`, commit on `Ok`, roll back on `Err`. Thread the `&mut Tx` to
-    /// every store that should commit together (events, projection, idempotency record).
-    fn transaction<R>(&self, body: impl FnOnce(&mut Self::Tx) -> Result<R, Error>) -> Result<R, Error>
+    /// every store that should commit together (events, projection, idempotency record). `body` fails
+    /// with any error an [`Error`] converts into — a [`HandlerError`](crate::HandlerError) included, so
+    /// a command dispatched inside keeps its verdict. A second unit of work on the same database while
+    /// this one is open on the thread is refused; see [`transaction`].
+    fn transaction<R, E: From<Error>>(&self, body: impl FnOnce(&mut Self::Tx) -> Result<R, E>) -> Result<R, E>
     where
         Self: Sized,
     {
@@ -70,23 +90,136 @@ impl<T: Transactor> Drop for Rollback<'_, T> {
     }
 }
 
+thread_local! {
+    /// The databases a [`transaction`] body is running on, on this thread, innermost last. A handler is
+    /// a sync closure that runs on its caller's thread, so a dispatch made inside a body runs inside that
+    /// unit of work: [`retry`](crate::retry) reads this to refuse it, and [`transaction`] to refuse a
+    /// second unit of work on a database that already has one open.
+    static OPEN_UNITS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Marks a [`transaction`] body as running on this thread until dropped, panics included.
+struct OpenUnit;
+
+impl OpenUnit {
+    /// Mark `database` open, or refuse it when a body on this thread already holds it.
+    fn enter(database: usize) -> Result<Self, Error> {
+        OPEN_UNITS.with_borrow_mut(|open| {
+            if open.contains(&database) {
+                // The inner unit of work would commit on its own, and the outer rollback could not take
+                // it back. Terminal: the same wiring fails the same way on every retry.
+                return Err(Error::bad_handle(
+                    "a unit of work was opened on a database that already has one open on this thread: the inner \
+                     one would commit independently of the outer one. Pass the open `&mut Tx` down (`save_in`, \
+                     `load_in`, `dispatch` inside the body) instead of opening another",
+                ));
+            }
+            open.push(database);
+            Ok(OpenUnit)
+        })
+    }
+}
+
+impl Drop for OpenUnit {
+    fn drop(&mut self) {
+        OPEN_UNITS.with_borrow_mut(|open| {
+            open.pop();
+        });
+    }
+}
+
+/// Whether a [`transaction`] body is running on this thread.
+pub(crate) fn in_unit_of_work() -> bool {
+    OPEN_UNITS.with_borrow(|open| !open.is_empty())
+}
+
 /// The free-function form of [`Transactor::transaction`]. A panic in `body` rolls back and keeps
 /// unwinding; the caller sees the panic, the backend sees a settled transaction.
-pub fn transaction<T, R>(tr: &T, body: impl FnOnce(&mut T::Tx) -> Result<R, Error>) -> Result<R, Error>
+///
+/// Opening it on a database that already has a unit of work open on this thread is refused with the
+/// terminal [`ErrorCode::BadHandle`], before anything begins: the inner unit of work would commit on its
+/// own, and the outer rollback could not take it back. So [`Repository::save`] (which opens its own)
+/// inside a host's body is refused rather than committing apart from it; [`Repository::save_in`] joins
+/// the open one. The check keys on [`Transactor::identity`], so it catches every transactor over one
+/// database only when the backend reports one identity for them. Two databases nest.
+pub fn transaction<T, R, E: From<Error>>(tr: &T, body: impl FnOnce(&mut T::Tx) -> Result<R, E>) -> Result<R, E>
 where
     T: Transactor,
 {
+    let open = OpenUnit::enter(tr.identity())?;
     let mut guard = Rollback { transactor: tr, tx: Some(tr.begin()?) };
     // `None` is unreachable: only `commit` takes the handle, and it consumes the guard.
     let outcome = guard.tx.as_mut().map(body);
+    drop(open);
     match outcome {
         Some(Ok(r)) => {
             guard.commit()?;
             Ok(r)
         }
         Some(Err(e)) => Err(e),
-        None => Err(Error::BadHandle("unit of work has no open transaction".to_string())),
+        None => Err(Error::bad_handle("unit of work has no open transaction").into()),
     }
+}
+
+/// Run `body` in a unit of work, and on a transient failure run it again in a fresh one: up to
+/// `attempts` runs (at least one), waiting each step of `pacing`. A terminal error returns at once.
+///
+/// This is the safe retry over a transaction. Each attempt commits or rolls back whole, so a second
+/// attempt never re-applies the first one's staged writes. Use it to retry a dispatch through
+/// [`idempotent_in`](crate::idempotent_in): [`retry`](crate::retry) refuses to run inside a
+/// [`transaction`] body, for exactly that reason. The sleep blocks the calling thread.
+pub fn retry_transaction<T, R>(
+    tr: &T,
+    attempts: usize,
+    pacing: &Pacing,
+    mut body: impl FnMut(&mut T::Tx) -> Result<R, HandlerError>,
+) -> Result<R, HandlerError>
+where
+    T: Transactor,
+{
+    let attempts = attempts.max(1);
+    let mut failures: usize = 0;
+    loop {
+        match transaction(tr, &mut body) {
+            Ok(result) => return Ok(result),
+            Err(e) if is_terminal(&*e) || failures.saturating_add(1) >= attempts => return Err(e),
+            Err(_) => {
+                // The backoff index is the number of failures so far, as in `retry`.
+                pacing.wait(u64::try_from(failures).unwrap_or(u64::MAX));
+                failures = failures.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// A row an [`Outbox`] holds: what [`Relay`] marks it published by.
+pub trait OutboxRow {
+    /// The row's unique id: the envelope id, or the saga command id.
+    fn id(&self) -> &str;
+}
+
+impl OutboxRow for EventEnvelope {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl OutboxRow for SagaCommand {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// The read side of a transactional outbox: committed rows not yet published, and the acknowledgement
+/// that prunes them. Generic over the row, so one store can hold the event outbox (`R` =
+/// [`EventEnvelope`]) and the saga command outbox (`R` = [`SagaCommand`]) side by side.
+pub trait Outbox<R> {
+    /// Committed rows not yet published, oldest commit first, at most `limit`. Running more than one
+    /// [`Relay`] over one store needs this call to lease or lock the rows it returns, or two relays
+    /// read the same batch and publish it twice.
+    fn unpublished(&self, limit: usize) -> Result<Vec<R>, Error>;
+    /// Acknowledge published rows by id. Idempotent; an unknown id is ignored.
+    fn mark_published(&self, ids: &[String]) -> Result<(), Error>;
 }
 
 /// The durable log: per-aggregate events with optimistic concurrency, aggregate snapshots, and a
@@ -94,8 +227,10 @@ where
 /// together.
 ///
 /// The boundary itself lives on [`Transactor`] (the supertrait): begin a unit of work, thread the
-/// `&mut Tx` through these writes, then commit so they land atomically.
-pub trait EventStore: Transactor {
+/// `&mut Tx` through these writes, then commit so they land atomically. The outbox's read side is the
+/// [`Outbox`] supertrait. Envelope ids are unique store-wide: an append carrying an id the store
+/// already holds is refused, or marking one row published would prune the other unpublished.
+pub trait EventStore: Transactor + Outbox<EventEnvelope> {
     /// Events for the aggregate with `sequence > after`, in order (`after` skips a snapshot).
     fn load(&self, tx: &mut Self::Tx, aggregate_id: &str, after: u64) -> Result<Vec<EventEnvelope>, Error>;
 
@@ -103,7 +238,8 @@ pub trait EventStore: Transactor {
     fn save_snapshot(&self, tx: &mut Self::Tx, snapshot: &Snapshot) -> Result<(), Error>;
 
     /// Append `events` and enqueue the same envelopes to the outbox, atomically. Return
-    /// [`Error::Concurrency`] if the stored version differs from `expected_version`.
+    /// [`Error::Concurrency`] if the stored version differs from `expected_version`, and a `codec`
+    /// error for a batch that is not dense or carries an envelope id the store already holds.
     fn append(
         &self,
         tx: &mut Self::Tx,
@@ -111,18 +247,10 @@ pub trait EventStore: Transactor {
         expected_version: u64,
         events: &[EventEnvelope],
     ) -> Result<(), Error>;
-
-    /// Outbox rows not yet published (relay read side). Running more than one [`Relay`] over one
-    /// store needs this call to lease or lock the rows it returns, or two relays read the same
-    /// batch and publish it twice.
-    fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error>;
-    /// Acknowledge published outbox rows by envelope id (relay).
-    fn mark_published(&self, ids: &[String]) -> Result<(), Error>;
 }
 
 fn default_now() -> i64 {
-    // The kernel clock is u64 nanos; it fits i64 until 2262, so saturating is a no-op in practice.
-    i64::try_from(edax_core::current_timestamp()).unwrap_or(i64::MAX)
+    edax_core::current_timestamp()
 }
 
 /// Loads aggregates (snapshot then replay the rest) and saves them (append the pending events and a
@@ -172,7 +300,7 @@ where
     /// Persist the aggregate's pending events in a unit of work of its own; return the committed
     /// envelopes (publish eagerly, or leave them to the [`Relay`]). On a clean commit the aggregate
     /// is reset to its new version; on error it is left untouched, so a retry (worth it for
-    /// [`Error::Store`], not for the terminal [`Error::Codec`]) re-sends the same pending events.
+    /// a `store` error, not for the terminal a `codec` error) re-sends the same pending events.
     /// Inside a transaction the caller already opened, use [`Repository::save_in`].
     pub fn save(&self, agg: &mut AC::Aggregate) -> Result<Vec<EventEnvelope>, Error> {
         self.save_with(agg, Namespace::new(), Metadata::new())
@@ -241,8 +369,8 @@ where
         let current = root.current();
         let aggregate_id = root.id.clone();
 
-        // Marshal the whole batch before opening the transaction: a payload that cannot be written
-        // fails the save outright, so a half-marshaled batch can never reach the store.
+        // Marshal the whole batch before the first write: a payload that cannot be written fails the
+        // save outright, so a half-marshaled batch can never reach the store.
         let envelopes: Vec<EventEnvelope> = root
             .pending()
             .iter()
@@ -252,7 +380,7 @@ where
                     id: (self.new_id)(),
                     aggregate_id: aggregate_id.clone(),
                     event: self.events.marshal(event)?,
-                    sequence: Some(initial + 1 + i as u64),
+                    sequence: Some(initial.saturating_add(1).saturating_add(u64::try_from(i).unwrap_or(u64::MAX))),
                     namespace: namespace.clone(),
                     metadata: metadata.clone(),
                     timestamp: (self.now)(),
@@ -273,55 +401,150 @@ where
         Ok((envelopes, current))
     }
 
+    /// Rebuild from the snapshot and the events after it. A snapshot is a cache of the event log, so
+    /// one this codec cannot use — another aggregate type's under the same id, or one whose `dump`
+    /// format no longer loads — is ignored and the stream replays from version 0. The loaded tail is
+    /// held to the kernel's dense-run rule, so a store that returns a gap or a repeat fails the load
+    /// instead of folding the wrong state.
     fn replay(&self, tx: &mut S::Tx, id: &str) -> Result<AC::Aggregate, Error> {
-        let snapshot = self.store.load_snapshot(tx, id)?;
-        let base = snapshot.as_ref().map_or(0, |s| s.version);
-        let mut agg = self.aggregates.load(id, base, snapshot.as_ref().map(|s| s.data.as_slice()))?;
-        let mut last = base;
-        for env in self.store.load(tx, id, base)? {
+        let cached = self
+            .store
+            .load_snapshot(tx, id)?
+            .filter(|s| s.type_name == self.aggregates.type_name())
+            .and_then(|s| self.aggregates.load(id, s.version, Some(&s.data)).ok().map(|agg| (s.version, agg)));
+        let (base, mut agg) = match cached {
+            Some(found) => found,
+            None => (0, self.aggregates.load(id, 0, None)?),
+        };
+        let events = self.store.load(tx, id, base)?;
+        let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
+        edax_event::check_batch(base, &sequences)?;
+        for env in &events {
             // Replay drives state directly — not apply(), which would re-queue these as pending.
             agg.transition(&self.events.unmarshal(&env.event)?);
-            if let Some(seq) = env.sequence {
-                last = seq;
-            }
         }
-        agg.root_mut().version = last;
+        // Dense from `base`, so the last sequence is the count past it.
+        agg.root_mut().version = base.saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX));
         Ok(agg)
     }
 }
 
-/// Drains the store's outbox to a publisher: the transactional-outbox publisher. Mark-published runs only
-/// after every row in the batch is published, so a failure mid-batch redelivers rather than drops.
+/// A dead-letter sink for a [`Relay`]: takes the row that cannot be published and the failure that
+/// killed it, and returns once the row is somewhere a human will look.
+pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync>;
+
+/// Drains an [`Outbox`] to a publisher: the transactional-outbox publisher, for the event outbox
+/// (`R` = [`EventEnvelope`], the default) and the saga command outbox (`R` = [`SagaCommand`]) alike.
 ///
-/// `publish` must return only once the transport has durably accepted the envelope. Anything that merely
-/// hands the envelope on, such as an in-process queue or a dispatcher's `submit`, makes the outbox
-/// at-most-once: the row is marked published while the event is still only in memory.
+/// `publish` must return only once the transport has durably accepted the row. Anything that merely
+/// hands it on, such as an in-process queue or a dispatcher's `submit`, makes the outbox
+/// at-most-once: the row is marked published while it is still only in memory.
 ///
-/// One relay per store, unless [`EventStore::unpublished`] leases the rows it returns.
-pub struct Relay<S> {
+/// A drain publishes rows in order and marks every row it settled, including on a failure part way:
+/// publishing is at-least-once, so downstream deduplicates by row id. A failing row stops the batch,
+/// because the rows behind it may be its aggregate's later events. Whether it is handed back or dead-
+/// lettered is the kernel's retry policy ([`Retries`]), keyed by row id: a terminal failure, or a
+/// transient one at the [`max_attempts`](Self::max_attempts)-th attempt, goes to the
+/// [`on_dead`](Self::on_dead) sink and is marked, so one poison row cannot stall the outbox; a row
+/// handed back waits its backoff step before the drain returns the error, so a host looping on
+/// `drain` does not spin. With no sink a poison row is handed back on every drain, and its wait grows.
+///
+/// Overlapping drains of one relay take turns, so a timer and a "drain now" never publish one batch
+/// twice. Two relays over one store need [`Outbox::unpublished`] to lease the rows it returns.
+pub struct Relay<S, R = EventEnvelope> {
     store: S,
+    draining: Mutex<()>,
+    retries: Mutex<Retries>,
+    on_dead: Option<RelaySink<R>>,
+    pacing: Pacing,
+    _row: PhantomData<fn() -> R>,
 }
 
-impl<S: EventStore> Relay<S> {
+impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
     pub fn new(store: S) -> Self {
-        Self { store }
+        Self {
+            store,
+            draining: Mutex::new(()),
+            retries: Mutex::new(Retries::new(0)),
+            on_dead: None,
+            pacing: Pacing::default(),
+            _row: PhantomData,
+        }
     }
 
-    /// Publish one batch of unpublished events; return how many. Call in a loop to keep draining.
-    /// `publish` is synchronous; wrap the call in your async runtime for a network transport.
-    pub fn drain<F>(&self, batch: usize, mut publish: F) -> Result<usize, Error>
+    /// Dead-letter a row whose publish failed transiently `n` times; `0` (the default) never does.
+    pub fn max_attempts(self, n: u32) -> Self {
+        Self { retries: Mutex::new(Retries::new(n)), ..self }
+    }
+
+    /// Where a row that cannot be published goes, instead of stalling the rows behind it. A sink
+    /// that fails hands the row back, and the next drain tries the sink again.
+    pub fn on_dead(mut self, sink: impl Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync + 'static) -> Self {
+        self.on_dead = Some(Box::new(sink));
+        self
+    }
+
+    /// How a failed drain waits before it returns: the backoff policy, the sleep and the jitter.
+    pub fn pacing(mut self, pacing: Pacing) -> Self {
+        self.pacing = pacing;
+        self
+    }
+
+    /// The outbox this relay drains.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Publish one batch; return how many rows it settled (published or dead-lettered). Call in a
+    /// loop to keep draining. `publish` is synchronous; wrap the call in your async runtime for a
+    /// network transport. Its error is a [`HandlerError`], so a saga command dispatched through a
+    /// [`CommandBus`](crate::CommandBus) keeps its verdict.
+    pub fn drain<F>(&self, batch: usize, mut publish: F) -> Result<usize, HandlerError>
     where
-        F: FnMut(&EventEnvelope) -> Result<(), Error>,
+        F: FnMut(&R) -> Result<(), HandlerError>,
     {
+        let _turn = lock(&self.draining);
         let rows = self.store.unpublished(batch)?;
-        for env in &rows {
-            publish(env)?;
+        let mut settled: Vec<String> = Vec::new();
+        let mut failed: Option<(u64, HandlerError)> = None;
+        for row in &rows {
+            let Err(error) = publish(row) else {
+                lock(&self.retries).succeeded(row.id());
+                settled.push(row.id().to_owned());
+                continue;
+            };
+            let failure = match code_of(&*error) {
+                Some(ErrorCode::InProgress) => Failure::Contended,
+                _ if is_terminal(&*error) => Failure::Terminal,
+                _ => Failure::Transient,
+            };
+            let verdict = lock(&self.retries).failed(row.id(), 0, failure, self.on_dead.is_some());
+            let step = match verdict {
+                Verdict::Nack { step } => step,
+                Verdict::Dead { attempt } => {
+                    // The kernel answers `Dead` only when told a sink exists, so `None` here is a
+                    // sink that refused the row: it is handed back like any failure.
+                    if self.on_dead.as_ref().is_some_and(|sink| sink(row, &error).is_ok()) {
+                        lock(&self.retries).dead_lettered(row.id());
+                        settled.push(row.id().to_owned());
+                        continue;
+                    }
+                    lock(&self.retries).sink_failed(row.id(), attempt)
+                }
+            };
+            failed = Some((step, error));
+            break;
         }
-        if !rows.is_empty() {
-            let ids: Vec<String> = rows.iter().map(|e| e.id.clone()).collect();
-            self.store.mark_published(&ids)?;
+        if !settled.is_empty() {
+            self.store.mark_published(&settled)?;
         }
-        Ok(rows.len())
+        match failed {
+            Some((step, error)) => {
+                self.pacing.wait(step);
+                Err(error)
+            }
+            None => Ok(settled.len()),
+        }
     }
 }
 
@@ -329,11 +552,13 @@ impl<S: EventStore> Relay<S> {
 mod tests {
     use super::*;
     use crate::{JsonCodec, MemoryEventStore, MemoryTx, Root};
+    use crate::ErrorCode;
     use edax_event::Event;
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
 
     // --- a tiny domain ---
 
@@ -376,8 +601,8 @@ mod tests {
             Ok(Event { name: "Deposited".into(), version: 1, data: n.to_string().into_bytes() })
         }
         fn unmarshal(&self, raw: &Event) -> Result<AccountEvent, Error> {
-            let s = std::str::from_utf8(&raw.data).map_err(|e| Error::Codec(e.to_string()))?;
-            let n = s.parse::<i64>().map_err(|e| Error::Codec(e.to_string()))?;
+            let s = std::str::from_utf8(&raw.data).map_err(Error::codec)?;
+            let n = s.parse::<i64>().map_err(Error::codec)?;
             Ok(AccountEvent::Deposited(n))
         }
     }
@@ -391,8 +616,8 @@ mod tests {
         fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<Account, Error> {
             let mut a = Account { root: Root::new(id, version), balance: 0 };
             if let Some(d) = data {
-                let s = std::str::from_utf8(d).map_err(|e| Error::Codec(e.to_string()))?;
-                a.balance = s.parse().map_err(|e: std::num::ParseIntError| Error::Codec(e.to_string()))?;
+                let s = std::str::from_utf8(d).map_err(Error::codec)?;
+                a.balance = s.parse().map_err(Error::codec)?;
             }
             Ok(a)
         }
@@ -478,7 +703,7 @@ mod tests {
         winner.apply(AccountEvent::Deposited(6));
         r.save(&mut winner).unwrap(); // store -> version 2, balance 10
         let got = r.save(&mut stale);
-        assert!(matches!(got, Err(Error::Concurrency { expected: 1, stored: 2 })), "got {:?}", got.err());
+        assert_eq!(got.err(), Some(Error::concurrency(1, 2)));
         let snap = store.load_snapshot(&mut MemoryTx::auto_commit(), "acct-6").unwrap().expect("the winner's snapshot");
         assert_eq!((snap.version, snap.data), (2, b"10".to_vec()));
     }
@@ -505,7 +730,7 @@ mod tests {
         let store = MemoryEventStore::new();
         store.append(&mut MemoryTx::auto_commit(), "acct-8", 0, &[deposited("acct-8", 1, b"not a number")]).unwrap();
         let got = repo(store).load("acct-8");
-        assert!(matches!(got, Err(Error::Codec(_))), "got {:?}", got.err());
+        assert!(matches!(got, Err(Error { code: ErrorCode::Codec, .. })), "got {:?}", got.err());
     }
 
     #[test]
@@ -522,7 +747,7 @@ mod tests {
         impl Spy {
             fn record(&self, step: &'static str, failure: Option<&'static str>) -> Result<(), Error> {
                 self.log.borrow_mut().push(step);
-                failure.map_or(Ok(()), |m| Err(Error::Store(m.to_string())))
+                failure.map_or(Ok(()), |m| Err(Error::store(m)))
             }
         }
         impl Transactor for Spy {
@@ -560,9 +785,9 @@ mod tests {
                 name: "failing body rolls back and never commits",
                 begin: None,
                 commit: None,
-                body: || Err(Error::Store("body gave up".into())),
+                body: || Err(Error::store("body gave up")),
                 want_log: &["begin", "rollback"],
-                want: Err("store error: body gave up"),
+                want: Err("store: body gave up"),
             },
             Case {
                 name: "a refused commit surfaces and does not also roll back",
@@ -570,7 +795,7 @@ mod tests {
                 commit: Some("commit refused"),
                 body: || Ok(7),
                 want_log: &["begin", "commit"],
-                want: Err("store error: commit refused"),
+                want: Err("store: commit refused"),
             },
             Case {
                 name: "a refused begin runs neither the body nor a rollback",
@@ -578,7 +803,7 @@ mod tests {
                 commit: None,
                 body: || panic!("the body must not run without a transaction"),
                 want_log: &["begin"],
-                want: Err("store error: begin refused"),
+                want: Err("store: begin refused"),
             },
         ];
         for c in cases {
@@ -607,7 +832,7 @@ mod tests {
 
         stale.apply(AccountEvent::Deposited(3));
         match r.save(&mut stale) {
-            Err(Error::Concurrency { expected: 1, stored: 2 }) => {}
+            Err(e) if e == Error::concurrency(1, 2) => {}
             other => panic!("expected concurrency error, got {:?}", other.err()),
         }
 
@@ -659,13 +884,13 @@ mod tests {
         }
         fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<Ledger, Error> {
             let balances = match data {
-                Some(d) => serde_json::from_slice(d).map_err(|e| Error::Codec(e.to_string()))?,
+                Some(d) => serde_json::from_slice(d).map_err(Error::codec)?,
                 None => BTreeMap::new(),
             };
             Ok(Ledger { root: Root::new(id, version), balances })
         }
         fn dump(&self, agg: &Ledger) -> Result<Vec<u8>, Error> {
-            serde_json::to_vec(&agg.balances).map_err(|e| Error::Codec(e.to_string()))
+            serde_json::to_vec(&agg.balances).map_err(Error::codec)
         }
     }
 
@@ -699,19 +924,19 @@ mod tests {
                 name: "the only event fails to marshal",
                 opening: &[],
                 events: &[&[("cash", 0, 1_250)]],
-                want: Err("codec error: key must be a string"),
+                want: Err("codec: key must be a string"),
             },
             Case {
                 name: "the third of three fails: no partial batch reaches the store",
                 opening: &[],
                 events: &[&[], &[], &[("cash", 0, 1_250)]],
-                want: Err("codec error: key must be a string"),
+                want: Err("codec: key must be a string"),
             },
             Case {
                 name: "every event marshals but the snapshot does not",
                 opening: &[("cash", 0, 1_250)],
                 events: &[&[]],
-                want: Err("codec error: key must be a string"),
+                want: Err("codec: key must be a string"),
             },
         ];
 
@@ -743,7 +968,7 @@ mod tests {
                     assert_eq!(ledger.root().version, sequences.len() as u64, "{}", c.name);
                 }
                 Err(message) => {
-                    assert!(matches!(&got, Err(Error::Codec(_))), "{}: got {:?}", c.name, got.as_ref().err());
+                    assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "{}: got {:?}", c.name, got.as_ref().err());
                     assert_eq!(got.err().map(|e| e.to_string()).as_deref(), Some(message), "{}", c.name);
                     assert!(appended.is_empty(), "{}: appended {appended:?}", c.name);
                     assert!(store.unpublished(10).unwrap().is_empty(), "{}: outbox not empty", c.name);
@@ -807,5 +1032,405 @@ mod tests {
 
         let n2 = relay.drain(100, |_env| Ok(())).unwrap();
         assert_eq!(n2, 0); // nothing left to publish
+    }
+
+    // --- the relay ---
+
+    /// A pacing that records each backoff step's wait instead of sleeping. The draw is fixed at
+    /// `u64::MAX`, so each wait is that step's ceiling and the step can be read back off it.
+    fn recorded() -> (Pacing, Arc<Mutex<Vec<std::time::Duration>>>) {
+        let waits: Arc<Mutex<Vec<std::time::Duration>>> = Arc::default();
+        let sink = Arc::clone(&waits);
+        let pacing = Pacing {
+            sleep: Arc::new(move |d| sink.lock().expect("no panics").push(d)),
+            entropy: Arc::new(|| u64::MAX),
+            ..Pacing::default()
+        };
+        (pacing, waits)
+    }
+
+    fn step_wait(step: u64) -> std::time::Duration {
+        recorded().0.delay(step)
+    }
+
+    /// The event outbox with two fault hooks: every `unpublished` read is reported on `reads`, and
+    /// `mark_published` fails while `fail_mark` is set (the relay crashed after the send).
+    #[derive(Clone)]
+    struct Hooked {
+        inner: MemoryEventStore,
+        reads: Option<Arc<Mutex<std::sync::mpsc::Sender<()>>>>,
+        fail_mark: Arc<AtomicBool>,
+    }
+
+    impl Hooked {
+        fn new(inner: MemoryEventStore) -> Self {
+            Self { inner, reads: None, fail_mark: Arc::default() }
+        }
+    }
+
+    impl Outbox<EventEnvelope> for Hooked {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+            if let Some(reads) = &self.reads {
+                let _ = reads.lock().expect("no panics").send(());
+            }
+            self.inner.unpublished(limit)
+        }
+        fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
+            if self.fail_mark.load(Ordering::SeqCst) {
+                return Err(Error::store("connection lost"));
+            }
+            self.inner.mark_published(ids)
+        }
+    }
+
+    /// A store holding `n` committed events of one account, all waiting in the outbox.
+    fn outbox_of(n: u64) -> MemoryEventStore {
+        let store = MemoryEventStore::new();
+        let events: Vec<EventEnvelope> = (1..=n).map(|seq| deposited("acct-r", seq, b"1")).collect();
+        store.append(&mut MemoryTx::auto_commit(), "acct-r", 0, &events).unwrap();
+        store
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Publish {
+        Ok,
+        Transient,
+        Terminal,
+        Contended,
+    }
+
+    #[test]
+    fn relay_drain_branches() {
+        #[derive(Clone, Copy)]
+        enum Sink {
+            None,
+            Takes,
+            Fails,
+        }
+        struct Case {
+            name: &'static str,
+            /// How publishing each of the four rows goes, on every drain.
+            rows: [Publish; 4],
+            sink: Sink,
+            max_attempts: u32,
+            /// How many drains to run.
+            drains: usize,
+            want_results: &'static [Result<usize, &'static str>],
+            want_left: &'static [&'static str],
+            want_dead: &'static [&'static str],
+            want_waits: &'static [u64],
+        }
+        use Publish::{Contended, Ok as Pub, Terminal, Transient};
+        let base = Case {
+            name: "",
+            rows: [Pub, Pub, Pub, Pub],
+            sink: Sink::None,
+            max_attempts: 0,
+            drains: 1,
+            want_results: &[Ok(4)],
+            want_left: &[],
+            want_dead: &[],
+            want_waits: &[],
+        };
+        let cases = [
+            Case { name: "every row published and marked", ..base },
+            Case {
+                name: "a transient failure marks the published prefix and waits before it returns",
+                rows: [Pub, Transient, Pub, Pub],
+                want_results: &[Err("store: broker unavailable")],
+                want_left: &["acct-r-2", "acct-r-3", "acct-r-4"],
+                want_waits: &[0],
+                ..base
+            },
+            Case {
+                name: "the same row failing again waits a longer step",
+                rows: [Transient, Pub, Pub, Pub],
+                drains: 3,
+                want_results: &[Err("store: broker unavailable"), Err("store: broker unavailable"), Err("store: broker unavailable")],
+                want_left: &["acct-r-1", "acct-r-2", "acct-r-3", "acct-r-4"],
+                want_waits: &[0, 1, 2],
+                ..base
+            },
+            Case {
+                name: "no sink: a poison row stays and its wait grows",
+                rows: [Pub, Terminal, Pub, Pub],
+                drains: 2,
+                want_results: &[Err("codec: message too large"), Err("codec: message too large")],
+                want_left: &["acct-r-2", "acct-r-3", "acct-r-4"],
+                want_waits: &[0, 1],
+                ..base
+            },
+            Case {
+                name: "a sink takes a poison row and the rows behind it go out",
+                rows: [Pub, Terminal, Pub, Pub],
+                sink: Sink::Takes,
+                want_results: &[Ok(4)],
+                want_dead: &["acct-r-2"],
+                ..base
+            },
+            Case {
+                name: "a sink that fails hands the row back and gets it again next drain",
+                rows: [Terminal, Pub, Pub, Pub],
+                sink: Sink::Fails,
+                drains: 2,
+                want_results: &[Err("codec: message too large"), Err("codec: message too large")],
+                want_left: &["acct-r-1", "acct-r-2", "acct-r-3", "acct-r-4"],
+                want_dead: &["acct-r-1", "acct-r-1"],
+                want_waits: &[0, 1],
+                ..base
+            },
+            Case {
+                name: "max_attempts dead-letters a row that keeps failing transiently",
+                rows: [Transient, Pub, Pub, Pub],
+                sink: Sink::Takes,
+                max_attempts: 2,
+                drains: 2,
+                want_results: &[Err("store: broker unavailable"), Ok(4)],
+                want_dead: &["acct-r-1"],
+                want_waits: &[0],
+                ..base
+            },
+            Case {
+                name: "contention is handed back without spending an attempt",
+                rows: [Contended, Pub, Pub, Pub],
+                sink: Sink::Takes,
+                max_attempts: 1,
+                drains: 2,
+                want_results: &[Err("in_progress: fulfill-7"), Err("in_progress: fulfill-7")],
+                want_left: &["acct-r-1", "acct-r-2", "acct-r-3", "acct-r-4"],
+                want_waits: &[0, 1],
+                ..base
+            },
+        ];
+        for c in cases {
+            let store = outbox_of(4);
+            let (pacing, waits) = recorded();
+            let dead: Arc<Mutex<Vec<String>>> = Arc::default();
+            let sink = Arc::clone(&dead);
+            let mode = c.sink;
+            let mut relay = Relay::new(store.clone()).pacing(pacing).max_attempts(c.max_attempts);
+            if !matches!(mode, Sink::None) {
+                relay = relay.on_dead(move |row: &EventEnvelope, _| {
+                    sink.lock().expect("no panics").push(row.id.clone());
+                    match mode {
+                        Sink::Fails => Err("dead-letter table unavailable".into()),
+                        _ => Ok(()),
+                    }
+                });
+            }
+            let rows = c.rows;
+            let results: Vec<Result<usize, String>> = (0..c.drains)
+                .map(|_| {
+                    relay
+                        .drain(10, |env| {
+                            let index = env.sequence.unwrap_or(1).saturating_sub(1) as usize;
+                            match rows.get(index).copied().unwrap_or(Pub) {
+                                Pub => Ok(()),
+                                Transient => Err(Error::store("broker unavailable").into()),
+                                Terminal => Err(Error::codec("message too large").into()),
+                                Contended => Err(Error::new(ErrorCode::InProgress, "fulfill-7").into()),
+                            }
+                        })
+                        .map_err(|e| e.to_string())
+                })
+                .collect();
+            let want: Vec<Result<usize, String>> = c.want_results.iter().map(|r| r.map_err(str::to_owned)).collect();
+            assert_eq!(results, want, "{}: results", c.name);
+            let left: Vec<String> = store.unpublished(10).unwrap().into_iter().map(|e| e.id).collect();
+            assert_eq!(left, c.want_left, "{}: left in the outbox", c.name);
+            assert_eq!(*dead.lock().unwrap(), c.want_dead, "{}: dead-lettered", c.name);
+            let want_waits: Vec<_> = c.want_waits.iter().map(|&step| step_wait(step)).collect();
+            assert_eq!(*waits.lock().unwrap(), want_waits, "{}: waits", c.name);
+        }
+    }
+
+    #[test]
+    fn overlapping_drains_of_one_relay_publish_each_row_once() {
+        // The reviewer's E7: a timer and a "drain now" on one relay. The first drain is held inside its
+        // publish; the second is started meanwhile. It must not read the rows the first has not marked
+        // yet, so it waits its turn and then finds nothing.
+        let (read_tx, reads) = std::sync::mpsc::channel::<()>();
+        let mut hooked = Hooked::new(outbox_of(2));
+        hooked.reads = Some(Arc::new(Mutex::new(read_tx)));
+        let relay = Arc::new(Relay::new(hooked).pacing(recorded().0));
+        let published: Arc<Mutex<Vec<String>>> = Arc::default();
+        let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release) = std::sync::mpsc::channel::<()>();
+        let release = Arc::new(Mutex::new(release));
+
+        let first = {
+            let (relay, published, release) = (Arc::clone(&relay), Arc::clone(&published), Arc::clone(&release));
+            std::thread::spawn(move || {
+                relay.drain(10, |env| {
+                    if published.lock().expect("no panics").is_empty() {
+                        entered_tx.send(()).expect("the test waits");
+                        release.lock().expect("no panics").recv().expect("the test releases");
+                    }
+                    published.lock().expect("no panics").push(env.id.clone());
+                    Ok(())
+                })
+            })
+        };
+        reads.recv().expect("the first drain read its batch");
+        entered.recv().expect("the first drain is publishing");
+        let second = {
+            let (relay, published) = (Arc::clone(&relay), Arc::clone(&published));
+            std::thread::spawn(move || {
+                relay.drain(10, |env| {
+                    published.lock().expect("no panics").push(env.id.clone());
+                    Ok(())
+                })
+            })
+        };
+        assert!(
+            reads.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
+            "the second drain read the outbox while the first was still publishing"
+        );
+        release_tx.send(()).expect("the first drain waits");
+        assert_eq!(first.join().expect("no panics").ok(), Some(2));
+        assert_eq!(second.join().expect("no panics").ok(), Some(0));
+        assert_eq!(*published.lock().unwrap(), ["acct-r-1", "acct-r-2"], "each row published once");
+    }
+
+    #[test]
+    fn a_crash_after_the_publish_republishes_and_the_consumer_deduplicates() {
+        // Lost acknowledgement: the rows went out but `mark_published` never landed. The next drain
+        // publishes them again (at-least-once); a consumer that deduplicates by envelope id applies
+        // each once.
+        let hooked = Hooked::new(outbox_of(2));
+        hooked.fail_mark.store(true, Ordering::SeqCst);
+        let relay = Relay::new(hooked.clone()).pacing(recorded().0);
+        let mut delivered: Vec<String> = Vec::new();
+        let crashed = relay.drain(10, |env| {
+            delivered.push(env.id.clone());
+            Ok(())
+        });
+        assert_eq!(crashed.err().map(|e| e.to_string()).as_deref(), Some("store: connection lost"));
+        hooked.fail_mark.store(false, Ordering::SeqCst);
+        let resent = relay.drain(10, |env| {
+            delivered.push(env.id.clone());
+            Ok(())
+        });
+        assert_eq!(resent.ok(), Some(2));
+        assert_eq!(delivered, ["acct-r-1", "acct-r-2", "acct-r-1", "acct-r-2"], "at-least-once");
+        let applied: std::collections::BTreeSet<&String> = delivered.iter().collect();
+        assert_eq!(applied.len(), 2, "the consumer's dedup by id applies each once");
+        assert!(hooked.inner.unpublished(10).unwrap().is_empty());
+    }
+
+    // --- replay ---
+
+    /// The event store, with `load` replaced by a fixed answer: a third-party store that breaks the
+    /// gap-free promise.
+    struct Lying {
+        inner: MemoryEventStore,
+        /// Answered verbatim instead of the stored stream, when set.
+        load: Option<Vec<EventEnvelope>>,
+    }
+
+    impl Transactor for Lying {
+        type Tx = MemoryTx;
+        fn begin(&self) -> Result<MemoryTx, Error> {
+            self.inner.begin()
+        }
+        fn commit(&self, tx: MemoryTx) -> Result<(), Error> {
+            self.inner.commit(tx)
+        }
+        fn rollback(&self, tx: MemoryTx) {
+            self.inner.rollback(tx);
+        }
+    }
+
+    impl Outbox<EventEnvelope> for Lying {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+            self.inner.unpublished(limit)
+        }
+        fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
+            self.inner.mark_published(ids)
+        }
+    }
+
+    impl EventStore for Lying {
+        fn load(&self, tx: &mut MemoryTx, id: &str, after: u64) -> Result<Vec<EventEnvelope>, Error> {
+            match &self.load {
+                Some(answer) => Ok(answer.clone()),
+                None => self.inner.load(tx, id, after),
+            }
+        }
+        fn load_snapshot(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<Snapshot>, Error> {
+            self.inner.load_snapshot(tx, id)
+        }
+        fn save_snapshot(&self, tx: &mut MemoryTx, snapshot: &Snapshot) -> Result<(), Error> {
+            self.inner.save_snapshot(tx, snapshot)
+        }
+        fn append(&self, tx: &mut MemoryTx, id: &str, expected: u64, events: &[EventEnvelope]) -> Result<(), Error> {
+            self.inner.append(tx, id, expected, events)
+        }
+    }
+
+    #[test]
+    fn replay_branches() {
+        struct Case {
+            name: &'static str,
+            /// The snapshot stored for the account, if any: `(type_name, version, data)`.
+            snapshot: Option<(&'static str, u64, &'static [u8])>,
+            /// What `load` answers, as `(sequence, amount)`; the stored stream is three deposits of 1.
+            load: Option<&'static [(u64, &'static [u8])]>,
+            want: Result<(i64, u64), &'static str>,
+        }
+        let cases = [
+            Case { name: "no snapshot: replay from 0", snapshot: None, load: None, want: Ok((3, 3)) },
+            Case { name: "own snapshot: replay the tail", snapshot: Some(("Account", 2, b"40")), load: None, want: Ok((41, 3)) },
+            Case {
+                name: "another aggregate type's snapshot is ignored",
+                snapshot: Some(("Ledger", 2, b"40")),
+                load: None,
+                want: Ok((3, 3)),
+            },
+            Case {
+                name: "a snapshot that does not load is ignored",
+                snapshot: Some(("Account", 2, b"not a number")),
+                load: None,
+                want: Ok((3, 3)),
+            },
+            Case {
+                name: "a store that returns a gap fails the load",
+                snapshot: None,
+                load: Some(&[(1, b"1"), (3, b"1")]),
+                want: Err("codec: envelope 1 has sequence 3, expected 2"),
+            },
+            Case {
+                name: "a store that repeats an event fails the load",
+                snapshot: None,
+                load: Some(&[(1, b"1"), (1, b"1")]),
+                want: Err("codec: envelope 1 has sequence 1, expected 2"),
+            },
+            Case {
+                name: "an unsequenced event fails the load",
+                snapshot: None,
+                load: Some(&[(0, b"1")]),
+                want: Err("codec: envelope 0 has no sequence"),
+            },
+        ];
+        for c in cases {
+            let load = c.load.map(|rows| {
+                rows.iter()
+                    .map(|&(seq, data)| EventEnvelope { sequence: (seq > 0).then_some(seq), ..deposited("acct-s", seq, data) })
+                    .collect()
+            });
+            let store = Lying { inner: MemoryEventStore::new(), load };
+            let stream: Vec<EventEnvelope> = (1..=3).map(|seq| deposited("acct-s", seq, b"1")).collect();
+            store.append(&mut MemoryTx::auto_commit(), "acct-s", 0, &stream).unwrap();
+            if let Some((type_name, version, data)) = c.snapshot {
+                let snapshot = Snapshot { aggregate_id: "acct-s".into(), type_name: type_name.into(), version, data: data.to_vec() };
+                store.save_snapshot(&mut MemoryTx::auto_commit(), &snapshot).unwrap();
+            }
+            // The outbox is untouched by a load: the three appended rows still wait, and marking clears them.
+            assert_eq!(Outbox::unpublished(&store, 10).unwrap().len(), 3, "{}", c.name);
+            store.mark_published(&stream.iter().map(|e| e.id.clone()).collect::<Vec<_>>()).unwrap();
+            let repo = Repository::new(store, AccountEvents, AccountCodec).with_clock(next_id, || 0);
+            let got = repo.load("acct-s").map(|a| (a.balance, a.root().version)).map_err(|e| e.to_string());
+            assert_eq!(got, c.want.map_err(str::to_owned), "{}", c.name);
+        }
     }
 }

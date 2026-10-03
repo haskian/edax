@@ -33,11 +33,12 @@ flowchart LR
 
 ### `CommandBus` to handler
 
-- Delivery: exactly one handler per command type. `retry` re-runs it inside the one claim.
-- Safe because `retry` sits inside the guard, so attempts share a claim.
-- A transient failure therefore never takes a second claim.
-- Put `retry` outside the guard and each attempt re-claims.
-- With a guard-owned unit of work, every attempt also shares one aborted transaction.
+- Delivery: exactly one handler per command type. `retry` re-runs a whole unit of work.
+- Safe because `retry` sits outside a guard given `unit_of_work`, so a failed attempt rolls back
+  its claim and its writes together.
+- The next attempt claims again in a fresh unit of work, from committed state.
+- `retry` refuses to run inside an open transaction. A second attempt there would apply the first
+  attempt's staged writes again, and one commit would land both.
 
 ### handler to `EventStore`
 
@@ -59,11 +60,18 @@ flowchart LR
 ### `Relay` to broker
 
 - Delivery: at-least-once.
-- Safe because `publish` returns only after a durable broker ack.
+- Safe because `publish` returns only after every in-sync replica acked (Kafka `acks="all"`, which
+  `enable_idempotence=True` implies). An ack from the leader alone is lost with the leader.
 - Rows stay unmarked until `mark_published`, which is idempotent.
 - Return before the ack and you mark a row published for a message that does not exist. That is a
   lost event.
-- Two relays on a non-leasing `unpublished` double-publish.
+- Two relays on a non-leasing `unpublished` double-publish. Overlapping drains of one relay take
+  turns.
+- A row whose publish fails stops the batch; the rows before it are marked.
+- A poison row goes to `on_dead` (terminal, or at `max_attempts`) instead of stalling the outbox.
+  Any other failure is handed back after a growing backoff step.
+- A saga's commands ride the same relay from the saga outbox. They are written with the step's
+  state and sent only once that write committed. A fold that lost a version race sends nothing.
 
 ### broker to `KeyOrderedDispatcher`
 
@@ -71,19 +79,26 @@ flowchart LR
 - The key is `aggregate_id`.
 - `ack` settles only that message. On an offset broker that is a per-partition watermark below the
   lowest unacked offset.
-- `nack` redelivers. Every delivery is settled once.
+- `nack` redelivers. On a log it rewinds the partition and retires the deliveries of it already handed
+  out, so the key keeps its order. Every delivery is settled at most once; a retired one not at all.
 - A bare "commit the current position" acks unsettled messages and loses them on restart.
+- Nothing redelivers a delivery left unsettled while the consumer lives. A raising dead-letter sink
+  and a poison message therefore nack, after a backoff step.
+- A rebalance commits, resets the revoked partitions and waits for the running handlers, so no key
+  runs on two members at once.
 
 ### `KeyOrderedDispatcher` to handler
 
 - Delivery: at-least-once, bounded, then dead-letter.
 - The worker is `partition(aggregate_id, workers)`, so one aggregate stays first in, first out
   (FIFO) on one worker.
-- Per-key order holds for successful deliveries only.
-- A nack requeues the delivery behind same-key deliveries already queued on that worker.
+- Per-key order holds through a nack on a broker that rewinds: the worker skips a delivery that is no
+  longer live. On a broker that requeues behind later messages, it holds for successful deliveries
+  only.
 - `max_attempts` plus `on_dead` bound redelivery. A terminal error dead-letters on the first
   failure.
-- Without `on_dead` a raising handler nacks forever and the broker redelivers forever.
+- Without `on_dead` a raising handler nacks forever and the broker redelivers forever, at the capped
+  backoff. `KafkaConsumer.run` refuses that.
 
 ### handler to `ProjectionStore`
 
@@ -159,16 +174,18 @@ sequenceDiagram
 | Duplicate source | What removes it | Where |
 |---|---|---|
 | the caller retries a submit | the guard's atomic claim plus the kernel's verdict on the reused key | `idempotent(store, key=...)` |
-| `retry` re-runs the handler | nothing needs to: attempts share one claim, and `Repository.save` is a compare-and-set that only one attempt can win | `retry` inside `idempotent` |
+| `retry` re-runs the handler | the rollback of the failed attempt: its claim and its writes go together, and the next attempt starts from committed state | `retry` outside `idempotent(..., unit_of_work=db)` |
 | two writers race on one aggregate | `append`'s version compare-and-set — the loser gets `ConcurrencyError` and writes nothing | `EventStore.append` |
 | two writers race on one read model | `save`'s version compare-and-set | `ProjectionStore.save` |
 | the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `env.id` | `edax.router.idempotent_by_id` |
 | the broker redelivers a handled message | the same claim; a `done` record replays and the handler is skipped | the ledger |
-| an out-of-order or stale redelivery | `should_apply(stored, incoming)` on the per-aggregate `sequence` | `edax.should_apply`, `edax::should_apply` |
+| an out-of-order or stale redelivery | `is_stale(stored, incoming)` on the per-aggregate `sequence`, then `advance(stored, incoming)` for the new watermark | `edax.is_stale` / `edax.advance`, `edax::is_stale` / `edax::advance` |
 
-`should_apply` compares strictly: an incoming sequence *equal* to the stored one is re-applied, so
-effect-idempotency on that boundary case stays the handler's job. It deduplicates *ordering*, not
-identity — use it beside the guard, not instead of it.
+`is_stale` compares strictly: an incoming sequence *equal* to the stored one is not stale and is
+re-applied, so effect-idempotency on that boundary case stays the handler's job. It deduplicates
+*ordering*, not identity — use it beside the guard, not instead of it. Store `advance`'s answer, not
+the event's sequence: an unsequenced event would otherwise erase the watermark and let the next stale
+redelivery through.
 
 The guard's own claim/complete/release orderings and every failure window inside them are in
 [../sdk/idempotency.md](../sdk/idempotency.md).
@@ -194,25 +211,27 @@ branches on it and cannot detect it. Absent, the answer is `False` — the safe 
 
 ## Ordering
 
-`partition(aggregate_id, n)` is `fnv1a32(aggregate_id) % n`, computed in the kernel so every
-language agrees bit for bit.
+Two placements keep one aggregate in order, and the kernel owns both.
 
-**What it guarantees.** The same aggregate id always maps to the same bucket, for the same `n`, in
-every service and every software development kit (SDK). In the dispatcher that means one aggregate's
-events are serialized on one worker in FIFO order, while other aggregates progress in parallel.
+- **Broker placement.** On Kafka, `edax_kafka::partition_for(key, partitions)` is Java's murmur2
+  partitioner. Every edax producer passes it as the record's partition. So every producer on the
+  topic puts one aggregate on one partition, whether it is a Python service, a Rust one, a Java
+  service or Kafka Connect. The broker then keeps its order. Leaving it to the client library would
+  not: aiokafka uses murmur2 and librdkafka CRC32.
+- **Local fan-out.** `partition(aggregate_id, w)` is `fnv1a32(aggregate_id) % w`. It is the worker
+  a consumer's `KeyOrderedDispatcher` runs an aggregate on. Its events run on one worker in FIFO
+  order, while other aggregates progress in parallel. `w` is local: the broker already routed the
+  aggregate to this one consumer, so no sibling with a different `w` ever sees the same id.
 
-**What it does not guarantee.**
+**What they do not guarantee.**
 
 - No order across aggregate ids. Two aggregates have no relative order at all.
-- No stability when `n` changes: `% n` remaps almost every id. Use `rendezvous(aggregate_id, n)`
-  when the count must grow — it remaps only the `~1/n` whose winner actually changed. Pick one per
-  deployment and keep it fixed; the two are not interchangeable once a deployment is running.
-- No ordering across the broker. Per-key order is the broker's contract, not the kernel's. A nacked
-  message may come back *behind* later same-key messages that were already acked; whether that is
-  acceptable is the handler's problem.
-- The deployment-wide logical partition count `N` is not a consumer's local worker count `W`. The
-  dispatcher may pass `W` directly only because the broker already routed the aggregate to this one
-  consumer, so no sibling with a different `W` ever sees the same id.
+- No stability when the count changes. Adding Kafka partitions moves keys, as it does for a Java
+  producer, and `% w` remaps almost every id. Plan a partition change like a migration.
+- Order after a nack only on a broker that rewinds. On a log the nacked message and every later one
+  of its partition come back in order, acked or not, and the copies already queued are skipped. On a
+  broker that requeues behind later messages, a nacked message comes back *behind* them; `is_stale`
+  is how a handler skips what is older than its watermark.
 
 **Never order on a wall clock.** `current_timestamp()` is Unix nanoseconds with a process-local
 high-water mark: strictly increasing *within one process*, and nothing more. It does not span
@@ -225,14 +244,15 @@ defends.
 A host can claim effectively-once for state in one database when **all** of these hold.
 
 - [ ] Every store that must commit together is built over **one** `Transactor`, and all of them join
-  the same `tx` (explicitly, or via `current_tx()`).
+  the same `tx` (explicitly, or via `current_tx` of their transactor).
 - [ ] The `IdempotencyStore` lives in **that same database** and declares `joins_transaction:
   ClassVar[bool] = True`.
 - [ ] The guard owns the transaction: `idempotent(..., unit_of_work=db)` or `idempotent_by_id(store,
   unit_of_work=db)`. On the consume path this is not optional — a dispatcher worker clears the
   ambient transaction, so a handler that opens one internally opens it *after* the claim was taken.
-- [ ] `retry` sits **outside** a guard that owns the transaction. See
-  [commands](../sdk/commands.md#retry-placement).
+- [ ] `retry` sits **outside** a guard that owns the transaction, and no transaction encloses the
+  dispatch: `retry` refuses to run inside one. See
+  [commands](../sdk/commands.md#where-retry-sits-relative-to-the-guard).
 - [ ] `claim` is an atomic insert-if-absent, linearizable across processes: `INSERT ... ON CONFLICT
   DO NOTHING`, `SET NX`, or a unique-key insert. Never a read then a write.
 - [ ] A losing claimant either blocks and then reads the winner's record, or fails with a
@@ -276,7 +296,7 @@ Also at-least-once by construction, whatever the host does:
   `split_lost_commit_response_releases_a_claim_over_work_that_landed_so_it_runs_twice` in
   `test_unit_of_work.py` asserts it.
 
-Each of those is caught downstream by a claim or by `should_apply`. None of them is removed at the
+Each of those is caught downstream by a claim or by `is_stale`. None of them is removed at the
 source, because none of them can be.
 
 ## See also

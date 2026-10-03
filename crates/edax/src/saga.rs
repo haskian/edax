@@ -2,12 +2,22 @@
 //!
 //! A saga coordinates a workflow that spans several aggregates. Each event it cares about is routed to a
 //! *correlation* (one running instance), folded into that instance's state, and may emit commands that drive
-//! the next step. The seam is [`Saga`] (the decision) and [`SagaStore`] (where instance state lives), plus a
-//! [`SagaRunner`] that wires them to a command dispatcher and plugs into the event router as a handler.
+//! the next step. The seam is [`Saga`] (the decision) and [`SagaStore`] (where instance state and the saga
+//! outbox live), plus a [`SagaRunner`] that folds an event and persists the step.
+//!
+//! The runner never sends a command. It saves the new state and the commands the fold decided in one
+//! versioned write, the saga outbox, and a [`Relay`](crate::Relay) over the store sends them once that write
+//! has committed. A fold that loses the version race to another worker therefore sends nothing: its commands
+//! roll back with its state, and the redelivery folds the winner's state. A crash after the commit re-sends
+//! from the outbox instead of losing the command, so a command is sent at least once per committed step and a
+//! consumer deduplicates it by its id. Completion writes a tombstone: a late or redelivered event finds the
+//! instance completed and is ignored, and a writer that loaded the instance before it completed conflicts.
 
-use edax_event::EventEnvelope;
+use edax_event::{saga_command_id, saga_write, EventEnvelope, Loaded, SagaCommand, SagaWrite};
 
-use crate::Error;
+use crate::command::HandlerError;
+use crate::store::Outbox;
+use crate::{Error, EventCodec};
 
 /// The decision half of a saga: route an event to a correlation and fold it into that instance.
 pub trait Saga {
@@ -20,78 +30,134 @@ pub trait Saga {
     fn correlation_id(&self, env: &EventEnvelope) -> Option<String>;
 
     /// Fold `env` into the instance. `state` is `None` for a new instance. Return
-    /// `(new_state, commands)`; a `new_state` of `None` completes (and removes) the instance.
+    /// `(new_state, commands)`; a `new_state` of `None` completes the instance. Pure: the runner may
+    /// discard the result when the write loses a race.
     fn handle(&self, state: Option<Self::State>, env: &EventEnvelope) -> (Option<Self::State>, Vec<Self::Command>);
 }
 
-/// A running saga instance: the accumulated `state` and the `version` it was loaded at. The version is
-/// optimistic concurrency. The dispatcher serializes same-`aggregate_id` events, so a saga whose
-/// `correlation_id` is the aggregate id has one writer; a saga correlating across aggregates can have two,
-/// and the version catches the racing writer.
-pub struct SagaInstance<S> {
-    pub state: S,
-    pub version: u64,
+/// A stored saga instance: running, with the state a fold starts from, or completed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SagaInstance<S> {
+    /// A running instance and the version it was loaded at.
+    Running {
+        /// The accumulated state.
+        state: S,
+        /// The version a write is conditional on.
+        version: u64,
+    },
+    /// A completed instance: a tombstone that keeps its version, so no write lands on it again.
+    Completed {
+        /// The tombstone's version.
+        version: u64,
+    },
 }
 
-/// Where saga instance state lives, keyed by correlation id, with optimistic concurrency.
-pub trait SagaStore {
+/// Where saga instance state and the saga outbox live, keyed by correlation id, with optimistic
+/// concurrency. What a backend must guarantee:
+///
+/// - `save` and `complete` write at `version + 1` only if the stored version still equals `version` (an
+///   absent instance is at version 0), and return the new version; otherwise they return a
+///   [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error and write nothing. A completed
+///   instance takes no write at all.
+/// - The step's `commands` are written in the same write as the state, so they commit or roll back
+///   together, and the [`Outbox`] supertrait shows them only once committed, oldest first.
+/// - `complete` keeps the row as a tombstone at its new version rather than removing it; a durable store
+///   purges tombstones by retention.
+pub trait SagaStore: Outbox<SagaCommand> {
     type State;
     /// Backend transaction handle — the same one the [`Transactor`](crate::Transactor) hands out, so a
     /// saga state write can enlist in the events' unit of work. Use `()` for a store that needs none.
     type Tx;
 
-    /// The instance for `id` (state + version), or `None` if there is none.
+    /// The instance for `id`, or `None` if there is none.
     fn load(&self, tx: &mut Self::Tx, id: &str) -> Result<Option<SagaInstance<Self::State>>, Error>;
-    /// Persist `state` for `id` at `version + 1` if the stored version still equals `version`; return
-    /// [`Error::Concurrency`] otherwise, and the new version on success.
-    fn save(&self, tx: &mut Self::Tx, id: &str, state: &Self::State, version: u64) -> Result<u64, Error>;
-    /// Remove the instance at `id` if the stored version still equals `version`; a no-op if absent.
-    fn delete(&self, tx: &mut Self::Tx, id: &str, version: u64) -> Result<(), Error>;
+    /// Persist `state` and `commands` for `id` at `version + 1`; see the trait for the rule.
+    fn save(&self, tx: &mut Self::Tx, id: &str, state: &Self::State, version: u64, commands: &[SagaCommand]) -> Result<u64, Error>;
+    /// Complete `id`: write its tombstone and `commands` at `version + 1`; see the trait for the rule.
+    fn complete(&self, tx: &mut Self::Tx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error>;
 }
 
-/// Drives a [`Saga`] over committed events: route to a correlation, fold, dispatch commands, persist.
-/// Pass [`SagaRunner::run`] (closing over a `tx` and a dispatcher) to an event router / consumer as
-/// the handler; the in-memory store's handle is [`MemoryTx`](crate::MemoryTx), so a demo closes over
-/// `&mut MemoryTx::auto_commit()`.
-pub struct SagaRunner<SG, ST> {
+/// Drives a [`Saga`] over committed events: route to a correlation, fold, and persist the step, state and
+/// commands in one write. Pass [`SagaRunner::run`] (closing over a `tx`) to an event router / consumer as the
+/// handler, and drain the store's command outbox with a [`Relay`](crate::Relay), decoding each row with
+/// [`SagaRunner::command`].
+pub struct SagaRunner<SG, ST, CC> {
     saga: SG,
     store: ST,
+    commands: CC,
+    now: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
-impl<SG, ST> SagaRunner<SG, ST>
+impl<SG, ST, CC> SagaRunner<SG, ST, CC>
 where
     SG: Saga,
     ST: SagaStore<State = SG::State>,
+    CC: EventCodec<Domain = SG::Command>,
 {
-    pub fn new(saga: SG, store: ST) -> Self {
-        Self { saga, store }
+    /// A runner folding with `saga`, persisting to `store`, and marshaling commands with `commands`.
+    pub fn new(saga: SG, store: ST, commands: CC) -> Self {
+        Self { saga, store, commands, now: Box::new(edax_core::current_timestamp) }
     }
 
-    /// Handle one committed event: load the correlation's instance, fold the event, dispatch any
-    /// emitted commands, then persist at the loaded version (or delete on completion). Thread the same
-    /// `tx` the events committed under so the state write joins that unit of work.
-    // at-least-once — dispatch before persist; redelivery re-dispatches, route commands through an
-    // idempotent bus. The optimistic version guards a cross-aggregate correlation's concurrent writer;
-    // it does not make the dispatch+persist atomic (add a saga-outbox to close that window).
-    pub fn run<F>(&self, tx: &mut ST::Tx, env: &EventEnvelope, mut dispatch: F) -> Result<(), Error>
-    where
-        F: FnMut(&SG::Command) -> Result<(), Error>,
-    {
+    /// Override the clock that stamps each outbox row, for deterministic tests.
+    pub fn with_clock(mut self, now: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
+        self.now = Box::new(now);
+        self
+    }
+
+    /// The store the runner persists to: build the command [`Relay`](crate::Relay) over a clone of it.
+    pub fn store(&self) -> &ST {
+        &self.store
+    }
+
+    /// Decode an outbox row back into the saga's command, for the relay's publish.
+    pub fn command(&self, row: &SagaCommand) -> Result<SG::Command, Error> {
+        self.commands.unmarshal(&row.command)
+    }
+
+    /// Handle one committed event: load the correlation's instance, fold the event, and write the new state
+    /// (or the tombstone) with the commands the fold emitted, at the loaded version. Thread the same `tx`
+    /// the events committed under so the write joins that unit of work. A conflict means another worker
+    /// advanced the instance first; its error is transient, so the event is redelivered and folds the
+    /// winner's state, and nothing this fold decided is ever sent.
+    pub fn run(&self, tx: &mut ST::Tx, env: &EventEnvelope) -> Result<(), HandlerError> {
         let Some(correlation_id) = self.saga.correlation_id(env) else { return Ok(()) };
-        let instance = self.store.load(tx, &correlation_id)?;
-        let version = instance.as_ref().map_or(0, |i| i.version);
-        let existed = instance.is_some();
-        let (new_state, commands) = self.saga.handle(instance.map(|i| i.state), env);
-        for cmd in &commands {
-            dispatch(cmd)?;
-        }
+        let (loaded, state) = match self.store.load(tx, &correlation_id)? {
+            None => (Loaded::Absent, None),
+            Some(SagaInstance::Running { state, version }) => (Loaded::Active { version }, Some(state)),
+            // A completed workflow takes no event: the kernel's write for it is `Ignore`, so the fold is
+            // not even run.
+            Some(SagaInstance::Completed { .. }) => return Ok(()),
+        };
+        let (new_state, commands) = self.saga.handle(state, env);
+        let write = saga_write(loaded, new_state.is_none(), !commands.is_empty());
+        let expected = match write {
+            SagaWrite::Save { expected } | SagaWrite::Complete { expected } => expected,
+            SagaWrite::Ignore | SagaWrite::Nothing => return Ok(()),
+        };
+        let rows = self.rows(&correlation_id, expected.saturating_add(1), &commands)?;
+        // The kernel answers `Save` exactly when the fold keeps state, and `Complete` when it does not.
         match new_state {
-            // Nothing loaded and nothing produced. A versioned delete here would turn a no-op into a
-            // write, and a concurrent creator of the same correlation would make that write conflict.
-            None if !existed => Ok(()),
-            None => self.store.delete(tx, &correlation_id, version),
-            Some(state) => self.store.save(tx, &correlation_id, &state, version).map(|_| ()),
-        }
+            Some(state) => self.store.save(tx, &correlation_id, &state, expected, &rows)?,
+            None => self.store.complete(tx, &correlation_id, expected, &rows)?,
+        };
+        Ok(())
+    }
+
+    /// The outbox rows for the commands a write at `version` sends.
+    fn rows(&self, correlation_id: &str, version: u64, commands: &[SG::Command]) -> Result<Vec<SagaCommand>, Error> {
+        let timestamp = (self.now)();
+        (0u64..)
+            .zip(commands)
+            .map(|(index, command)| {
+                Ok(SagaCommand {
+                    id: saga_command_id(correlation_id, version, index),
+                    correlation_id: correlation_id.to_owned(),
+                    command: self.commands.marshal(command)?,
+                    timestamp,
+                })
+            })
+            .collect()
     }
 }
 
@@ -99,72 +165,64 @@ where
 mod tests {
     use super::*;
     use crate::backend::{MemorySagaStore, MemoryTx};
-    use crate::{Command, CommandBus, KeyOrderedDispatcher};
+    use crate::{
+        idempotent, wrap, Command, CommandBus, ErrorCode, JsonRegistryCodec, Pacing, Relay, Terminal, Transactor,
+    };
     use edax_event::Event;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use std::cell::{Cell, RefCell};
     use std::sync::{Arc, Mutex};
 
-    // --- fault injection over the real in-memory store ---
+    // --- an order saga over a cross-aggregate correlation ---
 
-    /// The shared `MemorySagaStore` plus one knob: when `fail_write` is set, every write (save *and*
-    /// delete) fails, standing in for a store that dies after the runner has already dispatched its
-    /// commands. Only the fault is local; the concurrency rule is the shared adapter's.
-    #[derive(Default)]
-    struct FailingSagaStore {
-        inner: MemorySagaStore<String>,
-        fail_write: Cell<bool>,
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    struct Fulfill {
+        order_id: String,
     }
 
-    impl SagaStore for FailingSagaStore {
-        type State = String;
-        type Tx = MemoryTx;
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    struct Refund {
+        order_id: String,
+    }
 
-        fn load(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<SagaInstance<String>>, Error> {
-            self.inner.load(tx, id)
-        }
-        fn save(&self, tx: &mut MemoryTx, id: &str, state: &String, version: u64) -> Result<u64, Error> {
-            if self.fail_write.get() {
-                return Err(Error::Store("saga store unavailable".into()));
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+    enum OrderCommand {
+        Fulfill(Fulfill),
+        Refund(Refund),
+    }
+
+    impl Command for OrderCommand {
+        fn command_type(&self) -> &str {
+            match self {
+                OrderCommand::Fulfill(_) => "Fulfill",
+                OrderCommand::Refund(_) => "Refund",
             }
-            self.inner.save(tx, id, state, version)
-        }
-        fn delete(&self, tx: &mut MemoryTx, id: &str, version: u64) -> Result<(), Error> {
-            if self.fail_write.get() {
-                return Err(Error::Store("saga store unavailable".into()));
-            }
-            self.inner.delete(tx, id, version)
         }
     }
 
-    // --- a tiny order saga ---
-
+    /// `Created` opens the instance, `Paid` fulfills it and `Cancelled` refunds it, both completing it.
+    /// The correlation is the order, while the events come from the order and the payment aggregates:
+    /// two workers can fold one instance at once, which is what the version is for.
     struct OrderSaga;
 
     impl Saga for OrderSaga {
         type State = String;
-        type Command = String;
+        type Command = OrderCommand;
 
         fn correlation_id(&self, env: &EventEnvelope) -> Option<String> {
-            match env.event.name.as_str() {
-                "Created" | "Paid" => Some(env.aggregate_id.clone()),
-                _ => None,
-            }
+            env.metadata.get("order").cloned()
         }
 
-        fn handle(&self, state: Option<String>, env: &EventEnvelope) -> (Option<String>, Vec<String>) {
-            match env.event.name.as_str() {
-                "Created" => (Some("open".to_string()), Vec::new()),
-                "Paid" => {
-                    if state.is_some() {
-                        // Complete the instance and emit a fulfillment command.
-                        (None, vec![format!("Fulfill:{}", env.aggregate_id)])
-                    } else {
-                        // No live instance (e.g. redelivery after completion): nothing to do.
-                        (None, Vec::new())
-                    }
-                }
-                _ => (state, Vec::new()),
+        fn handle(&self, state: Option<String>, env: &EventEnvelope) -> (Option<String>, Vec<OrderCommand>) {
+            let order_id = env.metadata.get("order").cloned().unwrap_or_default();
+            match (state.as_deref(), env.event.name.as_str()) {
+                (None, "Created") => (Some("open".to_owned()), vec![]),
+                (Some("open"), "Paid") => (None, vec![OrderCommand::Fulfill(Fulfill { order_id })]),
+                (Some("open"), "Cancelled") => (None, vec![OrderCommand::Refund(Refund { order_id })]),
+                (Some("open"), "Noted") => (Some("open".to_owned()), vec![]),
+                // Nothing loaded and nothing to start: a stray event writes nothing.
+                (None, _) => (None, vec![]),
+                (Some(s), _) => (Some(s.to_owned()), vec![]),
             }
         }
     }
@@ -172,205 +230,290 @@ mod tests {
     fn envelope(aggregate_id: &str, name: &str) -> EventEnvelope {
         EventEnvelope {
             id: format!("{aggregate_id}-{name}"),
-            aggregate_id: aggregate_id.to_string(),
-            event: Event {
-                name: name.to_string(),
-                version: 1,
-                data: Vec::new(),
-            },
+            aggregate_id: aggregate_id.to_owned(),
+            event: Event { name: name.to_owned(), version: 1, data: Vec::new() },
             sequence: Some(1),
             namespace: Default::default(),
-            metadata: Default::default(),
+            metadata: [("order".to_owned(), "order-7".to_owned())].into_iter().collect(),
             timestamp: 0,
         }
     }
 
-    #[test]
-    fn saga_lifecycle() {
-        let runner = SagaRunner::new(OrderSaga, FailingSagaStore::default());
-        let dispatched = RefCell::new(Vec::<String>::new());
-        let mut dispatch = |cmd: &String| {
-            dispatched.borrow_mut().push(cmd.clone());
-            Ok(())
-        };
+    type Runner<ST> = SagaRunner<OrderSaga, ST, JsonRegistryCodec<OrderCommand>>;
 
-        // Unrelated event: ignored, dispatches nothing, stores nothing.
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Shipped"), &mut dispatch)
-            .unwrap();
-        assert!(dispatched.borrow().is_empty());
+    fn runner<ST: SagaStore<State = String>>(store: ST) -> Runner<ST> {
+        SagaRunner::new(OrderSaga, store, JsonRegistryCodec::new(1).unwrap()).with_clock(|| 1_714_564_800_000_000_000)
+    }
 
-        // Created: saves state, no commands.
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Created"), &mut dispatch)
-            .unwrap();
-        assert!(dispatched.borrow().is_empty());
+    fn no_wait() -> Pacing {
+        Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
+    }
 
-        // Paid: dispatches one command and deletes state.
-        runner.run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut dispatch).unwrap();
-        assert_eq!(*dispatched.borrow(), vec!["Fulfill:ord-1".to_string()]);
+    /// Drain every committed command through `send`, recording the decoded commands.
+    fn drain_all(runner: &Runner<MemorySagaStore<String>>) -> Vec<OrderCommand> {
+        let relay = Relay::<_, SagaCommand>::new(runner.store().clone()).pacing(no_wait());
+        let sent = RefCell::new(Vec::new());
+        relay
+            .drain(100, |row| {
+                sent.borrow_mut().push(runner.command(row)?);
+                Ok(())
+            })
+            .expect("a healthy drain");
+        sent.into_inner()
+    }
 
-        // Redelivered Paid (state already gone): dispatches nothing more.
-        runner.run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut dispatch).unwrap();
-        assert_eq!(dispatched.borrow().len(), 1);
+    fn instance(store: &MemorySagaStore<String>) -> Option<SagaInstance<String>> {
+        store.load(&mut MemoryTx::auto_commit(), "order-7").unwrap()
     }
 
     #[test]
-    fn saga_partial_failure_redelivers_at_least_once() {
-        // The runner dispatches before it persists, so a failure on either side leaves the instance
-        // alive and the event redeliverable — at-least-once, with duplicate commands the idempotent
-        // bus is expected to absorb. This pins that: state never advances past a failed step, and
-        // the completed instance stays completed.
-        let store = FailingSagaStore::default();
-        let runner = SagaRunner::new(OrderSaga, store);
-        let dispatched = RefCell::new(Vec::<String>::new());
-
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Created"), &mut |_: &String| Ok(()))
-            .unwrap();
-
-        // Dispatch fails: the instance must survive so the redelivery can re-emit the command.
-        let out = runner.run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |cmd: &String| {
-            dispatched.borrow_mut().push(cmd.clone());
-            Err(Error::Store("command bus unavailable".into()))
-        });
-        assert!(matches!(out, Err(Error::Store(_))));
-        assert_eq!(dispatched.borrow().len(), 1);
-
-        // Redelivery: the command dispatches, but persisting the completion fails. The instance is
-        // still open, so the event redelivers again and the command is emitted a second time.
-        runner.store.fail_write.set(true);
-        let out = runner.run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |cmd: &String| {
-            dispatched.borrow_mut().push(cmd.clone());
-            Ok(())
-        });
-        assert!(matches!(out, Err(Error::Store(_))));
-        assert_eq!(dispatched.borrow().len(), 2);
+    fn a_step_persists_its_state_and_commands_and_a_completed_instance_takes_no_event() {
+        struct Step {
+            event: &'static str,
+            want: Option<SagaInstance<String>>,
+            want_outbox: &'static [&'static str],
+        }
+        let running = |version| Some(SagaInstance::Running { state: "open".to_owned(), version });
+        let steps = [
+            Step { event: "Stray", want: None, want_outbox: &[] },
+            Step { event: "Created", want: running(1), want_outbox: &[] },
+            Step { event: "Noted", want: running(2), want_outbox: &[] },
+            Step { event: "Paid", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
+            // A redelivered `Paid` and a late `Cancelled` find a tombstone: no fold, no write, no command.
+            Step { event: "Paid", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
+            Step { event: "Cancelled", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
+            // Not even a fresh `Created` resurrects it.
+            Step { event: "Created", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
+        ];
+        let runner = runner(MemorySagaStore::<String>::new());
+        for step in steps {
+            runner.run(&mut MemoryTx::auto_commit(), &envelope("order-7", step.event)).expect(step.event);
+            assert_eq!(instance(runner.store()), step.want, "{}", step.event);
+            let outbox: Vec<String> = Outbox::<SagaCommand>::unpublished(runner.store(), 10).unwrap().into_iter().map(|c| c.id).collect();
+            assert_eq!(outbox, step.want_outbox, "{}: outbox", step.event);
+        }
+        let row = Outbox::<SagaCommand>::unpublished(runner.store(), 1).unwrap().remove(0);
         assert_eq!(
-            runner.store.load(&mut MemoryTx::auto_commit(), "ord-1").unwrap().map(|i| i.state).as_deref(),
-            Some("open")
+            (row.correlation_id.as_str(), row.command.name.as_str(), row.command.data.as_slice(), row.timestamp),
+            ("order-7", "Fulfill", &br#"{"order_id":"order-7"}"#[..], 1_714_564_800_000_000_000)
         );
-
-        // Healthy redelivery: completes and removes the instance (third dispatch of the same command).
-        runner.store.fail_write.set(false);
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |cmd: &String| {
-                dispatched.borrow_mut().push(cmd.clone());
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(dispatched.borrow().len(), 3);
-        assert!(runner.store.load(&mut MemoryTx::auto_commit(), "ord-1").unwrap().is_none());
-
-        // A fourth redelivery finds no instance: no command, no error.
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |cmd: &String| {
-                dispatched.borrow_mut().push(cmd.clone());
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(dispatched.borrow().len(), 3);
+        assert_eq!(drain_all(&runner), [OrderCommand::Fulfill(Fulfill { order_id: "order-7".into() })]);
+        assert!(drain_all(&runner).is_empty(), "marked sent");
     }
 
-    #[test]
-    fn an_event_with_no_instance_and_no_new_state_writes_nothing() {
-        // `handle` produced neither state nor commands and nothing was loaded, so the run must not
-        // touch the store: a versioned delete would be a write a concurrent creator could conflict
-        // with. `fail_write` makes any write at all fail, so a clean run proves none happened.
-        let runner = SagaRunner::new(OrderSaga, FailingSagaStore::default());
-        runner.store.fail_write.set(true);
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |_: &String| Ok(()))
-            .expect("an ignored correlation writes nothing");
-        assert!(runner.store.load(&mut MemoryTx::auto_commit(), "ord-1").unwrap().is_none());
+    /// The store, with a hook that runs between a worker's load and its write: the interleaving the
+    /// version exists for, forced deterministically instead of with threads and sleeps.
+    struct RacingStore {
+        inner: MemorySagaStore<String>,
+        after_load: RefCell<Option<Box<dyn FnOnce()>>>,
+        fail_write: Cell<bool>,
+        /// The next write lands, then reports a failure: its reply was lost.
+        lose_reply: Cell<bool>,
     }
 
-    /// The saga's step, as a command the bus can route.
-    #[derive(Serialize)]
-    struct Fulfill {
-        order_id: String,
-    }
-
-    impl Command for Fulfill {
-        fn command_type(&self) -> &str {
-            "Fulfill"
-        }
-    }
-
-    /// [`OrderSaga`] emitting a real command type instead of a string.
-    struct FulfillSaga;
-
-    impl Saga for FulfillSaga {
-        type State = String;
-        type Command = Fulfill;
-
-        fn correlation_id(&self, env: &EventEnvelope) -> Option<String> {
-            OrderSaga.correlation_id(env)
+    impl RacingStore {
+        fn new(inner: MemorySagaStore<String>) -> Self {
+            Self { inner, after_load: RefCell::new(None), fail_write: Cell::new(false), lose_reply: Cell::new(false) }
         }
 
-        fn handle(&self, state: Option<String>, env: &EventEnvelope) -> (Option<String>, Vec<Fulfill>) {
-            match env.event.name.as_str() {
-                "Created" => (Some("open".to_string()), Vec::new()),
-                "Paid" if state.is_some() => (None, vec![Fulfill { order_id: env.aggregate_id.clone() }]),
-                _ => (state, Vec::new()),
+        fn landed<T>(&self, wrote: Result<T, Error>) -> Result<T, Error> {
+            match wrote {
+                Ok(_) if self.lose_reply.replace(false) => Err(Error::store("reply lost after the write")),
+                other => other,
             }
         }
     }
 
-    /// The documented saga-to-command topology: a runner inside a dispatcher worker, emitting
-    /// through one `CommandBus` every worker shares. It only compiles because the command path is
-    /// `Arc` + `Send + Sync`.
-    #[test]
-    fn a_saga_in_a_dispatcher_worker_dispatches_through_a_shared_bus() {
-        let fulfilled: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&fulfilled);
-        let mut bus: CommandBus<Fulfill, ()> = CommandBus::new();
-        bus.register(
-            "Fulfill",
-            Box::new(move |cmd: &Fulfill| {
-                sink.lock().expect("no test thread panics while holding the sink").push(cmd.order_id.clone());
-                Ok(())
-            }),
-        )
-        .unwrap();
-
-        let bus = Arc::new(bus);
-        let runner = Arc::new(SagaRunner::new(FulfillSaga, MemorySagaStore::<String>::default()));
-        let dispatcher = KeyOrderedDispatcher::new(2, move |env: &EventEnvelope| {
-            runner.run(&mut MemoryTx::auto_commit(), env, |cmd: &Fulfill| {
-                bus.dispatch(cmd).map_err(|e| Error::Store(e.to_string()))
-            })
-        });
-
-        // Two correlations, so both workers run a saga against the one bus.
-        for order in ["ord-1", "ord-2"] {
-            dispatcher.submit(envelope(order, "Created"));
-            dispatcher.submit(envelope(order, "Paid"));
+    impl Outbox<SagaCommand> for RacingStore {
+        fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
+            self.inner.unpublished(limit)
         }
-        dispatcher.stop();
+        fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
+            self.inner.mark_published(ids)
+        }
+    }
 
-        let mut got = fulfilled.lock().expect("no worker panicked").clone();
-        got.sort();
-        assert_eq!(got, vec!["ord-1".to_string(), "ord-2".to_string()]);
+    impl SagaStore for RacingStore {
+        type State = String;
+        type Tx = MemoryTx;
+
+        fn load(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<SagaInstance<String>>, Error> {
+            let loaded = self.inner.load(tx, id);
+            if let Some(hook) = self.after_load.borrow_mut().take() {
+                hook();
+            }
+            loaded
+        }
+        fn save(&self, tx: &mut MemoryTx, id: &str, state: &String, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+            if self.fail_write.get() {
+                return Err(Error::store("saga store unavailable"));
+            }
+            self.landed(self.inner.save(tx, id, state, version, commands))
+        }
+        fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+            if self.fail_write.get() {
+                return Err(Error::store("saga store unavailable"));
+            }
+            self.landed(self.inner.complete(tx, id, version, commands))
+        }
     }
 
     #[test]
-    fn saga_write_at_loaded_version_catches_a_racing_writer() {
-        // The runner persists at the version it *loaded*, not a re-read: a writer that lands between
-        // load and persist (here, during dispatch) makes the completion a conflict, never a clobber.
-        let runner = SagaRunner::new(OrderSaga, FailingSagaStore::default());
-        runner
-            .run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Created"), &mut |_: &String| Ok(()))
-            .unwrap(); // instance at version 1
+    fn the_fold_that_loses_the_version_race_sends_nothing() {
+        // The reviewer's E4. `Paid` (payment worker) loads the open order; before it writes, `Cancelled`
+        // (order worker) folds the same instance and completes it with a `Refund`. `Paid`'s write
+        // conflicts, and because the runner never sends, its `Fulfill` dies with its fold. The
+        // redelivered `Paid` finds the tombstone. Exactly one compensating decision goes out.
+        let inner = MemorySagaStore::<String>::new();
+        let racing = RacingStore::new(inner.clone());
+        let first = runner(racing);
+        first.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Created")).unwrap();
 
-        let out = runner.run(&mut MemoryTx::auto_commit(), &envelope("ord-1", "Paid"), &mut |_: &String| {
-            runner.store.save(&mut MemoryTx::auto_commit(), "ord-1", &"racing".to_string(), 1).map(|_| ()) // version 2
+        let second = runner(inner.clone());
+        *first.store().after_load.borrow_mut() = Some(Box::new(move || {
+            second.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Cancelled")).expect("the winner commits");
+        }));
+        let lost = first.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid"));
+        let conflict = lost.expect_err("the loser's write conflicts");
+        assert_eq!(conflict.downcast_ref::<Error>().map(|e| e.code), Some(ErrorCode::Concurrency), "transient: redelivered");
+
+        first.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).expect("the redelivery is ignored");
+        let check = runner(inner);
+        assert_eq!(instance(check.store()), Some(SagaInstance::Completed { version: 2 }));
+        assert_eq!(drain_all(&check), [OrderCommand::Refund(Refund { order_id: "order-7".into() })], "no Fulfill escaped");
+    }
+
+    #[test]
+    fn a_write_that_fails_or_rolls_back_sends_nothing() {
+        // Crash between the decision and the send, in the only order the runner allows: the commands
+        // are part of the write, so a write that does not land leaves nothing to send, and the
+        // redelivery decides again from the state that did land.
+        for (name, fail_write) in [("the store refuses the write", true), ("the unit of work rolls back", false)] {
+            let inner = MemorySagaStore::<String>::new();
+            let store = RacingStore::new(inner.clone());
+            let runner = runner(store);
+            runner.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Created")).unwrap();
+            runner.store().fail_write.set(fail_write);
+            let tr = inner.transactor();
+            let tx = tr.begin().unwrap();
+            let mut handle = tx;
+            let out = runner.run(&mut handle, &envelope("payment-7", "Paid"));
+            assert_eq!(out.is_err(), fail_write, "{name}");
+            tr.rollback(handle);
+            assert_eq!(instance(&inner), Some(SagaInstance::Running { state: "open".to_owned(), version: 1 }), "{name}");
+            assert!(Outbox::<SagaCommand>::unpublished(&inner, 10).unwrap().is_empty(), "{name}: nothing to send");
+
+            runner.store().fail_write.set(false);
+            runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).unwrap();
+            assert_eq!(drain_all(&self::runner(inner)), [OrderCommand::Fulfill(Fulfill { order_id: "order-7".into() })], "{name}: redelivery");
+        }
+    }
+
+    #[test]
+    fn a_lost_write_reply_converges_on_redelivery() {
+        // The completion lands, then the runner sees a store error as if it had not. The redelivery
+        // reads the tombstone, so it neither folds again nor commits a second command.
+        let inner = MemorySagaStore::<String>::new();
+        let runner = runner(RacingStore::new(inner.clone()));
+        runner.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Created")).unwrap();
+        runner.store().lose_reply.set(true);
+        let lost = runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid"));
+        assert!(lost.is_err(), "the caller saw the lost reply");
+        runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).expect("the redelivery is ignored");
+        assert_eq!(instance(&inner), Some(SagaInstance::Completed { version: 2 }));
+        assert_eq!(drain_all(&self::runner(inner)), [OrderCommand::Fulfill(Fulfill { order_id: "order-7".into() })]);
+    }
+
+    #[test]
+    fn a_command_committed_before_a_crash_is_sent_after_it_and_a_resend_is_deduplicated() {
+        // Crash after the commit: the command waits in the outbox, so the next relay sends it. Crash
+        // after the send but before `mark_published`: the relay sends it again (at-least-once), and
+        // the consumer's guard keyed by the row id runs the handler once.
+        let store = MemorySagaStore::<String>::new();
+        let runner = runner(store.clone());
+        runner.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Created")).unwrap();
+        runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).unwrap();
+
+        /// The outbox, whose `mark_published` fails while `crash` is set: the process died after the send.
+        struct CrashingMark(MemorySagaStore<String>, Cell<bool>);
+        impl Outbox<SagaCommand> for CrashingMark {
+            fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
+                self.0.unpublished(limit)
+            }
+            fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
+                if self.1.get() {
+                    return Err(Error::store("connection lost"));
+                }
+                self.0.mark_published(ids)
+            }
+        }
+        let relay = Relay::<_, SagaCommand>::new(CrashingMark(store.clone(), Cell::new(true))).pacing(no_wait());
+        let ledger: Arc<dyn crate::IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(crate::MemoryIdempotencyStore::<()>::new());
+        let current_row: Arc<Mutex<String>> = Arc::default();
+        let key_row = Arc::clone(&current_row);
+        let guard = idempotent(ledger, move |_: &OrderCommand| Some(key_row.lock().expect("no panics").clone()));
+        let runs: Arc<Mutex<Vec<OrderCommand>>> = Arc::default();
+        let effect = Arc::clone(&runs);
+        let handler: crate::Handler<OrderCommand, ()> = Box::new(move |cmd: &OrderCommand| {
+            effect.lock().expect("no panics").push(cmd.clone());
+            Ok(())
         });
-        assert!(matches!(out, Err(Error::Concurrency { expected: 1, stored: 2 })), "got {out:?}");
-        assert_eq!(
-            runner.store.load(&mut MemoryTx::auto_commit(), "ord-1").unwrap().map(|i| (i.version, i.state)),
-            Some((2, "racing".to_string())),
-            "the racing writer's state survives"
-        );
+        let mut bus = CommandBus::new();
+        bus.register("Fulfill", wrap(handler, vec![guard])).unwrap();
+        let publish = |row: &SagaCommand| {
+            *current_row.lock().expect("no panics") = row.id.clone();
+            bus.dispatch::<OrderCommand, ()>(&runner.command(row)?)
+        };
+
+        let crashed = relay.drain(10, publish);
+        assert!(crashed.is_err(), "the mark did not land");
+        relay.store().1.set(false);
+        assert_eq!(relay.drain(10, publish).unwrap(), 1, "re-sent after the crash");
+        assert_eq!(relay.drain(10, publish).unwrap(), 0, "and then marked");
+        assert_eq!(*runs.lock().unwrap(), [OrderCommand::Fulfill(Fulfill { order_id: "order-7".into() })], "the handler ran once");
+    }
+
+    #[test]
+    fn a_saga_command_relayed_through_the_bus_keeps_the_commands_verdict() {
+        // The relay is where the command runs now, so it is where its verdict lands: a terminal
+        // failure, the handler's own or a host rejection, dead-letters the row once and the rows
+        // behind it go out; a transient one hands the row back.
+        #[derive(Clone, Copy, Debug)]
+        enum Fails {
+            Never,
+            Codec,
+            Rejected,
+            Transient,
+        }
+        let cases = [
+            ("success is marked", Fails::Never, 0, 0),
+            ("a terminal command failure dead-letters the row", Fails::Codec, 1, 0),
+            ("a host rejection dead-letters the row", Fails::Rejected, 1, 0),
+            ("a transient command failure hands the row back", Fails::Transient, 0, 1),
+        ];
+        for (name, fails, want_dead, want_left) in cases {
+            let store = MemorySagaStore::<String>::new();
+            let runner = runner(store.clone());
+            runner.run(&mut MemoryTx::auto_commit(), &envelope("order-7", "Created")).unwrap();
+            runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).unwrap();
+            let handler: crate::Handler<OrderCommand, ()> = Box::new(move |_: &OrderCommand| match fails {
+                Fails::Never => Ok(()),
+                Fails::Codec => Err(Error::codec("unknown field `sku`").into()),
+                Fails::Rejected => Err(Terminal::new("order already shipped").into()),
+                Fails::Transient => Err("warehouse API timed out".into()),
+            });
+            let mut bus = CommandBus::new();
+            bus.register("Fulfill", handler).unwrap();
+            let dead: Arc<Mutex<Vec<String>>> = Arc::default();
+            let sink = Arc::clone(&dead);
+            let relay = Relay::<_, SagaCommand>::new(store.clone()).pacing(no_wait()).on_dead(move |row: &SagaCommand, _| {
+                sink.lock().expect("no panics").push(row.id.clone());
+                Ok(())
+            });
+            let out = relay.drain(10, |row| bus.dispatch::<OrderCommand, ()>(&runner.command(row)?));
+            assert_eq!(out.is_err(), want_left == 1, "{name}: drain result");
+            assert_eq!(dead.lock().unwrap().len(), want_dead, "{name}: dead-lettered");
+            assert_eq!(Outbox::<SagaCommand>::unpublished(&store, 10).unwrap().len(), want_left, "{name}: left");
+        }
     }
 }

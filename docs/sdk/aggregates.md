@@ -37,7 +37,7 @@ u64` on `Root` with a private `pending`, and `current()` is `version + pending.l
 private, so a host reaches it only through `apply` and `take_pending`. That keeps one source of
 truth for the version.
 
-`apply` does three things in order: `transition` the state, increment the sequence, push the event
+`apply` does three things in order: `transition` the state, increment the version, push the event
 onto `pending`. Replay must never call it — a replayed event is already stored, and queueing it as
 pending would write it a second time. `Repository` therefore calls `transition` directly when it
 folds a loaded stream.
@@ -53,7 +53,7 @@ class Account(Aggregate):
             self.balance += event.amount
 ```
 
-`examples/py/command_handling.py:31`. `transition` is a pure fold: no I/O, no validation, no
+`examples/py/command_handling.py:32`. `transition` is a pure fold: no I/O, no validation, no
 raising. The decision to emit an event belongs to the handler. `transition` only applies one that
 has already been decided. It also runs on every replay of history that was valid once.
 
@@ -66,7 +66,7 @@ They are different seams with different jobs. Confusing them is the common mista
 | bridges | one domain event object and its `Event` — `name`, `version`, `data` bytes | the whole aggregate and its snapshot bytes |
 | methods | `marshal` / `unmarshal` | `load` / `dump` (plus `type` in Python, `type_name()` in Rust) |
 | used on | every event, every save and every replay | one snapshot per save, one per load |
-| ships ready-made | yes: `json_codec`, `msgpack_codec` (Python); `JsonCodec`, `MsgpackCodec` (Rust) | no — hand-written on purpose |
+| ships ready-made | yes: `json_codec`, `msgpack_codec` (Python); `JsonRegistryCodec`, `MsgpackRegistryCodec` (Rust) | no — hand-written on purpose |
 | where | `edax.codec`, `edax::codec` | `AggregateCodec` in `edax::aggregate`, `AggregateCodec` in `edax.store` |
 
 The event codecs ship because the shape is mechanical: a fixed set of event types, each serialized
@@ -79,8 +79,18 @@ events = json_codec({"Deposited": Deposited, "Withdrawn": Withdrawn})
 
 `json_codec` lives in `edax.codec`. `msgpack_codec` takes the same arguments and writes MessagePack
 instead — smaller, binary. Both accept `version=` and `upcasters=`, so an older stored payload is
-raised to the current shape on load. Rust's `JsonCodec::<T>::new("AccountEvent", 1)` and
-`MsgpackCodec` carry one name per codec, since serde alone does not name the type.
+raised to the current shape on load. Every unmarshal asks the kernel's `upcast_plan`, with or without
+an upcaster for the name. A payload from a **newer** writer than the codec's `version` raises
+`CodecError` instead of decoding silently under the older schema. A name with no upcaster reads an
+older payload as it is. `Upcaster.step` refuses a second transform for one version
+(`AlreadyRegistered`).
+
+Rust's `JsonRegistryCodec::<AccountEvent>::new(version)` is the same registry: one event name per
+variant of the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
+`.upcaster(name, Upcaster)` per name. It writes the same name and bytes as Python's `json_codec` for
+the same event, pinned by `testdata/golden/event_codec.json`, so a stream reads the same from either
+SDK. `JsonCodec::<T>::new(name, version)` remains for one event type under one name, and asks the
+kernel the same way.
 
 The snapshot codec:
 
@@ -98,11 +108,11 @@ class AccountCodec:
         return str(agg.balance).encode()
 ```
 
-`examples/py/command_handling.py:41`. `data is None` means no snapshot is stored yet, so rebuild the
+`examples/py/command_handling.py:42`. `data is None` means no snapshot is stored yet, so rebuild the
 aggregate empty at version 0.
 
 Every codec failure — an unregistered event name, an unwritable payload, a missing upcast step — is
-a `CodecError` in Python and `Error::Codec` in Rust. That is **terminal**: the same bytes fail the
+a `CodecError` in Python and an `edax::Error` with code `codec` in Rust. That is **terminal**: the same bytes fail the
 same way on every attempt, so the caller dead-letters instead of redelivering forever. `marshal` and
 `dump` are fallible in both directions for exactly this reason. A payload the codec cannot write
 reaches the caller as a typed error. It does not panic inside whichever thread called `save`.
@@ -130,7 +140,7 @@ sequenceDiagram
         EC-->>R: domain event
         R->>R: transition, never apply
     end
-    R->>R: sequence equals the last sequence seen
+    R->>R: version equals the last sequence seen
     R-->>C: aggregate at its stored version
     deactivate R
 ```
@@ -170,8 +180,8 @@ sequenceDiagram
         S-->>R: ok, event rows plus outbox rows staged
         R->>AC: dump aggregate
         AC-->>R: snapshot bytes
-        R->>S: save_snapshot tx, snapshot at current version
-        R->>R: clear pending, sequence equals current
+        R->>S: save_snapshot tx, when the version crosses a multiple of snapshot_every
+        R->>R: clear pending, version equals current
         R-->>C: the committed envelopes
     else stored version differs
         S-->>R: ConcurrencyError
@@ -217,9 +227,9 @@ the two writers actually meet.
 
 | Failure | Error | Transient? | What the caller does |
 |---|---|---|---|
-| stored version differs from `expected_version` | `ConcurrencyError` / `Error::Concurrency { expected, stored }` | transient | reload the aggregate, re-decide, save again |
-| a payload will not marshal | `CodecError` / `Error::Codec` | terminal | dead-letter; a retry fails identically |
-| the backend is down, a lock wait times out | `StoreError` / `Error::Store` | transient | retry with backoff |
+| stored version differs from `expected_version` | `ConcurrencyError` / `Error::concurrency(expected, stored)` | transient | reload the aggregate, re-decide, save again |
+| a payload will not marshal | `CodecError` / code `codec` | terminal | dead-letter; a retry fails identically |
+| the backend is down, a lock wait times out | `StoreError` / code `store` | transient | retry with backoff |
 
 `ConcurrencyError` means exactly one thing and nothing else: a version conflict. A store that
 reports a connection failure as a concurrency conflict makes the caller retry a decision it should
@@ -277,17 +287,27 @@ A `Snapshot` is a marshaled aggregate at a version, so a load can skip replaying
 | `version` | the version the snapshot state is at |
 | `data` | whatever `dump` produced |
 
-Both software development kits (SDKs) snapshot on **every** save, and both say so in the same words:
-"Snapshot every save; add an interval (every N events) if dump cost bites". Write an interval when
-`dump` gets expensive or the state gets large. Correctness does not depend on it. The replay always
-folds the tail after whatever version the snapshot carries.
+Python's `Repository(..., snapshot_every=n)` snapshots when a save carries the version across a
+multiple of `n`: `1` (the default) on every save that writes an event, `0` never. A save with nothing
+pending writes no snapshot. Raise the interval when `dump` gets expensive or the state gets large: every
+snapshot is a second write in the save's unit of work. Correctness does not depend on it. The replay
+always folds the tail after whatever version the snapshot carries. The Rust reference model snapshots on
+every save.
 
-`save_snapshot` is an upsert: last writer wins. It commits in the same `tx` as the append, so a
-rollback removes both.
+`save_snapshot` keeps the higher version: an older snapshot arriving late never replaces a newer one,
+and one past the stream's version is refused as `CodecError`. It commits in the same `tx` as the
+append, so a rollback removes both.
 
 A snapshot is a cache, not a source of truth. Deleting every snapshot must leave the system correct
 — it only makes loads slower. That is why `load` folds the tail rather than trusting the snapshot's
 version, and why the append's rejection short-circuits the snapshot write.
+
+Both SDKs' `Repository.load` act on that. A snapshot is skipped, and the stream replays from version
+0, when its `type_name` is not this codec's: another aggregate type under the same id. It is also
+skipped when the codec's `load` refuses its `data`, as after a `dump` format change. The loaded tail is
+checked with the kernel's dense-batch rule (`check_sequence_batch`). A store that returns a gap or a
+repeat fails the load with `CodecError` instead of folding the wrong state. The aggregate's version
+is the snapshot's plus the number of events folded.
 
 ## Wiring it up
 

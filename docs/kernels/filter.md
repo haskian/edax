@@ -79,14 +79,51 @@ silent default.
 
 | Operator | Rust constructor | Python constructor | Holds when | Falls to `false` when |
 |---|---|---|---|---|
-| `Eq` | `eq` | `eq` | values are equal — numeric for two numbers, structural otherwise | — |
+| `Eq` | `eq` | `eq` | values are equal — numeric for numbers at every depth, structural otherwise | — |
 | `Ne` | `ne` | `ne` | values are not equal | the path is missing or null |
-| `Gt` / `Gte` / `Lt` / `Lte` | `gt` / `gte` / `lt` / `lte` | same names | both sides are numbers, or both are strings, and the ordering holds | any other pairing — mismatched types, bool, array, object |
+| `Gt` / `Gte` / `Lt` / `Lte` | `gt` / `gte` / `lt` / `lte` | same names | both sides are numbers, both strings, or both bools, and the ordering holds | any other pairing — mismatched types, array, object |
 | `StartsWith` | `starts_with` | `starts_with` | both sides are strings and the document value has the prefix | either side is not a string |
 
 Ordering is defined only *within* a type. Numbers compare numerically, so `1` and `1.0` are equal;
-two integers compare exactly, with no `f64` promotion above 2^53. Strings compare by Unicode order,
-which is why RFC3339 timestamps need no special operator — as strings they already sort correctly.
+two integers compare exactly, with no `f64` promotion above 2^53. Strings compare by Unicode code
+point, which is UTF-8 byte order. `"Z"` sorts before `"a"`, and U+FF71 sorts after U+1F980.
+JavaScript, Java and C# order that last pair the other way, by UTF-16 code units. Strings are not
+normalized, so the NFC and NFD spellings of `café` are unequal. Bools order `false < true`, the rank
+the read side's sort gives them, so a sort and a range filter agree on every orderable pair.
+
+Equality is numeric at every depth, the same rule as at the top level: `eq(p, [1.0])` matches
+`[1]`, and `eq(p, {"x": 2.0})` matches `{"x": 2}`. `In` and `Contains` use the same equality.
+
+**Timestamps.** No special operator is needed, but string order is chronological only for one
+fixed-width form in one zone. Store timestamps as UTC with a `Z` suffix and a fixed fraction width
+(`2024-01-01T00:00:00.000000Z`), or as epoch integers. Two common forms order wrongly, silently:
+
+- A form that omits a zero fraction. msgspec, which the Python SDK encodes with, writes
+  `2024-01-01T00:00:00Z` for a whole second and `2024-01-01T00:00:00.500000Z` otherwise, and the
+  first sorts *after* the second because `Z` follows `.`.
+- A form with an offset. `2024-01-01T00:30:00+01:00` sorts by wall time, after `2024-01-01T00:00:00Z`,
+  although that instant is 23:30Z the day before.
+
+Normalize to the fixed UTC form before a value reaches a document or a filter.
+`testdata/golden/filter.json` pins both wrong orderings, so the precondition is a documented contract
+rather than a surprise.
+
+## What the kernel refuses
+
+`eval_json`, and every query that carries a filter, reads the filter strictly. Each of these is a
+terminal `codec` error, never a filter that silently means something else:
+
+| Input | Why it is refused |
+|---|---|
+| an unknown field in any node, `{"compare": {..., "vlaue": 1}}` | a typo would otherwise be a no-op |
+| a `null` comparand for `Compare` or inside `In` | no present value equals it, so the leaf matches nothing; ask `Exists(path, false)` for a missing or null path |
+| a path with an empty segment: `""`, `"a."`, `".a"`, `"a..b"` | a backend translating paths to SQL has no rule for one |
+| an integer literal wider than 64 bits | it would be compared as the nearest float, so `eq(x, 2**70)` would match `2**70 + 1` |
+
+`Contains(path, null)` stays valid: it asks whether the array holds a `null` element. A path is
+dot-delimited object keys, so a key containing `.` cannot be addressed. A numeric segment is a key,
+never an array index: `tags.0` reads `{"tags": {"0": ...}}`, not `{"tags": [...]}`.
+`Filter::validate` holds the rule, and `testdata/golden/filter.json` pins each refusal.
 
 ## The null and missing-path rule
 
@@ -162,8 +199,8 @@ flowchart TB
 ```
 
 `eval` dispatches on the variant and recurses for `And` / `Or` / `Not`. `eval_json` is the boundary
-the bindings call: it parses filter and document from JSON bytes, returns the verdict, and reports a
-parse failure as an `Err`.
+the bindings call. It parses filter and document from JSON bytes and refuses what the section above
+lists. It returns the verdict, and reports every failure as a `codec` error.
 
 ## The verdict is the kernel's; the dialect is the backend's
 
@@ -186,7 +223,8 @@ it.
 | Presence | `exists(path, bool)` — flag required | `exists(path, exists=True)` — flag defaults to `True` |
 | Connectives | `and(Vec<Filter>)`, `or(Vec<Filter>)`, `not(Filter)` | `and_(*filters)`, `or_(*filters)`, `not_(filter)` |
 | Evaluate | `eval(&Filter, &Value) -> bool` | `matches(filter, document) -> bool` |
-| JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, String>` | used internally by `matches` |
+| JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, Error>` | used internally by `matches` |
+| Validation | `Filter::validate()` | through `matches` |
 | Path helpers | `resolve`, `value_cmp` (public, shared with `edax-cqrs::query` next door) | not exposed |
 
 ```rust
@@ -208,7 +246,7 @@ sort = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as 
 
 page1 = await store.get_many(filter=flt, sort=sort, limit=2)
 ```
-<sup>`examples/py/projection_query.py:35-38`</sup>
+<sup>`examples/py/projection_query.py`</sup>
 
 The Python constructors are the only part of filtering the SDK owns: which dict key and which op
 name each one emits. A wrong key would pass the golden vectors unnoticed, so a separate table test

@@ -1,39 +1,72 @@
-"""Shared test fixtures and fault-injection fakes.
+"""Shared test fixtures and the in-tree fault rigs.
 
-The ``Flaky*`` stores model one specific real failure: a write **lands** and then its response is
-**lost** (a dropped ack, a killed connection between commit and reply). ``arm_lost_response`` names
-the seam method to lose (``"append"``, ``"complete"``, ...); the next call to that method forwards
-to the real store, commits, and *then* raises :class:`edax.StoreError`. It fires once, then clears.
-``"commit"`` loses the response of a whole unit of work: the transaction commits and the caller
-sees the error afterwards, which is the only place a *transactional* write can land and still fail.
+The fault wrappers themselves ship in :mod:`edax.testing.faults`, where an adopter's suite gets the same
+ones: :class:`~edax.testing.faults.LostResponse` lands a write and loses its reply (``"commit"`` loses a whole
+unit of work's), :class:`~edax.testing.faults.Refusing` refuses one, :class:`~edax.testing.faults.BrokenCommit`
+fails a commit either way, :class:`~edax.testing.faults.LostReply` loses one Redis script's reply. The
+``Flaky*`` factories here are those wrappers over the memory stores.
 """
 
 import asyncio
-import sys
+import json
+import os
 import types
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any
 from unittest import mock
 
+import aiokafka
+import aiokafka.errors
 import edax
+import fakeredis
 import pytest
+import redis.asyncio
+import redis.exceptions
+from aiokafka import TopicPartition
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
     MemoryProjectionStore,
     MemorySagaStore,
-    MemoryTx,
+    MemoryTransactor,
 )
-from edax.command import Record
-from edax.projection import Entity
-from edax.store import Tx
+from edax.testing.faults import LostResponse, Refusing
+
+GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
+_GOLDEN_READ: set[str] = set()
 
 
-def delivered(delivery: Optional[edax.Delivery]) -> edax.Delivery:
+def golden(name: str) -> list[dict[str, Any]]:
+    """The cases of ``testdata/golden/<name>``: the one reader every suite uses. Each name read is
+    recorded, so a full run can prove that every vector the kernels write has a Python reader."""
+    _GOLDEN_READ.add(name)
+    cases: list[dict[str, Any]] = json.loads((GOLDEN_DIR / name).read_text())
+    return cases
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail a full, green run that left a golden vector unread: a vector no Python test replays
+    proves nothing across languages. A partial run (a ``-k``, a ``-m``, one file) skips the check,
+    because it never meant to read every vector."""
+    if exitstatus != 0 or session.config.option.keyword or session.config.option.markexpr:
+        return
+    test_files = {path.name for path in Path(__file__).parent.glob("test_*.py")}
+    if not test_files <= {item.path.name for item in session.items}:
+        return
+    unread = sorted({path.name for path in GOLDEN_DIR.glob("*.json")} - _GOLDEN_READ)
+    if unread:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(f"golden vectors no Python test read: {', '.join(unread)}", red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def delivered(delivery: edax.Delivery | None) -> edax.Delivery:
     """Narrow a ``Consumer.poll`` result. ``poll`` returns ``None`` at end of stream; every caller
     here has just published, so ``None`` means the broker lost the message — a failed assertion
     naming that, not an ``AttributeError`` three lines later."""
@@ -52,7 +85,7 @@ def assert_logged(caplog: pytest.LogCaptureFixture, logger_name: str, fragments:
     """``logger_name`` emitted exactly one record per fragment, in order, each containing its fragment."""
     logged = [r.getMessage() for r in caplog.records if r.name == logger_name]
     assert len(logged) == len(fragments), logged
-    assert all(want in got for want, got in zip(fragments, logged)), logged
+    assert all(want in got for want, got in zip(fragments, logged, strict=True)), logged
 
 
 @dataclass
@@ -67,18 +100,18 @@ class CreateUser:
 def build_envelope(
     aggregate_id: str,
     name: str,
-    sequence: Optional[int],
+    sequence: int | None,
     *,
-    id: Optional[str] = None,
+    id: str | None = None,
     version: int = 1,
     data: bytes = b"",
-    namespace: Optional[dict[str, str]] = None,
-    metadata: Optional[dict[str, str]] = None,
+    namespace: dict[str, str] | None = None,
+    metadata: dict[str, str] | None = None,
     timestamp: int = 0,
 ) -> edax.EventEnvelope:
     """A native :class:`edax.EventEnvelope` with sensible defaults; ``id`` defaults to a stable
     ``{aggregate_id}-{name}-{sequence}``."""
-    return edax.Envelope(
+    return edax.EventEnvelope(
         id=id or f"{aggregate_id}-{name}-{sequence}",
         aggregate_id=aggregate_id,
         event=edax.Event(name, version, data),
@@ -90,223 +123,61 @@ def build_envelope(
 
 
 # =========================================================================
-# Fault injection: land the write, then lose the response
+# Fault injection: the shipped wrappers over the memory stores
 # =========================================================================
 
 
-class _LostResponse:
-    """Mixin: arm one seam method to land its write and then raise ``StoreError`` (a lost response)."""
-
-    arm_lost_response: Optional[str] = None
-
-    def _trip(self, op: str) -> None:
-        if self.arm_lost_response == op:
-            self.arm_lost_response = None  # one-shot
-            raise edax.StoreError("response lost after write")
+def FlakyEventStore() -> Any:
+    """A memory event store whose next armed call (``.arm("append")``, ``.arm("commit")``) loses its reply."""
+    return LostResponse(MemoryEventStore())
 
 
-class FlakyEventStore(_LostResponse, MemoryEventStore):
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[MemoryTx]:
-        async with super().transaction() as tx:
-            yield tx
-        self._trip("commit")  # committed; the response is lost on the way back
-
-    async def append(
-        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[edax.EventEnvelope]
-    ) -> None:
-        await super().append(tx, aggregate_id, expected_version, events)
-        self._trip("append")
-
-    async def mark_published(self, ids: Sequence[str]) -> None:
-        await super().mark_published(ids)
-        self._trip("mark_published")
+def FlakyProjectionStore() -> Any:
+    return LostResponse(MemoryProjectionStore())
 
 
-class FlakyProjectionStore(_LostResponse, MemoryProjectionStore):
-    async def save(self, entity: Entity, tx: Optional[Tx] = None) -> None:
-        before = entity.version
-        await super().save(entity, tx)  # advances entity.version in place
-        if self.arm_lost_response == "save":
-            entity.version = before  # the caller never saw the new version
-        self._trip("save")
+def FlakySagaStore() -> Any:
+    return LostResponse(MemorySagaStore())
 
 
-class FlakyIdempotency(_LostResponse):
-    """Seam wrapper over *any* ``IdempotencyStore`` (memory or redis), so both backends lose a
-    response identically: the trip fires after the inner store has committed."""
-
-    def __init__(self, inner: Any) -> None:
-        self._inner = inner
-
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Tx] = None) -> Optional[Record]:
-        prior = await self._inner.claim(key, payload_hash, tx)
-        self._trip("claim")
-        return prior
-
-    async def complete(self, key: str, record: Record, tx: Optional[Tx] = None) -> None:
-        await self._inner.complete(key, record, tx)
-        self._trip("complete")
-
-    async def release(self, key: str, tx: Optional[Tx] = None) -> None:
-        await self._inner.release(key, tx)
-        self._trip("release")
+def FlakyIdempotency(inner: Any) -> Any:
+    """Any ``IdempotencyStore`` (memory or Redis) losing a reply identically: the fault fires after the inner
+    store has committed."""
+    return LostResponse(inner)
 
 
-class BrokenCommitTransactor:
-    """A :class:`~edax.store.Transactor` whose commit fails, in the two ways that differ.
-
-    ``"nothing_landed"`` rolls the unit of work back and raises: the classic failed commit.
-    ``"lost_response"`` commits and *then* raises — the same shape ``FlakyEventStore("commit")``
-    models. Both are needed and they assert opposite things: the first lets the redelivery re-run
-    once, the second releases a claim over work that **did** land, so the redelivery runs it twice.
-    That second case is at-least-once, and it is the irreducible price of a ledger that cannot join
-    the transaction."""
-
-    def __init__(self, inner: Any, arm: Optional[str] = "nothing_landed") -> None:
-        self._inner = inner
-        self.arm = arm  # settable per unit of work, so one rig can drive a whole history
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[Any]:
-        arm = self.arm
-        if arm == "nothing_landed":
-            async with self._inner.transaction() as tx:
-                yield tx
-                # Raised inside the inner block, so the inner transactor rolls back before this
-                # propagates: the caller sees a failed commit over which nothing landed.
-                raise edax.StoreError("commit failed; nothing landed")
-        elif arm == "lost_response":
-            async with self._inner.transaction() as tx:
-                yield tx
-            raise edax.StoreError("commit landed; the response was lost")
-        else:
-            async with self._inner.transaction() as tx:
-                yield tx
-
-
-class SplitLedger:
-    """An ``IdempotencyStore`` on a database of its own: it accepts ``tx`` and ignores it, exactly
-    as :class:`~edax.backend.redis.RedisIdempotencyStore` does, because Redis cannot enlist in
-    another store's transaction. ``joins_transaction`` stays at its ``False`` default, so the guard
-    compensates by hand instead of relying on a rollback."""
-
-    def __init__(self) -> None:
-        from edax.backend.memory import MemoryTransactor
-
-        self._db = MemoryTransactor()
-        self._inner = MemoryIdempotencyStore(self._db)
-
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Tx] = None) -> Optional[Record]:
-        return await self._inner.claim(key, payload_hash, tx=self._db.auto_commit())
-
-    async def complete(self, key: str, record: Record, tx: Optional[Tx] = None) -> None:
-        await self._inner.complete(key, record, tx=self._db.auto_commit())
-
-    async def release(self, key: str, tx: Optional[Tx] = None) -> None:
-        await self._inner.release(key, tx=self._db.auto_commit())
-
-
-class RefusesToSettle:
-    """Mixin: every compensating write is refused, and counted so a test can prove the guard tried to
-    compensate rather than skipping it. A joining ledger refuses because the handler's own failed
-    statement has already aborted the transaction they share; a ledger of its own refuses because it
-    is unreachable. Same refusal either way, so one mixin serves both bases."""
-
-    refusals: int = 0
-
-    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
-        self.refusals += 1
-        raise edax.StoreError("the compensating write was refused")
-
-    async def release(self, key: str, tx: Optional[Any] = None) -> None:
-        self.refusals += 1
-        raise edax.StoreError("the compensating write was refused")
-
-
-class RefusingLedger(RefusesToSettle, MemoryIdempotencyStore):
-    """A joining ledger whose compensating writes are refused."""
-
-
-class FlakySagaStore(_LostResponse, MemorySagaStore):
-    async def save(self, id: str, state: Any, version: int, tx: Optional[Tx] = None) -> int:
-        v = await super().save(id, state, version, tx)
-        self._trip("save")
-        return v
-
-    async def delete(self, id: str, version: int, tx: Optional[Tx] = None) -> None:
-        await super().delete(id, version, tx)
-        self._trip("delete")
+def RefusingLedger(db: MemoryTransactor | None = None) -> Any:
+    """A joining ledger whose compensating writes are refused, counted in ``refusals``. A joining ledger
+    refuses because the handler's own failed statement has already aborted the transaction they share."""
+    return Refusing(MemoryIdempotencyStore(db), "complete", "release")
 
 
 # =========================================================================
-# In-memory Redis stand-in (shared by test_redis and the P2 redis param)
+# Redis: a Lua-capable fake for the fast suite, and a live server when one is named
 # =========================================================================
 
 TTL_MS = 60_000
 
+#: A live Redis to run the Redis suites against as well, as a URL (``redis://localhost:56380/0``). Unset, the
+#: suites run against fakeredis only.
+REDIS_URL: str | None = os.environ.get("EDAX_REDIS_URL")
 
-class FakeRedis:
-    """In-memory stand-in for Redis: enough to exercise claim/replay, plus the two faults a real
-    server has and a dict cannot fake by itself, a transport error and key expiry. ``now_ms`` is
-    the clock TTLs are measured against, so a test advances time instead of sleeping."""
 
-    def __init__(self) -> None:
-        self.map: dict[str, tuple[bytes, int]] = {}  # key -> (value, absolute expiry in ms)
-        self.fail = False  # every command raises a transport error
-        self.vanish_once = False  # the next SET NX loses but leaves no key (TTL/DEL race)
-        self.now_ms = 0
-        self.set_nx_calls = 0
-
-    def _live(self, key: str) -> Optional[bytes]:
-        """The stored value if the key exists and has not expired: Redis's own view of a key."""
-        entry = self.map.get(key)
-        return entry[0] if entry is not None and entry[1] > self.now_ms else None
-
-    def _check(self) -> None:
-        if self.fail:
-            raise RuntimeError("connection reset")
-
-    async def get(self, key: str) -> Optional[bytes]:
-        self._check()
-        return self._live(key)
-
-    async def set_px(self, key: str, value: bytes, ttl_ms: int) -> None:
-        self._check()
-        self.map[key] = (value, self.now_ms + ttl_ms)
-
-    async def set_nx_px(self, key: str, value: bytes, ttl_ms: int) -> bool:
-        self._check()
-        self.set_nx_calls += 1
-        if self.vanish_once:
-            self.vanish_once = False
-            return False  # lose the claim, but the key is gone by the time the caller GETs it
-        if self._live(key) is not None:
-            return False
-        self.map[key] = (value, self.now_ms + ttl_ms)
-        return True
-
-    async def delete(self, key: str) -> None:
-        self._check()
-        self.map.pop(key, None)
-
-    # The fence. Compare-and-write in one step, as the Lua in `AsyncRedisClient` does: a read
-    # followed by a write here would hide the race these exist to close.
-    async def set_px_if_prefix(self, key: str, prefix: bytes, value: bytes, ttl_ms: int) -> bool:
-        self._check()
-        current = self._live(key)
-        if current is None or not current.startswith(prefix):
-            return False
-        self.map[key] = (value, self.now_ms + ttl_ms)
-        return True
-
-    async def delete_if_prefix(self, key: str, prefix: bytes) -> bool:
-        self._check()
-        current = self._live(key)
-        if current is None or not current.startswith(prefix):
-            return False
-        self.map.pop(key, None)
-        return True
+@pytest.fixture(params=["fakeredis", "live"] if REDIS_URL else ["fakeredis"])
+async def redis_client(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """A ``redis.asyncio`` client. ``fakeredis`` runs the scripts in an embedded Lua interpreter (lupa), so
+    every script the store sends runs the kernel's own bytes: the fake never re-implements the fence. With
+    ``EDAX_REDIS_URL`` set the same tests also run against that server. Tests share no keys, so the live
+    database is never flushed."""
+    if request.param == "fakeredis":
+        client: Any = fakeredis.FakeAsyncRedis()
+    else:
+        assert REDIS_URL is not None, "the live parameter exists only with a URL"
+        client = redis.asyncio.Redis.from_url(REDIS_URL)
+    try:
+        yield client
+    finally:
+        await client.aclose()
 
 
 # =========================================================================
@@ -315,38 +186,40 @@ class FakeRedis:
 
 
 @contextmanager
-def recorded_backoff() -> Iterator[list[float]]:
-    """Record the dispatcher's backoff waits instead of paying them, yielding the seconds asked for.
+def recorded_backoff() -> Iterator[list[int]]:
+    """Record every backoff wait as the 0-based step it was asked for, instead of paying it.
 
-    Every nack waits one step of the kernel's schedule, so a test walking three redeliveries would
-    otherwise spend 700 ms proving arithmetic, and a Hypothesis run spends minutes. A context manager
+    Every nack and every retry waits one step of the kernel's jittered schedule, so a test walking three
+    redeliveries would otherwise spend real time proving arithmetic, and a Hypothesis run spends minutes.
+    Patches :meth:`edax.Pacing.wait`, so a dispatcher or a ``retry`` built anywhere — inside a consumer
+    included — records too; what one wait costs is ``tests/test_pacing.py``'s business. A context manager
     rather than only a fixture: Hypothesis rejects a function-scoped fixture on a generated test.
     """
-    waits: list[float] = []
+    steps: list[int] = []
 
-    async def fake_sleep(seconds: float) -> None:
-        waits.append(seconds)
+    async def record(self: edax.Pacing, attempt: int) -> None:
+        steps.append(attempt)
 
-    with mock.patch.object(edax.dispatcher, "_sleep", fake_sleep):
-        yield waits
+    with mock.patch.object(edax.Pacing, "wait", record):
+        yield steps
 
 
 @pytest.fixture
-def slept() -> Iterator[list[float]]:
+def slept() -> Iterator[list[int]]:
     """:func:`recorded_backoff` as a fixture, for the tests that do not generate their own cases."""
     with recorded_backoff() as waits:
         yield waits
 
 
-def expect(exc: Optional[type[BaseException]], match: Optional[str] = None) -> AbstractContextManager[Any]:
+def expect(exc: type[BaseException] | None, match: str | None = None) -> AbstractContextManager[Any]:
     """``with expect(StoreError):`` or ``with expect(None):``, so a replay makes one seam call
     whatever the model says the outcome is, instead of one ``pytest.raises`` block per branch."""
     return pytest.raises(exc, match=match) if exc is not None else nullcontext()
 
 
 def fields(env: edax.EventEnvelope) -> tuple[Any, ...]:
-    """Every field of a native envelope as a tuple. The native class has no ``__eq__`` (a type slot
-    the binding can't add, see ``aggregate.py``), so equality is compared field by field."""
+    """Every field of a native envelope as a tuple, so a failed comparison names the field that differs
+    (the envelope itself has value equality, see ``aggregate.py``)."""
     return (
         env.id,
         env.aggregate_id,
@@ -407,7 +280,7 @@ class TickEvents:
 class CounterCodec:
     type = "Counter"
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> Counter:
+    def load(self, id: str, version: int, data: bytes | None) -> Counter:
         c = Counter(id, version)
         if data is not None:
             c.n = int(data.decode())
@@ -427,52 +300,227 @@ def counter_repo(store: Any, ids: Iterator[int]) -> edax.Repository[Counter]:
 # Broker fakes: producer + consumer client in one object, no server
 # =========================================================================
 
-# The Kafka adapter imports TopicPartition lazily inside poll(); no broker package is installed here.
-TopicPartition = namedtuple("TopicPartition", "topic partition")
-_aiokafka = types.ModuleType("aiokafka")  # a real module: sys.modules holds modules, not namespaces
-_aiokafka.__dict__["TopicPartition"] = TopicPartition  # a module's __dict__ is its namespace
-sys.modules.setdefault("aiokafka", _aiokafka)
-
 KafkaMsg = namedtuple("KafkaMsg", "topic partition offset key value headers")
 
 
-class FakeKafkaClient:
-    """One partition of one topic: an append-only log with a fetch cursor. ``send_and_wait`` appends
-    at the next offset, ``getone`` reads at the cursor (blocks at the end, like a real consumer),
-    ``seek`` moves the cursor, ``commit`` records the watermark."""
+class FakeKafkaCluster:
+    """What a Kafka broker holds for one consumer group: topics of partitioned, append-only logs and the
+    group's committed offsets. :class:`FakeKafkaClient` members attach to it. It models the behaviour the
+    adapter must survive, which a queue-shaped fake hides:
 
-    def __init__(self) -> None:
-        self.log: list[KafkaMsg] = []
-        self.cursor = 0
-        self.commits: list[int] = []
-        self.seeks: list[int] = []
+    * nothing redelivers unless a member seeks back, a member joins or leaves (a rebalance), or a member
+      restarts from the commits;
+    * a rebalance is eager, the way aiokafka's is: every member's listener hears ``on_partitions_revoked``
+      for all it held and is awaited before the new assignment, and a member fetches nothing meanwhile;
+    * a newly assigned partition is fetched from the group's commit, and a commit overwrites — it can move
+      backwards, so a regression is visible in :attr:`commit_log`;
+    * ``pause_commits`` parks every commit until ``resume_commits``: a broker that stopped answering."""
+
+    def __init__(self, partitions: int = 1, *, _peers: list["FakeKafkaCluster"] | None = None) -> None:
+        self.partitions = partitions
+        # Every group of one broker shares the logs; each group has its own commits and members.
+        self._peers: list[FakeKafkaCluster] = _peers if _peers is not None else []
+        self._peers.append(self)
+        self.logs: dict[tuple[str, int], list[KafkaMsg]] = (
+            self._peers[0].logs if len(self._peers) > 1 else defaultdict(list)
+        )
+        self.committed: dict[TopicPartition, int] = {}
+        #: Every commit the group accepted, in order: ``(member, TopicPartition, offset)``.
+        self.commit_log: list[tuple[int, TopicPartition, int]] = []
+        self.members: list[FakeKafkaClient] = []
+        self._commits_open = asyncio.Event()
+        self._commits_open.set()
+
+    def append(self, topic: str, partition: int, key: bytes | None, value: bytes | None, headers: Any) -> int:
+        log = self.logs[(topic, partition)]
+        log.append(KafkaMsg(topic, partition, len(log), key, value, list(headers)))
+        self.wake()
+        return len(log) - 1
+
+    def topic_partitions(self) -> list[TopicPartition]:
+        topics = sorted({topic for topic, _ in self.logs} | {"t"})
+        return [TopicPartition(t, p) for t in topics for p in range(self.partitions)]
+
+    def group(self) -> "FakeKafkaCluster":
+        """Another consumer group of the same broker: the same logs, commits and members of its own."""
+        return FakeKafkaCluster(self.partitions, _peers=self._peers)
+
+    def wake(self) -> None:
+        for peer in self._peers:
+            for member in peer.members:
+                member._changed.set()
+
+    def pause_commits(self) -> None:
+        self._commits_open.clear()
+
+    def resume_commits(self) -> None:
+        self._commits_open.set()
+
+    async def rebalance(self) -> None:
+        """Revoke everything from every member (awaiting each listener), then spread the partitions over
+        the members in join order and announce the new assignment."""
+        for member in self.members:
+            member._rebalancing = True
+        # The revoked partitions are still held while the listener runs, so it can commit them.
+        for member in self.members:
+            if member.listener is not None:
+                await member.listener.on_partitions_revoked(set(member.assignment))
+            member.assignment = set()
+        tps = self.topic_partitions()
+        for i, member in enumerate(self.members):
+            member.assignment = {tp for j, tp in enumerate(tps) if j % len(self.members) == i}
+            member.position = {tp: self.committed.get(tp, 0) for tp in member.assignment}
+        for member in self.members:
+            if member.listener is not None:
+                await member.listener.on_partitions_assigned(set(member.assignment))
+            member._rebalancing = False
+        self.wake()
+
+    async def join(self, member: "FakeKafkaClient") -> None:
+        self.members.append(member)
+        await self.rebalance()
+
+    async def leave(self, member: "FakeKafkaClient", *, crash: bool = False) -> None:
+        """A member leaves. A clean leave hears its revoke; a crashed one hears nothing and keeps nothing."""
+        self.members.remove(member)
+        if crash:
+            member.assignment = set()
+            member._stopped = True
+            member._changed.set()
+        else:
+            if member.listener is not None:
+                await member.listener.on_partitions_revoked(set(member.assignment))
+            member.assignment = set()
+        await self.rebalance()
+
+
+class FakeKafkaClient:
+    """One ``AIOKafkaConsumer`` member and an ``AIOKafkaProducer`` in one object, over a
+    :class:`FakeKafkaCluster` (its own one-partition cluster unless given one). A client built without a
+    cluster owns every partition at once, with no group protocol, which is what most tests want.
+
+    ``getone`` reads the assigned partitions round robin, parks when caught up, and wakes on an append, a
+    seek, a rebalance or a stop. ``seek`` and ``commit`` refuse a partition this member does not hold, as
+    aiokafka does. ``stop`` makes ``getone`` raise ``ConsumerStoppedError``. The single-partition views
+    (``log``, ``cursor``, ``commits``, ``seeks``) read topic ``t``, partition 0."""
+
+    def __init__(
+        self,
+        cluster: FakeKafkaCluster | None = None,
+        *,
+        group_id: str | None = "g",
+        enable_auto_commit: bool = False,
+        acks: int = -1,
+    ) -> None:
+        standalone = cluster is None
+        self.cluster = cluster if cluster is not None else FakeKafkaCluster()
+        # The private attributes the adapter probes, under aiokafka's own names.
+        self._group_id = group_id
+        self._enable_auto_commit = enable_auto_commit
+        self._sender = types.SimpleNamespace(_acks=acks)
+        self.listener: Any = None
+        self.assignment: set[TopicPartition] = set()
+        self.position: dict[TopicPartition, int] = {}
+        self.seek_log: list[tuple[TopicPartition, int]] = []
+        self._standalone = standalone
+        self._rebalancing = False
+        self._stopped = False
+        self._changed = asyncio.Event()
+        self._next = 0
+        if standalone:
+            self.cluster.members.append(self)
+
+    # --- the single-partition views most tests read ---------------------------------------------
+
+    @property
+    def log(self) -> list[KafkaMsg]:
+        return self.cluster.logs[("t", 0)]
+
+    @property
+    def cursor(self) -> int:
+        return self._position(TopicPartition("t", 0))
+
+    @property
+    def commits(self) -> list[int]:
+        return [offset for _, tp, offset in self.cluster.commit_log if tp == TopicPartition("t", 0)]
+
+    @property
+    def seeks(self) -> list[int]:
+        return [offset for tp, offset in self.seek_log if tp == TopicPartition("t", 0)]
+
+    def settled(self) -> bool:
+        """Committed watermark is past the whole log: nothing would redeliver on restart."""
+        return self.cluster.committed.get(TopicPartition("t", 0)) == len(self.log)
+
+    # --- the consumer -----------------------------------------------------------------------------
+
+    def subscribe(self, topics: Sequence[str], listener: Any = None) -> None:
+        self.listener = listener
+
+    def _held(self) -> list[TopicPartition]:
+        return self.cluster.topic_partitions() if self._standalone else sorted(self.assignment)
+
+    def _position(self, tp: TopicPartition) -> int:
+        return self.position.setdefault(tp, self.cluster.committed.get(tp, 0))
+
+    def _refuse_unassigned(self, tp: TopicPartition) -> None:
+        if not self._standalone and tp not in self.assignment:
+            raise aiokafka.errors.IllegalStateError(f"No current assignment for partition {tp}")
+
+    async def getone(self) -> KafkaMsg:
+        # A real fetch suspends for a round trip; without this yield a consumer that seeks and polls in a
+        # loop would never hand the event loop back, which hides a hot loop instead of showing it.
+        await asyncio.sleep(0)
+        while True:
+            self._changed.clear()
+            if self._stopped:
+                raise aiokafka.errors.ConsumerStoppedError()
+            held = [] if self._rebalancing else self._held()
+            for step in range(len(held)):
+                tp = held[(self._next + step) % len(held)]
+                log, at = self.cluster.logs[(tp.topic, tp.partition)], self._position(tp)
+                if at < len(log):
+                    self.position[tp] = at + 1
+                    self._next = (self._next + step + 1) % len(held)
+                    return log[at]
+            await self._changed.wait()
+
+    def seek(self, tp: TopicPartition, offset: int) -> None:
+        self._refuse_unassigned(tp)
+        self.seek_log.append((tp, offset))
+        self.position[tp] = offset
+        self._changed.set()
+
+    async def commit(self, offsets: dict[TopicPartition, int]) -> None:
+        if self._group_id is None:
+            raise aiokafka.errors.IllegalOperation("Requires group_id")
+        for tp in offsets:
+            self._refuse_unassigned(tp)
+        await self.cluster._commits_open.wait()
+        for tp, offset in offsets.items():
+            self.cluster.committed[tp] = offset
+            self.cluster.commit_log.append((id(self), tp, offset))
+
+    async def stop(self) -> None:
+        self._stopped = True
+        self._changed.set()
+
+    # --- the producer -----------------------------------------------------------------------------
+
+    async def partitions_for(self, topic: str) -> set[int]:
+        return set(range(self.cluster.partitions))
 
     async def send_and_wait(
         self,
         topic: str,
-        value: bytes,
-        key: bytes = b"",
-        headers: Sequence[tuple[str, bytes]] = (),
+        value: bytes | None,
+        key: bytes | None = b"",
+        partition: int | None = None,
+        headers: Sequence[tuple[str, bytes | None]] = (),
     ) -> None:
-        self.log.append(KafkaMsg(topic, 0, len(self.log), key, value, list(headers)))
-
-    async def getone(self) -> KafkaMsg:
-        if self.cursor == len(self.log):
-            await asyncio.Event().wait()  # end of log: block forever, tests never poll past it
-        msg = self.log[self.cursor]
-        self.cursor += 1
-        return msg
-
-    async def commit(self, offsets: dict[Any, int]) -> None:
-        self.commits.extend(offsets.values())
-
-    def seek(self, tp: Any, offset: int) -> None:
-        self.seeks.append(offset)
-        self.cursor = offset
-
-    def settled(self) -> bool:
-        """Committed watermark is past the whole log: nothing would redeliver on restart."""
-        return bool(self.commits) and self.commits[-1] == len(self.log)
+        part = 0 if partition is None else partition
+        assert 0 <= part < self.cluster.partitions, f"no partition {part}"
+        self.cluster.append(topic, part, key, value, headers)
 
 
 class IdSerializer:

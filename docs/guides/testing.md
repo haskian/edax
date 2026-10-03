@@ -199,7 +199,40 @@ before you rely on it:
   the contract says `>`, a version advanced by a failed save. Each case asserts the suite catches it.
   A conformance suite that only ever passes is a promise, not a test.
 - **It runs against the in-tree backends too.** `test_contract_memory.py` holds the memory stores to
-  the same clauses, so the suite cannot drift from the implementations it describes.
+  the same clauses, so the suite cannot drift from the implementations it describes. `MemoryLedger` and
+  the Redis store (`test_redis.py`) run the same `IdempotencyStoreContract`, takeover clauses included.
+- **It catches races, not only wrong answers.** Each seam has a race clause. Two units of work stage a
+  write at one version before either commits, and exactly one may land. The order is forced, not left to
+  timing. The second writer runs in a task of its own. The first commits after the second staged, or after
+  a bounded wait when the store parks the second on a row lock. So a blocking SQL store does not deadlock
+  the clause. A read-then-write store passes every one-call clause and fails this one: see
+  `CheckThenActEventStore` in `test_contract_discriminates.py`, the reviewer's repro.
+- **It checks isolation.** A staged write must be invisible to another unit of work. A joining ledger
+  gets two more clauses. A claim staged in an open transaction is never won by another. A release with
+  nothing committed leaves a concurrent winner's record. These clauses need an async driver, because one
+  that blocks the event loop deadlocks any asyncio code.
+- **Its payloads are real.** Envelopes carry a `guid()` id, a `current_timestamp()` and a JSON body, as
+  the SDK writes them. A store with an `id uuid` column then passes or fails for the right reason.
+- **The discrimination test is strict.** `test_contract_discriminates.py` is one table, a row per
+  mistake. A row counts as caught only when the clause fails with its own verdict: an assertion, a
+  `pytest.raises` that did not fire, or a seam's typed error. The race and isolation rows also name the
+  assertion that must fire. A store that crashes for an unrelated reason is not a catch. Positive controls
+  run the same clauses over the same rigs without the mistake.
+
+### Fault wrappers
+
+`edax.testing.faults` wraps any store by delegation, so the same fault lands on Postgres, Redis or memory:
+
+| Wrapper | Fault |
+|---|---|
+| `LostResponse(store)` | `arm("append")` lands the next `append`, then raises `StoreError`: a reply lost after the write. `arm("commit")` loses the reply of the next unit of work after it committed. Arming a method the store lacks raises `AttributeError` instead of never firing. |
+| `Refusing(store, "complete", "release")` | refuses the named calls outright, writing nothing, and counts them in `refusals` |
+| `BrokenCommit(transactor, arm)` | a commit that fails with nothing landed (`"nothing_landed"`) or after it landed (`"lost_response"`); its `transactor` is the wrapped one, so the stores over it join the units of work it opens |
+| `LostReply(conn, script, resend)` | the Redis `eval` seam losing the reply to one script, with or without redis-py's re-send |
+
+The in-tree suites use these and nothing else; `tests/test_faults.py` proves each one fires once where
+armed. `MemoryLedger.expire(key)` and `MemoryIdempotencyStore.expire(key)` are the memory side of a TTL
+running out, for takeover tests.
 
 ## Contract suites a host can reuse
 
@@ -208,17 +241,22 @@ implementation takes a factory and one list entry.
 
 | Suite | Seam | How to point it at your backend |
 |---|---|---|
-| `crates/edax-py/tests/test_broker_contract.py` | `Producer` / `Consumer` | write a factory returning `Rig(producer.publish, consumer, settled_predicate)` and add it to the fixture's `params` and `ids` |
-| `crates/edax-py/tests/test_model.py` P2 | `IdempotencyStore` | add a branch to `_idempotency_backend` returning `(store, clock_handle)`, and add your name to `@pytest.mark.parametrize("backend", [...])` |
+| `edax.testing.BrokerContract` | `Producer` / `Consumer` | subclass it and give it a `broker_rig` fixture returning a `BrokerRig`: `publish`, `consumer(group)`, `commit(group)`, `crash(group)`, `drained(group)`; `test_broker_contract.py` has the memory and Kafka rigs, and `test_broker_model.py` runs both under random faults |
+| `crates/edax-py/tests/test_model.py` P2 | `IdempotencyStore` | add a branch to `_idempotency_backend` returning `(store, lapse)`, where `lapse` is an async callable that makes every key's TTL run out, and add your name to `@pytest.mark.parametrize("backend", [...])` |
 | `crates/edax/tests/model.rs` P1 | `EventStore` | call `check_event_store(YourStore::new, history)` — the generic bound *is* the contract |
 | `crates/edax/tests/model.rs` P6 | `ProjectionStore` | call `check_projection_store(YourStore::new, history)` |
 
-The clock handle in the P2 factory lets an `Expire` operation advance time. A store with a dedup
-window is then exercised across record expiry. Return `None` if yours never expires a record.
+The second element of the P2 factory is how an `Expire` operation runs every TTL out: `FLUSHALL` on the
+fakeredis client, `expire(key)` per key on memory. A store with a dedup window is then exercised across
+record expiry. The oracle assumes the store fences on the claim handle, as every in-tree ledger does, so a
+release after a landed `complete` keeps the record.
 
-`test_redis.py` and `test_kafka.py` are deliberately *not* contract suites — they pin
-adapter-specific behaviour (Redis error typing and record expiry, Kafka's watermark-only commit)
-that a different backend does not owe.
+`test_redis.py` and `test_kafka.py` are deliberately *not* contract suites. They pin
+adapter-specific behaviour that a different backend does not owe: Redis error typing, lease renewal
+and lost replies, and Kafka's watermark-only commit. `test_redis.py` does run the
+`IdempotencyStoreContract` too, takeover clauses included, against fakeredis and any live Redis
+named by `EDAX_REDIS_URL`. fakeredis runs the kernel's Lua in an embedded interpreter, so no fake
+re-implements the fence.
 
 ## Running everything
 

@@ -1,13 +1,15 @@
 """Saga / process manager: react to committed events, drive a workflow, emit commands.
 
-    events ─▶ KeyOrderedDispatcher ─▶ EventRouter ─▶ SagaRunner.on_event ─▶ CommandBus.dispatch
+    events ─▶ KeyOrderedDispatcher ─▶ EventRouter ─▶ SagaRunner.on_event ─▶ SagaStore (state + outbox)
                                                        │ correlation_id -> load state
                                                        │ handle(state, event) -> (new_state, commands)
-                                                       └ dispatch commands, then save/delete state
+                                                       └ save state and commands in one versioned write
+    SagaStore outbox ─▶ runner.relay(...) ─▶ CommandBus.dispatch
 
 An order saga waits for Paid, fires Fulfill, completes. partition(aggregate_id) pins each order to one
-worker, so Created lands before Paid without a lock. The runner dispatches before it persists, so a
-redelivered Paid is possible: the saga ignores it for a completed order and the bus is idempotent.
+worker, so Created lands before Paid without a lock. The runner never sends: it commits the new state and
+the commands together, and the relay sends what committed. Completion leaves a tombstone, so the
+redelivered Paid finds the order completed and is ignored; the bus is idempotent for the relay's re-sends.
 
 Run:  maturin develop -m crates/edax-py/Cargo.toml  &&  python examples/py/saga.py
 """
@@ -21,6 +23,7 @@ from typing import Any, ClassVar
 import edax
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore
 from edax.causation import CORRELATION_ID, propagate
+from edax.codec import json_codec
 from edax.command import CommandBus, idempotent
 from edax.saga import Completed, SagaRunner
 
@@ -47,20 +50,20 @@ def fulfill_key(cmd: Any) -> str:
 
 
 class OrderSaga:
-    def correlation_id(self, env: edax.Envelope) -> str | None:
+    def correlation_id(self, env: edax.EventEnvelope) -> str | None:
         return env.aggregate_id if env.event.name in ("Created", "Paid") else None
 
-    def handle(self, state: Any, env: edax.Envelope) -> tuple[Any, list]:
+    def handle(self, state: Any, env: edax.EventEnvelope) -> tuple[Any, list]:
         if env.event.name == "Created":
             return "open", []
         if env.event.name == "Paid" and state is not None:
             chain = propagate(env.metadata, env.id)  # exactly the two keys, for the command to carry
             return Completed, [Fulfill(env.aggregate_id, **chain)]  # complete + emit
-        return Completed, []  # Paid with no live instance (redelivery after completion)
+        return Completed, []  # Paid with no instance: nothing to complete (a redelivery never gets here)
 
 
-def make_event(order_id: str, name: str) -> edax.Envelope:
-    return edax.Envelope(
+def make_event(order_id: str, name: str) -> edax.EventEnvelope:
+    return edax.EventEnvelope(
         id=f"{order_id}-{name}",
         aggregate_id=order_id,
         event=edax.Event(name, 1, b""),
@@ -91,7 +94,7 @@ async def main() -> None:
 
     bus.register("Fulfill", fulfill)
 
-    runner = SagaRunner(OrderSaga(), MemorySagaStore(), dispatch=bus.dispatch)
+    runner = SagaRunner(OrderSaga(), MemorySagaStore(), json_codec({"Fulfill": Fulfill}))
     router = edax.EventRouter()
     router.register("Created", runner.on_event)
     router.register("Paid", runner.on_event)
@@ -101,6 +104,9 @@ async def main() -> None:
     for env in STREAM:
         await dispatcher.submit(env)
     await dispatcher.stop()
+    # The commands committed with each completion; the relay sends them through the bus.
+    sent = await runner.relay(bus.dispatch).drain()
+    assert sent == 2, sent
 
     print("fulfilled:", fulfilled)
     # Once each (cross-order is unordered), and the chain survived the hop: the flow id came from the

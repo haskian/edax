@@ -1,0 +1,276 @@
+[
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": null,
+    "initial_ttl_ms": 50000,
+    "name": "claim_a_free_key",
+    "script": "claim",
+    "want_reply": null,
+    "want_ttl_ms": 30000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "claim_resent_after_a_lost_reply",
+    "script": "claim",
+    "want_reply": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "claim_a_key_another_holds",
+    "script": "claim",
+    "want_reply": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "want_ttl_ms": 50000,
+    "want_value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "initial_ttl_ms": 50000,
+    "name": "claim_a_settled_key",
+    "script": "claim",
+    "want_reply": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "complete_the_held_claim",
+    "script": "complete",
+    "want_reply": 1,
+    "want_ttl_ms": 90000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "initial_ttl_ms": 50000,
+    "name": "complete_resent_after_it_landed",
+    "script": "complete",
+    "want_reply": 1,
+    "want_ttl_ms": 90000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": null,
+    "initial_ttl_ms": 50000,
+    "name": "complete_after_the_claim_lapsed",
+    "script": "complete",
+    "want_reply": 0,
+    "want_ttl_ms": null,
+    "want_value": null
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "complete_after_a_takeover",
+    "script": "complete",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "initial_ttl_ms": 50000,
+    "name": "complete_over_another_settled_record",
+    "script": "complete",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": null,
+    "initial_ttl_ms": 50000,
+    "name": "complete_with_an_empty_handle",
+    "script": "complete",
+    "want_reply": 0,
+    "want_ttl_ms": null,
+    "want_value": null
+  },
+  {
+    "args": [
+      "101",
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+      90000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "complete_with_a_prefix_of_the_claim",
+    "script": "complete",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "release_the_held_claim",
+    "script": "release",
+    "want_reply": 1,
+    "want_ttl_ms": null,
+    "want_value": null
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "initial_ttl_ms": 50000,
+    "name": "release_after_complete_landed",
+    "script": "release",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    ],
+    "initial": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "release_after_a_takeover",
+    "script": "release",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    ],
+    "initial": null,
+    "initial_ttl_ms": 50000,
+    "name": "release_a_free_key",
+    "script": "release",
+    "want_reply": 0,
+    "want_ttl_ms": null,
+    "want_value": null
+  },
+  {
+    "args": [
+      ""
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "release_with_an_empty_handle",
+    "script": "release",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "101"
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "release_with_a_prefix_of_the_claim",
+    "script": "release",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "extend_the_held_claim",
+    "script": "extend",
+    "want_reply": 1,
+    "want_ttl_ms": 30000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "initial_ttl_ms": 50000,
+    "name": "extend_by_a_stale_owner",
+    "script": "extend",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "100000000000000000000000000000000{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "initial_ttl_ms": 50000,
+    "name": "extend_a_settled_record",
+    "script": "extend",
+    "want_reply": 0,
+    "want_ttl_ms": 50000,
+    "want_value": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "args": [
+      "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      30000
+    ],
+    "initial": null,
+    "initial_ttl_ms": 50000,
+    "name": "extend_a_free_key",
+    "script": "extend",
+    "want_reply": 0,
+    "want_ttl_ms": null,
+    "want_value": null
+  }
+]

@@ -23,7 +23,7 @@
     "available": [
       1
     ],
-    "error": "missing upcast step 2 (no transform for v2 -> v3)",
+    "error": "codec: missing upcast step 2 (no transform for v2 -> v3)",
     "from": 1,
     "plan": null,
     "to": 3
@@ -32,7 +32,7 @@
     "available": [
       2
     ],
-    "error": "missing upcast step 1 (no transform for v1 -> v2)",
+    "error": "codec: missing upcast step 1 (no transform for v1 -> v2)",
     "from": 1,
     "plan": null,
     "to": 3
@@ -56,7 +56,7 @@
     "available": [
       2
     ],
-    "error": "cannot upcast downward: from 3 > to 2",
+    "error": "codec: cannot upcast downward: from 3 > to 2 (the payload comes from a newer writer)",
     "from": 3,
     "plan": null,
     "to": 2
@@ -74,5 +74,112 @@
       1
     ],
     "to": 2
+  },
+  {
+    "available": [],
+    "error": "codec: missing upcast step 1 (no transform for v1 -> v2)",
+    "from": 1,
+    "plan": null,
+    "to": 3
+  },
+  {
+    "available": [
+      3,
+      1,
+      2
+    ],
+    "error": null,
+    "from": 1,
+    "plan": [
+      1,
+      2,
+      3
+    ],
+    "to": 4
+  },
+  {
+    "available": [
+      2,
+      1,
+      2,
+      1
+    ],
+    "error": null,
+    "from": 1,
+    "plan": [
+      1,
+      2
+    ],
+    "to": 3
+  },
+  {
+    "available": [
+      -2,
+      -1,
+      0
+    ],
+    "error": null,
+    "from": -2,
+    "plan": [
+      -2,
+      -1,
+      0
+    ],
+    "to": 1
+  },
+  {
+    "available": [],
+    "error": null,
+    "from": 2147483647,
+    "plan": [],
+    "to": 2147483647
+  },
+  {
+    "available": [
+      2147483646
+    ],
+    "error": null,
+    "from": 2147483646,
+    "plan": [
+      2147483646
+    ],
+    "to": 2147483647
+  },
+  {
+    "available": [
+      -2147483648
+    ],
+    "error": "codec: missing upcast step -2147483647 (no transform for v-2147483647 -> v-2147483646)",
+    "from": -2147483648,
+    "plan": null,
+    "to": 2147483647
+  },
+  {
+    "available": null,
+    "error": null,
+    "from": 1,
+    "plan": [],
+    "to": 1
+  },
+  {
+    "available": null,
+    "error": null,
+    "from": 1,
+    "plan": [],
+    "to": 3
+  },
+  {
+    "available": null,
+    "error": "codec: cannot upcast downward: from 5 > to 1 (the payload comes from a newer writer)",
+    "from": 5,
+    "plan": null,
+    "to": 1
+  },
+  {
+    "available": null,
+    "error": null,
+    "from": -2147483648,
+    "plan": [],
+    "to": 2147483647
   }
 ]

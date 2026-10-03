@@ -5,7 +5,7 @@
 [project]
 name = "edax-examples"
 version = "0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "edax",  # local edax SDK; msgspec comes transitively. No example uses a broker client.
 ]

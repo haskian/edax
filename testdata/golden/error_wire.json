@@ -1,0 +1,79 @@
+[
+  {
+    "code": "codec",
+    "message": "invalid type: string, expected u64",
+    "name": "known_terminal_code",
+    "terminal": true,
+    "wire": "codec: invalid type: string, expected u64"
+  },
+  {
+    "code": "store",
+    "message": "connection to the event store was reset",
+    "name": "known_transient_code",
+    "terminal": false,
+    "wire": "store: connection to the event store was reset"
+  },
+  {
+    "code": "store",
+    "message": "redis: connection reset",
+    "name": "separator_inside_the_message",
+    "terminal": false,
+    "wire": "store: redis: connection reset"
+  },
+  {
+    "code": "concurrency",
+    "message": "",
+    "name": "empty_message",
+    "terminal": false,
+    "wire": "concurrency: "
+  },
+  {
+    "code": "codec",
+    "message": " padded",
+    "name": "second_space_stays_in_the_message",
+    "terminal": true,
+    "wire": "codec:  padded"
+  },
+  {
+    "code": null,
+    "message": "timeout: deadline exceeded",
+    "name": "unknown_code",
+    "terminal": false,
+    "wire": "timeout: deadline exceeded"
+  },
+  {
+    "code": null,
+    "message": "connection reset by peer",
+    "name": "no_separator",
+    "terminal": false,
+    "wire": "connection reset by peer"
+  },
+  {
+    "code": null,
+    "message": "codec:no space",
+    "name": "colon_without_space",
+    "terminal": false,
+    "wire": "codec:no space"
+  },
+  {
+    "code": null,
+    "message": "CODEC: invalid type",
+    "name": "uppercase_code",
+    "terminal": false,
+    "wire": "CODEC: invalid type"
+  },
+  {
+    "code": null,
+    "message": " codec: invalid type",
+    "name": "leading_space",
+    "terminal": false,
+    "wire": " codec: invalid type"
+  },
+  {
+    "code": null,
+    "message": "",
+    "name": "empty",
+    "terminal": false,
+    "wire": ""
+  }
+]

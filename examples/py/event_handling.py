@@ -25,8 +25,8 @@ from edax.backend.memory import MemoryIdempotencyStore
 from edax.router import idempotent_by_id
 
 
-def make_event(aggregate_id: str, name: str) -> edax.Envelope:
-    return edax.Envelope(
+def make_event(aggregate_id: str, name: str) -> edax.EventEnvelope:
+    return edax.EventEnvelope(
         id=f"{aggregate_id}-{name}",
         aggregate_id=aggregate_id,
         event=edax.Event(name, 1, b""),
@@ -58,19 +58,19 @@ async def main() -> None:
     router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
 
     @router.on("Opened")
-    async def opened(env: edax.Envelope) -> None:
+    async def opened(env: edax.EventEnvelope) -> None:
         calls.append(env.id)
         log.append(f"{env.aggregate_id}: opened")
 
     @router.on("Deposited")
-    async def deposited(env: edax.Envelope) -> None:
+    async def deposited(env: edax.EventEnvelope) -> None:
         calls.append(env.id)
         if env.aggregate_id == "acct-bob":
             raise RuntimeError("projection store unavailable")  # transient -> claim released, nack
         log.append(f"{env.aggregate_id}: deposited")
 
     @router.on("Withdrawn")
-    async def withdrawn(env: edax.Envelope) -> None:
+    async def withdrawn(env: edax.EventEnvelope) -> None:
         calls.append(env.id)
         log.append(f"{env.aggregate_id}: withdrawn")
 

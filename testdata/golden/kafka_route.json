@@ -1,0 +1,184 @@
+[
+  {
+    "headers": [],
+    "name": "no_headers_routes_to_the_default",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "route": "default"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "traceparent",
+        "value_hex": "30302d306166373635313931366364343364642d3031"
+      }
+    ],
+    "name": "a_foreign_header_only_routes_to_the_default",
+    "registered": [
+      "application/vnd.edax.envelope+json"
+    ],
+    "want": {
+      "route": "default"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      }
+    ],
+    "name": "a_registered_media_type_names_its_index",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "index": 1,
+      "route": "registered"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f782d746573742d6964"
+      }
+    ],
+    "name": "a_host_media_type_is_as_good_as_a_kernel_one",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/x-test-id"
+    ],
+    "want": {
+      "index": 1,
+      "route": "registered"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f782d70726f746f627566"
+      }
+    ],
+    "name": "an_unregistered_media_type_is_unknown",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "media_type": "application/x-protobuf",
+      "route": "unknown"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      }
+    ],
+    "name": "nothing_registered_makes_every_media_type_unknown",
+    "registered": [],
+    "want": {
+      "media_type": "application/vnd.edax.envelope+json",
+      "route": "unknown"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": ""
+      }
+    ],
+    "name": "an_empty_value_is_unknown_not_the_default",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "media_type": "",
+      "route": "unknown"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "Content-Type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      }
+    ],
+    "name": "the_name_is_matched_case_sensitively",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "route": "default"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+      },
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      }
+    ],
+    "name": "the_first_of_two_wins",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "index": 1,
+      "route": "registered"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "fffe"
+      },
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+      }
+    ],
+    "name": "a_non_utf8_first_value_reads_as_absent",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "route": "default"
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e3b20636861727365743d7574662d38"
+      }
+    ],
+    "name": "parameters_are_not_stripped",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.envelope+msgpack"
+    ],
+    "want": {
+      "media_type": "application/vnd.edax.envelope+json; charset=utf-8",
+      "route": "unknown"
+    }
+  }
+]

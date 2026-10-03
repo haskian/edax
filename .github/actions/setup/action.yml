@@ -1,5 +1,5 @@
 name: Set up toolchain
-description: Install the mise-pinned toolchain (Rust, uv, maturin) and restore the cargo cache.
+description: Install the mise-pinned toolchain (Rust, uv, maturin, alef) and restore the cargo cache.
 
 inputs:
   cargo-cache-key:

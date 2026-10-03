@@ -18,8 +18,21 @@ concurrency:
 jobs:
   rust:
     uses: ./.github/workflows/rust.yml
+  # alef owns `crates/edax-py/src/lib.rs` and the shipped `_edax.pyi`. Regenerating them must change
+  # nothing: an `edax-abi` change that landed without its regeneration leaves a new ABI function
+  # silently absent from Python. Independent of the interpreter, so it runs once.
+  binding:
+    name: alef freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: Regenerate the binding
+        run: scripts/regenerate_binding.sh
+      - name: The committed binding is what alef generates
+        run: git diff --exit-code crates/edax-py/src/lib.rs crates/edax-py/python/edax/_edax.pyi
 
-  # `requires-python = ">=3.9"` is a promise the suite has to keep. The floor is where a
+  # `requires-python = ">=3.10"` is a promise the suite has to keep. The floor is where a
   # syntax or typing feature added later breaks first; the ceiling is where a dependency or a
   # deprecation breaks first. Testing only the middle catches neither.
   python:
@@ -27,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.13"]
+        python-version: ["3.10", "3.13"]
     uses: ./.github/workflows/python.yml
     with:
       python-version: ${{ matrix.python-version }}

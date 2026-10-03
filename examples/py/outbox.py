@@ -25,8 +25,8 @@ from edax.backend.memory import MemoryBroker, MemoryEventStore
 REQUESTS = [("acct-a", 100), ("acct-b", 50), ("acct-a", 25), ("acct-b", 10)]
 
 
-def _env(env_id: str, aggregate_id: str, name: str, seq: int, data: bytes) -> edax.Envelope:
-    return edax.Envelope(
+def _env(env_id: str, aggregate_id: str, name: str, seq: int, data: bytes) -> edax.EventEnvelope:
+    return edax.EventEnvelope(
         id=env_id,
         aggregate_id=aggregate_id,
         event=edax.Event(name, 1, data),
@@ -60,7 +60,7 @@ async def main() -> None:
     balances: dict[str, int] = defaultdict(int)
     version: dict[str, int] = defaultdict(int)  # expected outbox version per aggregate
 
-    async def handle(env: edax.Envelope) -> None:
+    async def handle(env: edax.EventEnvelope) -> None:
         # same aggregate -> same worker -> serialized: no lock around this read-modify-write
         agg = env.aggregate_id
         balances[agg] += json.loads(env.event.data)["amount"]

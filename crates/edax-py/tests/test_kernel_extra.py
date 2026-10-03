@@ -1,66 +1,78 @@
-"""The thin SDK wrappers that sit straight on the kernel — rendezvous, query, upcast, causation,
+"""The thin SDK wrappers that sit straight on the kernel — query, upcast, causation,
 router — plus the two host-side pieces on the same path: the event codec registry and the error
 taxonomy every layer branches on."""
 
 import asyncio
 import json
-from pathlib import Path
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Any, Literal
 
 import edax
 import msgspec
 import pytest
-from conftest import Tick, build_envelope
+from conftest import Tick, build_envelope, golden
 from edax import _edax, causation, upcast
 from edax import query as Q
 from edax.codec import json_codec, msgpack_codec
 from edax.errors import _BY_CODE, from_runtime
 
-GOLDEN = Path(__file__).resolve().parents[3] / "testdata" / "golden"
 
-
-def load(name):
-    return json.loads((GOLDEN / name).read_text())
-
-
-def test_golden_rendezvous() -> None:
-    for c in load("rendezvous.json"):
-        assert edax.rendezvous(c["id"], c["n"]) == c["expected"]
+def _golden_page(case: dict[str, Any]) -> Q.Page:
+    """A golden query through the SDK's keyword API, or as raw spec text when it holds a key no
+    keyword spells (a typo the kernel must refuse)."""
+    spec = case["query"]
+    if not set(spec) <= {"filter", "sort", "offset", "limit", "after"}:
+        with edax.errors.mapped():
+            return Q.Page.from_kernel(_edax.query(json.dumps(spec), json.dumps(case["documents"])))
+    return Q.query(
+        case["documents"],
+        filter=spec.get("filter"),
+        sort=spec.get("sort"),
+        offset=spec.get("offset", 0),
+        limit=spec.get("limit"),
+        after=spec.get("after"),
+    )
 
 
 def test_golden_query() -> None:
-    for c in load("query.json"):
-        spec = c["query"]
-        page = Q.query(
-            c["documents"],
-            filter=spec.get("filter"),
-            sort=spec.get("sort"),
-            offset=spec.get("offset", 0),
-            limit=spec.get("limit"),
-            after=spec.get("after"),
-        )
-        assert page == c["expected_page"], c
-        if page:
-            cur = Q.encode_cursor(page[-1], spec.get("sort", []))
-            assert cur == c["expected_cursor"], c
-        else:
-            assert c["expected_cursor"] is None
+    """The page and its ``next`` cursor, byte for byte, and every refusal as the terminal
+    ``CodecError``: a cursor under another sort or without one, a ``next`` from a row with no id, a typo."""
+    for c in golden("query.json"):
+        if c["error_code"] is not None:
+            with pytest.raises(edax.CodecError) as caught:
+                _golden_page(c)
+            assert caught.value.code == c["error_code"], c["name"]
+            continue
+        page = _golden_page(c)
+        assert {"rows": page.rows, "next": page.next} == c["expected_page"], c["name"]
+        if page.next is not None:
+            # A backend that pages natively mints the same cursor from the same last row.
+            assert Q.encode_cursor(page.rows[-1], c["query"]["sort"]) == page.next, c["name"]
 
 
 def test_golden_cursor() -> None:
-    """The decode half of the cursor contract, and the sort a page is really ordered by.
+    """The decode half of the cursor contract, the sort a page is really ordered by, and the refusals.
 
     A backend binds `decode_cursor`'s tuple straight into its own keyset `WHERE` clause and orders by
     `effective_sort`, so a binding that disagrees on either pages differently from the kernel while
-    every cursor still looks well formed.
+    every cursor still looks well formed. A cursor read under a sort it was not minted under is refused
+    with the kernel's own text.
     """
-    for c in load("cursor.json"):
+    for c in golden("cursor.json"):
         sort = c["sort"]
         assert Q.effective_sort(sort) == c["expected_effective_sort"], c
+        if c["error"] is not None:
+            with pytest.raises(edax.CodecError) as caught:
+                if c["expected_cursor"] is not None:
+                    Q.decode_cursor(c["expected_cursor"], sort)
+                else:
+                    Q.encode_cursor(c["document"], sort)
+            assert _edax.tag_error("codec", str(caught.value)) == c["error"], c["name"]
+            continue
         assert Q.decode_cursor(c["expected_cursor"], sort) == c["expected_tuple"], c
-        if c["document"] is not None:
-            # Round trip: the cursor minted here is the one the vector pins.
-            assert Q.encode_cursor(c["document"], sort) == c["expected_cursor"], c
+        # Round trip: the cursor minted here is the one the vector pins.
+        assert Q.encode_cursor(c["document"], sort) == c["expected_cursor"], c
 
 
 @pytest.mark.parametrize(
@@ -85,8 +97,10 @@ def test_build_spec_matches_the_golden_query_shape() -> None:
     kernel's one ``Query`` shape. Rebuilding each golden spec from its own fields must reproduce it
     exactly: a renamed key, an extra key, or a field emitted when it was not set all fail here."""
     seen: set[str] = set()
-    for c in load("query.json"):
+    for c in golden("query.json"):
         spec = c["query"]
+        if c["name"] == "refused_unknown_field":
+            continue  # a typo the kernel refuses, which no constructor here can build
         seen |= set(spec)
         rebuilt = Q.build_spec(
             filter=spec.get("filter"),
@@ -100,17 +114,32 @@ def test_build_spec_matches_the_golden_query_shape() -> None:
 
 
 def test_golden_upcast() -> None:
-    for c in load("upcast.json"):
+    for c in golden("upcast.json"):
         if c["error"] is not None:
-            with pytest.raises(RuntimeError):
+            # The kernel's own wire form, `codec:` included: the raw call carries the code, and the
+            # pinned message names the step, so a binding that refused for another reason fails here.
+            with pytest.raises(RuntimeError) as caught:
                 edax.upcast_plan(c["from"], c["to"], c["available"])
+            assert str(caught.value) == c["error"], c
+            with pytest.raises(edax.CodecError) as mapped, edax.errors.mapped():
+                edax.upcast_plan(c["from"], c["to"], c["available"])
+            assert _edax.tag_error("codec", str(mapped.value)) == c["error"], c
         else:
-            assert edax.upcast_plan(c["from"], c["to"], c["available"]) == c["plan"]
+            assert edax.upcast_plan(c["from"], c["to"], c["available"]) == c["plan"], c
 
 
 def test_golden_causation() -> None:
-    for c in load("causation.json"):
+    for c in golden("causation.json"):
         assert causation.propagate(c["parent_metadata"], c["parent_event_id"]) == c["expected"]
+
+
+def test_a_second_transform_for_one_step_is_refused() -> None:
+    # Keeping either one silently would run a migration nobody chose.
+    upcaster = upcast.Upcaster().step(1, lambda d: d + b"a")
+    with pytest.raises(edax.AlreadyRegistered, match="upcast step 1 is registered twice") as caught:
+        upcaster.step(1, lambda d: d + b"b")
+    assert caught.value.terminal is True
+    assert upcaster.to(b"x", from_=1, to=2) == b"xa", "the first transform is kept"
 
 
 def _two_step_upcaster() -> upcast.Upcaster:
@@ -133,7 +162,7 @@ def _two_step_upcaster() -> upcast.Upcaster:
     ],
 )
 def test_upcaster_to_branches(
-    branch: str, from_: int, to: int, want: Optional[bytes], want_error: Optional[str]
+    branch: str, from_: int, to: int, want: bytes | None, want_error: str | None
 ) -> None:
     upcaster = _two_step_upcaster()
     if want_error is not None:
@@ -197,25 +226,72 @@ def test_from_runtime_maps_the_native_code(
     assert err.terminal is want_terminal
 
 
+ERROR_WIRE: list[dict[str, Any]] = golden("error_wire.json")
+
+
+@pytest.mark.parametrize("case", ERROR_WIRE, ids=lambda c: c["name"])
+def test_split_error_and_the_verdict_are_the_kernels(case: dict[str, Any]) -> None:
+    """Every row of `error_wire.json`, the negative ones included: `from_runtime` splits through the
+    kernel, so the ": " separator has one owner, and the verdict for a string with no code the kernel
+    knows is the kernel's default, read here rather than chosen."""
+    split = _edax.split_error(case["wire"])
+    assert (split.code or None, split.message, split.terminal) == (
+        case["code"],
+        case["message"],
+        case["terminal"],
+    )
+    assert _edax.error_verdict(case["wire"]) is case["terminal"]
+    err = from_runtime(RuntimeError(case["wire"]))
+    assert edax.errors.is_terminal(err) is case["terminal"], "the class carries the kernel's verdict"
+    if case["code"] is None:
+        assert type(err) is edax.StoreError and str(err) == case["wire"]
+
+
+def test_the_unclassified_default_is_the_kernels() -> None:
+    """A host exception carries no verdict: `is_terminal` falls back to the kernel's default, and the
+    class an unknown code maps to carries the same one, or the import fails."""
+    assert edax.errors.UNCLASSIFIED_IS_TERMINAL is _edax.error_verdict("") is False
+    assert edax.errors.is_terminal(ValueError("a host bug")) is edax.errors.UNCLASSIFIED_IS_TERMINAL
+    assert edax.StoreError.terminal is edax.errors.UNCLASSIFIED_IS_TERMINAL
+
+
 @pytest.mark.parametrize(
-    "branch,wire,want",
+    "branch, attribute, value, check",
     [
-        ("known_code", "codec: bad json", ("codec", "bad json")),
-        # Only the first separator splits; the rest belongs to the message.
-        ("separator_in_message", "store: redis: reset", ("store", "redis: reset")),
-        ("empty_message", "concurrency: ", ("concurrency", "")),
-        # No code the kernel knows: an empty code and the untouched string, which is what sends
-        # `from_runtime` to its transient default.
-        ("unknown_code", "timeout: deadline exceeded", ("", "timeout: deadline exceeded")),
-        ("no_separator", "connection reset", ("", "connection reset")),
-        ("colon_without_space", "codec:no space", ("", "codec:no space")),
-        ("empty", "", ("", "")),
+        # A kernel code with no class would reach the unknown-code default with no signal.
+        (
+            "a_kernel_code_with_no_class",
+            "_edax",
+            SimpleNamespace(error_codes=lambda: [*_edax.error_codes(), "quota_exceeded"]),
+            "_check_every_kernel_code_has_a_class",
+        ),
+        # The class an unknown code maps to must carry the kernel's default verdict.
+        (
+            "a_kernel_default_the_unknown_class_does_not_carry",
+            "UNCLASSIFIED_IS_TERMINAL",
+            True,
+            "_check_the_unclassified_class_carries_the_kernels_default",
+        ),
     ],
 )
-def test_split_error_is_the_kernels(branch: str, wire: str, want: tuple[str, str]) -> None:
-    """`from_runtime` splits through the kernel, so the ": " separator has one owner."""
-    split = _edax.split_error(wire)
-    assert (split.code, split.message) == want
+def test_the_import_fails_when_the_mapping_drifts_from_the_kernel(
+    branch: str, attribute: str, value: Any, check: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(edax.errors, attribute, value)
+    with pytest.raises(ImportError):
+        getattr(edax.errors, check)()
+
+
+def test_the_import_fails_on_a_wire_format_the_kernel_does_not_know(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(edax.aggregate, "WireFormat", Literal["json", "protobuf"])
+    with pytest.raises(edax.CodecError, match="unknown format: protobuf"):
+        edax.aggregate._check_every_wire_format_is_the_kernels()
+
+
+def test_tag_error_is_split_errors_inverse() -> None:
+    assert _edax.tag_error("rejected", "insufficient funds") == "rejected: insufficient funds"
+    with pytest.raises(RuntimeError, match="codec: unknown error code: Rejected"):
+        _edax.tag_error("Rejected", "x")
 
 
 # The kernel's error taxonomy: one row per code with the verdict every SDK persists on. The Rust
@@ -224,7 +300,7 @@ def test_split_error_is_the_kernels(branch: str, wire: str, want: tuple[str, str
 # These tests pin that the classes, the kernel, and the committed golden agree row by row, so a code
 # changing sides anywhere fails in one obvious place instead of flipping a dead-letter into an
 # infinite redelivery or a released claim into a poisoned key.
-ERROR_TAXONOMY: list[dict[str, Any]] = load("error_taxonomy.json")
+ERROR_TAXONOMY: list[dict[str, Any]] = golden("error_taxonomy.json")
 
 
 def _verdict_id(case: dict[str, Any]) -> str:
@@ -268,7 +344,7 @@ def test_a_host_subclass_inherits_its_parents_code_and_verdict() -> None:
 def test_a_class_with_a_code_the_kernel_does_not_know_cannot_be_defined() -> None:
     """The verdict comes from the kernel, so a class naming a code the kernel never pinned has no
     verdict to carry: defining it raises instead of defaulting."""
-    with pytest.raises(RuntimeError, match="unknown error code: timeout"):
+    with pytest.raises(RuntimeError, match="codec: unknown error code: timeout"):
 
         class TimeoutError_(edax.EdaxError, code="timeout"):
             pass
@@ -345,7 +421,7 @@ GAPPED_STEP = {"Withdrawn": upcast.Upcaster().step(2, _default_currency)}  # no 
     ],
 )
 def test_marshal_branches(
-    branch: str, factory: Callable[..., Any], event: Any, want_error: Optional[str]
+    branch: str, factory: Callable[..., Any], event: Any, want_error: str | None
 ) -> None:
     codec = factory(REGISTRY, version=3)
     if want_error is not None:
@@ -383,8 +459,8 @@ def test_marshal_branches(
 def test_registry_is_validated_at_construction(
     branch: str,
     events: dict[str, type],
-    upcasters: Optional[dict[str, Any]],
-    want_error: Optional[str],
+    upcasters: dict[str, Any] | None,
+    want_error: str | None,
 ) -> None:
     if want_error is not None:
         with pytest.raises(edax.EdaxError, match=want_error) as caught:
@@ -451,6 +527,17 @@ def test_registry_is_validated_at_construction(
             None,
             "upcasting Deposited v3->v2",
         ),
+        # The same newer writer for a name with no upcaster: still the kernel's refusal, never a silent
+        # decode that drops the fields this reader does not know (02#F2).
+        (
+            "newer_version_without_upcaster",
+            {},
+            "Withdrawn",
+            5,
+            WITHDRAWN_V2,
+            None,
+            "cannot upcast downward: from 5 > to 2",
+        ),
     ],
 )
 def test_unmarshal_branches(
@@ -460,7 +547,7 @@ def test_unmarshal_branches(
     version: int,
     data: bytes,
     want: Any,
-    want_error: Optional[str],
+    want_error: str | None,
 ) -> None:
     codec = json_codec(REGISTRY, version=2, upcasters=upcasters)
     event = edax.Event(name, version, data)
@@ -560,6 +647,13 @@ def test_register_rejects_a_second_handler_for_one_name() -> None:
 # =========================================================================
 
 
+class _DeclaredTerminal(Exception):
+    """A host's own exception that declares itself terminal, with a code the kernel does not know."""
+
+    terminal = True
+    code = "order_already_shipped"
+
+
 @pytest.mark.parametrize(
     "branch, error, want_terminal",
     [
@@ -569,6 +663,8 @@ def test_register_rejects_a_second_handler_for_one_name() -> None:
         ("cached_failure", edax.CachedFailure("insufficient funds"), True),
         ("handler_not_found", edax.HandlerNotFound("Withdraw"), True),
         ("already_registered", edax.AlreadyRegistered("Withdraw"), True),
+        ("rejected", edax.Rejected("insufficient funds"), True),
+        ("host_exception_declaring_terminal", _DeclaredTerminal("order already shipped"), True),
         # Transient: worth another attempt.
         ("concurrency", edax.ConcurrencyError("expected 3, stored 4"), False),
         ("store", edax.StoreError("connection reset"), False),
@@ -583,6 +679,23 @@ def test_is_terminal_classifies_every_error(branch: str, error: BaseException, w
 
 
 @pytest.mark.parametrize(
+    "branch, error, want",
+    [
+        ("transient_is_never_cached", edax.StoreError("connection reset"), None),
+        ("host_error_is_unclassified", ValueError("a bug"), None),
+        ("edax_error_keeps_its_code", edax.CodecError("bad payload"), "codec"),
+        ("cached_failure_keeps_its_own_code", edax.CachedFailure("codec: bad"), "cached_failure"),
+        ("rejected_is_rejected", edax.Rejected("insufficient funds"), "rejected"),
+        # A host's own `code` attribute is not a kernel code, so the cache names it a rejection.
+        ("host_terminal_with_a_foreign_code", _DeclaredTerminal("shipped"), "rejected"),
+        ("edax_subclass_inherits_the_code", type("LedgerCodec", (edax.CodecError,), {})("x"), "codec"),
+    ],
+)
+def test_code_of_is_what_a_terminal_failure_caches(branch: str, error: BaseException, want: Any) -> None:
+    assert edax.errors.code_of(error) == want
+
+
+@pytest.mark.parametrize(
     "branch, raised, want_type, want_terminal",
     [
         # The kernel tags deterministic failures `codec:`, so they map to a terminal CodecError.
@@ -590,15 +703,67 @@ def test_is_terminal_classifies_every_error(branch: str, error: BaseException, w
         ("tagged_concurrency", RuntimeError("concurrency: expected 3"), edax.ConcurrencyError, False),
         # No code: kept whole under StoreError rather than guessed at.
         ("untagged", RuntimeError("something went wrong"), edax.StoreError, False),
+        # An argument the binding could not convert fails the same way on every retry.
+        ("overflow", OverflowError("can't convert negative int to unsigned"), edax.CodecError, True),
+        ("wrong_type", TypeError("'int' object cannot be converted to 'PyString'"), edax.CodecError, True),
+        (
+            "lone_surrogate",
+            UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed"),
+            edax.CodecError,
+            True,
+        ),
     ],
 )
-def test_mapped_types_native_runtime_errors(
-    branch: str, raised: RuntimeError, want_type: type[edax.EdaxError], want_terminal: bool
+def test_mapped_types_native_failures(
+    branch: str, raised: Exception, want_type: type[edax.EdaxError], want_terminal: bool
 ) -> None:
     with pytest.raises(want_type) as excinfo, edax.errors.mapped():
         raise raised
     assert excinfo.value.terminal is want_terminal
     assert excinfo.value.__cause__ is raised  # the native error stays attached
+
+
+_ENV = _edax.EventEnvelope("evt-1", "agg-1", _edax.Event("Opened", 1, b"{}"), {}, {}, 0, 1)
+
+
+@pytest.mark.parametrize(
+    "branch, call",
+    [
+        # The two kernel errors that used to cross untagged and read as transient.
+        ("sequence_batch_gap", lambda: _edax.check_sequence_batch(0, [2])),
+        ("unknown_error_code", lambda: _edax.error_code_is_terminal("timeout")),
+        # Integer range at the boundary.
+        ("negative_u64_sequence", lambda: _edax.check_sequence_batch(0, [-1])),
+        ("i32_overflow_version", lambda: _edax.upcast_plan(1, 2**31, [1])),
+        ("negative_backoff_attempt", lambda: _edax.backoff_millis(100, 30_000, -1, 0)),
+        ("negative_stored_hash", lambda: _edax.idempotency_outcome(1, -5, False)),
+        (
+            "timestamp_past_i64",
+            lambda: _edax.EventEnvelope("e", "a", _edax.Event("X", 1, b""), {}, {}, 2**63, 1),
+        ),
+        # Types.
+        ("str_as_bytes", lambda: _edax.payload_hash("text")),  # ty: ignore[invalid-argument-type]
+        (
+            "non_str_metadata_value",
+            lambda: _edax.event_idempotency(
+                _edax.EventEnvelope("e", "a", _edax.Event("X", 1, b""), {}, {"n": 3}, 0)  # ty: ignore[invalid-argument-type]
+            ),
+        ),
+        # A lone surrogate is a legal Python `str`.
+        ("lone_surrogate_key", lambda: _edax.partition("\ud800", 8)),
+        ("lone_surrogate_wire", lambda: _edax.split_error("\ud800")),
+        # Kernel refusals of a value's content.
+        ("canonical_json_refuses_a_lone_surrogate_escape", lambda: _edax.canonical_json(b'{"s":"\\ud800"}')),
+        ("event_rule_takes_an_envelope", lambda: _edax.event_idempotency(_ENV.id)),  # ty: ignore[invalid-argument-type]
+    ],
+)
+def test_every_deterministic_boundary_failure_is_terminal(branch: str, call: Callable[[], Any]) -> None:
+    """08#F3's table, row by row: whatever the native call refuses — a kernel `codec:` error, or an
+    argument the binding cannot convert — reaches the host as the terminal CodecError inside
+    `mapped()`, so retry, the guard and the dispatcher stop instead of looping on it."""
+    with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+        call()
+    assert edax.is_terminal(caught.value)
 
 
 def test_mapped_leaves_non_runtime_errors_alone() -> None:
@@ -623,7 +788,8 @@ BAD_OP = {"compare": {"path": "status", "op": "no_such_op", "value": "settled"}}
         ("matches_rejects_an_unknown_filter_op", lambda: edax.filter.matches(BAD_OP, ACCOUNT_ROW)),
         (
             "encode_cursor_rejects_a_malformed_sort_key",
-            lambda: Q.encode_cursor(ACCOUNT_ROW, [{"desc": True}]),
+            # The checker now refuses this too; the run-time refusal is what the row pins.
+            lambda: Q.encode_cursor(ACCOUNT_ROW, [{"desc": True}]),  # type: ignore[typeddict-item]  # ty: ignore[missing-typed-dict-key, invalid-argument-type]
         ),
     ],
 )

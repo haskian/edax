@@ -1,129 +1,212 @@
-//! The Redis idempotency ledger: the stored value's layout, and the Lua a fenced write runs.
+//! The Redis idempotency ledger: the key, the stored value's layout, the settings a store is built
+//! with, and what a claim's reply means.
+//!
+//! # The key
+//!
+//! [`ledger_key`] is `{prefix}{key}` as UTF-8 bytes. Two SDKs that compose it differently never meet
+//! on one ledger, and nothing fails: both run every command. So the composition is here.
 //!
 //! # The value
 //!
-//! One key, `{prefix}{key}`, holds `<owner><record>`: a fixed-width hex fence token followed by the
-//! kernel's idempotency-record JSON. One key means one TTL governs both halves. A sibling key
-//! holding the token would expire on a clock of its own, so a claimant could win the record, lose
-//! the owner, and hold a claim it can never settle.
+//! One key holds `1<owner><record>`: the layout version `1`, a fixed-width hex owner token, then the
+//! kernel's idempotency-record JSON. One key means one TTL governs both halves. A sibling key holding
+//! the token would expire on a clock of its own, so a claimant could win the record, lose the owner,
+//! and hold a claim it can never settle. The version byte lets a later layout be refused by name
+//! instead of being split at the wrong place.
 //!
 //! The record half is never written here. [`claim_value`] asks `edax-cqrs` for the pending record's
-//! bytes and [`record_value`] takes a settled record's bytes from the caller, so the record's wire
+//! bytes and [`settled_value`] takes a settled record's bytes from the caller, so the record's wire
 //! shape has exactly one author and `testdata/golden/idempotency_record.json` keeps pinning it.
 //!
-//! # The fence
+//! # The claim handle
 //!
-//! A claim can lapse and be taken over. The lapsed worker's `complete` must not overwrite the new
-//! holder's claim and its `release` must not delete it, so both settle through a compare-and-write:
-//! [`FENCED_SET_SCRIPT`] and [`FENCED_DEL_SCRIPT`] read the token's width with `GETRANGE` and write
-//! only on a match. A `GET` then a `SET` would leave exactly the gap the fence exists to close.
-//! The bodies are constants, byte for byte, so two SDKs registering the script share one `EVALSHA`
-//! digest instead of each caching its own reformatting.
+//! The value a claimant writes is its handle: [`claim_value`] mints it, the claim script stores it,
+//! and every later write of that claimant compares the stored value with it **exactly**. A claim
+//! that lapsed and was taken over holds another value, so its old owner settles nothing. A settled
+//! record holds another value too, so a late release never deletes the outcome of committed work.
+//! See [`crate::scripts`].
 
-use edax_core::{guid_simple, AdapterError};
-use edax_cqrs::{encode_record, Record};
+use edax_core::{guid_simple, Error};
+use edax_cqrs::{decode_record, encode_record, Record, State};
 
-/// Width of the owner token in the stored value, in ASCII hex characters.
+/// The layout version, the first byte of every stored value.
+pub const LAYOUT_VERSION: u8 = b'1';
+
+/// Width of the owner token in the stored value, in lowercase ASCII hex characters.
 pub const OWNER_LEN: usize = 32;
 
-/// A fresh fence token: the kernel's id in its 32-character lowercase hex form, no hyphens.
+/// The largest TTL a store accepts, in milliseconds: 2^53 - 1, the largest integer every SDK
+/// language's number type holds exactly. Redis adds the TTL to its clock and refuses a sum that
+/// overflows, so a bound far below `i64::MAX` keeps that refusal out of reach.
+pub const MAX_TTL_MS: i64 = (1 << 53) - 1;
+
+/// A fresh owner token: the kernel's id in its 32-character lowercase hex form, no hyphens.
 ///
-/// v7 rather than random bytes so tokens sort by mint time, which makes a ledger dump readable; the
-/// 74 random bits are what make two claimants distinguishable.
+/// v7 rather than random bytes so tokens sort by mint time, which makes a ledger dump readable. The
+/// 32 random bits and the shared 42-bit counter (`edax_core::guid`) are what make two claimants
+/// distinguishable.
 pub fn new_owner() -> String {
     guid_simple()
 }
 
-/// The stored value for a fresh claim: `owner` followed by the kernel's **pending** record for
-/// `payload_hash`.
-///
-/// This is the value a claimant writes with `SET NX PX`, so whoever loses the race reads the
-/// winner's pending record and learns the key is in flight rather than "unseen".
-pub fn claim_value(owner: &str, payload_hash: u64) -> Result<String, AdapterError> {
-    // The record's bytes are `edax-cqrs`'s, never hand-formatted here: a ledger written by one SDK
-    // is read back through the same decoder in every other.
-    let bytes = encode_record(&Record::<()>::pending(payload_hash)).map_err(AdapterError::codec)?;
-    // `serde_json` emits UTF-8, so this cannot fail; it is checked rather than unwrapped because a
-    // panic inside a native binding crosses an FFI boundary that cannot catch it.
-    let record = String::from_utf8(bytes).map_err(AdapterError::codec)?;
-    record_value(owner, &record)
+/// A fresh claim's value for `payload_hash`, under a new owner token: [`claim_value`] over
+/// [`new_owner`]. The value is the claim's handle.
+pub fn new_claim(payload_hash: u64) -> Result<Vec<u8>, Error> {
+    claim_value(&new_owner(), payload_hash)
 }
 
-/// The stored value for a settled claim: `owner` followed by `record_json` as the caller encoded it.
+/// Refuse a prefix that cannot name a ledger. The prefix is the ledger's identity: an empty one puts
+/// every service sharing a Redis into one key space, where a request id two services both use is one
+/// claim.
+pub fn check_prefix(prefix: &str) -> Result<(), Error> {
+    if prefix.is_empty() {
+        return Err(Error::bad_handle(
+            "the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\"",
+        ));
+    }
+    Ok(())
+}
+
+/// The Redis key for an idempotency key: `{prefix}{key}`, as UTF-8 bytes.
+///
+/// No separator is added, so the prefix carries its own. Concatenation is not injective: prefix
+/// `billing:` with key `prod:x` is the key prefix `billing:prod:` gives `x`. Distinct services take
+/// prefixes neither of which starts with the other.
+pub fn ledger_key(prefix: &str, key: &str) -> Result<Vec<u8>, Error> {
+    check_prefix(prefix)?;
+    Ok([prefix.as_bytes(), key.as_bytes()].concat())
+}
+
+/// Refuse a TTL Redis would refuse on every write, so a misconfigured store fails when it is built
+/// rather than on every dispatch. `name` is the setting's name, for the message.
+pub fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
+    if !(1..=MAX_TTL_MS).contains(&ttl_ms) {
+        return Err(Error::bad_handle(format_args!(
+            "{name} is {ttl_ms} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}"
+        )));
+    }
+    Ok(())
+}
+
+/// The value a fresh claim writes, which is also the claim's handle: the layout version, `owner`,
+/// then the kernel's **pending** record for `payload_hash`.
+///
+/// Whoever loses the race reads the winner's pending record and learns the key is in flight rather
+/// than "unseen".
+pub fn claim_value(owner: &str, payload_hash: u64) -> Result<Vec<u8>, Error> {
+    check_owner(owner)?;
+    // The record's bytes are `edax-cqrs`'s, never hand-formatted here: a ledger written by one SDK
+    // is read back through the same decoder in every other.
+    let record = encode_record(&Record::<()>::pending(payload_hash))?;
+    Ok(frame(owner, &record))
+}
+
+/// The value that settles the claim `claim`: the claim's own owner token, then `record_json` as the
+/// caller encoded it.
 ///
 /// The record is passed through untouched. A host that already holds the record's bytes (an SDK
 /// encoding its own result type) must not re-encode them here, or a result would round-trip through
 /// a second serializer on the way to the ledger.
-pub fn record_value(owner: &str, record_json: &str) -> Result<String, AdapterError> {
-    check_owner(owner)?;
-    Ok(format!("{owner}{record_json}"))
+pub fn settled_value(claim: &[u8], record_json: &str) -> Result<Vec<u8>, Error> {
+    let owner = claim_owner(claim)?;
+    Ok(frame(owner, record_json.as_bytes()))
+}
+
+/// Refuse a claim handle this kernel never minted: not a whole value, an owner token of the wrong
+/// shape, or a record that is not pending. The scripts compare the handle exactly, so a malformed
+/// one could only ever fail to match. Refusing it names the wiring mistake instead.
+pub fn check_claim(claim: &[u8]) -> Result<(), Error> {
+    claim_owner(claim).map(|_| ())
 }
 
 /// Take a stored value apart into `(owner, record)`.
 ///
-/// Strict about the frame — a value that is not UTF-8, or too short to hold a token, cannot be
-/// settled by anyone — and liberal about the token itself: a token this kernel would not mint still
-/// reads back, so a ledger written by an older store stays readable. What the record half says is
-/// the record decoder's business, not this function's.
-pub fn split_value(raw: &[u8]) -> Result<(String, String), AdapterError> {
-    let text = std::str::from_utf8(raw).map_err(|e| AdapterError::codec(format!("stored value is not UTF-8: {e}")))?;
-    if text.len() < OWNER_LEN {
-        return Err(AdapterError::codec(format!(
-            "stored value is {} bytes, shorter than the {OWNER_LEN}-character owner token",
-            text.len()
-        )));
-    }
-    // Only a multibyte character straddling the token's width can fail here, and that value was
-    // never written by this kernel: the token is ASCII.
-    let (owner, record) = text.split_at_checked(OWNER_LEN).ok_or_else(|| {
-        AdapterError::codec(format!(
-            "stored value does not split into an owner token at {OWNER_LEN} bytes"
-        ))
-    })?;
+/// Strict about the frame: a value that is not UTF-8, carries another layout version, or is too
+/// short to hold a token cannot be settled by anyone. Liberal about the token itself: a token this
+/// kernel would not mint still reads back, so the record behind it is never stranded. What the
+/// record half says is the record decoder's business, not this function's.
+pub fn split_value(raw: &[u8]) -> Result<(String, String), Error> {
+    let text = std::str::from_utf8(raw).map_err(|e| Error::codec(format_args!("stored value is not UTF-8: {e}")))?;
+    let Some(rest) = text.strip_prefix(char::from(LAYOUT_VERSION)) else {
+        return Err(match text.chars().next() {
+            None => Error::codec("stored value is empty"),
+            Some(version) => Error::codec(format_args!(
+                "stored value has layout version {version:?}; this kernel reads version {:?}",
+                char::from(LAYOUT_VERSION)
+            )),
+        });
+    };
+    // Fails on a value too short for a token, or on a multibyte character straddling the token's
+    // width. Neither was written by this kernel: the token is ASCII.
+    let (owner, record) = rest
+        .split_at_checked(OWNER_LEN)
+        .ok_or_else(|| Error::codec(format_args!("stored value has no {OWNER_LEN}-character owner token")))?;
     Ok((owner.to_owned(), record.to_owned()))
 }
 
-/// Set the value under a key **only while it still carries the caller's owner token**, refreshing
-/// the TTL. `KEYS[1]` is the key; `ARGV` is the owner token, the new value, and the TTL in
-/// milliseconds. Returns `1` when the write landed, `0` when the key is absent or another claimant
-/// holds it.
-pub const FENCED_SET_SCRIPT: &str = "
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0
-end
-return 0
-";
+/// What a claim's reply means. `#[must_use]` and exhaustive: a host that ignores [`ClaimOutcome::Won`]
+/// never settles its claim, and every variant needs a decision.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// This caller holds the claim: run the handler, then settle with the claim value as handle.
+    Won,
+    /// Another claim or a settled record holds the key. Carries that record's JSON.
+    Prior(String),
+}
 
-/// Delete a key **only while it still carries the caller's owner token**. `KEYS[1]` is the key;
-/// `ARGV[1]` is the owner token. Returns `1` when the delete landed, `0` when the key is absent or
-/// another claimant holds it.
-pub const FENCED_DEL_SCRIPT: &str = "
-if redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0
-";
+/// Read the claim script's reply. `reply` is the value the key held before the script ran, `None`
+/// when it was free; `claim` is the value this caller asked the script to write.
+///
+/// A reply equal to `claim` is this caller's own claim: the first send landed, its reply was lost,
+/// and the client sent the command again (redis-py does by default). Reading that as someone else's
+/// claim would block the key until the claim lapsed, with no handler running.
+pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<ClaimOutcome, Error> {
+    match reply {
+        None => Ok(ClaimOutcome::Won),
+        Some(held) if held == claim => Ok(ClaimOutcome::Won),
+        Some(held) => split_value(held).map(|(_, record)| ClaimOutcome::Prior(record)),
+    }
+}
 
-/// Reject a token that could never fence anything: the fence compares the first [`OWNER_LEN`] bytes,
-/// so a token of another width would match a prefix of someone else's, and a non-hex byte is a token
-/// this kernel did not mint. The token itself is kept out of the message: it is the capability that
-/// authorizes overwriting a claim.
-fn check_owner(owner: &str) -> Result<(), AdapterError> {
+fn frame(owner: &str, record: &[u8]) -> Vec<u8> {
+    [&[LAYOUT_VERSION][..], owner.as_bytes(), record].concat()
+}
+
+/// The owner token of a well-formed claim handle. See [`check_claim`].
+fn claim_owner(claim: &[u8]) -> Result<&str, Error> {
+    let refused = |why: &str| Error::codec(format_args!("claim handle is not a claim this kernel minted: {why}"));
+    let text = std::str::from_utf8(claim).map_err(|_| refused("not UTF-8"))?;
+    let rest = text
+        .strip_prefix(char::from(LAYOUT_VERSION))
+        .ok_or_else(|| refused("no layout version"))?;
+    let (owner, record) = rest.split_at_checked(OWNER_LEN).ok_or_else(|| refused("too short"))?;
+    check_owner(owner)?;
+    match decode_record::<()>(record.as_bytes()) {
+        Ok(Record {
+            state: State::Pending, ..
+        }) => Ok(owner),
+        _ => Err(refused("its record is not a pending claim")),
+    }
+}
+
+/// Reject a token that is not one [`new_owner`] mints: 32 lowercase hex characters. Upper case is
+/// refused rather than folded, because the scripts compare bytes and `ABC` is not `abc`. The token
+/// itself is kept out of the message: inside a claim value it authorizes settling that claim.
+fn check_owner(owner: &str) -> Result<(), Error> {
     if owner.len() != OWNER_LEN {
-        return Err(AdapterError::codec(format!(
+        return Err(Error::codec(format_args!(
             "owner token is {} bytes, expected {OWNER_LEN}",
             owner.len()
         )));
     }
-    if !owner.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(AdapterError::codec("owner token is not ASCII hexadecimal"));
+    if !owner.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(Error::codec("owner token is not lowercase hexadecimal"));
     }
     Ok(())
 }
 
 #[cfg(test)]
-// A test asserts on the value it just built; a panic there is the failure report.
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
@@ -131,109 +214,196 @@ mod tests {
     /// `crates/edax-py/tests/test_redis.py`, which pins the same claim value from the Python side.
     const HASH: u64 = 11_258_580_006_047_770_801;
     /// The pending record those bytes carry, as the ledger holds it.
-    const PENDING: &str = r#"{"payload_hash":11258580006047770801,"result":null,"error":null,"pending":true}"#;
+    const PENDING: &str =
+        r#"{"payload_hash":11258580006047770801,"result":null,"error":null,"error_code":null,"pending":true}"#;
+    /// A settled record, as `edax-cqrs` encodes a success.
+    const DONE: &str = r#"{"payload_hash":11258580006047770801,"result":{"balance_cents":4200},"error":null,"error_code":null,"pending":false}"#;
     /// A well-formed token, in the shape `new_owner` mints.
     const OWNER: &str = "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d";
 
-    /// One owner-validation branch, shared by the two writers because they share the check.
-    struct OwnerCase {
-        name: &'static str,
-        owner: &'static str,
-        /// The error's wire form, or `None` when the token is accepted.
-        error: Option<&'static str>,
+    fn claim() -> Vec<u8> {
+        format!("1{OWNER}{PENDING}").into_bytes()
     }
 
-    fn owner_cases() -> [OwnerCase; 6] {
-        [
-            OwnerCase {
-                name: "minted_token_is_accepted",
-                owner: OWNER,
-                error: None,
-            },
-            OwnerCase {
-                name: "uppercase_hex_is_accepted",
-                owner: "0190B5C8E1F37C4B9A2D5E6F7A8B9C0D",
-                error: None,
-            },
-            OwnerCase {
-                name: "one_character_short",
-                owner: "0190b5c8e1f37c4b9a2d5e6f7a8b9c0",
-                error: Some("codec: owner token is 31 bytes, expected 32"),
-            },
-            OwnerCase {
-                name: "one_character_long",
-                owner: "0190b5c8e1f37c4b9a2d5e6f7a8b9c0de",
-                error: Some("codec: owner token is 33 bytes, expected 32"),
-            },
-            OwnerCase {
-                name: "empty",
-                owner: "",
-                error: Some("codec: owner token is 0 bytes, expected 32"),
-            },
-            OwnerCase {
-                // Right width, wrong alphabet: `z` is not a hex digit.
-                name: "non_hex_at_full_width",
-                owner: "0190b5c8e1f37c4b9a2d5e6f7a8b9c0z",
-                error: Some("codec: owner token is not ASCII hexadecimal"),
-            },
-        ]
-    }
-
-    /// The token's *shape* is this kernel's business — the fence compares a fixed width — while
-    /// the id behind it is `edax_core::guid_simple`'s, tested there.
     #[test]
-    fn a_minted_token_is_one_the_fence_can_compare() {
+    fn a_minted_token_is_one_the_scripts_can_compare() {
         let owner = new_owner();
         assert_eq!(owner.len(), OWNER_LEN);
-        assert_ne!(owner, new_owner(), "74 random bits -> distinct tokens");
+        assert_ne!(
+            owner,
+            new_owner(),
+            "the shared counter and the random bits -> distinct tokens"
+        );
         // A minted token must pass the check the writers apply, or no claim could ever be written.
-        assert_eq!(record_value(&owner, PENDING), Ok(format!("{owner}{PENDING}")));
+        assert_eq!(claim_value(&owner, HASH), Ok(format!("1{owner}{PENDING}").into_bytes()));
+        // A fresh claim is a claim the kernel accepts as a handle, under its own owner each time.
+        let claim = new_claim(HASH).unwrap();
+        assert_eq!(check_claim(&claim), Ok(()));
+        assert_ne!(split_value(&claim).unwrap().0, split_value(&new_claim(HASH).unwrap()).unwrap().0);
     }
 
     #[test]
     fn claim_value_branches() {
-        for case in owner_cases() {
-            let got = claim_value(case.owner, HASH);
-            match case.error {
-                None => assert_eq!(got, Ok(format!("{}{PENDING}", case.owner)), "{}", case.name),
-                Some(wire) => assert_eq!(got.unwrap_err().to_string(), wire, "{}", case.name),
+        let cases: [(&str, &str, Option<&str>); 6] = [
+            ("minted_token_is_accepted", OWNER, None),
+            (
+                "uppercase_hex_is_refused",
+                "0190B5C8E1F37C4B9A2D5E6F7A8B9C0D",
+                Some("codec: owner token is not lowercase hexadecimal"),
+            ),
+            (
+                "one_character_short",
+                "0190b5c8e1f37c4b9a2d5e6f7a8b9c0",
+                Some("codec: owner token is 31 bytes, expected 32"),
+            ),
+            (
+                "one_character_long",
+                "0190b5c8e1f37c4b9a2d5e6f7a8b9c0de",
+                Some("codec: owner token is 33 bytes, expected 32"),
+            ),
+            ("empty", "", Some("codec: owner token is 0 bytes, expected 32")),
+            (
+                "non_hex_at_full_width",
+                "0190b5c8e1f37c4b9a2d5e6f7a8b9c0z",
+                Some("codec: owner token is not lowercase hexadecimal"),
+            ),
+        ];
+        for (name, owner, error) in cases {
+            let got = claim_value(owner, HASH);
+            match error {
+                None => assert_eq!(got, Ok(format!("1{owner}{PENDING}").into_bytes()), "{name}"),
+                Some(wire) => assert_eq!(got.unwrap_err().to_string(), wire, "{name}"),
             }
         }
         // The hash is carried whole: a reader that rounded it through a double would lose the low bits.
+        let max = String::from_utf8(claim_value(OWNER, u64::MAX).unwrap()).unwrap();
+        assert!(max.contains(r#""payload_hash":18446744073709551615"#), "{max}");
+    }
+
+    #[test]
+    fn settled_value_branches() {
         assert_eq!(
-            claim_value(OWNER, u64::MAX),
-            Ok(format!(
-                r#"{OWNER}{{"payload_hash":18446744073709551615,"result":null,"error":null,"pending":true}}"#
-            ))
+            settled_value(&claim(), DONE),
+            Ok(format!("1{OWNER}{DONE}").into_bytes())
+        );
+        // The record half is passed through untouched, whatever it holds.
+        assert_eq!(
+            settled_value(&claim(), "not json"),
+            Ok(format!("1{OWNER}not json").into_bytes())
+        );
+        let refused: [(&str, Vec<u8>, &str); 7] = [
+            ("empty_handle", Vec::new(), "no layout version"),
+            ("not_utf8", vec![b'1', 0xff], "not UTF-8"),
+            (
+                "unversioned_token",
+                format!("{OWNER}{PENDING}").into_bytes(),
+                "no layout version",
+            ),
+            ("truncated_token", b"1019".to_vec(), "too short"),
+            (
+                "uppercase_token",
+                format!("1{}{PENDING}", OWNER.to_uppercase()).into_bytes(),
+                "lowercase",
+            ),
+            (
+                "a_settled_value",
+                format!("1{OWNER}{DONE}").into_bytes(),
+                "not a pending claim",
+            ),
+            (
+                "not_a_record",
+                format!("1{OWNER}{{").into_bytes(),
+                "not a pending claim",
+            ),
+        ];
+        for (name, handle, why) in refused {
+            let err = settled_value(&handle, DONE).unwrap_err();
+            assert_eq!(err.code, edax_core::ErrorCode::Codec, "{name}");
+            assert!(err.message.contains(why), "{name}: {err}");
+            assert!(
+                !err.message.contains(OWNER),
+                "{name}: the token leaked into the message"
+            );
+            assert_eq!(check_claim(&handle).unwrap_err(), err, "{name}: one check");
+        }
+        assert_eq!(check_claim(&claim()), Ok(()));
+    }
+
+    #[test]
+    fn split_value_branches() {
+        assert_eq!(split_value(&claim()), Ok((OWNER.to_owned(), PENDING.to_owned())));
+        let refused: [(&str, Vec<u8>, &str); 5] = [
+            ("empty", Vec::new(), "codec: stored value is empty"),
+            (
+                "unversioned",
+                format!("{OWNER}{PENDING}").into_bytes(),
+                "codec: stored value has layout version '0'; this kernel reads version '1'",
+            ),
+            (
+                "short",
+                b"1abc".to_vec(),
+                "codec: stored value has no 32-character owner token",
+            ),
+            ("not_utf8", vec![b'1', 0xff], "codec: stored value is not UTF-8"),
+            (
+                "straddling",
+                format!("1{}é", "0".repeat(31)).into_bytes(),
+                "codec: stored value has no 32-character owner token",
+            ),
+        ];
+        for (name, raw, wire) in refused {
+            let got = split_value(&raw).unwrap_err().to_string();
+            assert!(got.starts_with(wire), "{name}: {got}");
+        }
+    }
+
+    #[test]
+    fn claim_outcome_branches() {
+        let other = format!("1{}{PENDING}", "f".repeat(32)).into_bytes();
+        let settled = format!("1{OWNER}{DONE}").into_bytes();
+        assert_eq!(claim_outcome(None, &claim()), Ok(ClaimOutcome::Won), "free key");
+        assert_eq!(
+            claim_outcome(Some(&claim()), &claim()),
+            Ok(ClaimOutcome::Won),
+            "own claim, reply lost"
         );
         assert_eq!(
-            claim_value(OWNER, 0),
-            Ok(format!(
-                r#"{OWNER}{{"payload_hash":0,"result":null,"error":null,"pending":true}}"#
-            ))
+            claim_outcome(Some(&other), &claim()),
+            Ok(ClaimOutcome::Prior(PENDING.to_owned()))
+        );
+        assert_eq!(
+            claim_outcome(Some(&settled), &claim()),
+            Ok(ClaimOutcome::Prior(DONE.to_owned()))
+        );
+        assert!(
+            claim_outcome(Some(b"garbage"), &claim()).is_err(),
+            "an unreadable value is refused"
         );
     }
 
     #[test]
-    fn record_value_branches() {
-        const DONE: &str =
-            r#"{"payload_hash":11258580006047770801,"result":{"balance_cents":4200},"error":null,"pending":false}"#;
-        for case in owner_cases() {
-            let got = record_value(case.owner, DONE);
-            match case.error {
-                None => assert_eq!(got, Ok(format!("{}{DONE}", case.owner)), "{}", case.name),
-                Some(wire) => assert_eq!(got.unwrap_err().to_string(), wire, "{}", case.name),
+    fn key_and_settings_branches() {
+        assert_eq!(ledger_key("idem:", "order-7"), Ok(b"idem:order-7".to_vec()));
+        assert_eq!(ledger_key("idem:", ""), Ok(b"idem:".to_vec()));
+        assert_eq!(
+            ledger_key("", "order-7").unwrap_err().code,
+            edax_core::ErrorCode::BadHandle
+        );
+        assert_eq!(check_prefix("x"), Ok(()));
+        for (ttl, ok) in [
+            (1, true),
+            (MAX_TTL_MS, true),
+            (0, false),
+            (-5, false),
+            (MAX_TTL_MS + 1, false),
+            (i64::MIN, false),
+        ] {
+            let got = check_ttl("ttl_ms", ttl);
+            assert_eq!(got.is_ok(), ok, "{ttl}");
+            if let Err(e) = got {
+                assert_eq!(e.code, edax_core::ErrorCode::BadHandle);
+                assert!(e.message.starts_with(&format!("ttl_ms is {ttl} ms")), "{e}");
             }
         }
-        // The record half is passed through untouched, whatever it holds.
-        for (name, record) in [
-            ("empty_record", ""),
-            ("non_ascii_record", r#"{"payload_hash":1,"result":"café ☕","error":null,"pending":false}"#),
-            ("not_json_at_all", "not json"),
-        ] {
-            assert_eq!(record_value(OWNER, record), Ok(format!("{OWNER}{record}")), "{name}");
-        }
-        // A claim value is a record value over the kernel's pending record; the two agree by construction.
-        assert_eq!(claim_value(OWNER, HASH), record_value(OWNER, PENDING));
     }
 }

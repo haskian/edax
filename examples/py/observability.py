@@ -29,8 +29,9 @@ import contextlib
 import inspect
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, ClassVar
 
 import edax
 from edax import Delivery, EventRouter, KeyOrderedDispatcher, Observer, Relay, timing, transaction
@@ -63,7 +64,7 @@ class Counting(Observer):
         self.by_handler[f"{name}.settled.{how}"] += 1
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: Optional[str]
+        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
     ) -> None:
         self.counts[f"delivery.{outcome}" if error_type is None else f"delivery.{outcome}.{error_type}"] += 1
         self.by_handler[f"{name}.delivery.{outcome}"] += 1
@@ -77,7 +78,7 @@ class Counting(Observer):
     def transaction(self, outcome: str, duration_ns: int) -> None:
         self.counts[f"transaction.{outcome}"] += 1
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: Optional[int]) -> None:
+    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
         self.counts["drain.batches"] += 1
         self.counts["drain.published"] += published
 
@@ -99,7 +100,7 @@ class Latency:
         self.calls: Counter[str] = Counter()
         self.total_ns: Counter[str] = Counter()
 
-    def record(self, name: str, outcome: str, error_type: Optional[str], duration_ns: int) -> None:
+    def record(self, name: str, outcome: str, error_type: str | None, duration_ns: int) -> None:
         label = f"{name}.{outcome}" if error_type is None else f"{name}.{outcome}.{error_type}"
         self.calls[label] += 1
         self.total_ns[label] += duration_ns
@@ -114,7 +115,7 @@ class Spans:
         self.rows: list[tuple[str, str, str]] = []  # (parent, event name, outcome)
 
     def traced(self, next_: EventHandler) -> EventHandler:
-        async def handler(env: edax.Envelope) -> None:
+        async def handler(env: edax.EventEnvelope) -> None:
             parent = env.metadata.get("traceparent", "-")
             try:
                 result = next_(env)  # sync or async, as any EventHandler may be
@@ -132,9 +133,9 @@ class Replaying(_ConsumerLoop):
     """A `Consumer` over a fixed list: what a broker adapter's `poll` yields, then end of stream."""
 
     def __init__(self, items: list[Delivery]) -> None:
-        self._items: list[Optional[Delivery]] = [*items, None]
+        self._items: list[Delivery | None] = [*items, None]
 
-    async def poll(self) -> Optional[Delivery]:
+    async def poll(self) -> Delivery | None:
         return self._items.pop(0)
 
 
@@ -156,9 +157,9 @@ def envelope(
     name: str,
     *,
     timestamp: int = 0,
-    metadata: Optional[dict[str, str]] = None,
-) -> edax.Envelope:
-    return edax.Envelope(
+    metadata: dict[str, str] | None = None,
+) -> edax.EventEnvelope:
+    return edax.EventEnvelope(
         id=env_id,
         aggregate_id=aggregate_id,
         event=edax.Event(name, 1, b"{}"),
@@ -216,7 +217,7 @@ async def consume(observer: Counting, latency: Latency, spans: Spans) -> None:
     settled: list[str] = []
     dead: list[str] = []
 
-    async def handle(env: edax.Envelope) -> None:
+    async def handle(env: edax.EventEnvelope) -> None:
         if env.event.name == "Poison":
             raise edax.CodecError("will never decode")  # terminal: dead-letters on the first attempt
         if env.event.name == "Flaky":
@@ -315,7 +316,7 @@ async def outbox(observer: Counting) -> None:
         async with transaction(store, observer=observer):
             raise RuntimeError("abandoned")  # rolled back: reported as such
 
-    def broker_down(env: edax.Envelope) -> None:
+    def broker_down(env: edax.EventEnvelope) -> None:
         raise edax.StoreError("broker down")
 
     with contextlib.suppress(edax.StoreError):

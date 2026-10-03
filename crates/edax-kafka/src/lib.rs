@@ -6,26 +6,25 @@
 //! what the two sides must agree on bit-for-bit:
 //!
 //! - [`offsets`] — the token-settled per-partition commit watermark an [`OffsetTracker`] hands a
-//!   consumer as [`AckDecision`] / [`NackDecision`] data, never as a callback
-//! - [`record`] — the record a published envelope becomes: the key rule, the four contract headers,
-//!   the `content-type` header that names the value's wire format (the media type itself is
-//!   `edax_event::Format::media_type`, since it names the codec and not the transport), and the
-//!   poison-message id
-//!
-//! Placement is not here: the client's partitioner still picks the partition from the key.
+//!   consumer as [`AckDecision`] / [`NackDecision`] / [`Due`] data, never as a callback, and the
+//!   rewind a nack makes so the consumer keeps per-key order
+//! - [`record`] — the record a published envelope becomes: the key rule, the `content-type` header
+//!   that names the value's wire format (the media type itself is `edax_event::Format::media_type`,
+//!   since it names the codec and not the transport), the [`route`] a fetched record takes by it,
+//!   the poison-message id, and the record a dead-letter sink publishes
+//! - [`partition`] — broker placement: the partition a keyed record lands on, Java's murmur2 rule,
+//!   which every shell passes explicitly so mixed-language producers agree
 
 // Every public item is a cross-language contract, so it states what it promises.
 #![warn(missing_docs)]
-// This kernel runs inside a native binding: an unwinding panic crosses the host language's FFI
-// boundary, where it cannot be caught. Every fallible step returns a value instead.
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 pub mod offsets;
+pub mod partition;
 pub mod record;
 
-pub use edax_core::NO_DELIVERY;
-pub use offsets::{AckDecision, NackDecision, OffsetTracker, PartitionStats, NO_OFFSET};
+pub use offsets::{AckDecision, Due, NackDecision, OffsetTracker, PartitionStats};
+pub use partition::partition_for;
 pub use record::{
-    content_type, decode_record, encode_record, poison_id, record, KafkaHeader, KafkaRecord, CONTENT_TYPE,
-    HEADER_EVENT, HEADER_EVENT_VERSION, HEADER_ID,
+    content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, poison_id, record, route,
+    DeadLetterSource, KafkaHeader, KafkaRecord, Route, CONTENT_TYPE, DLQ_ERROR, DLQ_OFFSET, DLQ_PARTITION, DLQ_TOPIC,
 };

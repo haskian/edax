@@ -1,28 +1,41 @@
 """Fault injection over an arbitrary backend.
 
-The in-tree fixtures subclass the concrete memory stores. A packaged suite cannot: it is handed an
-adopter's store and has no idea what class it is. Everything here therefore *delegates* — it wraps
-the object it was given and forwards every call — so the same fault lands on Postgres, Redis or a
-hand-rolled store without any of them knowing.
+A packaged suite is handed an adopter's store and has no idea what class it is, so everything here
+*delegates*: it wraps the object it was given and forwards every call, and the same fault lands on Postgres,
+Redis or a hand-rolled store without any of them knowing.
 
-The fault that matters most is the lost response: the write reached the database and committed, and
-the reply did not come back. A caller cannot tell that from a write that never landed, which is why
-every seam in ``edax`` is specified to be safe under a retry. A suite that only tests clean failures
-never exercises the half of the contract that costs money.
+The fault that matters most is the lost response: the write reached the database and committed, and the reply
+did not come back. A caller cannot tell that from a write that never landed, which is why every seam in
+``edax`` is specified to be safe under a retry. A suite that only tests clean failures never exercises the
+half of the contract that costs money.
+
+- :class:`LostResponse` lands a call, then raises as though its reply was lost; ``"commit"`` loses the reply
+  of a whole unit of work, the only place a transactional write can land and still fail.
+- :class:`Refusing` refuses named calls outright and writes nothing.
+- :class:`BrokenCommit` is a transactor whose commit fails, either with nothing landed or after it landed.
+- :class:`LostReply` loses the reply to one Redis script, with or without the client's own re-send.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import inspect
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any, Literal
 
 from ..errors import StoreError
+from ..projection import Entity
 
-__all__ = ["LostResponse", "Refusing"]
+__all__ = ["BrokenCommit", "CommitFault", "LostReply", "LostResponse", "Refusing"]
+
+#: The seam method name that stands for a unit of work's commit, which no store method is.
+COMMIT = "commit"
 
 
 class _Delegating:
     """Forward every attribute the wrapper does not define to the wrapped object, so an unknown or
-    optional seam method (``get_many``, a backend's own helper) still reaches the real store."""
+    optional seam method (``get_many``, a backend's own helper, a ``transactor`` property) still reaches the
+    real store."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
@@ -30,70 +43,91 @@ class _Delegating:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
+    def _check(self, method: str) -> None:
+        """Refuse to arm a name the wrapped store has no method for: the fault would silently never fire."""
+        if not callable(getattr(self._inner, method, None)):
+            raise AttributeError(
+                f"{type(self._inner).__name__} has no method {method!r} to inject a fault into"
+            )
+
 
 class LostResponse(_Delegating):
     """Let a call land, then raise as though its response was lost in transit.
 
-    Arm with the method name; the *next* call to it commits and then raises ``StoreError``. One shot,
-    so the retry that follows sees a healthy store and meets the state the lost call actually wrote.
+    Arm with the method name; the *next* call to it lands and then raises :class:`~edax.errors.StoreError`.
+    One shot, so the retry that follows sees a healthy store and meets the state the lost call actually
+    wrote. Arm :data:`COMMIT` to lose the reply of the next unit of work instead: ``transaction()`` commits,
+    then raises. A lost ``save`` of an :class:`~edax.projection.Entity` leaves the caller's ``version`` where
+    it was, because the caller never heard the new one.
 
-    ``store = LostResponse(real); store.arm("append")`` then asserts what a redelivery does about an
-    append that already succeeded — the window every at-least-once guarantee is written against.
-    """
+    ``store = LostResponse(real); store.arm("append")`` then asserts what a redelivery does about an append
+    that already succeeded — the window every at-least-once guarantee is written against."""
 
     def __init__(self, inner: Any) -> None:
         super().__init__(inner)
-        self.armed: Optional[str] = None
+        #: The armed method, or ``None``.
+        self.armed: str | None = None
 
-    def arm(self, method: str) -> None:
+    def arm(self, method: str | None) -> None:
+        """Lose the reply of the next call to ``method`` (``None`` disarms). A name the store has no method
+        for raises :class:`AttributeError` instead of never firing."""
+        if method is not None:
+            self._check("transaction" if method == COMMIT else method)
         self.armed = method
 
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        result = await getattr(self._inner, method)(*args, **kwargs)
+    def _trip(self, method: str) -> None:
         if self.armed == method:
             self.armed = None
             raise StoreError(f"{method}: the write landed and the response was lost")
-        return result
 
-    async def append(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("append", *args, **kwargs)
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self._inner, name)
+        if name == "transaction":
+            return self._transaction(target)
+        if not inspect.iscoroutinefunction(target):
+            return target
 
-    async def save(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("save", *args, **kwargs)
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            # What the caller would see of an in-place version bump had the reply come back.
+            entities = [(a, a.version) for a in (*args, *kwargs.values()) if isinstance(a, Entity)]
+            result = await target(*args, **kwargs)
+            if self.armed == name:
+                for entity, version in entities:
+                    entity.version = version
+            self._trip(name)
+            return result
 
-    async def save_snapshot(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("save_snapshot", *args, **kwargs)
+        return call
 
-    async def mark_published(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("mark_published", *args, **kwargs)
+    def _transaction(self, begin: Callable[[], AbstractAsyncContextManager[Any]]) -> Callable[[], Any]:
+        @asynccontextmanager
+        async def transaction() -> AsyncIterator[Any]:
+            async with begin() as tx:
+                yield tx
+            self._trip(COMMIT)  # committed; the response is lost on the way back
 
-    async def claim(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("claim", *args, **kwargs)
-
-    async def complete(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("complete", *args, **kwargs)
-
-    async def release(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("release", *args, **kwargs)
-
-    async def delete(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("delete", *args, **kwargs)
+        return transaction
 
 
 class Refusing(_Delegating):
-    """Refuse a named method outright, without letting it land.
+    """Refuse the named methods outright, without letting them land, and count each refusal.
 
-    The other half of the pair: ``LostResponse`` writes and then fails, this one fails and writes
-    nothing. A contract clause that says "raises and writes nothing" needs this one to be provable.
-    """
+    The other half of the pair: :class:`LostResponse` writes and then fails, this one fails and writes
+    nothing. A contract clause that says "raises and writes nothing" needs this one to be provable, and so
+    does a guard whose compensation the store refuses (``Refusing(ledger, "complete", "release")``)."""
 
-    def __init__(self, inner: Any, method: str) -> None:
+    def __init__(self, inner: Any, *methods: str) -> None:
         super().__init__(inner)
-        self._method = method
+        if not methods:
+            raise ValueError("name at least one method to refuse")
+        for method in methods:
+            self._check(method)
+        self._methods = frozenset(methods)
+        #: How many calls were refused.
         self.refusals = 0
 
     def __getattr__(self, name: str) -> Any:
-        if name == self._method:
+        if name in self._methods:
 
             async def refuse(*args: Any, **kwargs: Any) -> Any:
                 self.refusals += 1
@@ -101,3 +135,64 @@ class Refusing(_Delegating):
 
             return refuse
         return getattr(self._inner, name)
+
+
+#: How a :class:`BrokenCommit` fails a commit: ``"nothing_landed"`` rolls back and raises, ``"lost_response"``
+#: commits and then raises, ``None`` commits cleanly.
+CommitFault = Literal["nothing_landed", "lost_response"] | None
+
+
+class BrokenCommit:
+    """A :class:`~edax.store.Transactor` whose commit fails, in the two ways that differ.
+
+    ``"nothing_landed"`` rolls the unit of work back and raises: the classic failed commit.
+    ``"lost_response"`` commits and *then* raises. They assert opposite things: the first lets a redelivery
+    re-run once, the second releases a claim over work that **did** land, so a redelivery runs it twice on a
+    ledger of its own. ``arm`` is settable per unit of work, so one rig can drive a whole history. Its
+    ``transactor`` is the wrapped one, so stores over that database find the units of work this opens."""
+
+    def __init__(self, inner: Any, arm: CommitFault = "nothing_landed") -> None:
+        self._inner = inner
+        self.arm: CommitFault = arm
+
+    @property
+    def transactor(self) -> Any:
+        """The wrapped transactor: the database the units of work belong to."""
+        return self._inner
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Any]:
+        arm = self.arm
+        if arm == "nothing_landed":
+            async with self._inner.transaction() as tx:
+                yield tx
+                # Raised inside the inner block, so the inner transactor rolls back before this
+                # propagates: the caller sees a failed commit over which nothing landed.
+                raise StoreError("commit failed; nothing landed")
+        async with self._inner.transaction() as tx:
+            yield tx
+        if arm == "lost_response":
+            raise StoreError("commit landed; the response was lost")
+
+
+class LostReply:
+    """A Redis connection wrapper (the ``eval`` seam of :class:`~edax.backend.redis.RedisIdempotencyStore`)
+    that loses the reply to the next ``eval`` of ``script``, once: the script runs on the server, then the
+    caller gets a :class:`ConnectionError`. ``resend`` models redis-py's default retry, which sends the same
+    command again on a new connection and returns that reply instead."""
+
+    def __init__(self, inner: Any, script: str, resend: bool) -> None:
+        self._inner = inner
+        self._script = script
+        self._resend = resend
+        #: Whether the fault is still to fire.
+        self.armed = True
+
+    async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[Any]) -> Any:
+        reply = await self._inner.eval(script, keys, args)
+        if self.armed and script == self._script:
+            self.armed = False
+            if self._resend:
+                return await self._inner.eval(script, keys, args)
+            raise ConnectionError("connection reset by peer while reading the reply")
+        return reply

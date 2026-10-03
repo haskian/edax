@@ -21,6 +21,8 @@ classDiagram
     class MemoryBroker {
         +publish()
         +poll()
+        +group()
+        +crash()
         +empty()
     }
     MemoryTransactor --> MemoryTx : yields
@@ -37,19 +39,21 @@ classDiagram
 | `MemoryTransactor` | `Transactor` | the transaction boundary; `transaction()` yields a `MemoryTx` |
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
 | `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works |
-| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim; declares `joins_transaction = True` |
+| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, and `expire(key)` lapses a key |
+| `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False` — the ordering a Redis ledger has |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
-| `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency |
-| `MemoryBroker` | `Producer` **and** `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure |
+| `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency, a tombstone on completion, and the saga outbox |
+| `MemoryBroker` | `Producer` **and** `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log that behaves like a Kafka topic |
 
 Only the waiting is Python's. The maps, the version checks, the outbox, the atomic claim, the
 transaction journal and the broker's settlement accounting live in the native `edax-memory` crate.
-Every software development kit (SDK) shares them, so the two bindings cannot drift. The native
-objects are `unsendable`: do not share one across operating-system threads.
+Every software development kit (SDK) shares them, so the two bindings cannot drift. Each native
+object is bound to the operating-system thread that built it: a call from another thread raises the
+terminal `BadHandle`, rather than the binding's own panic.
 
-The Rust SDK ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
-`MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryProjectionStore`, `MemorySagaStore` and
-`MemoryBroker`. There `MemoryTx` is a plain `Copy` token and the no-transaction handle is
+The Rust reference model ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
+`MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryLedger` (`Tx = ()`), `MemoryProjectionStore`,
+`MemorySagaStore` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token and the no-transaction handle is
 `MemoryTx::auto_commit()`, which is also its `Default`.
 
 ## The transaction is real
@@ -119,8 +123,8 @@ flowchart TB
     D -->|"no"| H
 ```
 
-`tx`, else the ambient `current_tx()`, else `_NO_TX` — the token that names no transaction, under
-which a write lands at once and a read sees committed state only.
+`tx`, else the ambient `current_tx(self)` of its own database, else `_NO_TX`. That is the token that
+names no transaction: under it a write lands at once and a read sees committed state only.
 
 A handle belonging to another transactor is **refused** with `BadHandle`, not silently
 auto-committed:
@@ -132,9 +136,11 @@ raise BadHandle(
 )
 ```
 
-The refusal is the point. A store cannot enlist in a unit of work its database knows nothing about,
-and going on would silently drop the atomicity the caller asked for. It applies to an explicit
-handle and to an ambient one alike, including a handle from a hand-written test `Transactor`.
+The refusal is the point. A store cannot enlist in a unit of work its database knows nothing about.
+Going on would silently drop the atomicity the caller asked for. The refusal applies to any explicit
+handle, including one from a hand-written test `Transactor`. Another database's ambient unit of work is
+never this store's to see: `current_tx(self)` reads only this database's. A store called inside a
+`transaction` over another database therefore runs outside any unit of work of its own.
 
 `MemoryTransactor.auto_commit()` is the explicit no-transaction handle, for a reader that must look
 *past* an open unit of work — a test probing what has actually landed.
@@ -154,6 +160,38 @@ The practical effect is one test. A claim that rolls back with its events releas
 dispatch runs the handler again instead of replaying an outcome that never landed. It deposits once,
 not twice. This is the Idempotent Consumer pattern: a dedup table beside the business change, in one
 commit.
+
+## Test on the ordering you deploy: `MemoryLedger`
+
+The guard has two orderings, and they behave differently where it matters
+([idempotency](../sdk/idempotency.md#the-two-modes)). A ledger that joins your transaction runs
+`begin; claim; run; complete; commit`. A terminal failure rolls back with the work and is **not** cached,
+so a redelivery runs the handler again. A ledger of its own, such as Redis, runs `claim; begin; run;
+commit; complete`. There a terminal failure **is** cached, so a redelivery raises `CachedFailure`. A claim
+can lapse while the handler runs. A `complete` whose reply is lost leaves a settled record, and the
+guard's release must not delete it.
+
+`MemoryLedger()` is that second shape in memory, so a suite rehearses it without Redis:
+
+```python
+from edax.backend.memory import MemoryLedger
+
+ledger = MemoryLedger()  # a database of its own; ignores tx; joins_transaction = False
+bus = CommandBus(idempotent(ledger, key=lambda c: c.request_id, unit_of_work=db))
+```
+
+**Claims are fenced, as Redis fences them.** `claim` returns a handle naming that claim. `complete` writes
+only while the key still holds the claim the handle names, or already holds the same record. Otherwise it
+raises `StoreError`. `release` deletes only that claim, and is a no-op otherwise. So a release after a
+`complete` whose reply was lost keeps the record. Both memory stores share the fence: it is the native
+store's.
+
+**`expire(key)` is the lease running out.** It lapses whatever the key holds in committed state: a claim
+or a settled record. A test can then force the takeover a claim TTL produces. Worker A's claim lapses
+mid-handler. Worker B claims and runs. A's late `complete` is refused, and B's outcome stands. A claim
+staged by an open unit of work is not committed, so it does not lapse. The same contract clauses run over
+`MemoryLedger` and the Redis store (`test_contract_memory.py`, `test_redis.py`). `test_memory_ledger.py`
+drives each scenario through the guard over both and asserts the same outcome.
 
 ## Isolation by exclusion, and `masked_pending`
 
@@ -179,9 +217,12 @@ back, so whatever it has staged since is not an outcome to replay. The loser the
 `pending`, and the guard raises `InProgress` — which the contract explicitly allows as the
 alternative to blocking.
 
-Two related rules live in the same `claim`. A staged release by another transaction does not hold
-the key, because the holder then has nothing to replay and the committed record decides. A key
-released inside your own transaction is free again for you.
+Two related rules live in `release`, which only ever drops the claim its handle names. With nothing
+committed for the key, a release drops the transaction's own staged claim and stages nothing. There is no
+row to delete, so nothing is held. A winner that commits meanwhile keeps its record. Over a committed
+claim, a release stages a delete. That delete holds the key until the transaction ends, as a row lock
+would. A claimant reads it as `pending`, and a second writer conflicts. Either way, a key released inside
+your own transaction is free again for you. A settled record is nobody's claim, so no release deletes it.
 
 This is the one effect an uncommitted transaction shows from outside. The contract test names it
 `HELD`: nothing is visible, but the claim key is taken, so a probing claimant loses and reads
@@ -192,10 +233,35 @@ pending.
 
 ## Diagnosing an abandoned token
 
-`MemoryTransactor.open_count()` reports how many transactions are still unsettled. A count that
+`MemoryTransactor.open_count()` reports how many transactions are still unsettled
+(`MemoryEventStore.unpublished_count()` is the outbox's backlog, counted natively). A count that
 never returns to zero means a token was abandoned. Its keys are then a permanent conflict, not a
 held key another writer can wait out. Rust's `transaction` rolls back if the body panics, so a panicking
 handler does not abandon a token.
+
+## The broker is a log
+
+`MemoryBroker(partitions=1)` is a partitioned, append-only log, settled through the Kafka kernel's
+`OffsetTracker`. It does to a handler what Kafka does, so a handler that only survives a queue fails
+here first and not in production.
+
+- **A nack rewinds the partition.** The nacked message and every later one of its partition come
+  back, in order, acked or not. Nack `a-1` after `a-2` was acked, and both come back. The deliveries
+  of the partition already handed out are retired (`Delivery.live` is `False`), so the dispatcher
+  skips them and a key never runs ahead of itself.
+- **`crash()` is a consumer that died.** Every delivery the group holds is retired, and every message
+  above its committed watermark is fetched again. Use it to prove a handler survives a restart or a
+  rebalance.
+- **`group(name)` is another consumer group.** It reads the same log, gets every message, starts at
+  the beginning and settles on its own. A projection and a saga on one broker each get their own
+  group, as they would on Kafka, instead of competing for each message.
+- **Order holds per key, not across keys,** once there is more than one partition. A key lands on
+  Kafka's partition for it.
+
+A group commits on every ack that moves its watermark, because a commit costs nothing here.
+`empty()` is true only when the group has committed past every message: nothing queued, nothing in
+flight, which is the same "nothing left to do" a durable broker reports. `edax.testing.BrokerContract`
+holds this broker and the Kafka adapter to the same clauses.
 
 ## Limits
 
@@ -205,16 +271,14 @@ This is a development and test backend.
 |---|---|
 | One process's heap | two workers, two containers or two test processes share nothing. Cross-process idempotency needs [redis](./redis.md) or your own durable ledger. |
 | No durability | a restart loses every event, snapshot, outbox row, record, saga instance and queued message. |
-| No retention policy | records are kept for the process lifetime. Nothing expires unless a store implements expiry, and none of these do. |
+| No retention policy | records are kept for the process lifetime. Nothing expires by itself; `expire(key)` lapses a key on demand, so a test decides when a lease or a retention TTL runs out. |
 | No blocking | a second writer conflicts immediately rather than waiting; a claimant gets `InProgress` where a durable store would block until the winner's transaction resolves and then read its record. |
 | An abandoned token is a permanent conflict | a token neither committed nor rolled back is not a held key you can wait out. Its keys conflict for the process lifetime. Every SDK's scoped unit of work guarantees a commit or a rollback runs. |
-| `unsendable` native objects | keep one transactor's stores on one thread. |
+| thread-bound native objects | build and use one transactor's stores on one thread; any other thread gets `BadHandle`. |
 
-`MemoryBroker` has matching limits. `publish` returns once the envelope is queued, not once it is
-durable. First in, first out (FIFO) gives per-key order. `nack` re-queues at the tail, possibly
-behind later same-key messages, which the `Consumer` contract permits. `empty()` is true only when
-nothing is queued *and* every polled delivery has been settled, which is the same "nothing left to
-do" a durable broker reports.
+`MemoryBroker` has matching limits. `publish` returns once the envelope is in the log, not once it is
+durable. Nothing is ever deleted from the log, which suits a test and not a long-running process. A
+group has one consumer: there is no partition assignment between several members of one group.
 
 ## See also
 

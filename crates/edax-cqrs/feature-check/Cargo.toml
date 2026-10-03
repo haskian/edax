@@ -1,0 +1,19 @@
+# A build of edax-cqrs with every serde_json feature that changes `Value`'s key order, number text or
+# float parse turned on. Cargo unifies features across a whole build, so one crate in an adopter's
+# graph can switch them on for the kernel too. The canonical form must not move when it does: this
+# crate replays the golden vectors under those features. Its own workspace, so the features never
+# leak into the main build (where they would rewrite the golden writer's output instead).
+#
+#   cargo test --manifest-path crates/edax-cqrs/feature-check/Cargo.toml
+[package]
+name = "edax-cqrs-feature-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+edax-cqrs = { path = ".." }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "float_roundtrip"] }

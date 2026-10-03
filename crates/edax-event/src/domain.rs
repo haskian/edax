@@ -36,7 +36,8 @@ pub struct EventEnvelope {
     pub id: String,
     /// The aggregate this event belongs to: the ordering and partitioning key.
     pub aggregate_id: String,
-    /// The event itself, payload included.
+    /// The event itself, payload included. A map on the wire, like the envelope.
+    #[serde(deserialize_with = "crate::codec::map_only")]
     pub event: Event,
     /// Per-aggregate ordinal. `None` for events published without an aggregate sequence.
     pub sequence: Option<u64>,

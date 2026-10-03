@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable
-from typing import TypeVar, Union
+from typing import TypeAlias, TypeVar
 
 T = TypeVar("T")
 
-MaybeAwaitable = Union[T, Awaitable[T]]
+MaybeAwaitable: TypeAlias = T | Awaitable[T]
 
 
 async def maybe_await(value: MaybeAwaitable[T]) -> T:

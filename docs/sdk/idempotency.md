@@ -40,8 +40,14 @@ completed event therefore returns nothing and skips silently. A command redelive
 winner's cached value.
 
 The seam is one Protocol in Python (`edax.command.IdempotencyStore`) and one trait in Rust
-(`edax::IdempotencyStore<O>`, which carries the handle type as `type Tx`). `joins_transaction` is
-Python-only; see [Rust parity](#rust-parity).
+(`edax::IdempotencyStore<O>`, which carries the transaction handle type as `type Tx`). `joins_transaction`
+is Python-only; see [Rust parity](#rust-parity).
+
+A won claim comes back with a **claim handle**: `Won(handle)` in Python, `Claim::Won(ClaimHandle)` in
+Rust. The guard passes it to `complete` and `release`, so a store whose claims can lapse settles a key
+only while it still holds that exact claim. The Redis ledger uses the claim's own stored value as the
+handle (see [backends/redis.md](../backends/redis.md#the-claim-handle)). The memory ledger's claims
+never lapse, so it returns an empty handle and ignores it.
 
 ## The two modes
 
@@ -78,7 +84,7 @@ sequenceDiagram
     G->>L: "claim(key, payload_hash)"
     L-->>G: won
     G->>S: run the handler, which writes
-    G->>L: "complete(key, done record)"
+    G->>L: "complete(key, handle, done record)"
     G->>T: commit
     deactivate T
     Note over T: failure window - a rollback here drops claim and write together, so there is nothing to compensate
@@ -117,7 +123,7 @@ sequenceDiagram
     G->>T: commit
     deactivate T
     Note over G,T: failure window - a commit that lands and loses only its reply releases a claim over work that survived
-    G->>L: "complete(key, done record)"
+    G->>L: "complete(key, handle, done record)"
     G-->>B: result
 ```
 
@@ -183,9 +189,8 @@ written anyway would roll back with the failure that produced it.
 broker retry plus client retry. Expiry inside that window turns a replay into a re-run.
 `RedisIdempotencyStore` splits the window in two. `claim_ttl_ms` bounds how long a pending claim
 blocks its key when the worker holding it dies. `ttl_ms` is the dedup window for a terminal record.
-Pinned by `test_claim_after_ttl_expiry_wins_again` and
-`test_a_pending_claim_expires_on_the_claim_ttl_not_the_record_ttl` in
-`crates/edax-py/tests/test_redis.py`.
+Pinned by `test_claim_branches` and `test_complete_branches` in
+`crates/edax-py/tests/test_redis.py`, which read each key's TTL back.
 
 ## The loser paths
 
@@ -200,6 +205,15 @@ type.
 | `failed` | `CachedFailure(error)` | terminal | dead-letter; the winner already failed deterministically |
 | `succeeded` | returns the stored result, `None` included | — | replay |
 
+**A replay is the handler's type, not its JSON.** A cached success crosses the ledger as JSON. Python's
+`idempotent(..., result_type=...)` converts it back with msgspec. A retried request then gets the
+`Invoice` the first dispatch returned, not a `dict`. Without `result_type`, the guard reads the return
+annotation of the handler it wraps directly, when that annotation resolves at module scope. With neither,
+with `result_type=typing.Any`, or with an `object` annotation, the replay is the plain JSON value. A type
+msgspec cannot convert to raises `TypeError` at `register`. A stored result that does not convert to the
+declared type raises the terminal `CodecError` on replay. `tests/test_replay_type.py` runs every branch,
+plus a crash-and-redeliver over each ledger ordering. Rust's guard decodes the record as the bus's `O`.
+
 The hash is checked before the state, so a mismatched payload is rejected even while the winner is
 still in progress. The kernel's `outcome` decides that, pinned by `outcome_branches`.
 
@@ -208,18 +222,15 @@ nothing. Rust's `guarded` does the same on the `Claim::Prior` arm. An over-eager
 would delete a live claim another worker is still working under. Pinned by
 `test_losing_the_claim_never_releases_the_winners_key`.
 
-**The one pre-claim exception.** A `claim` that *fails* is deliberately not compensated, even though
-the insert may have landed and only its response been lost. Both SDKs' seams are fallible here —
-Python's `claim` raises, Rust's returns `Result<Claim<O>, Error>` — and both guards propagate the
-store's own verdict without releasing. The source comment gives the reasoning:
+**The one pre-claim exception.** A `claim` that *fails* is not compensated, even though the insert
+may have landed and only its response been lost. Both SDKs' seams are fallible here — Python's
+`claim` raises, Rust's returns `Result<Claim<O>, Error>` — and both guards propagate the store's own
+verdict without releasing. A failed claim returned no handle, so there is nothing to release with.
+An orphan pending record costs `InProgress` until the claim's retention expires.
 
-> The guard cannot tell "my insert landed and the response was lost" from "another claimant holds
-> this key and the backend reported the contention", and releasing in the second case deletes the
-> winner's live claim. A claim whose response was lost is settled by the store's retention instead.
-
-So the asymmetry is deliberate. An orphan pending record costs `InProgress` until the claim's
-retention expires. A wrong release costs a duplicate side effect under a claim someone else holds.
-The guard takes the recoverable cost.
+A store can narrow that window. The Redis ledger's claim script returns the value it found, and a
+client that re-sends the script after a lost reply finds its own claim. The kernel reads that as won
+(`claim_outcome`), so a reply lost and re-sent costs nothing.
 
 `InProgress` is not a failed attempt. See
 [consuming](./consuming.md#inprogress-is-contention-not-a-failed-attempt).
@@ -237,7 +248,9 @@ and a client retrying a permanently failing request re-executes the handler ever
 Neither is wrong. A shared ledger buys effectively-once for state in that database and pays for it by
 not remembering failures. An own ledger remembers failures and pays at-least-once for the work. But
 the difference is invisible at the call site, so a service that swaps its ledger changes its replay
-behaviour without changing a line of handler code.
+behaviour without changing a line of handler code. Test on the ordering you deploy. `MemoryLedger` is the
+own-ledger shape in memory, with the same claim fence. Its `expire(key)` hook forces the takeover a Redis
+claim TTL produces ([memory backend](../backends/memory.md#test-on-the-ordering-you-deploy-memoryledger)).
 
 `CachedFailure` also carries only `str(e)` — the message, not the type. Anything a caller derives
 from the error class, an HTTP status in particular, is lost on replay. Map the status from the
@@ -274,6 +287,7 @@ Windows outside that table, each pinned elsewhere:
 | the command will not serialize | nothing — `CodecError` is raised before any claim | fails the same way, still without a claim | `test_idempotent_branches[unencodable_payload_is_terminal_before_any_claim]` |
 | `claim` fails | unknown; see below | re-claims. If the insert had landed, `InProgress` until retention frees the key | `test_a_claim_that_raises_is_not_compensated` |
 | `complete` fails after a success | nothing — `_complete_or_release` releases instead | re-runs the handler | `test_idempotent_branches[success_with_failing_complete_releases_the_claim]` |
+| `complete` lands, its reply is lost (every in-tree ledger fences: Redis and both memory stores) | `done` — the release carries the claim's handle and finds the settled record, so it deletes nothing | replays the cached result | `test_redis.py::test_a_complete_whose_reply_was_lost_keeps_the_record` |
 | `complete` fails after a terminal failure | nothing — released, and the caller sees the handler's error, not the store's | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_shows_the_handlers_verdict]` |
 | the handler's result will not serialize | nothing — terminal and released | re-runs the handler | `test_unserializable_result_is_terminal_and_releases_the_claim` |
 | the dispatch is cancelled mid-handler | nothing — the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
@@ -312,12 +326,14 @@ what looks like a shared store. `test_a_nested_unit_of_work_is_refused` pins it.
 that failure is refused. An attempt made inside such an aborted transaction cannot reach the data,
 and the abort masks the real error. This page is the one home for that fact.
 
-That is why `retry` placement depends on who owns the transaction.
-[Commands](./commands.md#retry-placement) states the placement rule.
+It is also why a retry must re-run a whole unit of work, never a handler inside one. A second attempt
+inside the same transaction applies the first attempt's staged writes again, and one commit lands
+both. So `retry` refuses to run while any `transaction` is open, and goes outside a guard given
+`unit_of_work`. [Commands](./commands.md#where-retry-sits-relative-to-the-guard) states the rule.
 
 ```python
-# examples/py/command_handling.py:90 — no unit_of_work: idempotency outermost, retry inside.
-bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+# examples/py/command_handling.py:97 — retry outermost, the guard owns the unit of work.
+bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), key=request_id_of, unit_of_work=db))
 ```
 
 **Store contract clauses for a claim taken inside a transaction**:
@@ -381,7 +397,7 @@ difference.
   dead-letter.
 - [../backends/redis.md](../backends/redis.md) — the cross-process ledger, its two time-to-live
   values (TTLs) and its fence.
-- [../kernels/cqrs.md](../kernels/cqrs.md) — `command_hash`, `payload_hash`, `decide` and the
+- [../kernels/cqrs.md](../kernels/cqrs.md) — `command_hash`, `payload_hash`, `outcome` and the
   record.
 - [../guides/delivery-guarantees.md](../guides/delivery-guarantees.md) — where these guarantees sit
   end to end.

@@ -18,7 +18,7 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Set to any value to regenerate instead of assert. The documented form is `EDAX_REGEN=1`.
+/// Set to `1` to regenerate instead of assert. Unset or empty asserts; any other value panics.
 pub const ENV_REGEN: &str = "EDAX_REGEN";
 
 /// What a golden run does with the derived vector.
@@ -30,12 +30,13 @@ enum Mode {
     Assert,
 }
 
-/// Presence alone selects [`Mode::Regenerate`]; the value is not inspected, so `EDAX_REGEN=0` also
-/// regenerates.
+/// Only `1` regenerates. Any other non-empty value panics rather than guess: someone who sets
+/// `EDAX_REGEN=0` to turn regeneration off must not have the contract silently rewritten.
 fn mode_from(regen: Option<&str>) -> Mode {
     match regen {
-        Some(_) => Mode::Regenerate,
-        None => Mode::Assert,
+        None | Some("") => Mode::Assert,
+        Some("1") => Mode::Regenerate,
+        Some(other) => panic!("{ENV_REGEN}={other:?} is not a mode: set it to 1 to regenerate, or unset it to assert"),
     }
 }
 
@@ -57,6 +58,27 @@ pub fn golden_dir() -> PathBuf {
 #[track_caller]
 pub fn write_or_check(name: &str, cases: Vec<Value>) {
     write_or_check_in(&golden_dir(), mode(), name, &Value::Array(cases));
+}
+
+/// Read `testdata/golden/<name>` as its array of cases: the one reader a test that replays a vector
+/// through an SDK layer uses, so no suite re-derives the path or the parse.
+#[track_caller]
+pub fn read(name: &str) -> Vec<Value> {
+    read_in(&golden_dir(), name)
+}
+
+#[track_caller]
+fn read_in(dir: &Path, name: &str) -> Vec<Value> {
+    let path = dir.join(name);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) => panic!("cannot read {}: {error}", path.display()),
+    };
+    match serde_json::from_str(&raw) {
+        Ok(Value::Array(cases)) => cases,
+        Ok(_) => panic!("{} is not a JSON array of cases", path.display()),
+        Err(error) => panic!("{} is not valid JSON: {error}", path.display()),
+    }
 }
 
 #[track_caller]
@@ -172,37 +194,56 @@ mod tests {
     }
 
     #[test]
-    fn mode_is_selected_by_presence_not_value() {
+    fn mode_regenerates_only_on_one() {
         struct Case {
             name: &'static str,
             regen: Option<&'static str>,
-            expected: Mode,
+            /// `None` when the value must panic instead of selecting a mode.
+            expected: Option<Mode>,
         }
         let table = [
-            Case {
-                name: "unset",
-                regen: None,
-                expected: Mode::Assert,
-            },
-            Case {
-                name: "documented_one",
-                regen: Some("1"),
-                expected: Mode::Regenerate,
-            },
-            Case {
-                name: "empty_value_still_regenerates",
-                regen: Some(""),
-                expected: Mode::Regenerate,
-            },
-            Case {
-                name: "zero_still_regenerates",
-                regen: Some("0"),
-                expected: Mode::Regenerate,
-            },
+            Case { name: "unset_asserts", regen: None, expected: Some(Mode::Assert) },
+            Case { name: "empty_asserts", regen: Some(""), expected: Some(Mode::Assert) },
+            Case { name: "one_regenerates", regen: Some("1"), expected: Some(Mode::Regenerate) },
+            Case { name: "zero_panics", regen: Some("0"), expected: None },
+            Case { name: "true_panics", regen: Some("true"), expected: None },
         ];
         for case in table {
-            assert_eq!(mode_from(case.regen), case.expected, "{}", case.name);
+            match case.expected {
+                Some(mode) => assert_eq!(mode_from(case.regen), mode, "{}", case.name),
+                None => {
+                    let message = panic_message(|| {
+                        mode_from(case.regen);
+                    });
+                    assert!(message.contains("set it to 1 to regenerate"), "{}: {message}", case.name);
+                }
+            }
         }
+    }
+
+    #[test]
+    fn read_returns_the_cases_or_names_the_bad_file() {
+        let dir = scratch_dir("read");
+        fs::write(dir.join("vector.json"), render(&Value::Array(cases()))).expect("scratch file is writable");
+        assert_eq!(read_in(&dir, "vector.json"), cases());
+
+        fs::write(dir.join("object.json"), r#"{"id":"agg-1"}"#).expect("scratch file is writable");
+        let not_array = panic_message(|| {
+            read_in(&dir, "object.json");
+        });
+        assert!(not_array.contains("object.json is not a JSON array"), "{not_array}");
+
+        fs::write(dir.join("broken.json"), "[{").expect("scratch file is writable");
+        let malformed = panic_message(|| {
+            read_in(&dir, "broken.json");
+        });
+        assert!(malformed.contains("broken.json is not valid JSON"), "{malformed}");
+
+        let missing = panic_message(|| {
+            read_in(&dir, "absent.json");
+        });
+        assert!(missing.contains("cannot read") && missing.contains("absent.json"), "{missing}");
+        fs::remove_dir_all(dir).expect("scratch dir removable");
     }
 
     #[test]
