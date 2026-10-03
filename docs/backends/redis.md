@@ -299,7 +299,7 @@ which is an estimate, that is about 17 GB.
 | no reply within `op_timeout_ms` | `StoreError`, "no reply within N ms" | transient |
 | `WRONGTYPE`: something other than a ledger value under the key | `CodecError` | terminal |
 | a refused command or credential (`ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS`) | `BadHandle` | terminal |
-| a stored value that will not decode, or is not UTF-8 | `CodecError` | terminal: retrying would loop until the TTL |
+| a stored value that will not decode, or is not UTF-8 | nothing on `claim`: it reads as the kernel's unreadable record, and the guard raises `CachedFailure` of code `codec` | terminal: the handler never runs again for the key, and the value stays until its TTL |
 | a result the record codec cannot serialize | `CodecError`, raised **before** any write | terminal |
 | a handle the kernel never minted | `CodecError`, raised **before** any write | terminal |
 

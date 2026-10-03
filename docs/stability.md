@@ -20,9 +20,9 @@ once real backends have been written against them. Pin a minor in your dependenc
 | Surface | Promise |
 |---|---|
 | Names exported from `edax` (Python) | The stable API. Breaks only in a minor. |
-| Kernel decisions: local partition and Kafka placement, the canonical form (RFC 8785) and the payload and command hashes, the idempotency record, verdict and settle, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
+| Kernel decisions: local partition and Kafka placement, the canonical form (RFC 8785) and the payload and command hashes, the idempotency record, verdict and settle, the replay of an unreadable record, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
 | The envelope wire format | Pinned by golden vectors. Within a minor, old bytes stay readable. A minor may refuse an old shape; the upgrade notes below name each one. |
-| The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is refused by name. |
+| The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is named, and replays as a cached `codec` failure instead of being split at the wrong place. |
 | The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
 | The conformance suites in `edax.testing` | A new clause may fail a backend that passed before, so clauses are added in a minor. |
 
@@ -58,6 +58,11 @@ once real backends have been written against them. Pin a minor in your dependenc
   more.
 - **Retry policy at the boundary.** The native `retries` takes the sink flag at construction, and
   `Retries.failed` takes the failure's error code instead of a failure kind.
+- **Unreadable idempotency records.** A stored record no reader can decode replays as
+  `CachedFailure` of code `codec`, in both SDKs, instead of raising `CodecError` on every claim. So
+  does a cached result that does not convert to the handler's `result_type`. A store reads the record
+  that holds a key with `edax.command.decode_prior`; a store of your own that calls `decode_record`
+  there must switch.
 
 ## Supported runtimes
 

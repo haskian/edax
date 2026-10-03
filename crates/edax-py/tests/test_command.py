@@ -28,14 +28,15 @@ def test_golden_idempotency_record() -> None:
     # the stored bytes to the same fields, re-emit the same bytes, and reach the same verdict. The
     # `null` result case is the one that used to diverge from the Rust SDK.
     for c in golden("idempotency_record.json"):
-        if "error_code" in c and "state" not in c:
-            # A stored value no reader may guess at: refused as the terminal `codec:` error, so a
-            # corrupted ledger row fails the same way in every SDK instead of reading as a success.
+        if "decode_error" in c:
+            # A stored value no reader may guess at: the strict reader refuses it with the kernel's text...
             with pytest.raises(edax.CodecError) as caught:
                 C.decode_record(c["stored"])
-            assert caught.value.code == c["error_code"], c["name"]
-            continue
-        record = C.decode_record(c["stored"])
+            assert f"{caught.value.code}: {caught.value}" == c["decode_error"], c["name"]
+        else:
+            assert C.decode_record(c["stored"]) == C.decode_prior(c["stored"], c["current"]), c["name"]
+        # ...and a claimant reads it as the kernel's terminal codec failure, as every SDK does.
+        record = C.decode_prior(c["stored"], c["current"])
         want = Record(
             c["payload_hash"], c.get("result"), c.get("error"), c["state"] == "pending", c.get("error_code")
         )

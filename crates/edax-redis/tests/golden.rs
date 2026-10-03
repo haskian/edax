@@ -252,7 +252,7 @@ fn outcome_cases() -> Vec<Value> {
             "a_settled_record_is_prior",
             Some(settled_of(&claim_of(ZEROS)).into_bytes()),
         ),
-        ("an_unreadable_value_is_refused", Some(b"{not a ledger value".to_vec())),
+        ("an_unreadable_value_replays_a_cached_codec_failure", Some(b"{not a ledger value".to_vec())),
     ];
     cases
         .into_iter()

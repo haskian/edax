@@ -21,9 +21,9 @@ from .. import _edax, _json, errors
 from .._owned import ThreadBound
 from ..aggregate import EventEnvelope
 from ..broker import _ConsumerLoop
-from ..command import Claimed, Record, Won, decode_record, encode_record
+from ..command import Claimed, Record, Won, decode_prior, encode_record
 from ..dispatcher import Delivery
-from ..errors import BadHandle
+from ..errors import BadHandle, ConcurrencyError
 from ..filter import Filter
 from ..projection import Entity
 from ..query import Page, SortKey, build_spec
@@ -203,7 +203,8 @@ class MemoryIdempotencyStore(_StoreView):
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         with errors.mapped():
             claimed = self._db().claim(self._token(tx), key, payload_hash)
-        return Won(claimed.handle) if claimed.won else decode_record(claimed.prior)
+        # A record that will not decode is the kernel's terminal codec failure, replayed as cached.
+        return Won(claimed.handle) if claimed.won else decode_prior(claimed.prior, payload_hash)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         with errors.mapped():  # a handle that names no claim on `key` any more: the fence's StoreError
@@ -218,6 +219,20 @@ class MemoryIdempotencyStore(_StoreView):
         next claim wins, and the old claim's handle settles nothing. A test hook; ``False`` when nothing was
         held. A claim staged by an open unit of work is not committed, so it does not lapse."""
         return self._db().expire_claim(key)
+
+    def put_raw(self, key: str, raw: str) -> None:
+        """Store ``raw`` as ``key``'s settled record in committed state, readable or not. A test hook that
+        rehearses a record another writer left behind (a torn write, another layout, a hand edit); the next
+        claim reads it as the kernel does. A key an open unit of work holds raises the transient
+        :class:`~edax.errors.ConcurrencyError` and is left alone."""
+        db = self._db()
+        db.expire_claim(key)
+        with errors.mapped():
+            claimed = db.claim(_NO_TX, key, 0)
+        if not claimed.won:
+            raise ConcurrencyError(f"idempotency key {key} is held by an open transaction")
+        with errors.mapped():
+            db.complete(_NO_TX, key, claimed.handle, raw)
 
 
 class MemoryLedger(MemoryIdempotencyStore):

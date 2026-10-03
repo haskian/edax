@@ -288,9 +288,29 @@ pub fn encode_idempotency_record(
 }
 
 /// Decode a stored idempotency record with the kernel's reading order. A record that is not a JSON
-/// object, lacks `payload_hash`, or carries a non-integer hash is a `codec:` error.
+/// object, lacks `payload_hash`, or carries a non-integer hash is a `codec:` error. A store reads the
+/// record holding a key with [`decode_prior_idempotency_record`] instead.
 pub fn decode_idempotency_record(record_json: &str) -> Result<IdempotencyRecord, String> {
     let record = edax_cqrs::decode_record::<serde_json::Value>(record_json.as_bytes()).map_err(wire)?;
+    Ok(flat_record(record))
+}
+
+/// The record a losing claimant reads from the JSON holding its key. Never fails: a record no reader
+/// can decode is a terminal `codec` failure, carrying the stored hash when it still reads, else
+/// `claimant_hash`. See [`edax_cqrs::decode_prior`].
+pub fn decode_prior_idempotency_record(record_json: &str, claimant_hash: u64) -> IdempotencyRecord {
+    flat_record(edax_cqrs::decode_prior(record_json.as_bytes(), claimant_hash))
+}
+
+/// The record that stands in for a cached result the host cannot read back as its result type: a
+/// terminal `codec` failure under `payload_hash` whose message names `cause`. See
+/// [`edax_cqrs::Record::unreadable`].
+pub fn unreadable_idempotency_record(payload_hash: u64, cause: &str) -> IdempotencyRecord {
+    flat_record(edax_cqrs::Record::unreadable(payload_hash, &edax_core::Error::codec(cause)))
+}
+
+/// A decoded record as the flat fields a binding holds.
+fn flat_record(record: edax_cqrs::Record<serde_json::Value>) -> IdempotencyRecord {
     let state = record.state.as_str().to_owned();
     let (error, error_code, result_json) = match record.state {
         edax_cqrs::State::Pending => (String::new(), String::new(), String::new()),
@@ -299,7 +319,7 @@ pub fn decode_idempotency_record(record_json: &str) -> Result<IdempotencyRecord,
         }
         edax_cqrs::State::Done(result) => (String::new(), String::new(), result.to_string()),
     };
-    Ok(IdempotencyRecord { payload_hash: record.payload_hash, state, error, error_code, result_json })
+    IdempotencyRecord { payload_hash: record.payload_hash, state, error, error_code, result_json }
 }
 
 /// The message a replay of a cached failure carries: the original failure's wire form, so its code
@@ -1218,7 +1238,9 @@ pub fn redis_heartbeats_per_ttl() -> i64 {
 
 /// What the claim script's `reply` to the caller's `claim` means: `None` when this caller holds the
 /// claim (the key was free, or the reply is the caller's own claim, re-sent after a lost reply), else
-/// the record JSON that holds the key. `claim` comes first because the reply is optional. See [`edax_redis::claim_outcome`].
+/// the record JSON that holds the key, for [`decode_prior_idempotency_record`]. A value no layout reads
+/// comes back as the kernel's unreadable record. `claim` comes first because the reply is optional. See
+/// [`edax_redis::claim_outcome`].
 pub fn redis_claim_outcome(claim: &[u8], reply: Option<Vec<u8>>) -> Result<Option<String>, String> {
     match edax_redis::claim_outcome(reply.as_deref(), claim).map_err(wire)? {
         edax_redis::ClaimOutcome::Won => Ok(None),
@@ -1674,6 +1696,28 @@ mod tests {
         ] {
             assert_eq!(cached_failure_message(error, code.map(str::to_owned)), want, "{name}");
         }
+    }
+
+    #[test]
+    fn a_prior_record_never_fails_to_decode() {
+        let flat = |r: IdempotencyRecord| (r.payload_hash, r.state, r.error, r.error_code, r.result_json);
+        let readable = r#"{"payload_hash":5,"result":{"n":1},"error":null,"pending":false}"#;
+        assert_eq!(flat(decode_prior_idempotency_record(readable, 9)), flat(decode_idempotency_record(readable).unwrap()));
+        let unreadable = |hash: u64, error: &str| (hash, "failed".to_owned(), error.to_owned(), "codec".to_owned(), String::new());
+        assert_eq!(
+            flat(decode_prior_idempotency_record("{", 9)),
+            unreadable(9, "unreadable idempotency record: EOF while parsing an object at line 1 column 1"),
+            "garbage carries the claimant's hash"
+        );
+        assert_eq!(
+            flat(decode_prior_idempotency_record(r#"{"payload_hash":5,"error":7}"#, 9)),
+            unreadable(5, "unreadable idempotency record: invalid type: integer `7`, expected a string"),
+            "a readable hash is kept"
+        );
+        assert_eq!(
+            flat(unreadable_idempotency_record(5, "does not convert to Invoice")),
+            unreadable(5, "unreadable idempotency record: does not convert to Invoice"),
+        );
     }
 
     #[test]

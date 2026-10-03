@@ -66,9 +66,13 @@ class TestMemorySagaStore(SagaStoreContract):
 class TestMemoryIdempotencyStore(IdempotencyStoreContract):
     # The memory store's claims lapse through its `expire` hook, so the takeover clauses run on it too.
     claims_expire = True
+    stores_raw_records = True
 
     async def expire_claim(self, idempotency_store: Any, key: str) -> None:
         assert idempotency_store.expire(key), f"{key} held nothing to lapse"
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        idempotency_store.put_raw(key, raw)
 
     @pytest.fixture
     def idempotency_store(self, db: MemoryTransactor) -> Any:
@@ -87,9 +91,13 @@ class TestMemoryLedger(IdempotencyStoreContract):
     so the takeover clauses hold it to the clauses `test_redis.py` holds Redis to."""
 
     claims_expire = True
+    stores_raw_records = True
 
     async def expire_claim(self, idempotency_store: Any, key: str) -> None:
         assert idempotency_store.expire(key), f"{key} held nothing to lapse"
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        idempotency_store.put_raw(key, raw)
 
     @pytest.fixture
     def idempotency_store(self) -> Any:

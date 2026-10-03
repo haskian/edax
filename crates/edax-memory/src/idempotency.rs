@@ -48,11 +48,11 @@ fn handle_of(id: i64) -> Vec<u8> {
 }
 
 /// The record a losing claimant reads while another open transaction holds `key`: the holder's
-/// record, re-masked as pending. The holder may still roll back, so its staged outcome is not one
-/// to replay. Bytes that are not a kernel record cross as they are.
-fn masked_pending(bytes: &[u8]) -> Vec<u8> {
-    let Ok(record) = edax_cqrs::decode_record::<Value>(bytes) else { return bytes.to_vec() };
-    edax_cqrs::encode_record(&edax_cqrs::Record::<Value>::pending(record.payload_hash)).unwrap_or_else(|_| bytes.to_vec())
+/// record, re-masked as pending under the hash `edax_cqrs::decode_prior` reads from it. The holder may
+/// still roll back, so its staged outcome is not one to replay, even one no reader can decode.
+fn masked_pending(bytes: &[u8], claimant_hash: u64) -> Result<Vec<u8>, Error> {
+    let held = edax_cqrs::decode_prior::<Value>(bytes, claimant_hash);
+    edax_cqrs::encode_record(&edax_cqrs::Record::<Value>::pending(held.payload_hash))
 }
 
 /// The record another open transaction holds for `key`, if any: its staged record, or — for a
@@ -119,7 +119,7 @@ impl MemoryIdempotencyStore {
             // A key another open transaction holds reads as pending; the committed record decides
             // once the holder ends.
             if let Some(held) = claim_held_by_other(committed, others, key) {
-                return Ok(Claimed::Prior(masked_pending(held)));
+                return masked_pending(held, payload_hash).map(Claimed::Prior);
             }
             if let Some(prior) = view(committed, own, key) {
                 return Ok(Claimed::Prior(prior.record.clone()));
@@ -217,6 +217,25 @@ mod tests {
         store.release(NO_TX, "cmd-key-1", &again).unwrap();
         assert!(matches!(store.claim(NO_TX, "cmd-key-1", hash), Ok(Claimed::Won(_))), "a released key is claimable");
         store.release(NO_TX, "cmd-key-404", &again).unwrap(); // releasing an unknown key is a no-op
+    }
+
+    #[test]
+    fn a_held_key_reads_as_pending_whatever_the_holder_staged() {
+        // The holder may roll back, so a claimant never replays what it staged: a record or bytes no
+        // reader can decode alike read as pending, under the hash `decode_prior` reads.
+        const HASH: u64 = 11_234_062_831_410_934_249;
+        let pending = |hash: u64| format!(r#"{{"payload_hash":{hash},"result":null,"error":null,"error_code":null,"pending":true}}"#).into_bytes();
+        for (name, staged, claimant, want) in [
+            ("a_settled_record", br#"{"payload_hash":11234062831410934249,"result":7,"error":null,"pending":false}"#.as_slice(), 1, pending(HASH)),
+            ("a_wrong_type_keeps_its_hash", br#"{"payload_hash":11234062831410934249,"error":7}"#.as_slice(), 1, pending(HASH)),
+            ("garbage_takes_the_claimants_hash", b"{not json".as_slice(), 1, pending(1)),
+        ] {
+            let store = MemoryIdempotencyStore::new();
+            let holder = store.transactor().begin();
+            let Ok(Claimed::Won(handle)) = store.claim(holder, "k", HASH) else { panic!("{name}: a free key") };
+            store.complete(holder, "k", &handle, staged).unwrap();
+            assert_eq!(store.claim(NO_TX, "k", claimant), Ok(Claimed::Prior(want)), "{name}");
+        }
     }
 
     /// The claim is an insert-if-absent under one lock, so under real contention exactly one caller

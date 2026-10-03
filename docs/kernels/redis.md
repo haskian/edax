@@ -105,8 +105,13 @@ stranded.
 |---|---|
 | nil, the key was free | `Won` |
 | the caller's own claim value | `Won`: the first send landed, its reply was lost, and the client sent the script again |
-| any other value | `Prior(record_json)`, the record that holds the key |
-| a value `split_value` refuses | codec error |
+| any other value | `Prior(record_json)`, the record that holds the key, for `edax_cqrs::decode_prior` |
+| a value `split_value` refuses | `Prior` of the kernel's unreadable record: a `codec` failure under the claimant's hash, naming the refusal |
+| a value `split_value` refuses, when `claim` is not a claim this kernel minted | codec error |
+
+A value `split_value` refuses still holds the key, and nobody can settle it. So the claimant reads it as
+the record half's unreadable record would read: a cached `codec` failure every SDK replays the same way.
+`redis_ledger.json` pins the row.
 
 The second row is why the outcome is a kernel decision. redis-py re-sends a command whose reply was
 lost by default. A store that read its own claim as someone else's would report `InProgress` with no

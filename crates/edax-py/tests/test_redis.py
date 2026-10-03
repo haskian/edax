@@ -182,23 +182,71 @@ async def test_claim_branches(ledger: Ledger) -> None:
     assert await s.claim("settled", HASH) == RECORD, "a settled key replays its record"
 
 
+OWNER = b"0" * 32
+
+
 @pytest.mark.parametrize(
-    "branch, stored, error, match",
+    "branch, stored, want_hash, cause",
     [
-        ("unversioned_value", b"{not json", edax.CodecError, "layout version"),
-        ("unreadable_record", b"1" + b"0" * 32 + b"{not json", edax.CodecError, "key must be a string"),
-        ("too_short_for_a_token", b"1abc", edax.CodecError, "no 32-character owner token"),
+        (
+            "unversioned_value",
+            b"{not json",
+            42,
+            "stored value has layout version '{'; this kernel reads version '1'",
+        ),
+        ("too_short_for_a_token", b"1abc", 42, "stored value has no 32-character owner token"),
+        (
+            "not_utf8",
+            b"1" + OWNER + b"\xff",
+            42,
+            "stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 33",
+        ),
+        ("unreadable_record", b"1" + OWNER + b"{not json", 42, "key must be a string at line 1 column 2"),
+        (
+            "torn_record_keeps_no_hash",
+            b"1" + OWNER + b'{"payload_hash":11258580006047770801,"res',
+            42,
+            "EOF while parsing a string at line 1 column 41",
+        ),
+        (
+            "wrong_type_keeps_the_stored_hash",
+            b"1" + OWNER + b'{"payload_hash":11258580006047770801,"pending":"settling"}',
+            HASH,
+            'invalid type: string "settling", expected a boolean',
+        ),
     ],
 )
-async def test_claim_of_an_unreadable_value_is_terminal(
-    ledger: Ledger, branch: str, stored: bytes, error: type[edax.EdaxError], match: str
+async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
+    ledger: Ledger, branch: str, stored: bytes, want_hash: int, cause: str
 ) -> None:
-    """A stored value that will not read back fails the same way on every retry, so it is a terminal
-    ``CodecError``; retrying or replaying it would loop until the TTL."""
+    """A stored value no reader can decode, at either layer (the frame or the record half), still holds its
+    key, and nobody can settle it. The claim reads the kernel's terminal codec failure, as every SDK does,
+    and leaves the value alone; the guard replays it as ``CachedFailure`` on every redelivery, so the
+    handler never runs and the dispatcher dead-letters it. The failure keeps the stored hash where it
+    reads, else the claimant's."""
     await ledger.client.set(ledger.rkey("k1"), stored, px=TTL_MS)
-    with pytest.raises(error, match=match) as caught:
-        await ledger.store().claim("k1", 42)
-    assert caught.value.terminal is True, branch
+    failed = Record(want_hash, error=f"unreadable idempotency record: {cause}", error_code="codec")
+    assert await ledger.store().claim("k1", 42) == failed, branch
+    assert await ledger.held("k1") == stored, f"{branch}: the claim wrote nothing"
+
+    runs = 0
+
+    async def handler(cmd: Charge) -> None:
+        nonlocal runs
+        runs += 1
+
+    bus = CommandBus(idempotent(ledger.store(), lambda c: c.request_id))
+    bus.register("Charge", handler)
+    # `Charge("k1")` hashes to neither 42 nor HASH: a stored hash that reads makes it a reused key.
+    replay = edax.PayloadMismatch if want_hash == HASH else edax.CachedFailure
+    for attempt in ("first delivery", "redelivery"):
+        with pytest.raises(replay) as caught:
+            await bus.dispatch(Charge("k1"))
+        error = caught.value
+        assert error.terminal, f"{branch}: {attempt}"
+        if isinstance(error, edax.CachedFailure):
+            assert error.original_code == "codec", f"{branch}: {attempt}"
+    assert runs == 0, f"{branch}: the handler never ran"
 
 
 async def test_complete_branches(ledger: Ledger) -> None:
@@ -801,6 +849,7 @@ def test_two_workers_on_one_key_never_land_two_outcomes(history: list[Step]) -> 
 
 class TestRedisIdempotencyStore(IdempotencyStoreContract):
     claims_expire = True
+    stores_raw_records = True
 
     @pytest.fixture
     def idempotency_store(self, ledger: Ledger) -> Any:
@@ -808,3 +857,8 @@ class TestRedisIdempotencyStore(IdempotencyStoreContract):
 
     async def expire_claim(self, idempotency_store: Any, key: str) -> None:
         await idempotency_store._conn._client.delete(idempotency_store._key(key))
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        # The record half of a well-framed value: what a torn or foreign record write leaves behind.
+        value = b"1" + OWNER + raw.encode()
+        await idempotency_store._conn._client.set(idempotency_store._key(key), value, px=TTL_MS)

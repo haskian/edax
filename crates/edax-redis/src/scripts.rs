@@ -72,8 +72,8 @@ return 0
 /// (`"WRONGTYPE Operation against a key holding the wrong kind of value"`).
 ///
 /// The prefix decides the verdict, so every SDK sharing a ledger agrees on it:
-/// - `WRONGTYPE`: the key holds something the ledger cannot read. Terminal `codec`, the verdict an
-///   unreadable record gets.
+/// - `WRONGTYPE`: the key holds something the ledger cannot read. Terminal `codec`, the code an
+///   unreadable record replays under.
 /// - `ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS`: a refused command, script or credential. The same
 ///   request fails the same way every time, so terminal `bad_handle`.
 /// - Anything else is transient `store`: a passing server state (`LOADING`, `BUSY`, `READONLY` during

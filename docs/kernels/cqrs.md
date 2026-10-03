@@ -18,6 +18,7 @@ and the two travel together because the query evaluates the filter.
 | `payload_hash` | the stable 64-bit hash of bytes, Fowler-Noll-Vo 1a (FNV-1a) |
 | `command_hash` | *which* bytes a command's hash covers |
 | `Record` / `State` | the stored record's wire shape and reading order |
+| `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
 
 ---
@@ -164,7 +165,7 @@ Wire shape — flat JSON, fixed key order:
 
 | Field | Type | Set when | Missing on read |
 |---|---|---|---|
-| `payload_hash` | unsigned 64-bit integer | always | required — a missing or non-integer hash is a codec error |
+| `payload_hash` | unsigned 64-bit integer | always | required — a missing or non-integer hash makes the record unreadable |
 | `result` | any JSON | `done` | reads as `null` |
 | `error` | string or null | `failed`: the failure's message, without its code | reads as absent |
 | `error_code` | string or null | `failed`: the failure's taxonomy code | reads as no code; so does a `null` or a code this kernel does not know |
@@ -186,6 +187,24 @@ record cannot be both pending and failed.
 On the way in every field but the hash is optional — an older or foreign writer may omit `pending`
 or `result`. Unknown fields are ignored. A record that is not a JSON object is rejected, because the
 derive would otherwise read a JSON array positionally.
+
+### An unreadable record replays as a cached failure
+
+Bytes `decode_record` refuses still hold their key. They are garbage, a torn write, another layout, a
+field of the wrong type, or a result a typed reader cannot read as its result type. `decode_prior(bytes,
+claimant_hash)` never fails. It reads such bytes as `Record::unreadable`: a terminal failure of code
+`codec` whose message names the decode error (`unreadable idempotency record: EOF while parsing ...`).
+The guard replays it as `cached_failure`, so the handler never runs again for the key and a dispatcher
+dead-letters the message. Raising instead would fail every redelivery until the record expired, and
+reading the bytes as a free key would run the handler a second time.
+
+Which hash the failure carries is the one choice left. It keeps the stored `payload_hash` when that
+field alone still reads as a `u64` in a JSON object. The hash is checked first, so another command that
+reuses the key is still told `payload_mismatch`, not that its own command failed. When the hash does
+not read, the failure carries `claimant_hash`: nothing tells the two commands apart, and the claimant
+gets the failure, the side that never runs a handler twice. The `decode_error` rows of
+`idempotency_record.json` pin each case, and the Redis kernel reads a value whose frame it refuses
+the same way.
 
 ### A stored `null` result replays as a success
 
@@ -230,7 +249,8 @@ stateDiagram-v2
   end note
 ```
 
-`encode_record` is the only encoding a ledger may persist; `decode_record` is the only reader.
+`encode_record` is the only encoding a ledger may persist; `decode_prior` is how a store reads the
+record that holds a key, and `decode_record` is the strict reader under it.
 Encoding a result JSON cannot express fails loudly rather than silently dropping the record, because
 the claim is already taken and a dropped record would strand the key.
 
@@ -275,10 +295,11 @@ The mapping is one `match` in Rust and one `if` chain in Python. Neither re-deri
 both call the kernel and translate. `testdata/golden/idempotency_record.json` covers every state and
 the three mismatch-beats-state cases. It also covers the two older-writer shapes, the absent-`result`
 shape, a coded failure, an empty message and an unknown `error_code`. One row is a host rejection
-written the way the Rust SDK's guard writes it. Each case carries `stored`, `current`,
-`payload_hash`, `state`, `outcome` and `encoded`, plus `error`, `error_code` and `replay` for a
-failure. A binding must decode to the same fields, re-emit the same bytes, reach the same verdict and
-raise the same replay.
+written the way the Rust SDK's guard writes it, and fourteen are unreadable. Each case carries
+`stored`, `current`, `payload_hash`, `state`, `outcome` and `encoded`, plus `error`, `error_code` and
+`replay` for a failure, and `decode_error` for an unreadable one. A binding must read with
+`decode_prior` to the same fields, re-emit the same bytes, reach the same verdict and raise the same
+replay.
 
 The winner's half of the table is `settle(code) -> Cache(code) | Release`. After the handler failed,
 a won claim caches the failure under its code when the kernel's verdict for that code is terminal.

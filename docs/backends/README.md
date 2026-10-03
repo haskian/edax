@@ -302,7 +302,8 @@ per code, read at class-definition time.
 |---|---|---|---|
 | the stored version did not match | `ConcurrencyError` | transient | the caller reloads the aggregate and retries |
 | connection reset, timeout, deadlock, serialization failure | `StoreError` | transient | the guard releases the claim; the dispatcher nacks after a backoff step and the broker redelivers |
-| a value will not marshal or a stored record will not decode | `CodecError` | terminal | the guard caches the failure; the dispatcher dead-letters instead of retrying |
+| a value will not marshal | `CodecError` | terminal | the guard caches the failure; the dispatcher dead-letters instead of retrying |
+| a stored record will not decode | nothing: return `decode_prior`'s record | terminal, as a cached `codec` failure | the guard replays `CachedFailure`; the handler never runs again for the key |
 
 Three traps are worth naming.
 
@@ -360,7 +361,9 @@ REDIS = redis.asyncio.Redis()  # the test server
 class TestRedisLedger(IdempotencyStoreContract):
     # The suite reads `joins_transaction` from the store, as the guard does. Redis declares False:
     # a ledger of its own, so the rollback clauses skip. Its claims expire, so the takeover clauses run.
+    # It stores the kernel's record JSON, so the unreadable-record clause runs.
     claims_expire = True
+    stores_raw_records = True
 
     @pytest.fixture
     async def idempotency_store(self):
@@ -368,6 +371,9 @@ class TestRedisLedger(IdempotencyStoreContract):
 
     async def expire_claim(self, idempotency_store, key):
         await REDIS.delete(f"test:idem:{key}")  # what the claim TTL does when it runs out
+
+    async def put_raw_record(self, idempotency_store, key, raw):
+        await REDIS.set(f"test:idem:{key}", b"1" + b"0" * 32 + raw.encode())  # a torn row, unchecked
 ```
 
 Install with `pip install edax[test]` and set `asyncio_mode = "auto"` in your pytest configuration.
@@ -378,12 +384,12 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 | `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
 | `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and *not* advancing on a conflict, independence per id, a save with no `tx` joining the ambient transaction, two writers at one version landing exactly one save, a staged row invisible to another transaction, and kernel paging when `supports_kernel_queries` is on |
 | `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown correlation reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
-| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key |
+| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key. With `stores_raw_records` and a `put_raw_record` hook: a record no reader can decode read as the kernel's cached `codec` failure, keeping the stored hash where it reads |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that
 cannot apply. The flags are `supports_rollback`, `supports_snapshots`, `supports_outbox`,
-`supports_transactions`, `supports_kernel_queries`, `supports_unpublished_count` and
-`claims_expire`. The defaults describe a transactional SQL
+`supports_transactions`, `supports_kernel_queries`, `supports_unpublished_count`, `claims_expire`
+and `stores_raw_records`. The defaults describe a transactional SQL
 backend, the strictest case. The suite takes no `joins_transaction` flag. It reads the store's own
 declaration, the one the guard acts on, so a wrong declaration fails the clauses it governs instead
 of being restated beside them.
@@ -425,9 +431,10 @@ suites above.
 It owns the record's wire shape, the filter semantics, the total order over JSON values and the
 error taxonomy. A backend may sort its own JSON keys, compute its own hash, or decide for itself
 that a record counts as a replay. It will agree with the other SDK until the first non-ASCII field
-name, and then stop. Read the record with `edax.command.decode_record`, write it with
-`encode_record`, and hand the prior record back to the guard unjudged. See
-[kernels](../kernels/README.md).
+name, and then stop. Read the record that holds a key with `edax.command.decode_prior`, write it with
+`encode_record`, and hand the prior record back to the guard unjudged. `decode_prior` never raises: a
+record no reader can decode comes back as the kernel's cached `codec` failure, the same one every SDK
+replays. See [kernels](../kernels/README.md).
 
 Three smaller prohibitions follow from the same rule.
 

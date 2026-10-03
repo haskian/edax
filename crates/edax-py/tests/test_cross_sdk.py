@@ -13,7 +13,7 @@ import pytest
 from conftest import build_envelope, golden
 from edax import _edax
 from edax._async import maybe_await
-from edax.backend.memory import MemoryIdempotencyStore
+from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger
 from edax.command import Won, _payload_hash
 from hypothesis import given
 from hypothesis import strategies as st
@@ -230,3 +230,39 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
     prior = await ledger.claim("evt-1", rust.payload_hash)
     assert not isinstance(prior, Won)
     assert edax.command.encode_record(prior) == rust.stored
+
+
+async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cached_failure() -> None:
+    """Shared-ledger fault: the Rust SDK's record write was cut off, and the torn bytes hold the key. A
+    Python consumer of the same event reads them as Rust does: the kernel's terminal codec failure, with
+    the replay text the golden row pins. The handler never runs and the dispatcher dead-letters the event
+    on its first attempt, instead of redelivering it until the record's retention ends."""
+    [case] = [c for c in golden("idempotency_record.json") if c["name"] == "torn_write_from_rust"]
+    ledger = MemoryLedger()
+    ledger.put_raw("evt-1", case["stored"])
+    runs = 0
+
+    async def handler(env: edax.EventEnvelope) -> None:
+        nonlocal runs
+        runs += 1
+
+    router = edax.EventRouter(edax.idempotent_by_id(ledger))
+    router.register("Deposited", handler)
+    dead: list[BaseException] = []
+
+    async def on_dead(delivery: edax.Delivery, error: BaseException) -> None:
+        dead.append(error)
+
+    dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
+    dispatcher.start()
+    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
+    settled: list[str] = []
+    await dispatcher.submit(edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack")))
+    await dispatcher._queues[0].join()
+    await dispatcher.stop()
+
+    assert runs == 0, "the unreadable outcome is replayed, never re-run"
+    assert settled == ["ack"] and len(dead) == 1, "dead-lettered on the first attempt"
+    [error] = dead
+    assert isinstance(error, edax.CachedFailure) and error.terminal and error.original_code == "codec"
+    assert f"{error.code}: {error}" == case["replay"], "the replay text both SDKs show"

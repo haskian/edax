@@ -46,7 +46,7 @@ pub use query::{
     decode_cursor, decode_cursor_json, effective_sort, effective_sort_json, encode_cursor, encode_cursor_json, query,
     query_json, query_spec, Page, Query, SortKey, TIEBREAK_PATH,
 };
-pub use record::{cached_failure, cached_failure_of, decode_record, encode_record, encode_record_fields, outcome, settle, Outcome, Record, Settle, State};
+pub use record::{cached_failure, cached_failure_of, decode_prior, decode_record, encode_record, encode_record_fields, outcome, settle, Outcome, Record, Settle, State};
 
 /// Stable 64-bit hash of bytes (FNV-1a). Identical across every binding. For commands, hash the
 /// output of [`canonical_json`] so two services agree on whether a reused idempotency key carries

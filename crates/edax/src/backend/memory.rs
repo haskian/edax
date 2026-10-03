@@ -8,7 +8,7 @@
 
 use std::marker::PhantomData;
 
-use edax_cqrs::{decode_record, encode_record};
+use edax_cqrs::{decode_prior, encode_record};
 use edax_event::EventEnvelope;
 use edax_memory::{Claimed, SagaRow, NO_TX};
 use serde::de::DeserializeOwned;
@@ -256,8 +256,9 @@ impl ProjectionStore for MemoryProjectionStore {
 /// [`claim`](IdempotencyStore::claim). Methods take `&self`, so it can be shared inside a middleware closure
 /// and across a [`KeyOrderedDispatcher`](crate::KeyOrderedDispatcher)'s worker threads. With `Tx = MemoryTx`
 /// a claim commits or rolls back with the events it guards, which makes a guarded handler effectively-once.
-/// A record the codec cannot write or read back is kept as a terminal failure naming the codec error, never
-/// dropped, so the next claimant gets [`Error::CachedFailure`]; a payload mismatch is still detected.
+/// A result the codec cannot write is reported by `complete`; a stored record that will not read back as `O`
+/// is the kernel's terminal codec failure ([`edax_cqrs::decode_prior`]), so the next claimant gets
+/// [`ErrorCode::CachedFailure`](crate::ErrorCode::CachedFailure); a payload mismatch is still detected.
 pub struct MemoryIdempotencyStore<O> {
     inner: edax_memory::MemoryIdempotencyStore,
     // `fn() -> O` rather than `O`: the store holds bytes, not an `O`, so it is `Send + Sync` whatever
@@ -288,21 +289,6 @@ impl<O> MemoryIdempotencyStore<O> {
     }
 }
 
-/// The terminal record that stands in for one the codec could not marshal. The message is the codec
-/// error in the form the middleware itself caches for a terminal handler error, so a claimant whose
-/// payload matches gets a [`CachedFailure`](crate::Error::CachedFailure) naming the cause.
-fn unreadable<O>(payload_hash: u64, cause: Error) -> Record<O> {
-    Record::failed(payload_hash, cause.code, cause.message)
-}
-
-/// The payload hash of a record that would not decode as `O`. Only the `Done` value is typed, so the
-/// hash itself normally still parses — keep it, or the reuse check would be lost to the codec failure
-/// and a claimant carrying a *different* command would be told its own command failed instead of that
-/// the key was reused. Falls back to the claimant's hash when the bytes are not a record at all.
-fn stored_hash(bytes: &[u8], claimant: u64) -> u64 {
-    decode_record::<Value>(bytes).map_or(claimant, |r| r.payload_hash)
-}
-
 /// A claim under `token`, typed: the handle on a win, or the prior record decoded as `O`.
 fn claim_typed<O: DeserializeOwned>(
     inner: &edax_memory::MemoryIdempotencyStore,
@@ -316,11 +302,22 @@ fn claim_typed<O: DeserializeOwned>(
     Ok(match inner.claim(token, key, payload_hash)? {
         Claimed::Won(handle) => Claim::Won(ClaimHandle(handle)),
         // A record that is there but will not decode as `O` is a real cached outcome the caller must not
-        // re-run, so it stays a `Prior` and reads back as a terminal codec failure.
-        Claimed::Prior(bytes) => Claim::Prior(
-            decode_record(&bytes).unwrap_or_else(|e| unreadable(stored_hash(&bytes, payload_hash), e)),
-        ),
+        // re-run: the kernel reads it as a terminal codec failure.
+        Claimed::Prior(bytes) => Claim::Prior(decode_prior(&bytes, payload_hash)),
     })
+}
+
+/// Overwrite `key` with `bytes` under no transaction, whatever they hold. See
+/// [`MemoryIdempotencyStore::put_raw`].
+fn put_raw(inner: &edax_memory::MemoryIdempotencyStore, key: &str, bytes: &[u8]) -> Result<(), Error> {
+    inner.expire(key);
+    match inner.claim(NO_TX, key, 0)? {
+        Claimed::Won(handle) => inner.complete(NO_TX, key, &handle, bytes),
+        Claimed::Prior(_) => Err(Error::new(
+            crate::ErrorCode::Concurrency,
+            format_args!("idempotency key {key} is held by an open transaction"),
+        )),
+    }
 }
 
 /// Settle the claim `handle` names under `token` with `record`. A result the codec cannot write is
@@ -359,6 +356,16 @@ impl<O> MemoryIdempotencyStore<O> {
     pub fn expire(&self, key: &str) -> bool {
         self.inner.expire(key)
     }
+
+    /// Store `bytes` as `key`'s settled record, readable or not, in committed state. A test hook that
+    /// rehearses a record another writer left behind: a torn write, another layout, a hand edit. The
+    /// next claim reads it as the kernel does.
+    ///
+    /// # Errors
+    /// [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) when an open transaction holds `key`.
+    pub fn put_raw(&self, key: &str, bytes: &[u8]) -> Result<(), Error> {
+        put_raw(&self.inner, key, bytes)
+    }
 }
 
 /// The in-memory idempotency store on a database of its own, the ordering a Redis ledger has: `Tx = ()`,
@@ -389,6 +396,14 @@ impl<O> MemoryLedger<O> {
     /// Lapse whatever `key` holds, as a claim TTL or a record TTL running out would.
     pub fn expire(&self, key: &str) -> bool {
         self.0.expire(key)
+    }
+
+    /// Store `bytes` as `key`'s settled record, readable or not. See [`MemoryIdempotencyStore::put_raw`].
+    ///
+    /// # Errors
+    /// Never in practice: nothing opens a transaction on a ledger's own database.
+    pub fn put_raw(&self, key: &str, bytes: &[u8]) -> Result<(), Error> {
+        self.0.put_raw(key, bytes)
     }
 }
 
@@ -571,6 +586,50 @@ mod tests {
         assert!(matches!(&wrote, Err(Error { code: ErrorCode::Codec, message: m }) if m == "no wire form"), "got {wrote:?}");
         store.release(&mut MemoryTx::auto_commit(), "k", &handle).expect("the guard releases the claim");
         assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), "k", HASH), Ok(Claim::Won(_))), "the key is free");
+    }
+
+    #[test]
+    fn an_unreadable_stored_record_replays_as_the_kernels_codec_failure() {
+        // Bytes another writer left under the key (a torn write, a foreign layout, a wrong type) are a
+        // cached outcome nobody can read: the kernel's `decode_prior` turns them into a terminal codec
+        // failure. The stored hash is kept when it still reads, so a reused key is still a mismatch.
+        const HASH: u64 = 11_234_062_831_410_934_249;
+        for (name, bytes, claimant, want_hash, cause) in [
+            ("torn_write", br#"{"payload_hash":11234062831410934249,"res"#.as_slice(), HASH, HASH, "EOF while parsing"),
+            ("wrong_type_keeps_the_stored_hash", br#"{"payload_hash":11234062831410934249,"error":42}"#.as_slice(), HASH ^ 1, HASH, "invalid type: integer `42`"),
+            ("result_not_an_o", br#"{"payload_hash":11234062831410934249,"result":"x","error":null,"pending":false}"#.as_slice(), HASH, HASH, "cached result is not a valid replay value"),
+        ] {
+            let store = MemoryIdempotencyStore::<u64>::new();
+            store.put_raw("k", bytes).unwrap();
+            let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", claimant)).expect("key stays taken");
+            assert_eq!(got.payload_hash, want_hash, "{name}");
+            let edax_cqrs::State::Failed { code, message } = &got.state else { panic!("{name}: want Failed, got {:?}", got.state) };
+            assert_eq!(*code, Some(ErrorCode::Codec), "{name}");
+            assert!(message.starts_with("unreadable idempotency record: ") && message.contains(cause), "{name}: {message}");
+        }
+    }
+
+    #[test]
+    fn put_raw_overwrites_a_committed_record_and_refuses_a_held_key() {
+        let db = MemoryTransactor::new();
+        let store = db.idempotency_store::<u64>();
+        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", 1) else { panic!("a free key") };
+        store.complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(1, 5)).unwrap();
+        store.put_raw("k", b"{").expect("a committed record is overwritten");
+        let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", 1)).expect("key stays taken");
+        assert!(matches!(got.state, edax_cqrs::State::Failed { code: Some(ErrorCode::Codec), .. }), "{got:?}");
+
+        // A key an open transaction holds is not committed state: refused, and the holder keeps it.
+        let mut tx = db.begin().unwrap();
+        assert!(matches!(store.claim(&mut tx, "held", 1), Ok(Claim::Won(_))));
+        let refused = store.put_raw("held", b"{");
+        assert!(matches!(&refused, Err(Error { code: ErrorCode::Concurrency, message: m }) if m.contains("held by an open transaction")), "{refused:?}");
+        db.rollback(tx);
+
+        let ledger = MemoryLedger::<u64>::new();
+        ledger.put_raw("k", b"{").unwrap();
+        let Ok(Claim::Prior(got)) = ledger.claim(&mut (), "k", 1) else { panic!("key stays taken") };
+        assert!(matches!(got.state, edax_cqrs::State::Failed { code: Some(ErrorCode::Codec), .. }), "{got:?}");
     }
 
     #[test]

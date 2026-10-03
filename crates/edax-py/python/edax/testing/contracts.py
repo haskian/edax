@@ -934,15 +934,27 @@ class IdempotencyStoreContract:
 
     A store whose claims expire (a TTL, a lease) declares ``claims_expire = True`` and overrides
     :meth:`expire_claim`; the takeover clauses then check that a lapsed claim's handle settles nothing.
+
+    A store that persists the kernel's record JSON declares ``stores_raw_records = True`` and overrides
+    :meth:`put_raw_record`; the unreadable-record clause then checks that a record no reader can decode
+    replays as a cached failure, as in every other SDK sharing the ledger.
     """
 
     #: Claims lapse on their own, so another caller can take a key over while its first claimant still
     #: runs. Such a store must fence ``complete`` and ``release`` on the handle.
     claims_expire: bool = False
 
+    #: The store persists the kernel's record JSON, so a row can hold bytes no reader decodes.
+    stores_raw_records: bool = False
+
     async def expire_claim(self, idempotency_store: Any, key: str) -> None:
         """Make the pending claim on ``key`` lapse now, as its TTL would. Override with ``claims_expire``."""
         raise NotImplementedError("a store that declares claims_expire overrides expire_claim")
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        """Store ``raw`` as ``key``'s settled record, unchecked, the way the store persists a record (a
+        Redis store frames it). Override with ``stores_raw_records``."""
+        raise NotImplementedError("a store that declares stores_raw_records overrides put_raw_record")
 
     async def _won(self, idempotency_store: Any, key: str, payload: int) -> bytes:
         """Claim ``key``, which must be free, and return the handle."""
@@ -999,6 +1011,43 @@ class IdempotencyStoreContract:
         assert prior.error == "insufficient funds" and prior.result is None
         # The code rides beside the message, so a replay in any SDK sharing the ledger keeps it.
         assert prior.error_code == "rejected", "the failure's code survives the round trip"
+
+    async def test_an_unreadable_record_replays_as_a_cached_codec_failure(
+        self, idempotency_store: Any
+    ) -> None:
+        """A row another writer left that no reader can decode (a torn write, another layout, a field of the
+        wrong type) still holds its key. ``claim`` must read it with :func:`~edax.command.decode_prior`: the
+        kernel's terminal ``codec`` failure, so the guard replays ``CachedFailure`` and the handler never
+        runs again for the key, as in every other SDK sharing the ledger. A store that raises instead makes
+        the two SDKs disagree; one that reads the row as free runs the handler a second time. The failure
+        keeps the stored hash where it reads, else the claimant's, and the claim leaves the row alone."""
+        if not self.stores_raw_records:
+            raise pytest.skip.Exception("the store does not persist the kernel's record JSON")
+        stored, claimant = 11234062831410934249, 18446744073709551615
+        rows = [
+            ("garbage", "\x01\x7fedax", claimant, "expected value at line 1 column 1"),
+            ("torn write", '{"payload_hash":11234062831410934249,"result":{"', claimant, "EOF while parsing"),
+            ("not an object", "[11234062831410934249]", claimant, "not a JSON object"),
+            (
+                "wrong type",
+                '{"payload_hash":11234062831410934249,"pending":"settling"}',
+                stored,
+                "expected a boolean",
+            ),
+        ]
+        for name, raw, want_hash, cause in rows:
+            key = _id("req")
+            await self.put_raw_record(idempotency_store, key, raw)
+            for attempt in ("first claim", "redelivery"):
+                prior = await idempotency_store.claim(key, claimant)
+                assert not isinstance(prior, Won), f"{name}: {attempt} must not win the key"
+                assert not prior.pending and prior.result is None, f"{name}: {attempt}"
+                assert prior.error_code == "codec", f"{name}: {attempt}: a cached codec failure"
+                error = prior.error or ""
+                assert error.startswith("unreadable idempotency record: ") and cause in error, (
+                    f"{name}: {error}"
+                )
+                assert prior.payload_hash == want_hash, f"{name}: {attempt}: the hash the failure keeps"
 
     async def test_completing_twice_is_idempotent(self, idempotency_store: Any) -> None:
         """ "Both are idempotent." The guard can reach `complete` twice when a response is lost and

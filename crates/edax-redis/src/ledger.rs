@@ -173,7 +173,8 @@ pub fn split_value(raw: &[u8]) -> Result<(String, String), Error> {
 pub enum ClaimOutcome {
     /// This caller holds the claim: run the handler, then settle with the claim value as handle.
     Won,
-    /// Another claim or a settled record holds the key. Carries that record's JSON.
+    /// Another claim or a settled record holds the key. Carries that record's JSON, which the host
+    /// reads with `edax_cqrs::decode_prior`.
     Prior(String),
 }
 
@@ -183,11 +184,23 @@ pub enum ClaimOutcome {
 /// A reply equal to `claim` is this caller's own claim: the first send landed, its reply was lost,
 /// and the client sent the command again (redis-py does by default). Reading that as someone else's
 /// claim would block the key until the claim lapsed, with no handler running.
+///
+/// A value [`split_value`] refuses holds the key all the same, and nobody can settle it. It reads as
+/// `Prior` of the kernel's unreadable record ([`Record::unreadable`]) under the claimant's hash, as an
+/// unreadable record half does, so every SDK replays it as a cached `codec` failure. Only a `claim`
+/// this kernel never minted is an error.
 pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<ClaimOutcome, Error> {
     match reply {
         None => Ok(ClaimOutcome::Won),
         Some(held) if held == claim => Ok(ClaimOutcome::Won),
-        Some(held) => split_value(held).map(|(_, record)| ClaimOutcome::Prior(record)),
+        Some(held) => match split_value(held) {
+            Ok((_, record)) => Ok(ClaimOutcome::Prior(record)),
+            Err(cause) => {
+                let (_, claimant_hash) = parse_claim(claim)?;
+                let record = encode_record(&Record::<()>::unreadable(claimant_hash, &cause))?;
+                Ok(ClaimOutcome::Prior(String::from_utf8_lossy(&record).into_owned()))
+            }
+        },
     }
 }
 
@@ -197,6 +210,11 @@ fn frame(owner: &str, record: &[u8]) -> Vec<u8> {
 
 /// The owner token of a well-formed claim handle. See [`check_claim`].
 fn claim_owner(claim: &[u8]) -> Result<&str, Error> {
+    parse_claim(claim).map(|(owner, _)| owner)
+}
+
+/// A well-formed claim handle's owner token and the payload hash its pending record carries.
+fn parse_claim(claim: &[u8]) -> Result<(&str, u64), Error> {
     let refused = |why: &str| Error::codec(format_args!("claim handle is not a claim this kernel minted: {why}"));
     let text = std::str::from_utf8(claim).map_err(|_| refused("not UTF-8"))?;
     let rest = text
@@ -206,8 +224,9 @@ fn claim_owner(claim: &[u8]) -> Result<&str, Error> {
     check_owner(owner)?;
     match decode_record::<()>(record.as_bytes()) {
         Ok(Record {
-            state: State::Pending, ..
-        }) => Ok(owner),
+            payload_hash,
+            state: State::Pending,
+        }) => Ok((owner, payload_hash)),
         _ => Err(refused("its record is not a pending claim")),
     }
 }
@@ -397,10 +416,21 @@ mod tests {
             claim_outcome(Some(&settled), &claim()),
             Ok(ClaimOutcome::Prior(DONE.to_owned()))
         );
-        assert!(
-            claim_outcome(Some(b"garbage"), &claim()).is_err(),
-            "an unreadable value is refused"
+        // A value no layout reads still holds the key: the claimant reads the kernel's unreadable record
+        // under its own hash, a cached codec failure.
+        let unreadable = |cause: &str| {
+            let record = Record::<()>::unreadable(HASH, &Error::codec(cause));
+            Ok(ClaimOutcome::Prior(String::from_utf8(encode_record(&record).unwrap()).unwrap()))
+        };
+        assert_eq!(
+            claim_outcome(Some(b"garbage"), &claim()),
+            unreadable("stored value has layout version 'g'; this kernel reads version '1'")
         );
+        assert_eq!(claim_outcome(Some(&[b'1', 0xff]), &claim()), unreadable("stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1"));
+        assert_eq!(claim_outcome(Some(b""), &claim()), unreadable("stored value is empty"));
+        // The claimant's own handle is the one thing that must be well formed.
+        let refused = claim_outcome(Some(b"garbage"), b"not a claim").unwrap_err();
+        assert_eq!(refused.to_string(), "codec: claim handle is not a claim this kernel minted: no layout version");
     }
 
     #[test]

@@ -37,6 +37,7 @@ from conftest import (
     build_envelope,
     counter_repo,
     expect,
+    ledger_key,
     recorded_backoff,
     same,
     sequence_of,
@@ -311,7 +312,17 @@ class Expire:
     """Every record's TTL runs out, pending claims included: a Redis TTL, or memory's ``expire`` hook."""
 
 
-BusOp = Dispatch | SeedPending | Release | Expire
+@dataclass
+class Corrupt:
+    """Another writer leaves bytes no reader can decode under ``key``: a record whose ``pending`` is a
+    word, keeping the hash of a command carrying ``payload``, or with ``payload`` ``None`` a torn write
+    whose hash does not read either."""
+
+    key: int
+    payload: int | None
+
+
+BusOp = Dispatch | SeedPending | Release | Expire | Corrupt
 
 bus_op = st.one_of(
     st.builds(
@@ -325,13 +336,19 @@ bus_op = st.one_of(
     st.builds(SeedPending, st.integers(0, 2), st.integers(0, 2)),
     st.builds(Release, st.integers(0, 2)),
     st.builds(Expire),
+    st.builds(Corrupt, st.integers(0, 2), st.none() | st.integers(0, 2)),
 )
 
 
-def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None]]]:
-    """A flaky idempotency store plus how to make every key's TTL run out: ``FLUSHALL`` on the fakeredis
-    client, memory's ``expire`` hook per key. Built inside the replay's event loop, which the fake client
-    binds to. fakeredis runs the kernel's own Lua; memory runs the kernel's own fence."""
+#: Stores ``raw`` as a key's settled record, unchecked, the way the backend persists a record.
+PutRaw = Callable[[str, str], Awaitable[None]]
+
+
+def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None]], PutRaw]:
+    """A flaky idempotency store, how to make every key's TTL run out (``FLUSHALL`` on the fakeredis client,
+    memory's ``expire`` hook per key) and how to leave unreadable bytes under a key. Built inside the
+    replay's event loop, which the fake client binds to. fakeredis runs the kernel's own Lua; memory runs
+    the kernel's own fence."""
     if backend == "memory":
         memory = MemoryIdempotencyStore()
 
@@ -339,11 +356,17 @@ def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None
             for key in range(3):
                 memory.expire(str(key))
 
-        return LostResponse(memory), lapse_memory
+        async def put_raw_memory(key: str, raw: str) -> None:
+            memory.put_raw(key, raw)
+
+        return LostResponse(memory), lapse_memory, put_raw_memory
     client = fakeredis.FakeAsyncRedis()
 
     async def lapse_redis() -> None:
         await client.flushall()
+
+    async def put_raw_redis(key: str, raw: str) -> None:
+        await client.set(ledger_key("idem:", key), b"1" + b"0" * 32 + raw.encode(), px=TTL_MS)
 
     # A short claim TTL bounds how long a dead worker blocks a key, a long record TTL is the dedup
     # window. `Expire` stands for both running out; claim lapses mid-handler are the two-worker
@@ -351,15 +374,17 @@ def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None
     redis = RedisIdempotencyStore(
         AsyncRedisClient(client), prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10
     )
-    return LostResponse(redis), lapse_redis
+    return LostResponse(redis), lapse_redis, put_raw_redis
 
 
 class Slot(Enum):
     PENDING = "pending"
+    UNREADABLE = "unreadable"
 
 
-# model[key] = (payload hash, slot); slot is Slot.PENDING, ("done", value) or ("failed", message)
-Record = tuple[int, Any]
+# model[key] = (payload hash, slot); slot is Slot.PENDING, Slot.UNREADABLE, ("done", value) or
+# ("failed", message). An unreadable record whose hash does not read holds `None`: the claimant's.
+Record = tuple[int | None, Any]
 KEEP = object()  # Expectation.slot: leave model[key] as it is
 
 
@@ -416,6 +441,12 @@ def decide(prior: Record | None, op: Dispatch, hash_: int) -> Expectation:
         )[op.outcome]
     # Taken key: the kernel decides, and the handler never runs.
     prior_hash, slot = prior
+    if slot is Slot.UNREADABLE:
+        # The kernel reads it as a cached codec failure, under the stored hash where that reads, else
+        # the claimant's: a reused key, or a terminal replay. Never a run, never a raise of its own.
+        if prior_hash is not None and prior_hash != hash_:
+            return Expectation(raises=edax.PayloadMismatch)
+        return Expectation(raises=C.CachedFailure, match="codec: unreadable idempotency record")
     if prior_hash != hash_:
         return Expectation(raises=edax.PayloadMismatch)
     if slot is Slot.PENDING:
@@ -427,9 +458,10 @@ def decide(prior: Record | None, op: Dispatch, hash_: int) -> Expectation:
 
 
 class BusReplay:
-    def __init__(self, store: Any, lapse: Callable[[], Awaitable[None]]) -> None:
+    def __init__(self, store: Any, lapse: Callable[[], Awaitable[None]], put_raw: PutRaw) -> None:
         self.store = store
         self.lapse = lapse
+        self.put_raw = put_raw
         self.calls = [0, 0]
         self.model: dict[int, Record] = {}
         # The handle of each pending claim a SeedPending took, so a Release can name it.
@@ -453,6 +485,8 @@ class BusReplay:
             await self.seed_pending(op)
         elif isinstance(op, Release):
             await self.release(op)
+        elif isinstance(op, Corrupt):
+            await self.corrupt(op)
         else:
             await self.expire(op)
 
@@ -485,7 +519,8 @@ class BusReplay:
             self.model[op.key] = (hash_, Slot.PENDING)
             self.seeded[op.key] = claimed.handle
         else:
-            assert self.model[op.key][0] == claimed.payload_hash
+            stored = self.model[op.key][0]
+            assert claimed.payload_hash == (hash_ if stored is None else stored)
 
     async def release(self, op: Release) -> None:
         handle = self.seeded.pop(op.key, None)
@@ -494,6 +529,16 @@ class BusReplay:
         await self.store.release(str(op.key), handle)
         self.model.pop(op.key, None)
 
+    async def corrupt(self, op: Corrupt) -> None:
+        if op.payload is None:
+            await self.put_raw(str(op.key), '{"payload_hash":')
+            self.model[op.key] = (None, Slot.UNREADABLE)
+        else:
+            hash_ = C._payload_hash(make_cmd(0, op.key, op.payload, 0))
+            await self.put_raw(str(op.key), f'{{"payload_hash":{hash_},"pending":"settling"}}')
+            self.model[op.key] = (hash_, Slot.UNREADABLE)
+        self.seeded.pop(op.key, None)  # the seeded claim is gone: its handle settles nothing now
+
     async def expire(self, op: Expire) -> None:
         await self.lapse()  # every TTL runs out
         self.model.clear()
@@ -501,11 +546,14 @@ class BusReplay:
 
     async def finish(self) -> None:
         # Every modeled record is readable back through the seam with the same hash and state.
-        for key, (hash_, slot) in self.model.items():
+        for key, (stored, slot) in self.model.items():
+            hash_ = 0 if stored is None else stored
             record = await self.store.claim(str(key), hash_)
             assert not isinstance(record, C.Won), f"key {key} should still hold a record"
             assert record.payload_hash == hash_
-            if slot is Slot.PENDING:
+            if slot is Slot.UNREADABLE:
+                assert record.error_code == "codec" and record.result is None
+            elif slot is Slot.PENDING:
                 assert record.pending
             elif slot[0] == "done":
                 assert record.result == slot[1]
@@ -514,8 +562,8 @@ class BusReplay:
 
 
 async def _replay_bus(history: list[BusOp], backend: str) -> None:
-    store, lapse = _idempotency_backend(backend)
-    r = BusReplay(store, lapse)
+    store, lapse, put_raw = _idempotency_backend(backend)
+    r = BusReplay(store, lapse, put_raw)
     for op in history:
         await r.step(op)
     await r.finish()

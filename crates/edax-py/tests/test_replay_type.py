@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import TTL_MS
+from conftest import TTL_MS, Recording
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
 from edax.command import CommandBus, idempotent
@@ -156,9 +156,11 @@ def test_a_type_with_no_conversion_is_refused_at_wiring(handler: Any, result_typ
         bus.register("IssueInvoice", handler)
 
 
-async def test_a_cached_result_that_does_not_convert_is_a_terminal_codec_error() -> None:
-    """A record written by another SDK, or under an older result type, that no longer converts: the same
-    record fails the same way on every replay, so it is terminal, and a dispatcher dead-letters it."""
+async def test_a_cached_result_that_does_not_convert_replays_as_a_cached_codec_failure() -> None:
+    """A record written by another SDK, or under an older result type, that no longer converts is an
+    unreadable record, as the Rust SDK's typed store reads it: the kernel's terminal codec failure, replayed
+    as ``CachedFailure`` on every redelivery, so the handler never runs and a dispatcher dead-letters it.
+    The observer hears ``failed``, the verdict the replay carries."""
     ledger = MemoryIdempotencyStore()
     writer = CommandBus(idempotent(ledger, lambda c: c.request_id, result_type=Any))
 
@@ -167,11 +169,17 @@ async def test_a_cached_result_that_does_not_convert_is_a_terminal_codec_error()
 
     writer.register("IssueInvoice", old_shape)
     await writer.dispatch(command())
-    reader = CommandBus(idempotent(ledger, lambda c: c.request_id))
+    observer = Recording()
+    reader = CommandBus(idempotent(ledger, lambda c: c.request_id, observer=observer))
     reader.register("IssueInvoice", issue)
-    with pytest.raises(edax.CodecError, match="does not convert to") as caught:
-        await reader.dispatch(command())
-    assert caught.value.terminal is True
+    for attempt in ("first delivery", "redelivery"):
+        with pytest.raises(
+            edax.CachedFailure, match="codec: unreadable idempotency record: cached result"
+        ) as caught:
+            await reader.dispatch(command())
+        assert caught.value.terminal is True and caught.value.original_code == "codec", attempt
+        assert "does not convert to" in str(caught.value), attempt
+    assert observer.claims == [("IssueInvoice", "failed")] * 2
 
 
 @pytest.fixture(params=["joining_memory_store", "memory_ledger", "redis"])

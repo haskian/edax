@@ -21,6 +21,10 @@
 //! so `null` decodes to `()` for a unit-result command and fails, typed, for a command whose result
 //! type has no null form.
 //!
+//! A stored record no reader can decode is still a cached outcome: [`decode_prior`] reads it as a
+//! terminal `codec` failure, so every SDK replays it as a cached failure instead of running the
+//! handler again or raising on every redelivery.
+//!
 //! Number bound: a `result` integer is exact within the `i64`/`u64` range and is read back as an
 //! `f64` outside it (`serde_json` without `arbitrary_precision`, which `edax-core`'s `number_cmp`
 //! relies on). Pinned by [`tests::result_integers_are_exact_only_within_64_bits`].
@@ -84,6 +88,12 @@ impl<R> Record<R> {
                 message: message.into(),
             },
         }
+    }
+
+    /// The record that stands in for a stored one no reader can decode: a terminal `codec` failure whose
+    /// message names `cause`, the decode error. See [`decode_prior`] for which hash it carries.
+    pub fn unreadable(payload_hash: u64, cause: &Error) -> Self {
+        Self::failed(payload_hash, ErrorCode::Codec, format!("unreadable idempotency record: {}", cause.message))
     }
 }
 
@@ -185,9 +195,33 @@ pub fn encode_record<R: Serialize>(record: &Record<R>) -> Result<Vec<u8>, Error>
 }
 
 /// Parse stored bytes into a record whose result is decoded as `R`. Unreadable bytes are a `codec`
-/// error.
+/// error. A store reads the record that holds a key with [`decode_prior`] instead.
 pub fn decode_record<R: DeserializeOwned>(json: &[u8]) -> Result<Record<R>, Error> {
     serde_json::from_slice(json).map_err(Error::codec)
+}
+
+/// The record a losing claimant reads from the bytes that hold its key. Never fails: bytes
+/// [`decode_record`] refuses (garbage, a torn write, another layout, a field of the wrong type, a
+/// result that is not an `R`) are [`Record::unreadable`], a terminal `codec` failure, so every SDK
+/// replays them as a cached failure. The handler never runs again for the key, and a dispatcher
+/// dead-letters the message instead of redelivering it until the record's retention ends.
+///
+/// The failure keeps the stored `payload_hash` when that field alone still reads as a `u64` in a JSON
+/// object. The kernel checks the hash first, so a claimant carrying a *different* command still learns
+/// that the key was reused, not that its own command failed. When the hash itself is unreadable, the
+/// record carries `claimant_hash`: nothing tells the two commands apart, so the claimant gets the
+/// failure, the side that never runs a handler twice.
+pub fn decode_prior<R: DeserializeOwned>(bytes: &[u8], claimant_hash: u64) -> Record<R> {
+    decode_record(bytes).unwrap_or_else(|cause| Record::unreadable(stored_hash(bytes).unwrap_or(claimant_hash), &cause))
+}
+
+/// The `payload_hash` of bytes that do not decode as a record, if that one field still reads. Through
+/// a `Value`, as the record itself is read, so an array is never read positionally.
+fn stored_hash(bytes: &[u8]) -> Option<u64> {
+    match serde_json::from_slice::<Value>(bytes).ok()? {
+        Value::Object(mut fields) => fields.remove("payload_hash")?.as_u64(),
+        _ => None,
+    }
 }
 
 /// The canonical record text from the flat fields a binding holds. The kernel applies its reading
@@ -396,6 +430,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn decode_prior_branches() {
+        // Every way stored bytes can fail to be a record, and the hash each failure keeps. A readable
+        // record reads exactly as `decode_record` reads it.
+        const CLAIMANT: u64 = 7;
+        let unreadable = |hash: u64, cause: &str| Record::<u64>::unreadable(hash, &Error::codec(cause));
+        for (name, bytes, want) in [
+            (
+                "a_readable_record_is_itself",
+                br#"{"payload_hash":11234062831410934249,"result":5,"error":null,"pending":false}"#.as_slice(),
+                Record::done(HASH, 5),
+            ),
+            ("garbage_carries_the_claimants_hash", b"{not json".as_slice(), unreadable(CLAIMANT, "key must be a string at line 1 column 2")),
+            ("not_utf8_carries_the_claimants_hash", b"\xff\xfe".as_slice(), unreadable(CLAIMANT, "expected value at line 1 column 1")),
+            (
+                "a_torn_write_carries_the_claimants_hash",
+                br#"{"payload_hash":11234062831410934249,"res"#.as_slice(),
+                unreadable(CLAIMANT, "EOF while parsing a string at line 1 column 41"),
+            ),
+            // An array is never read positionally, so its first element is not taken for a hash.
+            ("an_array_carries_the_claimants_hash", b"[11234062831410934249,null]".as_slice(), unreadable(CLAIMANT, "idempotency record is not a JSON object")),
+            ("no_hash_carries_the_claimants_hash", br#"{"result":5}"#.as_slice(), unreadable(CLAIMANT, "missing field `payload_hash`")),
+            (
+                "a_string_hash_carries_the_claimants_hash",
+                br#"{"payload_hash":"11234062831410934249"}"#.as_slice(),
+                unreadable(CLAIMANT, r#"invalid type: string "11234062831410934249", expected u64"#),
+            ),
+            (
+                "a_wrong_type_beside_a_readable_hash_keeps_the_stored_hash",
+                br#"{"payload_hash":11234062831410934249,"pending":"yes"}"#.as_slice(),
+                unreadable(HASH, r#"invalid type: string "yes", expected a boolean"#),
+            ),
+            (
+                "a_result_that_is_not_an_r_keeps_the_stored_hash",
+                br#"{"payload_hash":11234062831410934249,"result":"x","error":null,"pending":false}"#.as_slice(),
+                unreadable(HASH, r#"cached result is not a valid replay value: invalid type: string "x", expected u64"#),
+            ),
+        ] {
+            assert_eq!(decode_prior::<u64>(bytes, CLAIMANT), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_record_is_a_terminal_codec_failure_naming_the_cause() {
+        let record = Record::<Value>::unreadable(HASH, &Error::codec("EOF while parsing"));
+        assert_eq!(record, Record::failed(HASH, ErrorCode::Codec, "unreadable idempotency record: EOF while parsing"));
+        assert_eq!(
+            outcome(&record, HASH),
+            Outcome::Failed { code: Some(ErrorCode::Codec), message: "unreadable idempotency record: EOF while parsing" }
+        );
+        assert_eq!(outcome(&record, HASH ^ 1), Outcome::PayloadMismatch, "the hash is still checked first");
     }
 
     #[test]

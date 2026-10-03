@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from .. import _edax, errors
-from ..command import Claimed, Record, Won, decode_record, encode_record
+from ..command import Claimed, Record, Won, decode_prior, encode_record
 from ..errors import BadHandle, CodecError, EdaxError, StoreError
 from ..store import Tx
 
@@ -75,8 +75,9 @@ class RedisIdempotencyStore:
     ``claim_ttl_ms / 3`` while it is held. ``op_timeout_ms`` is the deadline on each Redis call, client
     retries included. A misconfigured store raises terminal :class:`~edax.errors.BadHandle` when built. A
     client or server failure raises transient :class:`~edax.errors.StoreError`, a deterministic one
-    (``WRONGTYPE``, a refused command) terminal, and an unreadable value terminal
-    :class:`~edax.errors.CodecError`. See ``docs/backends/redis.md``."""
+    (``WRONGTYPE``, a refused command) terminal. A stored value no reader can decode is the kernel's
+    terminal ``codec`` failure, which the guard replays as :class:`~edax.errors.CachedFailure`. See
+    ``docs/backends/redis.md``."""
 
     # Redis cannot enlist in another database's transaction, so the guard must compensate by hand.
     joins_transaction: ClassVar[bool] = False
@@ -144,10 +145,10 @@ class RedisIdempotencyStore:
         reply = await self._eval("claim", key, [claim, self._claim_ttl_ms])
         with errors.mapped():
             # A reply equal to this claim is its own first send, landed with its reply lost: won. A value
-            # the kernel cannot read is a terminal CodecError, not a retried transient failure.
+            # the kernel cannot read comes back as its unreadable record, a terminal codec failure.
             prior = _edax.redis_claim_outcome(claim, _reply_bytes(reply))
         if prior is not None:
-            return decode_record(prior)  # an unreadable record is the kernel's terminal CodecError
+            return decode_prior(prior, payload_hash)  # replayed as cached, never re-run
         if self._heartbeat:
             self._renewals[claim] = asyncio.create_task(self._renew(key, claim))
         return Won(claim)

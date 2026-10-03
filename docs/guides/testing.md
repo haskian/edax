@@ -201,7 +201,8 @@ worth knowing before you rely on it:
   A conformance suite that only ever passes is a promise, not a test.
 - **It runs against the in-tree backends too.** `test_contract_memory.py` holds the memory stores to
   the same clauses, so the suite cannot drift from the implementations it describes. `MemoryLedger` and
-  the Redis store (`test_redis.py`) run the same `IdempotencyStoreContract`, takeover clauses included.
+  the Redis store (`test_redis.py`) run the same `IdempotencyStoreContract`, takeover and
+  unreadable-record clauses included.
 - **It catches races, not only wrong answers.** Each seam has a race clause. Two units of work stage a
   write at one version before either commits, and exactly one may land. The order is forced, not left to
   timing. The second writer runs in a task of its own. The first commits after the second staged, or after

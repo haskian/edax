@@ -39,7 +39,7 @@ classDiagram
 | `MemoryTransactor` | `Transactor` | the transaction boundary; `transaction()` yields a `MemoryTx` |
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
 | `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works |
-| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, and `expire(key)` lapses a key |
+| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |
 | `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False` — the ordering a Redis ledger has |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
 | `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency, a tombstone on completion, and the saga outbox |
@@ -194,6 +194,11 @@ staged by an open unit of work is not committed, so it does not lapse. The same 
 drives each scenario through the guard over both and asserts the same outcome.
 `examples/py/15_lease_takeover.py` walks through the takeover one step at a time.
 
+**`put_raw(key, raw)` is another writer's damage.** It stores bytes as the key's settled record in
+committed state, unchecked: a torn write, another layout, a field of the wrong type. The next claim reads
+them as the kernel does, a cached `codec` failure, so a test can rehearse a corrupted ledger row. A key an
+open unit of work holds is refused with `ConcurrencyError`. Rust has the same hook on both memory stores.
+
 ## Isolation by exclusion, and `masked_pending`
 
 A durable store parks a second writer on a row lock. An in-memory store driven from one event loop
@@ -206,14 +211,16 @@ not win: it loses, and reads back the holder's record **re-masked as pending**. 
 `masked_pending`:
 
 ```rust
-fn masked_pending(bytes: &[u8]) -> Vec<u8> {
-    let Ok(record) = edax_cqrs::decode_record::<Value>(bytes) else { return bytes.to_vec() };
-    edax_cqrs::encode_record(&edax_cqrs::Record::<Value>::pending(record.payload_hash)).unwrap_or_else(|_| bytes.to_vec())
+fn masked_pending(bytes: &[u8], claimant_hash: u64) -> Result<Vec<u8>, Error> {
+    let held = edax_cqrs::decode_prior::<Value>(bytes, claimant_hash);
+    edax_cqrs::encode_record(&edax_cqrs::Record::<Value>::pending(held.payload_hash))
 }
 ```
 
-It decodes the holder's staged record, keeps the `payload_hash`, and returns a fresh `pending`
-record. Bytes that are not a kernel record cross unchanged. The reason is the holder may still roll
+It reads the holder's staged record as the kernel does, keeps its `payload_hash`, and returns a fresh
+`pending` record. Bytes no reader can decode are masked too, under the hash `decode_prior` reads from
+them. A claimant never replays them as a cached failure while they may still roll back. The reason
+is the holder may still roll
 back, so whatever it has staged since is not an outcome to replay. The loser therefore sees
 `pending`, and the guard raises `InProgress` — which the contract explicitly allows as the
 alternative to blocking.

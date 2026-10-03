@@ -14,7 +14,7 @@ use edax_cqrs::query::{decode_cursor, effective_sort, encode_cursor, query_json,
 use edax_cqrs::eval_json;
 use edax_core::ErrorCode;
 use edax_cqrs::{
-    cached_failure, canonical_json, command_hash, decode_record, encode_record, outcome, payload_hash, Outcome,
+    cached_failure, canonical_json, command_hash, decode_prior, decode_record, encode_record, outcome, payload_hash, Outcome,
     Record, State,
 };
 use edax_golden::write_or_check;
@@ -274,22 +274,37 @@ fn idempotency_record_cases() -> Vec<Value> {
         Case { name: "stored_zero_hash_mismatches", stored: stored(&Record::done(0, json!(42))), current: hash },
         Case { name: "stored_zero_hash_replays_against_zero", stored: stored(&Record::done(0, json!(42))), current: 0 },
     ];
-    let refused = [
-        ("not_an_object", "[1,null,null]".to_owned()),
-        ("missing_payload_hash", r#"{"result":null,"error":null,"pending":false}"#.to_owned()),
-        ("float_payload_hash", format!(r#"{{"payload_hash":{hash}.0,"pending":false}}"#)),
-        ("negative_payload_hash", r#"{"payload_hash":-1,"pending":false}"#.to_owned()),
-        ("string_payload_hash", format!(r#"{{"payload_hash":"{hash}","pending":false}}"#)),
-        ("payload_hash_past_u64", r#"{"payload_hash":18446744073709551616,"pending":false}"#.to_owned()),
-        ("non_string_error", format!(r#"{{"payload_hash":{hash},"error":42,"pending":false}}"#)),
-        ("null_pending", format!(r#"{{"payload_hash":{hash},"pending":null}}"#)),
-        ("not_json", "{".to_owned()),
+    // Bytes no reader can decode. Each still holds its key: `decode_prior` reads it as a terminal
+    // `codec` failure, and `decode_error` pins the strict reader's refusal. The message is the JSON
+    // parser's own text, so it is pinned too. A row whose hash does not read is claimed with `other`,
+    // so the failure visibly carries the claimant's hash; a row whose hash reads keeps the stored one.
+    let unreadable = [
+        Case { name: "not_an_object", stored: "[1,null,null]".to_owned(), current: other },
+        Case { name: "missing_payload_hash", stored: r#"{"result":null,"error":null,"pending":false}"#.to_owned(), current: other },
+        Case { name: "float_payload_hash", stored: format!(r#"{{"payload_hash":{hash}.0,"pending":false}}"#), current: other },
+        Case { name: "negative_payload_hash", stored: r#"{"payload_hash":-1,"pending":false}"#.to_owned(), current: other },
+        Case { name: "string_payload_hash", stored: format!(r#"{{"payload_hash":"{hash}","pending":false}}"#), current: other },
+        Case { name: "payload_hash_past_u64", stored: r#"{"payload_hash":18446744073709551616,"pending":false}"#.to_owned(), current: other },
+        Case { name: "non_string_error", stored: format!(r#"{{"payload_hash":{hash},"error":42,"pending":false}}"#), current: hash },
+        Case { name: "non_string_error_code", stored: format!(r#"{{"payload_hash":{hash},"error":"boom","error_code":7,"pending":false}}"#), current: hash },
+        Case { name: "null_pending", stored: format!(r#"{{"payload_hash":{hash},"pending":null}}"#), current: hash },
+        // A state the wire does not know: `pending` is a bool, never a word.
+        Case { name: "unknown_pending_state", stored: format!(r#"{{"payload_hash":{hash},"pending":"settling"}}"#), current: hash },
+        Case { name: "not_json", stored: "{".to_owned(), current: other },
+        Case { name: "garbage", stored: "\u{1}\u{7f}edax".to_owned(), current: other },
+        // A record the Rust SDK was writing, cut off mid-write: the shared ledger's torn row.
+        Case {
+            name: "torn_write_from_rust",
+            stored: stored(&Record::done(hash, json!({"invoice_id": "invoice-7", "total": 5000})))[..48].to_owned(),
+            current: other,
+        },
+        // The hash still reads beside a broken field, so another command reusing the key is told so.
+        Case {
+            name: "unreadable_record_reused_by_another_command",
+            stored: format!(r#"{{"payload_hash":{hash},"error":42,"pending":false}}"#),
+            current: other,
+        },
     ];
-    let refused_rows = refused.into_iter().map(|(name, stored)| {
-        let error = decode_record::<Value>(stored.as_bytes()).expect_err(name);
-        // The code is the contract; the message is the JSON parser's own text.
-        json!({ "name": name, "stored": stored, "current": hash, "error_code": error.code.as_str() })
-    });
     let cases = cases.into_iter().chain([
         // A field the kernel does not know is ignored, like a newer writer's addition to an envelope.
         Case {
@@ -299,8 +314,9 @@ fn idempotency_record_cases() -> Vec<Value> {
         },
     ]);
     cases
+        .chain(unreadable)
         .map(|c| {
-            let record = decode_record::<Value>(c.stored.as_bytes()).unwrap();
+            let record = decode_prior::<Value>(c.stored.as_bytes(), c.current);
             let mut expected = json!({
                 "name": c.name,
                 "stored": c.stored,
@@ -310,6 +326,10 @@ fn idempotency_record_cases() -> Vec<Value> {
                 "outcome": outcome(&record, c.current).as_str(),
                 "encoded": stored(&record),
             });
+            match decode_record::<Value>(c.stored.as_bytes()) {
+                Ok(strict) => assert_eq!(strict, record, "{}: a readable record reads alike both ways", c.name),
+                Err(error) => expected["decode_error"] = json!(error.to_string()),
+            }
             match &record.state {
                 State::Pending => {}
                 State::Failed { code, message } => {
@@ -324,7 +344,6 @@ fn idempotency_record_cases() -> Vec<Value> {
             }
             expected
         })
-        .chain(refused_rows)
         .collect()
 }
 

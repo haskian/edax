@@ -210,11 +210,25 @@ type.
 annotation of the handler it wraps directly, when that annotation resolves at module scope. With neither,
 with `result_type=typing.Any`, or with an `object` annotation, the replay is the plain JSON value. A type
 msgspec cannot convert to raises `TypeError` at `register`. A stored result that does not convert to the
-declared type raises the terminal `CodecError` on replay. `tests/test_replay_type.py` runs every branch,
+declared type is an unreadable record, described next. `tests/test_replay_type.py` runs every branch,
 plus a crash-and-redeliver over each ledger ordering. Rust's guard decodes the record as the bus's `O`.
 
 The hash is checked before the state, so a mismatched payload is rejected even while the winner is
 still in progress. The kernel's `outcome` decides that, pinned by `outcome_branches`.
+
+**An unreadable record is a cached failure.** A record no reader can decode still holds its key. It
+may be a torn write, another layout, a field of the wrong type, or a result that does not convert to
+the handler's type. Every store reads it with the kernel's `decode_prior`, which turns it into a terminal
+`codec` failure. The guard replays it as `CachedFailure`, with `original_code` `codec` and a message
+that names the decode error (`codec: unreadable idempotency record: EOF while parsing ...`). The
+handler never runs again for the key, and the dispatcher dead-letters the message instead of
+redelivering it until the record expires. Both SDKs reach the same failure from the same bytes,
+pinned by the `decode_error` rows of `idempotency_record.json`.
+
+The failure keeps the stored `payload_hash` when that one field still reads. Another command that
+reuses the key is then still told `PayloadMismatch`, not that its own command failed. When the hash
+itself does not read, the failure carries the claimant's hash, so the claimant gets the failure.
+Clear the key by hand to run the handler again.
 
 **A loser must never release the winner's key.** Python's `_replay` raises and returns; it writes
 nothing. Rust's `guarded` does the same on the `Claim::Prior` arm. An over-eager compensation there
@@ -237,6 +251,9 @@ client that re-sends the script after a lost reply finds its own claim. The kern
 ### `CachedFailure` is reachable in one mode only
 
 The same handler code has two replay semantics, decided by the ledger rather than by the code.
+
+One exception holds in both modes: a record no reader can decode replays as `CachedFailure`
+([above](#the-loser-paths)).
 
 Under a **shared ledger** a terminal failure is never cached. The `failed` record is written inside
 the transaction the handler's failure rolls back, so it disappears with the work. The key is free,
@@ -292,6 +309,7 @@ Windows outside that table, each pinned elsewhere:
 | the dispatch is cancelled mid-handler | nothing — the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
 | the dispatch is cancelled mid-`complete` | nothing — released | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_complete_releases_the_claim]` |
 | a Rust handler panics | nothing — released, and the panic keeps unwinding | re-runs the handler | `a_panicking_handler_releases_the_claim` |
+| a stored record will not decode (a torn write, another writer's layout) | the unreadable bytes, untouched | raises `CachedFailure` of code `codec`; the handler does not run | `test_an_unreadable_record_replays_as_a_cached_codec_failure` (contract), `an_unreadable_record_replays_as_a_cached_codec_failure_and_never_runs_the_handler` |
 
 When `claim` fails the ledger holds either nothing, or a pending record whose response was lost. The
 guard deliberately does not compensate that, and the handler does not run. The Rust twin is

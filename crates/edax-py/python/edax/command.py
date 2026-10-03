@@ -47,6 +47,7 @@ __all__ = [
     "PayloadMismatch",
     "Record",
     "Won",
+    "decode_prior",
     "decode_record",
     "encode_record",
     "idempotent",
@@ -234,6 +235,9 @@ class IdempotencyStore(Protocol):
     - *Record contents.* ``payload_hash`` is the kernel's unsigned 64-bit hash: store it losslessly, never a
       signed ``BIGINT``; one outside ``0 .. 2**64 - 1`` raises :class:`~edax.errors.CodecError`. ``result``
       must round-trip unchanged, within the codec's integer bounds (``docs/kernels/cqrs.md``).
+    - *Unreadable records.* ``claim`` reads the record holding a key with :func:`decode_prior`, so bytes no
+      reader can decode come back as the kernel's terminal ``codec`` failure, never as an exception and
+      never as a free key. The guard replays it as :class:`~edax.errors.CachedFailure`, as every SDK does.
     - *Errors.* Backend failures raise :class:`~edax.errors.StoreError`, which the guard treats as transient.
     """
 
@@ -348,7 +352,8 @@ def idempotent(
     A cached success crosses the store as JSON, so a replay hands back the handler's declared return type,
     not the plain JSON value: ``result_type``, else the return annotation of the handler this guard wraps
     directly (when it resolves at module scope), converted with msgspec. A replay that does not convert is
-    the terminal :class:`~edax.errors.CodecError`. With neither, or with ``result_type=Any``, a replay is
+    an unreadable record: the terminal :class:`~edax.errors.CachedFailure` of code ``codec``, as in the
+    Rust SDK, whose typed store reads it so. With neither, or with ``result_type=Any``, a replay is
     the plain JSON value, as with an `object` annotation. A ``result_type`` msgspec cannot convert to raises
     :class:`TypeError` at wiring.
 
@@ -554,6 +559,16 @@ def _replay(name: str, key: str, payload_hash: int, prior: Record, observe: Obse
     exceptions. The observer hears the kernel's verdict verbatim, so no SDK renames it. Never
     releases, because the key belongs to the winner."""
     verdict = _outcome(prior, payload_hash)
+    replayed = prior.result
+    if verdict == "succeeded" and replay_as is not None:
+        try:
+            replayed = msgspec.convert(prior.result, replay_as)
+        except msgspec.ValidationError as e:
+            # A cached result that does not read back as the result type is an unreadable record, as the
+            # Rust SDK's typed decode finds it: the kernel's terminal codec failure, replayed as cached.
+            cause = f"cached result for {key!r} does not convert to {replay_as!r}: {e}"
+            prior = _record_of(_edax.unreadable_idempotency_record(prior.payload_hash, cause))
+            verdict = "failed"
     observe.claim(name, verdict)
     if verdict == "payload_mismatch":
         raise PayloadMismatch(key)
@@ -563,13 +578,7 @@ def _replay(name: str, key: str, payload_hash: int, prior: Record, observe: Obse
         # The kernel's replay text carries the original code (`codec: bad payload`), so it survives.
         message = _edax.cached_failure_message(prior.error or "", prior.error_code)
         raise CachedFailure(message, original_code=prior.error_code)
-    if replay_as is None:
-        return prior.result  # "succeeded": the cached value, `None` included
-    try:
-        return msgspec.convert(prior.result, replay_as)
-    except msgspec.ValidationError as e:
-        # The same record fails the same way on every replay: deterministic, so terminal.
-        raise CodecError(f"cached result for {key!r} does not convert to {replay_as!r}: {e}") from e
+    return replayed  # "succeeded": the cached value, `None` included
 
 
 async def _complete_or_release(store: IdempotencyStore, key: str, handle: bytes, record: Record) -> None:
@@ -611,12 +620,28 @@ def decode_record(raw: str) -> Record:
     """Parse the kernel's idempotency-record JSON. The kernel applies the reading order, so a
     record written by an older writer (no ``pending`` field) reads as completed, and a completed
     record with a ``null`` result reads as a success whose value is ``None``. A failure stored without a
-    code the kernel knows reads with ``error_code=None``."""
+    code the kernel knows reads with ``error_code=None``. An unreadable record raises the terminal
+    :class:`~edax.errors.CodecError`; a store reads the record that holds a key with :func:`decode_prior`."""
     with errors.mapped():  # an unreadable record is the kernel's terminal `codec:` error
-        decoded = _edax.decode_idempotency_record(raw)
+        return _record_of(_edax.decode_idempotency_record(raw))
+
+
+def decode_prior(raw: str, claimant_hash: int) -> Record:
+    """The record a losing claimant reads from the JSON holding its key: :func:`decode_record`, except that
+    it never raises. A record no reader can decode is still a cached outcome, so the kernel reads it as a
+    terminal ``codec`` failure, and the guard replays it as :class:`~edax.errors.CachedFailure` in every
+    SDK: the handler never runs again for the key. The failure carries the stored ``payload_hash`` when
+    that field still reads, so a reused key is still a :class:`~edax.errors.PayloadMismatch`, else
+    ``claimant_hash``. Every :class:`IdempotencyStore` that persists the kernel's JSON reads with this."""
+    with errors.mapped():  # a hash outside u64 cannot cross: the terminal CodecError
+        return _record_of(_edax.decode_prior_idempotency_record(raw, claimant_hash))
+
+
+def _record_of(decoded: _edax.IdempotencyRecord) -> Record:
+    """A kernel-decoded record as the SDK's :class:`Record`."""
     if decoded.state == "pending":
         return Record(decoded.payload_hash, pending=True)
     if decoded.state == "failed":
         return Record(decoded.payload_hash, error=decoded.error, error_code=decoded.error_code or None)
-    # The kernel validated its own fields, not the host's `result`: the same terminal fault.
+    # The kernel wrote `result_json` from a value it parsed, so it is JSON.
     return Record(decoded.payload_hash, result=_json.decode(decoded.result_json))

@@ -278,8 +278,8 @@ def test_golden_kafka_offsets() -> None:
 
 def test_golden_redis_value() -> None:
     """The bytes under an idempotency key: ``1<owner><record>``, and the record read back out of them
-    the way a claim reads the key's holder. A second SDK that laid them out differently could not read
-    this SDK's ledger. A claim value with a fixed owner is a kernel test hook, so those rows replay in
+    the way a claim reads the key's holder; a value the split refuses reads as a cached codec failure. A
+    second SDK that laid them out differently could not read this SDK's ledger. A claim value with a fixed owner is a kernel test hook, so those rows replay in
     Rust only."""
     reader = _edax.redis_new_claim(0)  # a claim of this SDK's own, so every held value reads as a prior
     for c in golden("redis_value.json"):
@@ -291,9 +291,13 @@ def test_golden_redis_value() -> None:
         elif op == "split":
             raw, want = bytes.fromhex(c["raw_hex"]), c["want"]
             if "error" in want:
-                with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
-                    _edax.redis_claim_outcome(reader, raw)
-                assert f"codec: {caught.value}" == want["error"], name
+                # A value the split refuses still holds the key: the claimant reads the kernel's
+                # unreadable record, a codec failure under its own hash naming the split's refusal.
+                prior = _edax.redis_claim_outcome(reader, raw)
+                assert prior is not None, name
+                code, _, cause = want["error"].partition(": ")
+                failed = edax.Record(0, error=f"unreadable idempotency record: {cause}", error_code=code)
+                assert edax.command.decode_prior(prior, 0) == failed, name
                 continue
             assert _edax.redis_claim_outcome(reader, raw) == want["record"], name
         elif op != "claim":

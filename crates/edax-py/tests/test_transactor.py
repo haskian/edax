@@ -709,3 +709,23 @@ def test_a_transactor_chain_that_loops_names_no_database() -> None:
         current_tx(a)
     single = Loop()
     assert current_tx(single) is None, "an object naming itself is its own database"
+
+
+async def test_put_raw_overwrites_committed_state_and_leaves_a_held_key_alone() -> None:
+    """The test hook stores bytes a claim must then read as the kernel does. A committed record is
+    overwritten; a key an open unit of work holds is refused as transient, and the holder keeps it."""
+    db = MemoryTransactor()
+    store = MemoryIdempotencyStore(db)
+    won = await store.claim("k1", 1)
+    assert isinstance(won, Won)
+    await store.complete("k1", won.handle, Record(payload_hash=1, result=42))
+    store.put_raw("k1", "{")
+    prior = await store.claim("k1", 1)
+    assert not isinstance(prior, Won) and prior.error_code == "codec", "the settled record was overwritten"
+
+    async with transaction(db) as tx:
+        assert isinstance(await store.claim("held", 1, tx=tx), Won)
+        with pytest.raises(edax.ConcurrencyError, match="held by an open transaction"):
+            store.put_raw("held", "{")
+        held = await store.claim("held", 1, tx=tx)
+        assert not isinstance(held, Won) and held.pending, "the holder's own claim is untouched"

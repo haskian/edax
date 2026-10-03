@@ -41,7 +41,7 @@ it in `edax::Terminal`.
 | `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; `retry` inside an open transaction | the dispatcher dead-letters — retrying cannot rewire the store |
 | `ErrorCode::PayloadMismatch` | `PayloadMismatch` | `payload_mismatch` | terminal | the guard, when the key's stored hash differs from this payload's | the dispatcher dead-letters; the guard never re-runs the handler |
 | `ErrorCode::InProgress` | `InProgress` | `in_progress` | transient | the guard, when the winner holds the claim and has not completed | `retry` re-runs; the dispatcher waits one backoff step and nacks **without** burning an attempt |
-| `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal failure; the message is the original failure's wire form and `original_code` its code | the dispatcher dead-letters instead of redelivering forever |
+| `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal failure, or a stored record no reader can decode (`original_code` `codec`); the message is the original failure's wire form and `original_code` its code | the dispatcher dead-letters instead of redelivering forever |
 | `ErrorCode::HandlerNotFound` | `HandlerNotFound` | `handler_not_found` | terminal | `CommandBus.dispatch` when no handler is registered (or, in Rust, one is registered for another command or result type) | the dispatcher dead-letters — a redelivery finds the same registry |
 | `edax::Terminal(err)` | `Rejected`, or any exception with `terminal = True` | `rejected` | terminal | a host's own business rejection ("insufficient funds") | `retry` gives up at once; the guard caches it as `rejected`; the dispatcher dead-letters |
 | — any other error | any other exception | none | transient (the kernel's default) | host code, a downstream client, a panic | everything treats it as worth retrying |
@@ -56,7 +56,9 @@ Every row is a code of the kernel; the second column names the constructor where
 - a filter operand, a projection document or a saga state the SDK's one JSON encoder cannot encode.
   Python encodes all of them with msgspec, the encoder the command hash uses. A `datetime` that hashes
   in a command therefore also works in a filter.
-- an idempotency record that will not encode or decode.
+- an idempotency record that will not encode, or that the strict `decode_record` will not decode. A
+  store reads the record holding a key with `decode_prior` instead, which never raises: an unreadable
+  record replays as `CachedFailure` with `original_code` `codec`, in both SDKs.
 - every kernel refusal. Examples: a batch that is not dense (`check_sequence_batch`), an upcast plan
   with a gap, a cursor that is not base64, an unknown error code.
 - in Python, an argument the binding cannot convert: a negative or too-wide integer (`OverflowError`),

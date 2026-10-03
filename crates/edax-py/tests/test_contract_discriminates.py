@@ -28,7 +28,7 @@ from edax.backend.memory import (
     MemorySagaStore,
     MemoryTransactor,
 )
-from edax.command import Claimed, Record, Won
+from edax.command import Claimed, Record, Won, decode_record
 from edax.errors import CodecError, ConcurrencyError, EdaxError, StoreError
 from edax.projection import Entity
 from edax.query import Page
@@ -290,6 +290,28 @@ class DropsTheErrorCode(_Delegating):
         await self._inner.complete(
             key, handle, Record(record.payload_hash, record.result, record.error, record.pending), tx
         )
+
+
+class DecodesStrictly(_Delegating):
+    """Reads its rows with the strict ``decode_record`` instead of ``decode_prior``, as the Python stores did
+    before: an unreadable row raises ``CodecError`` on every claim, while the Rust SDK sharing the ledger
+    replays it as a cached failure."""
+
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
+        claimed = self._inner._db().claim(self._inner._token(tx), key, payload_hash)
+        return Won(claimed.handle) if claimed.won else decode_record(claimed.prior)
+
+
+class ReadsAnUnreadableRowAsFree(DecodesStrictly):
+    """Treats a row it cannot decode as absent and claims over it, the ``except: pass`` a hand-rolled store
+    writes: the handler runs again for a key whose outcome is already cached."""
+
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
+        try:
+            return await super().claim(key, payload_hash, tx)
+        except CodecError:
+            self._inner.expire(key)
+            return await self._inner.claim(key, payload_hash, tx)
 
 
 class NoneResultReadsAsPending(_Delegating):
@@ -775,6 +797,15 @@ class _ExpiringContract(IdempotencyStoreContract):
         del idempotency_store.records[key]
 
 
+class _RawContract(IdempotencyStoreContract):
+    """The unreadable-record clause runs only for a store that persists the kernel's record JSON."""
+
+    stores_raw_records = True
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        getattr(idempotency_store, "_inner", idempotency_store).put_raw(key, raw)
+
+
 #: What a broken store's failure may look like: a clause's own assertion, a ``pytest.raises`` that did not
 #: fire, or a seam's typed error the clause did not expect. A ``TypeError`` or an ``AttributeError`` is a
 #: broken rig, not a caught store, so it does not count.
@@ -954,6 +985,20 @@ BROKEN: list[Broken] = [
         IdempotencyStoreContract,
         "test_a_cached_failure_comes_back_as_a_failure",
         lambda db: DropsTheErrorCode(MemoryIdempotencyStore(db)),
+    ),
+    Broken(
+        "ledger_raises_on_an_unreadable_row",
+        _RawContract,
+        "test_an_unreadable_record_replays_as_a_cached_codec_failure",
+        lambda db: DecodesStrictly(MemoryIdempotencyStore(db)),
+        expect="expected value at line 1 column 1",
+    ),
+    Broken(
+        "ledger_reads_an_unreadable_row_as_free",
+        _RawContract,
+        "test_an_unreadable_record_replays_as_a_cached_codec_failure",
+        lambda db: ReadsAnUnreadableRowAsFree(MemoryIdempotencyStore(db)),
+        expect="must not win the key",
     ),
     Broken(
         "none_result_left_pending",
@@ -1161,6 +1206,12 @@ async def test_the_contract_fails_a_store_that_breaks_its_clause(case: Broken) -
             lambda: LockingLedger(),
             lambda store: {"event_store": store},
         ),
+        (
+            _RawContract,
+            "test_an_unreadable_record_replays_as_a_cached_codec_failure",
+            lambda: MemoryIdempotencyStore(),
+            lambda store: {},
+        ),
     ],
     ids=[
         "memory_event_store_races",
@@ -1173,6 +1224,7 @@ async def test_the_contract_fails_a_store_that_breaks_its_clause(case: Broken) -
         "a_ledger_whose_contender_times_out",
         "a_row_locked_ledger_releases_with_the_winner_parked",
         "a_row_locked_ledger_parks_the_settler_until_the_holder_ends",
+        "a_ledger_that_reads_with_decode_prior",
     ],
 )
 async def test_the_same_clause_passes_the_store_without_the_mistake(
@@ -1312,3 +1364,11 @@ async def test_the_takeover_clauses_skip_a_store_whose_claims_never_expire() -> 
             await clause(MemoryIdempotencyStore())
     with pytest.raises(NotImplementedError):
         await contract.expire_claim(MemoryIdempotencyStore(), "k")
+
+
+async def test_the_unreadable_record_clause_skips_a_store_that_stores_no_raw_records() -> None:
+    contract = IdempotencyStoreContract()
+    with pytest.raises(pytest.skip.Exception):
+        await contract.test_an_unreadable_record_replays_as_a_cached_codec_failure(MemoryIdempotencyStore())
+    with pytest.raises(NotImplementedError):
+        await contract.put_raw_record(MemoryIdempotencyStore(), "k", "{")

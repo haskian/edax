@@ -1,5 +1,6 @@
 //! The Rust twin of Python's `edax.testing.contracts` clauses for the saga store, the saga outbox, the
-//! event store's snapshot and id rules, and the idempotency store's held-key rule: generic functions over the seam traits, so a backend an adopter
+//! event store's snapshot and id rules, and the idempotency store's held-key and unreadable-record rules:
+//! generic functions over the seam traits, so a backend an adopter
 //! writes runs the same clauses, and every in-tree backend runs them here. Each clause is one invariant a
 //! backend must hold; the in-memory store is the reference.
 
@@ -11,8 +12,8 @@
 )]
 
 use edax::{
-    Claim, Error, ErrorCode, EventStore, IdempotencyStore, MemoryEventStore, MemoryIdempotencyStore, MemorySagaStore, MemoryTx, Outbox,
-    Record, SagaCommand, SagaInstance, SagaStore, Snapshot, Transactor,
+    Claim, Error, ErrorCode, EventStore, IdempotencyStore, MemoryEventStore, MemoryIdempotencyStore, MemoryLedger, MemorySagaStore, MemoryTx,
+    Outbox, Record, SagaCommand, SagaInstance, SagaStore, Snapshot, State, Transactor,
 };
 use edax_event::{saga_command_id, Event, EventEnvelope};
 
@@ -110,6 +111,34 @@ where
     assert!(matches!(settled.state, edax::State::Done(ref result) if result == "done"));
 }
 
+/// A record no reader can decode still holds its key: a claim reads it as the kernel's terminal `codec`
+/// failure (`edax_cqrs::decode_prior`), so the guard replays a cached failure and the handler never runs
+/// again, as in every other SDK sharing the ledger. The failure keeps the stored hash when it reads, else
+/// the claimant's. `put_raw` stores bytes under a key as the backend persists a record, unchecked.
+fn idempotency_unreadable_record_contract<S>(store: &S, put_raw: impl Fn(&str, &[u8]), auto: impl Fn() -> S::Tx)
+where
+    S: IdempotencyStore<u64>,
+{
+    const STORED: u64 = 11_234_062_831_410_934_249;
+    const CLAIMANT: u64 = 18_446_744_073_709_551_615;
+    for (key, bytes, want_hash, cause) in [
+        ("garbage", b"\x01\x7fedax".as_slice(), CLAIMANT, "expected value at line 1 column 1"),
+        ("torn-write", br#"{"payload_hash":11234062831410934249,"result":{""#.as_slice(), CLAIMANT, "EOF while parsing a string"),
+        ("not-an-object", b"[11234062831410934249]".as_slice(), CLAIMANT, "not a JSON object"),
+        ("wrong-type", br#"{"payload_hash":11234062831410934249,"pending":"settling"}"#.as_slice(), STORED, "expected a boolean"),
+        ("result-not-an-o", br#"{"payload_hash":11234062831410934249,"result":"x","pending":false}"#.as_slice(), STORED, "cached result is not a valid replay value"),
+    ] {
+        put_raw(key, bytes);
+        for attempt in ["first claim", "redelivery"] {
+            let Claim::Prior(record) = store.claim(&mut auto(), key, CLAIMANT).unwrap() else { panic!("{key}: {attempt} must not win") };
+            assert_eq!(record.payload_hash, want_hash, "{key}: {attempt}");
+            let State::Failed { code, message } = &record.state else { panic!("{key}: {attempt}: want Failed, got {:?}", record.state) };
+            assert_eq!(*code, Some(ErrorCode::Codec), "{key}: {attempt}");
+            assert!(message.starts_with("unreadable idempotency record: ") && message.contains(cause), "{key}: {attempt}: {message}");
+        }
+    }
+}
+
 /// The snapshot and id rules of the event store, against a fresh store from `new`.
 fn event_store_contract<S>(new: impl Fn() -> S)
 where
@@ -153,6 +182,14 @@ fn the_memory_saga_store_meets_the_saga_store_contract() {
 fn the_memory_idempotency_store_meets_the_held_key_clause() {
     let store = MemoryIdempotencyStore::<String>::new();
     idempotency_held_key_contract(&store, &store.transactor(), MemoryTx::auto_commit);
+}
+
+#[test]
+fn the_memory_stores_meet_the_unreadable_record_clause() {
+    let store = MemoryIdempotencyStore::<u64>::new();
+    idempotency_unreadable_record_contract(&store, |key, bytes| store.put_raw(key, bytes).unwrap(), MemoryTx::auto_commit);
+    let ledger = MemoryLedger::<u64>::new();
+    idempotency_unreadable_record_contract(&ledger, |key, bytes| ledger.put_raw(key, bytes).unwrap(), || ());
 }
 
 #[test]

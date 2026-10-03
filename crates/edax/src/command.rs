@@ -51,7 +51,9 @@ pub enum Claim<O> {
 ///
 /// A store that persists the kernel's JSON record (`edax_cqrs::encode_record`) must round-trip `O`
 /// unchanged. The codec is exact for integers inside the `i64`/`u64` range and reads anything wider back
-/// as an `f64`, so a result carrying a wider integer must carry it as a string.
+/// as an `f64`, so a result carrying a wider integer must carry it as a string. It reads the record that
+/// holds a key with `edax_cqrs::decode_prior`, so bytes no reader can decode as a `Record<O>` come back as
+/// the kernel's terminal `codec` failure, which the guard replays as a cached failure in every SDK.
 pub trait IdempotencyStore<O> {
     /// Backend transaction handle, like [`Transactor::Tx`](crate::Transactor::Tx). A store enlists the
     /// record in it, so the claim commits or rolls back with the events it guards; a rolled-back claim
@@ -1165,6 +1167,32 @@ mod tests {
         let replay = bus.dispatch::<Pay, i64>(&cmd).expect_err("cached failure");
         assert_eq!(replay.downcast_ref::<Error>(), Some(&Error::new(ErrorCode::CachedFailure, "codec: bad payload")));
         assert_eq!(calls.get(), 1); // handler never re-ran
+    }
+
+    #[test]
+    fn an_unreadable_record_replays_as_a_cached_codec_failure_and_never_runs_the_handler() {
+        // A torn write holds the key. The guard replays the kernel's codec failure, terminal, so retry
+        // stops at once, every redelivery replays it again, and the handler never runs for the key.
+        let store = Arc::new(MemStore::default());
+        store.put_raw("k1", br#"{"payload_hash":7,"result":{"#).unwrap();
+        let calls = Arc::new(Counter::default());
+        let calls_h = Arc::clone(&calls);
+        let bus = pay_bus(
+            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
+            Box::new(move |c: &Pay| {
+                calls_h.set(calls_h.get() + 1);
+                Ok(c.amount)
+            }),
+        );
+        let want = Error::new(
+            ErrorCode::CachedFailure,
+            "codec: unreadable idempotency record: EOF while parsing an object at line 1 column 28",
+        );
+        for attempt in ["first delivery", "redelivery"] {
+            let replay = bus.dispatch::<Pay, i64>(&pay("k1", 10)).expect_err(attempt);
+            assert_eq!(replay.downcast_ref::<Error>(), Some(&want), "{attempt}");
+        }
+        assert_eq!(calls.get(), 0, "the handler never ran");
     }
 
     /// The guard's test store: counts every seam call, and fails the ones it is told to. The counts

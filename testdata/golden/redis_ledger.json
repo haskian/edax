@@ -255,11 +255,13 @@
   },
   {
     "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
-    "name": "an_unreadable_value_is_refused",
+    "name": "an_unreadable_value_replays_a_cached_codec_failure",
     "op": "outcome",
     "reply_hex": "7b6e6f742061206c65646765722076616c7565",
     "want": {
-      "error": "codec: stored value has layout version '{'; this kernel reads version '1'"
+      "ok": {
+        "prior": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":\"unreadable idempotency record: stored value has layout version '{'; this kernel reads version '1'\",\"error_code\":\"codec\",\"pending\":false}"
+      }
     }
   },
   {
