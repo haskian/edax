@@ -368,10 +368,10 @@ mod tests {
 
     #[test]
     fn the_fold_that_loses_the_version_race_sends_nothing() {
-        // The reviewer's E4. `Paid` (payment worker) loads the open order; before it writes, `Cancelled`
-        // (order worker) folds the same instance and completes it with a `Refund`. `Paid`'s write
-        // conflicts, and because the runner never sends, its `Fulfill` dies with its fold. The
-        // redelivered `Paid` finds the tombstone. Exactly one compensating decision goes out.
+        // `Paid` (payment worker) loads the open order; before it writes, `Cancelled` (order worker)
+        // folds the same instance and completes it with a `Refund`. `Paid`'s write conflicts, and
+        // because the runner never sends, its `Fulfill` dies with its fold. The redelivered `Paid`
+        // finds the tombstone. Exactly one compensating decision goes out.
         let inner = MemorySagaStore::<String>::new();
         let racing = RacingStore::new(inner.clone());
         let first = runner(racing);
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn a_saga_command_relayed_through_the_bus_keeps_the_commands_verdict() {
-        // The relay is where the command runs now, so it is where its verdict lands: a terminal
+        // The relay is where the command runs, so it is where its verdict lands: a terminal
         // failure, the handler's own or a host rejection, dead-letters the row once and the rows
         // behind it go out; a transient one hands the row back.
         #[derive(Clone, Copy, Debug)]

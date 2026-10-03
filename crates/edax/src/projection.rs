@@ -29,7 +29,8 @@ pub trait ProjectionStore {
     fn get(&self, tx: &mut Self::Tx, id: &str) -> Result<Option<Entity>, Error>;
 
     /// Persist `entity.document` at `entity.version + 1` if the stored version still equals `entity.version`;
-    /// return [`Error::Concurrency`] otherwise. On success `entity.version` advances to the stored version.
+    /// return a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error otherwise. On success
+    /// `entity.version` advances to the stored version.
     fn save(&self, tx: &mut Self::Tx, entity: &mut Entity) -> Result<(), Error>;
 
     /// The page of documents `query` selects (see [`Query`]), with the cursor that resumes after it:

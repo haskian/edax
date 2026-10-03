@@ -24,8 +24,9 @@
 //!
 //! The cursor is `base64url(canonical_json({"s": <sort fingerprint>, "v": [<sort-key values>]}))`,
 //! unpadded so it survives a URL query string. The canonical form is RFC 8785, whose numbers are
-//! doubles, so a sort value that is an integer past 2^53 cannot be minted into a cursor. The fingerprint is the [`crate::payload_hash`] of
-//! the canonical effective sort, as 16 lowercase hex digits.
+//! doubles, so a sort value that is an integer past 2^53 cannot be minted into a cursor. The
+//! fingerprint is the [`crate::payload_hash`] of the canonical effective sort, as 16 lowercase hex
+//! digits.
 
 use crate::filter::{self, Filter};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};

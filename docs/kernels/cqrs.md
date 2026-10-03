@@ -6,7 +6,7 @@ hash covers, what the stored record looks like, what a claimant does with a reco
 
 The command bus itself is host-local ergonomics: handler registration, typed dispatch and the
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
-(SDKs), not here. The command side is five decisions and one stored shape.
+(SDKs), not here. The command side is six decisions and one stored shape.
 
 The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
@@ -20,6 +20,7 @@ and the two travel together because the query evaluates the filter.
 | `Record` / `State` | the stored record's wire shape and reading order |
 | `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
+| `settle` | whether a winner caches its failure or releases the claim |
 
 ---
 
@@ -99,8 +100,8 @@ value past 2^53 cannot be minted into a cursor either.
 half that carries the contract is `command_hash`, which fixes the *input rule*: the **whole command
 value**, serialized as one JSON object, then canonicalized, then hashed.
 
-That rule is the kernel's on purpose. No SDK and no user picks the bytes — a hand-written
-`payload()` was the one place two SDKs could quietly disagree.
+That rule is the kernel's on purpose. No SDK and no user picks the bytes. A hand-written
+`payload()` per command would let two SDKs disagree without notice.
 
 Two consequences follow from "the whole value":
 
@@ -133,7 +134,7 @@ on the same bytes because canonicalization removes everything an encoder is free
 
 Python uses `msgspec.json.encode` rather than `json.dumps` so that `UUID`, `datetime` and `Decimal`
 fields encode deterministically instead of raising `TypeError`, and it does **no** canonicalization
-of its own. The hash call is one line: `_edax.payload_hash_json(_payload_json(cmd))`.
+of its own. The hash is `_edax.payload_hash_json` over `_payload_json(cmd)`.
 
 ### The golden vectors that hold this
 
@@ -141,7 +142,7 @@ of its own. The hash call is one line: `_edax.payload_hash_json(_payload_json(cm
 |---|---|
 | `testdata/golden/payload_hash.json` | raw FNV-1a over six inputs, including `café ☕ 🦀` — agreement on multibyte UTF-8 |
 | `testdata/golden/canonical_payload_hash.json` | canonicalize-then-hash: key order, non-ASCII, `1` versus `1.0`, nested sorting, `{}` |
-| `testdata/golden/command_hash.json` | the input rule end to end: seven commands mapped to hashes |
+| `testdata/golden/command_hash.json` | the input rule end to end: ten commands, eight mapped to hashes and two refused past 2^53 |
 
 `command_hash.json` is asserted *through the SDK layer*, not against the kernel function. The Rust
 suite rebuilds each case as a `PlaceOrder`, dispatches it through the real `idempotent` middleware,
@@ -175,9 +176,9 @@ A failed record keeps its code **beside** the message rather than inside an `err
 that predates the field ignores it and still reads the failure, so a shared ledger stays readable
 through a rolling deploy. A replay keeps the original code in every SDK. `cached_failure(code,
 message)` is the error a losing claimant raises: terminal, with the original failure's wire form as
-its message (`"cached_failure: codec: bad payload"`). An empty `error` is still a failure; only `null` means
-"not failed". `encode_record_fields` builds the record from flat fields for a binding and refuses a code
-the taxonomy does not know.
+its message (`"cached_failure: codec: bad payload"`). An empty `error` is still a failure; only
+`null` means "not failed". `encode_record_fields` builds the record from flat fields for a binding
+and refuses a code the taxonomy does not know.
 
 **Reading order: `pending` wins, then `error`, then `result`**. The precedence is written down in
 exactly one place, `State::from_wire`, so a foreign writer that over-specifies a record cannot make
@@ -190,16 +191,16 @@ derive would otherwise read a JSON array positionally.
 
 ### An unreadable record replays as a cached failure
 
-Bytes `decode_record` refuses still hold their key. They are garbage, a torn write, another layout, a
-field of the wrong type, or a result a typed reader cannot read as its result type. `decode_prior(bytes,
-claimant_hash)` never fails. It reads such bytes as `Record::unreadable`: a terminal failure of code
+Bytes `decode_record` refuses still hold their key. They are garbage, a torn write, another layout,
+a field of the wrong type, or a result a typed reader cannot read as its result type.
+`decode_prior(bytes, claimant_hash)` never fails. It reads such bytes as `Record::unreadable`: a terminal failure of code
 `codec` whose message names the decode error (`unreadable idempotency record: EOF while parsing ...`).
 The guard replays it as `cached_failure`, so the handler never runs again for the key and a dispatcher
 dead-letters the message. Raising instead would fail every redelivery until the record expired, and
 reading the bytes as a free key would run the handler a second time.
 
-Which hash the failure carries is the one choice left. It keeps the stored `payload_hash` when that
-field alone still reads as a `u64` in a JSON object. The hash is checked first, so another command that
+Which hash the failure carries is the one choice left. It keeps the stored `payload_hash` when
+that field alone still reads as a `u64` in a JSON object. The hash is checked first, so another command that
 reuses the key is still told `payload_mismatch`, not that its own command failed. When the hash does
 not read, the failure carries `claimant_hash`: nothing tells the two commands apart, and the claimant
 gets the failure, the side that never runs a handler twice. The `decode_error` rows of
@@ -208,8 +209,8 @@ the same way.
 
 ### A stored `null` result replays as a success
 
-This is the case the module exists to settle. A `null` result on a completed, non-failed record is a
-**success whose value is null** — Python `None`, Rust `()` — not "no result". A handler that returns
+This is the case the module exists to settle. A `null` result on a completed, non-failed record is
+a success whose value is null (Python `None`, Rust `()`), not "no result". A handler that returns
 nothing is the common case, and its replay must return nothing rather than fail or look pending.
 
 A typed reader decodes the stored value as its own result type. `null` decodes to `()` for a
@@ -250,8 +251,8 @@ stateDiagram-v2
 ```
 
 `encode_record` is the only encoding a ledger may persist; `decode_prior` is how a store reads the
-record that holds a key, and `decode_record` is the strict reader under it.
-Encoding a result JSON cannot express fails loudly rather than silently dropping the record, because
+record that holds a key, and `decode_record` is the strict reader under it. Encoding a result JSON
+cannot express fails loudly rather than silently dropping the record, because
 the claim is already taken and a dropped record would strand the key.
 
 ---
@@ -263,10 +264,10 @@ record to judge. A stored hash of `0` is a real hash, not "absent": `idempotency
 that a record stored under `0` mismatches any other command and replays against itself.
 
 `outcome(prior, current)` is what a claimant that *lost* the claim does with the winner's record. It
-checks the hash first, so a mismatched payload is rejected even while the winner
-is still in progress. Only then does the record's state decide. The four variants are the whole
-classification, so adding one is a wire-format change that should break every SDK at compile time
-rather than fall into a catch-all.
+checks the hash first, so a mismatched payload is rejected even while the winner is still in
+progress. Only then does the record's state decide. The four variants are the whole classification.
+`Outcome` is not `#[non_exhaustive]`, so a fifth variant is a wire-format change that breaks every
+SDK at compile time instead of falling into a catch-all.
 
 ```mermaid
 flowchart TB
@@ -310,35 +311,6 @@ a cancellation). Both guards ask it (`edax_cqrs::settle`; Python `errors.code_of
 
 ---
 
-## What the kernel does not own
-
-The kernel decides. It never performs I/O, holds a lock, or retries.
-
-| Not owned | Whose it is | Why |
-|---|---|---|
-| the **claim** | the ledger backend's atomic insert-if-absent | linearizability across processes is a store property — `INSERT ... ON CONFLICT DO NOTHING`, `SET NX`, a unique-key insert. Never a read then a write. |
-| the **transaction** | the SDK guard and the host's `Transactor` | whether the claim commits with the events it guards is a wiring choice: `idempotent` uses the auto-commit handle, `idempotent_in` reads the host's open handle. |
-| the **retry policy** | the `retry` middleware, outside the guard | attempt counts and backoff are host policy. |
-| releasing a claim after a transient failure | the guard | the kernel has no verdict on the handler's error; the SDK classifies it and calls `complete` or `release`. |
-
-The consequence matters for the guarantee. Every window, both modes and both guards are in
-[`../sdk/idempotency.md`](../sdk/idempotency.md). What edax promises end to end is in
-[`../guides/delivery-guarantees.md`](../guides/delivery-guarantees.md).
-
----
-
-## See also
-
-- [`../sdk/idempotency.md`](../sdk/idempotency.md) — both guards, both modes, and every failure
-  window the kernel deliberately does not close.
-- [`./golden-vectors.md`](./golden-vectors.md) — how `command_hash.json` and
-  `idempotency_record.json` are generated and asserted.
-- [`./core.md`](./core.md) — `fnv1a64` behind `payload_hash`, backoff, and the error taxonomy
-  `PayloadMismatch` / `InProgress` / `CachedFailure` come from.
-- [`../sdk/commands.md`](../sdk/commands.md) — the `CommandBus` and middleware chain the kernel
-  deliberately leaves to the SDKs.
-- [`../sdk/errors.md`](../sdk/errors.md) — which verdicts are terminal and what branches on them.
-
 ## `query` — ordering and pagination
 
 The pipeline is `filter -> keyset(after) -> sort -> offset -> limit`. A backend may push all of it
@@ -359,8 +331,8 @@ A caller therefore never restates the sort to build one.
 | spec | `Query`, `SortKey` and every filter node refuse unknown fields; sort paths follow the filter's path rule; integer literals wider than 64 bits are refused |
 
 The cursor is written in the canonical form, so it is the same text whatever `serde_json` features a
-build turns on. It is URL-safe base64 with no padding, so it survives a URL query string. A cursor
-from before this rule (standard base64 of a bare tuple) is refused, not misread. Paging under
+build turns on. It is URL-safe base64 with no padding, so it survives a URL query string. A
+standard-base64 cursor, or one that encodes a bare tuple, is refused rather than misread. Paging under
 concurrent inserts and deletes neither skips nor repeats a row present throughout, as long as rows
 do not change their sort key. A proptest in `query.rs` and a Hypothesis twin through the binding
 check that. `testdata/golden/query.json` and `cursor.json` pin the bytes and every refusal.
@@ -368,3 +340,33 @@ check that. `testdata/golden/query.json` and `cursor.json` pin the bytes and eve
 The total order, the tiebreak and the cursor are documented from the host's side in
 [../sdk/projections.md](../sdk/projections.md#keyset-cursors). The Rust SDK re-exports the kernel's
 `Query`, `SortKey` and `Page` rather than defining its own, so the spec and the applier cannot drift.
+
+---
+
+## What the kernel does not own
+
+The kernel decides. It never performs I/O, holds a lock, or retries.
+
+| Not owned | Whose it is | Why |
+|---|---|---|
+| the **claim** | the ledger backend's atomic insert-if-absent | linearizability across processes is a store property — `INSERT ... ON CONFLICT DO NOTHING`, `SET NX`, a unique-key insert. Never a read then a write. |
+| the **transaction** | the SDK guard and the host's `Transactor` | whether the claim commits with the events it guards is a wiring choice. In Rust, `idempotent` uses the auto-commit handle and `idempotent_in` reads the host's open handle. Python's guard joins the ambient transaction, or opens one with `unit_of_work=`. |
+| the **retry policy** | the `retry` middleware, outside the guard | attempt counts and backoff are host policy. |
+| releasing a claim after a transient failure | the guard | the kernel has no verdict on the handler's error; the SDK classifies it and calls `complete` or `release`. |
+
+Every window, both modes and both guards are in [`../sdk/idempotency.md`](../sdk/idempotency.md). What edax promises end to end is in
+[`../guides/delivery-guarantees.md`](../guides/delivery-guarantees.md).
+
+---
+
+## See also
+
+- [`../sdk/idempotency.md`](../sdk/idempotency.md) — both guards, both modes, and every failure
+  window the kernel deliberately does not close.
+- [`./golden-vectors.md`](./golden-vectors.md) — how `command_hash.json` and
+  `idempotency_record.json` are generated and asserted.
+- [`./core.md`](./core.md) — `fnv1a64` behind `payload_hash`, backoff, and the error taxonomy
+  `PayloadMismatch` / `InProgress` / `CachedFailure` come from.
+- [`../sdk/commands.md`](../sdk/commands.md) — the `CommandBus` and middleware chain the kernel
+  deliberately leaves to the SDKs.
+- [`../sdk/errors.md`](../sdk/errors.md) — which verdicts are terminal and what branches on them.

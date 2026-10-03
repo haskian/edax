@@ -847,7 +847,7 @@ class ReturnsAFuture(edax.Observer):
 async def test_an_async_hook_is_reported_and_never_left_dangling(
     observer: type[edax.Observer], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """09#F12: an ``async def`` hook was called and never awaited, so its metric was dropped with only a
+    """An ``async def`` hook returns a coroutine nobody awaits, so its metric would drop with only a
     ``RuntimeWarning``. The guard closes the coroutine, logs an error naming the hook, and the work goes on."""
     hooks = observer()
     db = MemoryTransactor()

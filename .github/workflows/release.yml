@@ -60,8 +60,8 @@ jobs:
       matrix:
         include:
           # Built in maturin's manylinux/musllinux containers. A bare `maturin build` on the
-          # runner produces a `linux_x86_64` tag, which PyPI rejects on upload — the reason a
-          # tag used to publish nothing installable for Linux.
+          # runner produces a `linux_x86_64` tag, which PyPI rejects on upload, so a tag would
+          # publish nothing installable for Linux.
           - { name: linux-x86_64, runs-on: ubuntu-latest, target: x86_64, manylinux: auto }
           - { name: linux-aarch64, runs-on: ubuntu-latest, target: aarch64, manylinux: auto }
           - { name: musl-x86_64, runs-on: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2 }
@@ -163,8 +163,8 @@ jobs:
           name: sdist
           path: dist
       # Installed by path, not by name: that is what guarantees the sdist under test is the one
-      # just built, so the index stays open for the dependencies it needs — maturin to build it
-      # (`--no-index` starved the build backend too) and msgspec to import it. A `.tar.gz` is a
+      # just built, so the index stays open for the dependencies it needs: maturin to build it
+      # (`--no-index` would block the build backend too) and msgspec to import it. A `.tar.gz` is a
       # source install by definition, so `--no-binary` says nothing extra.
       - name: Build and install from source
         shell: bash

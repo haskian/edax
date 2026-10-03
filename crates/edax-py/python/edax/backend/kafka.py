@@ -1,7 +1,7 @@
 """Kafka producer and consumer adapters over a caller-owned ``aiokafka`` client (``pip install
-edax[kafka]``), so edax imports no broker package. The record — its key, its ``content-type`` header, the
-route a fetched record takes by it, the partition it lands on, the offset watermark that settles it and the
-dead-letter record — is the ``edax-kafka`` kernel's; this module makes the client calls around it. The
+edax[kafka]``), so edax imports no broker package. The ``edax-kafka`` kernel owns the record: its key, its
+``content-type`` header, the route a fetched record takes by it, the partition it lands on, the offset
+watermark that settles it and the dead-letter record. This module makes the client calls around it. The
 aggregate id is the message key, and the producer places it on Java's murmur2 partition explicitly, so every
 producer on the topic, in any language, keeps one aggregate on one partition and in order; the
 :class:`~edax.dispatcher.KeyOrderedDispatcher` pool then keeps those events serialized on one worker, and a
@@ -153,9 +153,10 @@ async def _send(client: ProducerClient, topic: str, record: KafkaRecord) -> None
 
 @dataclass(frozen=True)
 class KafkaFetched:
-    """A record as :class:`KafkaConsumer` fetched it — before any middleware, so a republish runs through
-    the middleware again — and where it sat. Carried as :attr:`~edax.dispatcher.Delivery.origin`, for a
-    dead-letter sink. A null key, value or header value is empty bytes here, the kernel's rule."""
+    """A record as :class:`KafkaConsumer` fetched it, and where it sat. It is the record before any
+    middleware, so a republish runs through the middleware again. Carried as
+    :attr:`~edax.dispatcher.Delivery.origin`, for a dead-letter sink. A null key, value or header value is
+    empty bytes here, the kernel's rule."""
 
     topic: str
     partition: int
@@ -180,8 +181,8 @@ class KafkaFetched:
 class KafkaDeadLetterSink:
     """An ``on_dead`` sink that publishes a dead delivery's record to a dead-letter topic through a
     caller-owned, started ``AIOKafkaProducer``: the record as fetched, plus where it came from and why
-    (:meth:`KafkaFetched.dead_letter`), on the kernel's partition for its key. A raise — the topic is
-    down — nacks the delivery for another try. A delivery that did not come from a
+    (:meth:`KafkaFetched.dead_letter`), on the kernel's partition for its key. A raise (the topic is
+    down) nacks the delivery for another try. A delivery that did not come from a
     :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`."""
 
     def __init__(self, client: ProducerClient, topic: str) -> None:
@@ -197,14 +198,13 @@ class KafkaDeadLetterSink:
 
 
 class RecordMiddleware(Protocol):
-    """Rewrites a record on its way to or from the broker. Synchronous, bytes to bytes: an async hook
-    (a KMS call) is a later addition if a host asks for one.
+    """Rewrites a record on its way to or from the broker. Synchronous, bytes to bytes.
 
     :meth:`on_publish` runs in order, after the kernel has built the record and before the send.
     :meth:`on_poll` runs in reverse, after the fetch and before the content-type lookup, so a pair of
     middlewares wraps the record like an onion. Use one to add a ``traceparent`` or tenant header, or
-    to compress or encrypt the value — rewrite ``content-type`` on the way out and restore it on the
-    way in, so the consumer still routes to the serializer that wrote the bytes. A
+    to compress or encrypt the value. Rewrite ``content-type`` on the way out and restore it on the way
+    in, so the consumer still routes to the serializer that wrote the bytes. A
     :class:`~edax.errors.CodecError` raised on poll marks the message poison; any other exception
     propagates as transient, so the message redelivers."""
 
@@ -363,14 +363,13 @@ class KafkaConsumer(_ConsumerLoop):
 
     def rebalance_listener(self, drain_timeout_s: float = 30.0) -> ConsumerRebalanceListener:
         """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke it commits
-        what is due, resets the revoked partitions — so the deliveries still queued are skipped, not
-        drained — and waits, up to ``drain_timeout_s``, until no handler of the dispatcher :meth:`run`
-        feeds is running, so no key is handled by two members at once. The new owner starts from the
-        commit, so the skipped work
-        and the handlers that were still running run again there: at-least-once. A handler still running at
-        the deadline overlaps the new owner, so keep the deadline above the slowest handler and below the
-        client's ``max_poll_interval_ms``. On assign it resets the assigned partitions, in case a revoke was
-        never announced."""
+        what is due and resets the revoked partitions, so the deliveries still queued are skipped rather
+        than drained. It then waits, up to ``drain_timeout_s``, until no handler of the dispatcher
+        :meth:`run` feeds is running, so no key is handled by two members at once. The new owner starts
+        from the commit, so the skipped work and the handlers that were still running run again there:
+        at-least-once. A handler still running at the deadline overlaps the new owner, so keep the
+        deadline above the slowest handler and below the client's ``max_poll_interval_ms``. On assign it
+        resets the assigned partitions, in case a revoke was never announced."""
         from aiokafka import ConsumerRebalanceListener
 
         consumer = self

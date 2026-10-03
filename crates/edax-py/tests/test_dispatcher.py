@@ -178,7 +178,7 @@ class SettleCase:
                 want_log=["dead-lettering", "dead-letter sink failed"],
                 attempt_tracked=True,
             ),
-            # 05#F2: left unsettled, a log-based broker would never bring it back while the consumer lives.
+            # Left unsettled, a log-based broker would never bring it back while the consumer lives.
             id="on_dead_raising_nacks_the_message_for_another_try",
         ),
         pytest.param(
@@ -426,9 +426,9 @@ class StopCase:
     ],
 )
 async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(case: StopCase) -> None:
-    """Before the fix, a deadline on ``stop()`` orphaned the workers: ``stats().running`` read
-    ``False`` while they ran on, and a restart put a second worker on each queue, so two handlers ran
-    one aggregate at once. The held delivery and the queued one were never settled."""
+    """A deadline on ``stop()`` must not orphan the workers. An orphan runs on while ``stats().running``
+    reads ``False``, a restart puts a second worker on its queue, and two handlers run one aggregate at
+    once. The held delivery and the queued one would never be settled."""
     entered = asyncio.Event()
     concurrent = 0
     peak = 0
@@ -476,8 +476,8 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
 
 
 async def test_a_dead_worker_is_reported_and_skipped_by_stop(caplog: pytest.LogCaptureFixture) -> None:
-    """A worker that ends while the dispatcher runs strands every key routed to it. Before the fix,
-    ``running`` still read ``True`` and ``stop()`` blocked on a sentinel the dead worker never took."""
+    """A worker that ends while the dispatcher runs strands every key routed to it. ``running``
+    must read ``False``, and ``stop()`` must not block on a sentinel the dead worker never takes."""
 
     async def handler(env: edax.EventEnvelope) -> None:
         pass
@@ -609,7 +609,7 @@ def test_stop_settles_every_submitted_delivery_exactly_once(
 
 
 # =========================================================================
-# liveness: a delivery the transport retired is neither run nor settled (05#F1)
+# liveness: a delivery the transport retired is neither run nor settled
 # =========================================================================
 
 
@@ -682,7 +682,7 @@ async def test_liveness_branches(case: LiveCase, slept: list[int]) -> None:
 
 
 # =========================================================================
-# poison settlement (05#F2, 05#F3) and cancellation at every await
+# poison settlement and cancellation at every await
 # =========================================================================
 
 
@@ -699,12 +699,12 @@ class PoisonCase:
     "case",
     [
         pytest.param(PoisonCase("ok", 1, ["ack"], ["dead"], []), id="a_sink_takes_it_then_it_is_acked"),
-        # 05#F3: before, the no-sink nack was immediate and the consumer spun on the broker.
+        # An immediate no-sink nack would spin the consumer on the broker.
         pytest.param(
             PoisonCase(None, 3, ["nack", "nack", "nack"], ["nack", "nack", "nack"], [0, 1, 2]),
             id="no_sink_nacks_after_a_growing_backoff",
         ),
-        # 05#F2: before, a raising sink left it unsettled for a redelivery Kafka never makes.
+        # Left unsettled after a raising sink, it would wait for a redelivery Kafka never makes.
         pytest.param(
             PoisonCase("raises", 2, ["nack", "nack"], ["sink_failed", "sink_failed"], [0, 1]),
             id="a_raising_sink_nacks_after_a_growing_backoff",
@@ -833,6 +833,6 @@ async def test_the_dispatcher_lends_its_pacing_to_the_consumer_loop() -> None:
 
 @pytest.mark.parametrize("workers", [0, -1], ids=["zero", "negative"])
 def test_a_dispatcher_refuses_fewer_than_one_worker(workers: int) -> None:
-    """09#F12: a count below one used to become one worker silently, hiding a wiring typo."""
+    """A count below one is a wiring typo; clamping it to one worker would hide it."""
     with pytest.raises(ValueError, match=f"at least one worker, got {workers}"):
         edax.KeyOrderedDispatcher(workers=workers, handler=lambda env: None)

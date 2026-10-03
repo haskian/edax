@@ -1,10 +1,10 @@
 """Executable conformance suites for the storage and broker seams.
 
-Every backend an adopter writes is correctness-critical, and its correctness rests on clauses no type
-and no review can check — whether ``append`` really compare-and-sets in the database rather than
-read-then-writing in Python, whether ``claim`` can tell "I won" from "someone else holds this". Until
-this package existed the only way to test a backend was to edit ``edax``'s own test files, which
-means a misread clause is encoded identically in the implementation and in its test.
+Every backend an adopter writes rests on clauses no type and no review can check: whether ``append``
+compare-and-sets in the database or reads then writes in Python, and whether ``claim`` can tell "I won"
+from "someone else holds this". A test the adopter writes from the same reading of a clause as the
+implementation encodes a misread clause in both. These suites state each clause once, for every
+backend.
 
 Subclass the contract for each seam you implement and supply the one fixture it asks for::
 
@@ -22,13 +22,12 @@ themselves. The suites are ``async def``, so they need ``asyncio_mode = "auto"``
 configuration (the ``test`` extra installs ``pytest-asyncio``).
 
 **Capabilities.** Backends differ in ways the contract allows, so a clause that cannot apply is
-skipped rather than failed. Declare them as class attributes on your subclass — the defaults describe
-a transactional SQL backend, which is the common case and the strictest.
+skipped rather than failed. Declare them as class attributes on your subclass. The defaults describe
+a transactional SQL backend, the common case and the strictest.
 
-Those skips `raise pytest.skip.Exception(...)` rather than calling `pytest.skip(...)`, which is the
-same thing at runtime and reports identically. The call form does not type-check under pytest 8,
-whose `skip` is declared through a `_WithException` protocol a checker reads as taking no arguments
-at all.
+A skip raises ``pytest.skip.Exception(...)``, which behaves and reports like ``pytest.skip(...)``. The
+call form does not type-check under pytest 8: a checker reads its ``_WithException`` declaration as
+taking no arguments.
 
 **Ambient enlistment.** The SDK's guards and the saga runner call a store with no ``tx`` inside
 :func:`~edax.store.transaction`, so the store must join :func:`~edax.store.current_tx` of its own
@@ -243,8 +242,8 @@ class EventStoreContract:
         """ "``append`` succeeds only if the stored version equals ``expected_version``, else it raises
         ``ConcurrencyError`` and writes nothing."
 
-        The single most important clause in the seam, and the one a read-then-write in Python passes
-        in a test and loses under concurrency. Both directions are checked: stale *and* ahead.
+        A read-then-write in Python passes this in a one-caller test and loses under concurrency. Both
+        directions are checked: stale *and* ahead.
         """
         agg = _id("acct")
         async with event_store.transaction() as tx:
@@ -338,7 +337,7 @@ class EventStoreContract:
             await event_store.append(tx, agg, 1, [])  # correct version, nothing to write
             assert [e.sequence for e in await event_store.load(tx, agg)] == [1], "and added nothing"
 
-        # The part that matters: an empty batch is still compare-and-set, not a free pass.
+        # An empty batch is still a compare-and-set.
         async with event_store.transaction() as tx:
             with pytest.raises(ConcurrencyError):
                 await event_store.append(tx, agg, 7, [])
@@ -367,8 +366,8 @@ class EventStoreContract:
             assert await event_store.load(tx, agg) == [], "the rollback took the events with it"
 
     async def test_a_snapshot_round_trips_and_never_leads_the_stream(self, event_store: Any) -> None:
-        """ "``load_snapshot`` returns the latest snapshot or ``None``, and may lag the stream but
-        never lead it." A snapshot ahead of the events replays state that was never committed."""
+        """ "``load_snapshot`` returns the latest snapshot or ``None``. A snapshot may lag the stream
+        but never lead it." A snapshot ahead of the events replays state that was never committed."""
         if not self.supports_snapshots:
             raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
@@ -481,7 +480,7 @@ class EventStoreContract:
         assert left == [], "marked rows stop coming back"
 
     async def test_unpublished_count_tracks_what_is_waiting(self, event_store: Any) -> None:
-        """ "``unpublished_count`` is how deep the outbox is right now." A count that ignores
+        """ "``unpublished_count`` returns how many committed unmarked rows are waiting." A count that ignores
         ``mark_published``, or counts uncommitted rows, reports a backlog that never drains and makes
         the health check it exists for permanently red."""
         if not (self.supports_outbox and self.supports_unpublished_count):
@@ -564,7 +563,7 @@ class ProjectionStoreContract:
     async def test_save_is_compare_and_set_on_the_version(self, projection_store: Any) -> None:
         """ "``save`` writes at ``version + 1`` only if the stored version still equals
         ``entity.version`` (``0`` means not yet stored), else it raises ``ConcurrencyError`` and
-        writes nothing." Enforce it in the database, not by reading first."""
+        writes nothing." The database enforces it, never a read first."""
         entity = Entity(_id("acct"), 0, {"balance": 1})
         await projection_store.save(entity)
 
@@ -625,7 +624,7 @@ class ProjectionStoreContract:
     async def test_two_writers_at_one_version_land_exactly_one_save(
         self, projection_store: Any, request: Any
     ) -> None:
-        """ "Enforce it in the database, not by reading first." Two projectors both save a new row at
+        """ "Enforce it in the database." Two projectors both save a new row at
         version 0, each staging before either commits. A store that reads the version and then writes
         lets the second overwrite the first: a read-model update lost. Exactly one may land."""
         if not self.supports_transactions:
@@ -926,8 +925,8 @@ class SagaStoreContract:
 class IdempotencyStoreContract:
     """The dedup ledger.
 
-    The seam whose correctness cannot be checked by any type or review that does not know your
-    isolation level, and the one where a mistake runs a handler twice. Supply an
+    No type and no review can check this seam without knowing your isolation level, and a mistake here
+    runs a handler twice. Supply an
     ``idempotency_store`` fixture, plus an ``event_store`` fixture on the same transactor when the
     store declares ``joins_transaction = True``. The suite reads that declaration from the store,
     the same place the guard reads it, so a wrong declaration fails the clauses it governs.
@@ -969,9 +968,8 @@ class IdempotencyStoreContract:
         assert isinstance(await idempotency_store.claim(_id("req"), 1234), Won)
 
     async def test_a_second_claim_loses_and_reads_the_winners_record(self, idempotency_store: Any) -> None:
-        """The whole point of the ledger. The loser must get the winner's record back, not a win: a
-        store that says "won" twice runs one command twice, which is the bug this seam exists to
-        prevent."""
+        """The loser must get the winner's record back, never a win: a store that says "won" twice runs
+        one command twice."""
         key, payload = _id("req"), 1234
         await self._won(idempotency_store, key, payload)
         prior = await idempotency_store.claim(key, payload)
@@ -1062,8 +1060,8 @@ class IdempotencyStoreContract:
 
     async def test_a_none_result_replays_as_a_success(self, idempotency_store: Any) -> None:
         """A handler returning `None` succeeded. A store that cannot tell "completed with no value"
-        from "still pending" re-runs it on every redelivery, which is the whole failure this seam
-        exists to prevent — and `None` is the single most common handler return."""
+        from "still pending" re-runs it on every redelivery, and `None` is the most common handler
+        return."""
         key, payload = _id("req"), 1234
         handle = await self._won(idempotency_store, key, payload)
         await idempotency_store.complete(key, handle, Record(payload, result=None))
@@ -1081,7 +1079,7 @@ class IdempotencyStoreContract:
         assert isinstance(await idempotency_store.claim(key, payload), Won), "free again"
 
     async def test_release_of_an_absent_key_is_not_an_error(self, idempotency_store: Any) -> None:
-        """ "Idempotent: releasing an absent key is not a failure." The guard compensates on paths
+        """ "Both are idempotent; releasing an absent key is a no-op." The guard compensates on paths
         where it cannot know whether the claim ever landed, and a second release must leave the key as
         free as the first did, so the retry it exists for still wins it."""
         key = _id("req")
@@ -1149,8 +1147,8 @@ class IdempotencyStoreContract:
         """The kernel compares hashes to decide ``PayloadMismatch``, so a store that truncates or
         re-signs the value turns a genuine duplicate into a mismatch.
 
-        The hash is an unsigned 64-bit integer. Storing it in a signed column without a cast is the
-        classic backend bug: everything passes until a hash above 2^63 appears.
+        The hash is an unsigned 64-bit integer. A signed column without a cast passes every test until a
+        hash above 2^63 appears.
         """
         key, payload = _id("req"), 18446744073709551615  # u64 max: the value a signed column loses
         await self._won(idempotency_store, key, payload)
@@ -1164,12 +1162,12 @@ class IdempotencyStoreContract:
         assert isinstance(await idempotency_store.claim(b, 2), Won), "a different key is still free"
 
     async def test_a_rollback_frees_the_claim(self, idempotency_store: Any, request: Any) -> None:
-        """ "A shared ledger runs ``begin; claim; run; complete; commit``: one atomic commit, so the
-        rollback *is* the release."
+        """ "all three operations join that transaction, so a rollback removes the claim:
+        effectively-once."
 
-        Only meaningful for a ledger that joins the transaction; a ledger of its own keeps the claim,
-        which is exactly the difference between effectively-once and at-least-once. Needs an
-        ``event_store`` fixture too, because the transaction has to come from somewhere.
+        Only a ledger that joins the transaction runs this clause. A ledger of its own keeps the claim,
+        which is the difference between effectively-once and at-least-once. Needs an ``event_store``
+        fixture too, to open the transaction.
         """
         if not joins_transaction(idempotency_store):
             raise pytest.skip.Exception("ledger declares joins_transaction = False")
@@ -1185,10 +1183,10 @@ class IdempotencyStoreContract:
     async def test_a_claim_with_no_tx_joins_the_ambient_transaction(
         self, idempotency_store: Any, request: Any
     ) -> None:
-        """ "Given ``tx``, or with :func:`~edax.store.current_tx` set, all three operations join that
-        transaction." The guard claims with no ``tx`` inside the unit of work it opened, so this is the
-        path production runs. A ledger that auto-commits there keeps the claim after the rollback,
-        and the key stays pending for good."""
+        """ "Given ``tx``, or with :func:`~edax.store.current_tx` of its own transactor set, all three
+        operations join that transaction." The guard claims with no ``tx`` inside the unit of work it
+        opened, so this is the path production runs. A ledger that auto-commits there keeps the claim
+        after the rollback, and the key stays pending for good."""
         if not joins_transaction(idempotency_store):
             raise pytest.skip.Exception("ledger declares joins_transaction = False")
         event_store = request.getfixturevalue("event_store")
@@ -1203,7 +1201,7 @@ class IdempotencyStoreContract:
         self, idempotency_store: Any, request: Any
     ) -> None:
         """ "A loser inside a transaction must block on the winner's row and then read it, or raise
-        ``StoreError``; it must never read a stale snapshot and report a win, which runs the handler
+        transient ``StoreError``; it must never read a stale snapshot and report a win, which runs the handler
         twice." The first unit of work holds an uncommitted claim; a claimant in another one must not win
         while it is open. Run in a task of its own, so a store that blocks the claimant answers once the
         holder rolls back."""

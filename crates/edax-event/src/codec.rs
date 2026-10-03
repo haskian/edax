@@ -14,10 +14,10 @@
 //! - **Trailing bytes** after the envelope are refused in both formats: a frame holds one envelope.
 //! - A repeated field is refused; a repeated key inside `namespace` or `metadata` keeps its last value.
 //!
-//! Custom formats are NOT handled here. The consistency primitives ([`crate::partition`],
-//! [`crate::is_stale`]) operate on fields, not encoded bytes — so a service that serializes its
-//! own envelopes with a format the lib doesn't know still routes and orders correctly. It simply
-//! carries its own bytes and skips this module.
+//! Custom formats are NOT handled here. The consistency primitives ([`crate::partition()`],
+//! [`crate::is_stale`]) operate on fields, not encoded bytes, so a service that serializes its
+//! own envelopes with a format the lib doesn't know still routes and orders correctly. It carries
+//! its own bytes and skips this module.
 
 use crate::domain::EventEnvelope;
 use edax_core::Error;

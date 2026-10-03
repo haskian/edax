@@ -3,7 +3,7 @@
 The Kafka protocol kernel: the record a published envelope becomes, the route a fetched record
 takes, the record a dead-letter sink publishes, and the offset watermark a consumer commits.
 
-`edax-kafka` is pure and synchronous. It links no Kafka client library at all. Every software
+`edax-kafka` is pure and synchronous. It links no Kafka client library. Every software
 development kit (SDK) ships its own input and output (I/O) shell over it, `aiokafka` in Python and
 `rdkafka` in a Rust host. A topic therefore reads the same whatever language wrote it, and a
 consumer commits the same offsets whatever language runs it.
@@ -24,8 +24,8 @@ Who owns the value depends on which of the two layers you call.
 | primitive | `record`, `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
 | composed | `encode_record`, `decode_record` | the kernel codec's, through `Format::encode` | a Rust host, and the golden vectors |
 
-Both layers write the same key and the same header. That is the point of the split: a host
-serializer changes the bytes, never the contract around them.
+Both layers write the same key and the same header, so a host serializer changes the bytes and
+never the contract around them.
 
 ### The key
 
@@ -47,9 +47,9 @@ Every record edax writes carries exactly one header.
 Everything else is deliberately absent. The aggregate id is the key already. The id, the event name,
 the version and the sequence are in the value, which every reader decodes anyway. No metadata is
 copied, because trace propagation is the host's own `traceparent`. Every header costs bytes on every
-record, so a header lands only together with a reader for it. Three earlier headers (`edax-id`,
-`edax-event`, `edax-event-version`) had no reader and were dropped. A record from an older producer
-still carries them, and decodes the same: a reader ignores headers it does not know.
+record, so a header lands only together with a reader for it. An older producer may still write
+`edax-id`, `edax-event` and `edax-event-version`. Nothing reads them, and the record decodes the
+same, because a reader ignores headers it does not know.
 
 Kafka allows a null key, value or header value; the kernel record has none. A shell crosses each
 null as empty bytes. One rule covers all three. A null `content-type` therefore routes like an empty
@@ -110,7 +110,7 @@ flowchart TB
   K -->|"no, the empty string included"| E["Unknown: poison, dead-letter it"]
 ```
 
-Three rules, and each closes a specific hole.
+Three rules decide the route.
 
 - **The first `content-type` wins.** A record carrying two is ambiguous. Picking the first is the
   rule both sides implement identically. A first value that is not UTF-8 reads as absent, and does
@@ -165,8 +165,8 @@ partition_for(key, partitions) = (murmur2(key) & 0x7fffffff) % partitions
 
 `murmur2` is Kafka's `Utils.murmur2`: seed `0x9747b28c`, little-endian 4-byte blocks, a tail that
 falls through. The mask is `Utils.toPositive`. It is a mask, not `abs`, so a port that negates a
-negative hash lands elsewhere. The key is the record's final key bytes, after every
-middleware ran: the bytes the broker stores. `partitions` is the topic's count from the client's
+negative hash lands elsewhere. The key is the record's final key bytes, after every middleware ran:
+the bytes the broker stores. `partitions` is the topic's count from the client's
 metadata; `0` is a `codec` error, never a division by zero.
 
 `edax_event::partition` is a different function for a different job: the local worker a dispatcher
@@ -229,7 +229,7 @@ trip. A shell commits what `due` names, all partitions in one call, on its own s
 own deadline. It then reports each commit back with `committed`, and only once the client's commit
 returned.
 
-That keeps a failed client commit out of the record: a commit that raised is simply due again. If the
+That keeps a failed client commit out of the record: a commit that raised is due again. If the
 tracker recorded the watermark itself, the commit that raised would count as committed, and the
 next, correct commit at that offset would be refused. Recording after the fact also keeps the record
 monotonic under out-of-order commits: `committed` max-merges, so two confirmations that returned out

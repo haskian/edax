@@ -60,7 +60,7 @@ pub trait IdempotencyStore<O> {
     /// releases the key, which is what makes a guarded handler effectively-once. A store that needs no
     /// handle uses `()`. The middleware reads the handle from [`idempotent_in`] or from `Tx::default()`.
     type Tx;
-    /// Atomically claim `key` with a pending record. [`Claim::Won(_)`] if this caller won; [`Claim::Prior`]
+    /// Atomically claim `key` with a pending record. [`Claim::Won`] if this caller won; [`Claim::Prior`]
     /// carries the winner's record so the caller decides replay, mismatch or in-progress. A store that
     /// cannot tell "I won" from "someone else holds this" must fail, or two handlers run. In a transaction a
     /// loser must block and read the winner's record, fail, or return it pending as a
@@ -335,11 +335,11 @@ where
             Ok(Err(e)) => {
                 // The kernel's settle table: a terminal failure is cached, code and message, so a
                 // redelivery replays it; anything else releases the claim so a retry (or redelivery)
-                // can re-run the handler. Either
-                // write can be refused — a handle the handler's own failed statement already aborted —
-                // and the handler's error is the verdict the caller and the dispatcher act on, so a
-                // refused compensation is dropped here exactly as the panic arm below drops it. The
-                // host's rollback or the store's retention frees the claim instead.
+                // can re-run the handler. Either write can be refused (the handler's own failed
+                // statement may already have aborted the handle), and the handler's error is the
+                // verdict the caller and the dispatcher act on, so a refused compensation is dropped
+                // here exactly as the panic arm below drops it. The host's rollback or the store's
+                // retention frees the claim instead.
                 let _ = match edax_cqrs::settle(code_of(&*e)) {
                     edax_cqrs::Settle::Cache(code) => {
                         complete_or_release(store, tx, key, &handle, Record::failed(hash, code, failure_message(&*e)))
@@ -438,8 +438,8 @@ mod tests {
     // The in-memory idempotency store is shipped, not re-rolled for tests.
     type MemStore = MemoryIdempotencyStore<i64>;
 
-    /// A call counter the handlers and test stores share. The command path is `Send + Sync`, so a
-    /// `Cell` no longer fits; the API is the same.
+    /// A call counter the handlers and test stores share. Atomic, because the command path is
+    /// `Send + Sync`.
     #[derive(Default)]
     struct Counter(AtomicUsize);
 
@@ -589,8 +589,8 @@ mod tests {
             assert_eq!(stored, expected, "{name}");
         }
 
-        // The rule the vector replaces: a hand-written `payload()` returning the business body
-        // without the key field. Those bytes must not reach the vector, or the gap is not closed.
+        // A hash over the business body alone, without the key field, must not match the vector:
+        // the key field is part of the command.
         let mut body_only = cases[0]["command"].clone();
         body_only.as_object_mut().expect("command is an object").remove("request_id");
         let old_rule = payload_hash(&canonical_json(&serde_json::to_vec(&body_only).unwrap()).unwrap());
@@ -1438,7 +1438,7 @@ mod tests {
         }
     }
 
-    /// 06#F1 through the guard on one store: the claim lapses mid-handler and a second dispatch on
+    /// Through the guard on one store: the claim lapses mid-handler and a second dispatch on
     /// the same store takes the key over. The first dispatch's `complete` is refused and its
     /// compensating release deletes nothing, so the new holder's claim survives and only the live
     /// claim settles the key.

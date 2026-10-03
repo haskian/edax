@@ -271,7 +271,7 @@ proptest! {
     }
 }
 
-/// The reviewer's E1 scenario, step by step: seq 1 fails, the queued seq 2 copy must not run.
+/// Step by step: seq 1 fails, so the queued seq 2 copy must not run.
 #[test]
 fn a_nack_keeps_a_keys_later_event_behind_the_redelivered_earlier_one() {
     let mut consumer = Consumer::new(log(&[(0, false), (0, false)]));

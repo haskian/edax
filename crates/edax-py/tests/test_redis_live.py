@@ -104,11 +104,11 @@ def upstream() -> tuple[str, int]:
 async def test_a_reply_dropped_on_the_wire_is_resent_by_redis_py_and_runs_the_handler_once(
     direct: Any, prefix: str, script: str
 ) -> None:
-    """06#F2 (the claim) and 06#F3 (the complete) on a real wire, the reviewer's ``e3`` proxy. The server
+    """A lost reply to the claim or to the complete, on a real wire through a dropping proxy. The server
     applies the script, the reply is lost, and redis-py's default retry sends the same ``EVALSHA`` again.
     The re-sent claim reads its own value back as won; the re-sent complete finds its own settled value.
-    Either way the dispatch succeeds once and the handler runs once. Before, the re-sent claim read as
-    another worker's: ``InProgress`` with no handler run, for the whole claim TTL."""
+    Either way the dispatch succeeds once and the handler runs once. A re-sent claim read as another
+    worker's would raise ``InProgress`` with no handler run, for the whole claim TTL."""
     body = {"claim": CLAIM_SCRIPT, "complete": COMPLETE_SCRIPT}[script]
     await direct.script_load(body)  # so the dropped reply is the script's, not a NOSCRIPT round
     proxy = DroppingProxy(upstream())
@@ -134,7 +134,7 @@ async def test_a_reply_dropped_on_the_wire_is_resent_by_redis_py_and_runs_the_ha
 async def test_a_heartbeat_holds_a_claim_past_its_ttl_and_without_it_the_key_is_taken_over(
     direct: Any, prefix: str
 ) -> None:
-    """06#F7 in real time. A handler runs four claim TTLs while a second worker keeps trying the key. With
+    """Lease renewal in real time. A handler runs four claim TTLs while a second worker keeps trying the key. With
     the heartbeat the claim stays live and the first worker's outcome lands; without it the claim lapses,
     the second worker takes over, and the first worker's complete is refused."""
     for heartbeat in (True, False):

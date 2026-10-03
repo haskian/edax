@@ -96,10 +96,8 @@ impl MemoryEventStore {
             // The dense-batch rule is the kernel's, so every store enforces the same one; the vector
             // `testdata/golden/sequence_batch.json` pins it. Whole-batch rejection, nothing written.
             //
-            // Tagged `codec:` (terminal), not `store:`: the same batch fails identically every time, so a
-            // transient tag would have a host retry its whole budget and then redeliver it forever. The
-            // taxonomy's codes encode *transience*, not failure kind, and `codec:` is the
-            // deterministic-terminal slot.
+            // A `codec` error (terminal), not `store`: the same batch fails identically every time, so a
+            // transient code would have a host retry its whole budget and then redeliver it forever.
             let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
             edax_event::sequence::check_batch(expected_version, &sequences)?;
             refuse_known_ids(committed, others, own, &events)?;
@@ -494,8 +492,8 @@ mod tests {
 
     #[test]
     fn mark_published_never_prunes_another_aggregates_row() {
-        // The reviewer's E4: two aggregates' events under one host-chosen id. The second append is
-        // refused, so publishing the first and marking its id cannot drop an unpublished row.
+        // Two aggregates' events under one host-chosen id. The second append is refused, so
+        // publishing the first and marking its id cannot drop an unpublished row.
         let store = MemoryEventStore::new();
         store.append(NO_TX, "invoice-7", 0, vec![envelope("dup", Some(1))]).unwrap();
         assert!(store.append(NO_TX, "invoice-8", 0, vec![envelope("dup", Some(1))]).is_err());

@@ -52,8 +52,8 @@ fn unsequenced() -> EventEnvelope {
     }
 }
 
-/// Non-ASCII in the key, the event name and the maps: the key and the `edax-event` header are raw
-/// UTF-8 bytes, which a host that latin-1s them would fail here.
+/// Non-ASCII in the key, the event name and the maps: the key and the value carry it as raw UTF-8
+/// bytes, which a host that latin-1s them would fail here.
 fn unicode() -> EventEnvelope {
     EventEnvelope {
         id: "evt-4".to_owned(),
@@ -630,7 +630,7 @@ fn kafka_offsets_cases() -> Vec<Value> {
             ],
         ),
         (
-            // Two commits in flight at once, the higher returning first: the guard records the
+            // Two commits in flight at once, the higher returning first: the tracker records the
             // highest watermark committed, not the last one written, so nothing lower is due again.
             "the_guard_never_commits_a_watermark_already_recorded",
             vec![

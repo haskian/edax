@@ -52,7 +52,7 @@ pub trait Transactor {
 
     /// Scoped unit of work: run `body`, commit on `Ok`, roll back on `Err`. Thread the `&mut Tx` to
     /// every store that should commit together (events, projection, idempotency record). `body` fails
-    /// with any error an [`Error`] converts into — a [`HandlerError`](crate::HandlerError) included, so
+    /// with any error an [`Error`] converts into — a [`HandlerError`] included, so
     /// a command dispatched inside keeps its verdict. A second unit of work on the same database while
     /// this one is open on the thread is refused; see [`transaction`].
     fn transaction<R, E: From<Error>>(&self, body: impl FnOnce(&mut Self::Tx) -> Result<R, E>) -> Result<R, E>
@@ -66,7 +66,7 @@ pub trait Transactor {
 /// Holds the open handle until the unit of work settles it. Dropping it unsettled — the body
 /// returned `Err`, or it unwound — rolls back. Without this, a panic would leak the handle: a
 /// backend that holds the transaction's keys until it ends would hold them forever, and every
-/// later write to those keys would fail with [`Error::Concurrency`].
+/// later write to those keys would fail with [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency).
 struct Rollback<'a, T: Transactor> {
     transactor: &'a T,
     tx: Option<T::Tx>,
@@ -137,11 +137,12 @@ pub(crate) fn in_unit_of_work() -> bool {
 /// unwinding; the caller sees the panic, the backend sees a settled transaction.
 ///
 /// Opening it on a database that already has a unit of work open on this thread is refused with the
-/// terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle), before anything begins: the inner unit of work would commit on its
-/// own, and the outer rollback could not take it back. So [`Repository::save`] (which opens its own)
-/// inside a host's body is refused rather than committing apart from it; [`Repository::save_in`] joins
-/// the open one. The check keys on [`Transactor::identity`], so it catches every transactor over one
-/// database only when the backend reports one identity for them. Two databases nest.
+/// terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle), before anything begins: the inner
+/// unit of work would commit on its own, and the outer rollback could not take it back. So
+/// [`Repository::save`] (which opens its own) inside a host's body is refused rather than committing
+/// apart from it; [`Repository::save_in`] joins the open one. The check keys on
+/// [`Transactor::identity`], so it catches every transactor over one database only when the backend
+/// reports one identity for them. Two databases nest.
 pub fn transaction<T, R, E: From<Error>>(tr: &T, body: impl FnOnce(&mut T::Tx) -> Result<R, E>) -> Result<R, E>
 where
     T: Transactor,
@@ -225,9 +226,10 @@ pub trait EventStore: Transactor + Outbox<EventEnvelope> {
     fn load_snapshot(&self, tx: &mut Self::Tx, aggregate_id: &str) -> Result<Option<Snapshot>, Error>;
     fn save_snapshot(&self, tx: &mut Self::Tx, snapshot: &Snapshot) -> Result<(), Error>;
 
-    /// Append `events` and enqueue the same envelopes to the outbox, atomically. Return
-    /// [`Error::Concurrency`] if the stored version differs from `expected_version`, and a `codec`
-    /// error for a batch that is not dense or carries an envelope id the store already holds.
+    /// Append `events` and enqueue the same envelopes to the outbox, atomically. Return a
+    /// [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error if the stored version differs
+    /// from `expected_version`, and a `codec` error for a batch that is not dense or carries an
+    /// envelope id the store already holds.
     fn append(
         &self,
         tx: &mut Self::Tx,
@@ -298,8 +300,8 @@ where
 
     /// Persist the aggregate's pending events in a unit of work of its own; return the committed
     /// envelopes (publish eagerly, or leave them to the [`Relay`]). On a clean commit the aggregate
-    /// is reset to its new version; on error it is left untouched, so a retry (worth it for
-    /// a `store` error, not for the terminal a `codec` error) re-sends the same pending events.
+    /// is reset to its new version; on error it is left untouched, so a retry (worth it for a
+    /// `store` error, not for a terminal `codec` error) re-sends the same pending events.
     /// Inside a transaction the caller already opened, use [`Repository::save_in`].
     pub fn save(&self, agg: &mut AC::Aggregate) -> Result<Vec<EventEnvelope>, Error> {
         self.save_with(agg, Namespace::new(), Metadata::new())
@@ -1360,9 +1362,9 @@ mod tests {
 
     #[test]
     fn overlapping_drains_of_one_relay_publish_each_row_once() {
-        // The reviewer's E7: a timer and a "drain now" on one relay. The first drain is held inside its
-        // publish; the second is started meanwhile. It must not read the rows the first has not marked
-        // yet, so it waits its turn and then finds nothing.
+        // A timer and a "drain now" on one relay. The first drain is held inside its publish; the
+        // second is started meanwhile. It must not read the rows the first has not marked yet, so it
+        // waits its turn and then finds nothing.
         let (read_tx, reads) = std::sync::mpsc::channel::<()>();
         let mut hooked = Hooked::new(outbox_of(2));
         hooked.reads = Some(Arc::new(Mutex::new(read_tx)));

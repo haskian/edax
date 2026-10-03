@@ -30,7 +30,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # Not ./.github/actions/setup: that installs the Rust toolchain, maturin and a cargo cache
-      # to run one regex. `install_args` still resolves the version from mise.toml, so the pin
+      # to verify one string. `install_args` still resolves the version from mise.toml, so the pin
       # stays in one place.
       - uses: jdx/mise-action@v4
         with:
@@ -44,9 +44,9 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # cog reads user.name to attribute the message it prints, and panics outright when git
-          # has none — which a fresh runner never does. The value is cosmetic; only its absence
-          # matters, and the panic reads as a bad title rather than a missing config.
+          # cog reads user.name to attribute the message it prints, and panics when git has none,
+          # which is the case on a fresh runner. The value is cosmetic. Without it, the panic reads
+          # as a bad title rather than a missing config.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           mise exec aqua:cocogitto/cocogitto -- cog verify "$PR_TITLE"

@@ -41,8 +41,8 @@ def test_no_example_command_hashes_its_type(path: Path) -> None:
 
     Declared as a dataclass *instance* field it enters the hash, and a Rust command carrying the same
     business fields does not hash it. A service sharing a ledger across the two languages then gets
-    ``PayloadMismatch`` on every genuine cross-language duplicate — the guarantee the kernel exists to
-    provide. ``docs/sdk/commands.md`` states the rule; this pins it for every example.
+    ``PayloadMismatch`` on every genuine cross-language duplicate. ``docs/sdk/commands.md`` states the
+    rule; this pins it for every example.
     """
     for name, value in vars(load(path)).items():
         if not (isinstance(value, type) and dataclasses.is_dataclass(value)):

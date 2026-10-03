@@ -25,8 +25,8 @@ runs:
 
     # The toolchain comes from the alef-generated rust-toolchain.toml, which mise reads as an
     # idiomatic version file; mise.toml deliberately does not pin rust. Clippy is printed as
-    # well as rustc because a components mismatch only shows up when a component is *used* —
-    # a missing clippy failed the lint step several minutes in, reading as a lint failure.
+    # well as rustc because a components mismatch only shows up when a component is *used*:
+    # a missing clippy fails the lint step minutes in, where it reads as a lint failure.
     - shell: bash
       run: |
         mise exec -- rustc --version

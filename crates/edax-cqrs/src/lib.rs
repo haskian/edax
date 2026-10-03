@@ -2,7 +2,7 @@
 //!
 //! Both sides of the separation the name describes. The command bus (handler registration, typed
 //! dispatch, the middleware chain) is host-local ergonomics with no cross-language requirement, so
-//! it lives in the bindings. The kernel owns only the decisions that must agree across languages
+//! it lives in the SDKs. The kernel owns only the decisions that must agree across languages
 //! and processes.
 //!
 //! Command side — what makes a command's identity:
@@ -39,8 +39,7 @@ pub use canonical::canonical_json;
 use edax_core::Error;
 
 pub use filter::{eval, eval_json, Filter, Operator};
-// The whole query surface, not a subset: the binding crate reached past a partial re-export into
-// `query::` for the four cursor and sort entry points, which is how a module path became an
+// The whole query surface, so no binding reaches into `query::` and makes a module path an
 // external contract.
 pub use query::{
     decode_cursor, decode_cursor_json, effective_sort, effective_sort_json, encode_cursor, encode_cursor_json, query,

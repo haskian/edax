@@ -4,9 +4,9 @@ How an event-sourced aggregate records events, how `Repository` rehydrates and p
 `EventStore.append` enforces optimistic concurrency.
 
 The write side is three pieces: an `Aggregate` that folds events into state, two codecs that turn
-domain objects into bytes, and an `EventStore` you implement over your own database. `Repository` is
-the orchestration between them — it opens no policy of its own beyond "snapshot then replay" on load
-and "append then snapshot" on save.
+domain objects into bytes, and an `EventStore` you implement over your own database. `Repository`
+orchestrates them. Its only policy is "snapshot then replay" on load and "append then snapshot" on
+save.
 
 ```mermaid
 flowchart LR
@@ -23,10 +23,10 @@ flowchart LR
 
 | Concept | Rust | Python |
 |---|---|---|
-| the carried state | `Root<E>` embedded, reached through `root()` / `root_mut()` | fields on the `Aggregate` base: `id`, `sequence`, `pending` |
+| the carried state | `Root<E>` embedded, reached through `root()` / `root_mut()` | fields on the `Aggregate` base: `id`, `version`, `pending` |
 | the version | `Root { version, pending }`, `current()` | `Version(initial, updates)`, `.current` property |
 | fold one event | `fn transition(&mut self, event: &Self::Event)` | `def transition(self, event) -> None` |
-| record a new event | `apply(event)` — one event | `apply(*events)` — any number |
+| record a new event | `apply(event)`, one event | `apply(*events)`, any number |
 
 Both SDKs split the version in two on purpose. One half is what storage last said. The other half
 counts what this instance applied since. Their sum is the version a save is about to write. The
@@ -37,8 +37,8 @@ u64` on `Root` with a private `pending`, and `current()` is `version + pending.l
 private, so a host reaches it only through `apply` and `take_pending`. That keeps one source of
 truth for the version.
 
-`apply` does three things in order: `transition` the state, increment the version, push the event
-onto `pending`. Replay must never call it — a replayed event is already stored, and queueing it as
+`apply` runs `transition` on the state, then records the event as pending, which advances the
+current version. Replay must never call it. A replayed event is already stored, and queueing it as
 pending would write it a second time. `Repository` therefore calls `transition` directly when it
 folds a loaded stream.
 
@@ -53,20 +53,20 @@ class Account(Aggregate):
             self.balance += event.amount
 ```
 
-`examples/py/03_snapshots.py`. `transition` is a pure fold: no I/O, no validation, no
+From `examples/py/03_snapshots.py`. `transition` is a pure fold: no I/O, no validation, no
 raising. The decision to emit an event belongs to the handler. `transition` only applies one that
 has already been decided. It also runs on every replay of history that was valid once.
 
 ## Two codecs, not one
 
-They are different seams with different jobs. Confusing them is the common mistake.
+They are different seams with different jobs, and confusing them is a common mistake.
 
 | | `EventCodec` | `AggregateCodec` |
 |---|---|---|
-| bridges | one domain event object and its `Event` — `name`, `version`, `data` bytes | the whole aggregate and its snapshot bytes |
+| bridges | one domain event object and its `Event`: `name`, `version`, `data` bytes | the whole aggregate and its snapshot bytes |
 | methods | `marshal` / `unmarshal` | `load` / `dump` (plus `type` in Python, `type_name()` in Rust) |
 | used on | every event, every save and every replay | one snapshot per save, one per load |
-| ships ready-made | yes: `json_codec`, `msgpack_codec` (Python); `JsonRegistryCodec`, `MsgpackRegistryCodec` (Rust) | no — hand-written on purpose |
+| ships ready-made | yes: `json_codec`, `msgpack_codec` (Python); `JsonRegistryCodec`, `MsgpackRegistryCodec` (Rust) | no, hand-written on purpose |
 | where | `edax.codec`, `edax::codec` | `AggregateCodec` in `edax::aggregate`, `AggregateCodec` in `edax.store` |
 
 The event codecs ship because the shape is mechanical: a fixed set of event types, each serialized
@@ -77,8 +77,8 @@ derived.
 events = json_codec({"Deposited": Deposited, "Withdrawn": Withdrawn})
 ```
 
-`json_codec` lives in `edax.codec`. `msgpack_codec` takes the same arguments and writes MessagePack
-instead — smaller, binary. Both accept `version=` and `upcasters=`, so an older stored payload is
+`json_codec` lives in `edax.codec`. `msgpack_codec` takes the same arguments and writes the smaller,
+binary MessagePack instead. Both accept `version=` and `upcasters=`, so an older stored payload is
 raised to the current shape on load. Every unmarshal asks the kernel's `upcast_plan`, with or without
 an upcaster for the name. A payload from a **newer** writer than the codec's `version` raises
 `CodecError` instead of decoding silently under the older schema. A name with no upcaster reads an
@@ -108,16 +108,16 @@ class AccountCodec:
         return str(account.balance).encode()
 ```
 
-`examples/py/03_snapshots.py`. `data is None` means no snapshot is stored yet, so rebuild the
+From `examples/py/03_snapshots.py`. `data is None` means no snapshot is stored yet, so rebuild the
 aggregate empty at version 0.
 
-Every codec failure — an unregistered event name, an unwritable payload, a missing upcast step — is
-a `CodecError` in Python and an `edax::Error` with code `codec` in Rust. That is **terminal**: the same bytes fail the
-same way on every attempt, so the caller dead-letters instead of redelivering forever. `marshal` and
-`dump` are fallible in both directions for exactly this reason. A payload the codec cannot write
+Every codec failure is a `CodecError` in Python and an `edax::Error` with code `codec` in Rust: an
+unregistered event name, an unwritable payload, a missing upcast step. It is terminal. The same bytes
+fail the same way on every attempt, so the caller dead-letters instead of redelivering forever.
+`marshal` and `dump` are fallible in both directions for this reason. A payload the codec cannot write
 reaches the caller as a typed error. It does not panic inside whichever thread called `save`.
 
-## Repository.load — snapshot, then replay the tail
+## Repository.load: snapshot, then replay the tail
 
 ```mermaid
 sequenceDiagram
@@ -140,25 +140,25 @@ sequenceDiagram
         EC-->>R: domain event
         R->>R: transition, never apply
     end
-    R->>R: version equals the last sequence seen
+    R->>R: version equals N plus the events folded
     R-->>C: aggregate at its stored version
     deactivate R
 ```
 
-No snapshot means a pure replay from version 0. The version the rehydrated aggregate carries is the
-last sequence the store returned, not the snapshot's version, so a snapshot that lags the stream is
-still correct. An envelope with no `sequence` is still folded into state but leaves the version
-alone.
+No snapshot means a pure replay from version 0. The rehydrated version is the snapshot's plus the
+events folded after it, so a snapshot that lags the stream is still correct. The loaded tail must be
+dense, and `Repository` checks it with the kernel's `check_sequence_batch`. A gap, a repeat or an
+unsequenced envelope fails the load with `CodecError` instead of folding the wrong state.
 
-A snapshot **may lag the stream and must never lead it**. Leading it would make the replay
-double-count the events the snapshot already contains.
+A snapshot may lag the stream and must never lead it. Leading it would make the replay double-count
+the events the snapshot already contains.
 
 Rust has two entry points instead of an optional argument: `Repository::load` opens a unit of work
 of its own, `Repository::load_in` runs inside the caller's `&mut Tx`. Python has one
-`load(aggregate_id, *, tx=None)` that joins the ambient transaction when `tx` is omitted — see
+`load(aggregate_id, *, tx=None)` that joins the ambient transaction when `tx` is omitted. See
 [transactions](./transactions.md).
 
-## Repository.save — marshal, append, snapshot
+## Repository.save: marshal, append, snapshot
 
 ```mermaid
 sequenceDiagram
@@ -178,9 +178,11 @@ sequenceDiagram
     R->>S: append tx, id, expected_version equals initial, envelopes
     alt stored version equals expected_version
         S-->>R: ok, event rows plus outbox rows staged
-        R->>AC: dump aggregate
-        AC-->>R: snapshot bytes
-        R->>S: save_snapshot tx, when the version crosses a multiple of snapshot_every
+        opt the version crosses a multiple of snapshot_every
+            R->>AC: dump aggregate
+            AC-->>R: snapshot bytes
+            R->>S: save_snapshot tx
+        end
         R->>R: clear pending, version equals current
         R-->>C: the committed envelopes
     else stored version differs
@@ -194,36 +196,34 @@ sequenceDiagram
 Sequence numbers are assigned by `Repository`, never renumbered by a store: the envelopes carry
 `expected_version + 1 .. + n`. The snapshot is written at `current`, the version after the batch.
 
-Marshaling the whole batch first is deliberate: a codec failure on the third of three events fails
-the save outright and appends nothing. `Repository::save_with` marshals first for that reason, and
+The whole batch marshals first, so a codec failure on the third of three events fails the save
+outright and appends nothing. `Repository::save_with` marshals first for that reason, and
 the Rust store suite asserts it.
 
-An **empty** save still calls `append`. Nothing is written, but the compare-and-set still runs. A
+An empty save still calls `append`. Nothing is written, but the compare-and-set still runs. A
 stale caller that applied no events is told it is stale. Its snapshot write is short-circuited
 rather than rolling the stored snapshot backwards.
 
 `save` returns the committed envelopes. Publish them eagerly if you want, or leave them to the
 [`Relay`](./outbox.md).
 
-**After the store accepts the writes, the aggregate is reset.** `pending` is cleared and the version
+After the store accepts the writes, the aggregate is reset. `pending` is cleared and the version
 becomes the version just written. Inside a caller's transaction that reset happens before the caller
 commits. A later rollback then leaves an aggregate that no longer holds its events. Reload it rather
 than save it again.
 
 ## append is a compare-and-set on the version
 
-`append` is the only place optimistic concurrency lives. Its contract, in full:
+`append` is the only place optimistic concurrency lives. The `EventStore` Protocol states it:
 
-> `append` is a compare-and-set on the version: it succeeds only if the stored version equals
-> `expected_version`, otherwise raises `ConcurrencyError` and writes nothing. Enforce it in the
-> database (a unique constraint on `(aggregate_id, sequence)` or a row lock on the stream), not by
-> a read-then-write in Python, so it holds under concurrent writers on separate connections.
-> — the `EventStore.append` contract
+> *Optimistic concurrency.* `append` succeeds only if the stored version equals `expected_version`,
+> else it raises `ConcurrencyError` and writes nothing. Enforce that with a unique constraint or a row
+> lock in the database, never a read-then-write in Python.
 
 The "in the database" clause carries the guarantee. A `SELECT max(sequence)` followed by an `INSERT`
 is not a compare-and-set: two connections both read the same maximum and both insert. A unique index
-on `(aggregate_id, sequence)` makes the second insert fail in the engine, which is the only place
-the two writers actually meet.
+on `(aggregate_id, sequence)` makes the second insert fail in the engine, the one place the two
+writers meet.
 
 | Failure | Error | Transient? | What the caller does |
 |---|---|---|---|
@@ -231,12 +231,12 @@ the two writers actually meet.
 | a payload will not marshal | `CodecError` / code `codec` | terminal | dead-letter; a retry fails identically |
 | the backend is down, a lock wait times out | `StoreError` / code `store` | transient | retry with backoff |
 
-`ConcurrencyError` means exactly one thing and nothing else: a version conflict. A store that
+`ConcurrencyError` means a version conflict and nothing else. A store that
 reports a connection failure as a concurrency conflict makes the caller retry a decision it should
 not retry. A store that reports a conflict as a store failure makes it retry without reloading,
 which conflicts again.
 
-**Nothing is written on a mismatch.** Not a partial batch, not a snapshot. The in-memory adapter
+Nothing is written on a mismatch: no partial batch, no snapshot. The in-memory adapter
 checks the version before staging anything and returns the conflict with both numbers. The
 repository's own test asserts the stored snapshot is still the winner's, never the loser's.
 
@@ -260,15 +260,14 @@ stateDiagram-v2
     V3 --> [*]
 ```
 
-B must **reload and re-decide**, not re-send the same events. Its pending events were decided
-against state that no longer exists; A's event may have invalidated them. That is the whole point of
-putting the check on the version rather than on the row: the conflict is a signal that the decision
-input changed.
+B must reload and re-decide, not re-send the same events. Its pending events were decided against
+state that no longer exists; A's event may have invalidated them. The check sits on the version, not
+on the row, so the conflict signals that the decision input changed.
 
 Two ways to avoid the race rather than lose it:
 
-- Route by aggregate id so one writer owns one aggregate at a time. `KeyOrderedDispatcher` does this
-  — same aggregate id, same worker, so the read-modify-write needs no lock
+- Route by aggregate id so one writer owns one aggregate at a time. `KeyOrderedDispatcher` does this:
+  same aggregate id, same worker, so the read-modify-write needs no lock
   (`examples/py/08_consume_events.py`). See [consuming](./consuming.md).
 - Wrap the dispatch in `retry` so a conflict is retried with a fresh load. See
   [commands](./commands.md).
@@ -283,13 +282,14 @@ A `Snapshot` is a marshaled aggregate at a version, so a load can skip replaying
 | Field | Meaning |
 |---|---|
 | `aggregate_id` | the stream it summarises |
-| `type_name` | the stable label from the codec — Python `AggregateCodec.type`, Rust `type_name()` |
+| `type_name` | the stable label from the codec: Python `AggregateCodec.type`, Rust `type_name()` |
 | `version` | the version the snapshot state is at |
 | `data` | whatever `dump` produced |
 
 Both repositories take an interval `n`: `Repository(..., snapshot_every=n)` in Python,
 `Repository::new(..).snapshot_every(n)` in Rust. A save snapshots when it carries the version across a
-multiple of `n`: `1` (the default) on every save that writes an event, `0` never. A save with nothing pending writes no snapshot. The rule is the kernel's
+multiple of `n`: `1` (the default) on every save that writes an event, `0` never. A save with nothing
+pending writes no snapshot. The rule is the kernel's
 (`snapshot_due`, pinned by `testdata/golden/snapshot_due.json`). Raise the interval when `dump` gets
 expensive or the state gets large: every snapshot is a second write in the save's unit of work.
 Correctness does not depend on it. The replay always folds the tail after whatever version the snapshot
@@ -300,21 +300,18 @@ snapshot at version 6.
 and one past the stream's version is refused as `CodecError`. It commits in the same `tx` as the
 append, so a rollback removes both.
 
-A snapshot is a cache, not a source of truth. Deleting every snapshot must leave the system correct
-— it only makes loads slower. That is why `load` folds the tail rather than trusting the snapshot's
-version, and why the append's rejection short-circuits the snapshot write.
+A snapshot is a cache, not a source of truth. Deleting every snapshot must leave the system correct,
+with slower loads. So `load` folds the tail after the snapshot, and the append's rejection
+short-circuits the snapshot write.
 
-Both SDKs' `Repository.load` act on that. A snapshot is skipped, and the stream replays from version
-0, when its `type_name` is not this codec's: another aggregate type under the same id. It is also
-skipped when the codec's `load` refuses its `data`, as after a `dump` format change. The loaded tail is
-checked with the kernel's dense-batch rule (`check_sequence_batch`). A store that returns a gap or a
-repeat fails the load with `CodecError` instead of folding the wrong state. The aggregate's version
-is the snapshot's plus the number of events folded.
+Both SDKs' `Repository.load` skip a snapshot they cannot use and replay from version 0. That happens
+when its `type_name` is not this codec's, as for another aggregate type under the same id. It also
+happens when the codec's `load` refuses its `data`, as after a `dump` format change.
 
 ## Wiring it up
 
 The one wiring snippet lives in [step 3 of getting
-started](../guides/getting-started.md#step-3--one-transaction-around-the-dispatch).
+started](../guides/getting-started.md#step-3--one-unit-of-work-per-dispatch-and-retry-around-it).
 
 `Repository` also takes `new_id=` and `now=` to pin envelope ids and timestamps for a deterministic
 test. Without them it uses the kernel's guid and clock. Rust's equivalent is `Repository::new(store,

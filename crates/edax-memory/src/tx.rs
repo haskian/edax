@@ -25,18 +25,18 @@ pub(crate) struct Held {
 
 /// The token that names no transaction. A write made under it lands at once (auto-commit) and a
 /// read under it sees only committed state. Every store method accepts it, so a caller that opens no
-/// unit of work keeps today's write-then-read behaviour.
+/// unit of work gets plain write-then-read behaviour.
 pub const NO_TX: i64 = NO_TOKEN;
 
-/// Process-wide token source, unlike the broker's per-instance one: a token names one transaction of
+/// Process-wide token source, unlike the offset tracker's per-instance one: a token names one transaction of
 /// one transactor for the whole process lifetime, so a handle from another transactor is refused as
 /// unknown instead of aliasing a live transaction there.
 static TX_TOKENS: TokenMint = TokenMint::new();
 
 /// A transaction token that names no open transaction: never begun, or already committed or rolled
-/// back. Its own terminal code rather than `codec:`, which the kernel reserves for a value that
-/// would not marshal: the same token fails identically on every retry, and a transient tag would
-/// have a host retry a wiring mistake forever.
+/// back. Its own terminal code, `bad_handle`, rather than `codec`, which the kernel reserves for a
+/// value that would not marshal: the same token fails identically on every retry, and a transient
+/// code would have a host retry a wiring mistake forever.
 pub(crate) fn unknown_tx(tx: i64) -> Error {
     Error::bad_handle(format_args!("unknown transaction {tx}: not begun, or already committed or rolled back"))
 }
@@ -216,10 +216,10 @@ pub(crate) use store_view;
 /// once per call and never re-entered, so there is nothing to deadlock on; a commit applies every
 /// seam's writes under that one hold, so no reader can observe half of one.
 ///
-/// A transaction that is neither committed nor rolled back is not merely a held key: it is a
-/// permanent conflict on every key it staged, for the process lifetime, because nothing can settle
-/// the token that holds them. Every SDK's scoped unit of work guarantees one of commit or rollback
-/// runs; [`open_count`](Self::open_count) is the diagnostic for a host that suspects one does not.
+/// A transaction that is neither committed nor rolled back is a permanent conflict on every key it
+/// staged, for the process lifetime, because nothing can settle the token that holds them. Every
+/// SDK's scoped unit of work guarantees one of commit or rollback runs;
+/// [`open_count`](Self::open_count) is the diagnostic for a host that suspects one does not.
 #[derive(Clone, Default)]
 pub struct MemoryTransactor {
     pub(crate) state: Arc<Mutex<MemoryState>>,

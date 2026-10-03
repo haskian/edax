@@ -189,7 +189,7 @@ mod tests {
     }
 
     /// The wrapper end to end: every branch of the shared machine is reachable through a
-    /// `Delivery`, and a settlement through the closures really lands in the machine.
+    /// `Delivery`, and a settlement through the closures lands in the machine.
     #[test]
     fn settlement_branches() {
         use Step::*;
@@ -370,9 +370,9 @@ mod tests {
         assert!(poll(&broker, Duration::ZERO).is_some(), "a queued message is taken without waiting");
     }
 
-    /// The reviewer's E5 through the Rust SDK: seq 1 fails once, and the staleness guard must not
-    /// lose it. Before the rewind, the nack requeued seq 1 behind seq 2, seq 2 applied, and the
-    /// redelivered seq 1 was skipped as stale for good.
+    /// Seq 1 fails once, and the staleness guard must not lose it. A nack that requeued seq 1 behind
+    /// seq 2 would apply seq 2 first, and the redelivered seq 1 would then be skipped as stale for
+    /// good.
     #[test]
     fn a_nack_keeps_per_key_order_so_the_staleness_guard_loses_nothing() {
         let stored: Arc<Mutex<Option<u64>>> = Arc::default();
@@ -405,8 +405,8 @@ mod tests {
         assert!(broker.empty());
     }
 
-    /// The reviewer's E6 through the Rust SDK: a sink that fails once must get another try, and the
-    /// broker must drain. Before, the delivery stayed unsettled forever.
+    /// A sink that fails once must get another try, and the broker must drain instead of holding the
+    /// delivery unsettled forever.
     #[test]
     fn a_failing_sink_nacks_and_the_redelivery_reaches_it_again() {
         let sink_calls = Arc::new(AtomicUsize::new(0));

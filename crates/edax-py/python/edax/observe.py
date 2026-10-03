@@ -122,8 +122,8 @@ SETTLEMENTS: Final[tuple[Settlement, ...]] = get_args(Settlement)
 #:   after one backoff step; no attempt spent.
 #: - ``sink_failed``: ``on_dead`` raised, so the delivery was nacked after one backoff step; the
 #:   redelivery gives the sink another try. Worth an alert: the dead-letter route is down.
-#: - ``stale``: the transport retired the delivery — a nack rewound its partition, or a rebalance took
-#:   the partition away — before or while the handler ran. Not settled; the transport fetches the
+#: - ``stale``: the transport retired the delivery (a nack rewound its partition, or a rebalance took
+#:   the partition away) before or while the handler ran. Not settled; the transport fetches the
 #:   message again. ``attempt`` is the one this delivery would have been, ``duration_ns`` is ``0`` when
 #:   the handler never ran.
 #: - ``unsettled``: the ack or the nack itself raised. Neither landed; on a log-based broker the
@@ -163,7 +163,7 @@ class Observer:
     the module docstring."""
 
     def claim(self, name: str, verdict: ClaimVerdict) -> None:
-        """A guarded dispatch **lost** the idempotency claim: the ledger already held a record for its
+        """A guarded dispatch lost the idempotency claim: the ledger already held a record for its
         key. Fires once per losing dispatch, from :func:`~edax.command.idempotent` and
         :func:`~edax.router.idempotent_by_id`, before the caller gets the cached result or the error.
 
@@ -177,7 +177,7 @@ class Observer:
         Not a count of dispatches: the winner reports through :meth:`settled`, never here."""
 
     def settled(self, name: str, how: Settlement, duration_ns: int) -> None:
-        """A guarded dispatch **won** the claim, ran, and its claim reached a terminal state. Fires once
+        """A guarded dispatch won the claim, ran, and its claim reached a terminal state. Fires once
         per winning dispatch, after the ledger write that ends the claim, whether that write succeeded
         or not. On a shared ledger that write is the commit, so ``completed`` is
         reported only once the commit has landed, and a failed commit reports ``released``.
@@ -190,7 +190,7 @@ class Observer:
         alert.
 
         Not handler latency: that is :func:`timing` on the bus. Not a delivery: a guarded event handler
-        reports here **and** through :meth:`delivery`, one for the claim and one for the broker."""
+        reports both here and through :meth:`delivery`, one for the claim and one for the broker."""
 
     def delivery(
         self, name: str, outcome: DeliveryOutcome, attempt: int, duration_ns: int, error_type: str | None
@@ -252,8 +252,8 @@ class Observer:
     def drain_failed(self, error: BaseException) -> None:
         """A :class:`~edax.store.Relay` drain raised: ``unpublished``, ``publish`` or ``mark_published``
         failed. The rows published before the failure are marked; the failing row and the rows behind it
-        come back on the next drain, so delivery stays at-least-once. Fires once per failed drain, after
-        the row's backoff wait and before the error re-raises to the caller.
+        come back on the next drain, so delivery stays at-least-once. Fires once per failed drain, before
+        the backoff wait and before the error re-raises to the caller.
 
         Label by :func:`error_type` of ``error``. Read a sustained rate as a relay that is stuck, and
         pair it with the ``oldest_timestamp`` gauge going stale."""

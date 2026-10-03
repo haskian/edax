@@ -10,7 +10,7 @@
 //!   its complement.
 //! - `And` / `Or` / `Not` combine leaves as ordinary booleans (`And([])` = true, `Or([])` = false).
 //!
-//! A consequence worth stating: `Ne(p, x)` does NOT match a document where `p` is absent/null
+//! So `Ne(p, x)` does NOT match a document where `p` is absent/null
 //! (the leaf is false), whereas `Not(Eq(p, x))` DOES (the inner leaf is false, negated to true).
 //!
 //! Value comparison:
@@ -97,7 +97,8 @@ pub enum Filter {
         /// The element the array must contain.
         value: Value,
     },
-    /// Presence test: matches iff the path resolving to a value equals `exists`.
+    /// Presence test: matches iff the path being present (resolving to a non-null value) equals
+    /// `exists`.
     Exists {
         /// Dot-delimited path into the document.
         path: String,

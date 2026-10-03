@@ -378,7 +378,7 @@ fn save_in_a_callers_transaction_resets_before_the_caller_commits() {
 }
 
 /// A repository call that opens its own unit of work, made inside a host's body on the same database,
-/// would commit on its own clean exit, and the host's rollback could not take it back (07#F4). It is
+/// would commit on its own clean exit, and the host's rollback could not take it back. It is
 /// refused before anything begins, whichever way the host's body then ends, so nothing it wrote
 /// commits apart from the host. The `_in` form joins the open unit of work instead.
 #[test]
@@ -419,7 +419,7 @@ fn a_unit_of_work_opened_inside_a_host_body_on_the_same_database_is_refused() {
         }
     }
 
-    // Two databases nest: a unit of work on another one commits on its own, as it always did.
+    // Two databases nest: a unit of work on another one commits on its own.
     let rig = rig();
     let other = MemoryTransactor::new();
     let other_events = other.event_store();

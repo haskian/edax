@@ -30,8 +30,8 @@ pub enum SagaRow {
 
 /// In-memory saga instance store for development and tests: per-correlation state with optimistic
 /// concurrency on the version, and the saga outbox. State is any JSON
-/// value (a saga that keeps `null` is legitimate). The rule is written once here so every SDK's saga
-/// runner meets the same referee:
+/// value (a saga that keeps `null` is legitimate). The rule is written once here, so every SDK's
+/// saga runner is held to the same one:
 ///
 /// - a `save` or `complete` at a stale version is a conflict, and so is any write to a completed
 ///   instance: completion is final;
@@ -53,8 +53,7 @@ pub struct MemorySagaStore {
 store_view!(MemorySagaStore, saga_store);
 
 /// Refuse a write to an instance another open transaction has written: the holder's commit would
-/// overwrite it.
-/// The conflict names the committed version, since the holder's own may yet roll back.
+/// overwrite it. The conflict names the committed version, since the holder's own may yet roll back.
 fn refuse_held_saga(committed: &Committed, others: &HashMap<i64, WriteSet>, id: &str, expected: u64) -> Result<(), Error> {
     match held_by_other(others, |set| set.sagas.get(id)) {
         Some(_) => Err(Error::concurrency(expected, committed.sagas.get(id).map_or(0, |(v, _)| *v))),

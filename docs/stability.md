@@ -11,8 +11,8 @@ Until 0.1.0 nothing here applies: 0.0.x is early alpha and every surface may cha
 A minor release (`0.x` to `0.(x+1)`) may break any surface below. A patch release (`0.x.y` to
 `0.x.(y+1)`) breaks none of them.
 
-That is what `0.` means, and it is not a formality: the seams are young, and some of them will move
-once real backends have been written against them. Pin a minor in your dependency declaration
+That is what `0.` means. The seams are young, and some of them will move once real backends are
+written against them. Pin a minor in your dependency declaration
 (`edax ~= 0.1.0`, `edax = "0.1"`) and read the changelog before you lift it.
 
 ## What is covered
@@ -34,9 +34,9 @@ once real backends have been written against them. Pin a minor in your dependenc
 - The examples, the documentation and the test suite.
 - The Rust crates. Nothing publishes them. The release ships the `edax` Python wheel, which reaches them
   as path dependencies, and their surface follows the Python SDK's needs. That includes the Rust `edax`
-  crate (`crates/edax`), which is a **reference model**, not a deployable SDK. It is synchronous and ships
-  in-memory backends only. It exists so a second language holds the Python orchestration to the kernels,
-  through twin test suites over the same case tables and golden vectors. It is `publish = false`. It gains
+  crate (`crates/edax`), which is a reference model, not a deployable SDK. It is synchronous and ships
+  in-memory backends only. It implements the Python orchestration a second time, against the same
+  kernels. Twin test suites run both over the same case tables and golden vectors. It is `publish = false`. It gains
   a feature only when a shared decision needs a second implementation to pin it. See
   [Rust and Python parity](sdk/rust-parity.md).
 

@@ -5,20 +5,20 @@ schedule, the clock, id generation and the error taxonomy. Two runtime primitive
 sit here too: a poison-tolerant lock and a settlement-token mint. The query filter is not here: it lives in
 `edax-cqrs`, beside the query that evaluates it ([filter.md](./filter.md)).
 
-Everything here is a pure function of its arguments except `guid` and `current_timestamp`, which are
-the two deliberate exceptions. The crate's whole dependency set is `uuid`
+Everything here is a pure function of its arguments except `guid` and `current_timestamp`. The
+crate's whole dependency set is `uuid`
 (`crates/edax-core/Cargo.toml`). Its modules are private and re-exported flat: one path per item,
 `edax_core::guid`, never `edax_core::guid::guid`.
 
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
-| `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not exported; only its callers are |
+| `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not on the ABI; only its callers are |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
 | `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_code_is_terminal`, `error_verdict`, `split_error` |
 | `sync` | `lock`: a poisoned mutex hands back its state instead of panicking again | yes | none | the native handles in `edax-abi`, `edax-memory`, `edax-kafka` |
-| `token` | `TokenMint` and `NO_TOKEN`: one live token per delivery or transaction, `0` never issued | yes | none — the guarantee is uniqueness | the Kafka `OffsetTracker`, the memory broker and transactions |
+| `token` | `TokenMint` and `NO_TOKEN`: one live token per delivery or transaction, `0` never issued | yes | none — the guarantee is uniqueness | the Kafka `OffsetTracker`, the memory idempotency claims and transactions |
 
 ## `backoff`
 
@@ -35,8 +35,7 @@ The randomness is an argument, not a side effect. The caller passes a random `u6
 The kernel stays pure. A golden vector pins `(policy, attempt, entropy) -> millis`, and every SDK
 computes the same wait for the same draw. Each SDK draws its own entropy per wait; a test passes a
 fixed one. Without jitter, every consumer that hit one downed dependency would retry in lockstep, at
-the same delays, for as long as
-the outage lasts. The arithmetic saturates rather than overflowing: the shift falls back to
+the same delays, for as long as the outage lasts. The arithmetic saturates rather than overflowing: the shift falls back to
 `u64::MAX`, the multiply saturates, the cap clamps. So every `u64` attempt is defined, and a port that
 doubles in a loop cannot spin at the top of the range.
 
@@ -88,7 +87,7 @@ same bytes identically, never where collision resistance matters.
 
 ## `clock` and `guid`
 
-The two functions in the toolkit that are not deterministic — the crate docstring names them as the
+The two functions in this crate that are not deterministic. The crate docstring names them as the
 exceptions.
 
 ```rust
@@ -111,15 +110,15 @@ across threads too. That holds even if the wall clock stalls inside a nanosecond
 the clock steps backwards under Network Time Protocol (NTP) slew, a leap second, or suspend. It does
 that with a process-local `AtomicI64` high-water mark and a compare-exchange loop, taking
 `wall.max(last + 1)`. A pre-1970 clock has no Unix duration, so it falls back to `0` and defers to the
-mark, which keeps the one guarantee the function actually makes.
+mark, which keeps the one guarantee the function makes.
 
 The price of strict monotonicity shows when the wall clock jumps forward and is then corrected (a VM
 resume, a bad NTP source). Every later call then returns the mark plus one nanosecond until the wall
-clock catches up. Timestamps stay ordered but sit at the bad future value for that long, and a lag computed from
-them (the relay's `oldest_timestamp`) reads short. Nothing in-process can tell such a jump from real
+clock catches up. Timestamps stay ordered but sit at the bad future value for that long, and a lag
+computed from them (the relay's `oldest_timestamp`) reads short. Nothing in-process can tell such a jump from real
 time.
 
-**Why they still live in the kernel.** The value is not the contract; the *shape* is. Every service
+**Why they still live in the kernel.** The contract is the shape of the value. Every service
 must generate an id that sorts the same way and a timestamp that never repeats, or event ordering
 and the outbox break at the language boundary. One implementation of "what a fresh event id looks
 like" beats one per SDK. Both SDKs take them as overridable defaults, so nothing is locked in:
@@ -130,8 +129,7 @@ self._now = now or _edax.current_timestamp
 ```
 <sup>`Repository.__init__`</sup>
 
-Rust does the same through `Repository::with_clock`, which the docstring introduces as "useful for
-deterministic tests".
+Rust does the same through `Repository::with_clock`, for deterministic tests.
 
 Two limits. The high-water mark is per process — it spans neither a restart nor a second machine, so
 it is not a cross-service ordering primitive. And `i64` nanoseconds run out in the year 2262, where

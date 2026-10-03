@@ -379,8 +379,8 @@ fn staleness_cases() -> Vec<Value> {
         })
     });
     let streams: [(&str, &[Option<u64>]); 3] = [
-        // The documented `watermark = sequence` let the unsequenced event erase the mark here, so the
-        // stale 3 applied and the mark moved back to 3.
+        // The naive `watermark = sequence` lets the unsequenced event erase the mark here, so the
+        // stale 3 applies and the mark moves back to 3.
         ("an_unsequenced_event_keeps_the_mark", &[Some(1), Some(2), Some(5), None, Some(3)]),
         // A seek back redelivers 1 and 2 after 2 already applied: 1 is skipped, 2 re-applies.
         ("a_redelivery_after_a_seek_back", &[Some(1), Some(2), Some(1), Some(2), Some(3)]),

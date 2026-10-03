@@ -251,8 +251,8 @@ fn check_owner(owner: &str) -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    /// A real dispatch's payload hash, past 2^53 so a lossy reader is caught. Shared with
-    /// `crates/edax-py/tests/test_redis.py`, which pins the same claim value from the Python side.
+    /// A real dispatch's payload hash, past 2^53 so a lossy reader is caught.
+    /// `crates/edax-py/tests/test_redis.py` uses the same hash on the Python side.
     const HASH: u64 = 11_258_580_006_047_770_801;
     /// The pending record those bytes carry, as the ledger holds it.
     const PENDING: &str =

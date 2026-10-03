@@ -9,8 +9,8 @@ transaction (:func:`~edax.command.joins_transaction`):
   after the claim is compensated by hand, and ``complete`` deliberately runs *after* the commit:
   before it, a crash in between would leave a ``done`` record over work that never landed.
 
-The table below is one case per failure window. Each asserts both halves of the outcome — how many
-times the handler ran, and whether its write is visible — because either alone can look right while
+The table below is one case per failure window. Each asserts both halves of the outcome (how many
+times the handler ran, and whether its write is visible), because either alone can look right while
 the other is wrong.
 """
 
@@ -250,9 +250,9 @@ class Broker:
 
 @pytest.mark.parametrize("shared", [True, False], ids=["shared_unit_of_work", "ledger_of_its_own"])
 async def test_a_nack_releases_the_claim_so_the_redelivery_reruns(shared: bool) -> None:
-    """The guarantee both modes owe: a delivery that ends in a nack must leave its key **free**.
-    A claim still held after a nack is worse than no guard at all — the broker redelivers, the
-    guard reports ``InProgress`` or replays a success that never happened, and the work is lost."""
+    """The guarantee both modes owe: a delivery that ends in a nack must leave its key free. A claim
+    still held after a nack is worse than no guard at all: the broker redelivers, the guard reports
+    ``InProgress`` or replays a success that never happened, and the work is lost."""
     broker = Broker(shared=shared, fail_first=RuntimeError("projection store unavailable"))
 
     await broker.deliver()
@@ -563,14 +563,13 @@ class History:
 @given(ops=st.lists(op, max_size=8), shared=st.booleans())
 @settings(max_examples=300, deadline=None)
 def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared: bool) -> None:
-    """The invariant **both** modes owe, and the one whose absence silently drops work: a key that
-    reads back as a completed success must have had its handler's write land at least once.
+    """The invariant both modes owe: a key that reads back as a completed success must have had its
+    handler's write land at least once. Without it, work drops silently.
 
-    The converse is what separates the modes, and is asserted here too: with a shared unit of work
-    the count is *exactly* one, because the claim and the write are one commit. With a ledger of
-    its own it may be two — a commit that landed and lost its reply releases the claim over work
-    that survived — which is at-least-once, and the reason split mode may never be called
-    effectively-once.
+    The converse separates the modes, and is asserted here too: with a shared unit of work the count
+    is *exactly* one, because the claim and the write are one commit. With a ledger of its own it may
+    be two, because a commit that landed and lost its reply releases the claim over work that
+    survived. That is at-least-once, and the reason split mode may never be called effectively-once.
     """
 
     async def check() -> None:
@@ -592,7 +591,7 @@ def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared
 
 
 # =========================================================================
-# cm-review: a ledger over another database than the guard's unit of work
+# a ledger over another database than the guard's unit of work
 # =========================================================================
 
 
@@ -602,9 +601,9 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
     guard: str, handler_fails: bool
 ) -> None:
     """A ``joins_transaction`` ledger wired over another database than ``unit_of_work``: the guard's
-    transaction is not the ledger's, so the claim must not land outside it. Before the fix the store found
-    no ambient tx of its own and auto-committed: a success left a ``done`` record the guard's commit never
-    covered, and a failed handler rolled back its work and left the key pending for good. The guard now
+    transaction is not the ledger's, so the claim must not land outside it. Left to find no ambient tx of
+    its own, the store would auto-commit: a success would leave a ``done`` record the guard's commit never
+    covered, and a failed handler would roll back its work and leave the key pending for good. The guard
     hands the store its transaction, which the store refuses with the terminal ``BadHandle`` before the
     handler runs, so the dispatcher dead-letters the wiring mistake."""
     db, other = MemoryTransactor(), MemoryTransactor()

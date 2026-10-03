@@ -169,7 +169,7 @@ class RacingStore(MemorySagaStore):
 @pytest.mark.parametrize(
     "loser, winner, want",
     [
-        # The reviewer's E4: payment and cancellation race. The cancel commits a Refund first; the
+        # Payment and cancellation race. The cancel commits a Refund first; the
         # payment fold's Fulfill must never go out.
         pytest.param(
             "PaymentReceived", "OrderCancelled", [Refund("order-7")], id="cancel_wins_no_fulfill_escapes"
@@ -340,7 +340,7 @@ RESERVE = edax.json_codec({"Reserve": Reserve})
 
 class ReserveSaga:
     """Every event it folds asks the warehouse to reserve stock, so a fold run twice shows as a second
-    ``Reserve``: the workflow step whose repeat the reviewer named."""
+    ``Reserve``, a workflow step that must not repeat."""
 
     def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
         return "order-7"
@@ -615,7 +615,7 @@ async def test_runner_branches(case: RunnerCase) -> None:
 
 
 async def test_the_runners_relay_keeps_the_commands_verdict() -> None:
-    # The relay is where the command runs now, so it is where its verdict lands: a terminal failure
+    # The relay is where the command runs, so it is where its verdict lands: a terminal failure
     # dead-letters the row and the rows behind it go out; a transient one hands the row back.
     store = MemorySagaStore()
     run = runner(store)

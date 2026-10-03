@@ -8,7 +8,7 @@
 //! - [`offsets`] — the token-settled per-partition commit watermark an [`OffsetTracker`] hands a
 //!   consumer as [`AckDecision`] / [`NackDecision`] / [`Due`] data, never as a callback, and the
 //!   rewind a nack makes so the consumer keeps per-key order
-//! - [`record`] — the record a published envelope becomes: the key rule, the `content-type` header
+//! - [`record`](mod@record) — the record a published envelope becomes: the key rule, the `content-type` header
 //!   that names the value's wire format (the media type itself is `edax_event::Format::media_type`,
 //!   since it names the codec and not the transport), the [`route`] a fetched record takes by it,
 //!   the poison-message id, and the record a dead-letter sink publishes

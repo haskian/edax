@@ -3,8 +3,8 @@
 From a fresh checkout to a running service: install the toolchain, build the native module, run both
 test suites, then wire a command-handling service in three steps.
 
-The toolchain is pinned with [mise](https://mise.jdx.dev). `cargo`, `maturin` and `uv` are **not**
-on your `PATH` — every invocation is prefixed with `mise exec --`. The Python software development
+The toolchain is pinned with [mise](https://mise.jdx.dev). `cargo`, `maturin` and `uv` are not on
+your `PATH`, so every invocation is prefixed with `mise exec --`. The Python software development
 kit (SDK) imports a compiled Rust extension, so a build step sits between a kernel change and a
 passing Python test.
 
@@ -23,9 +23,10 @@ flowchart LR
 mise install          # once per checkout; `mise trust` first if mise refuses the config
 ```
 
-`mise.toml` pins `uv`, `maturin`, `ruff` and `ty`. The Rust channel is **not** pinned there — it
-comes from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file
-(`mise.toml:1`). Pinning Rust in both places overrides that file and silently drops `clippy`.
+`mise.toml` pins `uv`, `maturin`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
+from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file (see
+the comment at the top of `mise.toml`). Pinning Rust in both places overrides that file and drops
+`clippy` with no warning.
 
 ## Build
 
@@ -44,7 +45,7 @@ mise exec -- maturin develop -m crates/edax-py/Cargo.toml
 ```
 
 `maturin develop` installs into the virtual environment named by `VIRTUAL_ENV`, so either activate
-the venv or export it (continuous integration (CI) exports it — `.github/workflows/python.yml:54`).
+the venv or export it. Continuous integration (CI) exports it in `.github/workflows/python.yml`.
 
 **Use `crates/edax-py/.venv/bin/python`.** It is the interpreter that has `edax` and `msgspec`
 installed; the repo-root `.venv` lacks `msgspec` (`AGENTS.md`). Every command below names it
@@ -61,15 +62,14 @@ mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
 ```
 
-Run **both**. `cargo test` alone misses binding regressions; `pytest` alone misses kernel ones.
+Run both. `cargo test` alone misses binding regressions; `pytest` alone misses kernel ones.
 
 ## The stale native module trap
 
 `pytest` never rebuilds `_edax`. It imports the `.so` that is already installed in the venv. Change
 anything under `edax-core`, `edax-event`, `edax-cqrs`, `edax-memory`, `edax-kafka`,
-`edax-redis` or `edax-abi` and run
-`pytest` without rebuilding, and the suite tests the *previously compiled* kernel: it passes green
-and proves nothing.
+`edax-redis` or `edax-abi` and run `pytest` without rebuilding, and the suite tests the previously
+compiled kernel: it passes green and proves nothing.
 
 ```mermaid
 sequenceDiagram
@@ -90,16 +90,14 @@ sequenceDiagram
     So-->>Pytest: the kernel you changed
 ```
 
-Changes confined to `crates/edax-py/python/edax/` need no rebuild — that package is plain Python.
+Changes confined to `crates/edax-py/python/edax/` need no rebuild: that package is plain Python.
 
-CI runs the steps in the right order, with the build step marked as required
-(`.github/workflows/python.yml:69`).
+CI runs the steps in the right order, the build before the tests (`.github/workflows/python.yml`).
 
 ## A first service
 
 Three steps. Each one runs on its own; each adds one guarantee. The in-memory backend
-(`edax.backend.memory`) keeps the real contracts, so a rollback in step 3 genuinely leaves nothing
-behind.
+(`edax.backend.memory`) keeps the real contracts, so a rollback in step 3 leaves nothing behind.
 
 ### Step 1 — an aggregate and a `Repository`
 
@@ -211,7 +209,7 @@ async def main() -> None:
 
     first = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
     second = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
-    print(first, second)  # 100 100 — the second call replayed, it did not deposit again
+    print(first, second)  # 100 100: the second call replayed, it did not deposit again
 
 
 asyncio.run(main())
@@ -228,7 +226,7 @@ ledger, the events, the snapshot and the outbox rows all enlist. They commit tog
 back together. `retry` goes outside the guard, so a failed attempt rolls back whole and the next one
 starts from committed state. `retry` refuses to run inside an open transaction: a second attempt
 there would apply the first attempt's staged writes again. The `Relay` then drains the
-transactional Outbox, and sees exactly one row: the replay wrote nothing.
+transactional Outbox, and sees one row: the replay wrote nothing.
 
 <!-- doclint: continues -->
 ```python
@@ -273,9 +271,9 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The dispatch and the commit are now one boundary, which is what makes the write effectively-once for
-state in that database. A ledger that lives in a *different* database cannot join this transaction,
-and the guarantee drops to at-least-once with a dedup window — see
+The dispatch and the commit are now one boundary, which makes the write effectively-once for state
+in that database. A ledger that lives in a different database cannot join this transaction, and the
+guarantee drops to at-least-once with a dedup window; see
 [delivery-guarantees.md](./delivery-guarantees.md).
 
 `examples/py/05_idempotent_commands.py` is the fuller version of this, with the `PayloadMismatch`
@@ -288,7 +286,7 @@ kernels decide, and where alef's output stops and hand-written code begins.
 
 ```mermaid
 flowchart LR
-    subgraph kernels["kernel crates — pure, no I/O"]
+    subgraph kernels["kernel crates: pure, no I/O"]
         direction TB
         K1["edax-core"]
         K2["edax-event"]
@@ -328,10 +326,10 @@ alef generate --lang python --clean
 A plain incremental `alef generate` is destructive here: on a cache hit it skips re-emitting
 `src/lib.rs` and the stub but still runs cleanup, deleting them (`alef.toml`).
 
-The binding crate does type conversion, error-to-exception mapping, Python-idiomatic config and
-async-runtime integration — nothing else. Neither the binding nor the SDK may re-derive kernel
-logic; if a rule must match across versions or languages, it belongs in a kernel with a golden
-vector (`AGENTS.md`).
+The binding crate does type conversion, error-to-exception mapping and Python-idiomatic config,
+and nothing else. Every `edax-abi` method is synchronous, so the binding links no async runtime.
+Neither the binding nor the SDK may re-derive kernel logic; if a rule must match across versions or
+languages, it belongs in a kernel with a golden vector (`AGENTS.md`).
 
 ## What to read next, in order
 

@@ -827,7 +827,7 @@ class RepoReplay:
 
     async def finish(self) -> None:
         # Every save that landed snapshotted in the same unit of work, so the snapshot tracks the
-        # stream exactly: it never leads it, and a lost commit response no longer leaves it behind.
+        # stream exactly: it never leads it, and a lost commit response does not leave it behind.
         for agg, ticks in self.model.ticks.items():
             snap = await self.store.load_snapshot(self.tx, agg_id(agg))
             if not ticks:

@@ -1,7 +1,7 @@
 //! The Rust twin of Python's `edax.testing.contracts` clauses for the saga store, the saga outbox, the
 //! event store's snapshot and id rules, and the idempotency store's held-key and unreadable-record rules:
-//! generic functions over the seam traits, so a backend an adopter
-//! writes runs the same clauses, and every in-tree backend runs them here. Each clause is one invariant a
+//! generic functions over the seam traits, so a backend an adopter writes runs the same clauses, and
+//! every in-tree backend runs them here. Each clause is one invariant a
 //! backend must hold; the in-memory store is the reference.
 
 #![allow(

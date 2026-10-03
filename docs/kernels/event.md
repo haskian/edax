@@ -145,7 +145,7 @@ let worker = edax_event::partition("acct-1", 8);
 and errors otherwise. `Format::media_type` names each variant's media type,
 `application/vnd.edax.envelope+json` or `application/vnd.edax.envelope+msgpack`, and
 `Format::from_media_type` resolves it back. Transports that carry a content type, such as the Kafka
-`content-type` header, use the pair. See `docs/kernels/kafka.md` for the vocabulary.
+`content-type` header, use the pair. See [kafka.md](./kafka.md) for the vocabulary.
 
 | | `data` on the wire | Shape | Golden `evt-1` size |
 |---|---|---|---|
@@ -186,16 +186,14 @@ would then produce two byte strings. Any comparison over the encoded form would 
 the key order traps above and escaping: `"`, `\`, U+001F as `\u001f`, DEL and U+2028 raw. They
 cover non-ASCII written raw in both formats, `i64` and `i32` extremes, and a negative timestamp. And
 they cover the MessagePack width boundaries: fixint/uint8/uint16/uint32/uint64, bin8/bin16 and
-fixstr/str8. Both test suites re-encode
-them and compare hex. A host may serialize its own envelopes in a format the kernel does not know.
+fixstr/str8. Both test suites re-encode them and compare hex. A host may serialize its own envelopes in a format the kernel does not know.
 Routing and ordering still work: `partition` and `is_stale` read fields, not encoded bytes.
 
 The ABI's `encode_envelope(format, envelope)` takes the native envelope the host already holds, as
-`kafka_record` does, and `decode_envelope` returns one. `KernelSerializer` is the thin Python wrapper over
-the pair. The native envelope is the Python SDK's model. It compares, hashes and pickles by value. Its
-`namespace` and `metadata` iterate in key order, the wire's. Its constructor takes `sequence` last:
-`EventEnvelope(id, aggregate_id, event, namespace, metadata, timestamp, sequence=None)`. The binding
-generator puts an optional parameter after the required ones.
+`kafka_record` does, and `decode_envelope` returns one. `KernelSerializer` is the thin Python
+wrapper over the pair. The native envelope is the Python SDK's model. It compares, hashes and
+pickles by value. Its `namespace` and `metadata` iterate in key order, the wire's. Its constructor
+is `EventEnvelope(id, aggregate_id, event, namespace, metadata, timestamp, sequence=None)`.
 
 ```python
 import edax
@@ -234,7 +232,7 @@ A codec asks on **every** unmarshal, also for a name with no upcaster. That is w
 newer-writer refusal hold everywhere. A v5 payload read by a v1 codec raises. It never decodes
 silently and drops the fields the older reader does not know.
 
-The split is deliberate. **The kernel plans, the host's code rewrites the payload.** A transform is
+The split is deliberate. The kernel plans, and the host's code rewrites the payload. A transform is
 domain code and cannot live in a language-neutral kernel. Which steps run, and in what order, is a
 consistency decision. Two services replaying the same stored events must rebuild the same state.
 
@@ -257,8 +255,8 @@ Its expected message names step 1, not step 2. The plan fails on the earliest ho
 one. The vector also pins that `available` is a set: unsorted and repeated entries plan the same.
 It pins negative versions, an empty `available` with `from < to`, the `i32` extremes, and the
 identity rows (`available: null`): current, older, and a newer writer, refused. A span of 2^32
-versions fails at its second step without walking the span, and an identity span is an empty plan. Every error row carries the
-kernel's exact message, and both SDK suites compare it.
+versions fails at its second step without walking the span, and an identity span is an empty plan.
+Every error row carries the kernel's exact message, and both SDK suites compare it.
 
 ```python
 from edax.upcast import Upcaster
@@ -326,8 +324,8 @@ loaded instance is absent or running, since `saga_admit` skips a completed one:
 | nothing, and the fold keeps no state and sends no command | `Nothing` |
 | anything else, keeping state | `Save { expected }` at the loaded version (`0` when absent) |
 | anything else, completing | `Complete { expected }` at the loaded version |
- The commands go in the same write,
-the saga outbox, each with `saga_command_id(correlation_id, version, index)` =
+
+The commands go in the same write, to the saga outbox, each with `saga_command_id(correlation_id, version, index)` =
 `"{correlation_id}:{version}:{index}"`, unique per committed transition. `SagaCommand` is the outbox
 row: that id, the correlation, the command marshaled as an `Event`, a timestamp. See
 [sagas](../sdk/sagas.md). Pinned by `saga.json`.
@@ -343,7 +341,7 @@ untouched — nothing about `codec` changes to get tracing.
 | `originate(metadata, fresh_id)` | a root event's own metadata plus one generated id | the given one, else `fresh_id` | the given one, else the resulting `correlation_id` |
 | `propagate(parent_metadata, parent_event_id)` | the parent's metadata and its event id | the parent's, else `parent_event_id` | always `parent_event_id` |
 
-Both return **only the two keys** for the host to merge; no other metadata is carried.
+Both return only the two keys for the host to merge; no other metadata is carried.
 `correlation_id` alone decides whether a metadata is already on a chain. A lone `causation_id` does
 not suppress a fresh correlation id. That is the `{causation_id: evt-0}` case in
 `testdata/golden/causation_originate.json`, whose expected `correlation_id` is `fresh-1`. A key is
@@ -424,14 +422,12 @@ all five and ended at 3; the kernel's fold applies `[1, 2, 5, None]` and ends at
 `testdata/golden/staleness.json` pins every pair, both `u64` ceiling cases, and three folds: that
 stream, a redelivery after a seek back, and out-of-order copies.
 
-The equal case needs care. `is_stale` does not answer "have I already applied this event?" — it
-answers "is this event older?", and an exact redelivery is not older. `is_stale(5, 5)` is false, so
-the event applies again. That makes it the wrong tool on its own for a replayed batch. Measured:
-replaying a stream through the ordinal check as the only dedup correctly skipped 180 stale events.
-It also re-applied exactly one event per key, a silent 18% read-model error. Every key's newest event
-has a sequence equal to the stored one. Put `idempotent_by_id` in front of the handler when the
-effect is not itself idempotent. Over the same 400 deliveries that gives 200 handler runs and exact
-balances. The key that guard claims is the kernel's too: `event_idempotency(envelope)` in `dedup`.
+The equal case needs care. `is_stale` answers "is this event older?", and an exact redelivery is
+not older. `is_stale(5, 5)` is false, so the event applies again. That makes it the wrong tool on
+its own for a replayed batch. A replay with the ordinal check as its only dedup skips every stale
+event, but applies each key's newest event twice, because its sequence equals the stored one. Put
+`idempotent_by_id` in front of the handler when the effect is not itself idempotent. The key that
+guard claims is the kernel's too: `event_idempotency(envelope)` in `dedup`.
 
 The ordering also assumes the consumer itself does not reorder. Say a nack seeks back while later
 copies of the same aggregate are already queued, and a worker runs them. The older event then

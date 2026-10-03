@@ -142,7 +142,7 @@ class KernelSerializer:
 
 @dataclass
 class Version:
-    """An aggregate's version: initial (from storage) plus updates applied now."""
+    """An aggregate's version: the one it was loaded at, plus the updates applied since."""
 
     initial: int
     updates: int = 0

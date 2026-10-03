@@ -108,8 +108,10 @@ type DeadLetterHook = dyn Fn(DeadLetter) -> Result<(), HandlerError> + Send + Sy
 /// the later one. A transport that requeues a nacked delivery behind later ones instead reorders the key,
 /// and a handler on it skips a stale event itself ([`is_stale`](crate::is_stale), then
 /// [`advance`](crate::advance) after it applies). Every nack waits one step of the builder's [`Pacing`]
-/// first, or a handler failing on a downed dependency spins the broker as fast as it redelivers. An [`ErrorCode::InProgress`](crate::ErrorCode::InProgress) failure waits the same way but never counts toward
-/// [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim expires.
+/// first, or a handler failing on a downed dependency spins the broker as fast as it redelivers. An
+/// [`ErrorCode::InProgress`](crate::ErrorCode::InProgress) failure waits the same way but never counts
+/// toward [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim
+/// expires.
 pub struct KeyOrderedDispatcher {
     senders: Vec<Queue>,
     workers: Vec<JoinHandle<()>>,
@@ -203,10 +205,10 @@ impl DispatcherBuilder {
     /// Spawn `workers` worker threads, each draining its own channel through the handler.
     ///
     /// # Errors
-    /// The terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle) for zero workers, a wiring mistake; a store error when the
-    /// platform refuses a worker thread. A dispatcher missing a worker would nack that worker's partition on
-    /// every delivery with no backoff, a hot loop, so it is never handed out: the threads already spawned
-    /// are stopped and joined first.
+    /// The terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle) for zero workers, a wiring
+    /// mistake; a store error when the platform refuses a worker thread. A dispatcher missing a worker
+    /// would nack that worker's partition on every delivery with no backoff, a hot loop, so it is never
+    /// handed out: the threads already spawned are stopped and joined first.
     pub fn build(self) -> Result<KeyOrderedDispatcher, Error> {
         let n = self.workers;
         if n == 0 {

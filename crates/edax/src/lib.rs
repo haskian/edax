@@ -1,4 +1,4 @@
-//! Ergonomic Rust SDK over the kernels: aggregates, the storage seams, and the orchestration.
+//! The reference Rust SDK over the kernels: aggregates, the storage seams, and the orchestration.
 //!
 //! The kernels own no I/O, so persistence is the SDK's job. Implement the seams against your own database:
 //! [`EventStore`] (write side, with the transactional outbox), [`ProjectionStore`] (read side),

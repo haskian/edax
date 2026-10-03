@@ -3,8 +3,8 @@
 What the software development kit (SDK) layer gives you, where each piece lives, and how far the two
 SDKs agree.
 
-The kernels own no I/O, so persistence and transport are the SDK's job. The SDK offers **seams** — a
-`Protocol` in Python, a trait in Rust — that you implement against your own database or broker, plus
+The kernels own no I/O, so persistence and transport are the SDK's job. The SDK offers seams (a
+`Protocol` in Python, a trait in Rust) that you implement against your own database or broker, plus
 the orchestration over them. No durable store ships; you bring one.
 
 ## The whole pipeline
@@ -35,8 +35,8 @@ at-least-once, which is why the guard and the version compare-and-set exist.
 |---|---|---|
 | `EventStore` | `Repository` loads from snapshot plus replay, saves pending events under optimistic concurrency | [aggregates](aggregates.md) |
 | `EventStore` (outbox half) | `Relay.drain` polls it, `pump` feeds it from change data capture | [outbox](outbox.md) |
-| `IdempotencyStore` | `idempotent`, `idempotent_in`, `idempotent_by_id`, `idempotent_by_id_in` | [idempotency](idempotency.md) |
-| `Transactor` | `transaction`, `transaction`, `current_tx` | [transactions](transactions.md) |
+| `IdempotencyStore` | `idempotent` and `idempotent_by_id`; in Rust also `idempotent_in` and `idempotent_by_id_in` | [idempotency](idempotency.md) |
+| `Transactor` | `transaction` and `current_tx`; in Rust `transaction` and `retry_transaction` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
 | `SagaStore` | `SagaRunner` correlates, folds, emits commands, persists at the loaded version | [sagas](sagas.md) |
 | `Producer`, `Consumer` | `KeyOrderedDispatcher` fans deliveries to workers by partition; `EventRouter` routes by event name | [consuming](consuming.md) |
@@ -62,9 +62,9 @@ classDiagram
         +mark_published(ids)
     }
     class IdempotencyStore {
-        +claim(key, payload_hash)
-        +complete(key, record)
-        +release(key)
+        +claim(key, payload_hash, tx)
+        +complete(key, handle, record, tx)
+        +release(key, handle, tx)
         +joins_transaction
     }
     class ProjectionStore {

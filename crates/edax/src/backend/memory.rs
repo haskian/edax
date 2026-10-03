@@ -50,7 +50,8 @@ impl Default for MemoryTx {
 /// own staged writes; nobody else sees them before the commit. `Clone` shares the database.
 ///
 /// Isolation is by exclusion: a key an open transaction wrote is held until it ends, and a second writer gets
-/// [`Error::Concurrency`] at once, not a wait. Every transactor and every standalone `new()` store owns a database.
+/// a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error at once, not a wait. Every transactor
+/// and every standalone `new()` store owns a database.
 #[derive(Clone, Default)]
 pub struct MemoryTransactor {
     inner: edax_memory::MemoryTransactor,

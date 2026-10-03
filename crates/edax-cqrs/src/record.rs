@@ -26,8 +26,8 @@
 //! handler again or raising on every redelivery.
 //!
 //! Number bound: a `result` integer is exact within the `i64`/`u64` range and is read back as an
-//! `f64` outside it (`serde_json` without `arbitrary_precision`, which `edax-core`'s `number_cmp`
-//! relies on). Pinned by [`tests::result_integers_are_exact_only_within_64_bits`].
+//! `f64` outside it (`serde_json` without `arbitrary_precision`, which the filter's `number_cmp`
+//! relies on). Pinned by the test `result_integers_are_exact_only_within_64_bits`.
 
 use edax_core::{Error, ErrorCode};
 use serde::de::DeserializeOwned;

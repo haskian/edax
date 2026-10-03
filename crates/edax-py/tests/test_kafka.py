@@ -65,8 +65,8 @@ async def test_out_of_order_ack_commits_watermark_only() -> None:
 
 
 async def test_a_nack_rewinds_the_partition_and_retires_what_was_fetched() -> None:
-    """05#F1: the copies fetched after the nacked offset are dead — their tokens are retired and the
-    dispatcher skips them — and the seek brings them back behind it, in order."""
+    """The copies fetched after the nacked offset are dead: their tokens are retired, so the dispatcher
+    skips them, and the seek brings them back behind it, in order."""
     c, k = await kafka_consumer(3)
     d0, d1, d2 = [delivered(await k.poll()) for _ in range(3)]
     await d1.ack()
@@ -460,7 +460,7 @@ class _UpperSerializer:
             "no serializer for content type 'application/x-protobuf'",
             id="unknown_media_type_is_poison",
         ),
-        # 05#F6: the shell used to send an empty header to the default; the kernel refuses it.
+        # An empty header must not fall back to the default serializer; the kernel refuses it.
         pytest.param(
             "an_empty_media_type_is_poison",
             [("content-type", b"")],
@@ -681,7 +681,7 @@ async def test_record_middleware_branches(
 
 
 # =========================================================================
-# client configuration probes (05#F4, 05#F11)
+# client configuration probes
 # =========================================================================
 
 
@@ -768,9 +768,9 @@ async def _drive(
 
 
 async def test_a_nack_keeps_per_key_order_so_the_staleness_guard_loses_nothing(slept: list[int]) -> None:
-    """05#F1 (reviewer's E1): seq 1 fails once. Before, the worker then ran the seq 2 copy already
-    queued, the guard applied it, and the redelivered seq 1 was skipped as stale for good. The rewind
-    retires that copy, so the redelivered seq 1 runs first."""
+    """Seq 1 fails once. If the worker then ran the seq 2 copy already queued, the guard would apply it
+    and skip the redelivered seq 1 as stale for good. The rewind retires that copy, so the redelivered
+    seq 1 runs first."""
     client = FakeKafkaClient()
     await publish_all(client, "t", SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in (1, 2)])
     stored: int | None = None
@@ -803,9 +803,9 @@ async def test_a_nack_keeps_per_key_order_so_the_staleness_guard_loses_nothing(s
 
 
 async def test_a_raising_sink_nacks_and_gets_another_try(slept: list[int]) -> None:
-    """05#F2 (reviewer's E2): the sink raises once on offset 3. Before, the delivery was left unsettled
-    for a redelivery Kafka never makes, and the partition's commits stopped at 3 for good. Now it nacks
-    through the backoff path, the redelivery reaches the sink again, and the partition drains."""
+    """The sink raises once on offset 3. Left unsettled, the delivery would wait for a redelivery Kafka
+    never makes, and the partition's commits would stop at 3 for good. It nacks through the backoff
+    path instead, the redelivery reaches the sink again, and the partition drains."""
     client = FakeKafkaClient()
     await publish_all(
         client, "t", IdSerializer(), [build_envelope(f"k{i}", "Tick", 1, id=str(i)) for i in range(10)]
@@ -837,8 +837,8 @@ async def test_a_raising_sink_nacks_and_gets_another_try(slept: list[int]) -> No
 
 
 async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept: list[int]) -> None:
-    """05#F3 (reviewer's E3): before, a poison nack had no backoff and spun about 36,000 seek-and-fetch
-    cycles a second. Every nack now waits a growing step first, so the rate is the backoff schedule's."""
+    """A poison nack with no backoff spins about 36,000 seek-and-fetch cycles a second. Every nack waits a
+    growing step first, so the rate is the backoff schedule's."""
     client = FakeKafkaClient()
     await client.send_and_wait("t", POISON_BYTES, key=b"a")
     calls = 0
@@ -859,7 +859,7 @@ async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept:
 
 
 async def test_run_refuses_a_dispatcher_without_a_sink() -> None:
-    """05#F3 decision: on Kafka a nack rewinds, so a message that fails for good with no sink stalls its
+    """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its
     partition forever. The run refuses before it polls anything."""
     client, consumer = await kafka_consumer(1)
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None)
@@ -886,8 +886,8 @@ class _FlakyKeyService:
 
 
 async def test_run_survives_a_transient_middleware_failure(slept: list[int]) -> None:
-    """05#F8 (reviewer's E8): one key-service blip ended the run, with nothing polling again. The loop now
-    waits a backoff step per consecutive failure and polls again; the poll already sought back."""
+    """One key-service blip must not end the run, or nothing polls again. The loop waits a backoff step
+    per consecutive failure and polls again; the poll already sought back."""
     client = FakeKafkaClient()
     await publish_all(client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id="0")])
     handled: list[str] = []
@@ -940,8 +940,8 @@ async def test_a_stopped_client_ends_the_run_and_commits_what_settled() -> None:
 
 
 async def test_commits_are_batched_off_the_ack_path() -> None:
-    """05#F9 (reviewer's E7): 100 acks made 100 serialized commit round trips inside the workers. An ack
-    now only settles; the committer commits what is due on its interval, in one call."""
+    """A commit per ack would make 100 acks 100 serialized round trips inside the workers. An ack only
+    settles; the committer commits what is due on its interval, in one call."""
     client = FakeKafkaClient()
     await publish_all(
         client, "t", IdSerializer(), [build_envelope(f"k{i % 7}", "Tick", 1, id=str(i)) for i in range(100)]
@@ -955,8 +955,8 @@ async def test_commits_are_batched_off_the_ack_path() -> None:
 
 
 async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
-    """05#F9: aiokafka retries a commit while the coordinator is away, without end. A paused broker now
-    costs one deadline per flush: the flush raises, nothing is recorded, consumption goes on, and the
+    """aiokafka retries a commit while the coordinator is away, without end. A paused broker costs one
+    deadline per flush: the flush raises, nothing is recorded, consumption goes on, and the
     watermark is due again once the broker is back."""
     client = FakeKafkaClient()
     await publish_all(
@@ -1044,7 +1044,7 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
 
 
 async def test_a_rebalance_mid_batch_drains_then_hands_over_without_overlap(slept: list[int]) -> None:
-    """05#F5: a second member joins while the first is mid-batch. The listener drains the revoked work
+    """A second member joins while the first is mid-batch. The listener drains the revoked work
     before the new owner starts, so no key is handled by two members at once, the group's commit never
     moves back, and every message is handled by someone."""
     cluster = FakeKafkaCluster(partitions=2)
@@ -1166,7 +1166,7 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
 
 
 # =========================================================================
-# dead-letter record (05#F10)
+# dead-letter record
 # =========================================================================
 
 
@@ -1184,9 +1184,8 @@ class _TraceHeader:
 
 @pytest.mark.parametrize("cause", ["poison", "terminal_handler"])
 async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) -> None:
-    """The sink republishes the record as it was fetched — key, value and every header, before any
-    middleware — plus where it came from and why, on the kernel's partition for its key. Before, a sink
-    got the raw value and a ``topic/partition/offset`` string only."""
+    """The sink republishes the record as it was fetched (key, value and every header, before any
+    middleware), plus where it came from and why, on the kernel's partition for its key."""
     cluster = FakeKafkaCluster(partitions=3)
     client = FakeKafkaClient(cluster)
     client.subscribe(["t"])

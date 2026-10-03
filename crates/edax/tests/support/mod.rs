@@ -2,8 +2,8 @@
 
 use std::sync::Mutex;
 
-/// A thread-safe `Cell`: one slot the guard, the handler and the test all read. The command path is
-/// `Send + Sync`, so a `Cell` no longer fits.
+/// A thread-safe `Cell`: one slot the guard, the handler and the test all read. A `Mutex`, because
+/// the command path is `Send + Sync`.
 #[derive(Default)]
 pub struct Shared<T>(Mutex<T>);
 

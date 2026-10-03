@@ -6,8 +6,8 @@ composed.
 
 A command is a value plus a type name. The bus routes on the type name and runs the handler through
 a chain of middleware wrapped around it at registration time. The kernel owns everything that has to
-agree across languages. Which bytes are hashed. Whether a failure is terminal. The backoff schedule.
-Dispatch and the chain are local ergonomics.
+agree across languages: which bytes are hashed, whether a failure is terminal, and the backoff
+schedule. Dispatch and the chain are local to each SDK.
 
 ```mermaid
 flowchart LR
@@ -53,9 +53,9 @@ class Deposit:
 
 ### Why the type name stays out of the hash
 
-The idempotency hash covers the command *value*, every instance field included — the field the key
-was read from as well. There is no `payload()` method to override, because a hand-written one was
-the single place two SDKs could quietly disagree about which bytes get hashed. The rule is the
+The idempotency hash covers the command *value*, every instance field included, the key field as
+well. There is no `payload()` method to override: a hand-written one was the one place two SDKs
+could disagree about which bytes get hashed. The rule is the
 kernel's and is pinned by `testdata/golden/command_hash.json`, asserted through the real
 `idempotent` middleware from both sides.
 
@@ -83,9 +83,9 @@ identically. `Deposit(account="x", amount=10)` and `Withdraw(account="x", amount
 Reuse one idempotency key across them and the second dispatch replays the first one's cached result:
 no `PayloadMismatch`, no execution, and the money never moves.
 
-That is the rule working as designed. The hash is over the command value, and it must be, or a Rust
-service and a Python service would disagree about the same command. What the kernel cannot know is
-which keys belong together. Namespace the key yourself, by command type and by service:
+The hash must cover the command value alone, or a Rust service and a Python service would disagree
+about the same command. The kernel cannot know which keys belong together. Namespace the key
+yourself, by command type and by service:
 
 ```python
 def key_of(cmd: Deposit) -> str:
@@ -98,8 +98,8 @@ bus = CommandBus(idempotent(ledger, key=key_of))
 
 The same applies to the ledger. `RedisIdempotencyStore(conn, prefix=...)` requires the prefix, with
 no default, because two services sharing one Redis under one prefix collide on a bare request id.
-The collision is not silent, because it surfaces as a terminal `PayloadMismatch`. It still
-dead-letters an event that was never wrong. Give each service and environment its own prefix.
+The collision surfaces as a terminal `PayloadMismatch`, which dead-letters an event that was never
+wrong. Give each service and environment its own prefix.
 
 ## CommandBus
 
@@ -120,13 +120,13 @@ it caches, so `wrap` applies it to each handler rather than once for the bus. Se
 typed view per result type over one database.
 
 `AlreadyRegistered` is a startup wiring error, not a runtime failure. `EventRouter::register`
-returns the same code for a duplicate event handler. One taxonomy covers both paths. It is terminal —
-reregistering the same type never starts working — so it fails the process at wiring time rather than
-being retried.
+returns the same code for a duplicate event handler. One taxonomy covers both paths. It is terminal,
+because registering the same type again never starts working, so it fails the process at wiring time
+instead of being retried.
 
 A dispatch fails with the handler's own `HandlerError`, the same type an event handler returns. A saga
 dispatching a command returns its failure with `?`, and the verdict survives to the dispatcher.
-Every failure the SDK itself raises is an `edax::Error` — the kernel's `Error { code, message }` —
+Every failure the SDK itself raises is an `edax::Error`, the kernel's `Error { code, message }`,
 inside that box; a caller downcasts to read its code. Python raises `HandlerNotFound` directly and
 lets a handler's exception propagate untouched.
 
@@ -215,13 +215,13 @@ sequenceDiagram
     deactivate Retry
 ```
 
-The guard never releases a claim it lost — the key belongs to the winner.
+The guard never releases a claim it lost: the key belongs to the winner.
 
 ## retry
 
 | | Rust | Python |
 |---|---|---|
-| Signature | `retry(attempts: usize, pacing: Pacing) -> Middleware<C, O>` | `retry(attempts: int, *, pacing: Pacing = Pacing()) -> Middleware` |
+| Signature | `retry(attempts: usize, pacing: Pacing) -> Middleware<C, O>` | `retry(attempts: int, *, pacing=None) -> Middleware`; `None` is `Pacing()` |
 | Floor | `attempts.max(1)` | `attempts < 1` raises `ValueError` |
 | Wait | `pacing.sleep`, default `std::thread::sleep`, blocking | `pacing.sleep`, default `await asyncio.sleep` |
 | Backoff | `pacing.delay(failures)`: the kernel's jittered `backoff_millis` | the same, through `_edax.backoff_millis` |
@@ -233,7 +233,7 @@ to find; the Rust reference model clamps it to one (`zero_attempts_clamps_to_one
 
 **What it retries.** Only transient failures. A terminal error is returned or re-raised at once
 without using an attempt, because a deterministic failure cannot come out differently. The verdict
-is the kernel's — see [`./errors.md`](./errors.md). Python catches `Exception`, so
+is the kernel's; see [errors](./errors.md). Python catches `Exception`, so
 `asyncio.CancelledError` passes straight through and is never retried.
 
 **The backoff.** The kernel's schedule with full jitter: failed attempt `i` waits a random duration in
@@ -262,17 +262,16 @@ after its writes succeeded.
 | `idempotent(store, key)` with no transaction anywhere | allowed, but each attempt's writes commit on their own: at-least-once, and the handler must tolerate a re-run |
 
 Python enforces the first two refusals in one check: `retry` raises terminal `BadHandle` while
-`a `transaction` is open. `test_command.py::test_retry_refuses_to_run_inside_an_open_transaction` pins it.
+a `transaction` is open. `test_command.py::test_retry_refuses_to_run_inside_an_open_transaction` pins it.
 Rust has no ambient transaction, so its `retry` refuses inside `transaction(&tr, ...)` on the same
 thread. Under `idempotent_in`, retry the whole unit of work with `retry_transaction(&tr, n, &pacing, body)`.
 
 `idempotent_in` is the Rust form that reads a host-supplied transaction handle; `unit_of_work` is
-the Python form. Their guarantees are [`./idempotency.md`](./idempotency.md)'s subject, not this
-file's.
+the Python form. [Idempotency](./idempotency.md) covers their guarantees.
 
 ## The recommended wiring
 
-The wiring `examples/py/05_idempotent_commands.py` runs:
+The wiring `examples/py/05_idempotent_commands.py` runs, with a `submit` entry point added:
 
 ```python
 # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
@@ -333,8 +332,8 @@ claim included. On a transient failure `retry` runs the next attempt in a fresh 
 does not replay an outcome that never landed.
 
 `Relay.drain` reads committed outbox rows only. The replayed dispatch, the rejected
-`PayloadMismatch` and the rolled-back attempt publish nothing. The example asserts exactly two
-envelopes reach the publisher.
+`PayloadMismatch` and the rolled-back attempt publish nothing. The example dispatches `req-A` three
+times and asserts one deposit event.
 
 ## See also
 

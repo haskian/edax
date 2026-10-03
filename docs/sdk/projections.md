@@ -4,8 +4,8 @@ The read side: a read model stored as one document per id, written with a versio
 with semantics the kernel decides.
 
 The event-sourced side replays events to rebuild an aggregate. A read model is the other shape: a
-current document you save and query directly. `ProjectionStore` is that seam, and no concrete store
-ships with edax — you bring one.
+current document you save and query directly. `ProjectionStore` is that seam. No durable store
+ships with edax; you bring one.
 
 ```mermaid
 flowchart LR
@@ -24,7 +24,7 @@ Three fields, and the third carries the whole concurrency rule.
 
 | Field | Python type | Rust type | Meaning |
 |---|---|---|---|
-| `id` | `str` | `String` | the row key — normally the aggregate id the projection tracks |
+| `id` | `str` | `String` | the row key, normally the aggregate id the projection tracks |
 | `version` | `int` | `u64` | the version the entity was loaded at; `0` for one never saved |
 | `document` | `Any` | `serde_json::Value` | the queryable body, a JSON object |
 
@@ -95,8 +95,8 @@ a compare-and-set; two processes will interleave. Use `UPDATE ... WHERE version 
 affected row count, or a unique insert for version 1.
 
 *Enlist in the caller's transaction.* Every method takes an optional `tx`. With `tx` given, or with
-`current_tx` of its transactor set by an enclosing `transaction`, the store runs inside that transaction; with neither,
-it auto-commits. That is what lets a projection write commit with the events that produced it. See
+`current_tx` of its transactor set by an enclosing `transaction`, the store runs inside that
+transaction; with neither, it auto-commits. That is what lets a projection write commit with the events that produced it. See
 [transactions](./transactions.md).
 
 ### Rust and Python parity
@@ -105,7 +105,7 @@ it auto-commits. That is what lets a projection write commit with the events tha
 |---|---|---|
 | seam | `trait ProjectionStore` with associated `type Tx` | `Protocol ProjectionStore`, `tx` keyword argument |
 | query shape | `edax_cqrs::Query`, re-exported not re-declared | a `dict` built by `edax.query.build_spec` |
-| optional method | none — a trait has no optional items | `get_many` |
+| optional method | none: a trait has no optional items | `get_many` |
 | conflict | `Error::concurrency(expected, stored)`, code `concurrency` | `ConcurrencyError` |
 
 Rust re-exports the kernel's `Query` rather than declaring its own, so the spec the SDK serializes
@@ -140,15 +140,15 @@ applied. See [idempotency](./idempotency.md).
 
 ## Querying
 
-A query is four independent parts, applied in a fixed order: **filter -> keyset(`after`) -> sort ->
-offset -> limit**.
+A query is independent parts applied in a fixed order: filter -> keyset(`after`) -> sort -> offset
+-> limit.
 
 ### Filter
 
 Build it with the constructors in `edax.filter`: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`,
 `starts_with`, `in_`, `contains`, `exists`, and the connectives `and_`, `or_`, `not_`. Each returns
-a plain dict in the kernel's canonical form. The abstract syntax tree and the null/missing rule —
-why `ne(p, x)` and `not_(eq(p, x))` differ. Read them in [kernels/filter](../kernels/filter.md).
+a plain dict in the kernel's canonical form. [kernels/filter](../kernels/filter.md) covers the
+abstract syntax tree and the null/missing rule, which is why `ne(p, x)` and `not_(eq(p, x))` differ.
 
 `edax.filter.matches(filter, document)` evaluates one document in process, which is how you test a
 filter without a store.
@@ -186,7 +186,7 @@ Three edges the test suite pins:
 ### Keyset cursors
 
 `offset` re-reads the prefix on every page and drifts when rows are inserted between calls. A keyset
-cursor does not: it names the last row of the page, and the next page starts *strictly* after it.
+cursor does not: it names the last row of the page, and the next page starts strictly after it.
 
 `get_many` returns a `Page`: the `rows`, and `next`, the cursor the kernel minted from the last row
 under the query's own sort. Pass `next` back as `after` with the same filter and sort. The caller
@@ -197,7 +197,7 @@ An unsorted query has no keyset to resume, so its `next` is always `None` and it
 The cursor binds the sort it was minted under. It is
 `base64url(canonical_json({"s": <fingerprint>, "v": [<values at the effective sort paths>]}))`,
 unpadded so it survives a URL query string, and the fingerprint is the payload hash of the effective
-sort. Replayed under another sort — another key, another direction, one key more — it is a terminal
+sort. Replayed under another sort (another key, another direction, one key more) it is a terminal
 `CodecError`, not a page of garbage. So is a cursor on an unsorted query. A row reaches the next page
 only if its tuple sorts strictly after the cursor tuple; an equal tuple was the previous page's last
 row.
@@ -206,7 +206,7 @@ The canonical form is RFC 8785, whose numbers are doubles. Say a page ends on a 
 an integer past 2^53. Then it cannot mint `next`: the query fails with `CodecError` rather than
 resume at the wrong row. Keep sort keys and ids that wide as strings.
 
-**A backend does not have to re-derive any of that.** The kernel owns both halves of the round trip.
+A backend does not re-derive any of that. The kernel owns both halves of the round trip.
 Read `after` with `decode_cursor`, which refuses a cursor minted under another sort, and mint `next`
 with `encode_cursor`. Order by `effective_sort` rather than by the declared keys:
 
@@ -225,11 +225,11 @@ reads. A backend that decodes differently fails a test instead of paging wrong i
 Every row arrives once while another writer commits between pages. `next` is the kernel's cursor.
 A cursor under another sort is refused.
 
-**The document must carry a non-null, unique `"id"`.** The kernel appends `{"path": "id"}` as a
+The document must carry a non-null, unique `"id"`. The kernel appends `{"path": "id"}` as a
 final sort key unless your sort already ends there. No two rows then share a full sort tuple, and a
 page boundary landing inside a tie neither drops nor repeats a row. A row whose `id` is missing or
 `null` cannot mint a cursor: that is a `CodecError`. Rows tied on every other key would tie on the
-tiebreak too, and paging past them would silently drop the rest of the tie. An empty sort takes no
+tiebreak too, and paging past them would drop the rest of the tie. An empty sort takes no
 tiebreak and no cursor.
 
 `MemoryProjectionStore` injects the row key as `"id"` before querying. That injected value is
@@ -252,7 +252,7 @@ Each of these is a terminal `CodecError`:
 ### A paging loop
 
 Built from `examples/py/11_projection_query.py`, which runs this loop and asserts
-`["a1", "a2"]` then `["a3", "a6"]` — page 2 resumed past a tie on `balance`.
+`["a1", "a2"]` then `["a3", "a6"]`: page 2 resumed past a tie on `balance`.
 
 ```python
 from edax.filter import and_, eq, gte
@@ -304,11 +304,11 @@ The kernel's `query_json` is the reference applier, and a backend that pages dow
 assert against it. Two services then page the same read model identically, and a cursor generated by
 one binding is understood byte-for-byte by another.
 
-A backend may instead read the spec as its own query dialect. That is allowed and stated in the seam
-docstring — but then cursors are not portable across services, and you own that.
+A backend may instead read the spec as its own query dialect. The seam docstring allows it, but
+then cursors are not portable across services, and you own that.
 
-`MemoryProjectionStore.get_many` defers to the kernel, which is what makes it the reference for how
-a durable backend must behave.
+`MemoryProjectionStore.get_many` defers to the kernel, which makes it the reference for how a
+durable backend must behave.
 
 ### Query a list without a store
 
@@ -320,17 +320,17 @@ page a set you already hold.
 
 | Raised | When | Verdict |
 |---|---|---|
-| `ConcurrencyError` | `save` version mismatch, and nothing else | transient — reload and refold |
+| `ConcurrencyError` | `save` version mismatch, and nothing else | transient: reload and refold |
 | `CodecError` | a malformed or misspelled filter or spec, a `None` comparand, a cursor minted under another sort, a `next` from a row without an `id`; a document the backend cannot marshal | terminal |
 | `StoreError` | anything else the backend fails on | transient |
 
-The taxonomy matters here. A corrupt cursor tagged as a store failure would look transient, and the
-handler paging with it would be redelivered forever. `test_get_many_rejects_a_bad_spec_as_terminal`
+A corrupt cursor tagged as a store failure would look transient, and the handler paging with it
+would be redelivered forever. `test_get_many_rejects_a_bad_spec_as_terminal`
 asserts `caught.value.terminal is True` for each refusal above.
 
 A scalar or array document is rejected at `save`, not at the query. It has nowhere for the store to
 inject the row key as `"id"`. Such a row could be written and then never paged. The memory adapter
-returns `Codec` while the caller can still fix it, and leaves the entity's version alone.
+raises `CodecError` while the caller can still fix it, and leaves the entity's version alone.
 
 See [errors](./errors.md).
 
@@ -339,8 +339,7 @@ See [errors](./errors.md).
 A projection is eventually consistent behind the write side. The write commits, the relay drains the
 outbox afterwards, the broker delivers at-least-once, and the handler folds the event later still.
 Every one of those steps is a gap where a query returns a document that does not yet reflect a
-committed write. Say so in your application programming interface (API) rather than pretending
-otherwise.
+committed write. Say so in your application programming interface (API).
 
 What a reader should do about it:
 
@@ -354,9 +353,9 @@ What a reader should do about it:
   document from a refreshed one, and a client can refuse to go backwards.
 - **Hold a cursor, not an offset, across pages.** A projection is being written while you page it;
   `offset` drifts under inserts, `after` does not.
-- **Keep the fold safe under redelivery.** The store's compare-and-set protects the *row*, not your
+- **Keep the fold safe under redelivery.** The store's compare-and-set protects the row, not your
   arithmetic. `balance + amount` applied twice is wrong however the version check went. Guard the
-  handler — see [idempotency](./idempotency.md).
+  handler; see [idempotency](./idempotency.md).
 
 ## See also
 

@@ -1,7 +1,7 @@
 # edax
 
 > [!WARNING]
-> **Early alpha (0.x).** The API is unstable and a minor release may break it, and nothing is
+> **Early alpha (0.x).** The application programming interface (API) is unstable and a minor release may break it, and nothing is
 > published to a package registry yet. Not ready for production. Build from source. What a version
 > promises: [stability](docs/stability.md).
 
@@ -15,7 +15,7 @@ a redelivered command is a duplicate. How a filtered page is ordered. Get one of
 service, or in one language, and the bug surfaces months later as a dropped row or a double-charged
 customer. edax puts exactly those decisions in pure Rust **kernels**, and wraps them in an SDK per
 language. **Golden vectors** pin the result, so drift fails the build instead of production. The
-SDK **wires**. The kernel **decides**. Neither layer re-derives the other's job.
+SDK wires. The kernel decides. Neither layer re-derives the other's job.
 
 ## Install
 
@@ -28,12 +28,12 @@ Rust kernel from source, so a [Rust toolchain](https://rustup.rs) must be on you
 uv pip install "git+https://github.com/crtomirmajer/edax#subdirectory=crates/edax-py"
 ```
 
-Python is the supported SDK. The Rust `edax` crate is a reference model (`publish = false`) that
-holds the Python orchestration to the kernels from a second language; see
-[Rust and Python parity](docs/sdk/rust-parity.md).
+Python is the supported SDK. The Rust `edax` crate is a reference model (`publish = false`). It
+implements the same orchestration in a second language, against the same kernels and golden
+vectors. See [Rust and Python parity](docs/sdk/rust-parity.md).
 
 Working inside a checkout instead? Point `uv` at the local path (`uv pip install ./crates/edax-py`),
-or use the pinned [mise](https://mise.jdx.dev) toolchain — see
+or use the pinned [mise](https://mise.jdx.dev) toolchain. See
 [getting started](docs/guides/getting-started.md).
 
 ## Quickstart
@@ -117,11 +117,11 @@ async def main() -> None:
 ```
 
 Dispatch `req-A` twice and the second call replays the first outcome. Reuse the key with a
-different body and the guard raises `PayloadMismatch`. A retry re-runs a whole unit of work, never a
-handler inside one, so `retry` goes outside a guard given `unit_of_work`. The kernel makes that decision, not the SDK,
-so a Rust service sharing the store reaches the same verdict.
+different body and the guard raises `PayloadMismatch`. The kernel decides between replay and
+mismatch, so a Rust service that shares the store reaches the same verdict. A retry re-runs a whole
+unit of work, never a handler inside one, so `retry` goes outside a guard given `unit_of_work`.
 
-Nineteen runnable examples, one idea each, take it from here in learning order. The
+Nineteen runnable examples, one idea each, go on from here in learning order. The
 [examples README](examples/py/README.md) lists them, from `01_command_bus.py` to
 `19_fault_injection.py`. Each one ends in asserts, so a clean exit is the test. Continuous
 integration (CI) runs them all.
@@ -132,12 +132,13 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 - [Getting started](docs/guides/getting-started.md) — install the toolchain, build the native
   module, run both test suites.
-- [Architecture](docs/architecture.md) — the kernel, application binary interface (ABI) and SDK layers, and what each one owns.
+- [Architecture](docs/architecture.md) — the kernel, application binary interface (ABI) and SDK
+  layers, and what each one owns.
 - [Delivery guarantees](docs/guides/delivery-guarantees.md) — at-least-once, dedup windows, and
   both idempotency guard modes.
 - [Backends](docs/backends/README.md) — the seam contracts, and the memory, Redis and Kafka
-  implementations. A Kafka record, its header, its partition and the offset watermark that settles it are the
-  `edax-kafka` kernel's; the adapter only makes the client calls.
+  implementations. The `edax-kafka` kernel owns a Kafka record, its header, its partition and the
+  offset watermark that settles it. The adapter only makes the client calls.
 
 ## Layout
 
@@ -151,6 +152,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-kafka` | Kafka kernel: the record key and header, broker placement, the media-type route, the dead-letter record, the offset watermark |
 | `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its four scripts, and the verdict on a Redis reply |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
+| `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `examples/py` | nineteen runnable examples in learning order; start at its [README](examples/py/README.md) |
 | `docs` | the full documentation set. Start at [`docs/README.md`](docs/README.md) |
@@ -158,8 +160,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 ## Status
 
-Early alpha. The application programming interface (API) is not yet stable, and nothing is
-published to a package registry. Build from source; see
+Early alpha. The API is not yet stable, and nothing is published to a package registry. Build from source; see
 [getting started](docs/guides/getting-started.md). The version literal lives in `Cargo.toml` alone,
 so this page does not restate it; [stability](docs/stability.md) says what a version promises.
 

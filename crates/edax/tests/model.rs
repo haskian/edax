@@ -501,7 +501,7 @@ proptest! {
         let nacked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
         let sink = Arc::clone(&handled);
-        // No wall time per nack: each failing delivery used to sleep its 100 ms for real.
+        // No wall time per nack: `Pacing::instant()` waits out the kernel's schedule in no time.
         let dispatcher = KeyOrderedDispatcher::builder(workers, move |env: &EventEnvelope| {
             sink.lock().unwrap().push((env.aggregate_id.clone(), env.sequence.unwrap()));
             if env.event.name == "Fail" {
@@ -679,7 +679,7 @@ proptest! {
                     prop_assert!(instance.root().pending().is_empty());
                     ticks_model.extend(ticks.iter().copied());
 
-                    // Stamping survives the store, not just the returned envelopes (G5 at this layer).
+                    // Stamping survives the store, not just the returned envelopes.
                     let stored = store.load(&mut tx, &agg_id(agg), version).unwrap();
                     prop_assert!(stored.iter().all(|e| e.namespace == namespace && e.metadata == metadata));
 

@@ -55,7 +55,7 @@ fn settled_of(claim: &str) -> String {
 /// `claim_value`: the value a winning claimant writes, which is also its handle.
 fn claim_cases() -> Vec<Value> {
     [
-        // The value `crates/edax-py/tests/test_redis.py` holds as `CLAIM`.
+        // The all-zero `OWNER` and the `HASH` of `crates/edax-py/tests/test_redis.py`.
         ("pending_claim", ZEROS, HASH),
         ("minted_owner_token", MINTED, HASH),
         // u64::MAX and 0 are the ends of the hash range; a binding that reads the hash as a signed
@@ -134,7 +134,8 @@ fn split_cases() -> Vec<Value> {
             "non_hex_owner_is_accepted_on_read",
             format!("1{}{{}}", "z".repeat(32)).into_bytes(),
         ),
-        // The unversioned layout of edax 0.1: refused by name rather than split one byte off.
+        // An unversioned value, the token straight before the record: refused by name rather than
+        // split one byte off.
         ("unversioned_value_is_refused", format!("{MINTED}{{}}").into_bytes()),
         (
             "another_layout_version_is_refused",
@@ -335,7 +336,7 @@ fn fence_cases() -> Vec<Value> {
     let other = claim_of(ZEROS);
     let settled = settled_of(&claim);
     let other_settled = settled_of(&other);
-    let stub = claim[..3].to_owned(); // a prefix of the claim: the old fence matched it
+    let stub = claim[..3].to_owned(); // a prefix of the claim, which a prefix-matching fence accepts
     let complete = |handle: &str| json!([handle, settled, RECORD_TTL]);
     let none = Value::Null;
 
@@ -424,7 +425,7 @@ fn fence_cases() -> Vec<Value> {
             json!(other_settled),
             json!(INITIAL_TTL),
         ),
-        // An empty handle on a free key: the old prefix fence wrote a ghost key here.
+        // An empty handle on a free key: a prefix-matching fence would write a ghost key here.
         (
             "complete_with_an_empty_handle",
             none.clone(),

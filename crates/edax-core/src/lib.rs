@@ -4,7 +4,7 @@
 //! (edax-cqrs) depend on: deterministic hashing and a jittered retry [`Backoff`] (pure and
 //! consistency-critical — all bindings produce identical results), the one [`Error`] type and its
 //! [`ErrorCode`] taxonomy (whose terminal / transient verdict decides what an idempotency guard
-//! persists, so every SDK must agree), plus [`guid`] and [`current_timestamp`] for minting new event
+//! persists, so every SDK must agree), plus [`guid()`] and [`current_timestamp`] for minting new event
 //! ids and timestamps (non-deterministic by nature, so the exceptions to that rule). [`lock`] and
 //! [`TokenMint`] are the runtime primitives the adapters share: one poison-tolerant lock and one
 //! settlement-token mint, so two state machines cannot drift on either.

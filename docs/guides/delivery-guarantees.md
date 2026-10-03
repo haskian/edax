@@ -4,9 +4,8 @@ What guarantee holds at every hop from a caller's request to a read model. What 
 What a host must do to claim effectively-once for its own database state.
 
 Nothing in this pipeline is exactly-once, and `edax` never promises it. Each hop is either atomic
-(one transaction) or at-least-once with something downstream that removes the duplicate. The whole
-argument is: make every duplicate detectable, and make detection a kernel decision so two services
-reach the same verdict.
+(one transaction) or at-least-once with something downstream that removes the duplicate. Every
+duplicate is detectable, and detection is a kernel decision, so two services reach the same verdict.
 
 ```mermaid
 flowchart LR
@@ -111,7 +110,7 @@ ledger and reaches the same kernel verdict the command bus does.
 
 The `Relay` hop has a second shape. Change data capture reads the write-ahead log, through logical
 replication or a Debezium outbox router. The outbox row is already written in the same transaction,
-so the consumer sees it exactly when the transaction commits. Feed the decoded envelopes to `pump`
+so the consumer sees it when the transaction commits. Feed the decoded envelopes to `pump`
 instead; there is no `mark_published`, because the stream position is the ack, so commit that
 position only after `pump` has passed the row. The guarantee is the same: at-least-once, resumed
 from the last committed position.
@@ -136,10 +135,10 @@ stateDiagram-v2
 `InProgress` is exempt from the attempt budget. See
 [consuming](../sdk/consuming.md#inprogress-is-contention-not-a-failed-attempt).
 
-Without `on_dead` there is no `dead_letter` state at all. A failing delivery nacks forever. That is
-a loud failure rather than a silent drop.
+Without `on_dead` there is no `dead_letter` state at all. A failing delivery nacks forever, which
+is loud, and nothing is dropped.
 
-## Where the duplicates actually come from
+## Where the duplicates come from
 
 ```mermaid
 sequenceDiagram
@@ -175,15 +174,15 @@ sequenceDiagram
 |---|---|---|
 | the caller retries a submit | the guard's atomic claim plus the kernel's verdict on the reused key | `idempotent(store, key=...)` |
 | `retry` re-runs the handler | the rollback of the failed attempt: its claim and its writes go together, and the next attempt starts from committed state | `retry` outside `idempotent(..., unit_of_work=db)` |
-| two writers race on one aggregate | `append`'s version compare-and-set — the loser gets `ConcurrencyError` and writes nothing | `EventStore.append` |
+| two writers race on one aggregate | `append`'s version compare-and-set: the loser gets `ConcurrencyError` and writes nothing | `EventStore.append` |
 | two writers race on one read model | `save`'s version compare-and-set | `ProjectionStore.save` |
 | the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `env.id` | `edax.router.idempotent_by_id` |
 | the broker redelivers a handled message | the same claim; a `done` record replays and the handler is skipped | the ledger |
 | an out-of-order or stale redelivery | `is_stale(stored, incoming)` on the per-aggregate `sequence`, then `advance(stored, incoming)` for the new watermark | `edax.is_stale` / `edax.advance`, `edax::is_stale` / `edax::advance` |
 
-`is_stale` compares strictly: an incoming sequence *equal* to the stored one is not stale and is
+`is_stale` compares strictly: an incoming sequence equal to the stored one is not stale and is
 re-applied, so effect-idempotency on that boundary case stays the handler's job. It deduplicates
-*ordering*, not identity — use it beside the guard, not instead of it. Store `advance`'s answer, not
+ordering, not identity: use it beside the guard, not instead of it. Store `advance`'s answer, not
 the event's sequence: an unsequenced event would otherwise erase the watermark and let the next stale
 redelivery through.
 
@@ -196,18 +195,17 @@ The guard's own claim/complete/release orderings and every failure window inside
    one `tx`; `EventStore`, `ProjectionStore`, `IdempotencyStore` and `SagaStore` are pure
    participants. Events, snapshot, outbox rows, projection write and the idempotency record commit
    as one set or roll back as one set. This is the only place edax gets effectively-once.
-2. **A database and a broker cannot be atomic.** That is the whole reason the transactional Outbox
-   exists. The row is written inside the database transaction. A separate `Relay` publishes it
+2. **A database and a broker cannot be atomic.** The transactional Outbox exists for that reason. The row is written inside the database transaction. A separate `Relay` publishes it
    afterwards. Publishing from inside the handler instead loses events on a rollback and invents
    them on a failed commit.
 3. **Two databases cannot be atomic without a distributed transaction, and edax does not use one.**
    No two-phase commit, no eXtended Architecture (XA). A ledger in Redis beside business state in
    your own database is two independent commits; no ordering makes them one. That mode is
-   **at-least-once with a dedup window** the width of the record's retention. Never call it
+   at-least-once with a dedup window the width of the record's retention. Never call it
    effectively-once.
 
 The `IdempotencyStore` declares which case it is with `joins_transaction`, because the guard
-branches on it and cannot detect it. Absent, the answer is `False` — the safe side.
+branches on it and cannot detect it. Absent, the answer is `False`, the safe side.
 
 ## Ordering
 
@@ -230,43 +228,43 @@ Two placements keep one aggregate in order, and the kernel owns both.
   producer, and `% w` remaps almost every id. Plan a partition change like a migration.
 - Order after a nack only on a broker that rewinds. On a log the nacked message and every later one
   of its partition come back in order, acked or not, and the copies already queued are skipped. On a
-  broker that requeues behind later messages, a nacked message comes back *behind* them; `is_stale`
+  broker that requeues behind later messages, a nacked message comes back behind them; `is_stale`
   is how a handler skips what is older than its watermark.
 
 **Never order on a wall clock.** `current_timestamp()` is Unix nanoseconds with a process-local
-high-water mark: strictly increasing *within one process*, and nothing more. It does not span
-restarts or machines. `guid()` is UUIDv7 — roughly time-ordered and index-friendly, but a random
-suffix, not an ordering key. Order on `sequence`, which the store assigns and the compare-and-set
+high-water mark: strictly increasing within one process, and nothing more. It does not span
+restarts or machines. `guid()` is UUIDv7: roughly time-ordered and index-friendly, but with a random
+suffix, so it is not an ordering key. Order on `sequence`, which the store assigns and the compare-and-set
 defends.
 
 ## Checklist: effectively-once for your database state
 
-A host can claim effectively-once for state in one database when **all** of these hold.
+A host can claim effectively-once for state in one database when all of these hold.
 
-- [ ] Every store that must commit together is built over **one** `Transactor`, and all of them join
+- [ ] Every store that must commit together is built over one `Transactor`, and all of them join
   the same `tx` (explicitly, or via `current_tx` of their transactor).
-- [ ] The `IdempotencyStore` lives in **that same database** and declares `joins_transaction:
+- [ ] The `IdempotencyStore` lives in that same database and declares `joins_transaction:
   ClassVar[bool] = True`.
 - [ ] The guard owns the transaction: `idempotent(..., unit_of_work=db)` or `idempotent_by_id(store,
-  unit_of_work=db)`. On the consume path this is not optional — a dispatcher worker clears the
-  ambient transaction, so a handler that opens one internally opens it *after* the claim was taken.
-- [ ] `retry` sits **outside** a guard that owns the transaction, and no transaction encloses the
+  unit_of_work=db)`. On the consume path this is required: a dispatcher worker clears the ambient
+  transaction, so a handler that opens one internally opens it after the claim was taken.
+- [ ] `retry` sits outside a guard that owns the transaction, and no transaction encloses the
   dispatch: `retry` refuses to run inside one. See
   [commands](../sdk/commands.md#where-retry-sits-relative-to-the-guard).
 - [ ] `claim` is an atomic insert-if-absent, linearizable across processes: `INSERT ... ON CONFLICT
   DO NOTHING`, `SET NX`, or a unique-key insert. Never a read then a write.
 - [ ] A losing claimant either blocks and then reads the winner's record, or fails with a
-  `StoreError` — never swallows the failure and reports a win. The blocking wait is bounded by a
+  `StoreError`. It never swallows the failure and reports a win. The blocking wait is bounded by a
   lock or statement timeout.
 - [ ] Record retention outlives the longest redelivery window: broker retry plus client retry.
-- [ ] `payload_hash` is persisted losslessly as an **unsigned** 64-bit value — unsigned column,
+- [ ] `payload_hash` is persisted losslessly as an unsigned 64-bit value: an unsigned column,
   `NUMERIC`, or a string. A signed `BIGINT` reads every value at or above `2**63` back negative.
-- [ ] `EventStore.append` enforces its version check **in the database**, and `ProjectionStore.save`
+- [ ] `EventStore.append` enforces its version check in the database, and `ProjectionStore.save`
   does too.
 - [ ] Exactly one `Relay` per store, unless `unpublished` leases rows (`SELECT ... FOR UPDATE SKIP
   LOCKED`, or a `leased_until` column).
 - [ ] `Producer.publish` returns only after a durable broker ack and raises on failure.
-- [ ] `Consumer.ack` settles only that message — a per-partition watermark on an offset broker.
+- [ ] A delivery's `ack` settles only that message: a per-partition watermark on an offset broker.
 - [ ] The error taxonomy is honored: `ConcurrencyError` only for a version conflict, `StoreError`
   for backend failures, `CodecError` for marshaling failures. The retry and dead-letter paths branch
   on it.

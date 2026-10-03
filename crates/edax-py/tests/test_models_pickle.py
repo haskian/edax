@@ -57,7 +57,7 @@ def test_event_pickles_standalone() -> None:
 
 
 # =========================================================================
-# 08#F4: value semantics on the native models
+# value semantics on the native models
 # =========================================================================
 
 

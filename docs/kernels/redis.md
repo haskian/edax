@@ -7,7 +7,7 @@ A Redis ledger is a cross-language contract. Software development kits (SDKs) th
 space must agree on four things. They are the key, the stored value, the script each write runs, and
 what a reply means. Otherwise one takes over a claim another still holds. `edax-redis` holds exactly
 those decisions. It links no Redis client library, so every SDK ships only the client calls around
-it and the TTL values it was configured with.
+it and the time to live (TTL) values it was configured with.
 
 | Module | Owns | Golden vectors |
 |---|---|---|
@@ -28,8 +28,8 @@ the other.
 `check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)` refuses the settings a store
 is built with. It refuses an empty prefix, and a TTL outside 1 to 2^53 - 1 milliseconds: the largest
 integer every SDK language's number type holds exactly. It refuses a deadline that is not positive.
-It refuses a heartbeat over a claim TTL too short to renew `HEARTBEATS_PER_TTL` (3) times. Redis refuses a zero or negative TTL
-on every write, so a store checks its settings when it is built. Every refusal is a terminal
+It refuses a heartbeat over a claim TTL too short to renew `HEARTBEATS_PER_TTL` (3) times. Redis
+refuses a zero or negative TTL on every write, so a store checks its settings when it is built. Every refusal is a terminal
 `bad_handle` error.
 
 ## The value
@@ -42,7 +42,7 @@ idem:order-7  ->  "1" + "<32 hex characters of owner token>" + "<kernel record J
 
 **Why one key and not two.** A sibling key holding the token would expire on a clock of its own. The
 two clocks drift apart. A claimant could then win the record, lose the owner, and hold a claim it
-can never settle. One key means one time to live (TTL) governs both halves.
+can never settle. One key means one TTL governs both halves.
 
 **Why a version byte.** A later layout must be refused by name, not split at the wrong place. The
 unversioned layout of edax 0.1 starts with the token's first hexadecimal digit, so this kernel
@@ -69,7 +69,7 @@ mint time and a ledger dump reads in order. A 42-bit counter shared within a pro
 bits are what make two claimants distinguishable (see [core.md](./core.md)).
 
 **The claim value is the claim's handle.** The claimant writes it, the store returns it as
-`Won(handle)`, and every later write compares the stored value with it **exactly**. A claim that
+`Won(handle)`, and every later write compares the stored value with it exactly. A claim that
 lapsed and was taken over holds another value, so its old owner settles nothing. A settled record
 holds another value too, so a late release never deletes the outcome of committed work. No width is
 chosen by the caller, so no prefix of a token can match another's.
@@ -77,8 +77,8 @@ chosen by the caller, so no prefix of a token can match another's.
 `check_claim(claim)` refuses a handle this kernel never minted. It refuses a handle with no layout
 version, and one too short. It refuses an owner token that is not 32 lowercase hexadecimal characters,
 and a record half that is not a pending record. `settled_value` applies the same check. The scripts
-would only fail to match such a handle, so refusing it names the wiring mistake instead. Upper case is refused rather than folded, because
-the scripts compare bytes. The token never appears in a message: inside a claim value it authorizes
+would only fail to match such a handle, so refusing it names the wiring mistake instead. Upper case
+is refused rather than folded, because the scripts compare bytes. The token never appears in a message: inside a claim value it authorizes
 settling that claim.
 
 `split_value` is strict about the frame and liberal about the token. It refuses a value that is not
@@ -109,8 +109,9 @@ stranded.
 | a value `split_value` refuses | `Prior` of the kernel's unreadable record: a `codec` failure under the claimant's hash, naming the refusal |
 | a value `split_value` refuses, when `claim` is not a claim this kernel minted | codec error |
 
-A value `split_value` refuses still holds the key, and nobody can settle it. So the claimant reads it as
-the record half's unreadable record would read: a cached `codec` failure every SDK replays the same way.
+A value `split_value` refuses still holds the key, and nobody can settle it. So the claimant reads
+it the way it reads an unreadable record half: a cached `codec` failure every SDK replays the same
+way.
 `redis_ledger.json` pins the row.
 
 The second row is why the outcome is a kernel decision. redis-py re-sends a command whose reply was
@@ -139,9 +140,8 @@ the server. `testdata/golden/redis_scripts.json` is the source of truth for the 
 
 **What each script does is a vector too.** `testdata/golden/redis_fence.json` has one row per case.
 A row holds the key's value and TTL before, the script and its arguments, and the reply, value and
-TTL after. The
-expectations are written out by hand in the generator, not computed: no Rust code re-implements the
-scripts. Each SDK replays the rows against a server that runs Lua. Python runs them against fakeredis
+TTL after. The generator writes the expectations out by hand rather than computing them, because no
+Rust code re-implements the scripts. Each SDK replays the rows against a server that runs Lua. Python runs them against fakeredis
 and, given `EDAX_REDIS_URL`, against a live Redis.
 
 ## The reply verdict
@@ -152,7 +152,7 @@ and, given `EDAX_REDIS_URL`, against a live Redis.
 |---|---|---|
 | `WRONGTYPE` | `codec`, terminal | the key holds something the ledger cannot read |
 | `ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS` | `bad_handle`, terminal | a refused command, script or credential fails the same way every time |
-| anything else | `store`, transient | a passing server state (`READONLY` during a failover, `LOADING`, `BUSY`, `OOM`, `TRYAGAIN`) or a prefix the kernel does not know |
+| anything else | `store`, transient | a passing server state (`READONLY` during a failover, `LOADING`, `BUSY`, `OOM`, `TRYAGAIN`, `NOSCRIPT` and more) or a prefix the kernel does not know |
 
 The unknown-prefix default is transient, the core default: a wrongly transient failure is redelivered
 loudly, a wrongly terminal one is dead-lettered.

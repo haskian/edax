@@ -78,8 +78,9 @@ return 0
 ///   request fails the same way every time, so terminal `bad_handle`.
 /// - Anything else is transient `store`: a passing server state (`LOADING`, `BUSY`, `READONLY` during
 ///   a failover, `MASTERDOWN`, `CLUSTERDOWN`, `TRYAGAIN`, `MOVED`, `ASK`, `NOREPLICAS`, `OOM`,
-///   `MISCONF`, `NOSCRIPT`) or a prefix this kernel does not know. That is the core default: a wrongly
-///   transient failure is redelivered loudly, a wrongly terminal one is dead-lettered.
+///   `MISCONF`, `NOSCRIPT`) or a prefix this kernel does not know. That is `edax_core::verdict`'s
+///   default: a wrongly transient failure is redelivered loudly, a wrongly terminal one is
+///   dead-lettered.
 pub fn reply_error(reply: &str) -> Error {
     let prefix = reply.split(' ').next().unwrap_or_default();
     let code = match prefix {

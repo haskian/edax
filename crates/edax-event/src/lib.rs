@@ -4,8 +4,8 @@
 //! concurrency, ergonomics, and transports. The kernel owns only the consistency-critical
 //! decisions that all services must agree on bit-for-bit:
 //!
-//! - [`partition`] — local fan-out: the worker a key-ordered dispatcher runs an aggregate on. Broker
-//!   placement is the transport's, so Kafka's lives in `edax-kafka`.
+//! - [`partition`](mod@partition) — local fan-out: the worker a key-ordered dispatcher runs an
+//!   aggregate on. Broker placement is the transport's, so Kafka's lives in `edax-kafka`.
 //! - [`codec`] — selectable, deterministic envelope serializations ([`codec::Format`]) and their
 //!   evolution rule
 //! - [`upcast`] — versioned-event upcast planning (ordering + gap detection)

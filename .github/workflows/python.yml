@@ -112,7 +112,7 @@ jobs:
         working-directory: crates/edax-py
         run: mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis mypy "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 
-      # THIS STEP IS LOAD-BEARING. pytest never rebuilds the native module: without it the
+      # Do not remove or reorder. pytest never rebuilds the native module: without this step the
       # suite imports a stale _edax and passes green while proving nothing about the Rust
       # side. Any change under edax-core/-event/-cqrs/-memory/-kafka/-redis/-abi needs this
       # first.

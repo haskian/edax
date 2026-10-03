@@ -127,7 +127,7 @@ class _ConsumerLoop:
                 # A terminal failure repeats on every poll: fail fast rather than loop on it.
                 if is_terminal(e):
                     raise
-                # A transient one — a record middleware whose key service blipped — must not end the
+                # A transient one (a record middleware whose key service blipped) must not end the
                 # loop, because nothing would poll again. The poll already handed its message back.
                 logger.warning(
                     "edax consumer: poll failed (%d in a row); retrying after a backoff step",

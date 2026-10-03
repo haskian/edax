@@ -91,7 +91,7 @@ async def test_a_memory_store_refuses_a_foreign_tx() -> None:
     # A handle from another transactor (or a fake) names a unit of work this store's database
     # knows nothing about: enlisting "anyway" would silently drop the atomicity the caller asked
     # for, so the store fails fast on an explicit one. Another database's ambient tx is not this
-    # store's to see at all (09#F4): the store runs outside any unit of work of its own database.
+    # store's to see at all: the store runs outside any unit of work of its own database.
     proj = MemoryProjectionStore()
     other = MemoryTransactor()
     async with transaction(other) as tx:
@@ -568,9 +568,9 @@ def test_a_native_handle_used_from_another_thread_raises_bad_handle(case: Foreig
 
 
 async def test_a_released_claim_with_nothing_committed_does_not_shadow_or_erase_a_winner() -> None:
-    """A staged release used to stage a delete even with nothing committed. The releaser's own
-    re-claim then read its staged delete instead of the winner's record and won a second time, and
-    its commit erased the winner's record, so the next dispatch ran the handler again."""
+    """A release with nothing committed must stage no delete. With one, the releaser's own re-claim
+    reads its staged delete instead of the winner's record and wins a second time, and its commit
+    erases the winner's record, so the next dispatch runs the handler again."""
     db = MemoryTransactor()
     ledger = MemoryIdempotencyStore(db)
     async with db.transaction() as releaser:
@@ -620,7 +620,7 @@ async def test_a_release_of_a_committed_claim_holds_the_key_until_it_ends() -> N
 
 
 # =========================================================================
-# 09#F4: the ambient tx is per database, so two databases nest without crossing handles
+# the ambient tx is per database, so two databases nest without crossing handles
 # =========================================================================
 
 

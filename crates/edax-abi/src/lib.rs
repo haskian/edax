@@ -1,15 +1,17 @@
 //! Flat, plain-Rust API surface over the edax kernels and adapters.
 //!
-//! This crate holds no logic of its own: every function forwards to a kernel
-//! (`edax-core` / `edax-event` / `edax-cqrs` / `edax-kafka` / `edax-redis`) or to a backend
-//! (`edax-memory`), reshaping only at the edges so the surface is trivial to bind. alef extracts
-//! these signatures and emits the native binding from them, so the shapes here
-//! are chosen to map cleanly: fallible calls return `Result<_, String>` (the
-//! generator raises on `Err`) whose text is always a kernel [`edax_core::Error`]'s wire form
-//! `"<code>: <message>"`, so the code comes from the kernel and never from a choice made here, bytes are `Vec<u8>` / `&[u8]`, dictionaries are
-//! `HashMap<String, String>` (converted to the kernel's ordered `BTreeMap` where
-//! deterministic encoding requires it), and an aggregate result is a plain struct
-//! rather than a tuple.
+//! This crate holds no logic of its own: every function forwards to a kernel (`edax-core` /
+//! `edax-event` / `edax-cqrs` / `edax-kafka` / `edax-redis`) or to a backend (`edax-memory`),
+//! reshaping only at the edges so the surface is trivial to bind. alef extracts these signatures and
+//! emits the native binding from them, so the shapes here are chosen to map cleanly:
+//!
+//! - A fallible call returns `Result<_, String>`, and the generator raises on `Err`. The text is
+//!   always a kernel [`edax_core::Error`]'s wire form `"<code>: <message>"`, so the code comes from
+//!   the kernel and never from a choice made here.
+//! - Bytes are `Vec<u8>` / `&[u8]`.
+//! - Dictionaries are `HashMap<String, String>`, converted to the kernel's ordered `BTreeMap` where
+//!   deterministic encoding requires it.
+//! - An aggregate result is a plain struct rather than a tuple.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -22,7 +24,7 @@ use edax_core::ErrorCode;
 // ---- routing / sequencing ------------------------------------------------
 
 /// The local worker, of `n`, that runs `aggregate_id`'s events: local fan-out only, never broker
-/// placement (that is [`kafka_partition_for`]). See [`edax_event::partition`].
+/// placement (that is [`kafka_partition_for`]). See [`edax_event::partition()`].
 pub fn partition(aggregate_id: &str, n: u32) -> u32 {
     edax_event::partition(aggregate_id, n)
 }
@@ -148,7 +150,7 @@ pub fn eval_filter(filter: &str, doc: &str) -> Result<bool, String> {
 
 /// Apply a read query (JSON string) to a JSON array of documents; returns the page as JSON text
 /// `{"rows": [...], "next": cursor|null}`, `next` minted under the query's own sort. See
-/// [`edax_cqrs::query`].
+/// [`edax_cqrs::query()`].
 pub fn query(query: &str, docs: &str) -> Result<String, String> {
     edax_cqrs::query_json(query.as_bytes(), docs.as_bytes()).map_err(wire)
 }
@@ -166,7 +168,7 @@ pub fn decode_cursor(cursor: &str, sort: &str) -> Result<String, String> {
     edax_cqrs::decode_cursor_json(cursor.as_bytes(), sort.as_bytes()).map_err(wire)
 }
 
-/// Sort keys a page ordered by (JSON string), `id` tiebreak appended sort keys (JSON string).
+/// The sort keys a page is actually ordered by, with the `id` tiebreak appended (JSON in, JSON out).
 ///
 /// A backend ordering by the declared sort alone disagrees with the kernel at every tie.
 pub fn effective_sort(sort: &str) -> Result<String, String> {
@@ -365,7 +367,7 @@ pub struct Event {
 /// (`event` is a nested [`Event`]). It is the currency for an envelope across the boundary: returned by
 /// [`decode_envelope`] and accepted/returned by the in-memory event store, so events cross as a
 /// structured object (bytes stay bytes, dictionaries stay dictionaries) with no JSON or wire encoding.
-/// [`envelope_from_record`] / [`record_from_envelope`] map it to and from the kernel envelope (only the
+/// `envelope_from_record` / `record_from_envelope` map it to and from the kernel envelope (only the
 /// dictionaries change container: a host `HashMap` becomes the kernel's order-deterministic `BTreeMap`).
 pub struct EventEnvelope {
     pub id: String,
@@ -439,9 +441,8 @@ pub fn media_type(format: &str) -> Result<String, String> {
 
 // ---- consumer retry policy ------------------------------------------------
 
-/// What [`Retries::failed`] tells the host to do: `dead` (hand the
-/// message to the sink, then ack; `attempt` is the attempt that killed it) or a nack after backoff
-/// step `step`. See [`edax_event::Verdict`].
+/// What [`Retries::failed`] tells the host to do: `dead` (hand the message to the sink, then ack;
+/// `attempt` is the attempt that killed it) or a nack after backoff step `step`. See [`edax_event::Verdict`].
 pub struct RetryVerdict {
     pub dead: bool,
     pub attempt: u32,
@@ -992,7 +993,7 @@ fn record_from_kafka_record(record: edax_kafka::KafkaRecord) -> KafkaRecord {
 }
 
 /// Build the record for `envelope` from value bytes the host already encoded; `content_type` names
-/// the format of `value` and `key` overrides the partitioning key. See [`edax_kafka::record`].
+/// the format of `value` and `key` overrides the partitioning key. See [`edax_kafka::record()`].
 // `key` is optional, so it trails `content_type` — alef moves optional parameters to the end of the
 // generated signature, and the surface order must match for the generated call to line up.
 pub fn kafka_record(
@@ -1608,8 +1609,8 @@ mod tests {
                 outcome: "succeeded",
             },
             Case {
-                // A completed `null` is a success whose value is null, not "no result" — the case
-                // that used to replay as an in-flight claim.
+                // A completed `null` is a success whose value is null, not "no result" and not an
+                // in-flight claim.
                 name: "cached_success_with_a_null_result",
                 pending: false,
                 result_json: "null",
@@ -1780,7 +1781,7 @@ mod tests {
                 encode_idempotency_record(HASH, false, "null", Some("boom".to_owned()), Some("timeout".to_owned())).map(|_| ()),
                 "unknown error code: timeout",
             ),
-            // The two that used to cross untagged and read as transient in a host (08#F3).
+            // A batch refusal and an unknown code carry the code too, or a host reads them as transient.
             ("sequence_batch_has_a_gap", check_sequence_batch(1, vec![Some(2), Some(4)]), "envelope 1 has sequence 4, expected 3"),
             ("error_code_is_unknown", error_code_is_terminal("timeout").map(|_| ()), "unknown error code: timeout"),
             (

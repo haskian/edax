@@ -37,7 +37,7 @@ trap](./getting-started.md#the-stale-native-module-trap).
 Every example ends in asserts that pin the values it printed, then prints `ok:`. An assert that fires
 raises `AssertionError`, and the process exits non-zero.
 
-CI relies on exactly that. The `Examples` step of `.github/workflows/python.yml` loops over
+CI relies on that. The `Examples` step of `.github/workflows/python.yml` loops over
 `examples/py/*.py` and stops on the first file that fails or prints no `ok:` line:
 
 ```yaml

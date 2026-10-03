@@ -1,7 +1,7 @@
 """Step 19: rehearse a lost reply with `edax.testing.faults`.
 
-The failure that costs money: the write landed, and the reply never came back. The caller cannot
-tell it from a write that failed, so it sends again. `BrokenCommit(db, "lost_response")` makes a
+In a lost reply the write landed, and the reply never came back. The caller cannot tell it from a
+write that failed, so it sends again. `BrokenCommit(db, "lost_response")` makes a
 commit land and then raise, so a test can prove the handler survives it.
 
 Here the ledger lives in its own database (as Redis does). The guard sees the failed commit and

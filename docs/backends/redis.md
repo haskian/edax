@@ -3,9 +3,8 @@
 `RedisIdempotencyStore`: a cross-process ledger, the two time-to-live values (TTLs) it needs, and
 the claim handle that keeps a lapsed worker from overwriting its successor.
 
-Redis backs one seam, `IdempotencyStore`. It is the worked example of a ledger that **cannot** join
-the caller's transaction. Everything below follows from that one fact. The guard must compensate by
-hand. The guarantee drops to at-least-once with a dedup window. A claim that can expire needs a
+Redis backs one seam, `IdempotencyStore`. It is the worked example of a ledger that cannot join the
+caller's transaction, and everything below follows from that. The guard must compensate by hand. The guarantee drops to at-least-once with a dedup window. A claim that can expire needs a
 fence. Install with `pip install edax[redis]`; the client is yours to construct, with redis-py 8 or
 later.
 
@@ -35,14 +34,11 @@ is just the handler. The host then owns any commit. The claim still lands on its
 compensation below is the same.
 
 Two independent commits, which no ordering can make atomic. The guarantee is therefore
-**at-least-once over an idempotent handler, with a dedup window the width of `ttl_ms`**. This store
-runs the own-ledger mode of [idempotency](../sdk/idempotency.md#the-two-modes).
+at-least-once over an idempotent handler, with a dedup window the width of `ttl_ms`. This store runs
+the own-ledger mode of [idempotency](../sdk/idempotency.md#the-two-modes), which explains why
+`complete` runs after the commit. Every failure up to and including the commit releases the claim.
 
-`complete` runs **after** the commit deliberately. Before it, a crash in between would leave a
-`done` record for work that never landed, which is silent loss. After it, the worst case is a re-run
-on redelivery. Every failure up to and including the commit releases the claim.
-
-One asymmetry is worth knowing: a claim that *raises* is not compensated. It returned no handle, so
+A claim that raises is not compensated. It returned no handle, so
 there is nothing to release with. A claim whose reply was lost for good is settled by its claim TTL
 instead.
 
@@ -53,11 +49,10 @@ bytes. `prefix` is required, and an empty one is refused: no default is right fo
 service and environment. Two services sharing one Redis under one prefix share a key space, and a
 bare request id that both use is one claim.
 
-The collision is loud rather than silent: the two commands hash differently, so the loser gets a
-terminal `PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though,
-and nothing in the guard can tell that apart from a genuine key reuse. That is why the parameter
-has no default: the decision belongs at wiring time, where the service and the environment are
-known.
+The collision is loud: the two commands hash differently, so the loser gets a terminal
+`PayloadMismatch` and dead-letters. It dead-letters an event that was never wrong, though, and
+nothing in the guard can tell that apart from a real key reuse. So the parameter has no default: the
+decision belongs at wiring time, where the service and the environment are known.
 
 ```python
 ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:")
@@ -71,8 +66,8 @@ Two pitfalls follow from plain concatenation:
 - A `{...}` hash tag in the prefix pins every ledger key to one Redis Cluster slot. That slot's
   shard then serves the whole ledger.
 
-Give each service and environment its own prefix. Namespacing the *key* by command type is a
-separate job and belongs to your key function — see
+Give each service and environment its own prefix. Namespacing the key by command type is a
+separate job and belongs to your key function; see
 [commands.md](../sdk/commands.md#the-key-namespace-is-yours).
 
 ## Two TTLs
@@ -102,7 +97,7 @@ is built. A zero, negative or fractional TTL raises the terminal `BadHandle` the
 every write on the server.
 
 `claim` writes the pending record under `claim_ttl_ms`; `complete` writes the terminal record under
-`ttl_ms`. **Retention starts at completion**, not at the claim: `complete` issues a fresh `SET ...
+`ttl_ms`. Retention starts at completion, not at the claim: `complete` issues a fresh `SET ...
 PX ttl_ms`, so the dedup window is measured from the moment the outcome was recorded. A completed
 record therefore outlives the claim TTL. `test_redis.py::test_complete_branches` asserts both TTLs.
 
@@ -155,19 +150,19 @@ must match it byte for byte to share a ledger. The store therefore calls the ker
 `redis_new_claim`, `redis_settled_value`, `redis_claim_outcome`. See
 [kernels/redis.md](../kernels/redis.md).
 
-**The claim value is the handle.** `claim` returns `Won(handle)`, and `handle` is the exact value
+The claim value is the handle. `claim` returns `Won(handle)`, and `handle` is the exact value
 the claim wrote. `complete`, `release` and `extend` each send it, and each script writes only while
 the key still holds that exact value. Nothing is kept in the store instance. Two claims on one key
 in one process are two handles, so a takeover inside one process is fenced like one across two.
 
-**Why one key and not two.** A sibling key holding the token would have an expiry clock of its own.
+One key, not two, because a sibling key holding the token would have an expiry clock of its own.
 The two clocks drift apart. A claimant can then win the record while losing the owner. It holds a
 claim it can never complete or release. One key, one TTL, one atomic write.
 
 ### The scripts
 
 Every write is one script, so the compare and the write are one atomic step. A `GET` followed by a
-`SET` from the client leaves exactly the gap the fence exists to close.
+`SET` from the client leaves the gap the fence exists to close.
 
 The four bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
 them byte for byte. A client registers each source once and sends `EVALSHA` after, so an SDK that
@@ -190,7 +185,7 @@ first send would have had. Each touches one key, so each is safe on Redis Cluste
 #### `claim`
 
 - The kernel's `claim_outcome` reads the reply. Nil means won.
-- A reply **equal to the caller's own claim value** also means won. The first send landed, its
+- A reply equal to the caller's own claim value also means won. The first send landed, its
   reply was lost, and redis-py's default retry sent the script again.
 - Any other value is the record that holds the key: pending (`InProgress`), or settled (a replay).
 
@@ -252,7 +247,7 @@ guard.
 A lease cannot protect a resource that does not check the token itself. The fence guards the Redis
 key and nothing else.
 
-- **edax's own stores are protected**, because the version compare-and-set *is* that check.
+- **edax's own stores are protected**, because the version compare-and-set is that check.
   `EventStore.append` rejects a write whose expected version moved, and `ProjectionStore.save`
   rejects a write whose entity version moved. The lapsed worker's write fails with
   `ConcurrencyError` rather than landing.
@@ -261,8 +256,8 @@ key and nothing else.
   idempotency key in the remote system, or their own compare-and-set.
 
 A monotonic fencing token, one the downstream resource could compare, needs a counter that outlives
-the expiring key. The store does not keep one yet: no caller needs it, and the handle already fences
-the ledger. Sizing `claim_ttl_ms` above the longest handler run, or renewing the lease, is what keeps
+the expiring key. The store keeps none: no caller needs one, and the handle already fences the
+ledger. Sizing `claim_ttl_ms` above the longest handler run, or renewing the lease, is what keeps
 the window from opening at all. The fence is the second line, not the first.
 
 ## Durability
@@ -278,7 +273,7 @@ record without any error reaching the store.
 - **`WAIT` does not fix that.** Sending `WAIT` after a write makes the loss less likely. It does not
   make Redis a strongly consistent store, so the store does not send it.
 - **Eviction.** Every ledger key carries a TTL, so the `volatile-*` and `allkeys-*` eviction policies
-  may evict live claims and records under memory pressure. Dedup is then lost silently. Run the
+  may evict live claims and records under memory pressure. Dedup is then lost with no error. Run the
   ledger's database with `maxmemory-policy noeviction`, where a full database refuses writes with a
   transient `OOM` error instead.
 - **The server clock.** The TTL is relative on the wire, so client clock skew does not matter. Redis
@@ -300,8 +295,8 @@ which is an estimate, that is about 17 GB.
 | `WRONGTYPE`: something other than a ledger value under the key | `CodecError` | terminal |
 | a refused command or credential (`ERR`, `NOPERM`, `NOAUTH`, `WRONGPASS`) | `BadHandle` | terminal |
 | a stored value that will not decode, or is not UTF-8 | nothing on `claim`: it reads as the kernel's unreadable record, and the guard raises `CachedFailure` of code `codec` | terminal: the handler never runs again for the key, and the value stays until its TTL |
-| a result the record codec cannot serialize | `CodecError`, raised **before** any write | terminal |
-| a handle the kernel never minted | `CodecError`, raised **before** any write | terminal |
+| a result the record codec cannot serialize | `CodecError`, raised before any write | terminal |
+| a handle the kernel never minted | `CodecError`, raised before any write | terminal |
 
 A Redis error reply is classified by the kernel's `reply_error`, from the reply's prefix, so every SDK
 sharing a ledger gives it one verdict. `test_redis.py::test_a_client_failure_carries_the_kernels_verdict`
@@ -354,7 +349,7 @@ contract also runs under `P2` of `test_model.py`, parameterized over `["memory",
 - [backends index](./README.md) — the seam contracts and the checklist for writing one.
 - [kernels/redis.md](../kernels/redis.md) — the key, the value, the handle, the scripts and the reply
   verdicts, decision by decision.
-- [memory](./memory.md) — the ledger that *does* join the transaction, and what that changes.
+- [memory](./memory.md) — the ledger that does join the transaction, and what that changes.
 - `examples/py/16_redis_ledger.py` — the guard over this store, against a real Redis when
   `EDAX_REDIS_URL` is set.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.

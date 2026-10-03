@@ -202,7 +202,7 @@ class KeyOrderedDispatcher:
     @property
     def on_dead(self) -> DeadLetterFn | None:
         """The dead-letter sink, or ``None``. A :class:`~edax.broker.Consumer` that must settle a message
-        no handler may see — a payload that will not decode — routes it here, the same exit a terminal
+        no handler may see (a payload that will not decode) routes it here, the same exit a terminal
         handler failure takes. Set at construction: workers read it, so it is not swapped mid-run."""
         return self._on_dead
 
@@ -339,7 +339,7 @@ class KeyOrderedDispatcher:
         return False
 
     async def settle_poison(self, delivery: Delivery, error: BaseException) -> DeliveryOutcome:
-        """Settle a polled message no handler may see — a payload that will not decode — the way a
+        """Settle a polled message no handler may see (a payload that will not decode) the way a
         terminal handler failure settles: ``on_dead``, then ack. With no sink, or a sink that raises, it is
         nacked after one backoff step, counted by its id like a failed attempt, so one poison message
         cannot spin the consumer against the broker. Reported through
@@ -375,7 +375,7 @@ class KeyOrderedDispatcher:
         """Wait one step of the backoff schedule, then nack. Every failure arm waits: nacking at
         once has a handler on a downed dependency polling the broker as fast as it redelivers, and on a
         seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
-        therefore every key routed to it — per-key ordering forbids skipping ahead. A cancel during the
+        therefore every key routed to it: per-key ordering forbids skipping ahead. A cancel during the
         wait reaches the worker, which nacks the delivery before it ends, so a stopped worker strands
         nothing. A nack that raises leaves the delivery unsettled and propagates to the worker's
         catch-all."""

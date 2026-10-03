@@ -1,7 +1,7 @@
-"""09#F6: a cached success replays as the handler's declared return type, not as the JSON it was stored as.
+"""A cached success replays as the handler's declared return type, not as the JSON it was stored as.
 
-The first dispatch returns the handler's own object; a retried request used to get a ``dict`` back, so caller
-code such as ``result.invoice_id`` worked in tests and failed only on the path idempotency exists for. Each
+The first dispatch returns the handler's own object. A replay that handed back a ``dict`` would let caller
+code such as ``result.invoice_id`` work in tests and fail only on the path idempotency exists for. Each
 branch of the replay-type choice is a row below, and the crash-and-redeliver rows run over every ledger
 ordering: the joining memory store, the memory ledger of its own, and Redis (the kernel's Lua on fakeredis).
 """

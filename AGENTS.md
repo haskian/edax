@@ -16,8 +16,8 @@ once on a fresh checkout; `mise trust` if it complains). `mise.toml` pins alef t
 ## Build & test
 
 ```
-# Rust kernels + SDK (golden vectors run here)
-mise exec -- cargo test -p edax-core -p edax-event -p edax-cqrs -p edax-kafka -p edax-redis -p edax
+# Rust kernels, memory backend + SDK (golden vectors run here); CI runs the same
+mise exec -- cargo test --workspace
 
 # Python SDK (venv needs msgspec)
 cd crates/edax-py && mise exec -- uv venv && source .venv/bin/activate
@@ -64,7 +64,7 @@ EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
 error taxonomy. `edax-event` is event-driven: local fan-out `partition`, codec, causation, staleness,
 dedup, sequence, upcast, and the orchestration decisions both SDKs make on the consume side: the
 retry and dead-letter policy (`Retries`, which every dispatcher and relay performs) and the saga
-step's write (`saga_write`, `saga_command_id`).
+step (`saga_admit`, `saga_write`, `saga_command_id`).
 `edax-cqrs` is both halves of its name: the command side's idempotency decision (the claimant's
 `outcome` and the winner's `settle`) *and* the read
 side's `filter` and `query`. Filter and query live together because the query evaluates the filter

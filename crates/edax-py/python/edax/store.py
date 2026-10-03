@@ -236,10 +236,9 @@ class EventStore(Protocol):
     - *Backlog (optional).* ``async def unpublished_count(self) -> int`` returns how many committed
       unmarked rows are waiting, outside any ``tx``: ``SELECT count(*)`` over the unmarked rows.
       :attr:`Relay.last` reports the drains that finished, so it stops moving when the relay does, and a
-      stalled relay then looks exactly like an idle one. The depth is what tells them apart. It is not
-      declared on this Protocol, because a required method would break every store that predates it: a
-      host reads it with ``getattr``, and ``EventStoreContract.supports_unpublished_count`` runs its
-      clause for a store that has it.
+      stalled relay then looks exactly like an idle one. The depth is what tells them apart. It is
+      optional: a host reads it with ``getattr``, and ``EventStoreContract.supports_unpublished_count``
+      runs its clause for a store that has it.
     - *Errors.* :class:`ConcurrencyError` only for a version mismatch; any other failure raises
       :class:`~edax.errors.StoreError`, or :class:`~edax.errors.CodecError` for a marshal failure. Called
       from one asyncio loop; no thread safety required."""
@@ -366,8 +365,8 @@ class Repository(Generic[A]):
     async def load(self, aggregate_id: str, *, tx: Tx | None = None) -> A:
         """Rehydrate the aggregate: snapshot, then replay the events after it.
 
-        A snapshot is a cache of the event log, so one this codec cannot use — another aggregate type's
-        under the same id, or one whose ``dump`` format ``load`` no longer reads — is ignored and the stream
+        A snapshot is a cache of the event log, so one this codec cannot use (another aggregate type's
+        under the same id, or one whose ``dump`` format ``load`` no longer reads) is ignored and the stream
         replays from version 0. The replayed run is held to the kernel's dense-batch rule, so a store that
         returns a gap or a repeat raises :class:`~edax.errors.CodecError` instead of folding the wrong
         state."""

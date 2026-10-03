@@ -1,8 +1,8 @@
 # The Rust toolchain is NOT declared here. `rust-toolchain.toml` is alef-generated and already
 # pins the channel plus the components (`rust-src`, `rustfmt`, `clippy`); mise reads it as an
-# idiomatic version file. Pinning a version here as well set RUSTUP_TOOLCHAIN to a *different*
-# toolchain, which overrode that file and silently dropped clippy — CI then failed on a component
-# the repo had already asked for.
+# idiomatic version file. A version pinned here as well sets RUSTUP_TOOLCHAIN to a *different*
+# toolchain, which overrides that file and drops clippy, so CI fails on a component the repo
+# already asks for.
 [settings]
 idiomatic_version_file_enable_tools = ["rust"]
 
@@ -12,6 +12,6 @@ uv = "latest"
 # alef generates `crates/edax-py/src/lib.rs` and the `_edax.pyi` stub from `edax-abi`; pinned to the
 # version `alef.toml` declares, so a regeneration here matches CI's freshness check.
 "cargo:alef" = "0.86.0"
-"aqua:cocogitto/cocogitto" = "7.0.0"
+"aqua:cocogitto/cocogitto" = "7.0.0"  # `cog`: conventional-commit version bumps in CI
 "aqua:astral-sh/ruff" = "0.16.7"
-"aqua:astral-sh/ty" = "0.0.80"  # `cog`: conventional-commit version bumps in CI
+"aqua:astral-sh/ty" = "0.0.80"

@@ -1,4 +1,4 @@
-# The filter kernel — `edax-cqrs::filter`
+# The filter kernel — `edax_cqrs::filter`
 
 A sealed abstract syntax tree (AST) plus one reference evaluator. The bindings build filters and
 call `eval_json`. The match decision is made only here, so the null and missing-path rules cannot
@@ -105,8 +105,7 @@ fixed-width form in one zone. Store timestamps as UTC with a `Z` suffix and a fi
   although that instant is 23:30Z the day before.
 
 Normalize to the fixed UTC form before a value reaches a document or a filter.
-`testdata/golden/filter.json` pins both wrong orderings, so the precondition is a documented contract
-rather than a surprise.
+`testdata/golden/filter.json` pins both wrong orderings.
 
 ## What the kernel refuses
 
@@ -175,8 +174,8 @@ with no closing date. "It is not the case that the closing date is 2024-01-01" i
 SDKs pin this pair — the two `{}`-document cases in `testdata/golden/filter.json`, and
 `test_filter.py::test_null_semantics`.
 
-The practical trap: `and_(eq("status", "settled"), ne("closed_at", X))` silently drops every open
-account, because the second arm is false wherever `closed_at` is null. Write `not_(eq("closed_at",
+So `and_(eq("status", "settled"), ne("closed_at", X))` drops every open account without warning,
+because the second arm is false wherever `closed_at` is null. Write `not_(eq("closed_at",
 X))`, or add `exists("closed_at", False)` as an explicit arm.
 
 ## One evaluation, step by step
@@ -220,12 +219,12 @@ it.
 | Comparisons | `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `starts_with` | same names |
 | Set membership | `is_in(path, vec![...])` | `in_(path, *values)` |
 | Array membership | `contains(path, value)` | `contains(path, value)` |
-| Presence | `exists(path, bool)` — flag required | `exists(path, exists=True)` — flag defaults to `True` |
+| Presence | `exists(path, bool)` — flag required | `exists(path, present=True)` — flag defaults to `True` |
 | Connectives | `and(Vec<Filter>)`, `or(Vec<Filter>)`, `not(Filter)` | `and_(*filters)`, `or_(*filters)`, `not_(filter)` |
 | Evaluate | `eval(&Filter, &Value) -> bool` | `matches(filter, document) -> bool` |
 | JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, Error>` | used internally by `matches` |
 | Validation | `Filter::validate()` | through `matches` |
-| Path helpers | `resolve`, `value_cmp` (public, shared with `edax-cqrs::query` next door) | not exposed |
+| Path helpers | `resolve`, `value_cmp` (public, shared with the `query` module next door) | not exposed |
 
 ```rust
 use edax_cqrs::filter::{and, eq, eval, gt};

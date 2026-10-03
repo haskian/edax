@@ -38,7 +38,7 @@ broker (`crates/edax/src/backend/broker.rs`) and expects a host adapter to call
 
 ## KeyOrderedDispatcher
 
-The broker already routed the message to this process. `workers` is purely local parallelism. Each
+The broker already routed the message to this process. `workers` is local parallelism only. Each
 worker owns one queue, and the worker for an event is
 
 ```
@@ -46,32 +46,32 @@ worker index = partition(aggregate_id, workers)
 ```
 
 `partition` is the kernel's bucket function, `fnv1a32(aggregate_id) % n`. It is pure and stable, so
-the same aggregate id always lands on the same worker for the life of the dispatcher. `workers` is
-floored at 1, so `0` gives one worker rather than none.
+the same aggregate id always lands on the same worker for the life of the dispatcher. Both SDKs
+refuse zero workers at construction.
 
-**What the ordering guarantee is.** All events carrying one aggregate id run on one worker, one at a
+**The ordering guarantee.** All events carrying one aggregate id run on one worker, one at a
 time, in the order they were submitted. Events for different aggregate ids run in parallel, one
 worker each.
 
-**What it is not.**
+**Its limits.**
 
 - No order across aggregate ids. Two aggregates progress independently, and which finishes first is
   unspecified.
 - The map is modulo the worker count, so several aggregate ids share a worker. A slow handler for
   one of them delays the others on that queue.
-- The dispatcher preserves only the order it was *submitted* in. Per-key order upstream of that is
+- The dispatcher preserves only the order it was submitted in. Per-key order upstream of that is
   the broker's contract.
-- **Per-key order holds through a nack only on a transport that rewinds.** A log (Kafka, the
+- Per-key order holds through a nack only on a transport that rewinds. A log (Kafka, the
   in-memory broker) seeks the partition back to its lowest unsettled offset. It also retires every
   delivery of the partition it already handed out. A worker skips a delivery that is no longer
   `live`: no handler run, no settlement, reported as `stale`. The redelivered earlier event therefore
   runs before the later one. A transport that requeues a nacked delivery behind later ones instead
   reorders the key, and the handler must tolerate that.
-- **A nack costs duplicates on keys that never failed.** The seek re-reads every message of the
+- A nack costs duplicates on keys that never failed. The seek re-reads every message of the
   partition above the lowest unsettled offset, other keys' acked messages included. Their order
   holds, but they run again. Measured on Kafka with 20 injected nacks in 600 events: 37-50% duplicate
-  deliveries. This is the transport's semantics rather than the dispatcher's. It is why every handler
-  wants to be idempotent, not only the ones that fail.
+  deliveries. These are the transport's semantics, not the dispatcher's, so every handler must be
+  idempotent, not only the ones that fail.
 
 A second `start` raises: a second task draining one queue would consume it concurrently and break
 per-key order.
@@ -92,7 +92,7 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-Submitting a bare envelope instead of a `Delivery` runs the handler and settles nothing — the
+Submitting a bare envelope instead of a `Delivery` runs the handler and settles nothing: the
 fire-and-forget path.
 
 **Worker health.** A handler that raises `asyncio.CancelledError` because it awaited a future
@@ -111,17 +111,18 @@ held and every delivery still queued, and so leaves nothing submitted unsettled.
 
 ## Settlement
 
-`ack` settles **that message only**. The dispatcher acks in worker order, not fetch order: worker A
+`ack` settles that message only. The dispatcher acks in worker order, not fetch order: worker A
 may finish offset 7 before worker B finishes 5.
 
-> An offset-based backend must therefore track a per-partition **watermark** — the lowest offset still
-> unsettled, or one past the highest delivered when nothing is unsettled, and commit that. A bare
-> "commit the current position" acknowledges unsettled messages and loses them on restart
-> The `Consumer.ack` contract states this; `KafkaConsumer.ack` implements it.
+An offset-based backend must therefore track a per-partition watermark and commit that: the lowest
+offset still unsettled, or one past the highest delivered when nothing is unsettled. A bare "commit
+the current position" acknowledges unsettled messages and loses them on restart. The `Consumer`
+Protocol states this. `KafkaConsumer` implements it through the `edax-kafka` kernel's offset
+tracker; see [kafka](../backends/kafka.md).
 
 `nack` returns the message to the broker for another attempt: a seek, a negative ack, or a requeue.
 
-The dispatcher settles each delivery at most once — ack or nack, never both. In Rust settling
+The dispatcher settles each delivery at most once: ack or nack, never both. In Rust settling
 consumes the `Delivery`, so the other closure can never also run. A delivery the transport retired
 is not settled at all: before the handler it is skipped, and after the handler its settlement is
 dropped, because the redelivered copy settles it. A raising `on_dead` nacks the delivery after one
@@ -190,19 +191,20 @@ By default a raising handler nacks and the broker redelivers forever. Two settin
 `testdata/golden/retries.json`). Both SDKs' dispatchers, and both `Relay`s, perform its answers, so
 two services consuming one topic dead-letter the same message at the same attempt.
 
-An **attempt** is one handler run of a delivery, counted as
+An attempt is one handler run of a delivery, counted as
 
 ```
 attempt = max(Delivery.attempt, in-process counter) + 1
-```. The in-process
-counter is per worker and keyed by envelope id; it resets on restart, so a crash mid-retry grants a
-fresh `max_attempts`. A broker-supplied `Delivery.attempt` is what makes the ceiling survive a
-restart — neither in-tree backend reads one from its client, so both report `0`.
+```
+
+The in-process counter belongs to the dispatcher and is keyed by envelope id. It resets on restart,
+so a crash mid-retry grants a fresh `max_attempts`. A broker-supplied `Delivery.attempt` makes the
+ceiling survive a restart. Neither in-tree backend reads one from its client, so both report `0`.
 
 | Outcome of a handler run | `on_dead` set | `on_dead` unset |
 |---|---|---|
 | Returned | ack | ack |
-| Raised, terminal error | `on_dead`, then ack — on the first attempt, whatever `max_attempts` says | nack, redelivered forever |
+| Raised, terminal error | `on_dead`, then ack, on the first attempt whatever `max_attempts` says | nack, redelivered forever |
 | Raised, transient error, attempt below `max_attempts` | sleep one backoff step, then nack | same |
 | Raised, transient error, attempt reaches `max_attempts` | `on_dead`, then ack | nack, redelivered forever |
 | `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
@@ -213,14 +215,14 @@ Terminal versus transient is the kernel's verdict, read through `err.terminal`. 
 `examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
 that passes, and one that reaches `max_attempts`.
 
-**Dead-lettering needs `on_dead`.** Without a sink a dead delivery still nacks and comes back —
-never a silent drop, but also never bounded. A terminal error dead-letters on the *first* attempt
-only because retrying it would only repeat it. With no sink installed that same terminal error is
+**Dead-lettering needs `on_dead`.** Without a sink a dead delivery still nacks and comes back. It
+is never dropped, and never bounded either. A terminal error dead-letters on the first attempt
+because retrying it would only repeat it. With no sink installed that same terminal error is
 nacked and redelivered forever, at the capped backoff. On a log that stalls the partition, so
 `KafkaConsumer.run` refuses a dispatcher without `on_dead`.
 
-**A sink that raises nacks.** The attempt is recorded like a failed handler's, so the redelivery
-reaches the sink again at once, with a longer wait. The observer reports `sink_failed`.
+**A sink that raises nacks.** The policy keeps the attempt, so the redelivery reaches the sink
+again, after a longer wait. The observer reports `sink_failed`.
 
 **A payload that will not decode** never reaches a handler. The consumer loop hands it to
 `dispatcher.settle_poison`: `on_dead`, then ack. With no sink, or a sink that raises, it nacks after
@@ -229,16 +231,15 @@ broker.
 
 Rust hands the sink a `DeadLetter { envelope, attempt, failure }` where `failure` is a
 `HandlerFailure::Error` or `HandlerFailure::Panic` carrying the unwind payload. A panic is
-unclassified, so it counts as transient. A bug on one payload is exactly the poison message the
-ceiling exists for. A single panic still cannot be told apart from a transient failure. Python
-passes `on_dead(delivery, err)` instead.
+unclassified, so it counts as transient: a single panic cannot be told apart from a transient
+failure. Python passes `on_dead(delivery, err)` instead.
 
 ### InProgress is contention, not a failed attempt
 
 `InProgress` means another worker holds the idempotency claim for this key. That is contention, not
 a failed attempt. Counting it would dead-letter a message whose holder is only slow. So the
 dispatcher exempts it from the attempt budget. It waits one step of the backoff schedule, then
-nacks. This is the one home for that rule; other pages link here.
+nacks.
 
 `InProgress` never counts toward `max_attempts`. The ceiling is therefore the claim's time to live
 (TTL), not the attempt budget. A crashed peer's claim blocks the key until that TTL expires.
@@ -246,17 +247,16 @@ nacks. This is the one home for that rule; other pages link here.
 The schedule is the kernel's, with full jitter: a random wait in `0 ..= min(100 * 2^step, 30000)`
 milliseconds. Consumers that hit one downed dependency then do not retry in lockstep. The dispatcher's
 `Pacing` (Rust `DispatcherBuilder::pacing`, Python `pacing=`) carries the policy, the sleep and the
-random draw; a test passes one that records instead of sleeping. The step is tracked per envelope id,
-separately from the attempt map.
-Nacking at once instead would make the broker redeliver in a tight loop until the claim's dedup
+random draw; a test passes one that records instead of sleeping. The step is tracked per envelope
+id, separately from the attempt map. Nacking at once instead would make the broker redeliver in a tight loop until the claim's dedup
 window expires. An ordinary transient failure waits the same way, for the same reason. A handler
 failing on a downed dependency would otherwise poll the broker as fast as it redelivers. On a
 seeking transport such as Kafka every nack also re-reads the partition tail. The two differ only in
 that a transient failure does spend an attempt.
 
-**The ceiling.** The wait blocks that worker, and therefore every aggregate id routed to it. That is
-deliberate: skipping ahead is exactly what per-key ordering forbids. A pool with more workers
-narrows the effect but cannot remove it. If one contended key must never hold up the rest, widen the
+**The cost.** The wait blocks that worker, and therefore every aggregate id routed to it, because
+per-key ordering forbids skipping ahead. A pool with more workers narrows the effect but cannot
+remove it. If one contended key must never hold up the rest, widen the
 pool.
 
 Both attempt maps grow by one entry per failing envelope id and shrink when that id is acked or
@@ -279,27 +279,26 @@ router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
 async def deposited(env: edax.EventEnvelope) -> None: ...
 
 
-bus = edax.KeyOrderedDispatcher(4, router.dispatch)
+dispatcher = edax.KeyOrderedDispatcher(4, router.dispatch)
 ```
 
 `examples/py/08_consume_events.py` runs this shape without the guard.
 `examples/py/10_idempotent_events.py` adds the guard over a shared unit of work.
 
-- **Registration is by event name.** `register(name, handler)`, or the `on(name)` decorator, which
+- Registration is by event name: `register(name, handler)`, or the `on(name)` decorator, which
   returns the bare function rather than the wrapped one.
-- **A duplicate name raises `AlreadyRegistered`** — a wiring mistake at startup, not a runtime
-  condition. `EventRouter.register` raises it in Python and returns an error with code `already_registered` in
-  Rust.
-- **Unhandled names.** An event with no registered handler goes to `on_unhandled`, which is wrapped
+- A duplicate name is a wiring mistake at startup. `EventRouter.register` raises `AlreadyRegistered`
+  in Python and returns an error with code `already_registered` in Rust.
+- An event with no registered handler goes to `on_unhandled`, which is wrapped
   in the chain like any handler, or is ignored if that is unset. An ignored event runs no
   middleware.
 
 ### The middleware chain
 
 The router wraps middleware around every handler at `register` time, first middleware outermost,
-exactly as on the `CommandBus`. Two middlewares `a` and `b` produce `>a >b handler <b <a`.
+as the `CommandBus` does. Two middlewares `a` and `b` produce `>a >b handler <b <a`.
 
-Because the chain is baked at registration, middleware must be added *before* the handlers it wraps.
+The chain is fixed at registration, so middleware must be added before the handlers it wraps.
 Python takes it in the constructor; Rust takes it through the builder `EventRouter::with`.
 
 ### idempotent_by_id
@@ -310,31 +309,31 @@ raw `event.data` bytes.
 
 | Redelivery meets | Result |
 |---|---|
-| a completed record | the handler is skipped and the delivery acked — no caller awaits an event handler's result, so the replay is silent |
+| a completed record | the handler is skipped and the delivery acked; no caller awaits an event handler's result, so the replay is silent |
 | a claim held by another worker | `InProgress`, transient: the dispatcher waits a backoff step and nacks |
 | a released claim after a transient failure | the handler runs again |
 | a cached terminal failure | `CachedFailure`, itself terminal, so the dispatcher dead-letters the redelivery too |
-| the same id with a different body | `PayloadMismatch` — an integrity error worth surfacing, not a duplicate |
+| the same id with a different body | `PayloadMismatch`: an integrity error, not a duplicate |
 
 Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`. Pinned end to end by
 `test_router.py::test_redelivery_through_the_dispatcher_is_skipped_and_acked`.
 
-**A worker has no ambient transaction to inherit.** The Python dispatcher clears the ambient transaction per
-worker, and Rust has no ambient transaction at all. A handler that opens one internally opens it
-*after* the claim was already taken. So `unit_of_work=` is the only way the guard gets a
+**A worker has no ambient transaction to inherit.** The Python dispatcher clears the ambient
+transaction per worker, and Rust has no ambient transaction at all. A handler that opens one
+internally opens it after the claim was already taken. So `unit_of_work=` is the only way the guard gets a
 transaction. It opens the transaction itself, in the right place. The claim then commits with the
 handler's writes, and a rollback drops both. Rust's form is `idempotent_by_id_in(store, current)`,
 where `current` hands each worker thread its own live handle.
 
-What each mode guarantees is spelled out in [idempotency.md](./idempotency.md); how the handle is
-published and joined is in [transactions.md](./transactions.md).
+[Idempotency](./idempotency.md) covers what each mode guarantees, and
+[transactions](./transactions.md) covers how the handle is published and joined.
 
 ## Bounded queues
 
 Both dispatchers bound each worker's queue. The default depth is 1024.
 
 Python takes the depth as `max_queue`. `submit` awaits when the queue is full rather than growing
-it. That is real backpressure onto the poll loop.
+it, which pushes back on the poll loop.
 
 Rust takes the depth as `DispatcherBuilder::queue_depth` and uses
 `std::sync::mpsc::sync_channel`. The send blocks when the queue is full, which applies the same

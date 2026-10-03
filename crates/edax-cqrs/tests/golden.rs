@@ -127,9 +127,8 @@ fn command_hash_cases() -> Vec<Value> {
     // dataclass), dispatch it through their real `idempotent` middleware, and compare the hash the
     // store received. `type` is routing metadata: it names the handler and is not a field.
     //
-    // The base fixture carries `request_id`, the field the idempotency key is read from. Under the
-    // old per-SDK rule a Rust `payload()` that returned the business body without it hashed
-    // differently from Python's whole-object encoding; the first case is that command.
+    // The base fixture carries `request_id`, the field the idempotency key is read from. A hash over
+    // the business body alone would leave it out; the first case pins that it is hashed.
     let base = json!({
         "order_id": "ord-7f3c",
         "customer": "Ada Lovelace",

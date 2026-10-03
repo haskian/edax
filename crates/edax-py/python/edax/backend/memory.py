@@ -85,9 +85,9 @@ class MemoryTransactor:
 
     def open_count(self) -> int:
         """How many transactions are open on this database. A leak diagnostic: a token that is
-        neither committed nor rolled back is not merely a held key, it is a permanent conflict on
-        every key it staged, for the process lifetime. A count that never returns to its idle level
-        names a unit of work that escaped its ``async with``."""
+        neither committed nor rolled back holds every key it staged as a conflict for the process
+        lifetime. A count that never returns to its idle level names a unit of work that escaped its
+        ``async with``."""
         return self._native.get().open_count()
 
     def auto_commit(self) -> MemoryTx:

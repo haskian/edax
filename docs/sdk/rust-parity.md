@@ -1,10 +1,10 @@
 # Rust and Python parity
 
-The Rust `edax` crate (`crates/edax`) is a **reference model**, not a deployable software development kit
+The Rust `edax` crate (`crates/edax`) is a reference model, not a deployable software development kit
 (SDK). It is synchronous, it ships in-memory backends only, and it is `publish = false`. It exists to hold
 the Python SDK's orchestration to the kernels from a second language. Twin test suites run the same case
 tables and the same golden vectors in both. A shared decision lives in a kernel, so both SDKs call the same
-code. This page lists what the model covers and where it deliberately differs. The model gains a feature
+code. This page lists what the model covers and where it differs on purpose. The model gains a feature
 only when a shared decision needs a second implementation to pin it, never to match Python name for name.
 
 ## What the model holds to the kernels
@@ -19,7 +19,7 @@ only when a shared decision needs a second implementation to pin it, never to ma
 | consume path | `KeyOrderedDispatcher`, `Delivery::with_live`, `EventRouter`, `idempotent_by_id` | `KeyOrderedDispatcher`, `Delivery.live`, `EventRouter`, `idempotent_by_id` |
 | saga | `Saga`, `SagaRunner`, `SagaStore` with its outbox | the same, plus `SagaRunner.relay` |
 | transaction | `Transactor` (with `identity`), `transaction`, `retry_transaction` | `Transactor`, `transaction`, `current_tx` |
-| in-memory backends | `MemoryTransactor` and its four stores, `MemoryLedger`, `MemoryBroker` (`with_partitions`, `group`, `crash`) | the same, Redis and Kafka |
+| in-memory backends | `MemoryTransactor` and its four stores, `MemoryLedger`, `MemoryBroker` (`with_partitions`, `group`, `crash`) | the same, plus the Redis and Kafka adapters |
 
 The decisions behind every row are the kernels': `edax-core`, `edax-event`, `edax-cqrs`, `edax-memory` and
 `edax-kafka`. So the two columns cannot disagree on a hash, a verdict, a fence, a commit watermark or a wire
@@ -41,6 +41,7 @@ byte. The in-memory stores are one implementation (`edax-memory`) behind both.
   durable Rust backend ships, so the two-commit ordering has nothing to describe. `MemoryLedger` (`Tx = ()`)
   is the ledger of its own, so the split ordering and the claim fence can still be rehearsed.
 - **No I/O shells.** The `edax-kafka` and `edax-redis` kernels have Python shells only.
+- **No telemetry seam.** Rust has no `Observer` and no `timing` middleware.
 - **Threads, not tasks.** Dispatcher workers are operating-system threads; `retry`, the relay and the
   dispatcher sleep their backoff on the calling thread through `Pacing`.
 

@@ -3,10 +3,10 @@
 //! [`guid`] returns a UUID version 7: a 48-bit Unix-millis timestamp, a 42-bit counter and 32
 //! random bits. Within one process the counter is shared, so ids are strictly increasing in mint
 //! order, which makes them a safe index key; across processes they are ordered only by their
-//! millisecond. [`guid_simple`] is the same
-//! id in the hyphen-free form a fixed-width token needs. Unlike the rest of the
-//! toolkit this is *non-deterministic* — it reads the clock and a random source — so it carries no
-//! golden vector, only the structural guarantees a v7 id must always hold.
+//! millisecond. [`guid_simple`] mints the same kind of id in the hyphen-free form a fixed-width
+//! token needs. Unlike the rest of the toolkit this is *non-deterministic*: it reads the clock and a
+//! random source. So it carries no golden vector, only the structural guarantees a v7 id must always
+//! hold.
 
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ pub fn guid() -> String {
     Uuid::now_v7().to_string()
 }
 
-/// The same id without the hyphens: 32 lowercase hexadecimal characters.
+/// A fresh UUID v7 without the hyphens: 32 lowercase hexadecimal characters.
 ///
 /// The fixed-width form a ledger value needs, where the token sits at a fixed offset and every
 /// claimant's must be the same number of bytes.

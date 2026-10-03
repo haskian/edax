@@ -56,8 +56,8 @@ mod tests {
         }
     }
 
-    /// The fold the review reproduced: the documented update `watermark = sequence` let the
-    /// unsequenced event erase the mark, so the stale 3 applied and the mark moved back to 3.
+    /// The naive update `watermark = sequence` lets the unsequenced event erase the mark, so the
+    /// stale 3 applies and the mark moves back to 3. `advance` must not.
     #[test]
     fn an_unsequenced_event_never_lets_a_stale_one_through() {
         let mut watermark = None;

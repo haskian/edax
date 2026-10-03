@@ -1,4 +1,4 @@
-"""04#F2: the memory ledger of its own rehearses what a Redis ledger does, behaviour for behaviour.
+"""The memory ledger of its own rehearses what a Redis ledger does, behaviour for behaviour.
 
 Each scenario runs over :class:`~edax.backend.memory.MemoryLedger` and over the Redis store (the kernel's own
 Lua on fakeredis, and a live server when ``EDAX_REDIS_URL`` names one), through the guard, and asserts the

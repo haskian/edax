@@ -315,8 +315,8 @@ class ReadsAnUnreadableRowAsFree(DecodesStrictly):
 
 
 class NoneResultReadsAsPending(_Delegating):
-    """Cannot tell "completed with no value" from "still pending" — the classic mistake of storing
-    the result column as NULL and inferring pending from it. A handler returning `None` then re-runs
+    """Cannot tell "completed with no value" from "still pending": it stores the result column as NULL
+    and infers pending from it. A handler returning `None` then re-runs
     on every redelivery."""
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
@@ -456,8 +456,8 @@ class ProjectionSaveIgnoresAmbientTx(_Delegating):
 
 
 class DropsNext(_Delegating):
-    """`get_many` returns the rows but never a `next`: a store that ported the old list-returning
-    seam. A reader following `next` stops after the first page and silently loses the rest."""
+    """`get_many` returns the rows but never a `next`, as a store written against a list-returning
+    seam would. A reader following `next` stops after the first page and silently loses the rest."""
 
     async def get_many(self, **kwargs: Any) -> Page:
         page = await self._inner.get_many(**kwargs)
@@ -485,7 +485,7 @@ class OwnCursor(_Delegating):
 
 
 class CheckThenActEventStore:
-    """The reviewer's store: the version check is a read in Python, then a database round trip, then the
+    """A check-then-act store: the version check is a read in Python, then a database round trip, then the
     insert, staged in the unit of work and applied on commit. Every clause that runs one writer at a time
     passes it; two writers at version 0 both commit sequence 1, a forked stream."""
 
@@ -619,7 +619,7 @@ class OverlayLedger(OverlayDb):
     """A joining ledger over transaction overlays, with the two mistakes a hand-rolled one makes as
     switches. ``stale_reads``: a claimant reads only the committed rows and its own, so it wins a key
     another open transaction claimed (a snapshot read with no row lock). ``release_shadows``: a release
-    stages a delete even with nothing committed, as memory's did before 04#F1, so the releaser's re-claim
+    stages a delete even with nothing committed, so the releaser's re-claim
     reads its own delete instead of a concurrent winner's record, and its commit erases that record. With
     both off the overlay is correct for the release clause, the positive control."""
 
@@ -1066,7 +1066,7 @@ BROKEN: list[Broken] = [
         "test_a_release_after_complete_keeps_the_record",
         lambda db: ExpiringLedger("by_owner"),
     ),
-    # The race and isolation clauses (04#F5): each store passes every one-call-at-a-time clause.
+    # The race and isolation clauses: each store passes every one-call-at-a-time clause.
     Broken(
         "event_store_checks_then_acts",
         EventStoreContract,

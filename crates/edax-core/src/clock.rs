@@ -3,8 +3,8 @@
 //! [`current_timestamp`] returns Unix time in nanoseconds, but guarantees each call yields a value
 //! strictly greater than every prior call in this process — even if the wall clock stalls within a
 //! nanosecond or steps backwards (NTP slew, leap, suspend). It does this with a process-local
-//! high-water mark, so like [`crate::guid`] it is non-deterministic and carries no golden vector:
-//! the guarantee is monotonicity, not a fixed value. The mark is per-process — it does not span
+//! high-water mark, so like [`crate::guid()`] it is non-deterministic and carries no golden vector:
+//! the guarantee is monotonicity, not a fixed value. The mark is per-process, so it does not span
 //! restarts or machines.
 //!
 //! The price of strict monotonicity: after the wall clock jumps forward and is then corrected (a VM
@@ -26,8 +26,8 @@ pub fn current_timestamp() -> i64 {
     let wall = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
-        // A pre-1970 clock has no Unix duration. Falling back to 0 keeps the guarantee this function
-        // actually makes — strictly increasing — by deferring to the high-water mark below.
+        // A pre-1970 clock has no Unix duration. Falling back to 0 keeps the strictly-increasing
+        // guarantee by deferring to the high-water mark below.
         .unwrap_or(0);
     let mut last = LAST.load(Ordering::Relaxed);
     loop {

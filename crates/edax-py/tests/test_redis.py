@@ -137,8 +137,8 @@ def test_a_misconfigured_store_is_refused_when_built(
     branch: str, settings: dict[str, Any], match: str
 ) -> None:
     """Every refused setting fails identically on every write, so it is the terminal ``BadHandle`` at
-    construction. Before, a zero or float TTL failed every ``complete`` on the server as a transient
-    ``StoreError``, and the handler re-ran on every redelivery."""
+    construction. Accepted, a zero or float TTL would fail every ``complete`` on the server as a
+    transient ``StoreError``, and the handler would re-run on every redelivery."""
     kwargs: dict[str, Any] = {"prefix": "idem:", **settings}
     prefix = kwargs.pop("prefix")
     with pytest.raises(edax.BadHandle, match=match) as caught:
@@ -282,7 +282,7 @@ async def test_complete_of_an_unencodable_result_is_terminal_and_writes_nothing(
 
 
 def foreign_handles(own: bytes) -> list[tuple[str, bytes]]:
-    """Handles no claim of this store returned (06#F4): each must be refused before any I/O."""
+    """Handles no claim of this store returned: each must be refused before any I/O."""
     return [
         ("empty", b""),
         ("truncated_to_a_prefix", own[:3]),
@@ -294,9 +294,9 @@ def foreign_handles(own: bytes) -> list[tuple[str, bytes]]:
 
 @pytest.mark.parametrize("op", ["complete", "release", "extend"])
 async def test_a_handle_the_kernel_never_minted_is_refused_before_any_io(ledger: Ledger, op: str) -> None:
-    """06#F4: the old fence compared a prefix of the caller's width, so an empty token re-created an
-    expired key and a one-character token overwrote a live claim. A malformed handle is now a terminal
-    ``CodecError`` and the key is untouched."""
+    """A fence that compares only a prefix of the caller's width lets an empty token re-create an expired
+    key and a one-character token overwrite a live claim. A malformed handle is a terminal ``CodecError``
+    and the key is untouched."""
     s = ledger.store()
     won = await s.claim("order-7", HASH)
     assert isinstance(won, Won)
@@ -321,7 +321,7 @@ async def test_release_branches(ledger: Ledger) -> None:
     await s.release("own", won.handle)  # releasing an absent key is a no-op
     await s.release("never-claimed", won.handle)
 
-    # 06#F3: the complete landed, its reply was lost, and the guard releases. The record stays.
+    # The complete landed, its reply was lost, and the guard releases. The record stays.
     done = await s.claim("done", HASH)
     assert isinstance(done, Won)
     await s.complete("done", done.handle, RECORD)
@@ -345,7 +345,7 @@ async def test_extend_branches(ledger: Ledger) -> None:
 
 
 # =========================================================================
-# 06#F1: two claims on one key in one store instance
+# two claims on one key in one store instance
 # =========================================================================
 
 
@@ -370,12 +370,12 @@ async def test_a_stale_owner_cannot_extend_the_new_holders_lease(ledger: Ledger)
 async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
     ledger: Ledger, first_to_finish: str
 ) -> None:
-    """06#F1 through the guard, the reviewer's ``e2`` shape. Two dispatches of one request share one bus and
-    one store. A's handler outlives its claim, and B takes the key over while A still runs. Whichever
-    finishes first, A's complete is refused: exactly one dispatch reports success and the ledger holds B's
-    result. Before, with A finishing first, A completed over B's live claim and B then wrote over it:
-    both reported success. Both handlers ran, which is the documented at-least-once window a lapse opens;
-    the fence makes the ledger say so. Barriers order every step."""
+    """Two claims on one key, through the guard. Two dispatches of one request share one bus and one
+    store. A's handler outlives its claim, and B takes the key over while A still runs. Whichever finishes
+    first, A's complete is refused: exactly one dispatch reports success and the ledger holds B's result.
+    Without the fence, A finishing first would complete over B's live claim and B would then write over
+    it, so both would report success. Both handlers ran, which is the documented at-least-once window a
+    lapse opens; the fence makes the ledger say so. Barriers order every step."""
     store = ledger.store()
     a_lapsed, b_started, a_finished, b_finished = (asyncio.Event() for _ in range(4))
     runs: list[str] = []
@@ -435,14 +435,14 @@ async def test_an_acknowledged_claim_lost_in_a_failover_is_one_more_at_least_onc
 
 
 # =========================================================================
-# Lost replies (06#F2, 06#F3), deadlines, error replies
+# Lost replies, deadlines, error replies
 # =========================================================================
 
 
 async def test_a_claim_whose_reply_was_lost_and_resent_is_won(ledger: Ledger) -> None:
-    """06#F2. redis-py re-sends a command whose reply was lost. The re-sent claim finds the claim its first
-    send wrote; the kernel reads its own value back as won, so the handler runs once. Before, the store read
-    its own claim as another's: ``InProgress`` on every redelivery until the claim TTL ran out."""
+    """redis-py re-sends a command whose reply was lost. The re-sent claim finds the claim its first send
+    wrote; the kernel reads its own value back as won, so the handler runs once. A store that read its own
+    claim as another's would raise ``InProgress`` on every redelivery until the claim TTL ran out."""
     conn = LostReply(ledger.conn(), CLAIM_SCRIPT, resend=True)
     runs: list[str] = []
 
@@ -470,10 +470,10 @@ async def test_a_claim_whose_reply_was_lost_for_good_is_held_for_the_claim_ttl_o
 
 @pytest.mark.parametrize("resend", [False, True], ids=["reply_lost", "reply_lost_then_resent"])
 async def test_a_complete_whose_reply_was_lost_keeps_the_record(ledger: Ledger, resend: bool) -> None:
-    """06#F3, the reviewer's ``e5``. The complete lands and its reply is lost. Without a re-send the
-    dispatch fails and the guard releases, and that release must not delete the record of committed work:
-    the redelivery replays it and the handler ran once. Before, the release matched the token in front of
-    the record and deleted it, so the redelivery charged twice."""
+    """The complete lands and its reply is lost. Without a re-send the dispatch fails and the guard
+    releases, and that release must not delete the record of committed work: the redelivery replays it
+    and the handler ran once. A release that matched the token in front of the record would delete it,
+    and the redelivery would charge twice."""
     conn = LostReply(ledger.conn(), COMPLETE_SCRIPT, resend=resend)
     runs: list[str] = []
 
@@ -520,7 +520,7 @@ class _Silent:
 
 
 async def test_a_call_with_no_reply_fails_at_the_deadline() -> None:
-    """06#F10: the deadline bounds each call, client retries included, so a hung server costs a dispatch
+    """The deadline bounds each call, client retries included, so a hung server costs a dispatch
     ``op_timeout_ms`` and not redis-py's ten retries of five seconds."""
     store = RedisIdempotencyStore(_Silent(), "idem:", op_timeout_ms=20)
     with pytest.raises(edax.StoreError, match="redis claim 'k': no reply within 20 ms") as caught:
@@ -562,10 +562,10 @@ class _ScriptRaises:
 async def test_a_client_failure_carries_the_kernels_verdict(
     branch: str, error: BaseException, want: type[edax.EdaxError], terminal: bool
 ) -> None:
-    """06#F6: a deterministic failure (``WRONGTYPE``, a refused command or credential, a value the client
-    cannot decode) fails the same way on every retry, so it is terminal; a passing state (a replica during
-    failover, a connection reset) is transient. The kernel's ``reply_error`` reads the reply's prefix;
-    before, every failure was a transient ``StoreError`` and the handler re-ran forever."""
+    """A deterministic failure (``WRONGTYPE``, a refused command or credential, a value the client cannot
+    decode) fails the same way on every retry, so it is terminal; a passing state (a replica during
+    failover, a connection reset) is transient. The kernel's ``reply_error`` reads the reply's prefix. Were
+    every failure a transient ``StoreError``, the handler would re-run forever."""
     store = RedisIdempotencyStore(AsyncRedisClient(cast(Any, _ScriptRaises(error))), "idem:")
     with pytest.raises(want, match="redis claim 'order-7'") as caught:
         await store.claim("order-7", HASH)
@@ -623,7 +623,7 @@ async def test_each_script_is_registered_once_and_sent_by_digest(ledger: Ledger)
 
 
 # =========================================================================
-# Lease renewal (06#F7)
+# Lease renewal
 # =========================================================================
 
 

@@ -3,11 +3,10 @@
 
 Two files carry one, and only two:
 
-* `Cargo.toml` — `[workspace.package] version`, which every member crate inherits with
+* `Cargo.toml`: `[workspace.package] version`, which every member crate inherits with
   `version.workspace = true`, including `edax-py`.
-* `crates/edax-abi/Cargo.toml` — a literal by necessity, not by choice: alef reads the generated
-  binding's version straight out of that file (`version_from` in `alef.toml`), so it cannot be
-  `version.workspace`.
+* `crates/edax-abi/Cargo.toml`: a literal, because alef reads the generated binding's version
+  straight out of that file (`version_from` in `alef.toml`), so it cannot be `version.workspace`.
 
 `crates/edax-py/pyproject.toml` declares `dynamic = ["version"]`, so maturin reads the Cargo version
 and there is nothing to rewrite there. `crates/edax-abi-py/` is alef-generated and outside the
@@ -24,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# (path, the line that carries the version) — anchored so a dependency pin cannot match by accident.
+# (path, the line that carries the version), anchored so a dependency pin cannot match by accident.
 TARGETS = [
     (ROOT / "Cargo.toml", re.compile(r'^version = "[^"]+"$', re.MULTILINE)),
     (ROOT / "crates/edax-abi/Cargo.toml", re.compile(r'^version = "[^"]+"$', re.MULTILINE)),

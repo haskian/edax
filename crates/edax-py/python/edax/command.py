@@ -354,7 +354,7 @@ def idempotent(
     directly (when it resolves at module scope), converted with msgspec. A replay that does not convert is
     an unreadable record: the terminal :class:`~edax.errors.CachedFailure` of code ``codec``, as in the
     Rust SDK, whose typed store reads it so. With neither, or with ``result_type=Any``, a replay is
-    the plain JSON value, as with an `object` annotation. A ``result_type`` msgspec cannot convert to raises
+    the plain JSON value, as with an ``object`` annotation. A ``result_type`` msgspec cannot convert to raises
     :class:`TypeError` at wiring.
 
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
@@ -501,7 +501,7 @@ async def _guarded_around_the_work(
     handle = claimed.handle
 
     # Won the claim. From here every exit must settle the record, including a failure of the commit
-    # itself — which is the whole reason the transaction is opened here and not around the caller.
+    # itself. That is why the transaction opens here and not around the caller.
     started = perf_counter_ns()
     # What a raise out of the completion below means: the store would not take the record.
     how: Settlement = "refused"

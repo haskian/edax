@@ -40,10 +40,10 @@ classDiagram
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
 | `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works |
 | `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |
-| `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False` — the ordering a Redis ledger has |
+| `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False`, the ordering a Redis ledger has |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
 | `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency, a tombstone on completion, and the saga outbox |
-| `MemoryBroker` | `Producer` **and** `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log that behaves like a Kafka topic |
+| `MemoryBroker` | `Producer` and `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log that behaves like a Kafka topic |
 
 Only the waiting is Python's. The maps, the version checks, the outbox, the atomic claim, the
 transaction journal and the broker's settlement accounting live in the native `edax-memory` crate.
@@ -53,15 +53,14 @@ terminal `BadHandle`, rather than the binding's own panic.
 
 The Rust reference model ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
 `MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryLedger` (`Tx = ()`), `MemoryProjectionStore`,
-`MemorySagaStore` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token and the no-transaction handle is
-`MemoryTx::auto_commit()`, which is also its `Default`.
+`MemorySagaStore` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token, and the
+no-transaction handle is `MemoryTx::auto_commit()`, which is also its `Default`.
 
 ## The transaction is real
 
 `MemoryTransactor` implements a real transaction. It stages every write made under a token, applies
 them together on commit, and drops them on rollback, so a test can assert that a raise left nothing
-behind. That is the point of it: the `Transactor` docstring names this backend as the one that keeps
-the contract for real.
+behind. The `Transactor` docstring names this backend for that reason.
 
 ```mermaid
 sequenceDiagram
@@ -126,8 +125,7 @@ flowchart TB
 `tx`, else the ambient `current_tx(self)` of its own database, else `_NO_TX`. That is the token that
 names no transaction: under it a write lands at once and a read sees committed state only.
 
-A handle belonging to another transactor is **refused** with `BadHandle`, not silently
-auto-committed:
+A handle belonging to another transactor is refused with `BadHandle`, never auto-committed:
 
 ```python
 raise BadHandle(
@@ -136,27 +134,25 @@ raise BadHandle(
 )
 ```
 
-The refusal is the point. A store cannot enlist in a unit of work its database knows nothing about.
-Going on would silently drop the atomicity the caller asked for. The refusal applies to any explicit
+A store cannot enlist in a unit of work its database knows nothing about. Going on would drop the
+atomicity the caller asked for, with no error. The refusal applies to any explicit
 handle, including one from a hand-written test `Transactor`. Another database's ambient unit of work is
 never this store's to see: `current_tx(self)` reads only this database's. A store called inside a
 `transaction` over another database therefore runs outside any unit of work of its own.
 
 `MemoryTransactor.auto_commit()` is the explicit no-transaction handle, for a reader that must look
-*past* an open unit of work — a test probing what has actually landed.
+past an open unit of work, such as a test probing what has landed.
 
 ## `joins_transaction = True`, and what it unlocks
 
-`MemoryIdempotencyStore` declares `joins_transaction: ClassVar[bool] = True`. It is entitled to,
-because `token` refuses a foreign handle with `BadHandle` — which is exactly the refusal the
-contract demands of a store that declares it. The refusal is terminal, because no number of retries
+`MemoryIdempotencyStore` declares `joins_transaction: ClassVar[bool] = True`. It may, because
+`token` refuses a foreign handle with `BadHandle`, the refusal the contract demands of a store that
+declares it. The refusal is terminal, because no number of retries
 rewires a store built over the wrong transactor.
 
-The declaration changes the guard's ordering. [Idempotency](../sdk/idempotency.md#the-two-modes) is
-the one home for the two guard modes and the guarantee each one buys. This store runs in
-shared-ledger mode.
-
-The practical effect is one test. A claim that rolls back with its events releases the key. The next
+The declaration selects the guard's shared-ledger ordering; see
+[idempotency](../sdk/idempotency.md#the-two-modes). A claim that rolls back with its events
+releases the key. The next
 dispatch runs the handler again instead of replaying an outcome that never landed. It deposits once,
 not twice. This is the Idempotent Consumer pattern: a dedup table beside the business change, in one
 commit.
@@ -165,9 +161,10 @@ commit.
 
 The guard has two orderings, and they behave differently where it matters
 ([idempotency](../sdk/idempotency.md#the-two-modes)). A ledger that joins your transaction runs
-`begin; claim; run; complete; commit`. A terminal failure rolls back with the work and is **not** cached,
-so a redelivery runs the handler again. A ledger of its own, such as Redis, runs `claim; begin; run;
-commit; complete`. There a terminal failure **is** cached, so a redelivery raises `CachedFailure`. A claim
+`begin; claim; run; complete; commit`. A terminal failure rolls back with the work and is not
+cached, so a redelivery runs the handler again. A ledger of its own, such as Redis, runs `claim;
+begin; run; commit; complete`. There a terminal failure is cached, so a redelivery raises
+`CachedFailure`. A claim
 can lapse while the handler runs. A `complete` whose reply is lost leaves a settled record, and the
 guard's release must not delete it.
 
@@ -207,7 +204,7 @@ transaction may stage an aggregate's stream, a projection id, an idempotency key
 id. That key is held until the transaction ends. A second writer gets `ConcurrencyError` at once.
 
 For the ledger, that exclusion replaces the row lock. A claim on a held key does not block and does
-not win: it loses, and reads back the holder's record **re-masked as pending**. The function is
+not win: it loses, and reads back the holder's record re-masked as pending. The function is
 `masked_pending`:
 
 ```rust
@@ -219,11 +216,9 @@ fn masked_pending(bytes: &[u8], claimant_hash: u64) -> Result<Vec<u8>, Error> {
 
 It reads the holder's staged record as the kernel does, keeps its `payload_hash`, and returns a fresh
 `pending` record. Bytes no reader can decode are masked too, under the hash `decode_prior` reads from
-them. A claimant never replays them as a cached failure while they may still roll back. The reason
-is the holder may still roll
-back, so whatever it has staged since is not an outcome to replay. The loser therefore sees
-`pending`, and the guard raises `InProgress` — which the contract explicitly allows as the
-alternative to blocking.
+them. The holder may still roll back, so whatever it has staged is not an outcome to replay, not even
+as a cached failure. The loser sees `pending`, and the guard raises `InProgress`, which the contract
+allows as the alternative to blocking.
 
 Two related rules live in `release`, which only ever drops the claim its handle names. With nothing
 committed for the key, a release drops the transaction's own staged claim and stages nothing. There is no
@@ -244,8 +239,8 @@ pending.
 `MemoryTransactor.open_count()` reports how many transactions are still unsettled
 (`MemoryEventStore.unpublished_count()` is the outbox's backlog, counted natively). A count that
 never returns to zero means a token was abandoned. Its keys are then a permanent conflict, not a
-held key another writer can wait out. Rust's `transaction` rolls back if the body panics, so a panicking
-handler does not abandon a token.
+held key another writer can wait out. Rust's `transaction` rolls back if the body panics, so a
+panicking handler does not abandon a token.
 
 ## The broker is a log
 

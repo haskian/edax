@@ -26,7 +26,7 @@ def test_golden_payload_hash() -> None:
 def test_golden_idempotency_record() -> None:
     # The record's wire shape, reading order and replay verdict are the kernel's; the SDK must read
     # the stored bytes to the same fields, re-emit the same bytes, and reach the same verdict. The
-    # `null` result case is the one that used to diverge from the Rust SDK.
+    # `null` result case pins that a completed `null` reads as a success, never as pending.
     for c in golden("idempotency_record.json"):
         if "decode_error" in c:
             # A stored value no reader may guess at: the strict reader refuses it with the kernel's text...
@@ -240,9 +240,8 @@ def test_golden_command_hash_rejects_the_old_per_sdk_rules() -> None:
     del body_only["request_id"]
     assert edax.payload_hash_json(msgspec.json.encode(body_only)) != case["expected"]
 
-    # Built through the constructor, as a service writes `Deposit(...)`. A converted instance would
-    # show the same divergence now that defaulted fields are read from the class; the constructor
-    # is simply the shape that carried `type` before that was true.
+    # Built through the constructor, as a service writes `Deposit(...)`. A converted instance shows
+    # the same divergence, because defaulted fields are read from the class.
     fields = dict(case["command"])
     fields["shipping"] = GoldenShipping(**fields["shipping"])
     with_type_field = GoldenPlaceOrderWithTypeField(**fields)
@@ -374,7 +373,7 @@ def test_hash_is_independent_of_how_the_command_was_built(case: ConstructionCase
     # A service that builds `Deposit(...)` and one that decodes the same command off a queue must
     # bind one key to one number, or the second reports PayloadMismatch on a genuine duplicate.
     # msgspec's dataclass encoder reads `__dict__`, and `convert` / `decode` leave a defaulted
-    # field out of it, so the two used to hash differently. Both must equal the hash of the fully
+    # field out of it, so the two would hash differently. Both must equal the hash of the fully
     # materialized value, not merely each other: two encodings that both dropped the defaults
     # would agree and still be wrong.
     assert _same_command(case.built, case.decoded)
@@ -1318,10 +1317,10 @@ def test_a_result_the_kernel_accepted_but_python_cannot_decode_is_terminal(
 
 
 async def test_a_cancel_at_the_claims_first_suspension_point_never_strands_the_key() -> None:
-    """The native store calls used to be ``async``: the claim was spawned on a runtime thread at call
-    time, and a cancel landing on its ``await`` stopped only the waiter. The claim landed unseen, and
-    every redelivery raised ``InProgress`` for the process lifetime. Synchronous native calls have no
-    such window: the cancel lands before the claim or after the dispatch, never between them."""
+    """An ``async`` native store call would spawn the claim on a runtime thread at call time, and a
+    cancel landing on its ``await`` would stop only the waiter. The claim would land unseen, and every
+    redelivery would raise ``InProgress`` for the process lifetime. Synchronous native calls have no such
+    window: the cancel lands before the claim or after the dispatch, never between them."""
     store = MemoryIdempotencyStore()
     runs: list[str] = []
 
@@ -1343,13 +1342,13 @@ async def test_a_cancel_at_the_claims_first_suspension_point_never_strands_the_k
 
 @pytest.mark.parametrize("attempts", [0, -3], ids=["zero", "negative"])
 def test_retry_refuses_fewer_than_one_attempt(attempts: int) -> None:
-    """09#F12: a count below one used to be clamped to one attempt silently, hiding a wiring typo."""
+    """A count below one is a wiring typo; clamping it to one attempt would hide it."""
     with pytest.raises(ValueError, match=f"at least one attempt, got {attempts}"):
         C.retry(attempts)
 
 
 async def test_the_bus_registers_by_decorator() -> None:
-    """09#F12: the command bus has the event router's decorator form, and the bare handler comes back."""
+    """The command bus has the event router's decorator form, and the bare handler comes back."""
     bus = C.CommandBus()
 
     @bus.on("user.create")

@@ -173,8 +173,8 @@ async def test_a_failed_commit_leaves_the_aggregate_holding_its_pending_events()
 
 
 async def test_save_in_a_callers_transaction_resets_before_the_caller_commits() -> None:
-    # The mirror case. With a caller-supplied handle the repository cannot wait for the commit —
-    # the caller performs it after `save` returns — so the reset happens first and a rollback leaves
+    # The mirror case. With a caller-supplied handle the repository cannot wait for the commit, which
+    # the caller performs after `save` returns, so the reset happens first and a rollback leaves
     # an aggregate that no longer holds its events. Reload it rather than saving it again.
     store = MemoryEventStore()
     repo = counter_repo(store, iter(range(1, 10_000)))
@@ -486,8 +486,8 @@ async def test_outbox_calls_map_native_errors_like_every_other_call(case: Outbox
 async def test_snapshot_every_snapshots_when_the_version_crosses_a_multiple(
     every: int, saves: list[int], want: list[int | None]
 ) -> None:
-    """09#F12: a snapshot on every save doubled the writes; the policy snapshots when a save carries the
-    version across a multiple of ``snapshot_every``, and the stream replays from it."""
+    """A snapshot on every save doubles the writes. The policy snapshots when a save carries the version
+    across a multiple of ``snapshot_every``, and the stream replays from it."""
     store = MemoryEventStore()
     repo = edax.Repository(store, TickEvents(), CounterCodec(), snapshot_every=every)
     got: list[int | None] = []
@@ -507,7 +507,7 @@ def test_a_negative_snapshot_interval_is_refused() -> None:
 
 
 # =========================================================================
-# 09#F12: Relay.run, the loop every adopter wrote by hand
+# Relay.run, the drain loop a host would otherwise write by hand
 # =========================================================================
 
 
@@ -603,7 +603,7 @@ async def test_run_survives_a_failed_drain(caplog: pytest.LogCaptureFixture, sle
 
 
 # =========================================================================
-# cm-review: a relay whose own store fails backs off instead of spinning
+# a relay whose own store fails backs off instead of spinning
 # =========================================================================
 
 
@@ -680,7 +680,7 @@ async def test_a_store_that_fails_backs_the_drain_off_and_a_store_that_recovers_
 
 
 async def test_run_over_a_store_that_fails_without_awaiting_yields_and_backs_off() -> None:
-    """The reviewer's critical: ``unpublished`` raises synchronously, so a drain never awaits anything. The
+    """``unpublished`` raises synchronously, so a drain never awaits anything. The
     loop must still yield to the event loop and wait a growing step, or it starves every other task on the
     loop (the dispatcher, Kafka commits, Redis heartbeats). A drain that reaches the store resets the step,
     so the next outage starts at step 0 again."""

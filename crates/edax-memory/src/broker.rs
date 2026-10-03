@@ -81,9 +81,8 @@ struct BrokerState {
 /// hands out a token, and [`ack`](Self::ack) / [`nack`](Self::nack) settle by it.
 ///
 /// [`is_empty`](Self::is_empty) is true only when a group has committed past every message, the
-/// same "nothing left to do" a durable broker reports. Without that a dispatcher that dropped a
-/// delivery would pass here and lose the message against Kafka: the in-memory rig would flatter
-/// exactly the bug it exists to catch.
+/// same "nothing left to do" a durable broker reports. Without that, a dispatcher that dropped a
+/// delivery would pass here and lose the message against Kafka.
 pub struct MemoryBroker {
     state: Mutex<BrokerState>,
 }

@@ -4,8 +4,8 @@ Cross-aggregate workflows: correlate a committed event to a running instance, fo
 instance's state, and emit the commands that drive the next step.
 
 Where an aggregate decides one entity's next state, a saga coordinates a workflow spanning several.
-This is the Saga pattern, used **instead of a distributed transaction**. There is no two-phase
-commit across the aggregates involved. There is only a sequence of local transactions linked by
+This is the Saga pattern, used instead of a distributed transaction. There is no two-phase commit
+across the aggregates involved. There is only a sequence of local transactions linked by
 events and commands.
 
 ```mermaid
@@ -43,18 +43,18 @@ the rows behind it wait. In Rust, the codec is a `RegistryCodec` over the comman
 
 `correlation_id(env)` answers one question: which running instance does this event belong to?
 
-- A **string** names the instance. The runner loads it, or starts at `None` state and version `0` if
+- A string names the instance. The runner loads it, or starts at `None` state and version `0` if
   there is none. A completed instance takes no event: the runner returns before it folds.
-- **`None` ignores the event.** The runner returns before it touches the store, so an unrelated
-  event costs nothing and writes nothing.
+- `None` ignores the event. The runner returns before it touches the store, so an unrelated event
+  costs nothing and writes nothing.
 
-The correlation id is the saga's own key, not the aggregate id — that is the whole point of a saga.
-It is often *derived* from the aggregate id, as in `examples/py/13_saga.py`, and that choice has a
-concurrency consequence, below.
+The correlation id is the saga's own key, not the aggregate id: one instance spans several
+aggregates. It is often derived from the aggregate id, as in `examples/py/13_saga.py`, and that
+choice has a concurrency consequence, below.
 
-It is also **not** the `correlation_id` in the envelope's metadata. That one names a logical flow
-and travels with the events; this one names a stored saga instance. They share a word and nothing
-else — no code reads one to produce the other. The chain in metadata is the next section.
+It is also not the `correlation_id` in the envelope's metadata. That one names a logical flow and
+travels with the events; this one names a stored saga instance. They share a word and nothing else,
+and no code reads one to produce the other. The next section covers the chain in metadata.
 
 ### handle
 
@@ -64,9 +64,9 @@ else — no code reads one to produce the other. The chain in metadata is the ne
 |---|---|---|
 | keep the instance | `(new_state, commands)` | `(Some(state), commands)` |
 | finish the instance (a tombstone) | `(Completed, commands)` | `(None, commands)` |
-| keep a state that happens to be null | `(None, commands)` | not expressible — `None` means completed |
+| keep a state that happens to be null | `(None, commands)` | not expressible: `None` means completed |
 
-That is the one seam where the two software development kits (SDKs) genuinely differ. Python needs
+This is the one seam where the two software development kits (SDKs) differ. Python needs
 the `Completed` sentinel because `None` is a legitimate state a saga may keep, and a plain `None`
 return would be indistinguishable from completion. The `none_state_is_saved_not_completed` case of
 `test_saga.py::test_runner_branches` pins it. The sentinel is an enum member, so its identity
@@ -77,7 +77,7 @@ is Completed` must still hold afterwards.
 
 A saga is where a causation chain would otherwise break. `handle` returns commands, not metadata, so
 the `correlation_id` and `causation_id` on `env` reach the emitted command only if you put them
-there. Two ways, both sound.
+there. Either of two ways works.
 
 **As command fields.** The default: explicit, and it survives a queue.
 
@@ -101,15 +101,15 @@ The handler then stamps what it was handed onto the events it writes:
 This does not break idempotency. A command field must be the same on every legitimate retry of one
 intent, the rule in
 [observability](./observability.md#traces-via-metadata-and-where-request-scoped-values-go). The
-causing event is exactly that. A redelivery hands the saga the *same* envelope, same `id` and same
-metadata, from the outbox and from the broker alike. The hash is unchanged, so the retry replays
+causing event meets it. A redelivery hands the saga the same envelope, same `id` and same metadata,
+from the outbox and from the broker alike. The hash is unchanged, so the retry replays
 instead of raising `PayloadMismatch`.
 
-The real hazard is identity, not hashing. Chain ids in fields widen what the command **is**. Say two
+The hazard is identity, not hashing. Chain ids in fields widen what the command is. Say two
 different events can legitimately cause one intent. They now build two different commands. A key
 that ignores the cause makes the second one a `PayloadMismatch` under the first one's record. So key
 on the cause too, or keep the cause out of the command. `examples/py/13_saga.py` keys on
-`order_id` alone, because exactly one event type causes `ShipOrder`.
+`order_id` alone, because one event type causes `ShipOrder`.
 
 **Or through a middleware seam.** Keep the command a pure business intent and carry `env` beside it.
 An event middleware wraps `SagaRunner.on_event` and puts the envelope where the command handler can
@@ -126,7 +126,7 @@ never calls `originate`, so a root event with no `ensure_ids()` has no chain at 
 | Method | Contract |
 |---|---|
 | `load(id, tx)` | the stored `SagaInstance` (state, version and `folded` marks, or a completed tombstone) or `None` |
-| `save(id, state, version, folded, commands, tx)` | write the state, the `folded` marks **and** the step's commands at `version + 1` **only if** the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
+| `save(id, state, version, folded, commands, tx)` | write the state, the `folded` marks and the step's commands at `version + 1` only if the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
 | `complete(id, version, commands, tx)` | the same, writing a tombstone instead of state |
 | `unpublished(limit)` / `mark_published(ids)` | the saga outbox, read by the relay outside any `tx`: committed commands only, oldest first, pruned by id, idempotently |
 | `tx` | with `tx` given, or `current_tx` of the store's transactor set, a durable backend enlists the write in that unit of work |
@@ -134,23 +134,23 @@ never calls `originate`, so a root event with no `ensure_ids()` has no chain at 
 A completed instance takes no write at all. Each command carries the id
 `saga_command_id(id, version + 1, index)`, which is `"{correlation_id}:{version}:{index}"`. It is
 unique per committed transition. A durable store can key the outbox row on it, and a consumer can
-deduplicate on it. The in-memory backend refuses a command whose id is not that one, as `codec`. A durable store
-purges tombstones by retention, longer than any redelivery window. `SagaStoreContract` in
+deduplicate on it. The in-memory backend refuses a command whose id is not that one, as `codec`. A
+durable store purges tombstones by retention, longer than any redelivery window. `SagaStoreContract` in
 `edax.testing` (and `crates/edax/tests/contract.rs` in Rust) holds a backend to every clause.
 
 `folded` is the kernel's record of the events the instance has folded (`saga_admit`). It is opaque
-text: the store keeps it in a text column, exactly as `save` wrote it, and `load` returns it. It
+text: the store keeps it in a text column, as `save` wrote it, and `load` returns it. It
 holds one entry per source aggregate: the highest sequence and the last event id folded from it. So
 it grows with the aggregates a workflow touches, not with its events. Before it folds, the runner
 asks the kernel whether the instance has folded the event already. A repeat is skipped: no fold, no
-write, no command. That is what keeps a redelivered step from deciding its commands a second time
-under the next version's ids. The rule relies on the dispatcher handing one aggregate's events over in
+write, no command. So a redelivered step never decides its commands a second time under the next
+version's ids. The rule relies on the dispatcher handing one aggregate's events over in
 order, as the staleness rule does. An unsequenced event has no order, so only the last one folded from
 its aggregate is recognized.
 
 ## Optimistic concurrency
 
-The runner writes at the version it **loaded**, not at a re-read. A writer that lands between the
+The runner writes at the version it loaded, not at a re-read. A writer that lands between the
 load and the write makes this write a conflict, never a silent overwrite.
 
 A `ConcurrencyError` from a saga store therefore means one thing. Another writer advanced this
@@ -161,7 +161,7 @@ writer's state and commands survive untouched.
 
 **When can that happen?** The `KeyOrderedDispatcher` serializes events that share an aggregate id. A
 saga whose `correlation_id` is the aggregate id therefore has no concurrent writer. Its version
-check never fires. The version exists for a **cross-aggregate** correlation, where two different
+check never fires. The version exists for a cross-aggregate correlation, where two different
 aggregate ids map to one correlation id and therefore to two different workers. `Paid` from the
 payment aggregate and `Cancelled` from the order aggregate can fold one order at once.
 `test_saga.py::test_the_fold_that_loses_the_version_race_sends_nothing` pins it: the cancel commits a
@@ -171,8 +171,8 @@ payment aggregate and `Cancelled` from the order aggregate can fold one order at
 ## The saga outbox: persist, then send
 
 The runner never sends a command. It writes the new state and the commands the fold decided in one
-versioned write, and a `Relay` sends what committed. That is the transactional outbox applied to a
-saga: storing the decision and the messages it produces happen in one transaction.
+versioned write, and a `Relay` sends what committed. This is the transactional outbox applied to a
+saga: the decision and the messages it produces are stored in one transaction.
 
 | Failure point | Instance after | What happens |
 |---|---|---|
@@ -184,7 +184,7 @@ saga: storing the decision and the messages it produces happen in one transactio
 | crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by command id |
 | a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it |
 
-So a command is sent **at least once per committed step**, and never for a step that did not commit.
+So a command is sent at least once per committed step, and never for a step that did not commit.
 Key the command's idempotency guard on something stable across re-sends: the command's own identity,
 or the row id. `test_saga.py::test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else`
 (hypothesis) and `crates/edax/tests/saga_model.rs` (proptest) check it over random histories of two
@@ -254,18 +254,19 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 
 Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
 makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. A completed instance folds
-nothing. When nothing was loaded and the fold
-neither keeps state nor sends a command, the write is `nothing`. Otherwise it is `save` or `complete`
-at the loaded version. A versioned write for the `nothing` case would turn a no-op into a write a concurrent
-creator of the same correlation could conflict with.
+nothing. When nothing was loaded and the fold neither keeps state nor sends a command, the write is
+`nothing`. Otherwise it is `save` or `complete` at the loaded version. A versioned write for the
+`nothing` case would turn a no-op into a write that a concurrent creator of the same correlation
+could conflict with.
 
 An explicit `tx` wins over the ambient one in Python, pinned by the `explicit_tx_wins_over_ambient`
 and `ambient_tx_is_joined` cases.
 
 ## Compensation
 
-**The SDK provides no compensation machinery.** There is no `compensate` hook, no reverse-order
-rollback, no failure-branch bookkeeping in `SagaRunner` — its whole body is load, fold, persist.
+The SDK provides no compensation machinery. There is no `compensate` hook, no reverse-order
+rollback, and no failure-branch bookkeeping in `SagaRunner`, whose whole body is load, fold,
+persist.
 
 | Concern | Who owns it |
 |---|---|

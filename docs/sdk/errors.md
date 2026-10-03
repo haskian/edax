@@ -3,9 +3,9 @@
 The error taxonomy is a cross-language contract. One code per kind of failure. One verdict per code.
 Three consumers branch on that verdict.
 
-Every failure the toolkit reports carries a kernel `ErrorCode`. The code carries one decision —
-whether the kind is **terminal** — and no software development kit (SDK) restates it. Terminality
-decides what gets *persisted*: a terminal failure is cached under the idempotency key and replayed
+Every failure the toolkit reports carries a kernel `ErrorCode`. The code carries one decision,
+whether the kind is terminal, and no software development kit (SDK) restates it. Terminality
+decides what gets persisted: a terminal failure is cached under the idempotency key and replayed
 forever after, a transient one releases the claim. Two SDKs may share one ledger and disagree on a
 verdict. One then caches a failure the other would release. That is a durable replay inconsistency.
 
@@ -26,7 +26,7 @@ flowchart LR
 
 ## The table
 
-Rust has **one** error type for the whole toolkit: the kernel's `Error { code: ErrorCode, message }`,
+Rust has one error type for the whole toolkit: the kernel's `Error { code: ErrorCode, message }`,
 re-exported as `edax::Error`. Every kernel function, every store and every SDK error is one of these,
 so a failure renders one way everywhere: `Display` is the wire form `"<code>: <message>"`. A handler
 returns any boxed error (`HandlerError`); a host marks its own business rejection terminal by wrapping
@@ -37,14 +37,14 @@ it in `edax::Terminal`.
 | `Error::concurrency(expected, stored)` | `ConcurrencyError` | `concurrency` | transient | `EventStore.append`, `ProjectionStore.save`, `SagaStore.save` on a version mismatch; a claim on a key another transaction holds | `retry` re-runs; the guard releases the claim; the dispatcher nacks |
 | `Error::codec(..)` | `CodecError` | `codec` | terminal | codecs, every kernel refusal of a value; see below | `retry` gives up at once; the guard caches a `failed` record; the dispatcher dead-letters at once |
 | `Error::store(..)` | `StoreError` | `store` | transient | any backend failure that is not a version conflict; also the Python class for an unknown wire code | `retry` re-runs; the guard releases; the dispatcher nacks |
-| `ErrorCode::AlreadyRegistered` | `AlreadyRegistered` | `already_registered` | terminal | `CommandBus.register`, `EventRouter.register`, the codec registry | nothing at runtime — it is a startup wiring error |
-| `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; `retry` inside an open transaction | the dispatcher dead-letters — retrying cannot rewire the store |
+| `ErrorCode::AlreadyRegistered` | `AlreadyRegistered` | `already_registered` | terminal | `CommandBus.register`, `EventRouter.register`, the codec registry, `Upcaster.step` | nothing at runtime: it is a startup wiring error |
+| `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; a nested `transaction`; `retry` inside an open transaction; a misconfigured store | the dispatcher dead-letters: retrying cannot rewire the store |
 | `ErrorCode::PayloadMismatch` | `PayloadMismatch` | `payload_mismatch` | terminal | the guard, when the key's stored hash differs from this payload's | the dispatcher dead-letters; the guard never re-runs the handler |
-| `ErrorCode::InProgress` | `InProgress` | `in_progress` | transient | the guard, when the winner holds the claim and has not completed | `retry` re-runs; the dispatcher waits one backoff step and nacks **without** burning an attempt |
+| `ErrorCode::InProgress` | `InProgress` | `in_progress` | transient | the guard, when the winner holds the claim and has not completed | `retry` re-runs; the dispatcher waits one backoff step and nacks without spending an attempt |
 | `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal failure, or a stored record no reader can decode (`original_code` `codec`); the message is the original failure's wire form and `original_code` its code | the dispatcher dead-letters instead of redelivering forever |
-| `ErrorCode::HandlerNotFound` | `HandlerNotFound` | `handler_not_found` | terminal | `CommandBus.dispatch` when no handler is registered (or, in Rust, one is registered for another command or result type) | the dispatcher dead-letters — a redelivery finds the same registry |
+| `ErrorCode::HandlerNotFound` | `HandlerNotFound` | `handler_not_found` | terminal | `CommandBus.dispatch` when no handler is registered (or, in Rust, one is registered for another command or result type) | the dispatcher dead-letters: a redelivery finds the same registry |
 | `edax::Terminal(err)` | `Rejected`, or any exception with `terminal = True` | `rejected` | terminal | a host's own business rejection ("insufficient funds") | `retry` gives up at once; the guard caches it as `rejected`; the dispatcher dead-letters |
-| — any other error | any other exception | none | transient (the kernel's default) | host code, a downstream client, a panic | everything treats it as worth retrying |
+| any other error | any other exception | none | transient (the kernel's default) | host code, a downstream client, a panic | everything treats it as worth retrying |
 
 Every row is a code of the kernel; the second column names the constructor where one exists, and
 `Error::new(code, message)` builds any of them.
@@ -69,22 +69,21 @@ Every row is a code of the kernel; the second column names the constructor where
 An `UndecodableDelivery` carries the terminal error and never reaches a handler. With a dead-letter
 sink wired the dispatcher routes it there and acks it, so a payload that will not decode is never
 lost and never crash-loops. Without a sink it nacks after a backoff step and comes back, as every
-dead delivery does — see [consuming.md](./consuming.md). A sink that raises nacks it the same way,
+dead delivery does; see [consuming.md](./consuming.md). A sink that raises nacks it the same way,
 so the redelivery gives the sink another try and the consumer keeps running.
 
 The wire form between the native layer and a binding is `"<code>: <message>"`, always the kernel's
 `Error` rendered as is: no binding call site picks a code. `ErrorCode::tag` builds it.
-`_edax.split_error` takes it apart, with the kernel's verdict attached, and it is the
-only place that does. Python's `errors.from_wire` calls `_edax.split_error` rather than splitting
+`_edax.split_error` takes it apart, with the kernel's verdict attached, and nothing else does. Python's `errors.from_wire` calls `_edax.split_error` rather than splitting
 the string itself. On the Python side `errors.mapped()` re-raises a native `RuntimeError` as its typed
 class. Wrap the native call only: a `TypeError` from host code inside the block would be retyped too.
 
 ## `is_terminal`, and who owns the verdict
 
 The kernel's table is the single source of truth. Each row names a variant, a wire code and a
-verdict. The table is a macro. The variant list, `ErrorCode::ALL`, `ErrorCode::as_str` and
-`ErrorCode::is_terminal` cannot drift. `ErrorCode` is deliberately *not* `#[non_exhaustive]`: a new
-code must be a compile error in every downstream `match` rather than a wildcard's silent default.
+verdict. The table is a macro, so the variant list, `ErrorCode::ALL`, `ErrorCode::as_str` and
+`ErrorCode::is_terminal` cannot drift. `ErrorCode` is not `#[non_exhaustive]`: a new code must be a
+compile error in every downstream `match`, never a wildcard's silent default.
 
 **Rust.** An `edax::Error` carries its code as a field, so there is no mapping to keep in step.
 `command::is_terminal` classifies any boxed handler error by its code: an `edax::Error`'s own,
@@ -134,9 +133,8 @@ colon without a space, an uppercase code, the empty string. No SDK states it for
 reads a string with no code it knows as a `store` failure (`Error::from_wire`). So the class and the
 verdict come from one place, and Python raises `StoreError` for it.
 
-
-Both mistakes cost something, and the costs are not symmetric. Guessing transient and being wrong
-redelivers a genuinely terminal failure forever. That is loud and visible in queue depth. The work
+The two possible mistakes cost different amounts. Guessing transient and being wrong redelivers a
+terminal failure forever. That is loud and visible in queue depth. The work
 is still there once the code is mapped. Guessing terminal and being wrong dead-letters a transient
 blip. The guard also caches a terminal failure under the key, so the record is written as `failed`.
 Re-driving that key afterwards replays `CachedFailure` instead of re-running. That poisons the key
@@ -147,12 +145,12 @@ poisoned key plus lost work is not.
 then silently mislabeled as a concurrency conflict. An operator can still read the code off the log
 line.
 
-
 ### Your own errors are transient unless you say otherwise
 
-The fall-through matters more than it looks. A host error carries no code, so it gets the kernel's
-default. **Every domain error a host defines is therefore transient by default.** Transient is the safe side under at-least-once. A wrong terminal verdict drops work,
-while a wrong transient one only repeats it. It is rarely what a business rule wants.
+A host error carries no code, so it gets the kernel's default. Every domain error a host defines is
+therefore transient by default. Transient is the safe side under at-least-once. A wrong terminal
+verdict drops work, while a wrong transient one only repeats it. It is rarely what a business rule
+wants.
 
 An insufficient balance will not become sufficient by running the handler again. Left transient,
 `retry(3)` re-runs the rule three times. A `KeyOrderedDispatcher` nacks it until `max_attempts`
@@ -189,32 +187,31 @@ terminal. Timeouts, deadlocks, and anything naming a dependency are not.
 
 | Consumer | Terminal | Transient |
 |---|---|---|
-| `retry` | return or re-raise at once, no attempt burned | wait one step of its `Pacing` and run again, up to `attempts` |
+| `retry` | return or re-raise at once, no attempt spent | wait one step of its `Pacing` and run again, up to `attempts` |
 | the guard | write a `failed` record under the key | release the claim so a retry or redelivery re-runs |
-| `KeyOrderedDispatcher` | dead-letter on the **first** failed attempt, whatever `max_attempts` says | nack, until the `max_attempts`-th failed attempt |
+| `KeyOrderedDispatcher` | dead-letter on the first failed attempt, whatever `max_attempts` says | nack, until the `max_attempts`-th failed attempt |
 
 **`retry`.** A terminal error cannot come out differently, so spending attempts and backoff on it
 only delays the real outcome.
 
-**The guard.** This is the verdict's durable consequence. A terminal failure is cached, its code beside
-its message. Every later claimant replays it as `CachedFailure`, whose message is the original wire
-form (`codec: bad payload`). A transient one releases the claim. Two special cases.
-A Python cancellation, a `BaseException`, always releases, because nobody is left to complete that
-claim. A Rust panic also releases and keeps unwinding, because a panic is not a value a record can
-replay faithfully. And when the ledger shares the guard's transaction, a terminal failure is *not*
-cached at all — the record would roll back with everything else. See
-[`./idempotency.md`](./idempotency.md).
+**The guard.** Here the verdict is durable. A terminal failure is cached, its code beside its
+message. Every later claimant replays it as `CachedFailure`, whose message is the original wire form
+(`codec: bad payload`). A transient one releases the claim. Three special cases apply. A Python
+cancellation, a `BaseException`, always releases, because nobody is left to complete that claim. A
+Rust panic also releases and keeps unwinding, because a panic is not a value a record can replay
+faithfully. When the ledger shares the guard's transaction, a terminal failure is not cached at all,
+because the record would roll back with everything else. See [idempotency](./idempotency.md).
 
 **`KeyOrderedDispatcher`.** A terminal error dies on the first failure because retrying only repeats
-it; a transient one is nacked until the attempt ceiling. Two details worth stating:
+it; a transient one is nacked until the attempt ceiling. Two details:
 
-- `InProgress` is **exempt** from the attempt count. See
+- `InProgress` is exempt from the attempt count. See
   [consuming](./consuming.md#inprogress-is-contention-not-a-failed-attempt).
-- A panic is unclassified and therefore transient. A bug on one payload is exactly the poison
-  message the ceiling exists for, but a single panic cannot be told from a transient one.
+- A panic is unclassified and therefore transient. A bug on one payload is the poison message the
+  ceiling exists for, but a single panic cannot be told from a transient one.
 
 **A terminal failure only dead-letters when `on_dead` is set.** Without a sink, a dead delivery
-still nacks after a backoff step. That is never a silent drop. The broker redelivers it. A sink that
+still nacks after a backoff step, and the broker redelivers it. Nothing is dropped. A sink that
 raises nacks the delivery the same way, so the redelivery gives the sink another try.
 `KafkaConsumer.run` requires a sink, because on Kafka a nack rewinds and a dead delivery that keeps
 coming back stalls its partition.
@@ -243,8 +240,8 @@ flowchart TB
     CF --> D
 ```
 
-The loop closes on itself, and that is the point. A terminal failure that reached the ledger comes
-back as `CachedFailure` on the redelivery. That is still terminal. The dispatcher dead-letters it on
+The loop closes on itself. A terminal failure that reached the ledger comes back as `CachedFailure`
+on the redelivery, which is still terminal. The dispatcher dead-letters it on
 its first attempt rather than nacking forever. A transient failure released the claim, so the
 redelivery re-runs the handler for real.
 
@@ -264,11 +261,11 @@ in the kernel's declaration order, with four fields.
 
 It pins three things:
 
-1. **The code set and its order.** Ten codes today: `concurrency`, `codec`, `store`,
+1. The code set and its order. Ten codes today: `concurrency`, `codec`, `store`,
    `payload_mismatch`, `in_progress`, `cached_failure`, `handler_not_found`, `already_registered`,
    `bad_handle`, `rejected`. New codes append, so an existing row's position never moves.
-2. **The verdict per code**, which is what an idempotency guard persists on.
-3. **The `"<code>: <message>"` framing** every binding parses, with a realistic message per code.
+2. The verdict per code, which is what an idempotency guard persists on.
+3. The `"<code>: <message>"` framing every binding parses, with a realistic message per code.
 
 It is generated from `ErrorCode::ALL` and checked from three sides. The flat application binary
 interface (ABI) asserts that `error_codes()` and `error_code_is_terminal` are the kernel's own. The

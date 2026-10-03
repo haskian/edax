@@ -358,7 +358,7 @@ fn a_crash_replay_of_committed_steps_is_one_of_the_histories() {
 #[test]
 fn the_reviewers_race_is_one_of_the_histories() {
     // Both workers read the fresh instance, the first commits, the second's stale write conflicts and
-    // is redelivered: the E4 interleaving, pinned so a shrink never loses it.
+    // is redelivered: the stale-write interleaving, pinned so a shrink never loses it.
     check(vec![
         Op::Load(0),
         Op::Load(1),

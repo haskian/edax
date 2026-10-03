@@ -174,7 +174,7 @@ class RunCase:
             id="cancelled_while_polling_stops_the_loop",
         ),
         # Queue of one that nobody drains: the second submit parks, so the cancel lands with the
-        # delivery polled but unsettled — the case that used to drop it.
+        # delivery polled but unsettled, and it must be nacked rather than dropped.
         pytest.param(
             RunCase(["d", "d"], True, [], ["nack"], False, [], max_queue=1, start=False),
             id="cancelled_between_poll_and_submit_nacks_the_delivery",
@@ -187,7 +187,7 @@ class RunCase:
             RunCase(["poison", None], False, [], ["nack"], True, [], on_dead=False, slept=[0]),
             id="undecodable_without_a_hook_is_nacked_after_a_backoff_step_never_dropped",
         ),
-        # 05#F2: a DLQ outage must not stop the consumer, and must not leave the poison unsettled for a
+        # A DLQ outage must not stop the consumer, and must not leave the poison unsettled for a
         # redelivery no log-based broker makes. It nacks after a backoff step, so the sink gets another
         # try, and the loop goes on.
         pytest.param(
@@ -203,7 +203,7 @@ class RunCase:
             ),
             id="undecodable_with_a_raising_sink_is_nacked_and_the_loop_continues",
         ),
-        # 05#F8: a transient poll failure (a middleware's key service) waits a growing step and polls again.
+        # A transient poll failure (a middleware's key service) waits a growing step and polls again.
         pytest.param(
             RunCase(["fail", "fail", "d", None], False, [1], ["ack"], True, [], slept=[0, 1]),
             id="a_transient_poll_failure_backs_off_and_the_loop_continues",
@@ -299,7 +299,7 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
 step = st.tuples(st.integers(0, 2), st.integers(1, 3), st.integers(1, 4))  # (agg, n events, drain limit)
 
 
-# the fixture is a factory, so a shared fixture value across examples is exactly what we want
+# the fixture is a factory, so one fixture value shared across examples is intended
 @settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(st.lists(step, min_size=1, max_size=10))
 def test_drain_history_reaches_consumer_in_key_order(
@@ -490,9 +490,9 @@ def test_a_memory_broker_needs_a_partition() -> None:
 
 
 async def test_the_memory_broker_reproduces_kafkas_seek_back() -> None:
-    """04#F3 (reviewer's broker_divergence.py): nack a-1 after a-2 was polled and acked. A queue requeued
-    a-1 alone, behind a-2; Kafka seeks back and redelivers a-1 *and* the acked a-2. The memory broker now
-    does what Kafka does, so a handler that cannot take the duplicate fails here first."""
+    """Nack a-1 after a-2 was polled and acked. A queue requeues a-1 alone, behind a-2; Kafka seeks back
+    and redelivers a-1 *and* the acked a-2. The memory broker does what Kafka does, so a handler that
+    cannot take the duplicate fails here first."""
     broker = MemoryBroker()
     for seq in (1, 2):
         await broker.publish(build_envelope("a", "Deposited", seq, id=f"a-{seq}"))

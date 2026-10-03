@@ -4,10 +4,9 @@ A packaged suite is handed an adopter's store and has no idea what class it is, 
 *delegates*: it wraps the object it was given and forwards every call, and the same fault lands on Postgres,
 Redis or a hand-rolled store without any of them knowing.
 
-The fault that matters most is the lost response: the write reached the database and committed, and the reply
-did not come back. A caller cannot tell that from a write that never landed, which is why every seam in
-``edax`` is specified to be safe under a retry. A suite that only tests clean failures never exercises the
-half of the contract that costs money.
+The main fault is the lost response: the write reached the database and committed, and the reply did not
+come back. A caller cannot tell that from a write that never landed, so every seam in ``edax`` is specified
+to be safe under a retry. A suite that tests only clean failures never runs that half of the contract.
 
 - :class:`LostResponse` lands a call, then raises as though its reply was lost; ``"commit"`` loses the reply
   of a whole unit of work, the only place a transactional write can land and still fail.
@@ -61,7 +60,7 @@ class LostResponse(_Delegating):
     it was, because the caller never heard the new one.
 
     ``store = LostResponse(real); store.arm("append")`` then asserts what a redelivery does about an append
-    that already succeeded — the window every at-least-once guarantee is written against."""
+    that already succeeded."""
 
     def __init__(self, inner: Any) -> None:
         super().__init__(inner)
@@ -145,9 +144,9 @@ CommitFault = Literal["nothing_landed", "lost_response"] | None
 class BrokenCommit:
     """A :class:`~edax.store.Transactor` whose commit fails, in the two ways that differ.
 
-    ``"nothing_landed"`` rolls the unit of work back and raises: the classic failed commit.
+    ``"nothing_landed"`` rolls the unit of work back and raises: a plain failed commit.
     ``"lost_response"`` commits and *then* raises. They assert opposite things: the first lets a redelivery
-    re-run once, the second releases a claim over work that **did** land, so a redelivery runs it twice on a
+    re-run once, the second releases a claim over work that *did* land, so a redelivery runs it twice on a
     ledger of its own. ``arm`` is settable per unit of work, so one rig can drive a whole history. Its
     ``transactor`` is the wrapped one, so stores over that database find the units of work this opens."""
 

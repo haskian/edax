@@ -137,9 +137,9 @@ def rig_kind(request: Any) -> str:
     return request.param
 
 
-#: The reviewer's E1, spelled out so every run checks it: seq 2 is queued behind seq 1, seq 1 fails, and
-#: the seq 2 copy must not run before the redelivered seq 1.
-E1 = [
+#: Spelled out so every run checks it: seq 2 is queued behind seq 1, seq 1 fails, and the seq 2 copy
+#: must not run before the redelivered seq 1.
+NACK_BEHIND_A_QUEUED_COPY = [
     ("publish", 0),
     ("publish", 0),
     ("poll", 0),
@@ -163,7 +163,7 @@ CRASH = [
 
 @settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(partitions=st.integers(1, 3), ops=st.lists(op, min_size=8, max_size=80))
-@example(partitions=1, ops=E1)
+@example(partitions=1, ops=NACK_BEHIND_A_QUEUED_COPY)
 @example(partitions=2, ops=CRASH)
 def test_every_message_is_processed_once_in_key_order_whatever_the_faults(
     rig_kind: str, partitions: int, ops: list[tuple[Any, ...]]

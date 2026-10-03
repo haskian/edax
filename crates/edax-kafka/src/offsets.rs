@@ -6,11 +6,10 @@
 //! [`OffsetTracker::due`] lists the watermarks not yet committed, so a shell commits them in one
 //! batch on its own schedule instead of one round trip per ack.
 //!
-//! Settlement is by token, the [`MemoryBroker`](https://docs.rs/edax-memory) precedent, not by
-//! `(partition, offset)`. That closes the stale-settle hole a key of coordinates leaves open:
-//! revoke a partition, reset it, get it assigned back, re-book offset 5, and the pre-revoke ack for
-//! 5 would otherwise discard the fresh booking. A token names one delivery for the tracker's whole
-//! life, so the stale one settles nothing.
+//! Settlement is by token, not by `(partition, offset)`. That closes the stale-settle hole a key of
+//! coordinates leaves open: revoke a partition, reset it, get it assigned back, re-book offset 5,
+//! and the pre-revoke ack for 5 would otherwise discard the fresh booking. A token names one
+//! delivery for the tracker's whole life, so the stale one settles nothing.
 //!
 //! A nack *rewinds the partition*. The shell seeks the partition's one fetch position back to the
 //! lowest offset in flight, so every booking at or above it is fetched again. The copies already
@@ -141,8 +140,7 @@ struct Inner {
     /// Live tokens only. A token leaves on ack, on re-booking of its offset, on a nack of any offset
     /// in its partition, and on reset of its partition; from then on it is stale and settles nothing.
     bookings: HashMap<i64, Booking>,
-    /// This tracker's own token mint. The in-memory broker numbers its deliveries with a mint of the
-    /// same type, not this one.
+    /// This tracker's own token mint: a token settles only on the tracker that issued it.
     tokens: TokenMint,
 }
 
@@ -238,7 +236,7 @@ impl OffsetTracker {
 
     /// The watermark of every partition whose watermark is higher than the last one committed,
     /// ordered by topic then partition. The shell commits them in one call and reports each back
-    /// with [`committed`](Self::committed); a commit that failed is simply due again next time.
+    /// with [`committed`](Self::committed); a commit that failed is due again next time.
     pub fn due(&self) -> Vec<Due> {
         lock(&self.state)
             .topics

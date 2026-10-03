@@ -1,8 +1,8 @@
 """The SDK's one encoder from host values to the JSON text the kernel reads, and back.
 
-msgspec, the encoder the command hash already uses, so a value that hashes in a command also works in a
-filter, a query, a projection document and a saga state: ``datetime``, ``UUID``, ``Decimal``, dataclasses
-and Structs all encode, deterministically. Every failure is deterministic, so it is a terminal
+It uses msgspec, the encoder the command hash already uses, so a value that hashes in a command also
+works in a filter, a query, a projection document and a saga state: ``datetime``, ``UUID``, ``Decimal``,
+dataclasses and Structs all encode, deterministically. Every failure is deterministic, so it is a terminal
 :class:`~edax.errors.CodecError`, never a bare ``TypeError`` a retry or a dispatcher would read as transient.
 
 msgspec writes ``NaN`` and the infinities as ``null``: JSON has no form for them, and the kernel would refuse

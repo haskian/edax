@@ -131,8 +131,8 @@ fn is_bad_handle(error: &HandlerError) -> bool {
 
 #[test]
 fn retry_refuses_to_run_inside_a_host_transaction() {
-    // Before the refusal, both wirings committed a balance of 200 for one deposit of 100: attempt 2
-    // re-read attempt 1's staged write and applied the deposit on top of it.
+    // Without the refusal, both wirings would commit a balance of 200 for one deposit of 100: attempt
+    // 2 re-reads attempt 1's staged write and applies the deposit on top of it.
     struct Case {
         name: &'static str,
         retry_outside_the_guard: bool,

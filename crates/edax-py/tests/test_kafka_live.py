@@ -172,7 +172,7 @@ class Member:
 async def test_a_nack_on_a_real_fetcher_keeps_the_key_in_order(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
-    """05#F1 live: seq 1 fails once while seq 2 and 3 are already fetched. The seek-back redelivers them
+    """Live: seq 1 fails once while seq 2 and 3 are already fetched. The seek-back redelivers them
     behind seq 1, the copies fetched before it are skipped, and the staleness guard loses nothing."""
     name = await topic(1)
     await publish_all(
@@ -280,7 +280,7 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
 async def test_a_member_joining_mid_batch_drains_the_revoked_work_first(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
-    """05#F5 live: a second member joins while the first is mid-batch. The first one's listener drains its
+    """Live: a second member joins while the first is mid-batch. The first one's listener drains its
     in-flight work and commits before the partitions move, so no key is handled by two members at once, no
     commit moves a partition back, and every message is handled."""
     name, group = await topic(4), f"g-{uuid.uuid4().hex[:8]}"
@@ -334,7 +334,7 @@ async def test_a_member_joining_mid_batch_drains_the_revoked_work_first(
 async def test_a_raising_sink_gets_another_try_and_the_partition_drains(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
-    """05#F2 live: the sink raises once. The delivery is nacked, sought back, dead-lettered on the next try,
+    """Live: the sink raises once. The delivery is nacked, sought back, dead-lettered on the next try,
     and the partition's commit reaches its end."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await publish_all(
@@ -364,8 +364,8 @@ async def test_a_raising_sink_gets_another_try_and_the_partition_drains(
 async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
-    """05#F3 live: with a sink that keeps failing, a poison record is retried at the backoff schedule's rate
-    — a handful a second, against tens of thousands before — and a run with no sink is refused outright."""
+    """Live: with a sink that keeps failing, a poison record is retried at the backoff schedule's rate, a
+    handful a second rather than tens of thousands, and a run with no sink is refused outright."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await producer.send_and_wait(
         name, b"\xff\xfe not an envelope", key=b"a", headers=[("content-type", b"application/x-nobody")]
@@ -395,7 +395,7 @@ async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
 async def test_a_frozen_broker_costs_a_commit_its_deadline_not_the_run(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
-    """05#F9 live: the broker is frozen (``docker pause``) while commits are due. Each flush gives up at its
+    """Live: the broker is frozen (``docker pause``) while commits are due. Each flush gives up at its
     deadline instead of waiting on aiokafka's own retry loop, the run stops on time, and once the broker
     is back the same watermark commits."""
     _needs_container()
@@ -457,7 +457,7 @@ async def _wait_for_flush(consumer: KafkaConsumer, limit: float) -> None:
 
 
 async def test_a_broker_restart_during_publishes_loses_nothing_acked(topic: Any) -> None:
-    """05#F4 live: the broker restarts while the outbox publishes. With ``enable_idempotence=True`` (so
+    """Live: the broker restarts while the outbox publishes. With ``enable_idempotence=True`` (so
     ``acks="all"``) every publish that returned is on the log afterwards; a publish that raised is retried,
     as the relay retries a batch it could not mark."""
     _needs_container()

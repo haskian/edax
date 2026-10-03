@@ -498,7 +498,7 @@ def test_registry_is_validated_at_construction(
             "upcasting Deposited v3->v2",
         ),
         # The same newer writer for a name with no upcaster: still the kernel's refusal, never a silent
-        # decode that drops the fields this reader does not know (02#F2).
+        # decode that drops the fields this reader does not know.
         (
             "newer_version_without_upcaster",
             {},
@@ -699,7 +699,7 @@ _ENV = _edax.EventEnvelope("evt-1", "agg-1", _edax.Event("Opened", 1, b"{}"), {}
 @pytest.mark.parametrize(
     "branch, call",
     [
-        # The two kernel errors that used to cross untagged and read as transient.
+        # Two kernel errors that would read as transient if they crossed untagged.
         ("sequence_batch_gap", lambda: _edax.check_sequence_batch(0, [2])),
         ("unknown_error_code", lambda: _edax.error_code_is_terminal("timeout")),
         # Integer range at the boundary.
@@ -728,8 +728,8 @@ _ENV = _edax.EventEnvelope("evt-1", "agg-1", _edax.Event("Opened", 1, b"{}"), {}
     ],
 )
 def test_every_deterministic_boundary_failure_is_terminal(branch: str, call: Callable[[], Any]) -> None:
-    """08#F3's table, row by row: whatever the native call refuses — a kernel `codec:` error, or an
-    argument the binding cannot convert — reaches the host as the terminal CodecError inside
+    """Row by row: whatever the native call refuses (a kernel `codec:` error, or an argument the binding
+    cannot convert) reaches the host as the terminal CodecError inside
     `mapped()`, so retry, the guard and the dispatcher stop instead of looping on it."""
     with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
         call()
@@ -758,7 +758,7 @@ BAD_OP = {"compare": {"path": "status", "op": "no_such_op", "value": "settled"}}
         ("matches_rejects_an_unknown_filter_op", lambda: edax.filter.matches(BAD_OP, ACCOUNT_ROW)),
         (
             "encode_cursor_rejects_a_malformed_sort_key",
-            # The checker now refuses this too; the run-time refusal is what the row pins.
+            # A type checker refuses this too; the row pins the run-time refusal.
             lambda: Q.encode_cursor(ACCOUNT_ROW, [{"desc": True}]),  # type: ignore[typeddict-item]  # ty: ignore[missing-typed-dict-key, invalid-argument-type]
         ),
     ],
