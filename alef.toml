@@ -23,7 +23,7 @@
 
 [workspace]
 languages = ["python"]
-alef_version = "0.86.0"
+alef_version = "0.103.12"
 
 [[crates]]
 name = "edax-abi"

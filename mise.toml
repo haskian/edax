@@ -10,8 +10,10 @@ idiomatic_version_file_enable_tools = ["rust"]
 uv = "latest"
 "cargo:maturin" = "1.14.0"
 # alef generates `crates/edax-py/src/lib.rs` and the `_edax.pyi` stub from `edax-abi`; pinned to the
-# version `alef.toml` declares, so a regeneration here matches CI's freshness check.
-"cargo:alef" = "0.86.0"
+# version `alef.toml` declares, so a regeneration here matches CI's freshness check. It comes from
+# the prebuilt GitHub release binary. A `cargo:` install compiles it beside maturin, and the two
+# parallel builds race on the same rustup download, which broke CI setup.
+"github:xberg-io/alef" = "0.103.12"
 "aqua:cocogitto/cocogitto" = "7.0.0"  # `cog`: conventional-commit version bumps in CI
 "aqua:astral-sh/ruff" = "0.16.7"
 "aqua:astral-sh/ty" = "0.0.80"

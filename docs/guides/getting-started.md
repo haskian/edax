@@ -23,7 +23,7 @@ flowchart LR
 mise install          # once per checkout; `mise trust` first if mise refuses the config
 ```
 
-`mise.toml` pins `uv`, `maturin`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
+`mise.toml` pins `uv`, `maturin`, `alef`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
 from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file (see
 the comment at the top of `mise.toml`). Pinning Rust in both places overrides that file and drops
 `clippy` with no warning.

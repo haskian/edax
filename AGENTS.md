@@ -11,7 +11,8 @@ Supported binding is **Python** (`crates/edax-py`). Kernels + reference Rust SDK
 
 `cargo` / `maturin` / `uv` / `alef` aren't on `PATH` — prefix with `mise exec --` (run `mise install`
 once on a fresh checkout; `mise trust` if it complains). `mise.toml` pins alef to the `alef_version` in
-`alef.toml`; the first `mise install` compiles it.
+`alef.toml` and installs its prebuilt GitHub release binary. Never switch it back to `cargo:alef`:
+two parallel `cargo:` builds race on the same rustup download and break `mise install`.
 
 ## Build & test
 
