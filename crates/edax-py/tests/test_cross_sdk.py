@@ -91,15 +91,14 @@ def test_a_python_int_matches_the_rust_float_for_the_golden_command() -> None:
 
 @pytest.mark.parametrize("case", golden("event_idempotency.json"), ids=lambda c: c["name"])
 def test_the_event_guard_claims_the_kernels_key_and_hash(case: dict[str, Any]) -> None:
-    env = build_envelope("acct-1", "Deposited", 3)
-    env = edax.EventEnvelope(
+    env = build_envelope(
+        "acct-1",
+        "Deposited",
+        3,
         id=case["id"],
-        aggregate_id=env.aggregate_id,
-        event=edax.Event("Deposited", 1, bytes.fromhex(case["data_hex"])),
-        namespace={},
+        data=bytes.fromhex(case["data_hex"]),
         metadata=case["metadata"],
         timestamp=case["timestamp"],
-        sequence=3,
     )
     rule = _edax.event_idempotency(env)
     assert (rule.key, rule.payload_hash) == (case["key"], case["payload_hash"])
@@ -201,15 +200,7 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
     dispatcher.start()
     # The event guard hashes the raw body: `cmd-a` is the body the Rust row's hash was taken over.
-    env = edax.EventEnvelope(
-        id="evt-1",
-        aggregate_id="acct-1",
-        event=edax.Event("Deposited", 1, b"cmd-a"),
-        namespace={},
-        metadata={},
-        timestamp=0,
-        sequence=1,
-    )
+    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     settled: list[str] = []
     await dispatcher.submit(edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack")))
     await dispatcher._queues[0].join()
@@ -233,15 +224,7 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
         raise edax.Rejected("insufficient funds: balance 300, withdrawal 500")
 
     guarded = edax.idempotent_by_id(ledger)(handler)
-    env = edax.EventEnvelope(
-        id="evt-1",
-        aggregate_id="acct-1",
-        event=edax.Event("Deposited", 1, b"cmd-a"),
-        namespace={},
-        metadata={},
-        timestamp=0,
-        sequence=1,
-    )
+    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     with pytest.raises(edax.Rejected):
         await maybe_await(guarded(env))
     prior = await ledger.claim("evt-1", rust.payload_hash)

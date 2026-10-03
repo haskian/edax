@@ -18,6 +18,7 @@ from conftest import (
     CounterCodec,
     CreateUser,
     FakeKafkaClient,
+    Recording,
     RefusingLedger,
     Tick,
     TickEvents,
@@ -31,54 +32,9 @@ from edax._async import maybe_await
 from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.broker import UndecodableDelivery, _ConsumerLoop
-from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS, _wrap, timing
+from edax.observe import _wrap, timing
 from edax.store import transaction
 from edax.testing.faults import BrokenCommit
-
-
-class Recording(edax.Observer):
-    """Every hook appends its arguments, so a case asserts the exact rows a branch emitted. Each
-    outcome string is checked against the published vocabulary, so an emitter cannot drift from it."""
-
-    def __init__(self) -> None:
-        self.claims: list[tuple[str, str]] = []  # (name, verdict)
-        self.settlements: list[tuple[str, str, int]] = []  # (name, how, duration_ns)
-        self.deliveries: list[tuple[str, str, int, int, str | None]] = []
-        self.settlement_failures: list[tuple[str, str, type[BaseException]]] = []
-        self.transactions: list[tuple[str, int]] = []
-        self.drains: list[tuple[int, int, int | None]] = []
-        self.drain_failures: list[type[BaseException]] = []
-        self.undecodables: list[tuple[str, type[BaseException]]] = []
-
-    def claim(self, name: str, verdict: str) -> None:
-        assert verdict in CLAIM_VERDICTS, verdict
-        self.claims.append((name, verdict))
-
-    def settled(self, name: str, how: str, duration_ns: int) -> None:
-        assert how in SETTLEMENTS, how
-        self.settlements.append((name, how, duration_ns))
-
-    def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
-    ) -> None:
-        assert outcome in DELIVERY_OUTCOMES, outcome
-        self.deliveries.append((name, outcome, attempt, duration_ns, error_type))
-
-    def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
-        self.settlement_failures.append((name, event_id, type(error)))
-
-    def transaction(self, outcome: str, duration_ns: int) -> None:
-        assert outcome in TRANSACTIONS, outcome
-        self.transactions.append((outcome, duration_ns))
-
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        self.drains.append((published, duration_ns, oldest_timestamp))
-
-    def drain_failed(self, error: BaseException) -> None:
-        self.drain_failures.append(type(error))
-
-    def undecodable(self, message_id: str, error: BaseException) -> None:
-        self.undecodables.append((message_id, type(error)))
 
 
 def _boom(*args: object) -> None:

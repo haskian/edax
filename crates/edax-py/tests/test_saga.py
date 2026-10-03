@@ -13,19 +13,13 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import FlakySagaStore, build_envelope
+from conftest import NO_WAIT, build_envelope
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
 from edax.saga import Completed, SagaCommand, SagaRunner
 from edax.store import Tx, current_tx
+from edax.testing.faults import LostResponse
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-
-
-async def _no_sleep(seconds: float) -> None:
-    pass
-
-
-NO_WAIT = edax.Pacing(sleep=_no_sleep)
 
 
 def env(aggregate_id: str, name: str, order_id: str = "order-7") -> edax.EventEnvelope:
@@ -308,7 +302,7 @@ async def test_a_lost_write_response_converges_on_redelivery(lost: str) -> None:
     # The write lands, then the runner sees a StoreError as if it hadn't. The redelivery reads what
     # landed, so it never repeats the step: a lost `complete` finds the tombstone, a lost `save` folds the
     # advanced state. Either way the command committed once and is sent once.
-    store = FlakySagaStore()
+    store: Any = LostResponse(MemorySagaStore())
     run = runner(store)
     if lost == "save":
         store.arm("save")

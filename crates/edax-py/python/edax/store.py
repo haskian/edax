@@ -321,9 +321,10 @@ class Repository(Generic[A]):
     transaction and nothing ever nests.
 
     ``snapshot_every`` is how often a save writes a snapshot: each time the aggregate's version crosses a
-    multiple of it, so ``1`` (the default) snapshots on every save and ``0`` never does. A snapshot is a
-    cache that doubles the writes of the save that takes it; a stream that is cheap to replay wants a
-    larger interval. A value below ``0`` raises :class:`ValueError`.
+    multiple of it, so ``1`` (the default) snapshots on every save and ``0`` never does; the kernel's
+    rule, pinned by ``testdata/golden/snapshot_due.json``. A snapshot is a cache that doubles the writes
+    of the save that takes it; a stream that is cheap to replay wants a larger interval. A value below
+    ``0`` raises :class:`ValueError`.
 
     ``observer`` receives one :meth:`~edax.observe.Observer.transaction` per unit of work the repository
     opens itself. A call that joined the caller's ``tx`` reports nothing; that caller's :func:`transaction`
@@ -383,12 +384,6 @@ class Repository(Generic[A]):
             agg.version = Version(base + len(envs))
             return agg
 
-    def _snapshot_due(self, initial: int, current: int) -> bool:
-        """Whether a save from ``initial`` to ``current`` crosses a multiple of ``snapshot_every``; a save
-        with nothing pending crosses none."""
-        every = self._snapshot_every
-        return every > 0 and current // every > initial // every
-
     def _from_snapshot(self, aggregate_id: str, snap: Snapshot | None) -> tuple[int, A] | None:
         """The aggregate rebuilt from ``snap`` and the version it stands at, or ``None`` to replay from 0."""
         if snap is None:
@@ -443,7 +438,7 @@ class Repository(Generic[A]):
             ]
         async with self._enlist(tx) as tx:
             await self._store.append(tx, aggregate.id, initial, envs)
-            if self._snapshot_due(initial, current):
+            if _edax.snapshot_due(self._snapshot_every, initial, current):
                 snapshot = Snapshot(
                     aggregate.id, self._aggregates.type, current, self._aggregates.dump(aggregate)
                 )
@@ -512,9 +507,10 @@ class Relay:
         self._publish = publish
         self._observer = _wrap(observer)
         self._on_dead = on_dead
-        self._max_attempts = max_attempts
         self._pacing = pacing or Pacing()
-        self._retries: ThreadBound[_edax.Retries] | None = None
+        # The kernel's retry policy, built on first use on the loop's thread: the native handle is bound
+        # to the thread that builds it, and a relay may be built on another.
+        self._retries = ThreadBound.lazy(lambda: _edax.retries(max_attempts, on_dead is not None), "Relay")
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
@@ -523,14 +519,6 @@ class Relay:
         self._store_failures = 0
         #: The last completed drain, ``None`` until the first one finishes. A drain that raised leaves it.
         self.last: DrainStats | None = None
-
-    def _policy(self) -> _edax.Retries:
-        """The kernel's retry policy, built on first use on the loop's thread: the native handle is bound
-        to the thread that builds it, and a relay may be built on another."""
-        if self._retries is None:
-            sink = self._on_dead is not None
-            self._retries = ThreadBound(_edax.retries(self._max_attempts, sink), "Relay")
-        return self._retries.get()
 
     async def drain(self, batch: int = 100) -> int:
         """Publish one batch; return how many rows it settled, published or dead-lettered. Concurrent calls
@@ -566,17 +554,14 @@ class Relay:
         A failed drain, a row's or the store's, has already waited its backoff step and reported
         :meth:`~edax.observe.Observer.drain_failed`, so the loop logs it and drains again: one bad row or a
         store that is down never ends the relay, and never spins the event loop. A cancel ends it at once."""
-        while stop is None or not stop.is_set():
+        stop = stop or asyncio.Event()  # with none given, nothing sets it: a cancel ends the loop
+        while not stop.is_set():
             try:
                 settled = await self.drain(batch)
             except Exception:
                 logger.warning("edax relay: drain failed; the next drain retries it", exc_info=True)
                 continue
-            if settled:
-                continue
-            if stop is None:
-                await asyncio.sleep(idle_s)
-            else:
+            if not settled:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop.wait(), idle_s)
 
@@ -585,7 +570,7 @@ class Relay:
     ) -> tuple[list[str], int, int, tuple[int, Exception] | None]:
         """Publish ``rows`` until one fails. Returns the ids of the rows settled, how many were published and
         dead-lettered, and the failed row's backoff step and error, if one failed."""
-        policy = self._policy()
+        policy = self._retries.get()
         settled: list[str] = []
         published = dead = 0
         for row in rows:
@@ -609,20 +594,30 @@ class Relay:
         verdict = policy.failed(row.id, 0, _carried_code(error))
         if not verdict.dead:
             return verdict.step
-        logger.warning(
-            "edax relay: dead-lettering outbox row %s after %d attempt(s)", row.id, verdict.attempt
-        )
         # The kernel answers `dead` only to a policy built with a sink, so a dead verdict means one is set.
         on_dead = cast("RelaySink", self._on_dead)
-        try:
-            await maybe_await(on_dead(row, error))
-        except Exception:
-            logger.exception(
-                "edax relay: the dead-letter sink failed for %s; the next drain retries it", row.id
-            )
-            return policy.sink_failed(row.id, verdict.attempt)
-        policy.dead_lettered(row.id)
-        return None
+        return await _dead_letter(logger, policy, row.id, verdict.attempt, lambda: on_dead(row, error))
+
+
+async def _dead_letter(
+    log: logging.Logger,
+    policy: _edax.Retries,
+    row_id: str,
+    attempt: int,
+    sink: Callable[[], MaybeAwaitable[None]],
+) -> int | None:
+    """Hand a row the kernel's ``policy`` declared dead at ``attempt`` to its ``sink``: ``None`` once the
+    sink took it and the policy forgot it, else the backoff step to wait before handing it back. A sink
+    that raises keeps the attempt, so the next try reaches the sink again with a longer wait. The one sink
+    protocol of the :class:`Relay` and the :class:`~edax.dispatcher.KeyOrderedDispatcher`."""
+    log.warning("edax: dead-lettering %s after %d attempt(s)", row_id, attempt)
+    try:
+        await maybe_await(sink())
+    except Exception:
+        log.exception("edax: the dead-letter sink failed for %s; handing it back for another try", row_id)
+        return policy.sink_failed(row_id, attempt)
+    policy.dead_lettered(row_id)
+    return None
 
 
 async def pump(source: AsyncIterable[EventEnvelope], publish: Publish) -> int:

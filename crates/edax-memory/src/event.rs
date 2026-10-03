@@ -15,14 +15,11 @@ fn refuse_known_ids(
     own: &WriteSet,
     events: &[edax_event::EventEnvelope],
 ) -> Result<(), Error> {
-    let staged = |set: &WriteSet, id: &str| set.streams.values().flatten().any(|e| e.id == id);
-    let mut batch: HashSet<&str> = HashSet::new();
+    // Every staged id once, then the batch's own: a batch id already in the set is a repeat.
+    let mut known: HashSet<&str> =
+        std::iter::once(own).chain(others.values()).flat_map(|set| set.streams.values().flatten()).map(|e| e.id.as_str()).collect();
     for env in events {
-        let known = committed.event_ids.contains(&env.id)
-            || staged(own, &env.id)
-            || others.values().any(|set| staged(set, &env.id))
-            || !batch.insert(env.id.as_str());
-        if known {
+        if committed.event_ids.contains(&env.id) || !known.insert(env.id.as_str()) {
             return Err(Error::codec(format_args!("envelope id {} is already stored", env.id)));
         }
     }

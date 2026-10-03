@@ -18,16 +18,19 @@ it and the TTL values it was configured with.
 
 `ledger_key(prefix, key)` is `{prefix}{key}` as UTF-8 bytes. Two SDKs that composed it differently
 would never meet on one ledger, and nothing would fail: both would run every command. So the
-composition is the kernel's, not each SDK's. `check_prefix` refuses an empty prefix, which would put
-every service sharing a Redis into one key space.
+composition is the kernel's, not each SDK's. An empty prefix is refused, because it would put every
+service sharing a Redis into one key space.
 
 No separator is added, so concatenation is not injective: prefix `billing:` with key `prod:x` is the
 key prefix `billing:prod:` gives `x`. Distinct services take prefixes neither of which starts with
 the other.
 
-`check_ttl(name, ttl_ms)` refuses a TTL outside 1 to 2^53 - 1 milliseconds, the largest integer
-every SDK language's number type holds exactly. Redis refuses a zero or negative TTL on every write,
-so a store checks its TTLs when it is built. Both refusals are a terminal `bad_handle` error.
+`check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)` refuses the settings a store
+is built with. It refuses an empty prefix, and a TTL outside 1 to 2^53 - 1 milliseconds: the largest
+integer every SDK language's number type holds exactly. It refuses a deadline that is not positive.
+It refuses a heartbeat over a claim TTL too short to renew `HEARTBEATS_PER_TTL` (3) times. Redis refuses a zero or negative TTL
+on every write, so a store checks its settings when it is built. Every refusal is a terminal
+`bad_handle` error.
 
 ## The value
 
@@ -163,7 +166,7 @@ output (I/O):
 | File | Case shape | What it pins |
 |---|---|---|
 | `redis_value.json` | `name`, `op`, the operands, `value` or `want` | `claim`, `settled` and `split`: a pending claim, a hash at both `u64` ends, a cached success and failure, a non-ASCII result, and every `split_value` branch |
-| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `ttl`, `handle`, `outcome` and `reply`: every refusal and every outcome row above |
+| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `config`, `handle`, `outcome` and `reply`: every refusal and every outcome row above |
 | `redis_scripts.json` | `name`, `body` | the four Lua bodies verbatim, so every SDK's `EVALSHA` digest matches |
 | `redis_fence.json` | `name`, `initial`, `script`, `args`, `want_reply`, `want_value`, `want_ttl_ms` | what each script does to a key, including a lost reply re-sent, a takeover, and malformed handles |
 
@@ -175,12 +178,12 @@ values in the old layout, and clients already cache the old digests.
 
 | | Rust | Python |
 |---|---|---|
-| the key | `ledger_key`, `check_prefix` | `_edax.redis_ledger_key`, `_edax.redis_check_prefix` |
-| a setting | `check_ttl` | `_edax.redis_check_ttl` |
-| a claim value | `new_claim`, `claim_value` | `_edax.redis_new_claim`, `_edax.redis_claim_value` |
+| the key | `ledger_key` | `_edax.redis_ledger_key` |
+| the settings | `check_config` | `_edax.redis_check_config`, `_edax.redis_heartbeats_per_ttl` |
+| a claim value | `new_claim`, `claim_value` (fixed owner, a test hook) | `_edax.redis_new_claim` |
 | a settled value | `settled_value`, `check_claim` | `_edax.redis_settled_value`, `_edax.redis_check_claim` |
-| read one back | `split_value`, `claim_outcome` | `_edax.redis_split_value`, `_edax.redis_claim_outcome` |
-| the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_claim_script()` and the three siblings |
+| read one back | `split_value`, `claim_outcome` | `_edax.redis_claim_outcome` |
+| the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_scripts()`, one field each |
 | a reply error | `reply_error` | `_edax.redis_reply_error` |
 
 The Rust SDK ships the kernel and no client shell. The Redis ledger lives in the Python SDK:

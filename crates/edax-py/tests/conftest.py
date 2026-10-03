@@ -4,19 +4,20 @@ The fault wrappers themselves ship in :mod:`edax.testing.faults`, where an adopt
 ones: :class:`~edax.testing.faults.LostResponse` lands a write and loses its reply (``"commit"`` loses a whole
 unit of work's), :class:`~edax.testing.faults.Refusing` refuses one, :class:`~edax.testing.faults.BrokenCommit`
 fails a commit either way, :class:`~edax.testing.faults.LostReply` loses one Redis script's reply. The
-``Flaky*`` factories here are those wrappers over the memory stores.
+tests wrap a store in them directly.
 """
 
 import asyncio
 import json
 import os
 import types
+import uuid
 from collections import defaultdict, namedtuple
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 import aiokafka
@@ -27,15 +28,14 @@ import pytest
 import redis.asyncio
 import redis.exceptions
 from aiokafka import TopicPartition
+from edax import _edax
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
-    MemoryEventStore,
     MemoryIdempotencyStore,
-    MemoryProjectionStore,
-    MemorySagaStore,
     MemoryTransactor,
 )
-from edax.testing.faults import LostResponse, Refusing
+from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
+from edax.testing.faults import Refusing
 
 GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
 _GOLDEN_READ: set[str] = set()
@@ -122,28 +122,99 @@ def build_envelope(
     )
 
 
+class Recording(edax.Observer):
+    """Every hook appends its arguments, so a case asserts the exact rows a branch emitted. Each
+    outcome string is checked against the published vocabulary, so an emitter cannot drift from it."""
+
+    def __init__(self) -> None:
+        self.claims: list[tuple[str, str]] = []  # (name, verdict)
+        self.settlements: list[tuple[str, str, int]] = []  # (name, how, duration_ns)
+        self.deliveries: list[tuple[str, str, int, int, str | None]] = []
+        self.settlement_failures: list[tuple[str, str, type[BaseException]]] = []
+        self.transactions: list[tuple[str, int]] = []
+        self.drains: list[tuple[int, int, int | None]] = []
+        self.drain_failures: list[type[BaseException]] = []
+        self.undecodables: list[tuple[str, type[BaseException]]] = []
+
+    def claim(self, name: str, verdict: str) -> None:
+        assert verdict in CLAIM_VERDICTS, verdict
+        self.claims.append((name, verdict))
+
+    def settled(self, name: str, how: str, duration_ns: int) -> None:
+        assert how in SETTLEMENTS, how
+        self.settlements.append((name, how, duration_ns))
+
+    def delivery(
+        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
+    ) -> None:
+        assert outcome in DELIVERY_OUTCOMES, outcome
+        self.deliveries.append((name, outcome, attempt, duration_ns, error_type))
+
+    def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
+        self.settlement_failures.append((name, event_id, type(error)))
+
+    def transaction(self, outcome: str, duration_ns: int) -> None:
+        assert outcome in TRANSACTIONS, outcome
+        self.transactions.append((outcome, duration_ns))
+
+    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
+        self.drains.append((published, duration_ns, oldest_timestamp))
+
+    def drain_failed(self, error: BaseException) -> None:
+        self.drain_failures.append(type(error))
+
+    def undecodable(self, message_id: str, error: BaseException) -> None:
+        self.undecodables.append((message_id, type(error)))
+
+
+class SeqSerializer:
+    """Wire form ``agg:seq``, so one aggregate's events carry real sequences."""
+
+    media_type = "application/x-test-seq"
+
+    def encode(self, env: edax.EventEnvelope) -> bytes:
+        return f"{env.aggregate_id}:{env.sequence}".encode()
+
+    def decode(self, wire: bytes) -> edax.EventEnvelope:
+        agg, seq = wire.decode().split(":")
+        return build_envelope(agg, "Tick", int(seq), id=f"{agg}-{seq}")
+
+
+async def sink_ok(delivery: edax.Delivery, err: BaseException) -> None:
+    """A dead-letter sink that takes everything: what a test that is not about the sink wires."""
+
+
+async def publish_all(client: Any, topic: str, serializer: Any, envs: Sequence[edax.EventEnvelope]) -> None:
+    """Publish ``envs`` in order to ``topic`` through a :class:`KafkaProducer` over ``client``, fake or
+    live."""
+    producer = KafkaProducer(client, topic, serializer=serializer)
+    for env in envs:
+        await producer.publish(env)
+
+
+class SpyProducerClient:
+    """A started producer with ``partitions`` partitions on every topic, recording each send."""
+
+    def __init__(self, partitions: int = 12) -> None:
+        self.partitions = partitions
+        self.sent: list[tuple[str, bytes, bytes, int, list[tuple[str, bytes]]]] = []
+
+    async def partitions_for(self, topic: str) -> range:
+        # A range, not a set: the vector's largest topic has 2**31 - 1 partitions.
+        return range(self.partitions)
+
+    async def send_and_wait(
+        self, topic: str, value: bytes, key: bytes, partition: int, headers: Sequence[tuple[str, bytes]]
+    ) -> None:
+        self.sent.append((topic, value, key, partition, list(headers)))
+
+    async def send(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("publish must await the broker ack (send_and_wait), not fire and forget")
+
+
 # =========================================================================
 # Fault injection: the shipped wrappers over the memory stores
 # =========================================================================
-
-
-def FlakyEventStore() -> Any:
-    """A memory event store whose next armed call (``.arm("append")``, ``.arm("commit")``) loses its reply."""
-    return LostResponse(MemoryEventStore())
-
-
-def FlakyProjectionStore() -> Any:
-    return LostResponse(MemoryProjectionStore())
-
-
-def FlakySagaStore() -> Any:
-    return LostResponse(MemorySagaStore())
-
-
-def FlakyIdempotency(inner: Any) -> Any:
-    """Any ``IdempotencyStore`` (memory or Redis) losing a reply identically: the fault fires after the inner
-    store has committed."""
-    return LostResponse(inner)
 
 
 def RefusingLedger(db: MemoryTransactor | None = None) -> Any:
@@ -161,6 +232,24 @@ TTL_MS = 60_000
 #: A live Redis to run the Redis suites against as well, as a URL (``redis://localhost:56380/0``). Unset, the
 #: suites run against fakeredis only.
 REDIS_URL: str | None = os.environ.get("EDAX_REDIS_URL")
+
+
+def fresh_prefix() -> str:
+    """A ledger prefix of one test's own, so tests on a live server share no keys."""
+    return f"idem:{uuid.uuid4().hex}:"
+
+
+def ledger_key(prefix: str, key: str) -> bytes:
+    """The Redis key a ledger store writes ``key`` under: the kernel's composition, never restated."""
+    return _edax.redis_ledger_key(prefix, key)
+
+
+@dataclass
+class Charge:
+    """A guarded command: the idempotency key is its ``request_id``."""
+
+    request_id: str
+    type: ClassVar[str] = "Charge"
 
 
 @pytest.fixture(params=["fakeredis", "live"] if REDIS_URL else ["fakeredis"])
@@ -204,6 +293,25 @@ def recorded_backoff() -> Iterator[list[int]]:
         yield steps
 
 
+async def _no_sleep(seconds: float) -> None:
+    """A wait that takes no wall time."""
+
+
+#: Pacing that waits no wall time, for a retry, a dispatcher or a relay under test.
+NO_WAIT = edax.Pacing(sleep=_no_sleep)
+
+
+def recording_pacing(entropy: int = 2**64 - 1) -> tuple[edax.Pacing, list[float]]:
+    """A pacing that records each wait, in seconds, instead of sleeping, with the draw fixed at ``entropy``.
+    At the default, the top, each wait is its step's ceiling, so the step reads back off it."""
+    waits: list[float] = []
+
+    async def record(seconds: float) -> None:
+        waits.append(seconds)
+
+    return edax.Pacing(sleep=record, entropy=lambda: entropy), waits
+
+
 @pytest.fixture
 def slept() -> Iterator[list[int]]:
     """:func:`recorded_backoff` as a fixture, for the tests that do not generate their own cases."""
@@ -217,25 +325,10 @@ def expect(exc: type[BaseException] | None, match: str | None = None) -> Abstrac
     return pytest.raises(exc, match=match) if exc is not None else nullcontext()
 
 
-def fields(env: edax.EventEnvelope) -> tuple[Any, ...]:
-    """Every field of a native envelope as a tuple, so a failed comparison names the field that differs
-    (the envelope itself has value equality, see ``aggregate.py``)."""
-    return (
-        env.id,
-        env.aggregate_id,
-        env.event.name,
-        env.event.version,
-        bytes(env.event.data),
-        env.sequence,
-        dict(env.namespace),
-        dict(env.metadata),
-        env.timestamp,
-    )
-
-
 def same(got: Sequence[edax.EventEnvelope], want: Sequence[edax.EventEnvelope]) -> None:
-    """Full envelope equality, not just ids: namespace/metadata/timestamp fidelity."""
-    assert [fields(e) for e in got] == [fields(e) for e in want]
+    """Full envelope equality, not just ids: namespace/metadata/timestamp fidelity. Envelopes compare by
+    value, and a failed comparison shows each one's fields."""
+    assert list(got) == list(want)
 
 
 def stamp(variant: int) -> tuple[dict[str, str], dict[str, str], int]:

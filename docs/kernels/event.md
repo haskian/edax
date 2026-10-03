@@ -16,9 +16,9 @@ Python service and a Rust service cannot drift.
 | `causation` | `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `dedup` | the key and hash an event's idempotency guard claims | `event_idempotency.json` |
-| `sequence` | the dense-batch rule an append must satisfy, and a replay checks | `sequence_batch.json` |
+| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; when a save writes a snapshot | `sequence_batch.json`, `snapshot_due.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json` |
-| `saga` | whether a saga step folds an event, the write it makes (save, complete, ignore, nothing) and its outbox command id | `saga.json` |
+| `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing) and its outbox command id | `saga.json` |
 
 Host code reaches the kernel through an SDK. The SDKs reach it through the flat application binary
 interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
@@ -308,19 +308,21 @@ code and for none.
 
 ## `saga` — the write a saga step makes
 
-`saga_admit(folded, env)` answers whether a runner folds `env` at all. `folded` is the text the
-instance's last write saved, empty for a new instance. It holds one mark per source aggregate: the
-highest sequence and the last event id folded from it. A redelivered event is a `Repeat` when its id
-is its aggregate's mark or its sequence is below it. The runner skips a repeat, so a step whose ack
-was lost does not decide its commands again. Anything else is `Fold { folded }`, the marks to save with the step.
-An unsequenced event is a repeat only of the last one folded from its aggregate. Marks the function
-did not write are a `codec` error.
+`saga_admit(completed, folded, env)` answers whether a runner folds `env` at all. A completed
+instance (a tombstone) folds nothing: `Completed`, so a late or redelivered event cannot start a
+finished workflow again. `folded` is the text the instance's last write saved, empty for a new
+instance. It holds one mark per source aggregate: the highest sequence and the last event id folded
+from it. A redelivered event is a `Repeat` when its id is its aggregate's mark or its sequence is
+below it. The runner skips a repeat, so a step whose ack was lost does not decide its commands
+again. Anything else is `Fold { folded }`, the marks to save with the step. An unsequenced event is
+a repeat only of the last one folded from its aggregate. Marks the function did not write are a
+`codec` error.
 
-`saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold:
+`saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. The
+loaded instance is absent or running, since `saga_admit` skips a completed one:
 
 | Loaded, and the fold | Write |
 |---|---|
-| a completed instance | `Ignore`: the event is not folded at all |
 | nothing, and the fold keeps no state and sends no command | `Nothing` |
 | anything else, keeping state | `Save { expected }` at the loaded version (`0` when absent) |
 | anything else, completing | `Complete { expected }` at the loaded version |
@@ -474,6 +476,12 @@ Versions and sequences are one `u64` space end to end, so the comparison is exac
 A batch that would run past `u64::MAX` is refused rather than clamped, since a clamp would let two
 envelopes share the ceiling. A negative version from a host is refused at the boundary as a `codec`
 error. `testdata/golden/sequence_batch.json` pins every branch, the ceiling cases included.
+
+`snapshot_due(every, initial, current)` answers whether a save from version `initial` to `current`
+writes a snapshot: when it crosses a multiple of `every`. `1` snapshots on every save that appends,
+`0` never does, and a save with nothing pending crosses no multiple. Both repositories ask it, so
+two SDKs saving one aggregate type snapshot at the same versions. `testdata/golden/snapshot_due.json`
+pins every branch.
 
 ## See also
 

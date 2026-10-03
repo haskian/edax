@@ -18,7 +18,7 @@ use edax_core::ErrorCode;
 use edax_cqrs::{encode_record, Record};
 use edax_golden::{hex, write_or_check};
 use edax_redis::{
-    check_claim, check_ttl, claim_outcome, claim_value, ledger_key, reply_error, settled_value, split_value,
+    check_claim, check_config, claim_outcome, claim_value, ledger_key, reply_error, settled_value, split_value,
     ClaimOutcome, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, MAX_TTL_MS, RELEASE_SCRIPT,
 };
 use serde_json::{json, Value};
@@ -189,20 +189,27 @@ fn key_cases() -> Vec<Value> {
     .collect()
 }
 
-/// `check_ttl`: the TTLs a store refuses when it is built.
-fn ttl_cases() -> Vec<Value> {
+/// `check_config`: the settings a store refuses when it is built, one row per refusal and the edges
+/// of the TTL range.
+fn config_cases() -> Vec<Value> {
     [
-        ("one_millisecond", 1),
-        ("a_day", 86_400_000),
-        ("the_largest_exact_integer", MAX_TTL_MS),
-        ("zero_is_refused", 0),
-        ("negative_is_refused", -5),
-        ("past_the_largest_exact_integer_is_refused", MAX_TTL_MS + 1),
+        ("accepted", "idem:", 86_400_000, 300_000, 5_000, false),
+        ("the_largest_exact_integer", "idem:", MAX_TTL_MS, MAX_TTL_MS, 1, false),
+        ("a_heartbeat_over_three_milliseconds", "idem:", 1, 3, 1, true),
+        ("an_empty_prefix_is_refused", "", 86_400_000, 300_000, 5_000, false),
+        ("a_zero_ttl_is_refused", "idem:", 0, 300_000, 5_000, false),
+        ("a_negative_claim_ttl_is_refused", "idem:", 86_400_000, -5, 5_000, false),
+        ("past_the_largest_exact_integer_is_refused", "idem:", MAX_TTL_MS + 1, 300_000, 5_000, false),
+        ("a_zero_deadline_is_refused", "idem:", 86_400_000, 300_000, 0, false),
+        ("a_heartbeat_over_two_milliseconds_is_refused", "idem:", 86_400_000, 2, 5_000, true),
     ]
     .into_iter()
-    .map(|(name, ttl_ms)| {
-        let want = outcome_json(check_ttl("ttl_ms", ttl_ms).map(|()| Value::Null));
-        json!({ "name": name, "op": "ttl", "setting": "ttl_ms", "ttl_ms": ttl_ms, "want": want })
+    .map(|(name, prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)| {
+        let want = outcome_json(check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat).map(|()| Value::Null));
+        json!({
+            "name": name, "op": "config", "prefix": prefix, "ttl_ms": ttl_ms, "claim_ttl_ms": claim_ttl_ms,
+            "op_timeout_ms": op_timeout_ms, "heartbeat": heartbeat, "want": want,
+        })
     })
     .collect()
 }
@@ -553,7 +560,7 @@ fn golden() {
     write_or_check("redis_value.json", values);
 
     let mut ledger = key_cases();
-    ledger.extend(ttl_cases());
+    ledger.extend(config_cases());
     ledger.extend(handle_cases());
     ledger.extend(outcome_cases());
     ledger.extend(reply_cases());

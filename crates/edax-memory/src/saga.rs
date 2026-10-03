@@ -40,8 +40,8 @@ pub enum SagaRow {
 /// - the commands a step decided are staged with its state in the same write, so they commit or
 ///   roll back together, and each must carry the kernel's [`saga_command_id`] for that write, or the
 ///   write is a `codec` error and stages nothing;
-/// - [`unsent`](Self::unsent) shows committed commands only, oldest commit first, until
-///   [`mark_sent`](Self::mark_sent) prunes them.
+/// - [`unpublished`](Self::unpublished) shows committed commands only, oldest commit first, until
+///   [`mark_published`](Self::mark_published) prunes them.
 ///
 /// A write under an open token is staged until the transactor commits. Not for production: a
 /// durable store enlists the write in the events' transaction and purges tombstones by retention.
@@ -136,12 +136,12 @@ impl MemorySagaStore {
 
     /// Committed outbox commands not yet sent, oldest commit first, capped at `limit`. The relay
     /// reads outside any transaction, so there is no token: a staged command is not one to send.
-    pub fn unsent(&self, limit: usize) -> Vec<SagaCommand> {
+    pub fn unpublished(&self, limit: usize) -> Vec<SagaCommand> {
         lock(&self.state).committed.saga_commands.iter().take(limit).cloned().collect()
     }
 
     /// Mark outbox commands sent by id, pruning them. Idempotent; an unknown id is a no-op.
-    pub fn mark_sent(&self, ids: Vec<String>) {
+    pub fn mark_published(&self, ids: Vec<String>) {
         let set: HashSet<String> = ids.into_iter().collect();
         lock(&self.state).committed.saga_commands.retain(|c| !set.contains(&c.id));
     }
@@ -188,7 +188,7 @@ mod tests {
     }
 
     fn unsent_ids(store: &MemorySagaStore) -> Vec<String> {
-        store.unsent(100).into_iter().map(|c| c.id).collect()
+        store.unpublished(100).into_iter().map(|c| c.id).collect()
     }
 
     #[derive(Clone, Copy)]
@@ -369,13 +369,13 @@ mod tests {
             ("zero_limit_reads_nothing", 0usize, vec![]),
             ("limit_below_size_reads_a_prefix", 2, vec!["order-1:2:0", "order-1:3:0"]),
         ] {
-            assert_eq!(store.unsent(limit).into_iter().map(|c| c.id).collect::<Vec<_>>(), want, "{name}");
+            assert_eq!(store.unpublished(limit).into_iter().map(|c| c.id).collect::<Vec<_>>(), want, "{name}");
         }
-        let first = store.unsent(1).remove(0);
+        let first = store.unpublished(1).remove(0);
         assert_eq!(first, command("order-1", 2, 0), "the row survives field for field");
 
-        store.mark_sent(vec!["order-1:2:0".to_owned(), "never-existed".to_owned()]);
-        store.mark_sent(vec!["order-1:2:0".to_owned()]);
+        store.mark_published(vec!["order-1:2:0".to_owned(), "never-existed".to_owned()]);
+        store.mark_published(vec!["order-1:2:0".to_owned()]);
         assert_eq!(unsent_ids(&store), ["order-1:3:0", "order-1:3:1"], "idempotent, unknown ids ignored");
 
         let rolled_back = store.transactor().begin();

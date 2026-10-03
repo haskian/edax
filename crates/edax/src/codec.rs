@@ -13,6 +13,7 @@
 //! `codec` error, which is terminal: the same bytes fail the same way on every attempt, so the caller
 //! dead-letters instead of retrying.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -114,19 +115,21 @@ impl Upcaster {
     /// Raise `data` from version `from` to `to`, in the kernel's planned order. A missing step, or
     /// `from > to`, is a `codec` error.
     pub fn to(&self, data: Vec<u8>, from: i32, to: i32) -> Result<Vec<u8>, Error> {
-        raise(Some(self), data, from, to)
+        raise(Some(self), &data, from, to).map(Cow::into_owned)
     }
 }
 
 /// Raise `data` from `from` to `to` through `upcaster`'s steps, or as the identity when the name has no
-/// upcaster. Always asks the kernel, so a payload from a newer writer is refused either way.
-fn raise(upcaster: Option<&Upcaster>, mut data: Vec<u8>, from: i32, to: i32) -> Result<Vec<u8>, Error> {
+/// upcaster. Always asks the kernel, so a payload from a newer writer is refused either way. Borrowed
+/// until a step runs, so the common empty plan copies nothing.
+fn raise<'a>(upcaster: Option<&Upcaster>, data: &'a [u8], from: i32, to: i32) -> Result<Cow<'a, [u8]>, Error> {
     let available: Option<Vec<i32>> = upcaster.map(|u| u.steps.keys().copied().collect());
+    let mut data = Cow::Borrowed(data);
     for version in edax_event::upcast_plan(from, to, available.as_deref())? {
         let step = upcaster
             .and_then(|u| u.steps.get(&version))
             .ok_or_else(|| Error::codec(format_args!("the plan names step {version}, which has no transform")))?;
-        data = step(data)?;
+        data = Cow::Owned(step(data.into_owned())?);
     }
     Ok(data)
 }
@@ -166,7 +169,7 @@ impl<T: Serialize + DeserializeOwned, F: PayloadFormat> EventCodec for SerdeCode
         if raw.name != self.name {
             return Err(Error::codec(format_args!("event {:?} is not {:?}, the one name this codec reads", raw.name, self.name)));
         }
-        let data = raise(self.upcaster.as_ref(), raw.data.clone(), raw.version, self.version)?;
+        let data = raise(self.upcaster.as_ref(), &raw.data, raw.version, self.version)?;
         F::decode(&data)
     }
 }
@@ -230,7 +233,7 @@ impl<T: Serialize + DeserializeOwned, F: PayloadFormat> EventCodec for RegistryC
         if !self.names.contains(&raw.name.as_str()) {
             return Err(Error::codec(format_args!("no event type registered for {:?}", raw.name)));
         }
-        let data = raise(self.upcasters.get(&raw.name), raw.data.clone(), raw.version, self.version)?;
+        let data = raise(self.upcasters.get(&raw.name), &raw.data, raw.version, self.version)?;
         T::deserialize(Named::<F> { name: &raw.name, data: &data, _format: PhantomData }).map_err(|e| e.0)
     }
 }
@@ -280,10 +283,15 @@ impl Serialize for EmptyMap {
 /// A serializer that takes one enum value apart into its variant name and its payload in `F`.
 struct Split<F>(PhantomData<F>);
 
+/// The refusal of every serde shape that is not an enum of newtype or unit variants.
+fn refused<T>() -> Result<T, Refusal> {
+    Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+}
+
 macro_rules! refuse {
     ($($method:ident($($arg:ty),*);)*) => {
         $(fn $method(self, $(_: $arg),*) -> Result<Self::Ok, Self::Error> {
-            Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+            refused()
         })*
     };
 }
@@ -321,31 +329,31 @@ impl<F: PayloadFormat> Serializer for Split<F> {
     }
 
     fn serialize_some<T: Serialize + ?Sized>(self, _: &T) -> Result<Self::Ok, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_newtype_struct<T: Serialize + ?Sized>(self, _: &'static str, _: &T) -> Result<Self::Ok, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeTupleStruct, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_tuple_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Self::SerializeTupleVariant, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeStruct, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
     fn serialize_struct_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Self::SerializeStructVariant, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
 }
 
@@ -361,7 +369,7 @@ impl<'de, F: PayloadFormat> de::Deserializer<'de> for Named<'de, F> {
     type Error = Refusal;
 
     fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
 
     fn deserialize_enum<V: Visitor<'de>>(self, _: &'static str, _: &'static [&'static str], visitor: V) -> Result<V::Value, Refusal> {
@@ -396,11 +404,11 @@ impl<'de, F: PayloadFormat> de::VariantAccess<'de> for Named<'de, F> {
     }
 
     fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
 
     fn struct_variant<V: Visitor<'de>>(self, _: &'static [&'static str], _: V) -> Result<V::Value, Refusal> {
-        Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+        refused()
     }
 }
 
@@ -413,7 +421,7 @@ fn variant_names<T: DeserializeOwned>() -> Result<&'static [&'static str], Error
         type Error = Refusal;
 
         fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Refusal> {
-            Err(Refusal(Error::codec(NEEDS_VARIANTS)))
+            refused()
         }
 
         fn deserialize_enum<V: Visitor<'de>>(self, _: &'static str, variants: &'static [&'static str], _: V) -> Result<V::Value, Refusal> {

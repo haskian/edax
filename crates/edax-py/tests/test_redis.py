@@ -8,17 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import edax
 import fakeredis
 import pytest
 import redis.asyncio
 import redis.exceptions
-from conftest import TTL_MS, golden
+from conftest import TTL_MS, Charge, fresh_prefix, golden, ledger_key
 from edax import _edax
 from edax.backend.redis import (
     CLAIM_SCRIPT,
@@ -47,6 +46,13 @@ SCRIPTS = {
 }
 
 
+def _held_record(value: bytes) -> Record:
+    """The record a ledger value holds, read the way a claim reads the key's holder."""
+    prior = _edax.redis_claim_outcome(_edax.redis_new_claim(0), value)
+    assert prior is not None, "a fresh claim never equals a held value"
+    return decode_record(prior)
+
+
 @dataclass
 class Ledger:
     """One test's ledger: a client, a prefix of its own, and direct reads of what Redis holds."""
@@ -62,7 +68,7 @@ class Ledger:
         return AsyncRedisClient(self.client)
 
     def rkey(self, key: str) -> bytes:
-        return (self.prefix + key).encode()
+        return ledger_key(self.prefix, key)
 
     async def lapse(self, key: str) -> None:
         """What the claim TTL does when it runs out, without waiting for it."""
@@ -77,18 +83,12 @@ class Ledger:
 
 @pytest.fixture
 def ledger(redis_client: Any) -> Ledger:
-    return Ledger(redis_client, f"idem:{uuid.uuid4().hex}:")
+    return Ledger(redis_client, fresh_prefix())
 
 
 def near(ttl_ms: int, want_ms: int) -> bool:
     """A PTTL read just after a write: at most the TTL written, and not much less."""
     return want_ms - 2_000 < ttl_ms <= want_ms
-
-
-@dataclass
-class Charge:
-    request_id: str
-    type: ClassVar[str] = "Charge"
 
 
 # =========================================================================
@@ -172,7 +172,7 @@ async def test_claim_branches(ledger: Ledger) -> None:
     won = await s.claim("free", HASH)
     assert isinstance(won, Won) and await ledger.held("free") == won.handle, "the handle is the value written"
     assert near(await ledger.pttl("free"), CLAIM_TTL_MS), "a claim lives for the claim TTL"
-    assert decode_record(_edax.redis_split_value(won.handle).record).pending
+    assert _held_record(won.handle).pending
 
     await ledger.client.set(ledger.rkey("held"), other, px=TTL_MS)
     assert await s.claim("held", HASH) == Record(HASH, pending=True), "another's claim reads as pending"
@@ -301,37 +301,9 @@ async def test_extend_branches(ledger: Ledger) -> None:
 # =========================================================================
 
 
-async def test_a_takeover_inside_one_store_instance_is_fenced(ledger: Ledger) -> None:
-    """06#F1 at the store. One store instance serves every dispatch in a process. Claim A lapses, claim B
-    on the same instance takes the key, and each handle acts only for its own claim: A's complete is
-    refused and its release deletes nothing, so B's claim survives and B alone settles the key. Before,
-    the instance kept one token per key, B's replaced A's, and both completes were accepted."""
-    s = ledger.store()
-    a = await s.claim("k", HASH)
-    assert isinstance(a, Won)
-    await ledger.lapse("k")
-    b = await s.claim("k", HASH)
-    assert isinstance(b, Won) and b.handle != a.handle
-
-    with pytest.raises(edax.StoreError, match="taken over"):
-        await s.complete("k", a.handle, Record(HASH, result="A"))
-    await s.release("k", a.handle)  # what the guard does next
-    assert await ledger.held("k") == b.handle, "B's live claim survived A's complete and release"
-
-    await s.complete("k", b.handle, Record(HASH, result="B"))
-    assert await s.claim("k", HASH) == Record(HASH, result="B")
-
-
-async def test_a_stale_release_on_one_instance_cannot_free_the_key_for_a_third_claim(ledger: Ledger) -> None:
-    """The failure branch of 06#F1: A fails after B took over, and A's release must not free the key, or a
-    third claim wins it and three handlers run."""
-    s = ledger.store()
-    a = await s.claim("k", HASH)
-    assert isinstance(a, Won)
-    await ledger.lapse("k")
-    assert isinstance(await s.claim("k", HASH), Won)
-    await s.release("k", a.handle)
-    assert await s.claim("k", HASH) == Record(HASH, pending=True), "the third claim loses to B"
+# The takeover itself (a lapsed claim's complete refused, its release deleting nothing, a third claim
+# losing to the live one) is `IdempotencyStoreContract.test_a_lapsed_claim_settles_nothing_for_its_old_owner`,
+# which `TestRedisIdempotencyStore` runs. Extending is Redis's alone.
 
 
 async def test_a_stale_owner_cannot_extend_the_new_holders_lease(ledger: Ledger) -> None:
@@ -632,10 +604,8 @@ class Beats:
 
 
 def heartbeat_store(ledger: Ledger, conn: Any | None = None) -> tuple[RedisIdempotencyStore, Beats]:
-    store = ledger.store(conn, heartbeat=True)
     beats = Beats()
-    store._sleep = beats.sleep
-    return store, beats
+    return ledger.store(conn, heartbeat=True, sleep=beats.sleep), beats
 
 
 async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> None:
@@ -773,7 +743,7 @@ async def _two_workers(history: list[Step]) -> None:
         """Read the key and check every invariant against what it holds now."""
         nonlocal record
         value = await ledger.held("k")
-        if value is not None and not decode_record(_edax.redis_split_value(value).record).pending:
+        if value is not None and not _held_record(value).pending:
             landed.add(value)
             record = record or value
         assert len(landed) <= 1, f"two outcomes landed: {landed}"
@@ -811,7 +781,7 @@ async def _two_workers(history: list[Step]) -> None:
                 await store.extend("k", held[w])
             elif s.op == "lapse":
                 value = await ledger.held("k")
-                if value is not None and decode_record(_edax.redis_split_value(value).record).pending:
+                if value is not None and _held_record(value).pending:
                     await ledger.lapse("k")
         except edax.StoreError:
             pass  # a lost reply or a refused complete: the property is about what the ledger holds

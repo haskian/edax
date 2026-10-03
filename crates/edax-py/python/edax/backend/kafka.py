@@ -21,7 +21,7 @@ from .._owned import ThreadBound
 from ..aggregate import EventEnvelope, KernelSerializer, Serializer
 from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
-from ..errors import AlreadyRegistered, CodecError, mapped
+from ..errors import CodecError, mapped
 from ..observe import error_type
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
@@ -139,12 +139,13 @@ async def _send(client: ProducerClient, topic: str, record: KafkaRecord) -> None
     the final key and the topic's partition count from the client's metadata. One placement for the
     producer and the dead-letter sink."""
     partitions = await client.partitions_for(topic)
+    key = record.key  # each read of a native field copies it
     with mapped():  # a topic reported with no partitions is the kernel's terminal `codec:` error
-        partition = _edax.kafka_partition_for(bytes(record.key), len(partitions))
+        partition = _edax.kafka_partition_for(key, len(partitions))
     await client.send_and_wait(
         topic,
         value=record.value,
-        key=record.key,
+        key=key,
         partition=partition,
         headers=[(h.key, h.value) for h in record.headers],
     )
@@ -292,14 +293,10 @@ class KafkaConsumer(_ConsumerLoop):
         # The default decodes a record that carries no `content-type` header at all, and claims its
         # own media type in the registry like every other serializer.
         self._default: Serializer = serializer or KernelSerializer("json")
-        self._serializers: list[Serializer] = []
-        for s in (self._default, *serializers):
-            # Two serializers under one media type would decode one topic two ways: a header-less record
-            # with the default, a typed record with whichever came first.
-            if any(s.media_type == known.media_type for known in self._serializers):
-                raise AlreadyRegistered(f"two serializers claim the media type {s.media_type!r}")
-            self._serializers.append(s)
+        self._serializers: list[Serializer] = [self._default, *serializers]
         self._media_types: list[str] = [s.media_type for s in self._serializers]
+        with mapped():  # a media type claimed twice is the kernel's `already_registered:` refusal
+            _edax.kafka_check_media_types(self._media_types)
         self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
         self._tracker = ThreadBound(_edax.offset_tracker(), "KafkaConsumer")
         self._commit_interval_s = commit_interval_s
@@ -424,16 +421,11 @@ class KafkaConsumer(_ConsumerLoop):
             raise
         # `ack` and `nack` settle long after this frame returns; they capture these, never `msg`.
         topic, partition, offset = msg.topic, msg.partition, msg.offset
-        tp = _topic_partition(topic, partition)
         # Book the offset before decoding: an undecodable payload still has to be settled, and an unbooked
         # offset is either committed past by the next ack or replayed into the same failure forever. Booked
         # before the next await, so a nack's rewind retires it if it lands later.
         with mapped():  # a negative offset is the kernel's terminal `codec:` refusal
             token = self._tracker.get().book(topic, partition, offset)
-        # Topic, partition and offset together are the only identity a poison message has. The offset
-        # alone repeats on every partition, so two poison messages would share one id and a dead-letter
-        # queue keyed on it would keep the first and reject the second.
-        poison_id = _edax.kafka_poison_id(topic, partition, offset)
         # A null key, value or header value crosses as empty bytes: the kernel record's rule, which also
         # routes a null content-type like an empty one.
         fetched = KafkaFetched(
@@ -457,19 +449,22 @@ class KafkaConsumer(_ConsumerLoop):
             # of it already handed out; seek() sets the partition's one fetch position.
             target = self._tracker.get().nack(token).seek
             if target is not None:
-                self._client.seek(tp, target)
+                self._client.seek(_topic_partition(topic, partition), target)
 
         def poison(cause: BaseException) -> UndecodableDelivery:
             """The fetched bytes as a dead-letterable delivery, settled by the offset already booked."""
+            # Topic, partition and offset together are the only identity a poison message has. The offset
+            # alone repeats on every partition, so two poison messages would share one id and a
+            # dead-letter queue keyed on it would keep the first and reject the second.
+            poison_id = _edax.kafka_poison_id(topic, partition, offset)
             error = CodecError(f"kafka {poison_id} did not decode: {cause}")
             error.__cause__ = cause  # `raise ... from e` is unavailable: the error is carried, not raised
             return UndecodableDelivery(fetched.value, poison_id, ack, nack, error, live=live, origin=fetched)
 
-        value, headers = fetched.value, [KafkaHeader(k, v) for k, v in fetched.headers]
         if self._middleware:
             # The kernel record exists for the middleware to rewrite; building one with no middleware to
             # run would copy the payload across the binding for nothing.
-            record = KafkaRecord(fetched.key, value, headers)
+            record = fetched.record()
             try:
                 for m in reversed(self._middleware):
                     record = m.on_poll(record)
@@ -484,6 +479,8 @@ class KafkaConsumer(_ConsumerLoop):
                 nack()
                 raise
             value, headers = record.value, record.headers
+        else:
+            value, headers = fetched.value, [KafkaHeader(k, v) for k, v in fetched.headers]
 
         route = _edax.kafka_route(headers, self._media_types)
         if route.registered is not None:

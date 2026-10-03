@@ -6,7 +6,7 @@
 //! every SDK ships only the client calls around them and the TTL values it was configured with. No
 //! Redis client library is involved.
 //!
-//! - [`ledger_key`] / [`check_prefix`] / [`check_ttl`] — the key, and the settings a store refuses.
+//! - [`ledger_key`] / [`check_config`] — the key, and the settings a store refuses.
 //! - [`new_claim`] / [`new_owner`] / [`claim_value`] — a claim's value, which is also its handle.
 //! - [`settled_value`] / [`check_claim`] — the value that settles a claim, and the handle check.
 //! - [`split_value`] — a stored value read back apart into its owner and its record.
@@ -25,7 +25,7 @@ pub mod ledger;
 pub mod scripts;
 
 pub use ledger::{
-    check_claim, check_prefix, check_ttl, claim_outcome, claim_value, ledger_key, new_claim, new_owner, settled_value,
-    split_value, ClaimOutcome, LAYOUT_VERSION, MAX_TTL_MS, OWNER_LEN,
+    check_claim, check_config, claim_outcome, claim_value, ledger_key, new_claim, new_owner, settled_value,
+    split_value, ClaimOutcome, HEARTBEATS_PER_TTL, LAYOUT_VERSION, MAX_TTL_MS, OWNER_LEN,
 };
 pub use scripts::{reply_error, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, RELEASE_SCRIPT};

@@ -17,3 +17,6 @@ publish = false
 edax-cqrs = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "float_roundtrip"] }
+
+[dev-dependencies]
+edax-golden = { path = "../../edax-golden" }

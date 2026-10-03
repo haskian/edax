@@ -423,22 +423,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    /// A pacing that records each wait instead of sleeping, with a fixed draw so every wait is the
-    /// kernel's delay for its step.
-    fn recorded() -> (Pacing, Arc<Mutex<Vec<Duration>>>) {
-        let slept: Arc<Mutex<Vec<Duration>>> = Arc::default();
-        let recorder = Arc::clone(&slept);
-        let pacing = Pacing {
-            sleep: Arc::new(move |d: Duration| recorder.lock().unwrap().push(d)),
-            entropy: Arc::new(|| 0x9e37_79b9_7f4a_7c15),
-            ..Pacing::default()
-        };
-        (pacing, slept)
-    }
-
-    /// The kernel's wait for backoff step `step` under `recorded()`'s draw.
+    /// The kernel's wait for backoff step `step` under [`Pacing::recording`]'s draw.
     fn kernel_wait(step: u64) -> Duration {
-        Duration::from_millis(edax_core::backoff_millis(edax_core::Backoff::DEFAULT, step, 0x9e37_79b9_7f4a_7c15))
+        Pacing::recording().0.delay(step)
     }
 
     fn envelope(aggregate_id: &str, name: &str, sequence: u64) -> EventEnvelope {
@@ -920,7 +907,7 @@ mod tests {
                     Outcome::Rejected => Err(crate::Terminal::new("order already shipped").into()),
                 }
             };
-            let (pacing, slept) = recorded();
+            let (pacing, slept) = Pacing::recording();
             let mut builder = KeyOrderedDispatcher::builder(1, handler).max_attempts(c.max_attempts).pacing(pacing);
             if let Some(sinks) = c.on_dead {
                 let dead = Arc::clone(&dead);
@@ -990,7 +977,7 @@ mod tests {
                 }
                 Ok(())
             })
-            .pacing(recorded().0)
+            .pacing(Pacing::recording().0)
             .build()
             .expect("the dispatcher's workers spawn");
             let (a, n, l) = (Arc::clone(&settled), Arc::clone(&settled), Arc::clone(&live));
@@ -1032,7 +1019,7 @@ mod tests {
             dead_sink.publish(letter.envelope);
             Ok(())
         })
-        .pacing(recorded().0)
+        .pacing(Pacing::recording().0)
         .build()
         .expect("the dispatcher's workers spawn");
 

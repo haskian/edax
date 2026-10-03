@@ -251,8 +251,9 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 | Sending | `Relay::<_, SagaCommand>::new(store)` and `runner.command(row)` | `runner.relay(dispatch)` |
 | State type | `Saga::State` and `SagaStore::State`, statically typed | `Any`, serialized as JSON by the in-memory backend |
 
-Both runners ask the kernel which write a step makes (`edax_event::saga_write`, pinned by
-`testdata/golden/saga.json`). A completed instance gets `ignore`. When nothing was loaded and the fold
+Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
+makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. A completed instance folds
+nothing. When nothing was loaded and the fold
 neither keeps state nor sends a command, the write is `nothing`. Otherwise it is `save` or `complete`
 at the loaded version. A versioned write for the `nothing` case would turn a no-op into a write a concurrent
 creator of the same correlation could conflict with.

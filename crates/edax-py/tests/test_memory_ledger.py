@@ -12,14 +12,13 @@ differ say so. The contract clauses themselves run over both in ``test_contract_
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import TTL_MS
+from conftest import TTL_MS, fresh_prefix, ledger_key
 from edax import _edax
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
@@ -61,11 +60,11 @@ async def rig(request: pytest.FixtureRequest, redis_client: Any) -> AsyncIterato
 
         yield Rig("memory_ledger", ledger, lapse_memory)
         return
-    prefix = f"idem:{uuid.uuid4().hex}:"
+    prefix = fresh_prefix()
     store = RedisIdempotencyStore(AsyncRedisClient(redis_client), prefix, ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS)
 
     async def lapse_redis(key: str) -> None:
-        assert await redis_client.delete((prefix + key).encode()) == 1, f"{key} held nothing to lapse"
+        assert await redis_client.delete(ledger_key(prefix, key)) == 1, f"{key} held nothing to lapse"
 
     yield Rig("redis", store, lapse_redis)
 

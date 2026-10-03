@@ -43,7 +43,15 @@ name = "edax-cqrs-feature-check"
 version = "0.0.0"
 dependencies = [
  "edax-cqrs",
+ "edax-golden",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "edax-golden"
+version = "0.1.0"
+dependencies = [
  "serde_json",
 ]
 

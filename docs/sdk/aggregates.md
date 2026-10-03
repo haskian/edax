@@ -287,12 +287,13 @@ A `Snapshot` is a marshaled aggregate at a version, so a load can skip replaying
 | `version` | the version the snapshot state is at |
 | `data` | whatever `dump` produced |
 
-Python's `Repository(..., snapshot_every=n)` snapshots when a save carries the version across a
-multiple of `n`: `1` (the default) on every save that writes an event, `0` never. A save with nothing
-pending writes no snapshot. Raise the interval when `dump` gets expensive or the state gets large: every
-snapshot is a second write in the save's unit of work. Correctness does not depend on it. The replay
-always folds the tail after whatever version the snapshot carries. The Rust reference model snapshots on
-every save.
+Both repositories take an interval `n`: `Repository(..., snapshot_every=n)` in Python,
+`Repository::new(..).snapshot_every(n)` in Rust. A save snapshots when it carries the version across a
+multiple of `n`: `1` (the default) on every save that writes an event, `0` never. A save with nothing pending writes no snapshot. The rule is the kernel's
+(`snapshot_due`, pinned by `testdata/golden/snapshot_due.json`). Raise the interval when `dump` gets
+expensive or the state gets large: every snapshot is a second write in the save's unit of work.
+Correctness does not depend on it. The replay always folds the tail after whatever version the snapshot
+carries.
 
 `save_snapshot` keeps the higher version: an older snapshot arriving late never replaces a newer one,
 and one past the stream's version is refused as `CodecError`. It commits in the same `tx` as the

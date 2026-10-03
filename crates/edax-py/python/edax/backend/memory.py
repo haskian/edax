@@ -127,6 +127,14 @@ class _StoreView:
         """The transactor this store enlists with; build the other stores over it to share it."""
         return self._transactor
 
+    def _db(self) -> _edax.MemoryTransactor:
+        """The native database, on the thread that built it."""
+        return self._transactor._native.get()
+
+    def _token(self, tx: Tx | None) -> int:
+        """The native token a call under ``tx`` runs with: see :meth:`MemoryTransactor.token`."""
+        return self._transactor.token(tx)
+
 
 class MemoryEventStore(_StoreView):
     """:class:`~edax.store.EventStore` over the native store: events + snapshots + outbox. Events
@@ -140,17 +148,17 @@ class MemoryEventStore(_StoreView):
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
         with errors.mapped():
-            return self._transactor._native.get().load_events(self._transactor.token(tx), aggregate_id, after)
+            return self._db().load_events(self._token(tx), aggregate_id, after)
 
     async def load_snapshot(self, tx: Tx, aggregate_id: str) -> Snapshot | None:
         with errors.mapped():
-            r = self._transactor._native.get().load_snapshot(self._transactor.token(tx), aggregate_id)
+            r = self._db().load_snapshot(self._token(tx), aggregate_id)
         return None if r is None else Snapshot(aggregate_id, r.type_name, r.version, r.data)
 
     async def save_snapshot(self, tx: Tx, snapshot: Snapshot) -> None:
         with errors.mapped():
-            self._transactor._native.get().save_snapshot(
-                self._transactor.token(tx),
+            self._db().save_snapshot(
+                self._token(tx),
                 snapshot.aggregate_id,
                 snapshot.type_name,
                 snapshot.version,
@@ -161,21 +169,19 @@ class MemoryEventStore(_StoreView):
         self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventEnvelope]
     ) -> None:
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            self._transactor._native.get().append_events(
-                self._transactor.token(tx), aggregate_id, expected_version, list(events)
-            )
+            self._db().append_events(self._token(tx), aggregate_id, expected_version, list(events))
 
     async def unpublished(self, limit: int = 100) -> list[EventEnvelope]:
         with errors.mapped():  # a negative limit cannot cross the unsigned boundary: CodecError
-            return self._transactor._native.get().unpublished(limit)
+            return self._db().unpublished(limit)
 
     async def mark_published(self, ids: Sequence[str]) -> None:
         with errors.mapped():
-            self._transactor._native.get().mark_published(list(ids))
+            self._db().mark_published(list(ids))
 
     async def unpublished_count(self) -> int:
         """How many committed unmarked outbox rows are waiting, counted without paging them."""
-        return self._transactor._native.get().unpublished_count()
+        return self._db().unpublished_count()
 
 
 class MemoryIdempotencyStore(_StoreView):
@@ -194,27 +200,24 @@ class MemoryIdempotencyStore(_StoreView):
     # a foreign unit of work would leave a `done` record for writes that rolled back.
     joins_transaction: ClassVar[bool] = True
 
-    def _token(self, tx: Tx | None) -> int:
-        return self._transactor.token(tx)
-
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         with errors.mapped():
-            claimed = self._transactor._native.get().claim(self._token(tx), key, payload_hash)
+            claimed = self._db().claim(self._token(tx), key, payload_hash)
         return Won(claimed.handle) if claimed.won else decode_record(claimed.prior)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         with errors.mapped():  # a handle that names no claim on `key` any more: the fence's StoreError
-            self._transactor._native.get().complete(self._token(tx), key, handle, encode_record(record))
+            self._db().complete(self._token(tx), key, handle, encode_record(record))
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         with errors.mapped():
-            self._transactor._native.get().release(self._token(tx), key, handle)
+            self._db().release(self._token(tx), key, handle)
 
     def expire(self, key: str) -> bool:
         """Lapse whatever ``key`` holds in committed state, as a claim or record TTL running out would: the
         next claim wins, and the old claim's handle settles nothing. A test hook; ``False`` when nothing was
         held. A claim staged by an open unit of work is not committed, so it does not lapse."""
-        return self._transactor._native.get().expire_claim(key)
+        return self._db().expire_claim(key)
 
 
 class MemoryLedger(MemoryIdempotencyStore):
@@ -244,13 +247,13 @@ class MemoryProjectionStore(_StoreView):
 
     async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
         with errors.mapped():
-            row = self._transactor._native.get().get_projection(self._transactor.token(tx), id)
+            row = self._db().get_projection(self._token(tx), id)
         return None if row is None else Entity(id, row.version, _json.decode(row.document_json))
 
     async def save(self, entity: Entity, tx: Tx | None = None) -> None:
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            entity.version = self._transactor._native.get().save_projection(
-                self._transactor.token(tx), entity.id, entity.version, _json.encode(entity.document)
+            entity.version = self._db().save_projection(
+                self._token(tx), entity.id, entity.version, _json.encode(entity.document)
             )
 
     async def get_many(
@@ -265,9 +268,7 @@ class MemoryProjectionStore(_StoreView):
     ) -> Page:
         spec = build_spec(filter=filter, sort=sort, offset=offset, limit=limit, after=after)
         with errors.mapped():  # a malformed spec/cursor is tagged `codec:` -> terminal
-            page = self._transactor._native.get().query_projections(
-                self._transactor.token(tx), _json.encode(spec)
-            )
+            page = self._db().query_projections(self._token(tx), _json.encode(spec))
         return Page.from_kernel(page)
 
 
@@ -281,7 +282,7 @@ class MemorySagaStore(_StoreView):
 
     async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None:
         with errors.mapped():
-            row = self._transactor._native.get().load_saga(self._transactor.token(tx), id)
+            row = self._db().load_saga(self._token(tx), id)
         if row is None:
             return None
         return SagaInstance(_json.decode(row.state_json), row.version, row.completed, row.folded)
@@ -296,25 +297,23 @@ class MemorySagaStore(_StoreView):
         tx: Tx | None = None,
     ) -> int:
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            return self._transactor._native.get().save_saga(
-                self._transactor.token(tx), id, version, _json.encode(state), folded, list(commands)
+            return self._db().save_saga(
+                self._token(tx), id, version, _json.encode(state), folded, list(commands)
             )
 
     async def complete(
         self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
     ) -> int:
         with errors.mapped():
-            return self._transactor._native.get().complete_saga(
-                self._transactor.token(tx), id, version, list(commands)
-            )
+            return self._db().complete_saga(self._token(tx), id, version, list(commands))
 
     async def unpublished(self, limit: int = 100) -> list[SagaCommand]:
         with errors.mapped():
-            return self._transactor._native.get().unsent_saga_commands(limit)
+            return self._db().unpublished_saga_commands(limit)
 
     async def mark_published(self, ids: Sequence[str]) -> None:
         with errors.mapped():
-            self._transactor._native.get().mark_saga_commands_sent(list(ids))
+            self._db().mark_saga_commands_published(list(ids))
 
 
 class _Log:

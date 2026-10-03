@@ -47,9 +47,15 @@ pub enum AckDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a dropped decision is a redelivery that never happens"]
 pub enum NackDecision {
-    /// Seek the partition back to this offset, the lowest still in flight, for redelivery. Every
-    /// token of the partition is retired.
-    Seek(i64),
+    /// Seek `partition` back to `offset`, the lowest still in flight, for redelivery. Every token of
+    /// the partition is retired. The partition rides along so a shell that holds only the token (the
+    /// in-memory broker) knows which fetch position to rewind.
+    Seek {
+        /// The partition the nacked token was booked on.
+        partition: i32,
+        /// The offset to seek it back to.
+        offset: i64,
+    },
     /// The token is stale or unknown. Nothing to do.
     Stale,
 }
@@ -77,9 +83,8 @@ pub struct PartitionStats {
     /// Unsettled offsets whose token is still live: work a handler may still settle. A rebalance
     /// drain waits for this to reach zero; a retired offset waits for a fetch instead.
     pub live: u64,
-    /// The highest offset booked; `None` is impossible for a reported partition, which exists only
-    /// once one offset was booked, but the type says what the value means rather than a sentinel.
-    pub max_delivered: Option<i64>,
+    /// The highest offset booked. A partition is reported only once an offset was booked on it.
+    pub max_delivered: i64,
     /// The last watermark the shell reported committed, or `None` before the first commit.
     pub committed: Option<i64>,
 }
@@ -91,25 +96,23 @@ struct PartitionState {
     inflight: BTreeMap<i64, i64>,
     /// The lowest offset booked since this bookkeeping began. A shell fetches from the group's last
     /// commit, so a watermark no higher than this one commits nothing the group does not have.
-    first: Option<i64>,
-    max_delivered: Option<i64>,
+    first: i64,
+    max_delivered: i64,
     committed: Option<i64>,
 }
 
 impl PartitionState {
-    fn new() -> Self {
-        Self { inflight: BTreeMap::new(), first: None, max_delivered: None, committed: None }
+    /// The bookkeeping of a partition whose first booking is `offset`.
+    fn new(offset: i64) -> Self {
+        Self { inflight: BTreeMap::new(), first: offset, max_delivered: offset, committed: None }
     }
 
     /// The offset a commit names: the lowest still in flight, else one past the highest delivered.
     /// Saturating: an offset at the `i64` ceiling would otherwise wrap below every committed
     /// watermark. Committing `i64::MAX` for it redelivers that one offset after a restart, which
     /// at-least-once allows.
-    fn watermark(&self) -> Option<i64> {
-        match self.inflight.keys().next() {
-            Some(&lowest) => Some(lowest),
-            None => self.max_delivered.map(|offset| offset.saturating_add(1)),
-        }
+    fn watermark(&self) -> i64 {
+        self.inflight.keys().next().copied().unwrap_or_else(|| self.max_delivered.saturating_add(1))
     }
 
     /// The watermark when it is progress: higher than the last one committed, and higher than the
@@ -117,7 +120,7 @@ impl PartitionState {
     /// rebalance — does not know the group's commit, but it fetched from there, so this spares the
     /// round trip that would re-commit it.
     fn due(&self) -> Option<i64> {
-        self.watermark().filter(|&watermark| Some(watermark) > self.committed && Some(watermark) > self.first)
+        Some(self.watermark()).filter(|&watermark| Some(watermark) > self.committed && watermark > self.first)
     }
 }
 
@@ -195,10 +198,10 @@ impl OffsetTracker {
             .entry(Arc::clone(&topic))
             .or_default()
             .entry(partition)
-            .or_insert_with(PartitionState::new);
+            .or_insert_with(|| PartitionState::new(offset));
         let replaced = state.inflight.insert(offset, token);
-        state.first = Some(state.first.map_or(offset, |first| first.min(offset)));
-        state.max_delivered = state.max_delivered.max(Some(offset));
+        state.first = state.first.min(offset);
+        state.max_delivered = state.max_delivered.max(offset);
         if let Some(stale) = replaced {
             inner.bookings.remove(&stale);
         }
@@ -272,21 +275,21 @@ impl OffsetTracker {
     /// between) pins the watermark until the partition is reset by a rebalance or a restart.
     pub fn nack(&self, token: i64) -> NackDecision {
         let mut inner = lock(&self.state);
-        let Some(booking) = inner.bookings.get(&token) else {
+        let Inner { topics, bookings, .. } = &mut *inner;
+        let Some(booking) = bookings.get(&token) else {
             return NackDecision::Stale;
         };
-        let (topic, partition, offset) = (Arc::clone(&booking.topic), booking.partition, booking.offset);
-        let Some(state) = inner.partition_mut(&topic, partition) else {
+        let (partition, offset) = (booking.partition, booking.offset);
+        let Some(state) = topics.get_mut(&*booking.topic).and_then(|partitions| partitions.get(&partition)) else {
             return NackDecision::Stale;
         };
         // The nacked offset is still in flight, so the map is never empty here; its own offset is
         // the answer either way.
         let target = state.inflight.keys().next().copied().unwrap_or(offset);
-        let retired: Vec<i64> = state.inflight.values().copied().collect();
-        for stale in retired {
-            inner.bookings.remove(&stale);
+        for stale in state.inflight.values() {
+            bookings.remove(stale);
         }
-        NackDecision::Seek(target)
+        NackDecision::Seek { partition, offset: target }
     }
 
     /// Drop a revoked partition's bookkeeping and retire its tokens.

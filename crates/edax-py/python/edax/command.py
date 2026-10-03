@@ -364,9 +364,8 @@ def idempotent(
             k = key(cmd)
             if k is None:
                 return await next_(cmd)
-            return await _guarded(
-                store, cmd.type, k, _payload_hash(cmd), lambda: next_(cmd), unit_of_work, observe, replay_as
-            )
+            guard = _Guard(store, cmd.type, k, _payload_hash(cmd), observe, replay_as)
+            return await _guarded(guard, lambda: next_(cmd), unit_of_work)
 
         return handler
 
@@ -409,17 +408,25 @@ async def _unit(unit_of_work: Transactor | None, observe: Observer) -> AsyncIter
             yield tx
 
 
-async def _guarded(
-    store: IdempotencyStore,
-    name: str,
-    key: str,
-    payload_hash: int,
-    run: Callable[[], Awaitable[Any]],
-    unit_of_work: Transactor | None,
-    observe: Observer,
-    replay_as: Any = None,
-) -> Any:
-    """Run ``run`` once under an atomic claim on ``key`` and return its result, or the cached one, converted
+@dataclass(frozen=True)
+class _Guard:
+    """One guarded dispatch: the claim on ``key`` in ``store`` for ``payload_hash``, reported to ``observe``
+    under ``name`` (the command type or event name), and the type a cached success replays as."""
+
+    store: IdempotencyStore
+    name: str
+    key: str
+    payload_hash: int
+    observe: Observer
+    replay_as: Any = None
+
+    def replay(self, prior: Record) -> Any:
+        """Lost the claim: act on the winner's record."""
+        return _replay(self.name, self.key, self.payload_hash, prior, self.observe, self.replay_as)
+
+
+async def _guarded(guard: _Guard, run: Callable[[], Awaitable[Any]], unit_of_work: Transactor | None) -> Any:
+    """Run ``run`` once under ``guard``'s atomic claim and return its result, or the cached one, converted
     to ``replay_as`` when that is set.
 
     The one claim/complete/release orchestration behind :func:`idempotent` (commands) and
@@ -443,24 +450,13 @@ async def _guarded(
             "idempotency guard was given a unit_of_work while a transaction is already open: "
             "either pass unit_of_work or open the transaction around the dispatch, not both"
         )
-    if unit_of_work is not None and joins_transaction(store):
-        return await _guarded_in_one_commit(
-            store, name, key, payload_hash, run, unit_of_work, observe, replay_as
-        )
-    return await _guarded_around_the_work(
-        store, name, key, payload_hash, run, unit_of_work, observe, replay_as
-    )
+    if unit_of_work is not None and joins_transaction(guard.store):
+        return await _guarded_in_one_commit(guard, run, unit_of_work)
+    return await _guarded_around_the_work(guard, run, unit_of_work)
 
 
 async def _guarded_in_one_commit(
-    store: IdempotencyStore,
-    name: str,
-    key: str,
-    payload_hash: int,
-    run: Callable[[], Awaitable[Any]],
-    unit_of_work: Transactor,
-    observe: Observer,
-    replay_as: Any,
+    guard: _Guard, run: Callable[[], Awaitable[Any]], unit_of_work: Transactor
 ) -> Any:
     """``begin; claim; run; complete; commit``. The ledger shares the transaction, so every failure path
     below is a rollback that drops the claim with the work: reported as ``released``. The commit is the
@@ -471,37 +467,32 @@ async def _guarded_in_one_commit(
         # The handle goes to the store explicitly. Left to `current_tx`, a store over another database
         # would find no ambient tx of its own and auto-commit the claim outside the guard's transaction,
         # so a rollback would leave the key pending; given this handle it refuses with BadHandle.
-        async with _transaction(unit_of_work, observe) as tx:
-            claimed = await store.claim(key, payload_hash, tx=tx)
+        async with _transaction(unit_of_work, guard.observe) as tx:
+            claimed = await guard.store.claim(guard.key, guard.payload_hash, tx=tx)
             if not isinstance(claimed, Won):
-                return _replay(name, key, payload_hash, claimed, observe, replay_as)
+                return guard.replay(claimed)
             started = perf_counter_ns()
             result = await run()
-            await store.complete(key, claimed.handle, Record(payload_hash, result=result), tx=tx)
+            record = Record(guard.payload_hash, result=result)
+            await guard.store.complete(guard.key, claimed.handle, record, tx=tx)
         how = "completed"
         return result
     finally:
         if started is not None:
-            observe.settled(name, how, perf_counter_ns() - started)
+            guard.observe.settled(guard.name, how, perf_counter_ns() - started)
 
 
 async def _guarded_around_the_work(
-    store: IdempotencyStore,
-    name: str,
-    key: str,
-    payload_hash: int,
-    run: Callable[[], Awaitable[Any]],
-    unit_of_work: Transactor | None,
-    observe: Observer,
-    replay_as: Any,
+    guard: _Guard, run: Callable[[], Awaitable[Any]], unit_of_work: Transactor | None
 ) -> Any:
     """``claim; begin; run; commit; complete``. The claim lands on its own, so every failure after
     it must be compensated by hand. With ``unit_of_work`` unset the middle is just ``run()``."""
     # A claim that raises is deliberately not compensated: it returned no handle to release with, and a
     # claim whose response was lost is settled by the store's retention.
+    store, key, payload_hash = guard.store, guard.key, guard.payload_hash
     claimed = await store.claim(key, payload_hash)
     if not isinstance(claimed, Won):
-        return _replay(name, key, payload_hash, claimed, observe, replay_as)
+        return guard.replay(claimed)
     handle = claimed.handle
 
     # Won the claim. From here every exit must settle the record, including a failure of the commit
@@ -511,7 +502,7 @@ async def _guarded_around_the_work(
     how: Settlement = "refused"
     try:
         try:
-            async with _unit(unit_of_work, observe):
+            async with _unit(unit_of_work, guard.observe):
                 result = await run()
         except BaseException as e:
             # The kernel's settle table: a terminal failure is cached with its code; a transient one, or a
@@ -526,7 +517,7 @@ async def _guarded_around_the_work(
         how = "completed"
         return result
     finally:
-        observe.settled(name, how, perf_counter_ns() - started)
+        guard.observe.settled(guard.name, how, perf_counter_ns() - started)
 
 
 async def _settle_failure(

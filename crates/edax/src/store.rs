@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use edax_core::lock;
 use edax_event::{EventEnvelope, Failure, Metadata, Namespace, Retries, SagaCommand, Verdict};
 
-use crate::command::{code_of, is_terminal, HandlerError};
+use crate::command::{code_of, retry_with, HandlerError};
 use crate::pacing::Pacing;
 use crate::{Aggregate, AggregateCodec, Error, EventCodec};
 
@@ -177,19 +177,7 @@ pub fn retry_transaction<T, R>(
 where
     T: Transactor,
 {
-    let attempts = attempts.max(1);
-    let mut failures: usize = 0;
-    loop {
-        match transaction(tr, &mut body) {
-            Ok(result) => return Ok(result),
-            Err(e) if is_terminal(&*e) || failures.saturating_add(1) >= attempts => return Err(e),
-            Err(_) => {
-                // The backoff index is the number of failures so far, as in `retry`.
-                pacing.wait(u64::try_from(failures).unwrap_or(u64::MAX));
-                failures = failures.saturating_add(1);
-            }
-        }
-    }
+    retry_with(attempts, pacing, || transaction(tr, &mut body))
 }
 
 /// A row an [`Outbox`] holds: what [`Relay`] marks it published by.
@@ -253,14 +241,16 @@ fn default_now() -> i64 {
     edax_core::current_timestamp()
 }
 
-/// Loads aggregates (snapshot then replay the rest) and saves them (append the pending events and a
-/// fresh snapshot in one transaction; the store also enqueues the outbox).
+/// Loads aggregates (snapshot then replay the rest) and saves them (append the pending events and, at
+/// the [`snapshot_every`](Self::snapshot_every) interval, a fresh snapshot in one transaction; the
+/// store also enqueues the outbox).
 pub struct Repository<S, EC, AC> {
     store: S,
     events: EC,
     aggregates: AC,
     new_id: Box<dyn Fn() -> String + Send + Sync>,
     now: Box<dyn Fn() -> i64 + Send + Sync>,
+    snapshot_every: u64,
 }
 
 impl<S, EC, AC> Repository<S, EC, AC>
@@ -270,7 +260,16 @@ where
     EC: EventCodec<Domain = <AC::Aggregate as Aggregate>::Event>,
 {
     pub fn new(store: S, events: EC, aggregates: AC) -> Self {
-        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), now: Box::new(default_now) }
+        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), now: Box::new(default_now), snapshot_every: 1 }
+    }
+
+    /// How often a save writes a snapshot: each time the aggregate's version crosses a multiple of
+    /// `every`, so `1` (the default) snapshots on every save and `0` never does. The kernel's rule
+    /// ([`edax_event::snapshot_due`]). A snapshot doubles the writes of the save that takes it; a
+    /// stream that is cheap to replay wants a larger interval.
+    pub fn snapshot_every(mut self, every: u64) -> Self {
+        self.snapshot_every = every;
+        self
     }
 
     /// Override id and clock — useful for deterministic tests. Closures, so a caller can capture a
@@ -388,16 +387,19 @@ where
             })
             .collect::<Result<_, Error>>()?;
 
-        let snapshot = Snapshot {
-            aggregate_id: aggregate_id.clone(),
-            type_name: self.aggregates.type_name().to_string(),
-            version: current,
-            // Snapshot every save; add an interval (every N events) if dump cost bites.
-            data: self.aggregates.dump(agg)?,
+        // Dumped before the first write, like the events: a snapshot that cannot be written fails the
+        // save outright.
+        let snapshot = if edax_event::snapshot_due(self.snapshot_every, initial, current) {
+            let data = self.aggregates.dump(agg)?;
+            Some(Snapshot { aggregate_id: aggregate_id.clone(), type_name: self.aggregates.type_name().to_string(), version: current, data })
+        } else {
+            None
         };
 
         self.store.append(tx, &aggregate_id, initial, &envelopes)?;
-        self.store.save_snapshot(tx, &snapshot)?;
+        if let Some(snapshot) = snapshot {
+            self.store.save_snapshot(tx, &snapshot)?;
+        }
         Ok((envelopes, current))
     }
 
@@ -456,23 +458,33 @@ pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError
 /// twice. Two relays over one store need [`Outbox::unpublished`] to lease the rows it returns.
 pub struct Relay<S, R = EventEnvelope> {
     store: S,
-    /// Taken for a whole drain, so drains take turns. Holds the consecutive store failures, the
-    /// backoff step of the next one.
-    draining: Mutex<u64>,
+    /// Taken for a whole drain, so drains take turns.
+    draining: Mutex<Draining>,
     max_attempts: u32,
-    retries: Mutex<Retries>,
     on_dead: Option<RelaySink<R>>,
     pacing: Pacing,
     _row: PhantomData<fn() -> R>,
+}
+
+/// What a drain holds for its whole run: the consecutive store failures (the backoff step of the next
+/// one) and the kernel's retry policy, keyed by row id.
+struct Draining {
+    store_failures: u64,
+    retries: Retries,
+}
+
+impl Draining {
+    fn new(max_attempts: u32, sink: bool) -> Mutex<Self> {
+        Mutex::new(Self { store_failures: 0, retries: Retries::new(max_attempts, sink) })
+    }
 }
 
 impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
     pub fn new(store: S) -> Self {
         Self {
             store,
-            draining: Mutex::new(0),
+            draining: Draining::new(0, false),
             max_attempts: 0,
-            retries: Mutex::new(Retries::new(0, false)),
             on_dead: None,
             pacing: Pacing::default(),
             _row: PhantomData,
@@ -481,15 +493,15 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
 
     /// Dead-letter a row whose publish failed transiently `n` times; `0` (the default) never does.
     pub fn max_attempts(self, n: u32) -> Self {
-        let retries = Mutex::new(Retries::new(n, self.on_dead.is_some()));
-        Self { max_attempts: n, retries, ..self }
+        let draining = Draining::new(n, self.on_dead.is_some());
+        Self { max_attempts: n, draining, ..self }
     }
 
     /// Where a row that cannot be published goes, instead of stalling the rows behind it. A sink
     /// that fails hands the row back, and the next drain tries the sink again.
     pub fn on_dead(mut self, sink: impl Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync + 'static) -> Self {
         self.on_dead = Some(Box::new(sink));
-        self.retries = Mutex::new(Retries::new(self.max_attempts, true));
+        self.draining = Draining::new(self.max_attempts, true);
         self
     }
 
@@ -512,8 +524,9 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
     where
         F: FnMut(&R) -> Result<(), HandlerError>,
     {
-        let mut store_failures = lock(&self.draining);
-        let (settled, failed) = match self.publish_batch(batch, publish) {
+        let mut draining = lock(&self.draining);
+        let Draining { store_failures, retries } = &mut *draining;
+        let (settled, failed) = match self.publish_batch(retries, batch, publish) {
             Ok(drained) => {
                 *store_failures = 0;
                 drained
@@ -537,7 +550,12 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
 
     /// Read a batch, publish it in order until a row fails, and mark every row settled. Returns how
     /// many rows settled and the failed row's backoff step and error; `Err` only for a store failure.
-    fn publish_batch<F>(&self, batch: usize, mut publish: F) -> Result<(usize, Option<(u64, HandlerError)>), Error>
+    fn publish_batch<F>(
+        &self,
+        retries: &mut Retries,
+        batch: usize,
+        mut publish: F,
+    ) -> Result<(usize, Option<(u64, HandlerError)>), Error>
     where
         F: FnMut(&R) -> Result<(), HandlerError>,
     {
@@ -546,22 +564,22 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
         let mut failed: Option<(u64, HandlerError)> = None;
         for row in &rows {
             let Err(error) = publish(row) else {
-                lock(&self.retries).succeeded(row.id());
+                retries.succeeded(row.id());
                 settled.push(row.id().to_owned());
                 continue;
             };
-            let verdict = lock(&self.retries).failed(row.id(), 0, Failure::of(code_of(&*error)));
+            let verdict = retries.failed(row.id(), 0, Failure::of(code_of(&*error)));
             let step = match verdict {
                 Verdict::Nack { step } => step,
                 Verdict::Dead { attempt } => {
                     // The kernel answers `Dead` only for a relay built with a sink, so `None` here is
                     // unreachable and a sink that refused the row hands it back like any failure.
                     if self.on_dead.as_ref().is_some_and(|sink| sink(row, &error).is_ok()) {
-                        lock(&self.retries).dead_lettered(row.id());
+                        retries.dead_lettered(row.id());
                         settled.push(row.id().to_owned());
                         continue;
                     }
-                    lock(&self.retries).sink_failed(row.id(), attempt)
+                    retries.sink_failed(row.id(), attempt)
                 }
             };
             failed = Some((step, error));
@@ -696,6 +714,24 @@ mod tests {
         let b = r.load("acct-2").unwrap();
         assert_eq!(b.balance, 15);
         assert_eq!(b.root().version, 2);
+    }
+
+    #[test]
+    fn snapshot_every_writes_one_where_a_save_crosses_its_interval() {
+        // Two saves of one event each: the snapshot left behind, per interval. `1` takes both saves,
+        // `2` the second, `3` neither, and `0` never snapshots.
+        for (every, want) in [(1, Some(2)), (2, Some(2)), (3, None), (0, None)] {
+            let store = MemoryEventStore::new();
+            let r = repo(store.clone()).snapshot_every(every);
+            let mut a = Account::open("acct-9");
+            for amount in [10, 5] {
+                a.apply(AccountEvent::Deposited(amount));
+                r.save(&mut a).unwrap();
+            }
+            let snapshot = store.load_snapshot(&mut MemoryTx::auto_commit(), "acct-9").unwrap();
+            assert_eq!(snapshot.map(|s| s.version), want, "every {every}");
+            assert_eq!(r.load("acct-9").unwrap().balance, 15, "every {every}: the load replays what the snapshot lacks");
+        }
     }
 
     #[test]
@@ -1062,21 +1098,8 @@ mod tests {
 
     // --- the relay ---
 
-    /// A pacing that records each backoff step's wait instead of sleeping. The draw is fixed at
-    /// `u64::MAX`, so each wait is that step's ceiling and the step can be read back off it.
-    fn recorded() -> (Pacing, Arc<Mutex<Vec<std::time::Duration>>>) {
-        let waits: Arc<Mutex<Vec<std::time::Duration>>> = Arc::default();
-        let sink = Arc::clone(&waits);
-        let pacing = Pacing {
-            sleep: Arc::new(move |d| sink.lock().expect("no panics").push(d)),
-            entropy: Arc::new(|| u64::MAX),
-            ..Pacing::default()
-        };
-        (pacing, waits)
-    }
-
     fn step_wait(step: u64) -> std::time::Duration {
-        recorded().0.delay(step)
+        Pacing::recording().0.delay(step)
     }
 
     /// The event outbox with two fault hooks: every `unpublished` read is reported on `reads`, and
@@ -1230,7 +1253,7 @@ mod tests {
         ];
         for c in cases {
             let store = outbox_of(4);
-            let (pacing, waits) = recorded();
+            let (pacing, waits) = Pacing::recording();
             let dead: Arc<Mutex<Vec<String>>> = Arc::default();
             let sink = Arc::clone(&dead);
             let mode = c.sink;
@@ -1320,7 +1343,7 @@ mod tests {
             reads: Mutex::new([false, false, true, true, false, true, false].into()),
             marks: Mutex::new([false].into()),
         };
-        let (pacing, waits) = recorded();
+        let (pacing, waits) = Pacing::recording();
         let relay = Relay::new(store).pacing(pacing);
         for drain in drains {
             let before = waits.lock().unwrap().len();
@@ -1343,7 +1366,7 @@ mod tests {
         let (read_tx, reads) = std::sync::mpsc::channel::<()>();
         let mut hooked = Hooked::new(outbox_of(2));
         hooked.reads = Some(Arc::new(Mutex::new(read_tx)));
-        let relay = Arc::new(Relay::new(hooked).pacing(recorded().0));
+        let relay = Arc::new(Relay::new(hooked).pacing(Pacing::recording().0));
         let published: Arc<Mutex<Vec<String>>> = Arc::default();
         let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
         let (release_tx, release) = std::sync::mpsc::channel::<()>();
@@ -1390,7 +1413,7 @@ mod tests {
         // each once.
         let hooked = Hooked::new(outbox_of(2));
         hooked.fail_mark.store(true, Ordering::SeqCst);
-        let relay = Relay::new(hooked.clone()).pacing(recorded().0);
+        let relay = Relay::new(hooked.clone()).pacing(Pacing::recording().0);
         let mut delivered: Vec<String> = Vec::new();
         let crashed = relay.drain(10, |env| {
             delivered.push(env.id.clone());

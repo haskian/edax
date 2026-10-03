@@ -4,9 +4,9 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import FakeKafkaClient, KafkaMsg, golden, sequence_of
+from conftest import FakeKafkaClient, KafkaMsg, SpyProducerClient, golden, sequence_of
 from edax import _edax, causation
-from edax.backend.kafka import KafkaConsumer
+from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.broker import UndecodableDelivery
 from edax.causation import CAUSATION_ID, CORRELATION_ID, ensure_ids, originate, propagate
 
@@ -35,6 +35,12 @@ def test_golden_staleness() -> None:
         assert (applied, watermark) == (c["applied"], c["watermark"]), c["name"]
 
 
+def test_golden_snapshot_due() -> None:
+    """The snapshot interval :class:`~edax.store.Repository` asks the kernel about on every save."""
+    for c in golden("snapshot_due.json"):
+        assert _edax.snapshot_due(c["every"], c["initial"], c["current"]) is c["due"], c
+
+
 def test_golden_sequence_batch() -> None:
     """The dense-batch rule, one case per branch, through the public :func:`edax.check_sequence_batch` a
     durable store calls. Every refusal is the kernel's terminal ``codec:`` error, so a store whose append
@@ -45,7 +51,7 @@ def test_golden_sequence_batch() -> None:
         else:
             with pytest.raises(edax.CodecError) as caught:
                 edax.check_sequence_batch(c["expected"], c["sequences"])
-            assert _edax.tag_error("codec", str(caught.value)) == c["error"]
+            assert f"{caught.value.code}: {caught.value}" == c["error"]
             assert edax.is_terminal(caught.value)
 
 
@@ -109,8 +115,8 @@ def test_golden_envelope_decode() -> None:
 
 
 def _envelope_as_obj(env: edax.EventEnvelope) -> dict[str, Any]:
-    """The golden's envelope shape out of a native envelope, so a case compares one value instead of
-    seven fields. The native class has no ``__eq__``, so two envelopes never compare equal directly."""
+    """The golden's envelope shape out of a native envelope, so a case compares one value against the
+    vector's JSON instead of seven fields."""
     return {
         "id": env.id,
         "aggregate_id": env.aggregate_id,
@@ -131,17 +137,22 @@ def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
 
 
 def test_golden_kafka_record() -> None:
-    """The record a producer sends, built the way :class:`~edax.backend.kafka.KafkaProducer` builds
-    it: the serializer's bytes and media type into the kernel's record. A second SDK writing a
-    different key or header set would split the topic in two."""
+    """The record a :class:`~edax.backend.kafka.KafkaProducer` sends, through a spy client: the
+    serializer's bytes and media type in the kernel's record. A second SDK writing a different key or
+    header set would split the topic in two."""
     for c in golden("kafka_record.json"):
-        env = _envelope_from_obj(c["envelope"])
+        env, key = _envelope_from_obj(c["envelope"]), c["key"]
+        client = SpyProducerClient()
         serializer = edax.KernelSerializer(c["format"])
-        record = _edax.kafka_record(env, serializer.encode(env), _edax.media_type(c["format"]), c["key"])
-        assert record.key.hex() == c["key_hex"], c["name"]
-        assert record.value.hex() == c["value_hex"], c["name"]
-        got = [(h.key, h.value.hex()) for h in record.headers]
-        assert got == [(h["key"], h["value_hex"]) for h in c["headers"]], c["name"]
+        producer = KafkaProducer(
+            client, "t", serializer=serializer, key=None if key is None else lambda _, key=key: key
+        )
+        asyncio.run(producer.publish(env))
+        [(_, value, sent_key, _, headers)] = client.sent
+        assert (sent_key.hex(), value.hex()) == (c["key_hex"], c["value_hex"]), c["name"]
+        assert [(k, v.hex()) for k, v in headers] == [(h["key"], h["value_hex"]) for h in c["headers"]], c[
+            "name"
+        ]
 
 
 def test_golden_kafka_decode() -> None:
@@ -176,8 +187,14 @@ def test_golden_kafka_decode() -> None:
 def test_golden_kafka_route() -> None:
     """The routing rule every shell runs, replayed through the binding: the default, an index into the
     host's own registry, or the unknown media type — an empty value included, which a null header value
-    crosses as."""
+    crosses as — and the refusal of a registry that names a media type twice."""
     for c in golden("kafka_route.json"):
+        if "error" in c["want"]:
+            with pytest.raises(edax.AlreadyRegistered) as refused, edax.errors.mapped():
+                _edax.kafka_check_media_types(c["registered"])
+            assert f"already_registered: {refused.value}" == c["want"]["error"], c["name"]
+            continue
+        _edax.kafka_check_media_types(c["registered"])
         route = _edax.kafka_route(_headers_from_obj(c["headers"]), c["registered"])
         got: dict[str, Any]
         if route.registered is not None:
@@ -191,11 +208,10 @@ def test_golden_kafka_route() -> None:
 
 def test_golden_kafka_dead_letter() -> None:
     """The record a dead-letter sink publishes: key, value and headers verbatim plus the four
-    ``edax-dlq-*`` headers, and the source its reader recovers — the last one, after two dead-letterings —
-    or none when a coordinate is missing or unreadable."""
+    ``edax-dlq-*`` headers. The rows for the kernel's reader of those headers replay in Rust only: no
+    SDK reads a dead-letter record back."""
     for c in golden("kafka_dead_letter.json"):
         if "record" not in c:
-            assert _edax.kafka_dead_letter_source(_headers_from_obj(c["headers"])) is None, c["name"]
             continue
         rec, want = c["record"], c["want"]
         record = _edax.KafkaRecord(
@@ -206,15 +222,6 @@ def test_golden_kafka_dead_letter() -> None:
         assert [{"key": h.key, "value_hex": h.value.hex()} for h in dead.headers] == want["headers"], c[
             "name"
         ]
-        source = _edax.kafka_dead_letter_source(dead.headers)
-        assert source is not None, c["name"]
-        got = {
-            "topic": source.topic,
-            "partition": source.partition,
-            "offset": source.offset,
-            "error": source.error,
-        }
-        assert got == want["source"], c["name"]
 
 
 def test_golden_kafka_offsets() -> None:
@@ -270,13 +277,14 @@ def test_golden_kafka_offsets() -> None:
 
 
 def test_golden_redis_value() -> None:
-    """The bytes under an idempotency key: ``1<owner><record>``, and the split back out of them. A
-    second SDK that laid them out differently could not read this SDK's ledger."""
+    """The bytes under an idempotency key: ``1<owner><record>``, and the record read back out of them
+    the way a claim reads the key's holder. A second SDK that laid them out differently could not read
+    this SDK's ledger. A claim value with a fixed owner is a kernel test hook, so those rows replay in
+    Rust only."""
+    reader = _edax.redis_new_claim(0)  # a claim of this SDK's own, so every held value reads as a prior
     for c in golden("redis_value.json"):
         name, op = c["name"], c["op"]
-        if op == "claim":
-            assert _edax.redis_claim_value(c["owner"], c["payload_hash"]) == c["value"].encode(), name
-        elif op == "settled":
+        if op == "settled":
             assert _edax.redis_settled_value(c["claim"].encode(), c["record_json"]) == c["value"].encode(), (
                 name
             )
@@ -284,12 +292,11 @@ def test_golden_redis_value() -> None:
             raw, want = bytes.fromhex(c["raw_hex"]), c["want"]
             if "error" in want:
                 with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
-                    _edax.redis_split_value(raw)
+                    _edax.redis_claim_outcome(reader, raw)
                 assert f"codec: {caught.value}" == want["error"], name
                 continue
-            split = _edax.redis_split_value(raw)
-            assert (split.owner, split.record) == (want["owner"], want["record"]), name
-        else:
+            assert _edax.redis_claim_outcome(reader, raw) == want["record"], name
+        elif op != "claim":
             raise AssertionError(f"{name}: unknown op {op}")
 
 
@@ -298,8 +305,10 @@ def _redis_ledger_case(c: dict[str, Any]) -> Any:
     op = c["op"]
     if op == "key":
         return _edax.redis_ledger_key(c["prefix"], c["key"]).hex()
-    if op == "ttl":
-        return _edax.redis_check_ttl(c["setting"], c["ttl_ms"])
+    if op == "config":
+        return _edax.redis_check_config(
+            c["prefix"], c["ttl_ms"], c["claim_ttl_ms"], c["op_timeout_ms"], c["heartbeat"]
+        )
     if op == "handle":
         return _edax.redis_check_claim(bytes.fromhex(c["handle_hex"]))
     if op == "outcome":
@@ -326,11 +335,12 @@ def test_golden_redis_ledger() -> None:
 def test_golden_redis_scripts() -> None:
     """The four Lua bodies, verbatim: EVALSHA hashes the source, so a byte of drift in any one is a
     different script and a lost fence between SDKs."""
+    scripts = _edax.redis_scripts()
     bodies = {
-        "claim": _edax.redis_claim_script(),
-        "complete": _edax.redis_complete_script(),
-        "release": _edax.redis_release_script(),
-        "extend": _edax.redis_extend_script(),
+        "claim": scripts.claim,
+        "complete": scripts.complete,
+        "release": scripts.release,
+        "extend": scripts.extend,
     }
     assert [c["name"] for c in golden("redis_scripts.json")] == list(bodies)
     for c in golden("redis_scripts.json"):

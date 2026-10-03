@@ -180,5 +180,28 @@
       "media_type": "application/vnd.edax.envelope+json; charset=utf-8",
       "route": "unknown"
     }
+  },
+  {
+    "headers": [],
+    "name": "a_media_type_registered_twice_is_refused",
+    "registered": [
+      "application/vnd.edax.envelope+json",
+      "application/x-test-id",
+      "application/vnd.edax.envelope+json"
+    ],
+    "want": {
+      "error": "already_registered: two serializers claim the media type \"application/vnd.edax.envelope+json\""
+    }
+  },
+  {
+    "headers": [],
+    "name": "a_host_media_type_registered_twice_is_refused",
+    "registered": [
+      "application/x-test-id",
+      "application/x-test-id"
+    ],
+    "want": {
+      "error": "already_registered: two serializers claim the media type \"application/x-test-id\""
+    }
   }
 ]

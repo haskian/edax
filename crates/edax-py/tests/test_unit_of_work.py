@@ -25,7 +25,7 @@ import edax
 import pytest
 from conftest import RefusingLedger
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
-from edax.command import Claimed, CommandBus, Record, Won, idempotent, joins_transaction
+from edax.command import Claimed, CommandBus, Record, Won, _payload_hash, idempotent, joins_transaction
 from edax.projection import Entity
 from edax.router import idempotent_by_id
 from edax.testing.faults import BrokenCommit, CommitFault, Refusing
@@ -343,11 +343,11 @@ async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
-    await ledger.claim("req-A", _hash_of(Deposit(100, "req-A")))
+    await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
     with pytest.raises(edax.InProgress):
         await bus.dispatch(Deposit(100, "req-A"))
 
-    still_held = await ledger.claim("req-A", _hash_of(Deposit(100, "req-A")))
+    still_held = await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -385,7 +385,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
-    await ledger.claim("req-A", _hash_of(cmd))  # the winner, still pending
+    await ledger.claim("req-A", _payload_hash(cmd))  # the winner, still pending
 
     ledger.raise_on_claim = True
     with pytest.raises(edax.StoreError):
@@ -393,7 +393,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
 
     assert ledger.releases == [], "a failed claim must not be compensated"
     ledger.raise_on_claim = False
-    still_held = await ledger.claim("req-A", _hash_of(cmd))
+    still_held = await ledger.claim("req-A", _payload_hash(cmd))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -473,7 +473,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
 
     if case.shared:
         # The host's rollback is what frees the claim, so the key is clear for a redelivery.
-        assert isinstance(await ledger.claim("req-A", _hash_of(cmd)), Won)
+        assert isinstance(await ledger.claim("req-A", _payload_hash(cmd)), Won)
     else:
         # No rollback is coming: the claim stays pending until the store's retention frees it. That
         # is the documented residual cost of a ledger of its own, not a leak.
@@ -495,12 +495,6 @@ async def test_joins_transaction_defaults_to_false_for_an_undeclared_store() -> 
 
 async def _never_completes(cmd: Any) -> None:
     raise AssertionError("the handler must not run when the claim is already held")
-
-
-def _hash_of(cmd: Any) -> int:
-    from edax.command import _payload_hash
-
-    return _payload_hash(cmd)
 
 
 # =========================================================================
@@ -563,7 +557,7 @@ class History:
     async def record(self, key: int) -> Any:
         """The key's stored record, read by claiming it. Only ever called after the history is
         over, so taking the claim cannot perturb what it reports."""
-        return await self.ledger.claim(str(key), _hash_of(Deposit(0, str(key))))
+        return await self.ledger.claim(str(key), _payload_hash(Deposit(0, str(key))))
 
 
 @given(ops=st.lists(op, max_size=8), shared=st.booleans())

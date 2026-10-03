@@ -1,5 +1,5 @@
 """Structured error taxonomy over the kernel's ``ErrorCode``. The native layer reports failures as strings
-with a stable code prefix (``"codec: ..."``); :func:`from_runtime` maps the code to an exception class.
+with a stable code prefix (``"codec: ..."``); :func:`from_wire` maps the code to an exception class.
 ``terminal`` marks an error that fails the same way on retry. The retry middleware, the idempotency guard and
 the dispatcher decide retry-vs-dead-letter on it, and the guard persists on it: a terminal failure is cached
 under the idempotency key, a transient one releases the claim. The verdict is the kernel's, pinned by
@@ -90,8 +90,8 @@ class Rejected(EdaxError, code="rejected"):
 
 
 def _check_every_kernel_code_has_a_class() -> None:
-    """Fail the import if the kernel knows a code this module does not. Without it a new kernel code would
-    reach :func:`from_runtime`'s unknown-code default and be classified transient with no signal."""
+    """Fail the import if the kernel knows a code this module does not, so :func:`from_wire` finds a class
+    for every code the kernel names."""
     unmapped = sorted(set(_edax.error_codes()) - set(_BY_CODE))
     if unmapped:
         raise ImportError(f"kernel error codes with no edax.errors class: {unmapped}")
@@ -100,39 +100,18 @@ def _check_every_kernel_code_has_a_class() -> None:
 _check_every_kernel_code_has_a_class()
 
 
-#: The kernel's verdict for a failure no code classifies — a host's own exception, a wire string with an
-#: unknown code. Read from the kernel, never chosen here, so every SDK sharing a store agrees on it.
+#: The kernel's verdict for a failure no code classifies — a host's own exception. Read from the kernel,
+#: never chosen here, so every SDK sharing a store agrees on it.
 UNCLASSIFIED_IS_TERMINAL: bool = _edax.error_verdict("")
 
 
-def _check_the_unclassified_class_carries_the_kernels_default() -> None:
-    """:func:`from_runtime` maps an unknown code to :class:`StoreError`, so that class's verdict must be the
-    kernel's default for an unclassified failure. Fail the import if the kernel ever changes it."""
-    if StoreError.terminal != UNCLASSIFIED_IS_TERMINAL:
-        raise ImportError(
-            "edax.errors maps an unknown code to StoreError, whose verdict is not the kernel's default"
-        )
-
-
-_check_the_unclassified_class_carries_the_kernels_default()
-
-
-def from_runtime(e: Exception) -> EdaxError:
-    """Map a native ``"<code>: <message>"`` error to the matching :class:`EdaxError`. An unknown or absent
-    code becomes a :class:`StoreError` carrying the whole message, code included: the kernel's verdict for
-    an unclassified failure is transient (a wrongly transient error is redelivered loudly and the work
-    survives, while a wrongly terminal one is dead-lettered and cached under its key, poisoning it). See
-    ``docs/sdk/errors.md``."""
-    return from_wire(str(e))
-
-
 def from_wire(wire: str) -> EdaxError:
-    """Map a kernel error's wire form ``"<code>: <message>"`` to the matching :class:`EdaxError`, with the
-    same unknown-code default as :func:`from_runtime`."""
-    # An unknown code comes back with an empty code and the whole string as the message.
+    """Map a kernel error's wire form ``"<code>: <message>"`` to the matching :class:`EdaxError`. The
+    kernel reads an unknown or absent code as a :class:`StoreError` carrying the whole string, code
+    included: a wrongly transient error is redelivered loudly and the work survives, while a wrongly
+    terminal one is dead-lettered and cached under its key, poisoning it. See ``docs/sdk/errors.md``."""
     split = _edax.split_error(wire)
-    cls = _BY_CODE.get(split.code)
-    return cls(split.message) if cls else StoreError(split.message)
+    return _BY_CODE[split.code](split.message)
 
 
 def is_terminal(e: BaseException) -> bool:
@@ -173,6 +152,6 @@ def mapped() -> Iterator[None]:
     try:
         yield
     except RuntimeError as e:
-        raise from_runtime(e) from e
+        raise from_wire(str(e)) from e
     except _ARGUMENT_ERRORS as e:
         raise CodecError(f"argument could not cross into the kernel: {e}") from e

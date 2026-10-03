@@ -309,7 +309,7 @@ from the loop's thread, with no locking.
 | `KeyOrderedDispatcher.idle()` | `bool` | every queue empty and `in_flight == 0` |
 | `Relay.last` | `DrainStats | None` | `published: int`, `duration_ns: int`, `oldest_timestamp: int | None`; `None` until the first drain completes; a drain that raised leaves it |
 | `EventStore.unpublished_count()` | `int` | optional seam method: committed unmarked outbox rows waiting now. Absent on a store that does not implement it |
-| `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled, retired ones included; `live: int` of those, the ones a handler may still settle; `max_delivered: int | None`; `committed: int | None` the last watermark, `None` before the first commit |
+| `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled, retired ones included; `live: int` of those, the ones a handler may still settle; `max_delivered: int` the highest offset booked; `committed: int | None` the last watermark, `None` before the first commit |
 | `KafkaConsumer.reset(tp)` | — | drops the bookkeeping for a revoked partition and retires its deliveries; `rebalance_listener()` calls it |
 
 The health checks a host builds from them:

@@ -58,7 +58,7 @@ pub fn new_claim(payload_hash: u64) -> Result<Vec<u8>, Error> {
 /// Refuse a prefix that cannot name a ledger. The prefix is the ledger's identity: an empty one puts
 /// every service sharing a Redis into one key space, where a request id two services both use is one
 /// claim.
-pub fn check_prefix(prefix: &str) -> Result<(), Error> {
+fn check_prefix(prefix: &str) -> Result<(), Error> {
     if prefix.is_empty() {
         return Err(Error::bad_handle(
             "the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\"",
@@ -77,12 +77,34 @@ pub fn ledger_key(prefix: &str, key: &str) -> Result<Vec<u8>, Error> {
     Ok([prefix.as_bytes(), key.as_bytes()].concat())
 }
 
-/// Refuse a TTL Redis would refuse on every write, so a misconfigured store fails when it is built
-/// rather than on every dispatch. `name` is the setting's name, for the message.
-pub fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
+/// Refuse a TTL Redis would refuse on every write. `name` is the setting's name, for the message.
+fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
     if !(1..=MAX_TTL_MS).contains(&ttl_ms) {
         return Err(Error::bad_handle(format_args!(
             "{name} is {ttl_ms} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}"
+        )));
+    }
+    Ok(())
+}
+
+/// How many times per claim TTL a heartbeat renews a held claim: every third of it, so one missed
+/// beat still leaves a third of the lease.
+pub const HEARTBEATS_PER_TTL: i64 = 3;
+
+/// Refuse the settings a ledger store is built with, as a `bad_handle` error naming the first one
+/// refused, so a misconfigured store fails when it is built rather than on every dispatch: an empty
+/// `prefix`, a `ttl_ms` or `claim_ttl_ms` Redis would refuse, an `op_timeout_ms` deadline that is not
+/// positive, or a `heartbeat` over a `claim_ttl_ms` too short to renew [`HEARTBEATS_PER_TTL`] times.
+pub fn check_config(prefix: &str, ttl_ms: i64, claim_ttl_ms: i64, op_timeout_ms: i64, heartbeat: bool) -> Result<(), Error> {
+    check_prefix(prefix)?;
+    check_ttl("ttl_ms", ttl_ms)?;
+    check_ttl("claim_ttl_ms", claim_ttl_ms)?;
+    if op_timeout_ms <= 0 {
+        return Err(Error::bad_handle(format_args!("op_timeout_ms is {op_timeout_ms} ms; a deadline must be positive")));
+    }
+    if heartbeat && claim_ttl_ms < HEARTBEATS_PER_TTL {
+        return Err(Error::bad_handle(format_args!(
+            "claim_ttl_ms is {claim_ttl_ms} ms; a heartbeat renews every 1/{HEARTBEATS_PER_TTL} of it, so it needs {HEARTBEATS_PER_TTL}"
         )));
     }
     Ok(())
@@ -389,21 +411,20 @@ mod tests {
             ledger_key("", "order-7").unwrap_err().code,
             edax_core::ErrorCode::BadHandle
         );
-        assert_eq!(check_prefix("x"), Ok(()));
-        for (ttl, ok) in [
-            (1, true),
-            (MAX_TTL_MS, true),
-            (0, false),
-            (-5, false),
-            (MAX_TTL_MS + 1, false),
-            (i64::MIN, false),
-        ] {
-            let got = check_ttl("ttl_ms", ttl);
-            assert_eq!(got.is_ok(), ok, "{ttl}");
-            if let Err(e) = got {
-                assert_eq!(e.code, edax_core::ErrorCode::BadHandle);
-                assert!(e.message.starts_with(&format!("ttl_ms is {ttl} ms")), "{e}");
-            }
+        // One row per refusal of `check_config`, and the edges of the TTL range.
+        let refused = |prefix, ttl, claim_ttl, deadline, heartbeat| {
+            check_config(prefix, ttl, claim_ttl, deadline, heartbeat).err().map(|e| (e.code, e.message))
+        };
+        let bad = |message: &str| Some((edax_core::ErrorCode::BadHandle, message.to_owned()));
+        assert_eq!(refused("x", 1, MAX_TTL_MS, 1, false), None);
+        assert_eq!(refused("x", 86_400_000, 3, 5_000, true), None, "a heartbeat over three milliseconds");
+        assert_eq!(refused("", 1, 1, 1, false), bad("the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\""));
+        for ttl in [0, -5, MAX_TTL_MS + 1, i64::MIN] {
+            let want = format!("ttl_ms is {ttl} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}");
+            assert_eq!(refused("x", ttl, 1, 1, false), bad(&want), "{ttl}");
         }
+        assert_eq!(refused("x", 1, 0, 1, false), bad(&format!("claim_ttl_ms is 0 ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}")));
+        assert_eq!(refused("x", 1, 1, 0, false), bad("op_timeout_ms is 0 ms; a deadline must be positive"));
+        assert_eq!(refused("x", 1, 2, 1, true), bad("claim_ttl_ms is 2 ms; a heartbeat renews every 1/3 of it, so it needs 3"));
     }
 }

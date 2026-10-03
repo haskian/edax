@@ -17,16 +17,9 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import build_envelope
+from conftest import NO_WAIT, build_envelope
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
 from edax.filter import eq, matches
-
-
-async def _no_sleep(seconds: float) -> None:
-    pass
-
-
-NO_WAIT = edax.Pacing(sleep=_no_sleep)
 
 
 class DeclaredTerminal(Exception):

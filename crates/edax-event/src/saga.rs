@@ -13,7 +13,8 @@
 //! A broker redelivers an event whose step committed but whose ack was lost, and a crash replays
 //! every event above the committed offset. Folding one again would decide its commands a second
 //! time, under new ids, so the instance remembers what it folded ([`saga_admit`]) and the runner
-//! skips a repeat before it folds.
+//! skips a repeat before it folds. A completed instance folds nothing at all, so the same answer
+//! skips an event that finds a tombstone.
 
 use std::collections::BTreeMap;
 
@@ -33,20 +34,12 @@ pub enum Loaded {
         /// The version the fold is based on.
         version: u64,
     },
-    /// A completed instance (a tombstone) at `version`.
-    Completed {
-        /// The tombstone's version.
-        version: u64,
-    },
 }
 
 /// The write a saga step makes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub enum SagaWrite {
-    /// The instance is completed: discard the event without folding it. A late or redelivered
-    /// event must not start a finished workflow again.
-    Ignore,
     /// Nothing was loaded and the fold neither keeps state nor sends a command: write nothing, so a
     /// concurrent creator of the same correlation is not made to conflict with a no-op.
     Nothing,
@@ -63,10 +56,10 @@ pub enum SagaWrite {
 }
 
 /// The write for a step that loaded `loaded` and whose fold `completes` the instance (or keeps it
-/// running) and emitted commands or not (`has_commands`).
+/// running) and emitted commands or not (`has_commands`). A completed instance never gets here:
+/// [`saga_admit`] skips every event that finds one.
 pub fn saga_write(loaded: Loaded, completes: bool, has_commands: bool) -> SagaWrite {
     let expected = match loaded {
-        Loaded::Completed { .. } => return SagaWrite::Ignore,
         Loaded::Absent if completes && !has_commands => return SagaWrite::Nothing,
         Loaded::Absent => 0,
         Loaded::Active { version } => version,
@@ -92,6 +85,9 @@ struct Mark {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub enum SagaAdmit {
+    /// The instance is completed: discard the event without folding it. A late or redelivered
+    /// event must not start a finished workflow again.
+    Completed,
     /// The instance folded this event already: a redelivery or a replay after a crash. Skip it and
     /// write nothing, so its commands are not decided a second time.
     Repeat,
@@ -102,8 +98,9 @@ pub enum SagaAdmit {
     },
 }
 
-/// Whether an instance that has folded `folded` folds `env`. `folded` is the text the last write
-/// saved, empty for a new instance; a store keeps it as it is and never reads it.
+/// Whether an instance that has folded `folded` folds `env`, or is `completed` (a tombstone) and
+/// folds nothing. `folded` is the text the last write saved, empty for a new instance; a store keeps
+/// it as it is and never reads it.
 ///
 /// The instance keeps one mark per source aggregate: the highest sequence and the last event id
 /// folded from it. An event is a repeat when its id is the mark's, or when its sequence is below
@@ -113,7 +110,10 @@ pub enum SagaAdmit {
 ///
 /// # Errors
 /// A `codec` error when `folded` is not text this function wrote.
-pub fn saga_admit(folded: &str, env: &EventEnvelope) -> Result<SagaAdmit, Error> {
+pub fn saga_admit(completed: bool, folded: &str, env: &EventEnvelope) -> Result<SagaAdmit, Error> {
+    if completed {
+        return Ok(SagaAdmit::Completed);
+    }
     let mut marks: BTreeMap<String, Mark> = if folded.is_empty() {
         BTreeMap::new()
     } else {
@@ -159,8 +159,6 @@ mod tests {
     #[test]
     fn saga_write_branches() {
         let cases = [
-            ("completed ignores a fold that keeps state", Loaded::Completed { version: 4 }, false, true, SagaWrite::Ignore),
-            ("completed ignores a fold that completes", Loaded::Completed { version: 4 }, true, false, SagaWrite::Ignore),
             ("absent, completes, no commands: nothing", Loaded::Absent, true, false, SagaWrite::Nothing),
             ("absent, completes with commands: tombstone at 0", Loaded::Absent, true, true, SagaWrite::Complete { expected: 0 }),
             ("absent, keeps state: save at 0", Loaded::Absent, false, false, SagaWrite::Save { expected: 0 }),
@@ -214,8 +212,10 @@ mod tests {
             ),
         ];
         for (name, folded, env, want) in cases {
-            assert_eq!(saga_admit(folded, &env).map_err(|e| e.to_string()), want, "{name}");
+            assert_eq!(saga_admit(false, folded, &env).map_err(|e| e.to_string()), want, "{name}");
         }
+        // A tombstone folds nothing, whatever the marks and the event: unread marks are no error.
+        assert_eq!(saga_admit(true, "[1]", &event("order-7", Some(1), "evt-1")).map_err(|e| e.to_string()), Ok(SagaAdmit::Completed));
     }
 
     #[test]

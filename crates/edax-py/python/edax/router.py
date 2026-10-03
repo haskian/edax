@@ -11,7 +11,7 @@ from collections.abc import Callable
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from .aggregate import EventEnvelope
-from .command import IdempotencyStore, _compose, _guarded
+from .command import IdempotencyStore, _compose, _Guard, _guarded
 from .errors import AlreadyRegistered
 from .observe import Observer, _wrap
 from .store import Transactor
@@ -90,8 +90,8 @@ def idempotent_by_id(
         async def handler(env: EventEnvelope) -> None:
             with errors.mapped():
                 rule = _edax.event_idempotency(env)
-            run = lambda: maybe_await(next_(env))  # noqa: E731 - one call, named for the line length
-            await _guarded(store, env.event.name, rule.key, rule.payload_hash, run, unit_of_work, observe)
+            guard = _Guard(store, env.event.name, rule.key, rule.payload_hash, observe)
+            await _guarded(guard, lambda: maybe_await(next_(env)), unit_of_work)
 
         return handler
 

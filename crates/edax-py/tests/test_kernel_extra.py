@@ -15,7 +15,7 @@ from conftest import Tick, build_envelope, golden
 from edax import _edax, causation, upcast
 from edax import query as Q
 from edax.codec import json_codec, msgpack_codec
-from edax.errors import _BY_CODE, from_runtime
+from edax.errors import _BY_CODE, from_wire
 
 
 def _golden_page(case: dict[str, Any]) -> Q.Page:
@@ -68,7 +68,7 @@ def test_golden_cursor() -> None:
                     Q.decode_cursor(c["expected_cursor"], sort)
                 else:
                     Q.encode_cursor(c["document"], sort)
-            assert _edax.tag_error("codec", str(caught.value)) == c["error"], c["name"]
+            assert f"{caught.value.code}: {caught.value}" == c["error"], c["name"]
             continue
         assert Q.decode_cursor(c["expected_cursor"], sort) == c["expected_tuple"], c
         # Round trip: the cursor minted here is the one the vector pins.
@@ -123,7 +123,7 @@ def test_golden_upcast() -> None:
             assert str(caught.value) == c["error"], c
             with pytest.raises(edax.CodecError) as mapped, edax.errors.mapped():
                 edax.upcast_plan(c["from"], c["to"], c["available"])
-            assert _edax.tag_error("codec", str(mapped.value)) == c["error"], c
+            assert f"{mapped.value.code}: {mapped.value}" == c["error"], c
         else:
             assert edax.upcast_plan(c["from"], c["to"], c["available"]) == c["plan"], c
 
@@ -217,10 +217,10 @@ def test_upcaster_to_branches(
         ("empty_message", "", edax.StoreError, "", False),
     ],
 )
-def test_from_runtime_maps_the_native_code(
+def test_from_wire_maps_the_native_code(
     branch: str, message: str, want_type: type, want_message: str, want_terminal: bool
 ) -> None:
-    err = from_runtime(RuntimeError(message))
+    err = from_wire(message)
     assert type(err) is want_type
     assert str(err) == want_message
     assert err.terminal is want_terminal
@@ -231,67 +231,37 @@ ERROR_WIRE: list[dict[str, Any]] = golden("error_wire.json")
 
 @pytest.mark.parametrize("case", ERROR_WIRE, ids=lambda c: c["name"])
 def test_split_error_and_the_verdict_are_the_kernels(case: dict[str, Any]) -> None:
-    """Every row of `error_wire.json`, the negative ones included: `from_runtime` splits through the
-    kernel, so the ": " separator has one owner, and the verdict for a string with no code the kernel
-    knows is the kernel's default, read here rather than chosen."""
+    """Every row of `error_wire.json`, the negative ones included: `from_wire` splits through the
+    kernel, so the ": " separator and the class of a string with no code the kernel knows have one
+    owner, read here rather than chosen."""
     split = _edax.split_error(case["wire"])
-    assert (split.code or None, split.message, split.terminal) == (
-        case["code"],
-        case["message"],
-        case["terminal"],
-    )
+    assert (split.code, split.message, split.terminal) == (case["code"], case["message"], case["terminal"])
     assert _edax.error_verdict(case["wire"]) is case["terminal"]
-    err = from_runtime(RuntimeError(case["wire"]))
+    err = from_wire(case["wire"])
+    assert (err.code, str(err)) == (case["code"], case["message"])
     assert edax.errors.is_terminal(err) is case["terminal"], "the class carries the kernel's verdict"
-    if case["code"] is None:
-        assert type(err) is edax.StoreError and str(err) == case["wire"]
 
 
 def test_the_unclassified_default_is_the_kernels() -> None:
-    """A host exception carries no verdict: `is_terminal` falls back to the kernel's default, and the
-    class an unknown code maps to carries the same one, or the import fails."""
+    """A host exception carries no verdict: `is_terminal` falls back to the kernel's default, the
+    verdict of the class an unknown code maps to."""
     assert edax.errors.UNCLASSIFIED_IS_TERMINAL is _edax.error_verdict("") is False
     assert edax.errors.is_terminal(ValueError("a host bug")) is edax.errors.UNCLASSIFIED_IS_TERMINAL
     assert edax.StoreError.terminal is edax.errors.UNCLASSIFIED_IS_TERMINAL
 
 
-@pytest.mark.parametrize(
-    "branch, attribute, value, check",
-    [
-        # A kernel code with no class would reach the unknown-code default with no signal.
-        (
-            "a_kernel_code_with_no_class",
-            "_edax",
-            SimpleNamespace(error_codes=lambda: [*_edax.error_codes(), "quota_exceeded"]),
-            "_check_every_kernel_code_has_a_class",
-        ),
-        # The class an unknown code maps to must carry the kernel's default verdict.
-        (
-            "a_kernel_default_the_unknown_class_does_not_carry",
-            "UNCLASSIFIED_IS_TERMINAL",
-            True,
-            "_check_the_unclassified_class_carries_the_kernels_default",
-        ),
-    ],
-)
-def test_the_import_fails_when_the_mapping_drifts_from_the_kernel(
-    branch: str, attribute: str, value: Any, check: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(edax.errors, attribute, value)
-    with pytest.raises(ImportError):
-        getattr(edax.errors, check)()
+def test_the_import_fails_when_a_kernel_code_has_no_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A kernel code with no class would leave `from_wire` with nothing to raise."""
+    codes = SimpleNamespace(error_codes=lambda: [*_edax.error_codes(), "quota_exceeded"])
+    monkeypatch.setattr(edax.errors, "_edax", codes)
+    with pytest.raises(ImportError, match="quota_exceeded"):
+        edax.errors._check_every_kernel_code_has_a_class()
 
 
 def test_the_import_fails_on_a_wire_format_the_kernel_does_not_know(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(edax.aggregate, "WireFormat", Literal["json", "protobuf"])
     with pytest.raises(edax.CodecError, match="unknown format: protobuf"):
         edax.aggregate._check_every_wire_format_is_the_kernels()
-
-
-def test_tag_error_is_split_errors_inverse() -> None:
-    assert _edax.tag_error("rejected", "insufficient funds") == "rejected: insufficient funds"
-    with pytest.raises(RuntimeError, match="codec: unknown error code: Rejected"):
-        _edax.tag_error("Rejected", "x")
 
 
 # The kernel's error taxonomy: one row per code with the verdict every SDK persists on. The Rust
@@ -324,7 +294,7 @@ def test_each_code_keeps_the_kernel_verdict(case: dict[str, Any]) -> None:
     assert cls.code == case["code"]
     assert cls.terminal is case["terminal"]
     assert _edax.error_code_is_terminal(case["code"]) is case["terminal"]
-    err = from_runtime(RuntimeError(case["wire"]))
+    err = from_wire(case["wire"])
     assert type(err) is cls
     assert str(err) == case["message"]
     assert edax.errors.is_terminal(err) is case["terminal"]
@@ -356,7 +326,7 @@ def test_an_unmapped_code_stays_transient_and_keeps_the_code_in_the_message() ->
     command replays `CachedFailure` forever — a poisoned key needing manual repair. A transient
     default only redelivers, which is visible and recoverable once the code is mapped. The code must
     survive into the message so an operator can see which one went unmapped."""
-    err = from_runtime(RuntimeError("throttled: quota exhausted, retry after 30s"))
+    err = from_wire("throttled: quota exhausted, retry after 30s")
     assert type(err) is edax.StoreError
     assert edax.errors.is_terminal(err) is False
     assert str(err) == "throttled: quota exhausted, retry after 30s"

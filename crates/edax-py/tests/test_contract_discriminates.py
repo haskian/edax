@@ -496,11 +496,12 @@ class CheckThenActEventStore:
 
 class OverlayDb:
     """A dict database with transactions as overlays, applied on commit, for the read-then-write mistakes
-    of the projection and saga seams. ``leaky`` lets every reader see every open transaction's overlay."""
+    of the projection and saga seams. ``leaky`` lets every reader see every open transaction's overlay. An
+    overlay entry of ``None`` is a staged delete."""
 
     def __init__(self, leaky: bool = False) -> None:
-        self.committed: dict[str, tuple[int, Any]] = {}
-        self.open: dict[int, dict[str, tuple[int, Any]]] = {}
+        self.committed: dict[str, Any] = {}
+        self.open: dict[int, dict[str, Any]] = {}
         self.leaky = leaky
         self._minted = 0
 
@@ -514,9 +515,13 @@ class OverlayDb:
         except BaseException:
             del self.open[tx]
             raise
-        self.committed.update(self.open.pop(tx))
+        for key, held in self.open.pop(tx).items():
+            if held is None:
+                self.committed.pop(key, None)
+            else:
+                self.committed[key] = held
 
-    def read(self, tx: Any, key: str) -> tuple[int, Any] | None:
+    def read(self, tx: Any, key: str) -> Any:
         overlays = list(self.open.values()) if self.leaky else [self.open.get(tx, {})]
         for overlay in overlays:
             if key in overlay:
@@ -588,7 +593,7 @@ class LeakyEventStore(_Delegating):
         return rows + [e for e in self._staged if e.aggregate_id == aggregate_id and e.id not in seen]
 
 
-class OverlayLedger:
+class OverlayLedger(OverlayDb):
     """A joining ledger over transaction overlays, with the two mistakes a hand-rolled one makes as
     switches. ``stale_reads``: a claimant reads only the committed rows and its own, so it wins a key
     another open transaction claimed (a snapshot read with no row lock). ``release_shadows``: a release
@@ -599,38 +604,19 @@ class OverlayLedger:
     joins_transaction = True
 
     def __init__(self, *, release_shadows: bool) -> None:
+        super().__init__()
         self.release_shadows = release_shadows
-        self.committed: dict[str, tuple[bytes, Record]] = {}
-        self.open: dict[int, dict[str, tuple[bytes, Record] | None]] = {}
-        self._minted = 0
 
     @property
     def transactor(self) -> OverlayLedger:
         return self
 
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[int]:
-        self._minted += 1
-        tx = self._minted
-        self.open[tx] = {}
-        try:
-            yield tx
-        except BaseException:
-            del self.open[tx]
-            raise
-        for key, held in self.open.pop(tx).items():
-            if held is None:
-                self.committed.pop(key, None)
-            else:
-                self.committed[key] = held
-
     def _overlay(self, tx: Any) -> dict[str, tuple[bytes, Record] | None]:
-        tx = tx if tx is not None else current_tx(self)
-        return self.open.get(tx, {})
+        return self.open.get(tx if tx is not None else current_tx(self), {})
 
     def _held(self, tx: Any, key: str) -> tuple[bytes, Record] | None:
-        overlay = self._overlay(tx)
-        return overlay[key] if key in overlay else self.committed.get(key)
+        held: tuple[bytes, Record] | None = self.read(tx if tx is not None else current_tx(self), key)
+        return held
 
     async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
         held = self._held(tx, key)
@@ -897,7 +883,7 @@ BROKEN: list[Broken] = [
     Broken(
         "older_snapshot_replaces_newer",
         EventStoreContract,
-        "test_an_older_snapshot_never_replaces_a_newer_one",
+        "test_the_latest_snapshot_wins",
         lambda db: SnapshotsWithoutChecks(MemoryEventStore(db)),
     ),
     Broken(
@@ -1284,7 +1270,6 @@ async def test_the_snapshot_clauses_skip_a_backend_without_snapshots() -> None:
         events.test_a_snapshot_round_trips_and_never_leads_the_stream,
         events.test_the_latest_snapshot_wins,
         events.test_a_snapshot_leading_the_stream_is_refused,
-        events.test_an_older_snapshot_never_replaces_a_newer_one,
     ):
         with pytest.raises(pytest.skip.Exception):
             await clause(MemoryEventStore(MemoryTransactor()))

@@ -43,9 +43,9 @@ fn error_taxonomy_cases() -> Vec<Value> {
         .collect()
 }
 
-/// The verdict for any wire string, the negative rows included: a binding that splits the string
-/// or defaults the verdict itself would own a second copy of these rules. `code` is `null` when the
-/// kernel finds no code, and `message` is then the whole string.
+/// The failure any wire string names and its verdict, the negative rows included: a binding that
+/// splits the string or defaults the class itself would own a second copy of these rules. `code` is
+/// `store` when the kernel finds no code, and `message` is then the whole string.
 fn error_wire_cases() -> Vec<Value> {
     [
         ("known_terminal_code", "codec: invalid type: string, expected u64"),
@@ -62,12 +62,12 @@ fn error_wire_cases() -> Vec<Value> {
     ]
     .into_iter()
     .map(|(name, wire)| {
-        let split = ErrorCode::split(wire);
+        let error = edax_core::Error::from_wire(wire);
         json!({
             "name": name,
             "wire": wire,
-            "code": split.map(|(code, _)| code.as_str()),
-            "message": split.map_or(wire, |(_, message)| message),
+            "code": error.code.as_str(),
+            "message": error.message,
             "terminal": edax_core::verdict_of_wire(wire),
         })
     })

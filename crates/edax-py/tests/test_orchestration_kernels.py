@@ -10,7 +10,7 @@ from typing import Any
 import edax
 import msgspec
 import pytest
-from conftest import build_envelope, golden
+from conftest import build_envelope, golden, recording_pacing
 from edax import _edax
 from edax.backend.memory import MemoryEventStore
 from edax.codec import json_codec, msgpack_codec
@@ -250,11 +250,8 @@ async def test_relay_drain_branches(
     want_steps: list[int],
 ) -> None:
     store = await _outbox_of(4)
-    waits: list[float] = []
+    pacing, waits = recording_pacing()
     dead: list[str] = []
-
-    async def record(seconds: float) -> None:
-        waits.append(seconds)
 
     async def on_dead(row: edax.EventEnvelope, error: BaseException) -> None:
         dead.append(row.id)
@@ -271,8 +268,7 @@ async def test_relay_drain_branches(
         publish,
         on_dead=on_dead if sink else None,
         max_attempts=max_attempts,
-        # The draw is fixed at the top, so each wait is its step's ceiling and the step reads back off it.
-        pacing=edax.Pacing(sleep=record, entropy=lambda: 2**64 - 1),
+        pacing=pacing,
     )
     results: list[Any] = []
     for _ in range(drains):
@@ -318,10 +314,11 @@ def test_golden_saga() -> None:
             env = build_envelope(admit["aggregate_id"], "OrderCreated", admit["sequence"], id=admit["id"])
             if "error" in want:
                 with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
-                    _edax.saga_admit(admit["folded"], env)
+                    _edax.saga_admit(admit["completed"], admit["folded"], env)
                 assert str(caught.value) == want["error"].removeprefix("codec: "), row
                 continue
-            assert _edax.saga_admit(admit["folded"], env) == want.get("folded"), row
+            got = _edax.saga_admit(admit["completed"], admit["folded"], env)
+            assert got == want.get("folded"), row
             continue
         if "command_id" in row:
             assert (
@@ -330,13 +327,9 @@ def test_golden_saga() -> None:
             ), row
             continue
         loaded = row["loaded"]
-        write = _edax.saga_write(
-            loaded["state"], loaded.get("version", 0), row["completes"], row["has_commands"]
-        )
+        write = _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
         want = row["want"]
         assert (write.action, write.expected) == (want["write"], want.get("expected", 0)), row
-    with pytest.raises(edax.CodecError, match="unknown saga instance state"), edax.errors.mapped():
-        _edax.saga_write("gone", 0, False, False)
 
 
 # =========================================================================

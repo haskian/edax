@@ -143,8 +143,8 @@ impl Consumer {
             }
             self.settled.insert((held.partition, held.offset));
             let _ = self.tracker.ack(held.token);
-        } else if let NackDecision::Seek(target) = self.tracker.nack(held.token) {
-            self.position[held.partition] = target;
+        } else if let NackDecision::Seek { offset, .. } = self.tracker.nack(held.token) {
+            self.position[held.partition] = offset;
         }
     }
 

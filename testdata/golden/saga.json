@@ -94,50 +94,6 @@
     "completes": false,
     "has_commands": false,
     "loaded": {
-      "state": "completed",
-      "version": 4
-    },
-    "want": {
-      "write": "ignore"
-    }
-  },
-  {
-    "completes": false,
-    "has_commands": true,
-    "loaded": {
-      "state": "completed",
-      "version": 4
-    },
-    "want": {
-      "write": "ignore"
-    }
-  },
-  {
-    "completes": true,
-    "has_commands": false,
-    "loaded": {
-      "state": "completed",
-      "version": 4
-    },
-    "want": {
-      "write": "ignore"
-    }
-  },
-  {
-    "completes": true,
-    "has_commands": true,
-    "loaded": {
-      "state": "completed",
-      "version": 4
-    },
-    "want": {
-      "write": "ignore"
-    }
-  },
-  {
-    "completes": false,
-    "has_commands": false,
-    "loaded": {
       "state": "active",
       "version": 18446744073709551615
     },
@@ -185,6 +141,31 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": true,
+      "folded": "",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "completed": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": true,
+      "folded": "[1]",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "completed": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
       "folded": "",
       "id": "evt-1",
       "sequence": 1
@@ -196,6 +177,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-1",
       "sequence": 1
@@ -207,6 +189,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
       "id": "evt-1",
       "sequence": 1
@@ -218,6 +201,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-2",
       "sequence": 2
@@ -229,6 +213,7 @@
   {
     "admit": {
       "aggregate_id": "payment-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-p",
       "sequence": 1
@@ -240,6 +225,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
       "id": "evt-u",
       "sequence": null
@@ -251,6 +237,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
       "id": "evt-v",
       "sequence": null
@@ -262,6 +249,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
       "id": "evt-v",
       "sequence": null
@@ -273,6 +261,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-x",
       "sequence": 1
@@ -284,6 +273,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
       "id": "evt-3",
       "sequence": 3
@@ -295,6 +285,7 @@
   {
     "admit": {
       "aggregate_id": "café",
+      "completed": false,
       "folded": "{\"café\":{\"sequence\":18446744073709551615,\"id\":\"évt\"}}",
       "id": "évt",
       "sequence": 18446744073709551615
@@ -306,6 +297,7 @@
   {
     "admit": {
       "aggregate_id": "order-7",
+      "completed": false,
       "folded": "[1]",
       "id": "evt-1",
       "sequence": 1

@@ -130,19 +130,18 @@ where
     /// (redelivered after its step committed) is skipped: no fold, no write, no command.
     pub fn run(&self, tx: &mut ST::Tx, env: &EventEnvelope) -> Result<(), HandlerError> {
         let Some(correlation_id) = self.saga.correlation_id(env) else { return Ok(()) };
-        let (loaded, state, folded) = match self.store.load(tx, &correlation_id)? {
-            None => (Loaded::Absent, None, String::new()),
-            Some(SagaInstance::Running { state, version, folded }) => (Loaded::Active { version }, Some(state), folded),
-            // A completed workflow takes no event: the kernel's write for it is `Ignore`, so the fold is
-            // not even run.
-            Some(SagaInstance::Completed { .. }) => return Ok(()),
+        let (loaded, state, folded, completed) = match self.store.load(tx, &correlation_id)? {
+            None => (Loaded::Absent, None, String::new(), false),
+            Some(SagaInstance::Running { state, version, folded }) => (Loaded::Active { version }, Some(state), folded, false),
+            Some(SagaInstance::Completed { .. }) => (Loaded::Absent, None, String::new(), true),
         };
-        let SagaAdmit::Fold { folded } = saga_admit(&folded, env)? else { return Ok(()) };
+        // The kernel skips a tombstone and an event the instance folded already: no fold, no write.
+        let SagaAdmit::Fold { folded } = saga_admit(completed, &folded, env)? else { return Ok(()) };
         let (new_state, commands) = self.saga.handle(state, env);
         let write = saga_write(loaded, new_state.is_none(), !commands.is_empty());
         let expected = match write {
             SagaWrite::Save { expected } | SagaWrite::Complete { expected } => expected,
-            SagaWrite::Ignore | SagaWrite::Nothing => return Ok(()),
+            SagaWrite::Nothing => return Ok(()),
         };
         let rows = self.rows(&correlation_id, expected.saturating_add(1), &commands)?;
         // The kernel answers `Save` exactly when the fold keeps state, and `Complete` when it does not.
@@ -254,13 +253,10 @@ mod tests {
         SagaRunner::new(OrderSaga, store, JsonRegistryCodec::new(1).unwrap()).with_clock(|| 1_714_564_800_000_000_000)
     }
 
-    fn no_wait() -> Pacing {
-        Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
-    }
 
     /// Drain every committed command through `send`, recording the decoded commands.
     fn drain_all(runner: &Runner<MemorySagaStore<String>>) -> Vec<OrderCommand> {
-        let relay = Relay::<_, SagaCommand>::new(runner.store().clone()).pacing(no_wait());
+        let relay = Relay::<_, SagaCommand>::new(runner.store().clone()).pacing(Pacing::instant());
         let sent = RefCell::new(Vec::new());
         relay
             .drain(100, |row| {
@@ -524,7 +520,7 @@ mod tests {
                 self.0.mark_published(ids)
             }
         }
-        let relay = Relay::<_, SagaCommand>::new(CrashingMark(store.clone(), Cell::new(true))).pacing(no_wait());
+        let relay = Relay::<_, SagaCommand>::new(CrashingMark(store.clone(), Cell::new(true))).pacing(Pacing::instant());
         let ledger: Arc<dyn crate::IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(crate::MemoryIdempotencyStore::<()>::new());
         let current_row: Arc<Mutex<String>> = Arc::default();
         let key_row = Arc::clone(&current_row);
@@ -583,7 +579,7 @@ mod tests {
             bus.register("Fulfill", handler).unwrap();
             let dead: Arc<Mutex<Vec<String>>> = Arc::default();
             let sink = Arc::clone(&dead);
-            let relay = Relay::<_, SagaCommand>::new(store.clone()).pacing(no_wait()).on_dead(move |row: &SagaCommand, _| {
+            let relay = Relay::<_, SagaCommand>::new(store.clone()).pacing(Pacing::instant()).on_dead(move |row: &SagaCommand, _| {
                 sink.lock().expect("no panics").push(row.id.clone());
                 Ok(())
             });

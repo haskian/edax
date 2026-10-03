@@ -5,7 +5,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use edax_core::{backoff_millis, Backoff};
@@ -44,6 +44,25 @@ impl Pacing {
     pub fn wait(&self, attempt: u64) {
         (self.sleep)(self.delay(attempt));
     }
+
+    /// The kernel's schedule, waited out in no time: for a test, or a host that paces its own loop.
+    pub fn instant() -> Self {
+        Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
+    }
+
+    /// The kernel's schedule, recorded instead of slept, for a test. The draw is fixed at `u64::MAX`,
+    /// so each recorded wait is its step's [`delay`](Pacing::delay) and a test reads the step back
+    /// off it.
+    pub fn recording() -> (Self, Arc<Mutex<Vec<Duration>>>) {
+        let waits: Arc<Mutex<Vec<Duration>>> = Arc::default();
+        let sink = Arc::clone(&waits);
+        let pacing = Pacing {
+            sleep: Arc::new(move |d| edax_core::lock(&sink).push(d)),
+            entropy: Arc::new(|| u64::MAX),
+            ..Pacing::default()
+        };
+        (pacing, waits)
+    }
 }
 
 /// A random `u64` from the standard library alone: every `RandomState` is seeded with fresh keys,
@@ -55,8 +74,6 @@ fn random_u64() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
     #[test]
     fn a_wait_is_the_kernels_delay_for_the_drawn_entropy() {
         let slept: Arc<Mutex<Vec<Duration>>> = Arc::default();

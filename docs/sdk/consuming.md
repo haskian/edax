@@ -89,10 +89,8 @@ per-key order.
 | Stop | `stop(self)` drops the senders, drains, joins | `await stop(timeout=None)`, idempotent: refuses later `submit`s, drains, and past the deadline cancels the workers and nacks what they held or had queued |
 | Ambient unit of work | Rust has none; the host threads its own handle | the worker clears the ambient map so a handler cannot inherit the transaction of whoever started the dispatcher |
 
-The Python worker clearing the ambient transaction is not housekeeping. A task copies its creator's context. A
-dispatcher started inside `transaction` would otherwise hand every handler that caller's transaction.
-That happens long after the commit and from a second task, which the `Transactor` contract forbids.
-A worker is its own unit-of-work boundary.
+Why the Python worker clears the ambient transaction:
+[transactions](./transactions.md#boundary-rules).
 
 Submitting a bare envelope instead of a `Delivery` runs the handler and settles nothing — the
 fire-and-forget path used by `examples/py/saga.py`.

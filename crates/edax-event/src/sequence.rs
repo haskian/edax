@@ -1,9 +1,11 @@
-//! The dense-batch rule an event append must satisfy.
+//! The dense-batch rule an event append must satisfy, and when a save writes a snapshot.
 //!
 //! A store checks only the stream's last stored sequence, so a batch with a gap, a repeat or a
 //! reordering would pass that check and still break the gap-free ascending read every store
 //! promises. Every durable store needs the same rule, so it lives here and is pinned by
-//! `testdata/golden/sequence_batch.json` rather than re-derived per backend.
+//! `testdata/golden/sequence_batch.json` rather than re-derived per backend. The snapshot interval
+//! is a version rule too, pinned by `testdata/golden/snapshot_due.json`, so two SDKs saving one
+//! aggregate type snapshot at the same versions.
 
 use edax_core::Error;
 
@@ -33,6 +35,13 @@ pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<(), Error
         }
     }
     Ok(())
+}
+
+/// Whether a save that moves an aggregate from version `initial` to `current` writes a snapshot under
+/// an interval of `every` versions: when the save crosses a multiple of `every`. `1` snapshots on
+/// every save that appends, `0` never does, and a save with nothing pending crosses no multiple.
+pub fn snapshot_due(every: u64, initial: u64, current: u64) -> bool {
+    every > 0 && current / every > initial / every
 }
 
 #[cfg(test)]

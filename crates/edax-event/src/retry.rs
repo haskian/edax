@@ -96,11 +96,6 @@ impl Retries {
         Self { max_attempts, sink, ..Self::default() }
     }
 
-    /// The ceiling this policy was built with.
-    pub fn max_attempts(&self) -> u32 {
-        self.max_attempts
-    }
-
     /// The attempt a run of `id` is: `max(broker_attempt, recorded) + 1`, saturating.
     pub fn attempt(&self, id: &str, broker_attempt: u32) -> u32 {
         broker_attempt.max(self.attempts.get(id).copied().unwrap_or(0)).saturating_add(1)
@@ -235,6 +230,5 @@ mod tests {
         assert_eq!(retries.failed("evt-1", 0, Failure::Transient), Verdict::Dead { attempt: 3 });
         retries.dead_lettered("evt-1");
         assert_eq!(retries.tracked(), Tracked::default());
-        assert_eq!(retries.max_attempts(), 2);
     }
 }

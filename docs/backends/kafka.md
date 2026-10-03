@@ -404,8 +404,8 @@ It deliberately leaves the rest to the host:
   verbatim, plus `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and `edax-dlq-error`. A
   republish to the source topic after the fix then routes and decodes as the original did. The record
   rides on `Delivery.origin` as a `KafkaFetched`, so a sink of your own calls
-  `delivery.origin.dead_letter(error)` for it. The kernel's `dead_letter_record` builds it, and
-  `kafka_dead_letter_source` reads the coordinates back. A payload that will not decode reaches the
+  `delivery.origin.dead_letter(error)` for it. The kernel's `dead_letter_record` builds it, and its
+  `dead_letter_source` reads the coordinates back. A payload that will not decode reaches the
   sink with the stand-in id `topic/partition/offset`. A sink that raises nacks the message after one
   backoff step, so the redelivery gives it another try. If the sink then sees one offset twice, the
   coordinates are the dedup key.

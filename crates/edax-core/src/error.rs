@@ -7,12 +7,12 @@
 //! idempotency store and disagree on a verdict leave one caching a failure the other would release:
 //! a durable replay inconsistency. So the verdict lives here, pinned by
 //! `testdata/golden/error_taxonomy.json`, and every SDK derives its own from [`ErrorCode::is_terminal`].
-//! The verdict for a failure with no code is here too ([`verdict`]), pinned by
-//! `testdata/golden/error_wire.json`.
+//! The verdict for a failure with no code is here too ([`verdict`]): such a failure is a `store`
+//! failure, the same class and the same verdict, pinned by `testdata/golden/error_wire.json`.
 //!
 //! Every kernel function fails with the one [`Error`] type, so the code comes from the kernel and
 //! never from a caller's choice. Failures cross a native binding as `"<code>: <message>"`:
-//! [`ErrorCode::tag`] is the one place that builds that string and [`ErrorCode::split`] the one
+//! [`ErrorCode::tag`] is the one place that builds that string and [`Error::from_wire`] the one
 //! place that takes it apart.
 
 /// The `"<code>: <message>"` wire form splits on the first `": "`. A bare colon is part of the message.
@@ -102,7 +102,7 @@ impl ErrorCode {
     }
 
     /// Take a wire form apart into its code and message. `None` if there is no `": "` separator or
-    /// the code before it is unknown; [`verdict_of_wire`] then gives the verdict.
+    /// the code before it is unknown; [`Error::from_wire`] then classifies the whole string.
     pub fn split(wire: &str) -> Option<(ErrorCode, &str)> {
         let (code, message) = wire.split_once(SEPARATOR)?;
         code.parse().ok().map(|c| (c, message))
@@ -110,18 +110,18 @@ impl ErrorCode {
 }
 
 /// The verdict for a failure, from its code if it has one. A failure no code classifies — a host's
-/// own error, a wire string with an unknown code — is transient: a wrongly transient failure is
-/// redelivered loudly and the work survives, while a wrongly terminal one is cached under its key
-/// and poisons it. The default lives here, pinned by `testdata/golden/error_wire.json`, so two SDKs
-/// sharing one idempotency store cannot pick different ones.
+/// own error, a wire string with an unknown code — is a `store` failure, so transient: a wrongly
+/// transient failure is redelivered loudly and the work survives, while a wrongly terminal one is
+/// cached under its key and poisons it. The default lives here, pinned by
+/// `testdata/golden/error_wire.json`, so two SDKs sharing one idempotency store cannot pick
+/// different ones.
 pub fn verdict(code: Option<ErrorCode>) -> bool {
-    code.is_some_and(ErrorCode::is_terminal)
+    code.unwrap_or(ErrorCode::Store).is_terminal()
 }
 
-/// The verdict for a wire string: its code's if [`ErrorCode::split`] finds one, else the
-/// unclassified default of [`verdict`].
+/// The verdict for a wire string: the verdict of the failure [`Error::from_wire`] reads from it.
 pub fn verdict_of_wire(wire: &str) -> bool {
-    verdict(ErrorCode::split(wire).map(|(code, _)| code))
+    Error::from_wire(wire).is_terminal()
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -184,6 +184,16 @@ impl Error {
     /// A transaction handle that names no open transaction.
     pub fn bad_handle(cause: impl std::fmt::Display) -> Self {
         Error::new(ErrorCode::BadHandle, cause)
+    }
+
+    /// The failure a wire string names: its code and message if [`ErrorCode::split`] finds a code,
+    /// else a `store` failure carrying the whole string, so a host still logs the original text and
+    /// decides nothing itself. The inverse of `Display` for every failure this kernel renders.
+    pub fn from_wire(wire: &str) -> Self {
+        match ErrorCode::split(wire) {
+            Some((code, message)) => Error::new(code, message),
+            None => Error::store(wire),
+        }
     }
 
     /// The code's verdict: whether the failure repeats identically on retry.
@@ -269,9 +279,11 @@ mod tests {
         ];
         for c in cases {
             assert_eq!(ErrorCode::split(c.wire), c.want, "{}: split", c.name);
+            let (code, message) = c.want.unwrap_or((ErrorCode::Store, c.wire));
+            assert_eq!(Error::from_wire(c.wire), Error::new(code, message), "{}: from_wire", c.name);
             assert_eq!(verdict_of_wire(c.wire), c.terminal, "{}: verdict", c.name);
         }
-        assert!(!verdict(None), "a failure no code classifies is transient");
+        assert_eq!(verdict(None), ErrorCode::Store.is_terminal(), "a failure no code classifies is a store failure");
     }
 
     #[test]

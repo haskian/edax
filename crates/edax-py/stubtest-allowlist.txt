@@ -13,7 +13,6 @@ edax\._edax\.Event
 edax\._edax\.EventEnvelope
 edax\._edax\.EventIdempotency
 edax\._edax\.IdempotencyRecord
-edax\._edax\.KafkaDeadLetterSource
 edax\._edax\.KafkaDue
 edax\._edax\.KafkaHeader
 edax\._edax\.KafkaRecord
@@ -26,7 +25,7 @@ edax\._edax\.OffsetTracker
 edax\._edax\.PartitionStats
 edax\._edax\.PollResult
 edax\._edax\.ProjectionRow
-edax\._edax\.RedisValue
+edax\._edax\.RedisScripts
 edax\._edax\.Retries
 edax\._edax\.RetriesTracked
 edax\._edax\.RetryVerdict

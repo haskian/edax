@@ -13,10 +13,11 @@
 //! - [`staleness`] — whether an event is older than the per-aggregate watermark, and the watermark
 //!   after it applies
 //! - [`dedup`] — the key and hash an event's idempotency guard claims
-//! - [`sequence`] — the dense-batch rule an append must satisfy before a store writes it
+//! - [`sequence`] — the dense-batch rule an append must satisfy before a store writes it, and when a
+//!   save writes a snapshot
 //! - [`retry`] — when a failed message is handed back, after how long, and when it dies
 //! - [`saga`] — whether a saga step folds an event (a redelivery is skipped), the write it makes
-//!   (save, complete, ignore) and its outbox command's id
+//!   (save, complete, nothing) and its outbox command's id
 //!
 //! Shared primitives (hashing, backoff) live in `edax-core`. The read side — the filter AST, its
 //! evaluator, and the sort/cursor/paging rules — is `edax-cqrs`, which owns both halves of the
@@ -43,6 +44,6 @@ pub use domain::{Event, EventEnvelope, Metadata, Namespace};
 pub use partition::partition;
 pub use retry::{Failure, Retries, Tracked, Verdict};
 pub use saga::{saga_admit, saga_command_id, saga_write, Loaded, SagaAdmit, SagaCommand, SagaWrite};
-pub use sequence::check_batch;
+pub use sequence::{check_batch, snapshot_due};
 pub use staleness::{advance, is_stale};
 pub use upcast::upcast_plan;

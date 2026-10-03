@@ -29,17 +29,14 @@ import edax
 import fakeredis
 import pytest
 from conftest import (
+    NO_WAIT,
     TTL_MS,
     Counter,
-    FlakyEventStore,
-    FlakyIdempotency,
-    FlakyProjectionStore,
     Tick,
     agg_id,
     build_envelope,
     counter_repo,
     expect,
-    fields,
     recorded_backoff,
     same,
     sequence_of,
@@ -47,7 +44,7 @@ from conftest import (
 )
 from edax import command as C
 from edax.aggregate import WireFormat
-from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore
+from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
 from edax.testing.faults import LostResponse
 from hypothesis import given, settings
@@ -57,13 +54,6 @@ from hypothesis import strategies as st
 # cold run; the properties are deterministic, so the deadline buys nothing here.
 MODEL = settings(max_examples=200, deadline=None)
 
-
-async def _no_sleep(seconds: float) -> None:
-    pass
-
-
-#: A failed relay drain waits its backoff step; the model waits no wall time for it.
-NO_WAIT = edax.Pacing(sleep=_no_sleep)
 
 # "Lost response" faults are rare on purpose: histories stay mostly clean so the happy paths still
 # get exercised. `lost` (bool) is true ~1 in 5; `lost_kind` loses the claim (1) or the outcome (2).
@@ -259,7 +249,7 @@ class StoreReplay:
 async def _replay_store(history: list[StoreOp]) -> None:
     # No open unit of work: the model describes committed state, and an outbox drain reads only
     # committed rows, so every op auto-commits (`tx=None` outside any `transaction`).
-    r = StoreReplay(FlakyEventStore())
+    r = StoreReplay(LostResponse(MemoryEventStore()))
     for op in history:
         await r.step(op)
     await r.finish()
@@ -349,7 +339,7 @@ def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None
             for key in range(3):
                 memory.expire(str(key))
 
-        return FlakyIdempotency(memory), lapse_memory
+        return LostResponse(memory), lapse_memory
     client = fakeredis.FakeAsyncRedis()
 
     async def lapse_redis() -> None:
@@ -361,7 +351,7 @@ def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None
     redis = RedisIdempotencyStore(
         AsyncRedisClient(client), prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10
     )
-    return FlakyIdempotency(redis), lapse_redis
+    return LostResponse(redis), lapse_redis
 
 
 class Slot(Enum):
@@ -468,7 +458,7 @@ class BusReplay:
 
     async def dispatch(self, op: Dispatch) -> None:
         cmd = make_cmd(op.kind, op.key, op.payload, op.outcome)
-        hash_ = edax.payload_hash_json(C._payload_json(cmd))
+        hash_ = C._payload_hash(cmd)
         prior = self.model.get(op.key)
         e = decide(prior, op, hash_)
 
@@ -488,7 +478,7 @@ class BusReplay:
     async def seed_pending(self, op: SeedPending) -> None:
         # An in-flight winner: claim takes the key if free and leaves any existing record alone.
         cmd = make_cmd(0, op.key, op.payload, 0)
-        hash_ = edax.payload_hash_json(C._payload_json(cmd))
+        hash_ = C._payload_hash(cmd)
         claimed = await self.store.claim(str(op.key), hash_)
         if isinstance(claimed, C.Won):
             assert op.key not in self.model
@@ -800,7 +790,7 @@ class RepoReplay:
 
 async def _replay_repo(history: list[RepoOp]) -> None:
     # No open unit of work, as in `_replay_store`: each save is the repository's own transaction.
-    r = RepoReplay(FlakyEventStore())
+    r = RepoReplay(LostResponse(MemoryEventStore()))
     for op in history:
         await r.step(op)
     await r.finish()
@@ -857,7 +847,7 @@ def test_kernel_serializer_roundtrip(
         sequence=sequence,
     )
     codec = edax.KernelSerializer(fmt)
-    assert fields(codec.decode(codec.encode(env))) == fields(env)
+    assert codec.decode(codec.encode(env)) == env
 
 
 @given(fmt=st.sampled_from(["json", "msgpack"]), wire=st.binary(min_size=1, max_size=32))
@@ -961,7 +951,7 @@ class ProjectionReplay:
 
 
 async def _replay_projection(history: list[ProjOp]) -> None:
-    r = ProjectionReplay(FlakyProjectionStore())
+    r = ProjectionReplay(LostResponse(MemoryProjectionStore()))
     for op in history:
         await r.step(op)
 

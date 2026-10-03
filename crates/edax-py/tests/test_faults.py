@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import edax
 import fakeredis
 import pytest
-from edax import _edax
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -20,23 +19,11 @@ from edax.backend.memory import (
     MemoryProjectionStore,
     MemoryTransactor,
 )
-from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
+from edax.backend.redis import CLAIM_SCRIPT, RELEASE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
 from edax.command import Record, Won
 from edax.projection import Entity
+from edax.testing.contracts import envelope
 from edax.testing.faults import COMMIT, BrokenCommit, CommitFault, LostReply, LostResponse, Refusing
-
-
-def deposited(aggregate_id: str, sequence: int) -> edax.EventEnvelope:
-    return edax.EventEnvelope(
-        id=edax.guid(),
-        aggregate_id=aggregate_id,
-        event=edax.Event("Deposited", 1, b'{"account_id":"acct-1","amount":100,"currency":"EUR"}'),
-        namespace={"tenant": "acme"},
-        metadata={"correlation_id": edax.guid()},
-        timestamp=edax.current_timestamp(),
-        sequence=sequence,
-    )
-
 
 # =========================================================================
 # LostResponse
@@ -65,7 +52,7 @@ class LostCase:
 async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) -> None:
     store = LostResponse(MemoryEventStore())
     store.arm(case.arm)
-    env = deposited("acct-1", 1)
+    env = envelope("acct-1", 1)
     raised: BaseException | None = None
     try:
         if case.arm == COMMIT:
@@ -82,7 +69,7 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
     if case.lost:
         assert store.armed is None, "one shot"
         async with store.transaction() as tx:  # the retry meets a healthy store
-            await store.append(tx, "acct-1", 1, [deposited("acct-1", 2)])
+            await store.append(tx, "acct-1", 1, [envelope("acct-1", 2)])
     else:
         assert store.armed == case.arm, "an unfired fault stays armed"
 
@@ -168,7 +155,7 @@ async def test_a_broken_commit_fails_the_way_it_is_armed(
     events = MemoryEventStore(db)
     unit = BrokenCommit(db, arm)
     assert unit.transactor is db, "stores over the database find the units of work it opens"
-    env = deposited("acct-1", 1)
+    env = envelope("acct-1", 1)
     raised: BaseException | None = None
     try:
         async with edax.transaction(unit):
@@ -187,7 +174,7 @@ async def test_a_broken_commit_fails_the_way_it_is_armed(
 
 async def test_a_lost_reply_runs_the_script_and_loses_its_reply_once() -> None:
     client = fakeredis.FakeAsyncRedis()
-    conn = LostReply(AsyncRedisClient(client), _edax.redis_claim_script(), resend=False)
+    conn = LostReply(AsyncRedisClient(client), CLAIM_SCRIPT, resend=False)
     store = RedisIdempotencyStore(conn, "idem:")
     with pytest.raises(edax.StoreError, match="connection reset"):
         await store.claim("req-1", 7)
@@ -199,7 +186,7 @@ async def test_a_lost_reply_runs_the_script_and_loses_its_reply_once() -> None:
 
 async def test_a_lost_reply_with_the_clients_resend_returns_the_second_reply() -> None:
     client = fakeredis.FakeAsyncRedis()
-    conn = LostReply(AsyncRedisClient(client), _edax.redis_claim_script(), resend=True)
+    conn = LostReply(AsyncRedisClient(client), CLAIM_SCRIPT, resend=True)
     store = RedisIdempotencyStore(conn, "idem:")
     won = await store.claim("req-1", 7)
     assert isinstance(won, Won), "the re-sent claim reads its own claim back: a win, not a stranger's hold"
@@ -208,7 +195,7 @@ async def test_a_lost_reply_with_the_clients_resend_returns_the_second_reply() -
 
 async def test_a_lost_reply_leaves_every_other_script_alone() -> None:
     client = fakeredis.FakeAsyncRedis()
-    conn = LostReply(AsyncRedisClient(client), _edax.redis_release_script(), resend=False)
+    conn = LostReply(AsyncRedisClient(client), RELEASE_SCRIPT, resend=False)
     store = RedisIdempotencyStore(conn, "idem:")
     won = await store.claim("req-1", 7)  # the claim script: not the armed one
     assert isinstance(won, Won) and conn.armed is True

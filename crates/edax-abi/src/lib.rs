@@ -47,6 +47,12 @@ pub fn check_sequence_batch(expected: u64, sequences: Vec<Option<u64>>) -> Resul
     edax_event::sequence::check_batch(expected, &sequences).map_err(wire)
 }
 
+/// Whether a save from version `initial` to `current` writes a snapshot under an interval of `every`
+/// versions (`0`: never). See [`edax_event::snapshot_due`].
+pub fn snapshot_due(every: u64, initial: u64, current: u64) -> bool {
+    edax_event::snapshot_due(every, initial, current)
+}
+
 /// A backoff policy, in milliseconds. See [`edax_core::Backoff`].
 pub struct BackoffPolicy {
     /// The ceiling of the first retry's wait; each later attempt doubles it.
@@ -109,35 +115,26 @@ pub fn error_verdict(wire: &str) -> bool {
     edax_core::verdict_of_wire(wire)
 }
 
-/// Build the wire form `"<code>: <message>"`, the inverse of [`split_error`]. An unknown code is a
-/// `codec:` error. See [`edax_core::ErrorCode::tag`].
-pub fn tag_error(code: &str, message: &str) -> Result<String, String> {
-    Ok(code.parse::<ErrorCode>().map_err(wire)?.tag(message))
-}
-
 /// A wire failure taken apart. A struct rather than a tuple: the generator sanitizes a tuple return
 /// to `Vec<String>` and loses the field names.
 pub struct SplitError {
-    /// The taxonomy code, or empty when the wire form carries no code the kernel knows.
+    /// The taxonomy code: `store` when the wire form carries no code the kernel knows.
     pub code: String,
-    /// The message after the separator, or the whole wire string when `code` is empty.
+    /// The message after the separator, or the whole wire string when it carries no known code.
     pub message: String,
-    /// The kernel's verdict for this failure, the unclassified default included.
+    /// The kernel's verdict for this failure.
     pub terminal: bool,
 }
 
 /// Split a wire failure `"<code>: <message>"` into its code, its message and its verdict.
 ///
-/// An unknown code, or a string with no separator, yields an empty code, the whole string unchanged
-/// and the kernel's default verdict, so a host still logs the original text and decides nothing
-/// itself. The separator is the kernel's; a host that split the string itself would own a second
-/// copy of it. `testdata/golden/error_wire.json` pins every case.
+/// An unknown code, or a string with no separator, is a `store` failure carrying the whole string
+/// unchanged, so a host still logs the original text and decides nothing itself. The separator and
+/// that default are the kernel's ([`edax_core::Error::from_wire`]); a host that split the string
+/// itself would own a second copy of them. `testdata/golden/error_wire.json` pins every case.
 pub fn split_error(wire: &str) -> SplitError {
-    let terminal = edax_core::verdict_of_wire(wire);
-    match ErrorCode::split(wire) {
-        Some((code, message)) => SplitError { code: code.as_str().to_owned(), message: message.to_owned(), terminal },
-        None => SplitError { code: String::new(), message: wire.to_owned(), terminal },
-    }
+    let error = edax_core::Error::from_wire(wire);
+    SplitError { code: error.code.as_str().to_owned(), terminal: error.is_terminal(), message: error.message }
 }
 
 // ---- filter / query ------------------------------------------------------
@@ -360,12 +357,22 @@ pub struct EventEnvelope {
     pub timestamp: i64,
 }
 
+/// Binding event -> the kernel's.
+fn kernel_event(e: Event) -> edax_event::Event {
+    edax_event::Event { name: e.name, version: e.version, data: e.data }
+}
+
+/// The kernel's event -> a binding event.
+fn record_event(e: edax_event::Event) -> Event {
+    Event { name: e.name, version: e.version, data: e.data }
+}
+
 /// Binding record -> the kernel's nested envelope (HashMap -> the kernel's ordered BTreeMap).
 fn envelope_from_record(r: EventEnvelope) -> edax_event::EventEnvelope {
     edax_event::EventEnvelope {
         id: r.id,
         aggregate_id: r.aggregate_id,
-        event: edax_event::Event { name: r.event.name, version: r.event.version, data: r.event.data },
+        event: kernel_event(r.event),
         sequence: r.sequence,
         namespace: r.namespace.into_iter().collect(),
         metadata: r.metadata.into_iter().collect(),
@@ -378,7 +385,7 @@ fn record_from_envelope(env: edax_event::EventEnvelope) -> EventEnvelope {
     EventEnvelope {
         id: env.id,
         aggregate_id: env.aggregate_id,
-        event: Event { name: env.event.name, version: env.event.version, data: env.event.data },
+        event: record_event(env.event),
         sequence: env.sequence,
         namespace: env.namespace.into_iter().collect(),
         metadata: env.metadata.into_iter().collect(),
@@ -442,11 +449,6 @@ pub struct Retries {
 }
 
 impl Retries {
-    /// The ceiling this policy was built with; `0` is none.
-    pub fn max_attempts(&self) -> u32 {
-        edax_core::lock(&self.inner).max_attempts()
-    }
-
     /// The attempt a run of `id` is: `max(broker_attempt, recorded) + 1`.
     pub fn attempt(&self, id: &str, broker_attempt: u32) -> u32 {
         edax_core::lock(&self.inner).attempt(id, broker_attempt)
@@ -494,41 +496,35 @@ pub fn retries(max_attempts: u32, sink: bool) -> Retries {
 
 // ---- saga step -------------------------------------------------------------
 
-/// The write a saga step makes: `action` is `"ignore"`, `"nothing"`, `"save"` or `"complete"`, and
-/// `expected` the version a save or complete is conditional on (`0` otherwise). See
-/// [`edax_event::SagaWrite`].
+/// The write a saga step makes: `action` is `"nothing"`, `"save"` or `"complete"`, and `expected` the
+/// version a save or complete is conditional on (`0` otherwise). See [`edax_event::SagaWrite`].
 pub struct SagaWrite {
     pub action: String,
     pub expected: u64,
 }
 
-/// The write for a step that loaded `loaded` (`"absent"`, `"active"` or `"completed"`, the last a
-/// tombstone) at `version` (ignored when absent), and whose fold `completes` the instance or not,
-/// with or without commands. Any other `loaded` is a `codec:` error. See [`edax_event::saga_write`].
-pub fn saga_write(loaded: &str, version: u64, completes: bool, has_commands: bool) -> Result<SagaWrite, String> {
-    let loaded = match loaded {
-        "absent" => edax_event::Loaded::Absent,
-        "active" => edax_event::Loaded::Active { version },
-        "completed" => edax_event::Loaded::Completed { version },
-        other => return Err(wire(edax_core::Error::codec(format_args!("unknown saga instance state {other:?}")))),
-    };
+/// The write for a step whose fold `completes` the instance or not, with or without commands, over a
+/// running instance loaded at `version` (`None` when nothing was loaded). A completed instance never
+/// gets here: [`saga_admit`] skips it. See [`edax_event::saga_write`].
+// `version` is optional, so it trails: alef moves optional parameters to the end of the signature.
+pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> SagaWrite {
+    let loaded = version.map_or(edax_event::Loaded::Absent, |version| edax_event::Loaded::Active { version });
     let (action, expected) = match edax_event::saga_write(loaded, completes, has_commands) {
-        edax_event::SagaWrite::Ignore => ("ignore", 0),
         edax_event::SagaWrite::Nothing => ("nothing", 0),
         edax_event::SagaWrite::Save { expected } => ("save", expected),
         edax_event::SagaWrite::Complete { expected } => ("complete", expected),
     };
-    Ok(SagaWrite { action: action.to_owned(), expected })
+    SagaWrite { action: action.to_owned(), expected }
 }
 
-/// Whether an instance that saved the marks `folded` (empty for a new instance) folds `envelope`:
-/// `None` when it folded it already (a redelivery: skip it, write nothing), else the marks to save
-/// with the step. Marks this function did not write are a `codec:` error. See
-/// [`edax_event::saga_admit`].
-pub fn saga_admit(folded: &str, envelope: EventEnvelope) -> Result<Option<String>, String> {
+/// Whether an instance that saved the marks `folded` (empty for a new instance), or is `completed`
+/// (a tombstone), folds `envelope`: `None` when it does not (a tombstone, or a redelivery of an event
+/// it folded: skip it, write nothing), else the marks to save with the step. Marks this function did
+/// not write are a `codec:` error. See [`edax_event::saga_admit`].
+pub fn saga_admit(completed: bool, folded: &str, envelope: EventEnvelope) -> Result<Option<String>, String> {
     let env = envelope_from_record(envelope);
-    Ok(match edax_event::saga_admit(folded, &env).map_err(wire)? {
-        edax_event::SagaAdmit::Repeat => None,
+    Ok(match edax_event::saga_admit(completed, folded, &env).map_err(wire)? {
+        edax_event::SagaAdmit::Completed | edax_event::SagaAdmit::Repeat => None,
         edax_event::SagaAdmit::Fold { folded } => Some(folded),
     })
 }
@@ -552,7 +548,7 @@ fn saga_command_from_record(r: SagaCommand) -> edax_event::SagaCommand {
     edax_event::SagaCommand {
         id: r.id,
         correlation_id: r.correlation_id,
-        command: edax_event::Event { name: r.command.name, version: r.command.version, data: r.command.data },
+        command: kernel_event(r.command),
         timestamp: r.timestamp,
     }
 }
@@ -561,7 +557,7 @@ fn record_from_saga_command(c: edax_event::SagaCommand) -> SagaCommand {
     SagaCommand {
         id: c.id,
         correlation_id: c.correlation_id,
-        command: Event { name: c.command.name, version: c.command.version, data: c.command.data },
+        command: record_event(c.command),
         timestamp: c.timestamp,
     }
 }
@@ -837,13 +833,13 @@ impl MemoryTransactor {
 
     /// Committed saga outbox commands not yet sent, oldest commit first, capped at `limit`. The
     /// relay reads outside any transaction, so there is no token.
-    pub fn unsent_saga_commands(&self, limit: u64) -> Vec<SagaCommand> {
-        self.inner.saga_store().unsent(limit_of(limit)).into_iter().map(record_from_saga_command).collect()
+    pub fn unpublished_saga_commands(&self, limit: u64) -> Vec<SagaCommand> {
+        self.inner.saga_store().unpublished(limit_of(limit)).into_iter().map(record_from_saga_command).collect()
     }
 
     /// Mark saga outbox commands sent by id. Idempotent; an unknown id is a no-op.
-    pub fn mark_saga_commands_sent(&self, ids: Vec<String>) {
-        self.inner.saga_store().mark_sent(ids);
+    pub fn mark_saga_commands_published(&self, ids: Vec<String>) {
+        self.inner.saga_store().mark_published(ids);
     }
 }
 
@@ -1015,31 +1011,20 @@ pub fn kafka_route(headers: Vec<KafkaHeader>, registered: Vec<String>) -> KafkaR
     }
 }
 
+/// Refuse a serializer registry that names one media type twice, as an `already_registered:` error.
+/// A host calls it once, on the list it later passes to [`kafka_route`]. See
+/// [`edax_kafka::check_media_types`].
+pub fn kafka_check_media_types(registered: Vec<String>) -> Result<(), String> {
+    let registered: Vec<&str> = registered.iter().map(String::as_str).collect();
+    edax_kafka::check_media_types(&registered).map_err(wire)
+}
+
 /// The record a dead-letter sink publishes for `record`, fetched from `topic`/`partition`/`offset`:
 /// key, value and headers verbatim, plus the four `edax-dlq-*` headers. See
 /// [`edax_kafka::dead_letter_record`].
 pub fn kafka_dead_letter_record(record: KafkaRecord, topic: &str, partition: i32, offset: i64, error: &str) -> KafkaRecord {
     let kernel = edax_kafka::KafkaRecord { key: record.key, value: record.value, headers: kernel_headers(record.headers) };
     record_from_kafka_record(edax_kafka::dead_letter_record(&kernel, topic, partition, offset, error))
-}
-
-/// Where a dead-letter record came from, as [`kafka_dead_letter_source`] reads it.
-pub struct KafkaDeadLetterSource {
-    pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
-    pub error: String,
-}
-
-/// Read the source the last `edax-dlq-*` headers name, or `None` when the headers carry no complete,
-/// readable source. See [`edax_kafka::dead_letter_source`].
-pub fn kafka_dead_letter_source(headers: Vec<KafkaHeader>) -> Option<KafkaDeadLetterSource> {
-    edax_kafka::dead_letter_source(&kernel_headers(headers)).map(|source| KafkaDeadLetterSource {
-        topic: source.topic,
-        partition: source.partition,
-        offset: source.offset,
-        error: source.error,
-    })
 }
 
 /// The header that names a record value's media type, `"content-type"`: the one contract header, so a
@@ -1091,7 +1076,7 @@ pub struct PartitionStats {
     /// drain waits for this to reach zero.
     pub live: u64,
     /// The highest offset booked.
-    pub max_delivered: Option<i64>,
+    pub max_delivered: i64,
     /// The last watermark the host reported committed, or `None` before the first commit.
     pub committed: Option<i64>,
 }
@@ -1151,7 +1136,7 @@ impl OffsetTracker {
     /// offset the host should seek the partition to.
     pub fn nack(&self, token: i64) -> NackDecision {
         match self.inner.nack(token) {
-            edax_kafka::NackDecision::Seek(offset) => NackDecision { seek: Some(offset) },
+            edax_kafka::NackDecision::Seek { offset, .. } => NackDecision { seek: Some(offset) },
             edax_kafka::NackDecision::Stale => NackDecision { seek: None },
         }
     }
@@ -1188,27 +1173,11 @@ pub fn offset_tracker() -> OffsetTracker {
 
 // ---- redis ---------------------------------------------------------------
 
-/// A stored Redis ledger value taken apart. A struct rather than a tuple, like [`SplitError`]: the
-/// generator sanitizes a tuple return to `Vec<String>` and loses the field names.
-pub struct RedisValue {
-    /// The owner token the value carries, whatever its alphabet — read back liberally so the record
-    /// behind it is never stranded.
-    pub owner: String,
-    /// The idempotency record JSON behind the token, for [`decode_idempotency_record`].
-    pub record: String,
-}
-
 /// A fresh claim's value for `payload_hash` under a new owner token, minted by the kernel and never
 /// by the host. The value is also the claim's handle: pass it to the complete, release and extend
 /// scripts. Non-deterministic. See [`edax_redis::new_claim`].
 pub fn redis_new_claim(payload_hash: u64) -> Result<Vec<u8>, String> {
     edax_redis::new_claim(payload_hash).map_err(wire)
-}
-
-/// The claim value for a given `owner` token: [`redis_new_claim`] with the token fixed, for a test
-/// replaying a golden vector. See [`edax_redis::claim_value`].
-pub fn redis_claim_value(owner: &str, payload_hash: u64) -> Result<Vec<u8>, String> {
-    edax_redis::claim_value(owner, payload_hash).map_err(wire)
 }
 
 /// The value that settles the claim `claim`, over `record_json` as the host encoded it (with
@@ -1229,22 +1198,22 @@ pub fn redis_ledger_key(prefix: &str, key: &str) -> Result<Vec<u8>, String> {
     edax_redis::ledger_key(prefix, key).map_err(wire)
 }
 
-/// Refuse a ledger prefix, as a `bad_handle:` error. See [`edax_redis::check_prefix`].
-pub fn redis_check_prefix(prefix: &str) -> Result<(), String> {
-    edax_redis::check_prefix(prefix).map_err(wire)
+/// Refuse the settings a ledger store is built with, as a `bad_handle:` error naming the first one
+/// refused. See [`edax_redis::check_config`].
+pub fn redis_check_config(
+    prefix: &str,
+    ttl_ms: i64,
+    claim_ttl_ms: i64,
+    op_timeout_ms: i64,
+    heartbeat: bool,
+) -> Result<(), String> {
+    edax_redis::check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat).map_err(wire)
 }
 
-/// Refuse a TTL Redis would refuse, as a `bad_handle:` error naming the setting `name`. See
-/// [`edax_redis::check_ttl`].
-pub fn redis_check_ttl(name: &str, ttl_ms: i64) -> Result<(), String> {
-    edax_redis::check_ttl(name, ttl_ms).map_err(wire)
-}
-
-/// Take a stored value apart into its owner token and its record. A frame no claimant could ever
-/// settle is a `codec:` (terminal) error. See [`edax_redis::split_value`].
-pub fn redis_split_value(raw: &[u8]) -> Result<RedisValue, String> {
-    let (owner, record) = edax_redis::split_value(raw).map_err(wire)?;
-    Ok(RedisValue { owner, record })
+/// How many times per claim TTL a heartbeat renews a held claim. A call because the generator binds
+/// functions, not constants. See [`edax_redis::HEARTBEATS_PER_TTL`].
+pub fn redis_heartbeats_per_ttl() -> i64 {
+    edax_redis::HEARTBEATS_PER_TTL
 }
 
 /// What the claim script's `reply` to the caller's `claim` means: `None` when this caller holds the
@@ -1263,25 +1232,23 @@ pub fn redis_reply_error(reply: &str) -> String {
     wire(edax_redis::reply_error(reply))
 }
 
-/// The claim script, byte for byte the kernel's, so every SDK's `EVALSHA` names one digest. See
-/// [`edax_redis::CLAIM_SCRIPT`].
-pub fn redis_claim_script() -> String {
-    edax_redis::CLAIM_SCRIPT.to_owned()
+/// The four kernel scripts, byte for byte, so every SDK's `EVALSHA` names one digest. A struct
+/// rather than four calls, like [`SplitError`]. See [`edax_redis::CLAIM_SCRIPT`] and its siblings.
+pub struct RedisScripts {
+    pub claim: String,
+    pub complete: String,
+    pub release: String,
+    pub extend: String,
 }
 
-/// The complete script. See [`edax_redis::COMPLETE_SCRIPT`].
-pub fn redis_complete_script() -> String {
-    edax_redis::COMPLETE_SCRIPT.to_owned()
-}
-
-/// The release script. See [`edax_redis::RELEASE_SCRIPT`].
-pub fn redis_release_script() -> String {
-    edax_redis::RELEASE_SCRIPT.to_owned()
-}
-
-/// The lease-extend script. See [`edax_redis::EXTEND_SCRIPT`].
-pub fn redis_extend_script() -> String {
-    edax_redis::EXTEND_SCRIPT.to_owned()
+/// The four kernel scripts. See [`RedisScripts`].
+pub fn redis_scripts() -> RedisScripts {
+    RedisScripts {
+        claim: edax_redis::CLAIM_SCRIPT.to_owned(),
+        complete: edax_redis::COMPLETE_SCRIPT.to_owned(),
+        release: edax_redis::RELEASE_SCRIPT.to_owned(),
+        extend: edax_redis::EXTEND_SCRIPT.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -1364,9 +1331,6 @@ mod tests {
         // The default for a failure with no code the kernel knows is the kernel's too.
         assert!(!error_verdict("timeout: deadline exceeded"), "unclassified is transient");
         assert!(error_verdict("payload_mismatch: acct-1-3"));
-        // `tag_error` is `split_error`'s inverse, and refuses a code it cannot pin a verdict on.
-        assert_eq!(tag_error("rejected", "insufficient funds"), Ok("rejected: insufficient funds".to_owned()));
-        assert_eq!(tag_error("Rejected", "x"), Err("codec: unknown error code: Rejected".to_owned()));
     }
 
     #[test]
@@ -1384,11 +1348,11 @@ mod tests {
                 want: ("store", "redis: connection reset", false),
             },
             Case { name: "empty_message", wire: "concurrency: ", want: ("concurrency", "", false) },
-            // No code the kernel knows: the host keeps the whole string, and the verdict is still the
-            // kernel's default rather than the host's.
-            Case { name: "unknown_code", wire: "timeout: deadline exceeded", want: ("", "timeout: deadline exceeded", false) },
-            Case { name: "no_separator", wire: "connection reset", want: ("", "connection reset", false) },
-            Case { name: "empty", wire: "", want: ("", "", false) },
+            // No code the kernel knows: a store failure carrying the whole string, so the class and the
+            // verdict are the kernel's default rather than the host's.
+            Case { name: "unknown_code", wire: "timeout: deadline exceeded", want: ("store", "timeout: deadline exceeded", false) },
+            Case { name: "no_separator", wire: "connection reset", want: ("store", "connection reset", false) },
+            Case { name: "empty", wire: "", want: ("store", "", false) },
         ];
         for c in cases {
             let got = split_error(c.wire);
@@ -1501,7 +1465,6 @@ mod tests {
     fn retries_cross_their_decisions_structurally() {
         let code = |c: &str| Some(c.to_owned());
         let policy = retries(2, true);
-        assert_eq!(policy.max_attempts(), 2);
         let nack = policy.failed("evt-1", 0, code("store")).unwrap();
         assert_eq!((nack.dead, nack.step), (false, 0));
         let dead = policy.failed("evt-1", 0, None).unwrap();
@@ -1523,10 +1486,11 @@ mod tests {
     #[test]
     fn saga_admit_crosses_the_marks_as_text() {
         let env = |id: &str| envelope(id, Some(1));
-        let folded = saga_admit("", env("evt-1")).unwrap().expect("a new instance folds");
-        assert_eq!(saga_admit(&folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
-        assert!(saga_admit(&folded, env("evt-2")).unwrap().is_some(), "the next event folds");
-        assert!(saga_admit("[1]", env("evt-1")).unwrap_err().starts_with("codec: saga folded marks"));
+        let folded = saga_admit(false, "", env("evt-1")).unwrap().expect("a new instance folds");
+        assert_eq!(saga_admit(false, &folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
+        assert_eq!(saga_admit(true, &folded, env("evt-2")).unwrap(), None, "a tombstone folds nothing");
+        assert!(saga_admit(false, &folded, env("evt-2")).unwrap().is_some(), "the next event folds");
+        assert!(saga_admit(false, "[1]", env("evt-1")).unwrap_err().starts_with("codec: saga folded marks"));
     }
 
     #[test]
@@ -1539,12 +1503,14 @@ mod tests {
 
     #[test]
     fn saga_write_crosses_every_action() {
-        let got = |loaded, v, completes, cmds| saga_write(loaded, v, completes, cmds).map(|w| (w.action, w.expected));
-        assert_eq!(got("completed", 4, false, true), Ok(("ignore".to_owned(), 0)));
-        assert_eq!(got("absent", 0, true, false), Ok(("nothing".to_owned(), 0)));
-        assert_eq!(got("absent", 9, false, false), Ok(("save".to_owned(), 0)), "an absent instance's version is ignored");
-        assert_eq!(got("active", 3, true, true), Ok(("complete".to_owned(), 3)));
-        assert_eq!(got("gone", 3, true, true), Err(r#"codec: unknown saga instance state "gone""#.to_owned()));
+        let got = |version, completes, cmds| {
+            let write = saga_write(completes, cmds, version);
+            (write.action, write.expected)
+        };
+        assert_eq!(got(None, true, false), ("nothing".to_owned(), 0));
+        assert_eq!(got(None, false, false), ("save".to_owned(), 0));
+        assert_eq!(got(Some(3), false, false), ("save".to_owned(), 3));
+        assert_eq!(got(Some(3), true, true), ("complete".to_owned(), 3));
         assert_eq!(saga_command_id("order-7", 2, 1), "order-7:2:1");
     }
 
@@ -1751,7 +1717,7 @@ mod tests {
         // Every deterministic marshaling failure must name its cause *and* carry the taxonomy code, or
         // the host falls back to a transient store error and retries a failure that always repeats.
         let valid_doc = r#"{"id":"user-1","age":36}"#;
-        let cases: [(&str, Result<(), String>, &str); 18] = [
+        let cases: [(&str, Result<(), String>, &str); 17] = [
             ("filter_is_not_json", eval_filter("{not json}", valid_doc).map(|_| ()), "key must be a string at line 1 column 2"),
             ("filter_is_not_a_filter", eval_filter(r#"{"nope":1}"#, valid_doc).map(|_| ()), "unknown variant"),
             ("document_is_not_json", eval_filter(r#"{"exists":{"path":"id","exists":true}}"#, "nope").map(|_| ()), "expected ident"),
@@ -1773,7 +1739,6 @@ mod tests {
             // The two that used to cross untagged and read as transient in a host (08#F3).
             ("sequence_batch_has_a_gap", check_sequence_batch(1, vec![Some(2), Some(4)]), "envelope 1 has sequence 4, expected 3"),
             ("error_code_is_unknown", error_code_is_terminal("timeout").map(|_| ()), "unknown error code: timeout"),
-            ("tag_error_code_is_unknown", tag_error("timeout", "x").map(|_| ()), "unknown error code: timeout"),
             (
                 "record_is_not_a_json_object",
                 decode_idempotency_record("[11234062831410934249]").map(|_| ()),
@@ -1950,13 +1915,13 @@ mod tests {
         assert_eq!(store.complete_saga(NO_TX, "order-1", 1, vec![fulfill]).unwrap(), 2);
         let done = store.load_saga(NO_TX, "order-1").unwrap().expect("a tombstone");
         assert_eq!((done.version, done.completed, done.state_json.as_str(), done.folded.as_str()), (2, true, "null", ""));
-        let unsent = store.unsent_saga_commands(10);
+        let unsent = store.unpublished_saga_commands(10);
         assert_eq!(unsent.len(), 1);
         let row = &unsent[0];
         assert_eq!((row.id.as_str(), row.correlation_id.as_str(), row.timestamp), ("order-1:2:0", "order-1", 7));
         assert_eq!((row.command.name.as_str(), row.command.version, row.command.data.as_slice()), ("Fulfill", 1, &br#"{"order_id":"order-1"}"#[..]));
-        store.mark_saga_commands_sent(vec!["order-1:2:0".to_owned()]);
-        assert!(store.unsent_saga_commands(10).is_empty());
+        store.mark_saga_commands_published(vec!["order-1:2:0".to_owned()]);
+        assert!(store.unpublished_saga_commands(10).is_empty());
         let resurrect = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"open"}"#, "", vec![]).unwrap_err();
         assert!(resurrect.starts_with("concurrency: saga order-1 completed"), "{resurrect}");
         assert_eq!(limit_of(u64::MAX), usize::MAX, "a limit past the target's width saturates");
@@ -2101,7 +2066,7 @@ mod tests {
         let empty = vec![KafkaHeader { key: kafka_content_type_header(), value: Vec::new() }];
         assert_eq!(route(empty), (None, Some(String::new())), "an empty value is unknown, not the default");
 
-        // A dead letter keeps the record and appends its source; the reader gets the source back.
+        // A dead letter keeps the record and appends its source.
         let dead = kafka_dead_letter_record(
             KafkaRecord { key: record.key.clone(), value: record.value.clone(), headers: copy_headers(&record.headers) },
             "orders",
@@ -2111,9 +2076,11 @@ mod tests {
         );
         assert_eq!((dead.key.as_slice(), dead.value.as_slice()), (record.key.as_slice(), record.value.as_slice()));
         assert_eq!(dead.headers.len(), record.headers.len() + 4);
-        let source = kafka_dead_letter_source(copy_headers(&dead.headers)).expect("a source");
-        assert_eq!((source.topic.as_str(), source.partition, source.offset, source.error.as_str()), ("orders", 3, 42, "codec: bad"));
-        assert!(kafka_dead_letter_source(Vec::new()).is_none(), "no source");
+        let source: Vec<(&str, &[u8])> = dead.headers[record.headers.len()..].iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
+        assert_eq!(
+            source,
+            [("edax-dlq-topic", &b"orders"[..]), ("edax-dlq-partition", b"3"), ("edax-dlq-offset", b"42"), ("edax-dlq-error", b"codec: bad")]
+        );
 
         // Topic, partition and offset together are the identity of a message that has no envelope.
         assert_eq!(kafka_poison_id("orders", 3, 42), "orders/3/42");
@@ -2157,12 +2124,12 @@ mod tests {
         assert!(tracker.due().is_empty(), "committed: nothing due");
 
         let page = tracker.stats();
-        type Row<'a> = (&'a str, i32, u64, u64, Option<i64>, Option<i64>);
+        type Row<'a> = (&'a str, i32, u64, u64, i64, Option<i64>);
         let rows: Vec<Row> = page
             .iter()
             .map(|row| (row.topic.as_str(), row.partition, row.unsettled, row.live, row.max_delivered, row.committed))
             .collect();
-        assert_eq!(rows, [("orders", 0, 1, 0, Some(7), Some(7))], "7 is unsettled and retired");
+        assert_eq!(rows, [("orders", 0, 1, 0, 7, Some(7))], "7 is unsettled and retired");
 
         tracker.reset("orders", 0);
         assert!(tracker.stats().is_empty(), "a revoked partition leaves no row behind");
@@ -2170,28 +2137,25 @@ mod tests {
 
     // ---- redis -------------------------------------------------------------
 
-    /// What the boundary adds to the ledger kernel: the split value crosses as a struct, so the
-    /// token and the record behind it arrive as named fields, and the claim outcome crosses as an
-    /// optional record. The value layout is the kernel's, pinned by `testdata/golden/redis_value.json`.
+    /// What the boundary adds to the ledger kernel: the claim outcome crosses as an optional record.
+    /// The value layout is the kernel's, pinned by `testdata/golden/redis_value.json`.
     #[test]
     fn redis_value_crosses_as_owner_and_record() {
         let claim = redis_new_claim(HASH).unwrap();
         assert_ne!(claim, redis_new_claim(HASH).unwrap(), "each claim mints its own owner");
-        let claimed = redis_split_value(&claim).unwrap();
-        assert_eq!(claimed.owner.len(), 32);
-        assert_eq!(decode_idempotency_record(&claimed.record).unwrap().state, "pending");
         assert_eq!(redis_check_claim(&claim), Ok(()));
 
         // A settled record is passed through untouched, so a result never round-trips through a
         // second serializer on its way to the ledger.
         let done = encode_idempotency_record(HASH, false, RESULT, None, None).unwrap();
         let settled = redis_settled_value(&claim, &done).unwrap();
-        let read_back = redis_split_value(&settled).unwrap();
-        assert_eq!((read_back.owner, read_back.record), (claimed.owner, done.clone()));
+        assert_eq!(&settled[..33], &claim[..33], "the claim's own owner token");
 
         assert_eq!(redis_claim_outcome(&claim, None), Ok(None));
         assert_eq!(redis_claim_outcome(&claim, Some(claim.clone())), Ok(None));
         assert_eq!(redis_claim_outcome(&claim, Some(settled)), Ok(Some(done)));
+        let pending = redis_claim_outcome(&redis_new_claim(HASH).unwrap(), Some(claim)).unwrap().expect("another claim");
+        assert_eq!(decode_idempotency_record(&pending).unwrap().state, "pending");
     }
 
     /// The settings and the replies cross with the kernel's codes: a refused setting or command is a
@@ -2199,21 +2163,23 @@ mod tests {
     #[test]
     fn redis_refusals_cross_with_the_kernels_codes() {
         assert_eq!(redis_ledger_key("idem:", "k"), Ok(b"idem:k".to_vec()));
-        assert_eq!(redis_check_prefix("idem:"), Ok(()));
+        assert_eq!(redis_check_config("idem:", 1, 3, 1, true), Ok(()));
+        assert_eq!(redis_heartbeats_per_ttl(), 3);
         for refused in [
             redis_ledger_key("", "k").map(|_| ()),
-            redis_check_prefix(""),
-            redis_check_ttl("ttl_ms", 0),
+            redis_check_config("", 1, 1, 1, false),
+            redis_check_config("idem:", 0, 1, 1, false),
             redis_check_claim(b""),
         ] {
             let wire = refused.unwrap_err();
             assert!(wire.starts_with("bad_handle: ") || wire.starts_with("codec: "), "{wire}");
         }
-        assert_eq!(redis_check_ttl("ttl_ms", 1), Ok(()));
         assert!(redis_reply_error("ERR invalid expire time").starts_with("bad_handle: "));
         assert!(redis_reply_error("READONLY replica").starts_with("store: "));
-        for script in [redis_claim_script(), redis_complete_script(), redis_release_script(), redis_extend_script()] {
-            assert!(script.contains("KEYS[1]"));
-        }
+        let scripts = redis_scripts();
+        assert_eq!(
+            [scripts.claim, scripts.complete, scripts.release, scripts.extend],
+            [edax_redis::CLAIM_SCRIPT, edax_redis::COMPLETE_SCRIPT, edax_redis::RELEASE_SCRIPT, edax_redis::EXTEND_SCRIPT]
+        );
     }
 }

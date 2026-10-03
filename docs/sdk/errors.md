@@ -71,9 +71,9 @@ dead delivery does — see [consuming.md](./consuming.md). A sink that raises na
 so the redelivery gives the sink another try and the consumer keeps running.
 
 The wire form between the native layer and a binding is `"<code>: <message>"`, always the kernel's
-`Error` rendered as is: no binding call site picks a code. `ErrorCode::tag` builds it (`_edax.tag_error`
-on the ABI). `_edax.split_error` takes it apart, with the kernel's verdict attached, and it is the
-only place that does. Python's `errors.from_runtime` calls `_edax.split_error` rather than splitting
+`Error` rendered as is: no binding call site picks a code. `ErrorCode::tag` builds it.
+`_edax.split_error` takes it apart, with the kernel's verdict attached, and it is the
+only place that does. Python's `errors.from_wire` calls `_edax.split_error` rather than splitting
 the string itself. On the Python side `errors.mapped()` re-raises a native `RuntimeError` as its typed
 class. Wrap the native call only: a `TypeError` from host code inside the block would be retyped too.
 
@@ -128,9 +128,9 @@ code table. The parent stays what a native code maps to.
 
 The default is the kernel's (`edax_core::verdict(None)`, `_edax.error_verdict`).
 `testdata/golden/error_wire.json` pins it with every negative case: an unknown code, no separator, a
-colon without a space, an uppercase code, the empty string. No SDK states it for itself. Python maps an unknown
-code to `StoreError` and fails the import if that class's verdict ever differs from the kernel's
-default.
+colon without a space, an uppercase code, the empty string. No SDK states it for itself. The kernel
+reads a string with no code it knows as a `store` failure (`Error::from_wire`). So the class and the
+verdict come from one place, and Python raises `StoreError` for it.
 
 
 Both mistakes cost something, and the costs are not symmetric. Guessing transient and being wrong
@@ -141,7 +141,7 @@ Re-driving that key afterwards replays `CachedFailure` instead of re-running. Th
 durably; recovery needs someone to delete the record by hand. A noisy loop is recoverable, a
 poisoned key plus lost work is not.
 
-`from_runtime` keeps the whole message, code included, when it cannot parse the code. Nothing is
+`from_wire` keeps the whole message, code included, when it cannot parse the code. Nothing is
 then silently mislabeled as a concurrency conflict. An operator can still read the code off the log
 line.
 
@@ -273,8 +273,8 @@ stripped off the message. The Rust SDK asserts every code, a `Terminal` and an u
 land on the side the table says.
 
 `testdata/golden/error_wire.json` is its companion: any wire string, the negative cases included, with
-the code the kernel finds (or `null`), the message, and the verdict. Python asserts `split_error`,
-`error_verdict` and `from_runtime` against every row.
+the code the kernel finds (`store` when it finds none), the message, and the verdict. Python asserts
+`split_error`, `error_verdict` and `from_wire` against every row.
 
 Regenerate after an intentional change:
 

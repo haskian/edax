@@ -367,20 +367,17 @@ impl<O> MemoryIdempotencyStore<O> {
 /// to rehearse a split ledger on. [`expire`](Self::expire) lapses a claim the way Redis's TTL does, so a
 /// takeover and a stale owner's late complete (refused by the handle fence) can be tested. `Clone` shares
 /// the ledger. Not durable.
-pub struct MemoryLedger<O> {
-    inner: edax_memory::MemoryIdempotencyStore,
-    result: PhantomData<fn() -> O>,
-}
+pub struct MemoryLedger<O>(MemoryIdempotencyStore<O>);
 
 impl<O> Default for MemoryLedger<O> {
     fn default() -> Self {
-        Self { inner: edax_memory::MemoryIdempotencyStore::new(), result: PhantomData }
+        Self(MemoryIdempotencyStore::default())
     }
 }
 
 impl<O> Clone for MemoryLedger<O> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), result: PhantomData }
+        Self(self.0.clone())
     }
 }
 
@@ -391,7 +388,7 @@ impl<O> MemoryLedger<O> {
 
     /// Lapse whatever `key` holds, as a claim TTL or a record TTL running out would.
     pub fn expire(&self, key: &str) -> bool {
-        self.inner.expire(key)
+        self.0.expire(key)
     }
 }
 
@@ -399,15 +396,15 @@ impl<O: Serialize + DeserializeOwned> IdempotencyStore<O> for MemoryLedger<O> {
     type Tx = ();
 
     fn claim(&self, _tx: &mut (), key: &str, payload_hash: u64) -> Result<Claim<O>, Error> {
-        claim_typed(&self.inner, NO_TX, key, payload_hash)
+        claim_typed(&self.0.inner, NO_TX, key, payload_hash)
     }
 
     fn complete(&self, _tx: &mut (), key: &str, handle: &ClaimHandle, record: Record<O>) -> Result<(), Error> {
-        complete_typed(&self.inner, NO_TX, key, handle, record)
+        complete_typed(&self.0.inner, NO_TX, key, handle, record)
     }
 
     fn release(&self, _tx: &mut (), key: &str, handle: &ClaimHandle) -> Result<(), Error> {
-        self.inner.release(NO_TX, key, &handle.0)
+        self.0.inner.release(NO_TX, key, &handle.0)
     }
 }
 
@@ -449,11 +446,11 @@ impl<S> MemorySagaStore<S> {
 
 impl<S> Outbox<SagaCommand> for MemorySagaStore<S> {
     fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
-        Ok(self.inner.unsent(limit))
+        Ok(self.inner.unpublished(limit))
     }
 
     fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
-        self.inner.mark_sent(ids.to_vec());
+        self.inner.mark_published(ids.to_vec());
         Ok(())
     }
 }

@@ -121,10 +121,14 @@ Three rules, and each closes a specific hole.
 - **No readable content type falls back to the default.** A header-less record still decodes,
   whether written before this kernel or by a client that drops headers.
 
-`testdata/golden/kafka_route.json` pins the rule against a registry in eleven rows. They cover no
+A registry that names one media type twice is refused (`check_media_types`, an `already_registered`
+error), because it would decode one topic two ways. A shell checks its registry once, when it is
+built.
+
+`testdata/golden/kafka_route.json` pins the rule against a registry in thirteen rows. They cover no
 header, a foreign header only, a kernel and a host media type, an unknown one, and an empty registry.
-They also cover an empty value, an upper-case name, two headers, a non-UTF-8 first value, and
-parameters.
+They also cover an empty value, an upper-case name, two headers, a non-UTF-8 first value,
+parameters, and two registries that name a media type twice.
 `testdata/golden/kafka_decode.json` pins the composed decode, including a msgpack value under a JSON
 default, an empty value, an upper-case name, a non-UTF-8 first value and a parameterized type.
 
@@ -259,7 +263,7 @@ watermark until a rebalance or a restart resets the partition.
 | `kafka_record.json` | `name`, `format`, `envelope`, `key`, `key_hex`, `value_hex`, `headers` | eight records: both formats, an overridden key against the default, an unsequenced envelope with an empty payload, and unicode |
 | `kafka_partition.json` | `name`, `key_hex`, `java_murmur2`, `partitions`, `expected`, `error` | eleven keys at 1, 3, 12, 100 and 2^31 − 1 partitions, six of them Kafka's own Java vectors, plus `0` partitions refused |
 | `kafka_decode.json` | `name`, `default_format`, `value_hex`, `headers`, `want` | nine decodes: no content type, an overriding one, an unknown one, two content types, header-less bytes in the other format, an empty value, an upper-case name, a non-UTF-8 first value, a parameterized type |
-| `kafka_route.json` | `name`, `headers`, `registered`, `want` | eleven routes against a host's registry |
+| `kafka_route.json` | `name`, `headers`, `registered`, `want` | eleven routes against a host's registry, and two registries refused |
 | `kafka_dead_letter.json` | `name`, `record`, coordinates, `error`, `want`; or `name`, `headers`, `want` | five dead-letter records and their source, then seven header sets the reader refuses |
 | `kafka_offsets.json` | `name`, `steps` with an `op` and a `want` each | fourteen scenarios replayed step by step, each ending in the `stats` it left |
 
@@ -279,7 +283,7 @@ diff before committing it.
 |---|---|---|
 | record | `edax_kafka::encode_record` / `decode_record` | `_edax.kafka_record`, `_edax.kafka_content_type_header` |
 | route | `edax_kafka::route` | `_edax.kafka_route`, which `KafkaConsumer` calls on every record |
-| dead letter | `edax_kafka::dead_letter_record` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, `_edax.kafka_dead_letter_source`, behind `KafkaFetched.dead_letter` |
+| dead letter | `edax_kafka::dead_letter_record` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, behind `KafkaFetched.dead_letter`; the reader is Rust's alone |
 | placement | `edax_kafka::partition_for` | `_edax.kafka_partition_for`, which `KafkaProducer` passes as `partition=` |
 | media type | `edax_event::Format::media_type` | `_edax.media_type`, behind `KernelSerializer.media_type` |
 | poison id | `edax_kafka::poison_id` | `_edax.kafka_poison_id` |

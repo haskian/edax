@@ -3,17 +3,10 @@
 //! match, refusals included: the 2^53 check reads the input text, so `arbitrary_precision` cannot
 //! hide a wide literal from it.
 
-use std::path::PathBuf;
-
 use edax_cqrs::query::{encode_cursor, SortKey};
 use edax_cqrs::{canonical_json, command_hash, payload_hash};
+use edax_golden::read as golden;
 use serde_json::Value;
-
-fn golden(name: &str) -> Vec<Value> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/golden").join(name);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
 
 #[test]
 fn the_features_are_on() {

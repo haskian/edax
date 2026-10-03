@@ -22,7 +22,6 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
 
 use edax::{
     Error, JsonRegistryCodec, MemorySagaStore, MemoryTx, Outbox, Pacing, Relay, Saga, SagaCommand, SagaInstance, SagaRunner,
@@ -246,7 +245,7 @@ impl World {
 
     fn drain(&mut self, fail_at: Option<u8>, crash_mark: bool) -> Result<(), TestCaseError> {
         let outbox = CrashingMark { inner: self.store.clone(), crash: Cell::new(crash_mark) };
-        let relay = Relay::<_, SagaCommand>::new(outbox).pacing(Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() });
+        let relay = Relay::<_, SagaCommand>::new(outbox).pacing(Pacing::instant());
         let mut index = 0u8;
         let mut sent: Vec<String> = Vec::new();
         let _ = relay.drain(10, |row| {

@@ -23,7 +23,7 @@ import edax
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from conftest import build_envelope, sequence_of
+from conftest import SeqSerializer, build_envelope, publish_all, sequence_of, sink_ok
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 
 BOOTSTRAP: str | None = os.environ.get("EDAX_KAFKA_BOOTSTRAP")
@@ -42,19 +42,6 @@ def _needs_container() -> None:
 
 def _docker(*args: str) -> None:
     subprocess.run(["docker", *args], check=True, capture_output=True, timeout=120)
-
-
-class SeqSerializer:
-    """Wire form ``agg:seq``, so one aggregate's events carry real sequences."""
-
-    media_type = "application/x-test-seq"
-
-    def encode(self, env: edax.EventEnvelope) -> bytes:
-        return f"{env.aggregate_id}:{env.sequence}".encode()
-
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
-        agg, seq = wire.decode().split(":")
-        return build_envelope(agg, "Tick", int(seq), id=f"{agg}-{seq}")
 
 
 @pytest.fixture
@@ -165,7 +152,7 @@ class Member:
             commit_timeout_s=commit_timeout_s,
         )
         self.client.subscribe([topic], listener=self.consumer.rebalance_listener(drain_timeout_s=5))
-        self.dispatcher = edax.KeyOrderedDispatcher(workers=4, handler=handler, on_dead=on_dead or _sink_ok)
+        self.dispatcher = edax.KeyOrderedDispatcher(workers=4, handler=handler, on_dead=on_dead or sink_ok)
         self.task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -182,23 +169,15 @@ class Member:
         await self.client.stop()
 
 
-async def _sink_ok(delivery: edax.Delivery, err: BaseException) -> None:
-    """A sink that takes everything: what a test that is not about the sink wires."""
-
-
-async def _publish(producer: AIOKafkaProducer, topic: str, envs: list[edax.EventEnvelope]) -> None:
-    edax_producer = KafkaProducer(producer, topic, serializer=SeqSerializer())
-    for env in envs:
-        await edax_producer.publish(env)
-
-
 async def test_a_nack_on_a_real_fetcher_keeps_the_key_in_order(
     topic: Any, producer: AIOKafkaProducer
 ) -> None:
     """05#F1 live: seq 1 fails once while seq 2 and 3 are already fetched. The seek-back redelivers them
     behind seq 1, the copies fetched before it are skipped, and the staleness guard loses nothing."""
     name = await topic(1)
-    await _publish(producer, name, [build_envelope("a", "Tick", seq) for seq in (1, 2, 3)])
+    await publish_all(
+        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in (1, 2, 3)]
+    )
     stored: int | None = None
     applied: list[int] = []
     runs: list[int] = []
@@ -236,7 +215,9 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
     committed, and work in flight. Its replacement starts from the group's commit: every offset from the
     commit runs again, and none below it."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
-    await _publish(producer, name, [build_envelope(f"k{i % 4}", "Tick", i + 1) for i in range(40)])
+    await publish_all(
+        producer, name, SeqSerializer(), [build_envelope(f"k{i % 4}", "Tick", i + 1) for i in range(40)]
+    )
     script = textwrap.dedent(
         f"""
         import asyncio, sys
@@ -304,7 +285,12 @@ async def test_a_member_joining_mid_batch_drains_the_revoked_work_first(
     commit moves a partition back, and every message is handled."""
     name, group = await topic(4), f"g-{uuid.uuid4().hex[:8]}"
     keys = [f"k{i}" for i in range(8)]
-    await _publish(producer, name, [build_envelope(k, "Tick", seq) for seq in range(1, 61) for k in keys])
+    await publish_all(
+        producer,
+        name,
+        SeqSerializer(),
+        [build_envelope(k, "Tick", seq) for seq in range(1, 61) for k in keys],
+    )
     active: dict[str, str] = {}
     overlaps: list[str] = []
     handled: dict[str, set[int]] = defaultdict(set)
@@ -351,7 +337,9 @@ async def test_a_raising_sink_gets_another_try_and_the_partition_drains(
     """05#F2 live: the sink raises once. The delivery is nacked, sought back, dead-lettered on the next try,
     and the partition's commit reaches its end."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
-    await _publish(producer, name, [build_envelope("a", "Tick", seq) for seq in range(1, 11)])
+    await publish_all(
+        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in range(1, 11)]
+    )
     sink_calls: list[int] = []
 
     def handler(env: edax.EventEnvelope) -> None:
@@ -412,13 +400,15 @@ async def test_a_frozen_broker_costs_a_commit_its_deadline_not_the_run(
     is back the same watermark commits."""
     _needs_container()
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
-    await _publish(producer, name, [build_envelope("a", "Tick", seq) for seq in range(1, 6)])
+    await publish_all(
+        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in range(1, 6)]
+    )
     handled: list[int] = []
     member = Member(name, group, lambda e: handled.append(sequence_of(e)), commit_timeout_s=1.0)
     await member.start()
     await _wait(lambda: len(handled) == 5, 30, "every message handled")
     await _wait(lambda: any(o == 5 for _, _, o in member.commits), 10, "the first commit")
-    await _publish(producer, name, [build_envelope("a", "Tick", 6)])
+    await publish_all(producer, name, SeqSerializer(), [build_envelope("a", "Tick", 6)])
     await _wait(lambda: len(handled) == 6, 30, "the sixth message")
     _docker("pause", CONTAINER or "")
     try:

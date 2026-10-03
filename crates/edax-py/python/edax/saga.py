@@ -156,21 +156,19 @@ class SagaRunner:
         if cid is None:
             return
         instance = await self._store.load(cid, tx)
-        if instance is not None and instance.completed:
-            # The kernel's write for any fold of a completed instance is `ignore` (pinned by
-            # `testdata/golden/saga.json`), so the fold is not even run.
-            return
         with errors.mapped():
-            folded = _edax.saga_admit("" if instance is None else instance.folded, env)
+            if instance is None:
+                folded = _edax.saga_admit(False, "", env)
+            else:
+                folded = _edax.saga_admit(instance.completed, instance.folded, env)
         if folded is None:
-            return  # folded already: its step committed, and its commands are in the outbox
-        loaded = "absent" if instance is None else "active"
-        version = 0 if instance is None else instance.version
+            # A tombstone, or an event folded already: its step committed, and its commands are in
+            # the outbox. Pinned by `testdata/golden/saga.json`.
+            return
         new_state, commands = self._saga.handle(None if instance is None else instance.state, env)
-        completes = new_state is Completed
-        with errors.mapped():
-            write = _edax.saga_write(loaded, version, completes, bool(commands))
-        if write.action not in ("save", "complete"):
+        version = None if instance is None else instance.version
+        write = _edax.saga_write(new_state is Completed, bool(commands), version)
+        if write.action == "nothing":
             return
         rows = self._rows(cid, write.expected + 1, commands)
         if write.action == "save":

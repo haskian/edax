@@ -36,32 +36,18 @@ ENVELOPES: dict[str, edax.EventEnvelope] = {
 }
 
 
-def _same(a: edax.EventEnvelope, b: edax.EventEnvelope) -> bool:
-    return (
-        a.id == b.id
-        and a.aggregate_id == b.aggregate_id
-        and a.timestamp == b.timestamp
-        and a.sequence == b.sequence
-        and a.namespace == b.namespace
-        and a.metadata == b.metadata
-        and a.event.name == b.event.name
-        and a.event.version == b.event.version
-        and a.event.data == b.event.data
-    )
-
-
 @pytest.mark.parametrize("shape", list(ENVELOPES))
 def test_copy_and_deepcopy_round_trip(shape: str) -> None:
     v = ENVELOPES[shape]
-    assert _same(v, copy.copy(v))
-    assert _same(v, copy.deepcopy(v))
+    assert v == copy.copy(v)
+    assert v == copy.deepcopy(v)
 
 
 @pytest.mark.parametrize("shape", list(ENVELOPES))
 def test_pickle_round_trips_every_protocol(shape: str) -> None:
     v = ENVELOPES[shape]
     for proto in range(pickle.HIGHEST_PROTOCOL + 1):
-        assert _same(v, pickle.loads(pickle.dumps(v, proto))), proto
+        assert v == pickle.loads(pickle.dumps(v, proto)), proto
 
 
 def test_event_pickles_standalone() -> None:

@@ -156,7 +156,7 @@ where
     S::Tx: Default,
 {
     let store = new_store();
-    let relay = Relay::new(store.clone()).pacing(Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() });
+    let relay = Relay::new(store.clone()).pacing(Pacing::instant());
     let mut model = StoreModel::default();
     let mut tx = S::Tx::default(); // the auto-commit handle: the model describes committed state
 
@@ -510,7 +510,7 @@ proptest! {
                 Ok(())
             }
         })
-        .pacing(Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() })
+        .pacing(Pacing::instant())
         .build()
         .expect("the dispatcher's workers spawn");
 
@@ -719,9 +719,10 @@ proptest! {
             }
         }
 
+        // Every save that appends snapshots (the default interval); a save with nothing pending, none.
         for (agg, ticks) in &model {
             let snap = store.load_snapshot(&mut tx, &agg_id(*agg)).unwrap();
-            prop_assert_eq!(snap.map(|s| s.version), Some(ticks.len() as u64));
+            prop_assert_eq!(snap.map(|s| s.version), (!ticks.is_empty()).then_some(ticks.len() as u64));
         }
     }
 }

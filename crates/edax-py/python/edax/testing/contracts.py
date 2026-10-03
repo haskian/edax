@@ -53,7 +53,6 @@ uuid`` column or a ``timestamptz`` column takes them as they come in production.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol
@@ -97,7 +96,7 @@ def envelope(aggregate_id: str, sequence: int | None, *, name: str = "Deposited"
 
 def _id(prefix: str) -> str:
     """A fresh id per test, so a suite run against a durable store needs no truncation between tests."""
-    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+    return f"{prefix}-{_edax.guid()}"
 
 
 #: How long a clause waits for a delivery the contract says must come, or for a raced unit of work to
@@ -384,17 +383,21 @@ class EventStoreContract:
             assert snap.version <= stream[-1].sequence, "a snapshot may lag, never lead"
 
     async def test_the_latest_snapshot_wins(self, event_store: Any) -> None:
-        """ "the *latest* snapshot": a second save supersedes the first rather than accumulating."""
+        """ "the *latest* snapshot": a later save supersedes an earlier one rather than accumulating, and a
+        slow writer's older snapshot arriving after a newer one never rolls the cache back, or the
+        repository would replay from the older version on every load."""
         if not self.supports_snapshots:
             raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
             await event_store.save_snapshot(tx, Snapshot(agg, "Account", 1, b"first"))
-            await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"second"))
+            await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"newer"))
+        async with event_store.transaction() as tx:
+            await event_store.save_snapshot(tx, Snapshot(agg, "Account", 1, b"older"))
         async with event_store.transaction() as tx:
             snap = await event_store.load_snapshot(tx, agg)
-            assert snap is not None and (snap.version, snap.data) == (2, b"second")
+            assert snap is not None and (snap.version, snap.data) == (2, b"newer")
 
     async def test_a_snapshot_leading_the_stream_is_refused(self, event_store: Any) -> None:
         """ "A snapshot may lag the stream but never lead it." One past the stream's version would make
@@ -414,21 +417,6 @@ class EventStoreContract:
         async with event_store.transaction() as tx:
             snap = await event_store.load_snapshot(tx, agg)
             assert snap is not None and (snap.version, snap.data) == (2, b"level")
-
-    async def test_an_older_snapshot_never_replaces_a_newer_one(self, event_store: Any) -> None:
-        """A slow writer's snapshot arriving after a faster one's must not roll the cache back: the
-        repository would then replay from the older version on every load."""
-        if not self.supports_snapshots:
-            raise pytest.skip.Exception("backend declares no snapshot support")
-        agg = _id("acct")
-        async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
-            await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"newer"))
-        async with event_store.transaction() as tx:
-            await event_store.save_snapshot(tx, Snapshot(agg, "Account", 1, b"older"))
-        async with event_store.transaction() as tx:
-            snap = await event_store.load_snapshot(tx, agg)
-            assert snap is not None and (snap.version, snap.data) == (2, b"newer")
 
     async def test_an_envelope_id_already_stored_is_refused(self, event_store: Any) -> None:
         """ "An envelope id is unique store-wide." Two rows under one id, and marking the first published
@@ -757,7 +745,7 @@ class SagaStoreContract:
     #: declares ``False`` needs no such fixture.
     supports_transactions: bool = True
 
-    async def _unsent(self, saga_store: Any, cid: str) -> list[str]:
+    async def _unpublished(self, saga_store: Any, cid: str) -> list[str]:
         return [c.id for c in await saga_store.unpublished(limit=1000) if c.correlation_id == cid]
 
     async def test_an_unknown_correlation_loads_as_none(self, saga_store: Any) -> None:
@@ -820,9 +808,10 @@ class SagaStoreContract:
         with pytest.raises(ConcurrencyError):
             await saga_store.save(cid, {"step": "lost"}, 0, "", [_saga_command(cid, 1, 0)])
         await saga_store.complete(cid, 1, [_saga_command(cid, 2, 0), _saga_command(cid, 2, 1)])
-        assert await self._unsent(saga_store, cid) == [f"{cid}:1:0", f"{cid}:2:0", f"{cid}:2:1"]
-        row = next(c for c in await saga_store.unpublished(limit=1000) if c.id == f"{cid}:2:1")
         want = _saga_command(cid, 2, 1)
+        sent = [_saga_command(cid, 1, 0).id, _saga_command(cid, 2, 0).id, want.id]
+        assert await self._unpublished(saga_store, cid) == sent
+        row = next(c for c in await saga_store.unpublished(limit=1000) if c.id == want.id)
         assert (
             row.correlation_id,
             row.command.name,
@@ -844,9 +833,10 @@ class SagaStoreContract:
         await saga_store.save(
             cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0), _saga_command(cid, 1, 1)]
         )
-        await saga_store.mark_published([f"{cid}:1:0"])
-        await saga_store.mark_published([f"{cid}:1:0", _edax.saga_command_id(_id("corr"), 1, 0)])
-        assert await self._unsent(saga_store, cid) == [f"{cid}:1:1"]
+        first, second = _edax.saga_command_id(cid, 1, 0), _edax.saga_command_id(cid, 1, 1)
+        await saga_store.mark_published([first])
+        await saga_store.mark_published([first, _edax.saga_command_id(_id("corr"), 1, 0)])
+        assert await self._unpublished(saga_store, cid) == [second]
         assert len(await saga_store.unpublished(limit=1)) == 1, "a row waits, so the limit decides"
 
     async def test_the_folded_marks_round_trip(self, saga_store: Any) -> None:
@@ -883,7 +873,7 @@ class SagaStoreContract:
         instance = await saga_store.load(cid)
         want = {"step": "paid"} if outcomes[0] == "landed" else {"step": "cancelled"}
         assert instance is not None and instance.version == 1 and instance.state == want
-        assert await self._unsent(saga_store, cid) == [command.id], "the winner's command, once"
+        assert await self._unpublished(saga_store, cid) == [command.id], "the winner's command, once"
 
     async def test_an_uncommitted_step_is_invisible_to_another_transaction(
         self, saga_store: Any, request: Any
@@ -911,9 +901,10 @@ class SagaStoreContract:
         with pytest.raises(RuntimeError):
             async with transaction(transactor):
                 await saga_store.save(cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0)])
-                assert await self._unsent(saga_store, cid) == [], "an uncommitted command is not one to send"
+                unsent = await self._unpublished(saga_store, cid)
+                assert unsent == [], "an uncommitted command is not one to send"
                 raise RuntimeError("the handler failed")
-        assert await self._unsent(saga_store, cid) == []
+        assert await self._unpublished(saga_store, cid) == []
         assert await saga_store.load(cid) is None
 
     async def test_a_save_with_no_tx_joins_the_ambient_transaction(

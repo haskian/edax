@@ -17,7 +17,7 @@
 use edax_event::{Event, EventEnvelope, Format, Metadata, Namespace};
 use edax_golden::{hex, write_or_check};
 use edax_kafka::{
-    content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, partition_for, record, route,
+    check_media_types, content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, partition_for, record, route,
     AckDecision, KafkaHeader, KafkaRecord, NackDecision, OffsetTracker, Route, CONTENT_TYPE,
 };
 use serde_json::{json, Value};
@@ -264,7 +264,8 @@ fn kafka_decode_cases() -> Vec<Value> {
 }
 
 /// The routing rule every shell runs: which registered serializer a fetched record's headers pick,
-/// the default, or none (poison). The registry is the shell's, so each row carries its own.
+/// the default, or none (poison). The registry is the shell's, so each row carries its own, and a
+/// registry that names a media type twice is refused before any record routes against it.
 fn kafka_route_cases() -> Vec<Value> {
     let json = Format::Json.media_type();
     let msgpack = Format::Msgpack.media_type();
@@ -294,10 +295,16 @@ fn kafka_route_cases() -> Vec<Value> {
             vec![header(CONTENT_TYPE, b"application/vnd.edax.envelope+json; charset=utf-8")],
             vec![json, msgpack],
         ),
+        ("a_media_type_registered_twice_is_refused", Vec::new(), vec![json, "application/x-test-id", json]),
+        ("a_host_media_type_registered_twice_is_refused", Vec::new(), vec!["application/x-test-id", "application/x-test-id"]),
     ];
     cases
         .into_iter()
         .map(|(name, headers, registered)| {
+            if let Err(refused) = check_media_types(&registered) {
+                let want = json!({ "error": refused.to_string() });
+                return json!({ "name": name, "headers": headers_json(&headers), "registered": registered, "want": want });
+            }
             let want = match route(&headers, &registered) {
                 Route::Default => json!({ "route": "default" }),
                 Route::Registered(index) => json!({ "route": "registered", "index": index }),
@@ -447,7 +454,7 @@ fn ack_step(tracker: &OffsetTracker, token: i64) -> Value {
 
 fn nack_step(tracker: &OffsetTracker, token: i64) -> Value {
     let want = match tracker.nack(token) {
-        NackDecision::Seek(offset) => json!({ "decision": "seek", "offset": offset }),
+        NackDecision::Seek { offset, .. } => json!({ "decision": "seek", "offset": offset }),
         NackDecision::Stale => json!({ "decision": "stale" }),
     };
     json!({ "op": "nack", "token": token, "want": want })

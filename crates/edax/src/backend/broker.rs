@@ -172,11 +172,6 @@ mod tests {
 
     const WAIT: Duration = Duration::from_millis(20);
 
-    /// A pacing that never sleeps, so a nack's backoff costs no wall time here.
-    fn instant() -> Pacing {
-        Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
-    }
-
     fn poll(broker: &MemoryBroker, timeout: Duration) -> Option<Delivery> {
         broker.poll(timeout).expect("a poll never fails here")
     }
@@ -395,7 +390,7 @@ mod tests {
             }
             Ok(())
         })
-        .pacing(instant())
+        .pacing(Pacing::instant())
         .build()
         .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();
@@ -422,7 +417,7 @@ mod tests {
                     0 => Err(crate::Error::store("dlq down").into()),
                     _ => Ok(()),
                 })
-                .pacing(instant())
+                .pacing(Pacing::instant())
                 .build()
                 .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();

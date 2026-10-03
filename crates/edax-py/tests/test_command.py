@@ -10,8 +10,7 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import CreateUser, golden
-from edax import _edax
+from conftest import NO_WAIT, CreateUser, golden, recording_pacing
 from edax import command as C
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
 from edax.command import Claimed, Record, Won
@@ -48,7 +47,7 @@ def test_golden_idempotency_record() -> None:
             # apart, and the original failure's code survives inside the message.
             with pytest.raises(edax.CachedFailure) as caught:
                 C._replay("Deposit", "k", c["current"], record, edax.observe._wrap(None), None)
-            assert _edax.tag_error("cached_failure", str(caught.value)) == c["replay"], c["name"]
+            assert f"{caught.value.code}: {caught.value}" == c["replay"], c["name"]
             assert caught.value.original_code == c["error_code"], c["name"]
 
 
@@ -516,7 +515,7 @@ async def test_pending_claim_raises_in_progress_not_none() -> None:
     # bogus None success — it raises InProgress so the caller retries/redelivers.
     store = MemoryIdempotencyStore()
     cmd = CreateUser("a@b.c")
-    hash_ = edax.payload_hash_json(C._payload_json(cmd))
+    hash_ = C._payload_hash(cmd)
     assert isinstance(
         await store.claim("req-1", hash_), Won
     )  # simulate the in-flight winner (pending record)
@@ -759,12 +758,7 @@ class BrokenCompleteStore(CountingIdempotencyStore):
 async def test_retry_inside_idempotent_shares_one_claim() -> None:
     store = CountingIdempotencyStore()
     # Order matters: idempotent first (outermost), retry inside it.
-    slept: list[float] = []
-
-    async def record(seconds: float) -> None:
-        slept.append(seconds)
-
-    pacing = edax.Pacing(sleep=record, entropy=lambda: 2**64 - 1)
+    pacing, slept = recording_pacing()
     bus = C.CommandBus(C.idempotent(store, lambda cmd: "req-1"), C.retry(2, pacing=pacing))
     calls = 0
 
@@ -803,14 +797,6 @@ def test_register_duplicate_type_raises() -> None:
     bus.register("user.create", handler)
     with pytest.raises(C.AlreadyRegistered, match=r"user\.create"):
         bus.register("user.create", handler)
-
-
-async def _no_sleep(seconds: float) -> None:
-    pass
-
-
-#: Retries that wait no wall time.
-NO_WAIT = edax.Pacing(sleep=_no_sleep)
 
 
 class DeclaredTerminal(Exception):
@@ -858,13 +844,9 @@ class RetryCase:
     ],
 )
 async def test_retry_branches(case: RetryCase) -> None:
-    slept: list[float] = []
-
-    async def record(seconds: float) -> None:
-        slept.append(seconds)
-
     draw = 0x9E3779B97F4A7C15
-    bus = C.CommandBus(C.retry(case.attempts, pacing=edax.Pacing(sleep=record, entropy=lambda: draw)))
+    pacing, slept = recording_pacing(draw)
+    bus = C.CommandBus(C.retry(case.attempts, pacing=pacing))
     calls = 0
 
     async def handler(cmd: CreateUser) -> str:

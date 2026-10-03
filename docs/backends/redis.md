@@ -97,8 +97,8 @@ turns a replay into a re-run.
 - Too small: a redelivery inside the window re-runs the handler instead of replaying.
 - Too large: records accumulate. See [Durability](#durability) for sizing.
 
-Both are whole milliseconds from 1 to 2^53 - 1, checked by the kernel's `check_ttl` when the store is
-built. A zero, negative or fractional TTL raises the terminal `BadHandle` there, rather than failing
+Both are whole milliseconds from 1 to 2^53 - 1, checked by the kernel's `check_config` when the store
+is built. A zero, negative or fractional TTL raises the terminal `BadHandle` there, rather than failing
 every write on the server.
 
 `claim` writes the pending record under `claim_ttl_ms`; `complete` writes the terminal record under

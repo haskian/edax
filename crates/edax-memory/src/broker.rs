@@ -15,7 +15,7 @@
 //! A group commits on every ack that moves its watermark: in memory a commit costs nothing. Nothing
 //! is ever deleted from the log, which suits a test and not a long-running process.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use edax_core::{lock, Error};
@@ -39,9 +39,6 @@ pub struct PolledDelivery {
 /// tracker that settles its deliveries.
 struct Group {
     tracker: OffsetTracker,
-    /// The partition of each live token, so a nack knows which fetch position to rewind. The
-    /// tracker answers with the offset only, because a Kafka shell already holds the partition.
-    live: HashMap<i64, usize>,
     /// The next offset to fetch, per partition.
     position: Vec<i64>,
     /// The committed watermark, per partition: where a crash resumes.
@@ -54,7 +51,6 @@ impl Group {
     fn new(partitions: usize) -> Self {
         Self {
             tracker: OffsetTracker::new(),
-            live: HashMap::new(),
             position: vec![0; partitions],
             committed: vec![0; partitions],
             next: 0,
@@ -145,7 +141,6 @@ impl MemoryBroker {
             let offset = *position;
             let token = group.tracker.book(TOPIC, partition, offset)?;
             *position = offset.saturating_add(1);
-            group.live.insert(token, p);
             group.next = (p + 1) % log.len();
             return Ok(Some(PolledDelivery { token, partition, offset, envelope: envelope.clone() }));
         }
@@ -162,7 +157,6 @@ impl MemoryBroker {
         };
         match group.tracker.ack(token) {
             AckDecision::Settled => {
-                group.live.remove(&token);
                 group.commit();
                 true
             }
@@ -179,17 +173,10 @@ impl MemoryBroker {
         let Some(group) = state.groups.get_mut(group) else {
             return false;
         };
-        let Some(&partition) = group.live.get(&token) else {
-            return false;
-        };
-        // `live` holds exactly the tracker's live tokens, so the `Stale` arm is unreachable; it answers
-        // like an unknown token rather than panicking.
         match group.tracker.nack(token) {
-            NackDecision::Seek(target) => {
-                // The rewind retired every token of the partition, so none of them is live here either.
-                group.live.retain(|_, p| *p != partition);
-                if let Some(position) = group.position.get_mut(partition) {
-                    *position = target;
+            NackDecision::Seek { partition, offset } => {
+                if let Some(position) = usize::try_from(partition).ok().and_then(|p| group.position.get_mut(p)) {
+                    *position = offset;
                 }
                 true
             }
@@ -212,7 +199,6 @@ impl MemoryBroker {
             for partition in 0..group.position.len() {
                 group.tracker.reset(TOPIC, i32::try_from(partition).unwrap_or(i32::MAX));
             }
-            group.live.clear();
             group.position.clone_from(&group.committed);
         }
     }

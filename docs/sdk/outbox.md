@@ -85,7 +85,7 @@ in-memory store checks it (`EventStoreContract.test_an_envelope_id_already_store
 A snapshot may lag the stream but never lead it. `save_snapshot` refuses one past the stream's
 version as the transaction sees it, as `CodecError`, and keeps the higher version when an older one
 arrives late (`test_a_snapshot_leading_the_stream_is_refused`,
-`test_an_older_snapshot_never_replaces_a_newer_one`). `Repository.load` treats a snapshot as a
+`test_the_latest_snapshot_wins`). `Repository.load` treats a snapshot as a
 cache: one whose `type_name` is not this codec's, or that does not load, is skipped, and the stream
 replays from version 0. The replayed run is checked with the kernel's dense-batch rule, so a store
 that returns a gap or a repeat fails the load instead of folding the wrong state.

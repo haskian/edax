@@ -15,7 +15,7 @@ from unittest import mock
 
 import edax
 import pytest
-from conftest import assert_logged, build_envelope, delivered, recorded_backoff, sequence_of
+from conftest import Recording, assert_logged, build_envelope, delivered, recorded_backoff, sequence_of
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker
 from hypothesis import given, settings
@@ -613,16 +613,6 @@ def test_stop_settles_every_submitted_delivery_exactly_once(
 # =========================================================================
 
 
-class _Outcomes(edax.Observer):
-    def __init__(self) -> None:
-        self.rows: list[tuple[str, int, str | None]] = []
-
-    def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
-    ) -> None:
-        self.rows.append((outcome, attempt, error_type))
-
-
 @dataclass
 class LiveCase:
     dies: str | None  # None, "before" the worker takes it, or "during" the handler
@@ -674,7 +664,7 @@ async def test_liveness_branches(case: LiveCase, slept: list[int]) -> None:
         nonlocal sink_calls
         sink_calls += 1
 
-    observer = _Outcomes()
+    observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=handler, on_dead=on_dead if case.with_on_dead else None, observer=observer
     )
@@ -686,7 +676,7 @@ async def test_liveness_branches(case: LiveCase, slept: list[int]) -> None:
     await dispatcher.submit(delivery)
     await dispatcher.stop()
     assert (runs, settled, sink_calls) == (case.runs, case.settled, case.sink_calls)
-    assert observer.rows == [case.outcome]
+    assert [(d[1], d[2], d[4]) for d in observer.deliveries] == [case.outcome]
     assert slept == [], "a retired delivery waits no backoff"
     assert dispatcher.stats().attempts_tracked == 0
 
@@ -750,38 +740,90 @@ async def test_settle_poison_branches(case: PoisonCase, slept: list[int]) -> Non
     assert reported == ["t/0/7"] * case.attempts, "every poisoned delivery is reported once"
 
 
-@pytest.mark.parametrize("where", ["backoff", "sink"])
-async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: str) -> None:
+@pytest.mark.parametrize(
+    "where, want",
+    [
+        pytest.param("backoff", ["nack"], id="in_the_backoff_wait"),
+        pytest.param("sink", ["nack"], id="in_the_sink"),
+        # The ack already settled it: there is nothing left to hand back.
+        pytest.param("ack", ["ack"], id="in_its_ack"),
+        # A bare envelope settles nothing, so a cancel mid-handler nacks nothing either.
+        pytest.param("fire_and_forget", [], id="in_a_fire_and_forget_handler"),
+    ],
+)
+async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: str, want: list[str]) -> None:
     """Stopping the dispatcher while a worker waits out a nack's backoff, or while the sink runs, must not
-    strand the delivery: it is nacked at once, then the cancel goes on."""
+    strand the delivery: it is nacked at once, then the cancel goes on. A delivery that settled, or a bare
+    envelope, is not nacked."""
     parked = asyncio.Event()
-
-    async def sleep(seconds: float) -> None:
-        parked.set()
-        await asyncio.Event().wait()
-
-    async def on_dead(d: edax.Delivery, err: BaseException) -> None:
-        parked.set()
-        await asyncio.Event().wait()
-
-    def handler(env: edax.EventEnvelope) -> None:
-        raise edax.CodecError("bad") if where == "sink" else edax.StoreError("db")
-
     settled: list[str] = []
+
+    async def park(*_: object) -> None:
+        parked.set()
+        await asyncio.Event().wait()
+
+    async def handler(env: edax.EventEnvelope) -> None:
+        if where == "fire_and_forget":
+            await park()
+        if where in ("sink", "backoff"):
+            raise edax.CodecError("bad") if where == "sink" else edax.StoreError("db")
+
+    async def ack() -> None:
+        settled.append("ack")
+        await park()
+
     dispatcher = edax.KeyOrderedDispatcher(
-        workers=1, handler=handler, on_dead=on_dead, pacing=edax.Pacing(sleep=sleep)
+        workers=1, handler=handler, on_dead=park, pacing=edax.Pacing(sleep=park)
     )
     dispatcher.start()
+    env = build_envelope("acct-1", "Deposited", 1)
     await dispatcher.submit(
-        edax.Delivery(
-            build_envelope("acct-1", "Deposited", 1),
-            lambda: settled.append("ack"),
-            lambda: settled.append("nack"),
-        )
+        env if where == "fire_and_forget" else edax.Delivery(env, ack, lambda: settled.append("nack"))
     )
     await asyncio.wait_for(parked.wait(), 1)
     await dispatcher.stop(timeout=0.01)
-    assert settled == ["nack"]
+    assert settled == want
+
+
+@pytest.mark.parametrize(
+    "where, want",
+    [
+        pytest.param("backoff", ["nack"], id="in_the_backoff_wait"),
+        pytest.param("sink", ["nack"], id="in_the_sink"),
+        # The sink took it and the ack already settled it: nothing is left to hand back.
+        pytest.param("ack", ["ack"], id="in_its_ack"),
+    ],
+)
+async def test_a_consumer_cancelled_while_settling_poison_hands_it_back(where: str, want: list[str]) -> None:
+    """The consumer loop settles a poison message itself, not a worker: a cancel there hands the message
+    back too, or the transport's watermark pins on it. One that already settled is not nacked."""
+    parked = asyncio.Event()
+    settled: list[str] = []
+
+    async def park(*_: object) -> None:
+        parked.set()
+        await asyncio.Event().wait()
+
+    async def sink_ok(*_: object) -> None:
+        pass
+
+    async def ack() -> None:
+        settled.append("ack")
+        await park()
+
+    on_dead = {"backoff": None, "sink": park, "ack": sink_ok}[where]
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: None, on_dead=on_dead, pacing=edax.Pacing(sleep=park)
+    )
+    poison = edax.broker.UndecodableDelivery(
+        b"\xff", "t/0/7", ack, lambda: settled.append("nack"), edax.CodecError("x")
+    )
+    task = asyncio.create_task(dispatcher.settle_poison(poison, poison.error))
+    await asyncio.wait_for(parked.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert settled == want
 
 
 async def test_the_dispatcher_lends_its_pacing_to_the_consumer_loop() -> None:

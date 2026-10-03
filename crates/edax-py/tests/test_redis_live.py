@@ -10,17 +10,15 @@ import asyncio
 import hashlib
 import os
 import subprocess
-import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any
 from urllib.parse import urlparse
 
 import edax
 import pytest
 import redis.asyncio
-from conftest import REDIS_URL
+from conftest import REDIS_URL, Charge, fresh_prefix, ledger_key
 from edax.backend.redis import CLAIM_SCRIPT, COMPLETE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
 from edax.command import CommandBus, Record, Won, idempotent
 
@@ -30,12 +28,6 @@ if REDIS_URL is None:
 URL: str = REDIS_URL or ""  # set: the module is skipped without it
 CONTAINER: str | None = os.environ.get("EDAX_REDIS_CONTAINER")
 HASH = 11258580006047770801
-
-
-@dataclass
-class Charge:
-    request_id: str
-    type: ClassVar[str] = "Charge"
 
 
 @pytest.fixture
@@ -49,7 +41,7 @@ async def direct() -> AsyncIterator[Any]:
 
 @pytest.fixture
 def prefix() -> str:
-    return f"idem:{uuid.uuid4().hex}:"
+    return fresh_prefix()
 
 
 class DroppingProxy:
@@ -168,7 +160,7 @@ async def test_a_heartbeat_holds_a_claim_past_its_ttl_and_without_it_the_key_is_
             assert taken is not None, "the unrenewed claim lapsed and was taken over"
             with pytest.raises(edax.StoreError, match="taken over"):
                 await holder.complete(key, won.handle, Record(HASH, result="holder"))
-            assert await direct.get((prefix + key).encode()) == taken
+            assert await direct.get(ledger_key(prefix, key)) == taken
 
 
 @contextmanager
@@ -202,7 +194,7 @@ async def test_a_server_frozen_past_the_claim_ttl_refuses_the_late_complete(dire
     bus.register(Charge.type, handler)
     with pytest.raises(edax.StoreError, match="taken over"):
         await bus.dispatch(Charge("req-1"))
-    assert await direct.get((prefix + "req-1").encode()) is None
+    assert await direct.get(ledger_key(prefix, "req-1")) is None
     assert await bus.dispatch(Charge("req-1")) == "charged"
     assert runs == ["req-1", "req-1"]
 
@@ -225,7 +217,7 @@ async def test_settlement_sent_into_a_frozen_server_never_loses_a_landed_record(
         with pytest.raises(edax.StoreError, match="no reply within 300 ms"):
             await store.release("req-1", won.handle)
     await asyncio.sleep(0.3)  # the buffered commands run once the server resumes
-    held = await direct.get((prefix + "req-1").encode())
+    held = await direct.get(ledger_key(prefix, "req-1"))
     settled = edax._edax.redis_settled_value(
         won.handle, edax.command.encode_record(Record(HASH, result="charged"))
     )

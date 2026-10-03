@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -108,39 +108,10 @@ class TestKafkaBroker(BrokerContract):
         return KafkaRig(request.param)
 
 
-@dataclass
-class Rig:
-    """A broker as the drain property drives it: a publish, one consumer, and "nothing left"."""
-
-    publish: Callable[[edax.EventEnvelope], Awaitable[None]]
-    consumer: Any
-    settled: Callable[[], Awaitable[bool]]
-
-
-def _memory() -> Rig:
-    b = MemoryBroker()
-
-    async def settled() -> bool:
-        return b.empty()
-
-    return Rig(b.publish, b, settled)
-
-
-def _kafka() -> Rig:
-    c, s = FakeKafkaClient(), edax.KernelSerializer()
-    consumer = KafkaConsumer(c, serializer=s)
-
-    async def settled() -> bool:
-        await consumer.flush()
-        return c.settled()
-
-    return Rig(KafkaProducer(c, "t", serializer=s).publish, consumer, settled)
-
-
 # A factory, not an instance: hypothesis re-runs the test body per example on one fixture value,
 # and its property below must stay a sync test (hypothesis cannot drive `async def`).
-@pytest.fixture(params=[_memory, _kafka], ids=["memory", "kafka"])
-def make_rig(request: Any) -> Callable[[], Rig]:
+@pytest.fixture(params=[MemoryRig, KafkaRig], ids=["memory", "kafka"])
+def make_rig(request: Any) -> Callable[[], MemoryRig | KafkaRig]:
     return request.param
 
 
@@ -151,11 +122,6 @@ async def _append(store: MemoryEventStore, versions: dict[int, int], agg: int, n
         await store.append(tx, agg_id(agg), v, envs)
     versions[agg] = v + n
     return [e.id for e in envs]
-
-
-async def _poll(rig: Rig, n: int) -> list[edax.Delivery]:
-    # timeout: a broken nack/publish leaves poll blocking forever; fail instead of hanging
-    return [delivered(await asyncio.wait_for(rig.consumer.poll(), 1)) for _ in range(n)]
 
 
 class _ScriptedConsumer(_ConsumerLoop):
@@ -337,7 +303,7 @@ step = st.tuples(st.integers(0, 2), st.integers(1, 3), st.integers(1, 4))  # (ag
 @settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(st.lists(step, min_size=1, max_size=10))
 def test_drain_history_reaches_consumer_in_key_order(
-    make_rig: Callable[[], Rig], history: list[tuple[int, int, int]]
+    make_rig: Callable[[], MemoryRig | KafkaRig], history: list[tuple[int, int, int]]
 ) -> None:
     async def run() -> None:
         rig, store, versions = make_rig(), MemoryEventStore(), {}
@@ -351,11 +317,15 @@ def test_drain_history_reaches_consumer_in_key_order(
             pass
         total = sum(versions.values())
         seen: dict[str, list[str]] = defaultdict(list)
-        for d in await _poll(rig, total):
+        consumer = await rig.consumer("drain")
+        for _ in range(total):
+            # timeout: a broken nack/publish leaves poll blocking forever; fail instead of hanging
+            d = delivered(await asyncio.wait_for(consumer.poll(), 1))
             seen[d.envelope.aggregate_id].append(d.envelope.id)
             await d.ack()
         assert seen == {agg_id(a): ids for a, ids in want.items()}
-        assert await rig.settled()
+        await rig.commit("drain")
+        assert rig.drained("drain")
 
     asyncio.run(run())
 

@@ -25,6 +25,6 @@ pub mod record;
 pub use offsets::{AckDecision, Due, NackDecision, OffsetTracker, PartitionStats};
 pub use partition::partition_for;
 pub use record::{
-    content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, poison_id, record, route,
+    check_media_types, content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, poison_id, record, route,
     DeadLetterSource, KafkaHeader, KafkaRecord, Route, CONTENT_TYPE, DLQ_ERROR, DLQ_OFFSET, DLQ_PARTITION, DLQ_TOPIC,
 };

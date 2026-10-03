@@ -248,7 +248,6 @@ fn failure_message(e: &(dyn std::error::Error + 'static)) -> String {
 /// [`retry_transaction`](crate::retry_transaction) instead. Inside [`idempotent`] with no transaction, every
 /// attempt's writes commit on their own: at-least-once, so the handler must tolerate a re-run.
 pub fn retry<C: 'static, O: 'static>(attempts: usize, pacing: Pacing) -> Middleware<C, O> {
-    let attempts = attempts.max(1);
     let pacing = Arc::new(pacing);
     Box::new(move |next: Handler<C, O>| {
         let pacing = Arc::clone(&pacing);
@@ -259,20 +258,32 @@ pub fn retry<C: 'static, O: 'static>(attempts: usize, pacing: Pacing) -> Middlew
                      attempt's staged writes; retry the whole unit of work with retry_transaction",
                 )));
             }
-            let mut failures: usize = 0;
-            loop {
-                match next(cmd) {
-                    Ok(out) => return Ok(out),
-                    Err(e) if is_terminal(&*e) || failures.saturating_add(1) >= attempts => return Err(e),
-                    Err(_) => {
-                        // The backoff index is the number of failures so far: the first retry waits step 0.
-                        pacing.wait(u64::try_from(failures).unwrap_or(u64::MAX));
-                        failures = failures.saturating_add(1);
-                    }
-                }
-            }
+            retry_with(attempts, &pacing, || next(cmd))
         })
     })
+}
+
+/// Run `attempt` up to `attempts` times (at least once), waiting each step of `pacing` after a
+/// transient failure, and return the last error; a terminal one returns at once. The one retry loop
+/// behind [`retry`] and [`retry_transaction`](crate::retry_transaction), so their backoff index
+/// cannot drift.
+pub(crate) fn retry_with<R>(
+    attempts: usize,
+    pacing: &Pacing,
+    mut attempt: impl FnMut() -> Result<R, HandlerError>,
+) -> Result<R, HandlerError> {
+    let mut failures: usize = 0;
+    loop {
+        match attempt() {
+            Ok(out) => return Ok(out),
+            Err(e) if is_terminal(&*e) || failures.saturating_add(1) >= attempts.max(1) => return Err(e),
+            Err(_) => {
+                // The backoff index is the number of failures so far: the first retry waits step 0.
+                pacing.wait(u64::try_from(failures).unwrap_or(u64::MAX));
+                failures = failures.saturating_add(1);
+            }
+        }
+    }
 }
 
 /// Overwrite the pending claim on `key` with its terminal `record`. If that write fails, release the claim
@@ -440,24 +451,8 @@ mod tests {
         }
     }
 
-    /// A pacing that records each wait instead of sleeping, with a fixed draw so every wait is the
-    /// kernel's delay for that draw.
-    fn recorded() -> (Pacing, Arc<Mutex<Vec<Duration>>>) {
-        let slept: Arc<Mutex<Vec<Duration>>> = Arc::default();
-        let recorder = Arc::clone(&slept);
-        let pacing = Pacing {
-            sleep: Arc::new(move |d| recorder.lock().unwrap().push(d)),
-            entropy: Arc::new(|| u64::MAX),
-            ..Pacing::default()
-        };
-        (pacing, slept)
-    }
 
-    fn no_wait() -> Pacing {
-        recorded().0
-    }
-
-    /// The wait the kernel computes for retry `attempt` under `recorded()`'s fixed draw.
+    /// The wait the kernel computes for retry `attempt` under `Pacing::recording()`'s fixed draw.
     fn kernel_wait(attempt: u64) -> Duration {
         Duration::from_millis(edax_core::backoff_millis(edax_core::Backoff::DEFAULT, attempt, u64::MAX))
     }
@@ -853,7 +848,7 @@ mod tests {
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
             let (failures, failure) = (c.failures, c.failure);
-            let (pacing, slept) = recorded();
+            let (pacing, slept) = Pacing::recording();
             let bus = pay_bus(
                 vec![retry(c.attempts, pacing)],
                 Box::new(move |cmd: &Pay| {
@@ -1152,7 +1147,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(3, no_wait())],
+            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
             Box::new(move |_c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Err(Error::codec("bad payload").into())
@@ -1226,7 +1221,7 @@ mod tests {
         let calls_h = Arc::clone(&calls);
         // Order matters: idempotent first (outermost), retry inside it. Every attempt then runs under
         // one claim; swapped, each retry would take and release its own, which the claim count shows.
-        let (pacing, slept) = recorded();
+        let (pacing, slept) = Pacing::recording();
         let bus = pay_bus(
             vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(2, pacing)],
             Box::new(move |c: &Pay| {

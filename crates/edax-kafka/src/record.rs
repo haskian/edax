@@ -17,7 +17,7 @@
 //!
 //! Placement is [`crate::partition_for`]: the shell passes the partition it names with the record.
 
-use edax_core::Error;
+use edax_core::{Error, ErrorCode};
 use edax_event::{EventEnvelope, Format};
 
 /// Header naming the wire format of the value bytes; the value is a media type (the vocabulary note
@@ -108,8 +108,8 @@ pub enum Route {
 ///
 /// [`content_type`] reads the header: the first [`CONTENT_TYPE`] wins, matched case-sensitively,
 /// and a first value that is not UTF-8 reads as absent. The match against `registered` is exact,
-/// so a media type with parameters (`; charset=utf-8`) or an empty value is [`Route::Unknown`]. The
-/// first registration of a media type wins; a shell refuses duplicates before it gets here.
+/// so a media type with parameters (`; charset=utf-8`) or an empty value is [`Route::Unknown`]. A
+/// shell builds `registered` once and holds it to [`check_media_types`] first.
 pub fn route(headers: &[KafkaHeader], registered: &[&str]) -> Route {
     match content_type(headers) {
         None => Route::Default,
@@ -120,8 +120,19 @@ pub fn route(headers: &[KafkaHeader], registered: &[&str]) -> Route {
     }
 }
 
-/// The formats this kernel mints, in the order [`decode_record`] registers their media types.
-const FORMATS: [Format; 2] = [Format::Json, Format::Msgpack];
+/// Refuse a registry that names one media type twice, as an `already_registered` error naming it.
+/// Two serializers under one media type would decode one topic two ways: a header-less record with
+/// the default, a typed record with whichever came first.
+pub fn check_media_types(registered: &[&str]) -> Result<(), Error> {
+    let mut seen = std::collections::HashSet::new();
+    match registered.iter().find(|media_type| !seen.insert(**media_type)) {
+        Some(media_type) => Err(Error::new(
+            ErrorCode::AlreadyRegistered,
+            format_args!("two serializers claim the media type {media_type:?}"),
+        )),
+        None => Ok(()),
+    }
+}
 
 /// Build the record for `env` with the kernel codec: [`Format::encode`] for the value and
 /// [`Format::media_type`] for the header. Infallible, like both of those.
@@ -131,18 +142,14 @@ pub fn encode_record(format: Format, env: &EventEnvelope, key: Option<&str>) -> 
 
 /// Decode a fetched record back to its envelope.
 ///
-/// [`route`] over every format this kernel mints decides the format; a media type it does not
-/// mint is a `codec` error (`unknown format: ...`), never a silent fallback, so a producer rollout
-/// the consumer cannot read becomes one poison message instead of a stream of decode failures. No
-/// readable content type falls back to `default`.
+/// The [`content_type`] names the format; a media type this kernel does not mint is a `codec` error
+/// (`unknown format: ...`), never a silent fallback, so a producer rollout the consumer cannot read
+/// becomes one poison message instead of a stream of decode failures. No readable content type
+/// falls back to `default`.
 pub fn decode_record(default: Format, value: &[u8], headers: &[KafkaHeader]) -> Result<EventEnvelope, Error> {
-    let media_types = FORMATS.map(|format| format.media_type());
-    let format = match route(headers, &media_types) {
-        Route::Default => default,
-        // Every index `route` returns is one of `media_types`, so the `None` arm is unreachable; it
-        // answers with the same refusal an unknown media type gets rather than panicking.
-        Route::Registered(index) => FORMATS.get(index).copied().ok_or_else(|| Error::codec("unknown format"))?,
-        Route::Unknown(media_type) => Format::from_media_type(&media_type)?,
+    let format = match content_type(headers) {
+        None => default,
+        Some(media_type) => Format::from_media_type(media_type)?,
     };
     format.decode(value)
 }

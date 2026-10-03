@@ -125,11 +125,6 @@ impl Rig {
     }
 }
 
-/// A pacing that waits no wall time.
-fn no_wait() -> Pacing {
-    Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
-}
-
 fn is_bad_handle(error: &HandlerError) -> bool {
     error.downcast_ref::<Error>().is_some_and(|e| e.code == ErrorCode::BadHandle)
 }
@@ -147,7 +142,7 @@ fn retry_refuses_to_run_inside_a_host_transaction() {
         Case { name: "retry_outside_idempotent_in", retry_outside_the_guard: true },
     ] {
         let rig = Rig::new();
-        let chain = if case.retry_outside_the_guard { vec![retry(3, no_wait()), rig.guard()] } else { vec![rig.guard(), retry(3, no_wait())] };
+        let chain = if case.retry_outside_the_guard { vec![retry(3, Pacing::instant()), rig.guard()] } else { vec![rig.guard(), retry(3, Pacing::instant())] };
         let bus = rig.bus(chain, 1);
         let refused = transaction(&rig.db, |tx| {
             rig.handle.set(*tx);
@@ -166,7 +161,7 @@ fn retry_refuses_to_run_inside_a_host_transaction() {
 fn retry_outside_any_transaction_still_retries() {
     // No unit of work is open, so retry runs: at-least-once, every attempt's write lands on its own.
     let rig = Rig::new();
-    let bus = rig.bus(vec![retry(2, no_wait())], 1);
+    let bus = rig.bus(vec![retry(2, Pacing::instant())], 1);
     assert_eq!(bus.dispatch::<_, i64>(&deposit()).ok(), Some(200), "attempt 2 sees attempt 1's committed write");
     assert_eq!(rig.runs.load(Ordering::SeqCst), 2);
 }
@@ -175,7 +170,7 @@ fn retry_outside_any_transaction_still_retries() {
 fn the_refusal_ends_with_the_transaction_body() {
     // The marker is scoped to the body: on return, on an error, and on a panic, a later retry runs.
     let rig = Rig::new();
-    let bus = rig.bus(vec![retry(1, no_wait())], 0);
+    let bus = rig.bus(vec![retry(1, Pacing::instant())], 0);
     transaction(&rig.db, |_| Ok::<_, Error>(())).expect("a clean body commits");
     transaction(&rig.db, |_| Err::<(), _>(Error::store("body gave up"))).expect_err("the body's error");
     let panicked = catch_unwind(AssertUnwindSafe(|| transaction(&rig.db, |_| -> Result<(), Error> { panic!("boom") })));
@@ -188,7 +183,7 @@ fn a_nested_transaction_keeps_the_outer_one_marked() {
     // Two transactors over two databases nest; leaving the inner body must not unmark the outer one.
     let rig = Rig::new();
     let other = MemoryTransactor::new();
-    let bus = rig.bus(vec![retry(1, no_wait())], 0);
+    let bus = rig.bus(vec![retry(1, Pacing::instant())], 0);
     let refused = transaction(&rig.db, |_| {
         transaction(&other, |_| Ok::<_, Error>(())).expect("the inner unit of work commits");
         Ok::<_, Error>(bus.dispatch::<_, i64>(&deposit()))
@@ -221,7 +216,7 @@ fn retry_transaction_branches() {
     for case in cases {
         let rig = Rig::new();
         let runs = Cell::new(0usize);
-        let result = retry_transaction(&rig.db, case.attempts, &no_wait(), |tx| {
+        let result = retry_transaction(&rig.db, case.attempts, &Pacing::instant(), |tx| {
             let run = runs.get();
             runs.set(run + 1);
             add(&rig.projections, tx, 100)?;
@@ -245,7 +240,7 @@ fn retry_transaction_retries_a_guarded_dispatch_once_per_outcome() {
     // the failed attempt rolls back its claim and its deposit together, and a redelivery replays.
     let rig = Rig::new();
     let bus = rig.bus(vec![rig.guard()], 1);
-    let first = retry_transaction(&rig.db, 3, &no_wait(), |tx| {
+    let first = retry_transaction(&rig.db, 3, &Pacing::instant(), |tx| {
         rig.handle.set(*tx);
         let result = bus.dispatch::<_, i64>(&deposit());
         rig.handle.set(MemoryTx::auto_commit());
@@ -267,6 +262,6 @@ fn retry_inside_idempotent_without_a_transaction_is_still_allowed() {
         ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
         |cmd: &Deposit| Some(cmd.request_id.clone()),
     );
-    let bus = rig.bus(vec![guard, retry(2, no_wait())], 0);
+    let bus = rig.bus(vec![guard, retry(2, Pacing::instant())], 0);
     assert_eq!(bus.dispatch::<_, i64>(&deposit()).ok(), Some(100));
 }

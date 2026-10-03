@@ -16,7 +16,7 @@ the two deliberate exceptions. The crate's whole dependency set is `uuid`
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
-| `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_code_is_terminal`, `error_verdict`, `split_error`, `tag_error` |
+| `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_code_is_terminal`, `error_verdict`, `split_error` |
 | `sync` | `lock`: a poisoned mutex hands back its state instead of panicking again | yes | none | the native handles in `edax-abi`, `edax-memory`, `edax-kafka` |
 | `token` | `TokenMint` and `NO_TOKEN`: one live token per delivery or transaction, `0` never issued | yes | none — the guarantee is uniqueness | the Kafka `OffsetTracker`, the memory broker and transactions |
 
@@ -185,7 +185,7 @@ declares `terminal = True`.
 
 **One error type.** Every kernel function fails with `edax_core::Error { code, message }`, never a
 bare `String`. The code comes from the kernel, so no caller picks one or forgets to. Its
-`Display` is the wire form `"<code>: <message>"`, built by `ErrorCode::tag`; `ErrorCode::split` is the
+`Display` is the wire form `"<code>: <message>"`, built by `ErrorCode::tag`; `Error::from_wire` is the
 one place that takes it apart, on the first `": "`. The binding crosses `to_string()` and adds
 nothing. The Rust SDK re-exports the same type as `edax::Error`, so a failure renders one way and a
 cached failure stores the same bytes in every SDK. A name the taxonomy does not know is itself a
@@ -194,7 +194,8 @@ time.
 
 **The unclassified default is the kernel's too.** `verdict(None)` and `verdict_of_wire(wire)` give the
 verdict for a failure with no code the kernel knows. Such a failure is a host's own exception, or a
-wire string with an unknown code, no separator, an uppercase code, or nothing at all. It is transient: a wrongly transient
+wire string with an unknown code, no separator, an uppercase code, or nothing at all. It is a `store`
+failure (`Error::from_wire` reads such a string as one), so it is transient. A wrongly transient
 failure is redelivered loudly and the work survives, while a wrongly terminal one is cached under its
 key and poisons it. `testdata/golden/error_wire.json` pins every case, negative ones included, so no
 SDK states this default for itself.

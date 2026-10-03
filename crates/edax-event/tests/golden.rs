@@ -426,6 +426,17 @@ fn sequence_batch_cases() -> Vec<Value> {
         .collect()
 }
 
+/// The snapshot interval, one row per branch: no interval, a save with nothing pending, a save inside
+/// one interval, a save crossing one or several multiples, and the `u64` ceiling.
+fn snapshot_due_cases() -> Vec<Value> {
+    [(0, 0, 5), (1, 3, 3), (1, 3, 4), (5, 1, 4), (5, 4, 5), (5, 4, 12), (5, 5, 9), (u64::MAX, 0, u64::MAX - 1), (u64::MAX, 1, u64::MAX)]
+        .into_iter()
+        .map(|(every, initial, current)| {
+            json!({ "every": every, "initial": initial, "current": current, "due": edax_event::snapshot_due(every, initial, current) })
+        })
+        .collect()
+}
+
 /// The event guard's input rule: the envelope id is the key, the raw `event.data` bytes are hashed.
 /// The envelope's other fields take no part, so two deliveries of one event differing only in
 /// metadata or timestamp claim the same key with the same hash.
@@ -609,16 +620,14 @@ fn saga_cases() -> Vec<Value> {
     let loaded_json = |loaded: Loaded| match loaded {
         Loaded::Absent => json!({ "state": "absent" }),
         Loaded::Active { version } => json!({ "state": "active", "version": version }),
-        Loaded::Completed { version } => json!({ "state": "completed", "version": version }),
     };
     let write_json = |write: edax_event::SagaWrite| match write {
-        edax_event::SagaWrite::Ignore => json!({ "write": "ignore" }),
         edax_event::SagaWrite::Nothing => json!({ "write": "nothing" }),
         edax_event::SagaWrite::Save { expected } => json!({ "write": "save", "expected": expected }),
         edax_event::SagaWrite::Complete { expected } => json!({ "write": "complete", "expected": expected }),
     };
     let mut cases = Vec::new();
-    for loaded in [Loaded::Absent, Loaded::Active { version: 3 }, Loaded::Completed { version: 4 }, Loaded::Active { version: u64::MAX }] {
+    for loaded in [Loaded::Absent, Loaded::Active { version: 3 }, Loaded::Active { version: u64::MAX }] {
         for completes in [false, true] {
             for has_commands in [false, true] {
                 let want = write_json(edax_event::saga_write(loaded, completes, has_commands));
@@ -626,32 +635,36 @@ fn saga_cases() -> Vec<Value> {
             }
         }
     }
-    // Whether a step folds an event, from the marks the instance saved: one row per branch of `saga_admit`.
+    // Whether a step folds an event, from whether the instance completed and the marks it saved: one row
+    // per branch of `saga_admit`. A tombstone folds nothing, even under marks no runner wrote.
     let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
     let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
     let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
-    let admits: [(&str, &str, Option<u64>, &str); 12] = [
-        ("", "order-7", Some(1), "evt-1"),
-        (one, "order-7", Some(1), "evt-1"),
-        (two, "order-7", Some(1), "evt-1"),
-        (one, "order-7", Some(2), "evt-2"),
-        (one, "payment-7", Some(1), "evt-p"),
-        (unsequenced, "order-7", None, "evt-u"),
-        (unsequenced, "order-7", None, "evt-v"),
-        (two, "order-7", None, "evt-v"),
-        (one, "order-7", Some(1), "evt-x"),
-        (unsequenced, "order-7", Some(3), "evt-3"),
-        (r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
-        ("[1]", "order-7", Some(1), "evt-1"),
+    let admits: [(bool, &str, &str, Option<u64>, &str); 14] = [
+        (true, "", "order-7", Some(1), "evt-1"),
+        (true, "[1]", "order-7", Some(1), "evt-1"),
+        (false, "", "order-7", Some(1), "evt-1"),
+        (false, one, "order-7", Some(1), "evt-1"),
+        (false, two, "order-7", Some(1), "evt-1"),
+        (false, one, "order-7", Some(2), "evt-2"),
+        (false, one, "payment-7", Some(1), "evt-p"),
+        (false, unsequenced, "order-7", None, "evt-u"),
+        (false, unsequenced, "order-7", None, "evt-v"),
+        (false, two, "order-7", None, "evt-v"),
+        (false, one, "order-7", Some(1), "evt-x"),
+        (false, unsequenced, "order-7", Some(3), "evt-3"),
+        (false, r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
+        (false, "[1]", "order-7", Some(1), "evt-1"),
     ];
-    for (folded, aggregate_id, sequence, id) in admits {
+    for (completed, folded, aggregate_id, sequence, id) in admits {
         let env = EventEnvelope { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_envelope() };
-        let want = match edax_event::saga_admit(folded, &env) {
+        let want = match edax_event::saga_admit(completed, folded, &env) {
+            Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
             Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
             Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
             Err(e) => json!({ "error": e.to_string() }),
         };
-        cases.push(json!({ "admit": { "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
+        cases.push(json!({ "admit": { "completed": completed, "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
     }
     for (correlation_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
         cases.push(json!({
@@ -673,6 +686,7 @@ fn golden() {
     write_or_check("staleness.json", staleness_cases());
     write_or_check("envelope_decode.json", envelope_decode_cases());
     write_or_check("sequence_batch.json", sequence_batch_cases());
+    write_or_check("snapshot_due.json", snapshot_due_cases());
     write_or_check("retries.json", retries_cases());
     write_or_check("retry_failure.json", retry_failure_cases());
     write_or_check("saga.json", saga_cases());
