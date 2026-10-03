@@ -104,9 +104,15 @@ async def main() -> None:
     for env in STREAM:
         await dispatcher.submit(env)
     await dispatcher.stop()
-    # The commands committed with each completion; the relay sends them through the bus.
-    sent = await runner.relay(bus.dispatch).drain()
-    assert sent == 2, sent
+    # The commands committed with each completion; the relay sends them through the bus. A command that
+    # fails terminally goes to `on_dead`; without a sink it would be handed back on every drain.
+    dead: list[str] = []
+
+    async def dead_letter(row: edax.SagaCommand, error: BaseException) -> None:
+        dead.append(row.id)
+
+    sent = await runner.relay(bus.dispatch, on_dead=dead_letter).drain()
+    assert sent == 2 and dead == [], (sent, dead)
 
     print("fulfilled:", fulfilled)
     # Once each (cross-order is unordered), and the chain survived the hop: the flow id came from the

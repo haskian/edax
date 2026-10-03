@@ -186,7 +186,9 @@ class DeletesOnComplete:
         self._outbox.extend(commands)
         return version + 1
 
-    async def save(self, id: str, state: Any, version: int, commands: Any, tx: Any = None) -> int:
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
         new = await self._write(id, version, commands)
         self._rows[id] = (new, state)
         return new
@@ -212,9 +214,11 @@ class SendsBeforeTheWrite(_Delegating):
         super().__init__(inner)
         self._sent: list[Any] = []
 
-    async def save(self, id: str, state: Any, version: int, commands: Any, tx: Any = None) -> int:
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
         self._sent.extend(commands)
-        return await self._inner.save(id, state, version, [], tx)
+        return await self._inner.save(id, state, version, folded, [], tx)
 
     async def complete(self, id: str, version: int, commands: Any, tx: Any = None) -> int:
         self._sent.extend(commands)
@@ -358,8 +362,8 @@ class ExpiringLedger:
 
 class ClaimIgnoresAmbientTx(_Delegating):
     """Joins an explicit ``tx`` but auto-commits when given none, while still declaring
-    ``joins_transaction``. The guard claims with no ``tx``, so in production the claim outlives the
-    rollback and the key stays pending for good."""
+    ``joins_transaction``. A guard with no ``unit_of_work`` claims with no ``tx`` inside the host's own
+    transaction, so in production the claim outlives the rollback and the key stays pending for good."""
 
     def __init__(self, inner: MemoryIdempotencyStore, db: MemoryTransactor) -> None:
         super().__init__(inner)
@@ -367,6 +371,38 @@ class ClaimIgnoresAmbientTx(_Delegating):
 
     async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
         return await self._inner.claim(key, payload_hash, tx if tx is not None else self._auto_commit)
+
+
+class AutoCommitsAForeignTx(_Delegating):
+    """Declares ``joins_transaction`` but writes a handle it does not know as if none was given: an
+    auto-commit. The guard hands it a unit of work of another database; the claim then lands outside the
+    guard's transaction, a rollback leaves it pending, and the key is stuck."""
+
+    def __init__(self, inner: MemoryIdempotencyStore, db: MemoryTransactor) -> None:
+        super().__init__(inner)
+        self._db = db
+
+    def _own(self, tx: Any) -> Any:
+        return tx if getattr(tx, "transactor", None) is self._db else self._db.auto_commit()
+
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
+        return await self._inner.claim(key, payload_hash, self._own(tx))
+
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
+        await self._inner.complete(key, handle, record, self._own(tx))
+
+    async def release(self, key: str, handle: bytes, tx: Any = None) -> None:
+        await self._inner.release(key, handle, self._own(tx))
+
+
+class DropsFolded(_Delegating):
+    """Persists the state and the version and drops ``folded``, a column the schema never got. Every event
+    redelivered after its step committed is folded again, and its commands go out under new ids."""
+
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
+        return await self._inner.save(id, state, version, "", commands, tx)
 
 
 class SagaSaveIgnoresAmbientTx(_Delegating):
@@ -377,9 +413,11 @@ class SagaSaveIgnoresAmbientTx(_Delegating):
         super().__init__(inner)
         self._auto_commit = db.auto_commit()
 
-    async def save(self, id: str, state: Any, version: int, commands: Any, tx: Any = None) -> int:
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
         return await self._inner.save(
-            id, state, version, commands, tx if tx is not None else self._auto_commit
+            id, state, version, folded, commands, tx if tx is not None else self._auto_commit
         )
 
 
@@ -520,7 +558,9 @@ class CheckThenActSagaStore:
         row = self.db.read(tx if tx is not None else current_tx(self.db), id)
         return None if row is None else SagaInstance(row[1], row[0])
 
-    async def save(self, id: str, state: Any, version: int, commands: Any, tx: Any = None) -> int:
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
         tx = tx if tx is not None else current_tx(self.db)
         new = await self.db.write(tx, id, version, state)
         self.outbox.extend(commands)  # enqueued at once: the read-then-write's second half
@@ -705,9 +745,22 @@ class LockingLedger(OverlayLedger):
         held_elsewhere = any(key in overlay for other, overlay in self.open.items() if other != tx)
         if held_elsewhere and self.timeout:
             raise StoreError("lock wait timeout exceeded")
-        if isinstance(tx, int):  # outside a unit of work a read takes no lock
-            await self.locks.lock(tx, key)
+        await self._lock(tx, key)
         return await super().claim(key, payload_hash, tx)
+
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
+        tx = tx if tx is not None else current_tx(self)
+        await self._lock(tx, key)
+        await super().complete(key, handle, record, tx)
+
+    async def release(self, key: str, handle: bytes, tx: Any = None) -> None:
+        tx = tx if tx is not None else current_tx(self)
+        await self._lock(tx, key)
+        await super().release(key, handle, tx)
+
+    async def _lock(self, tx: Any, key: str) -> None:
+        if isinstance(tx, int):  # outside a unit of work a write takes no lock
+            await self.locks.lock(tx, key)
 
 
 def fixtures(**values: Any) -> Any:
@@ -930,6 +983,27 @@ BROKEN: list[Broken] = [
         lambda db, store: {"event_store": MemoryEventStore(db)},
     ),
     Broken(
+        "auto_commits_a_foreign_tx",
+        IdempotencyStoreContract,
+        "test_a_handle_of_another_database_is_refused",
+        lambda db: AutoCommitsAForeignTx(MemoryIdempotencyStore(db), db),
+    ),
+    Broken(
+        "settles_over_a_held_key",
+        IdempotencyStoreContract,
+        "test_a_key_another_open_transaction_holds_is_never_settled_over_it",
+        lambda db: OverlayLedger(release_shadows=False),
+        lambda db, store: {"event_store": store},
+        expect="landed on a key another open transaction held",
+    ),
+    Broken(
+        "saga_drops_the_folded_marks",
+        SagaStoreContract,
+        "test_the_folded_marks_round_trip",
+        lambda db: DropsFolded(MemorySagaStore(db)),
+        expect="the marks come back as they were saved",
+    ),
+    Broken(
         "saga_save_ignores_the_ambient_tx",
         SagaStoreContract,
         "test_a_save_with_no_tx_joins_the_ambient_transaction",
@@ -1095,6 +1169,12 @@ async def test_the_contract_fails_a_store_that_breaks_its_clause(case: Broken) -
             lambda: LockingLedger(),
             lambda store: {"event_store": store},
         ),
+        (
+            IdempotencyStoreContract,
+            "test_a_key_another_open_transaction_holds_is_never_settled_over_it",
+            lambda: LockingLedger(),
+            lambda store: {"event_store": store},
+        ),
     ],
     ids=[
         "memory_event_store_races",
@@ -1106,6 +1186,7 @@ async def test_the_contract_fails_a_store_that_breaks_its_clause(case: Broken) -
         "a_row_locked_ledger_parks_the_contender_until_the_rollback",
         "a_ledger_whose_contender_times_out",
         "a_row_locked_ledger_releases_with_the_winner_parked",
+        "a_row_locked_ledger_parks_the_settler_until_the_holder_ends",
     ],
 )
 async def test_the_same_clause_passes_the_store_without_the_mistake(

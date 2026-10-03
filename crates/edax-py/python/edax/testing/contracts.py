@@ -65,7 +65,7 @@ from ..aggregate import Event, EventEnvelope
 from ..broker import Consumer
 from ..command import Record, Won, joins_transaction
 from ..dispatcher import Delivery
-from ..errors import CodecError, ConcurrencyError, StoreError
+from ..errors import BadHandle, CodecError, ConcurrencyError, StoreError
 from ..filter import eq
 from ..projection import Entity
 from ..query import encode_cursor, sort_key
@@ -767,7 +767,7 @@ class SagaStoreContract:
     async def test_save_then_load_round_trips_the_state(self, saga_store: Any) -> None:
         """The runner's whole job is fold-and-persist, so the state must come back as it went in."""
         cid = _id("corr")
-        version = await saga_store.save(cid, {"step": "awaiting_payment"}, 0, [])
+        version = await saga_store.save(cid, {"step": "awaiting_payment"}, 0, "", [])
         instance = await saga_store.load(cid)
         assert instance is not None and instance.state == {"step": "awaiting_payment"}
         assert instance.version == version == 1 and not instance.completed
@@ -776,9 +776,9 @@ class SagaStoreContract:
         """Two events for one correlation can arrive concurrently. Without a CAS here one fold
         silently overwrites the other and the saga forgets a step."""
         cid = _id("corr")
-        await saga_store.save(cid, {"step": "one"}, 0, [])
+        await saga_store.save(cid, {"step": "one"}, 0, "", [])
         with pytest.raises(ConcurrencyError):
-            await saga_store.save(cid, {"step": "clobbered"}, 0, [])
+            await saga_store.save(cid, {"step": "clobbered"}, 0, "", [])
         instance = await saga_store.load(cid)
         assert instance is not None and instance.state == {"step": "one"}
 
@@ -786,7 +786,7 @@ class SagaStoreContract:
         """Completion is a write at the loaded version that keeps the row: a stale completion conflicts,
         and the instance then reads as completed one version on, not as absent."""
         cid = _id("corr")
-        version = await saga_store.save(cid, {"step": "one"}, 0, [])
+        version = await saga_store.save(cid, {"step": "one"}, 0, "", [])
         with pytest.raises(ConcurrencyError):
             await saga_store.complete(cid, version + 5, [])
         assert await saga_store.complete(cid, version, []) == version + 1
@@ -798,12 +798,12 @@ class SagaStoreContract:
         event that would start the saga again at version 0 (resurrection), and a second completion all
         conflict, and the tombstone stays."""
         cid = _id("corr")
-        await saga_store.save(cid, {"step": "one"}, 0, [])
+        await saga_store.save(cid, {"step": "one"}, 0, "", [])
         await saga_store.complete(cid, 1, [])
         writes: list[tuple[str, Callable[[], Awaitable[object]]]] = [
-            ("stale_writer", lambda: saga_store.save(cid, {"step": "two"}, 1, [])),
-            ("fresh_start", lambda: saga_store.save(cid, {"step": "one"}, 0, [])),
-            ("at_the_tombstone", lambda: saga_store.save(cid, {"step": "two"}, 2, [])),
+            ("stale_writer", lambda: saga_store.save(cid, {"step": "two"}, 1, "", [])),
+            ("fresh_start", lambda: saga_store.save(cid, {"step": "one"}, 0, "", [])),
+            ("at_the_tombstone", lambda: saga_store.save(cid, {"step": "two"}, 2, "", [])),
             ("second_completion", lambda: saga_store.complete(cid, 2, [])),
         ]
         for name, write in writes:
@@ -816,9 +816,9 @@ class SagaStoreContract:
         """The saga outbox: a write's commands are shown once it committed, oldest first, with every
         field intact; a refused write enqueues none, so a fold that lost the race sends nothing."""
         cid = _id("corr")
-        await saga_store.save(cid, {"step": "one"}, 0, [_saga_command(cid, 1, 0)])
+        await saga_store.save(cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0)])
         with pytest.raises(ConcurrencyError):
-            await saga_store.save(cid, {"step": "lost"}, 0, [_saga_command(cid, 1, 0)])
+            await saga_store.save(cid, {"step": "lost"}, 0, "", [_saga_command(cid, 1, 0)])
         await saga_store.complete(cid, 1, [_saga_command(cid, 2, 0), _saga_command(cid, 2, 1)])
         assert await self._unsent(saga_store, cid) == [f"{cid}:1:0", f"{cid}:2:0", f"{cid}:2:1"]
         row = next(c for c in await saga_store.unpublished(limit=1000) if c.id == f"{cid}:2:1")
@@ -841,11 +841,26 @@ class SagaStoreContract:
         """A relay is at-least-once, so it re-marks after a lost response: a second mark and an unknown
         id are no errors, and a marked command stops coming back while the rest still wait."""
         cid = _id("corr")
-        await saga_store.save(cid, {"step": "one"}, 0, [_saga_command(cid, 1, 0), _saga_command(cid, 1, 1)])
+        await saga_store.save(
+            cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0), _saga_command(cid, 1, 1)]
+        )
         await saga_store.mark_published([f"{cid}:1:0"])
         await saga_store.mark_published([f"{cid}:1:0", _edax.saga_command_id(_id("corr"), 1, 0)])
         assert await self._unsent(saga_store, cid) == [f"{cid}:1:1"]
         assert len(await saga_store.unpublished(limit=1)) == 1, "a row waits, so the limit decides"
+
+    async def test_the_folded_marks_round_trip(self, saga_store: Any) -> None:
+        """``save`` keeps ``folded`` as written and ``load`` returns it: the runner skips an event redelivered
+        after its step committed by these marks. A store that drops them folds the event again, and the step's
+        commands go out a second time under new ids."""
+        cid = _id("corr")
+        folded = f'{{"{cid}":{{"sequence":1,"id":"evt-1"}}}}'
+        await saga_store.save(cid, {"step": "one"}, 0, folded, [])
+        instance = await saga_store.load(cid)
+        assert instance is not None and instance.folded == folded, "the marks come back as they were saved"
+        await saga_store.save(cid, {"step": "two"}, 1, "", [])
+        instance = await saga_store.load(cid)
+        assert instance is not None and instance.folded == "", "each save replaces them"
 
     async def test_two_steps_at_one_version_land_exactly_one_write(
         self, saga_store: Any, request: Any
@@ -861,8 +876,8 @@ class SagaStoreContract:
         command = _saga_command(cid, 1, 0)
         outcomes = await _race(
             transactor.transaction,
-            lambda tx: saga_store.save(cid, {"step": "paid"}, 0, [command], tx=tx),
-            lambda tx: saga_store.save(cid, {"step": "cancelled"}, 0, [command], tx=tx),
+            lambda tx: saga_store.save(cid, {"step": "paid"}, 0, "", [command], tx=tx),
+            lambda tx: saga_store.save(cid, {"step": "cancelled"}, 0, "", [command], tx=tx),
         )
         assert sorted(outcomes) == ["conflict", "landed"], f"exactly one step lands, got {outcomes}"
         instance = await saga_store.load(cid)
@@ -881,7 +896,7 @@ class SagaStoreContract:
         cid = _id("corr")
         seen = await _staged_then_read(
             transactor.transaction,
-            lambda tx: saga_store.save(cid, {"step": "paid"}, 0, [], tx=tx),
+            lambda tx: saga_store.save(cid, {"step": "paid"}, 0, "", [], tx=tx),
             lambda tx: saga_store.load(cid, tx=tx),
         )
         assert seen is None, "another transaction saw a staged step"
@@ -895,7 +910,7 @@ class SagaStoreContract:
         cid = _id("corr")
         with pytest.raises(RuntimeError):
             async with transaction(transactor):
-                await saga_store.save(cid, {"step": "one"}, 0, [_saga_command(cid, 1, 0)])
+                await saga_store.save(cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0)])
                 assert await self._unsent(saga_store, cid) == [], "an uncommitted command is not one to send"
                 raise RuntimeError("the handler failed")
         assert await self._unsent(saga_store, cid) == []
@@ -912,7 +927,7 @@ class SagaStoreContract:
         cid = _id("corr")
         with pytest.raises(RuntimeError):
             async with transaction(transactor):
-                await saga_store.save(cid, {"step": "awaiting_payment"}, 0, [])
+                await saga_store.save(cid, {"step": "awaiting_payment"}, 0, "", [])
                 raise RuntimeError("the handler failed")
         assert await saga_store.load(cid) is None, "the rollback took the save with it"
 
@@ -1236,6 +1251,105 @@ class IdempotencyStoreContract:
         assert not isinstance(stored, Won) and stored.result == {"balance": 42}, (
             f"the releaser's commit erased the winner's record: {stored!r}"
         )
+
+    async def test_a_handle_of_another_database_is_refused(self, idempotency_store: Any) -> None:
+        """ "``True`` obliges you to raise terminal BadHandle for a handle from another database, never to
+        auto-commit." The guard hands the store its unit of work's handle, so a store over another database
+        than the guard's ``unit_of_work`` must fail at the claim. One that auto-commits instead keeps a claim
+        the guard's rollback cannot take back, and the key stays pending for good."""
+        if not joins_transaction(idempotency_store):
+            raise pytest.skip.Exception("ledger declares joins_transaction = False")
+        from ..backend.memory import MemoryTransactor  # another database than any adopter's store
+
+        key, payload = _id("req"), 1234
+        async with MemoryTransactor().transaction() as foreign:
+            with pytest.raises(BadHandle):
+                await idempotency_store.claim(key, payload, tx=foreign)
+        assert isinstance(await idempotency_store.claim(key, payload), Won), "the refused claim wrote nothing"
+        held = _id("req")
+        won = await self._won(idempotency_store, held, payload)
+        async with MemoryTransactor().transaction() as foreign:
+            with pytest.raises(BadHandle):
+                await idempotency_store.complete(held, won, Record(payload, result="done"), tx=foreign)
+            with pytest.raises(BadHandle):
+                await idempotency_store.release(held, won, tx=foreign)
+        prior = await idempotency_store.claim(held, payload)
+        assert not isinstance(prior, Won) and prior.pending, "the refused settlements wrote nothing"
+
+    async def test_a_key_another_open_transaction_holds_is_never_settled_over_it(
+        self, idempotency_store: Any, request: Any
+    ) -> None:
+        """ "A ``joins_transaction`` store refuses ``complete`` and ``release`` of a key another open
+        transaction has written." One unit of work stages the release of a committed claim; another settles
+        the same key meanwhile. Landing over it would let the holder's commit erase the record, or free its
+        claim. The settler may block until the holder ends (a row lock) or be refused with a transient error;
+        it may never land while the holder is open. Each settler runs in a task of its own, so a store that
+        blocks it answers once the holder rolls back."""
+        if not joins_transaction(idempotency_store):
+            raise pytest.skip.Exception("ledger declares joins_transaction = False")
+        event_store = request.getfixturevalue("event_store")
+        payload = 1234
+        for settle in ("complete", "release"):
+            key = _id("req")
+            async with event_store.transaction() as tx:
+                won = await idempotency_store.claim(key, payload, tx=tx)
+            assert isinstance(won, Won), f"a free key must be won, got {won!r}"
+            got, after_rollback = await _settle_while_held(
+                idempotency_store, event_store, key, won.handle, settle
+            )
+            stored = await idempotency_store.claim(key, payload)
+            if got == "refused":
+                assert not isinstance(stored, Won) and stored.pending, f"{settle}: the refusal wrote nothing"
+                continue
+            assert after_rollback, f"{settle} landed on a key another open transaction held"
+            if settle == "complete":
+                assert not isinstance(stored, Won) and stored.result == "done", stored
+            else:
+                assert isinstance(stored, Won), (
+                    f"the release after the rollback freed the key, got {stored!r}"
+                )
+
+
+async def _settle_while_held(
+    idempotency_store: Any, event_store: Any, key: str, handle: bytes, settle: str
+) -> tuple[str, bool]:
+    """A holder unit of work stages the release of ``key``'s committed claim and stays open; a settler in
+    another one ``complete``s or ``release``s the key meanwhile. The holder rolls back once the settler
+    answered, or after a bounded moment if the store parks it. Returns what the settler got, ``landed`` or
+    ``refused``, and whether the holder had already rolled back by then."""
+    holder_open, holder_ended, settler_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def hold() -> None:
+        try:
+            async with event_store.transaction() as tx:
+                await idempotency_store.release(key, handle, tx=tx)
+                holder_open.set()
+                waiting = asyncio.ensure_future(settler_done.wait())
+                await asyncio.wait({waiting}, timeout=_BLOCKED_S)
+                waiting.cancel()
+                raise _RolledBack
+        except _RolledBack:
+            pass
+        finally:
+            holder_ended.set()
+
+    async def settler() -> tuple[str, bool]:
+        await holder_open.wait()
+        try:
+            async with event_store.transaction() as tx:
+                if settle == "complete":
+                    await idempotency_store.complete(key, handle, Record(1234, result="done"), tx=tx)
+                else:
+                    await idempotency_store.release(key, handle, tx=tx)
+            got = "landed"
+        except (ConcurrencyError, StoreError):
+            got = "refused"  # a transient refusal: the contract's other allowed answer
+        finally:
+            settler_done.set()
+        return got, holder_ended.is_set()
+
+    _, outcome = await asyncio.gather(hold(), settler())
+    return outcome
 
 
 class BrokerRig(Protocol):

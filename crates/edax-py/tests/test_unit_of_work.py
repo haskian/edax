@@ -595,3 +595,53 @@ def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared
                 assert applied == 0, f"key {key}: work landed without a record to show for it"
 
     asyncio.run(check())
+
+
+# =========================================================================
+# cm-review: a ledger over another database than the guard's unit of work
+# =========================================================================
+
+
+@pytest.mark.parametrize("guard", ["idempotent", "idempotent_by_id"])
+@pytest.mark.parametrize("handler_fails", [False, True], ids=["handler_succeeds", "handler_fails"])
+async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
+    guard: str, handler_fails: bool
+) -> None:
+    """A ``joins_transaction`` ledger wired over another database than ``unit_of_work``: the guard's
+    transaction is not the ledger's, so the claim must not land outside it. Before the fix the store found
+    no ambient tx of its own and auto-committed: a success left a ``done`` record the guard's commit never
+    covered, and a failed handler rolled back its work and left the key pending for good. The guard now
+    hands the store its transaction, which the store refuses with the terminal ``BadHandle`` before the
+    handler runs, so the dispatcher dead-letters the wiring mistake."""
+    db, other = MemoryTransactor(), MemoryTransactor()
+    ledger = MemoryIdempotencyStore(other)
+    runs = 0
+
+    async def handler(message: Any) -> None:
+        nonlocal runs
+        runs += 1
+        if handler_fails:
+            raise RuntimeError("projection store unavailable")
+
+    env = edax.EventEnvelope(
+        id="evt-1",
+        aggregate_id=DOC,
+        event=edax.Event("Deposited", 1, b'{"amount":100}'),
+        namespace={},
+        metadata={},
+        timestamp=1_714_564_800_000_000_000,
+        sequence=1,
+    )
+    if guard == "idempotent":
+        bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
+        bus.register("Deposit", handler)
+        dispatched, key = bus.dispatch(Deposit(100, "req-A")), "req-A"
+    else:
+        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db))
+        router.register("Deposited", handler)
+        dispatched, key = router.dispatch(env), env.id
+    with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):
+        await dispatched
+    assert runs == 0, "refused at the claim, before the handler ran"
+    assert isinstance(await ledger.claim(key, 0), Won), "no claim landed outside the guard's transaction"
+    assert (db.open_count(), other.open_count()) == (0, 0), "the guard's transaction rolled back"

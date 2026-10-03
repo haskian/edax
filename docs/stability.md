@@ -21,7 +21,7 @@ once real backends have been written against them. Pin a minor in your dependenc
 |---|---|
 | Names exported from `edax` (Python) | The stable API. Breaks only in a minor. |
 | Kernel decisions: local partition and Kafka placement, the canonical form (RFC 8785) and the payload and command hashes, the idempotency record, verdict and settle, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
-| The envelope wire format | Pinned by golden vectors. Old bytes stay readable. |
+| The envelope wire format | Pinned by golden vectors. Within a minor, old bytes stay readable. A minor may refuse an old shape; the upgrade notes below name each one. |
 | The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is refused by name. |
 | The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
 | The conformance suites in `edax.testing` | A new clause may fail a backend that passed before, so clauses are added in a minor. |
@@ -39,6 +39,25 @@ once real backends have been written against them. Pin a minor in your dependenc
   through twin test suites over the same case tables and golden vectors. It is `publish = false`. It gains
   a feature only when a shared decision needs a second implementation to pin it. See
   [Rust and Python parity](sdk/rust-parity.md).
+
+## Upgrade notes
+
+### 0.1 to 0.2
+
+0.2 is a minor release, so it may break the surfaces above, and it does.
+
+- **MessagePack envelopes.** 0.1 wrote a MessagePack envelope as a positional array. 0.2 writes and
+  reads only the map keyed by field name, and refuses an array with the terminal `codec` error. A
+  consumer dead-letters every 0.1 MessagePack record it meets. JSON envelopes are unchanged.
+  Before you upgrade, drain the outbox: let every 0.1 relay publish its rows and every consumer
+  commit past them. Or republish the retained records as JSON. 0.2 has no reader for the array
+  form, by design.
+- **Saga store seam.** `SagaStore.save` takes the instance's `folded` marks, and `load` returns them
+  as `SagaInstance.folded`. A durable saga store needs a text column for them. An instance saved
+  before the column existed has empty marks, so its first redelivery after the upgrade may fold once
+  more.
+- **Retry policy at the boundary.** The native `retries` takes the sink flag at construction, and
+  `Retries.failed` takes the failure's error code instead of a failure kind.
 
 ## Supported runtimes
 

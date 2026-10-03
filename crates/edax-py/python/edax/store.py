@@ -15,13 +15,13 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from time import perf_counter_ns
 from types import MappingProxyType
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar, cast
 
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
 from .aggregate import Aggregate, Event, EventEnvelope, Version
-from .errors import BadHandle, ConcurrencyError, InProgress, is_terminal
+from .errors import BadHandle, ConcurrencyError, _carried_code
 from .observe import Observer, TransactionOutcome, _wrap
 from .pacing import Pacing
 
@@ -486,7 +486,10 @@ class Relay:
     stall the outbox; a row handed back waits one step of ``pacing`` before the drain re-raises, and the step
     grows each time the same row fails, so a host looping on :meth:`drain` does not spin. With no ``on_dead``
     a poison row is handed back on every drain. :class:`~edax.errors.InProgress` (a guarded command whose key
-    another dispatcher holds) is contention: handed back without spending an attempt.
+    another dispatcher holds) is contention: handed back without spending an attempt. A drain whose store
+    call fails (``unpublished`` or ``mark_published``) waits too before it re-raises, one step per consecutive
+    store failure, so a store that is down is neither spun on nor hammered; a drain whose store calls succeed
+    starts that count over.
 
     Concurrent drains of one relay take turns, so a timer and a "drain now" never publish one batch twice.
     Two relays over one store need ``unpublished`` to lease the rows it returns.
@@ -515,6 +518,9 @@ class Relay:
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
+        # Consecutive drains whose store call failed: the backoff step of the next one. Read and written
+        # under `_draining` only.
+        self._store_failures = 0
         #: The last completed drain, ``None`` until the first one finishes. A drain that raised leaves it.
         self.last: DrainStats | None = None
 
@@ -522,7 +528,8 @@ class Relay:
         """The kernel's retry policy, built on first use on the loop's thread: the native handle is bound
         to the thread that builds it, and a relay may be built on another."""
         if self._retries is None:
-            self._retries = ThreadBound(_edax.retries(self._max_attempts), "Relay")
+            sink = self._on_dead is not None
+            self._retries = ThreadBound(_edax.retries(self._max_attempts, sink), "Relay")
         return self._retries.get()
 
     async def drain(self, batch: int = 100) -> int:
@@ -532,11 +539,22 @@ class Relay:
             started = perf_counter_ns()
             try:
                 rows = await self._store.unpublished(batch)
-                published, dead = await self._publish_in_order(rows)
+                settled, published, dead, failure = await self._publish_in_order(rows)
+                if settled:
+                    await self._store.mark_published(settled)
             except Exception as e:
-                # Reported so a stuck relay is a counter, not only a log line at the caller.
+                # The store failed, not a row. Reported so a stuck relay is a counter, not only a log line
+                # at the caller, and waited out with a step that grows while the store stays down.
                 self._observer.drain_failed(e)
+                await self._pacing.wait(self._store_failures)
+                self._store_failures += 1
                 raise
+            self._store_failures = 0
+            if failure is not None:
+                step, error = failure
+                self._observer.drain_failed(error)
+                await self._pacing.wait(step)
+                raise error
             oldest = min((row.timestamp for row in rows), default=None)
             self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
             self._observer.drain(self.last.published, self.last.duration_ns, self.last.oldest_timestamp)
@@ -545,9 +563,9 @@ class Relay:
     async def run(self, *, idle_s: float = 1.0, stop: asyncio.Event | None = None, batch: int = 100) -> None:
         """Drain until ``stop`` is set, or forever when it is ``None`` (cancel the task to end it). Drains
         back to back while rows flow; after a drain that settled nothing, waits ``idle_s`` or until ``stop``.
-        A failed drain has already waited its backoff step and reported
-        :meth:`~edax.observe.Observer.drain_failed`, so the loop logs it and drains again: one bad row never
-        ends the relay. A cancel ends it at once."""
+        A failed drain, a row's or the store's, has already waited its backoff step and reported
+        :meth:`~edax.observe.Observer.drain_failed`, so the loop logs it and drains again: one bad row or a
+        store that is down never ends the relay, and never spins the event loop. A cancel ends it at once."""
         while stop is None or not stop.is_set():
             try:
                 settled = await self.drain(batch)
@@ -562,13 +580,14 @@ class Relay:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop.wait(), idle_s)
 
-    async def _publish_in_order(self, rows: Sequence[Any]) -> tuple[int, int]:
-        """Publish ``rows`` until one fails, mark every row settled, then re-raise that failure after its
-        backoff step. Returns ``(published, dead_lettered)`` when every row settled."""
+    async def _publish_in_order(
+        self, rows: Sequence[Any]
+    ) -> tuple[list[str], int, int, tuple[int, Exception] | None]:
+        """Publish ``rows`` until one fails. Returns the ids of the rows settled, how many were published and
+        dead-lettered, and the failed row's backoff step and error, if one failed."""
         policy = self._policy()
         settled: list[str] = []
         published = dead = 0
-        failure: tuple[int, Exception] | None = None
         for row in rows:
             try:
                 await maybe_await(self._publish(row))
@@ -578,37 +597,25 @@ class Relay:
                     settled.append(row.id)
                     dead += 1
                     continue
-                failure = (step, e)
-                break
+                return settled, published, dead, (step, e)
             policy.succeeded(row.id)
             settled.append(row.id)
             published += 1
-        if settled:
-            await self._store.mark_published(settled)
-        if failure is not None:
-            step, error = failure
-            await self._pacing.wait(step)
-            raise error
-        return published, dead
+        return settled, published, dead, None
 
     async def _settle_failure(self, policy: _edax.Retries, row: Any, error: Exception) -> int | None:
         """Ask the policy what a failed row gets: ``None`` when ``on_dead`` took it, else the backoff step to
-        wait before handing it back."""
-        kind = (
-            "contended"
-            if isinstance(error, InProgress)
-            else "terminal"
-            if is_terminal(error)
-            else "transient"
-        )
-        verdict = policy.failed(row.id, 0, kind, self._on_dead is not None)
-        if not (verdict.dead and self._on_dead is not None):
+        wait before handing it back. The kernel reads the error's code."""
+        verdict = policy.failed(row.id, 0, _carried_code(error))
+        if not verdict.dead:
             return verdict.step
         logger.warning(
             "edax relay: dead-lettering outbox row %s after %d attempt(s)", row.id, verdict.attempt
         )
+        # The kernel answers `dead` only to a policy built with a sink, so a dead verdict means one is set.
+        on_dead = cast("RelaySink", self._on_dead)
         try:
-            await maybe_await(self._on_dead(row, error))
+            await maybe_await(on_dead(row, error))
         except Exception:
             logger.exception(
                 "edax relay: the dead-letter sink failed for %s; the next drain retries it", row.id

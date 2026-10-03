@@ -11,9 +11,11 @@
 //!
 //! - the attempt a run is: `max(broker_attempt, recorded) + 1`, so a broker that counts its own
 //!   redeliveries raises it, and a restart that forgot the local count does not lower it;
+//! - a failure's kind is its error code's ([`Failure::of`]): `in_progress` is contention, a terminal
+//!   code is terminal, and any other code, or none, is transient;
 //! - a message dies when its failure is terminal, or when `0 < max_attempts <= attempt`; a dead
-//!   message goes to the sink if there is one, and is nacked like a transient failure if there is
-//!   none;
+//!   message goes to the sink if the policy was built with one, and is nacked like a transient
+//!   failure if it was not;
 //! - a nack waits backoff step `attempt - 1`, so the wait grows across redeliveries;
 //! - contention (another consumer holds the message's idempotency claim) is not a failed attempt: it
 //!   waits its own growing step and never counts toward `max_attempts`;
@@ -21,6 +23,8 @@
 //!   redelivery dies again at the next attempt and the sink gets another try.
 
 use std::collections::HashMap;
+
+use edax_core::ErrorCode;
 
 /// How a run failed, as the policy reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,20 @@ pub enum Failure {
     Transient,
     /// Another consumer holds the message's idempotency claim. Not a failed attempt.
     Contended,
+}
+
+impl Failure {
+    /// The kind of a failure that carries `code`, `None` for one no code classifies: contention for
+    /// [`ErrorCode::InProgress`], terminal for a terminal code, and transient otherwise (the kernel's
+    /// default for an unclassified failure, [`edax_core::verdict`]). One rule, so two SDKs consuming one
+    /// topic count and kill the same failures.
+    pub fn of(code: Option<ErrorCode>) -> Failure {
+        match code {
+            Some(ErrorCode::InProgress) => Failure::Contended,
+            code if edax_core::verdict(code) => Failure::Terminal,
+            _ => Failure::Transient,
+        }
+    }
 }
 
 /// What the host does with a failed message.
@@ -65,15 +83,17 @@ pub struct Tracked {
 #[derive(Debug, Clone, Default)]
 pub struct Retries {
     max_attempts: u32,
+    sink: bool,
     attempts: HashMap<String, u32>,
     contended: HashMap<String, u32>,
 }
 
 impl Retries {
     /// A policy that dead-letters a transient failure at its `max_attempts`-th attempt; `0` disables
-    /// that ceiling, so only a terminal failure dies.
-    pub fn new(max_attempts: u32) -> Self {
-        Self { max_attempts, ..Self::default() }
+    /// that ceiling, so only a terminal failure dies. `sink` is whether the host has a dead-letter sink:
+    /// without one nothing dies, and every failure is handed back with a growing step.
+    pub fn new(max_attempts: u32, sink: bool) -> Self {
+        Self { max_attempts, sink, ..Self::default() }
     }
 
     /// The ceiling this policy was built with.
@@ -92,8 +112,8 @@ impl Retries {
         self.contended.remove(id);
     }
 
-    /// `id` failed. `sink` is whether the host has a dead-letter sink to hand a dead message to.
-    pub fn failed(&mut self, id: &str, broker_attempt: u32, failure: Failure, sink: bool) -> Verdict {
+    /// `id` failed with `failure`, at the broker's own redelivery count `broker_attempt`.
+    pub fn failed(&mut self, id: &str, broker_attempt: u32, failure: Failure) -> Verdict {
         if failure == Failure::Contended {
             let entry = self.contended.entry(id.to_owned()).or_insert(0);
             let step = *entry;
@@ -103,7 +123,7 @@ impl Retries {
         self.contended.remove(id);
         let attempt = self.attempt(id, broker_attempt);
         let exhausted = self.max_attempts > 0 && attempt >= self.max_attempts;
-        if sink && (failure == Failure::Terminal || exhausted) {
+        if self.sink && (failure == Failure::Terminal || exhausted) {
             return Verdict::Dead { attempt };
         }
         // Recorded whatever the ceiling, so the wait grows across redeliveries: unrecorded, every
@@ -133,6 +153,16 @@ impl Retries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_of_branches() {
+        assert_eq!(Failure::of(None), Failure::Transient, "an unclassified failure is transient");
+        assert_eq!(Failure::of(Some(ErrorCode::InProgress)), Failure::Contended, "in_progress is contention");
+        for &code in ErrorCode::ALL.iter().filter(|&&c| c != ErrorCode::InProgress) {
+            let want = if code.is_terminal() { Failure::Terminal } else { Failure::Transient };
+            assert_eq!(Failure::of(Some(code)), want, "{code}");
+        }
+    }
 
     #[test]
     fn failed_branches() {
@@ -171,38 +201,38 @@ mod tests {
             Case { name: "contention never counts", failure: Failure::Contended, recorded: Some(2), want: Verdict::Nack { step: 0 }, want_recorded: Some(2), ..base },
         ];
         for c in cases {
-            let mut retries = Retries::new(c.max_attempts);
+            let mut retries = Retries::new(c.max_attempts, c.sink);
             if let Some(n) = c.recorded {
                 let _ = retries.sink_failed("evt-1", n);
             }
-            assert_eq!(retries.failed("evt-1", c.broker_attempt, c.failure, c.sink), c.want, "{}", c.name);
+            assert_eq!(retries.failed("evt-1", c.broker_attempt, c.failure), c.want, "{}", c.name);
             assert_eq!(retries.attempts.get("evt-1").copied(), c.want_recorded, "{}: recorded", c.name);
         }
     }
 
     #[test]
     fn contention_grows_its_own_step_until_a_real_outcome_clears_it() {
-        let mut retries = Retries::new(3);
+        let mut retries = Retries::new(3, true);
         for step in 0..3 {
-            assert_eq!(retries.failed("evt-1", 0, Failure::Contended, true), Verdict::Nack { step });
+            assert_eq!(retries.failed("evt-1", 0, Failure::Contended), Verdict::Nack { step });
         }
         assert_eq!(retries.tracked(), Tracked { attempts: 0, contended: 1 });
         // A real failure clears the contention count and starts the attempt count at 1.
-        assert_eq!(retries.failed("evt-1", 0, Failure::Transient, true), Verdict::Nack { step: 0 });
+        assert_eq!(retries.failed("evt-1", 0, Failure::Transient), Verdict::Nack { step: 0 });
         assert_eq!(retries.tracked(), Tracked { attempts: 1, contended: 0 });
-        assert_eq!(retries.failed("evt-1", 0, Failure::Contended, true), Verdict::Nack { step: 0 }, "contention starts over");
+        assert_eq!(retries.failed("evt-1", 0, Failure::Contended), Verdict::Nack { step: 0 }, "contention starts over");
         retries.succeeded("evt-1");
         assert_eq!(retries.tracked(), Tracked::default(), "success forgets both");
     }
 
     #[test]
     fn a_failed_sink_keeps_the_attempt_and_the_redelivery_dies_again() {
-        let mut retries = Retries::new(2);
-        assert_eq!(retries.failed("evt-1", 0, Failure::Transient, true), Verdict::Nack { step: 0 });
-        assert_eq!(retries.failed("evt-1", 0, Failure::Transient, true), Verdict::Dead { attempt: 2 });
+        let mut retries = Retries::new(2, true);
+        assert_eq!(retries.failed("evt-1", 0, Failure::Transient), Verdict::Nack { step: 0 });
+        assert_eq!(retries.failed("evt-1", 0, Failure::Transient), Verdict::Dead { attempt: 2 });
         assert_eq!(retries.sink_failed("evt-1", 2), 1);
         assert_eq!(retries.attempt("evt-1", 0), 3);
-        assert_eq!(retries.failed("evt-1", 0, Failure::Transient, true), Verdict::Dead { attempt: 3 });
+        assert_eq!(retries.failed("evt-1", 0, Failure::Transient), Verdict::Dead { attempt: 3 });
         retries.dead_lettered("evt-1");
         assert_eq!(retries.tracked(), Tracked::default());
         assert_eq!(retries.max_attempts(), 2);

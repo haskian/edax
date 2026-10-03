@@ -14,6 +14,7 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
+use edax_core::ErrorCode;
 use edax_event::{Event, EventEnvelope, Format, Metadata, Namespace};
 use edax_golden::{hex, write_or_check};
 use serde_json::{json, Value};
@@ -479,7 +480,7 @@ fn event_idempotency_cases() -> Vec<Value> {
 #[derive(Clone, Copy)]
 enum RetryOp {
     Attempt(&'static str, u32),
-    Failed(&'static str, u32, edax_event::Failure, bool),
+    Failed(&'static str, u32, Option<ErrorCode>),
     Succeeded(&'static str),
     DeadLettered(&'static str),
     SinkFailed(&'static str, u32),
@@ -494,6 +495,15 @@ fn failure_name(failure: edax_event::Failure) -> &'static str {
     }
 }
 
+/// The failure kind of every error code, and of a failure with no code: what decides whether a
+/// failed message is contention, a transient failure or a terminal one.
+fn retry_failure_cases() -> Vec<Value> {
+    std::iter::once(None)
+        .chain(ErrorCode::ALL.iter().copied().map(Some))
+        .map(|code| json!({ "code": code.map(ErrorCode::as_str), "failure": failure_name(edax_event::Failure::of(code)) }))
+        .collect()
+}
+
 fn verdict_json(verdict: edax_event::Verdict) -> Value {
     match verdict {
         edax_event::Verdict::Nack { step } => json!({ "nack": step }),
@@ -501,65 +511,74 @@ fn verdict_json(verdict: edax_event::Verdict) -> Value {
     }
 }
 
-/// The retry and dead-letter policy as operation scripts: each scenario builds `Retries::new(max_attempts)`
-/// and replays `ops`, each with the answer the kernel gave, so a second SDK replays the same script and
-/// must get the same answers. One scenario per branch of the rule.
+/// The retry and dead-letter policy as operation scripts: each scenario builds
+/// `Retries::new(max_attempts, sink)` and replays `ops`, each with the answer the kernel gave, so a second
+/// SDK replays the same script and must get the same answers. A failed op carries the failure's error
+/// code, `null` for none, as a host passes it. One scenario per branch of the rule.
 fn retries_cases() -> Vec<Value> {
-    use edax_event::Failure::{Contended, Terminal, Transient};
     use RetryOp::*;
-    let scenarios: Vec<(&str, u32, Vec<RetryOp>)> = vec![
+    const TRANSIENT: Option<ErrorCode> = Some(ErrorCode::Store);
+    const TERMINAL: Option<ErrorCode> = Some(ErrorCode::Codec);
+    const CONTENDED: Option<ErrorCode> = Some(ErrorCode::InProgress);
+    let scenarios: Vec<(&str, u32, bool, Vec<RetryOp>)> = vec![
         (
             "transient_failures_back_off_then_die_at_the_ceiling",
             3,
-            vec![Attempt("evt-1", 0), Failed("evt-1", 0, Transient, true), Attempt("evt-1", 0), Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Transient, true), DeadLettered("evt-1"), Tracked],
+            true,
+            vec![Attempt("evt-1", 0), Failed("evt-1", 0, TRANSIENT), Attempt("evt-1", 0), Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, TRANSIENT), DeadLettered("evt-1"), Tracked],
         ),
-        ("a_terminal_failure_dies_on_its_first_attempt", 3, vec![Failed("evt-1", 0, Terminal, true), DeadLettered("evt-1"), Tracked]),
+        ("a_terminal_failure_dies_on_its_first_attempt", 3, true, vec![Failed("evt-1", 0, TERMINAL), DeadLettered("evt-1"), Tracked]),
         (
             "with_no_sink_a_dead_message_nacks_with_a_growing_step",
             3,
-            vec![Failed("evt-1", 0, Terminal, false), Failed("evt-1", 0, Terminal, false), Failed("evt-1", 0, Transient, false), Failed("evt-1", 0, Transient, false), Tracked],
+            false,
+            vec![Failed("evt-1", 0, TERMINAL), Failed("evt-1", 0, TERMINAL), Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, TRANSIENT), Tracked],
         ),
         (
             "max_attempts_zero_has_no_ceiling",
             0,
-            vec![Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Terminal, true)],
+            true,
+            // The second failure carries no code: unclassified, so transient like the others.
+            vec![Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, None), Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, TERMINAL)],
         ),
-        ("a_broker_attempt_raises_the_count", 3, vec![Attempt("evt-1", 2), Failed("evt-1", 2, Transient, true)]),
-        ("a_lower_broker_attempt_never_lowers_it", 5, vec![Failed("evt-1", 3, Transient, true), Attempt("evt-1", 0), Failed("evt-1", 0, Transient, true)]),
+        ("a_broker_attempt_raises_the_count", 3, true, vec![Attempt("evt-1", 2), Failed("evt-1", 2, TRANSIENT)]),
+        ("a_lower_broker_attempt_never_lowers_it", 5, true, vec![Failed("evt-1", 3, TRANSIENT), Attempt("evt-1", 0), Failed("evt-1", 0, TRANSIENT)]),
         (
             "contention_waits_its_own_step_and_never_counts",
             2,
+            true,
             vec![
-                Failed("evt-1", 0, Contended, true),
-                Failed("evt-1", 0, Contended, true),
-                Failed("evt-1", 0, Contended, true),
+                Failed("evt-1", 0, CONTENDED),
+                Failed("evt-1", 0, CONTENDED),
+                Failed("evt-1", 0, CONTENDED),
                 Attempt("evt-1", 0),
                 Tracked,
-                Failed("evt-1", 0, Transient, true),
+                Failed("evt-1", 0, TRANSIENT),
                 Tracked,
-                Failed("evt-1", 0, Contended, true),
+                Failed("evt-1", 0, CONTENDED),
             ],
         ),
-        ("success_forgets_both_counts", 3, vec![Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Contended, true), Tracked, Succeeded("evt-1"), Tracked, Attempt("evt-1", 0)]),
+        ("success_forgets_both_counts", 3, true, vec![Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, CONTENDED), Tracked, Succeeded("evt-1"), Tracked, Attempt("evt-1", 0)]),
         (
             "a_failed_sink_keeps_the_attempt_and_the_redelivery_dies_again",
             2,
-            vec![Failed("evt-1", 0, Transient, true), Failed("evt-1", 0, Transient, true), SinkFailed("evt-1", 2), Attempt("evt-1", 0), Failed("evt-1", 0, Transient, true), DeadLettered("evt-1"), Tracked],
+            true,
+            vec![Failed("evt-1", 0, TRANSIENT), Failed("evt-1", 0, TRANSIENT), SinkFailed("evt-1", 2), Attempt("evt-1", 0), Failed("evt-1", 0, TRANSIENT), DeadLettered("evt-1"), Tracked],
         ),
-        ("ids_are_counted_apart", 2, vec![Failed("evt-1", 0, Transient, true), Failed("evt-2", 0, Transient, true), Failed("evt-1", 0, Transient, true), Attempt("evt-2", 0), Tracked]),
-        ("the_count_saturates_at_the_ceiling_of_u32", 0, vec![Attempt("evt-1", u32::MAX), Failed("evt-1", u32::MAX, Transient, true), Attempt("evt-1", 0)]),
+        ("ids_are_counted_apart", 2, true, vec![Failed("evt-1", 0, TRANSIENT), Failed("evt-2", 0, TRANSIENT), Failed("evt-1", 0, TRANSIENT), Attempt("evt-2", 0), Tracked]),
+        ("the_count_saturates_at_the_ceiling_of_u32", 0, true, vec![Attempt("evt-1", u32::MAX), Failed("evt-1", u32::MAX, TRANSIENT), Attempt("evt-1", 0)]),
     ];
     scenarios
         .into_iter()
-        .map(|(name, max_attempts, ops)| {
-            let mut retries = edax_event::Retries::new(max_attempts);
+        .map(|(name, max_attempts, sink, ops)| {
+            let mut retries = edax_event::Retries::new(max_attempts, sink);
             let ops: Vec<Value> = ops
                 .into_iter()
                 .map(|op| match op {
                     Attempt(id, broker) => json!({ "op": "attempt", "id": id, "broker_attempt": broker, "want": retries.attempt(id, broker) }),
-                    Failed(id, broker, failure, sink) => json!({
-                        "op": "failed", "id": id, "broker_attempt": broker, "failure": failure_name(failure), "sink": sink,
-                        "want": verdict_json(retries.failed(id, broker, failure, sink)),
+                    Failed(id, broker, code) => json!({
+                        "op": "failed", "id": id, "broker_attempt": broker, "code": code.map(ErrorCode::as_str),
+                        "want": verdict_json(retries.failed(id, broker, edax_event::Failure::of(code))),
                     }),
                     Succeeded(id) => {
                         retries.succeeded(id);
@@ -578,12 +597,13 @@ fn retries_cases() -> Vec<Value> {
                     }
                 })
                 .collect();
-            json!({ "name": name, "max_attempts": max_attempts, "ops": ops })
+            json!({ "name": name, "max_attempts": max_attempts, "sink": sink, "ops": ops })
         })
         .collect()
 }
 
-/// The saga step's write for every loaded state and fold, and the outbox command id.
+/// The saga step's write for every loaded state and fold, whether a step folds an event, and the outbox
+/// command id.
 fn saga_cases() -> Vec<Value> {
     use edax_event::Loaded;
     let loaded_json = |loaded: Loaded| match loaded {
@@ -606,6 +626,33 @@ fn saga_cases() -> Vec<Value> {
             }
         }
     }
+    // Whether a step folds an event, from the marks the instance saved: one row per branch of `saga_admit`.
+    let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
+    let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
+    let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
+    let admits: [(&str, &str, Option<u64>, &str); 12] = [
+        ("", "order-7", Some(1), "evt-1"),
+        (one, "order-7", Some(1), "evt-1"),
+        (two, "order-7", Some(1), "evt-1"),
+        (one, "order-7", Some(2), "evt-2"),
+        (one, "payment-7", Some(1), "evt-p"),
+        (unsequenced, "order-7", None, "evt-u"),
+        (unsequenced, "order-7", None, "evt-v"),
+        (two, "order-7", None, "evt-v"),
+        (one, "order-7", Some(1), "evt-x"),
+        (unsequenced, "order-7", Some(3), "evt-3"),
+        (r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
+        ("[1]", "order-7", Some(1), "evt-1"),
+    ];
+    for (folded, aggregate_id, sequence, id) in admits {
+        let env = EventEnvelope { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_envelope() };
+        let want = match edax_event::saga_admit(folded, &env) {
+            Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
+            Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
+            Err(e) => json!({ "error": e.to_string() }),
+        };
+        cases.push(json!({ "admit": { "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
+    }
     for (correlation_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
         cases.push(json!({
             "correlation_id": correlation_id, "version": version, "index": index,
@@ -627,5 +674,6 @@ fn golden() {
     write_or_check("envelope_decode.json", envelope_decode_cases());
     write_or_check("sequence_batch.json", sequence_batch_cases());
     write_or_check("retries.json", retries_cases());
+    write_or_check("retry_failure.json", retry_failure_cases());
     write_or_check("saga.json", saga_cases());
 }

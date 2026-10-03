@@ -141,19 +141,22 @@ def is_terminal(e: BaseException) -> bool:
     return bool(getattr(e, "terminal", UNCLASSIFIED_IS_TERMINAL))
 
 
+def _carried_code(e: BaseException) -> str | None:
+    """The taxonomy code failure ``e`` carries: an edax error's own code, ``rejected`` for any other exception
+    that declares itself terminal (a host's business rejection, whatever its own ``code`` attribute holds),
+    and ``None`` otherwise. Every kernel decision about a failure starts from this code, as the Rust SDK's
+    ``code_of`` does."""
+    if isinstance(e, EdaxError) and e.code in _BY_CODE:
+        return e.code
+    return Rejected.code if is_terminal(e) else None
+
+
 def code_of(e: BaseException) -> str | None:
     """The taxonomy code a won idempotency claim caches failure ``e`` under, or ``None`` when the claim is
-    released instead. ``e`` carries an edax error's own code, ``rejected`` for any other exception that
-    declares itself terminal (a host's business rejection, whatever its own ``code`` attribute holds), and
-    no code otherwise; the kernel's settle table (``idempotency_settle``) decides from that code, so every
-    SDK sharing a ledger caches the same failures. Pinned by ``testdata/golden/idempotency_settle.json``."""
-    if isinstance(e, EdaxError) and e.code in _BY_CODE:
-        carried: str | None = e.code
-    elif is_terminal(e):
-        carried = Rejected.code
-    else:
-        carried = None
-    return _edax.idempotency_settle(carried)
+    released instead. The kernel's settle table (``idempotency_settle``) decides from the code ``e`` carries
+    (its own, ``rejected`` for a host exception that declares itself terminal, else none), so every SDK
+    sharing a ledger caches the same failures. Pinned by ``testdata/golden/idempotency_settle.json``."""
+    return _edax.idempotency_settle(_carried_code(e))
 
 
 #: What a native call raises when an argument does not convert: a negative or too-wide integer, a value of the

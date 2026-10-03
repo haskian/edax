@@ -9,13 +9,13 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter_ns
-from typing import Any
+from typing import Any, cast
 
 from . import _edax
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
 from .aggregate import EventEnvelope
-from .errors import InProgress, is_terminal
+from .errors import CodecError, InProgress, _carried_code
 from .observe import DeliveryOutcome, Observer, _wrap, error_type
 from .pacing import Pacing
 from .store import _leave_every_unit_of_work
@@ -177,7 +177,8 @@ class KeyOrderedDispatcher:
         bound to the thread that builds it and a dispatcher may be built on another. Entries for nacked
         messages that never come back stay until the id is seen again."""
         if self._retries is None:
-            self._retries = ThreadBound(_edax.retries(self._max_attempts), "KeyOrderedDispatcher")
+            sink = self._on_dead is not None
+            self._retries = ThreadBound(_edax.retries(self._max_attempts, sink), "KeyOrderedDispatcher")
         return self._retries.get()
 
     def stats(self) -> DispatcherStats:
@@ -302,42 +303,36 @@ class KeyOrderedDispatcher:
             acked = await self._ack_or_log(delivery)
             policy.succeeded(env_id)
             return "ack" if acked else "unsettled"
-        if isinstance(error, InProgress):
-            # Contention, not a failed attempt: the policy waits its own step and never counts it toward
-            # the ceiling. Nacking at once would poll the broker until the claim's TTL.
-            verdict = policy.failed(env_id, delivery.attempt, "contended", self._on_dead is not None)
-            await self._nack_after_backoff(delivery, verdict.step)
-            return "in_progress"
-        # A BaseException is never terminal: nothing says it repeats, so it is retried like a
-        # transient failure.
-        terminal = isinstance(error, Exception) and is_terminal(error)
-        failure = "terminal" if terminal else "transient"
-        verdict = policy.failed(env_id, delivery.attempt, failure, self._on_dead is not None)
-        if verdict.dead and self._on_dead is not None:
+        # The kernel reads the failure's code: `in_progress` is contention, which waits its own step and
+        # never counts toward the ceiling, since nacking at once would poll the broker until the claim's
+        # TTL. A BaseException that is not an Exception (a cancel from elsewhere, a native panic) carries
+        # no code: nothing says it repeats, so it is retried like a transient failure.
+        code = _carried_code(error) if isinstance(error, Exception) else None
+        verdict = policy.failed(env_id, delivery.attempt, code)
+        if verdict.dead:
             logger.warning(
-                "edax dispatcher: dead-lettering %s after %d attempt(s) (terminal=%s)",
+                "edax dispatcher: dead-lettering %s after %d attempt(s) (code=%s)",
                 env_id,
                 verdict.attempt,
-                terminal,
+                code,
             )
-            if not await self._sink(self._on_dead, delivery, error, verdict.attempt):
+            if not await self._sink(delivery, error, verdict.attempt):
                 return "sink_failed"
             acked = await self._ack_or_log(delivery)
             policy.dead_lettered(env_id)
             return "dead" if acked else "unsettled"
-        # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
-        # Transient failure: waited the same way as the InProgress arm, one step of the kernel's
-        # schedule before handing the delivery back.
+        # Whether redelivery reorders against already-acked same-aggregate messages is the broker's. Every
+        # failure that is handed back waits one step of the kernel's schedule first.
         await self._nack_after_backoff(delivery, verdict.step)
-        return "nack"
+        return "in_progress" if isinstance(error, InProgress) else "nack"
 
-    async def _sink(
-        self, on_dead: DeadLetterFn, delivery: Delivery, error: BaseException, attempt: int
-    ) -> bool:
+    async def _sink(self, delivery: Delivery, error: BaseException, attempt: int) -> bool:
         """Hand ``delivery`` to ``on_dead``; return whether the sink took it. A sink that raises nacks the
         delivery after one backoff step, the transient path, and the policy keeps the attempt so the
         redelivery reaches the sink again with a longer wait. Leaving it unsettled instead would pin a
         log-based broker for good: nothing redelivers a delivery while its consumer lives."""
+        # The kernel answers `dead` only to a policy built with a sink, so a dead verdict means one is set.
+        on_dead = cast("DeadLetterFn", self._on_dead)
         try:
             await maybe_await(on_dead(delivery, error))
         except asyncio.CancelledError:
@@ -366,9 +361,11 @@ class KeyOrderedDispatcher:
         env_id = delivery.envelope.id
         self._observer.undecodable(env_id, error)
         policy = self._policy()
-        verdict = policy.failed(env_id, delivery.attempt, "terminal", self._on_dead is not None)
-        if verdict.dead and self._on_dead is not None:
-            if not await self._sink(self._on_dead, delivery, error, verdict.attempt):
+        # A payload that will not decode fails alike on every delivery: terminal by construction, whatever
+        # exception the decoder raised.
+        verdict = policy.failed(env_id, delivery.attempt, CodecError.code)
+        if verdict.dead:
+            if not await self._sink(delivery, error, verdict.attempt):
                 return "sink_failed"
             await delivery.ack()
             policy.dead_lettered(env_id)

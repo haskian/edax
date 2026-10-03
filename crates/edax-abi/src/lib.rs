@@ -457,16 +457,13 @@ impl Retries {
         edax_core::lock(&self.inner).succeeded(id);
     }
 
-    /// `id` failed with `failure` (`"terminal"`, `"transient"` or `"contended"`); `sink` is whether
-    /// the host has a dead-letter sink. Any other failure name is a `codec:` error.
-    pub fn failed(&self, id: &str, broker_attempt: u32, failure: &str, sink: bool) -> Result<RetryVerdict, String> {
-        let failure = match failure {
-            "terminal" => edax_event::Failure::Terminal,
-            "transient" => edax_event::Failure::Transient,
-            "contended" => edax_event::Failure::Contended,
-            other => return Err(wire(edax_core::Error::codec(format_args!("unknown failure kind {other:?}")))),
-        };
-        Ok(retry_verdict(edax_core::lock(&self.inner).failed(id, broker_attempt, failure, sink)))
+    /// `id` failed with a failure carrying the taxonomy code `code`, `None` for one no code classifies;
+    /// the kernel reads the kind off the code ([`edax_event::Failure::of`]). An unknown code is a
+    /// `codec:` error.
+    pub fn failed(&self, id: &str, broker_attempt: u32, code: Option<String>) -> Result<RetryVerdict, String> {
+        let code = code.map(|c| c.parse::<edax_core::ErrorCode>()).transpose().map_err(wire)?;
+        let failure = edax_event::Failure::of(code);
+        Ok(retry_verdict(edax_core::lock(&self.inner).failed(id, broker_attempt, failure)))
     }
 
     /// The sink took the dead message: forget its counts.
@@ -490,9 +487,9 @@ impl Retries {
 }
 
 /// A retry policy that dead-letters a transient failure at its `max_attempts`-th attempt (`0`: only
-/// a terminal one dies).
-pub fn retries(max_attempts: u32) -> Retries {
-    Retries { inner: Arc::new(Mutex::new(edax_event::Retries::new(max_attempts))) }
+/// a terminal one dies). `sink` is whether the host has a dead-letter sink: without one nothing dies.
+pub fn retries(max_attempts: u32, sink: bool) -> Retries {
+    Retries { inner: Arc::new(Mutex::new(edax_event::Retries::new(max_attempts, sink))) }
 }
 
 // ---- saga step -------------------------------------------------------------
@@ -522,6 +519,18 @@ pub fn saga_write(loaded: &str, version: u64, completes: bool, has_commands: boo
         edax_event::SagaWrite::Complete { expected } => ("complete", expected),
     };
     Ok(SagaWrite { action: action.to_owned(), expected })
+}
+
+/// Whether an instance that saved the marks `folded` (empty for a new instance) folds `envelope`:
+/// `None` when it folded it already (a redelivery: skip it, write nothing), else the marks to save
+/// with the step. Marks this function did not write are a `codec:` error. See
+/// [`edax_event::saga_admit`].
+pub fn saga_admit(folded: &str, envelope: EventEnvelope) -> Result<Option<String>, String> {
+    let env = envelope_from_record(envelope);
+    Ok(match edax_event::saga_admit(folded, &env).map_err(wire)? {
+        edax_event::SagaAdmit::Repeat => None,
+        edax_event::SagaAdmit::Fold { folded } => Some(folded),
+    })
 }
 
 /// The id of the `index`-th command a saga step committed at `version`. See
@@ -582,12 +591,13 @@ pub struct ProjectionRow {
     pub document_json: String,
 }
 
-/// A stored saga instance and its version: running with its state, or `completed` (a tombstone, whose
-/// `state_json` is `null`).
+/// A stored saga instance and its version: running with its state and the kernel's `folded` marks, or
+/// `completed` (a tombstone, whose `state_json` is `null` and whose `folded` is empty).
 pub struct SagaRow {
     pub version: u64,
     pub completed: bool,
     pub state_json: String,
+    pub folded: String,
 }
 
 /// JSON text -> a value, refusing text that is not JSON as the `codec:` error it is.
@@ -791,29 +801,31 @@ impl MemoryTransactor {
     pub fn load_saga(&self, tx: i64, id: &str) -> Result<Option<SagaRow>, String> {
         let row = self.inner.saga_store().load(tx, id).map_err(wire)?;
         row.map(|row| {
-            let (completed, state_json) = match &row.value {
-                edax_memory::SagaRow::Active(state) => (false, to_json(state)?),
-                edax_memory::SagaRow::Completed => (true, "null".to_owned()),
+            let (completed, state_json, folded) = match row.value {
+                edax_memory::SagaRow::Active { state, folded } => (false, to_json(&state)?, folded),
+                edax_memory::SagaRow::Completed => (true, "null".to_owned(), String::new()),
             };
-            Ok(SagaRow { version: row.version, completed, state_json })
+            Ok(SagaRow { version: row.version, completed, state_json, folded })
         })
         .transpose()
     }
 
-    /// Persist `state_json` and the step's `commands` under `tx` at `version + 1` if the stored version
-    /// still equals `version` (an absent instance is at version 0); returns the new version. A
-    /// completed instance takes no write. State that is not JSON is a `codec:` error.
+    /// Persist `state_json`, the `folded` marks ([`saga_admit`]) and the step's `commands` under `tx` at
+    /// `version + 1` if the stored version still equals `version` (an absent instance is at version 0);
+    /// returns the new version. A completed instance takes no write. State that is not JSON is a
+    /// `codec:` error.
     pub fn save_saga(
         &self,
         tx: i64,
         id: &str,
         version: u64,
         state_json: &str,
+        folded: &str,
         commands: Vec<SagaCommand>,
     ) -> Result<u64, String> {
         let state: serde_json::Value = parse_json("saga state", state_json)?;
         let commands = commands.into_iter().map(saga_command_from_record).collect();
-        self.inner.saga_store().save(tx, id, version, state, commands).map_err(wire)
+        self.inner.saga_store().save(tx, id, version, state, folded.to_owned(), commands).map_err(wire)
     }
 
     /// Complete the instance under `tx`: write its tombstone and the step's `commands` at
@@ -1487,24 +1499,34 @@ mod tests {
 
     #[test]
     fn retries_cross_their_decisions_structurally() {
-        let policy = retries(2);
+        let code = |c: &str| Some(c.to_owned());
+        let policy = retries(2, true);
         assert_eq!(policy.max_attempts(), 2);
-        let nack = policy.failed("evt-1", 0, "transient", true).unwrap();
+        let nack = policy.failed("evt-1", 0, code("store")).unwrap();
         assert_eq!((nack.dead, nack.step), (false, 0));
-        let dead = policy.failed("evt-1", 0, "transient", true).unwrap();
-        assert_eq!((dead.dead, dead.attempt), (true, 2));
+        let dead = policy.failed("evt-1", 0, None).unwrap();
+        assert_eq!((dead.dead, dead.attempt), (true, 2), "an unclassified failure is transient and counts");
         assert_eq!(policy.sink_failed("evt-1", 2), 1);
         assert_eq!(policy.attempt("evt-1", 0), 3);
         policy.dead_lettered("evt-1");
-        let contended = policy.failed("evt-2", 0, "contended", true).unwrap();
+        let contended = policy.failed("evt-2", 0, code("in_progress")).unwrap();
         assert_eq!((contended.dead, contended.step), (false, 0));
         let tracked = policy.tracked();
         assert_eq!((tracked.attempts, tracked.contended), (0, 1));
         policy.succeeded("evt-2");
         assert_eq!(policy.tracked().contended, 0);
-        assert_eq!(policy.failed("evt-1", 0, "poison", true).err().as_deref(), Some(r#"codec: unknown failure kind "poison""#));
-        let terminal = policy.failed("evt-3", 0, "terminal", false).unwrap();
+        assert_eq!(policy.failed("evt-1", 0, code("poison")).err().as_deref(), Some("codec: unknown error code: poison"));
+        let terminal = retries(2, false).failed("evt-3", 0, code("codec")).unwrap();
         assert_eq!((terminal.dead, terminal.step), (false, 0), "no sink: a terminal failure nacks");
+    }
+
+    #[test]
+    fn saga_admit_crosses_the_marks_as_text() {
+        let env = |id: &str| envelope(id, Some(1));
+        let folded = saga_admit("", env("evt-1")).unwrap().expect("a new instance folds");
+        assert_eq!(saga_admit(&folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
+        assert!(saga_admit(&folded, env("evt-2")).unwrap().is_some(), "the next event folds");
+        assert!(saga_admit("[1]", env("evt-1")).unwrap_err().starts_with("codec: saga folded marks"));
     }
 
     #[test]
@@ -1905,15 +1927,16 @@ mod tests {
         let store = memory_transactor();
         assert!(store.load_saga(NO_TX, "order-1").unwrap().is_none());
 
-        assert_eq!(store.save_saga(NO_TX, "order-1", 0, r#"{"status":"awaiting_payment"}"#, vec![]).unwrap(), 1);
+        let folded = r#"{"order-1":{"sequence":1,"id":"evt-1"}}"#;
+        assert_eq!(store.save_saga(NO_TX, "order-1", 0, r#"{"status":"awaiting_payment"}"#, folded, vec![]).unwrap(), 1);
         let row = store.load_saga(NO_TX, "order-1").unwrap().expect("saved");
-        assert_eq!((row.version, row.completed), (1, false));
+        assert_eq!((row.version, row.completed, row.folded.as_str()), (1, false, folded), "the marks cross as they were saved");
         assert_eq!(serde_json::from_str::<Value>(&row.state_json).unwrap(), json!({"status": "awaiting_payment"}));
 
         // The adapter's codes cross untouched: a stale version is a conflict, bad state JSON is codec.
-        let conflict = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"shipped"}"#, vec![]).unwrap_err();
+        let conflict = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"shipped"}"#, "", vec![]).unwrap_err();
         assert_eq!(conflict, "concurrency: expected 0, stored 1");
-        assert!(store.save_saga(NO_TX, "order-1", 1, "{not json", vec![]).unwrap_err().starts_with("codec: saga state: "));
+        assert!(store.save_saga(NO_TX, "order-1", 1, "{not json", "", vec![]).unwrap_err().starts_with("codec: saga state: "));
         let stale_complete = store.complete_saga(NO_TX, "order-1", 0, vec![]).unwrap_err();
         assert_eq!(stale_complete, "concurrency: expected 0, stored 1");
 
@@ -1926,7 +1949,7 @@ mod tests {
         };
         assert_eq!(store.complete_saga(NO_TX, "order-1", 1, vec![fulfill]).unwrap(), 2);
         let done = store.load_saga(NO_TX, "order-1").unwrap().expect("a tombstone");
-        assert_eq!((done.version, done.completed, done.state_json.as_str()), (2, true, "null"));
+        assert_eq!((done.version, done.completed, done.state_json.as_str(), done.folded.as_str()), (2, true, "null", ""));
         let unsent = store.unsent_saga_commands(10);
         assert_eq!(unsent.len(), 1);
         let row = &unsent[0];
@@ -1934,7 +1957,7 @@ mod tests {
         assert_eq!((row.command.name.as_str(), row.command.version, row.command.data.as_slice()), ("Fulfill", 1, &br#"{"order_id":"order-1"}"#[..]));
         store.mark_saga_commands_sent(vec!["order-1:2:0".to_owned()]);
         assert!(store.unsent_saga_commands(10).is_empty());
-        let resurrect = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"open"}"#, vec![]).unwrap_err();
+        let resurrect = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"open"}"#, "", vec![]).unwrap_err();
         assert!(resurrect.starts_with("concurrency: saga order-1 completed"), "{resurrect}");
         assert_eq!(limit_of(u64::MAX), usize::MAX, "a limit past the target's width saturates");
     }
@@ -1961,7 +1984,7 @@ mod tests {
             store.save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec()).unwrap();
             store.save_projection(tx, "user-1", 0, r#"{"age":36}"#).unwrap();
             assert!(store.claim(tx, "req-A", 7).unwrap().won, "{}", c.name);
-            store.save_saga(tx, "order-1", 0, r#"{"status":"open"}"#, vec![]).unwrap();
+            store.save_saga(tx, "order-1", 0, r#"{"status":"open"}"#, "", vec![]).unwrap();
 
             // Read-your-writes under the token; nothing visible under NO_TX yet (the outbox never
             // shows a staged append).

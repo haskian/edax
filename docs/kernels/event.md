@@ -17,8 +17,8 @@ Python service and a Rust service cannot drift.
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `dedup` | the key and hash an event's idempotency guard claims | `event_idempotency.json` |
 | `sequence` | the dense-batch rule an append must satisfy, and a replay checks | `sequence_batch.json` |
-| `retry` | a consumer's or relay's retry and dead-letter policy: hand back after which step, or die | `retries.json` |
-| `saga` | the write a saga step makes (save, complete, ignore, nothing) and its outbox command id | `saga.json` |
+| `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json` |
+| `saga` | whether a saga step folds an event, the write it makes (save, complete, ignore, nothing) and its outbox command id | `saga.json` |
 
 Host code reaches the kernel through an SDK. The SDKs reach it through the flat application binary
 interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
@@ -284,10 +284,12 @@ steps or `None`, and no host-side version comparison. Both failures are determin
 ## `retry` — when a failed message dies
 
 `Retries` is the policy a consumer runs on a failed message, sans-IO in the `OffsetTracker` style.
-The host runs the handler, the sink, the wait and the ack or nack. It asks `failed(id,
-broker_attempt, failure, sink)` what to do. `failure` is `Terminal`, `Transient` or `Contended` (the
-message's idempotency claim is held by another consumer); `sink` is whether a dead-letter sink is
-wired. The answer:
+The host builds it with `Retries::new(max_attempts, sink)`, where `sink` is whether a dead-letter
+sink is wired. The host runs the handler, the sink, the wait and the ack or nack. It asks
+`failed(id, broker_attempt, failure)` what to do, with `failure = Failure::of(code)`. `code` is the
+failure's error code, `None` for one no code classifies. `in_progress` reads as `Contended`: another
+consumer holds the message's idempotency claim. A terminal code reads as `Terminal`, anything else as
+`Transient`. The ABI takes the code itself, so no SDK maps an error to a kind. The answer:
 
 | Rule | Detail |
 |---|---|
@@ -301,9 +303,18 @@ wired. The answer:
 Two SDKs consuming one topic agree on when a message dies, so a poison message is not dead-lettered
 by one service and retried forever by the other. Both `KeyOrderedDispatcher`s and both `Relay`s run
 it, the relays keyed by outbox row id. `retries.json` holds operation scripts, each op with the
-answer the kernel gave; both suites replay them.
+answer the kernel gave; both suites replay them. `retry_failure.json` pins `Failure::of` for every
+code and for none.
 
 ## `saga` — the write a saga step makes
+
+`saga_admit(folded, env)` answers whether a runner folds `env` at all. `folded` is the text the
+instance's last write saved, empty for a new instance. It holds one mark per source aggregate: the
+highest sequence and the last event id folded from it. A redelivered event is a `Repeat` when its id
+is its aggregate's mark or its sequence is below it. The runner skips a repeat, so a step whose ack
+was lost does not decide its commands again. Anything else is `Fold { folded }`, the marks to save with the step.
+An unsequenced event is a repeat only of the last one folded from its aggregate. Marks the function
+did not write are a `codec` error.
 
 `saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold:
 

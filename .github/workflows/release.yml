@@ -78,7 +78,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: build
-          # abi3-py39, so one wheel per platform covers every interpreter the package supports.
+          # abi3-py310, so one wheel per platform covers every interpreter the package supports.
           args: --release --out dist --manifest-path crates/edax-py/Cargo.toml
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}

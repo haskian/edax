@@ -11,10 +11,9 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
@@ -27,20 +26,18 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 1
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 3
         }
@@ -56,7 +53,8 @@
           "contended": 0
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 3,
@@ -64,10 +62,9 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "terminal",
+        "code": "codec",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 1
         }
@@ -83,7 +80,8 @@
           "contended": 0
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 3,
@@ -91,40 +89,36 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "terminal",
+        "code": "codec",
         "id": "evt-1",
         "op": "failed",
-        "sink": false,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "terminal",
+        "code": "codec",
         "id": "evt-1",
         "op": "failed",
-        "sink": false,
         "want": {
           "nack": 1
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": false,
         "want": {
           "nack": 2
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": false,
         "want": {
           "nack": 3
         }
@@ -136,7 +130,8 @@
           "contended": 0
         }
       }
-    ]
+    ],
+    "sink": false
   },
   {
     "max_attempts": 0,
@@ -144,45 +139,42 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": null,
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 1
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 2
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "terminal",
+        "code": "codec",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 4
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 3,
@@ -196,15 +188,15 @@
       },
       {
         "broker_attempt": 2,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 3
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 5,
@@ -212,10 +204,9 @@
     "ops": [
       {
         "broker_attempt": 3,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 3
         }
@@ -228,15 +219,15 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 5
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 2,
@@ -244,30 +235,27 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "contended",
+        "code": "in_progress",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "contended",
+        "code": "in_progress",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 1
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "contended",
+        "code": "in_progress",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 2
         }
@@ -287,10 +275,9 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
@@ -304,15 +291,15 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "contended",
+        "code": "in_progress",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 3,
@@ -320,20 +307,18 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "contended",
+        "code": "in_progress",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
@@ -362,7 +347,8 @@
         "op": "attempt",
         "want": 1
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 2,
@@ -370,20 +356,18 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 2
         }
@@ -402,10 +386,9 @@
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 3
         }
@@ -421,7 +404,8 @@
           "contended": 0
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 2,
@@ -429,30 +413,27 @@
     "ops": [
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-2",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 0
         }
       },
       {
         "broker_attempt": 0,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "dead": 2
         }
@@ -470,7 +451,8 @@
           "contended": 0
         }
       }
-    ]
+    ],
+    "sink": true
   },
   {
     "max_attempts": 0,
@@ -484,10 +466,9 @@
       },
       {
         "broker_attempt": 4294967295,
-        "failure": "transient",
+        "code": "store",
         "id": "evt-1",
         "op": "failed",
-        "sink": true,
         "want": {
           "nack": 4294967294
         }
@@ -498,6 +479,7 @@
         "op": "attempt",
         "want": 4294967295
       }
-    ]
+    ],
+    "sink": true
   }
 ]

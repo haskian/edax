@@ -236,6 +236,15 @@ relay still cannot skip it, because publishing the rows behind it would reorder 
 growing wait keeps a host's drain loop from spinning on it. `relay.last.dead_lettered` counts the
 rows a drain moved aside.
 
+### A store that fails
+
+When the relay's own store fails in `unpublished` or `mark_published`, the drain waits before it
+re-raises too. The first failure waits step 0 of the backoff schedule, and each failure in a row
+waits one step more. A drain whose store calls succeed starts that count over. So `Relay.run`, or a
+host loop over `drain`, neither spins on a store that is down nor hammers it. The event loop stays
+free for the dispatcher and the transport's heartbeats. A failed `mark_published` leaves its rows
+unmarked, so the next drain publishes them again: at-least-once, as above.
+
 **Run one relay per store.** The `Outbox` contract does not lease rows. Two relays would read
 the same rows and double-publish. For N relays, make `unpublished` claim rows. Use a row lock that
 skips rows already locked and is held until `mark_published`, or a `leased_until` column.

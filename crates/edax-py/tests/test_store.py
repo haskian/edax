@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, fields
 from typing import Any
+from unittest import mock
 
 import edax
 import pytest
@@ -599,3 +600,114 @@ async def test_run_survives_a_failed_drain(caplog: pytest.LogCaptureFixture, sle
     assert attempts == 3 and slept == [0, 1], "two failed drains, each waiting its own backoff step"
     assert caplog.text.count("drain failed; the next drain retries it") == 2
     assert await store.unpublished() == []
+
+
+# =========================================================================
+# cm-review: a relay whose own store fails backs off instead of spinning
+# =========================================================================
+
+
+class ScriptedOutbox:
+    """The real outbox with a script per store call: each ``unpublished`` and each ``mark_published`` takes
+    the next answer off its list, ``False`` failing it, and succeeds once its list is empty. A failing call
+    raises before it awaits anything, as a driver that refuses a closed pool does: nothing in it yields."""
+
+    def __init__(self, inner: MemoryEventStore, reads: list[bool], marks: list[bool]) -> None:
+        self.inner = inner
+        self.reads = reads
+        self.marks = marks
+        self.calls = 0
+
+    async def unpublished(self, limit: int = 100) -> list[EventEnvelope]:
+        self.calls += 1
+        if self.reads and not self.reads.pop(0):
+            raise edax.StoreError("database down")
+        return await self.inner.unpublished(limit)
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        if self.marks and not self.marks.pop(0):
+            raise edax.StoreError("connection lost")
+        await self.inner.mark_published(ids)
+
+
+@dataclass
+class StoreDrain:
+    name: str
+    publish_fails: bool  # the first row's publish fails, transiently
+    want: int | str  # the settled count, or the raised error's message
+    want_wait: int | None  # the backoff step this drain waits, if it waits
+
+
+async def test_a_store_that_fails_backs_the_drain_off_and_a_store_that_recovers_starts_over(
+    slept: list[int],
+) -> None:
+    """The relay's own store is down: a host looping on ``drain`` waits a step that grows while it stays
+    down, and starts over once a drain's store calls succeed. A row's publish failure waits the row's own
+    step, kept apart from the store's."""
+    drains = [
+        StoreDrain("the read fails: step 0", False, "database down", 0),
+        StoreDrain("it fails again: step 1", False, "database down", 1),
+        StoreDrain("the mark fails: the store's step 2", False, "connection lost", 2),
+        StoreDrain("the store answers, a row fails: the row's step 0", True, "broker unavailable", 0),
+        StoreDrain("the read fails after a recovery: step 0 again", False, "database down", 0),
+        StoreDrain("everything lands: no wait", False, 4, None),
+        StoreDrain("the next store failure starts at step 0", False, "database down", 0),
+    ]
+    store = ScriptedOutbox(await _outbox_with(4), [False, False, True, True, False, True, False], [False])
+    failed: list[str] = []
+
+    class Failures(edax.Observer):
+        def drain_failed(self, error: BaseException) -> None:
+            failed.append(str(error))
+
+    relay = edax.Relay(store, lambda env: None, observer=Failures())
+    for drain in drains:
+        before = len(slept)
+
+        def publish(env: EventEnvelope, fails: bool = drain.publish_fails) -> None:
+            if fails and env.sequence == 1:
+                raise edax.StoreError("broker unavailable")
+
+        relay._publish = publish
+        try:
+            got: int | str = await relay.drain()
+        except edax.StoreError as e:
+            got = str(e)
+        assert got == drain.want, drain.name
+        assert slept[before:] == ([] if drain.want_wait is None else [drain.want_wait]), drain.name
+    assert failed == [d.want for d in drains if isinstance(d.want, str)], "every failed drain is reported"
+    assert await store.inner.unpublished() == [], "every row was marked in the end"
+
+
+async def test_run_over_a_store_that_fails_without_awaiting_yields_and_backs_off() -> None:
+    """The reviewer's critical: ``unpublished`` raises synchronously, so a drain never awaits anything. The
+    loop must still yield to the event loop and wait a growing step, or it starves every other task on the
+    loop (the dispatcher, Kafka commits, Redis heartbeats). A drain that reaches the store resets the step,
+    so the next outage starts at step 0 again."""
+    steps: list[int] = []
+    ticks = 0
+    stop = asyncio.Event()
+    # Two failed reads, a drain that publishes the first row, one more failed read, then the second row.
+    store = ScriptedOutbox(await _outbox_with(2), [False, False, True, False], [])
+
+    async def record(self: edax.Pacing, attempt: int) -> None:
+        steps.append(attempt)
+        await asyncio.sleep(0)  # a real wait yields; this one costs no wall time
+
+    async def other_task() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0)
+
+    def publish(env: EventEnvelope) -> None:
+        if env.sequence == 2:
+            stop.set()
+
+    ticker = asyncio.create_task(other_task())
+    with mock.patch.object(edax.Pacing, "wait", record):
+        await asyncio.wait_for(edax.Relay(store, publish).run(stop=stop, idle_s=60, batch=1), 5)
+    await ticker
+    assert steps == [0, 1, 0], "consecutive store failures wait a growing step; a recovery starts over"
+    assert ticks >= 3, "the loop yielded on every failure, so other tasks ran"
+    assert store.calls == 5 and await store.inner.unpublished() == [], "then it drained every row"

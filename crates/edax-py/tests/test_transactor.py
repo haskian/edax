@@ -358,7 +358,7 @@ class Rig:
         """One write on every participant, inside the ambient unit of work."""
         await self.bus.dispatch(Deposit("acct-1", 100, "req-A"))
         await self.proj.save(Entity("acct-1", 0, {"balance": 100}))
-        await self.sagas.save("order-1", {"status": "open"}, 0, [])
+        await self.sagas.save("order-1", {"status": "open"}, 0, "", [])
 
     async def visible(self) -> tuple[int, int, bool, bool, bool, bool]:
         """What a reader outside any transaction sees of every participant:

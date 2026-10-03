@@ -32,14 +32,14 @@ classDiagram
         <<seam>>
         +bool joins_transaction
         +claim(key, payload_hash, tx)
-        +complete(key, record, tx)
-        +release(key, tx)
+        +complete(key, handle, record, tx)
+        +release(key, handle, tx)
     }
     class SagaStore {
         <<seam>>
         +load(id, tx)
-        +save(id, state, version, tx)
-        +delete(id, version, tx)
+        +save(id, state, version, folded, commands, tx)
+        +complete(id, version, commands, tx)
     }
     class MemoryTransactor {
         <<backend>>

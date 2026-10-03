@@ -1,13 +1,15 @@
 //! Model test of the saga outbox: two workers folding one correlation with stale loads, crashes between
 //! the fold and the commit, a relay that crashes after publishing and before marking, publish failures,
-//! and late redeliveries after completion, replayed in random order. After every step and at the end it
-//! checks the outbox's promises:
+//! late redeliveries after completion, and redeliveries of events whose step already committed (a lost
+//! ack, a crash replaying everything above the committed offset), replayed in random order. After every
+//! step and at the end it checks the outbox's promises:
 //!
 //! - a command is sent only if the step that decided it committed: a fold that lost the version race, or
 //!   whose unit of work rolled back, sends nothing;
 //! - every committed command is sent eventually, and the consumer, deduplicating by command id, applies
 //!   each exactly once (effectively-once over an at-least-once relay);
-//! - nothing commits for a correlation after it completed: a late event never resurrects it.
+//! - nothing commits for a correlation after it completed: a late event never resurrects it;
+//! - no event's step commits twice: a redelivered event the instance already folded is skipped.
 //!
 //! Run a longer sweep with `PROPTEST_CASES=2000 cargo test -p edax --test saga_model`.
 
@@ -64,12 +66,14 @@ impl Saga for CountSaga {
     }
 }
 
+/// Event `id` of the flow, from an aggregate of its own: two workers may fold two of them at once, as
+/// they may only for events of different aggregates (a dispatcher serializes one aggregate's events).
 fn event(id: usize, name: &str) -> EventEnvelope {
     EventEnvelope {
         id: format!("evt-{id}"),
-        aggregate_id: "flow-1".to_owned(),
+        aggregate_id: format!("agg-{id}"),
         event: Event { name: name.to_owned(), version: 1, data: Vec::new() },
-        sequence: None,
+        sequence: Some(1),
         namespace: Default::default(),
         metadata: Default::default(),
         timestamp: 0,
@@ -99,8 +103,8 @@ impl SagaStore for StaleRead {
     fn load(&self, _: &mut MemoryTx, _: &str) -> Result<Option<SagaInstance<u32>>, Error> {
         Ok(self.loaded.clone())
     }
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &u32, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
-        self.inner.save(tx, id, state, version, commands)
+    fn save(&self, tx: &mut MemoryTx, id: &str, state: &u32, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error> {
+        self.inner.save(tx, id, state, version, folded, commands)
     }
     fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
         self.inner.complete(tx, id, version, commands)
@@ -133,6 +137,9 @@ enum Op {
     Write { w: usize, crash: bool },
     /// The relay drains; `fail_at` makes that row's publish fail, `crash_mark` loses the mark.
     Drain { fail_at: Option<u8>, crash_mark: bool },
+    /// The broker hands over again every committed event from the `from`-th on, in order: one lost ack
+    /// when it names the last, a crash above the committed offset when it names an earlier one.
+    Redeliver { from: usize },
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -140,6 +147,7 @@ fn op() -> impl Strategy<Value = Op> {
         (0..2usize).prop_map(Op::Load),
         (0..2usize, prop::bool::weighted(0.2)).prop_map(|(w, crash)| Op::Write { w, crash }),
         (prop::option::weighted(0.2, 0..3u8), prop::bool::weighted(0.2)).prop_map(|(fail_at, crash_mark)| Op::Drain { fail_at, crash_mark }),
+        (0..4usize).prop_map(|from| Op::Redeliver { from }),
     ]
 }
 
@@ -163,6 +171,8 @@ struct World {
     after_completion: u32,
     /// The events whose step committed, in commit order.
     landed_events: Vec<String>,
+    /// The envelopes of those events, for the broker to hand over again.
+    landed_envelopes: Vec<EventEnvelope>,
     /// The step number each committed command carries: a fold that read stale state and still landed
     /// would repeat one.
     steps: Vec<u32>,
@@ -182,6 +192,7 @@ impl World {
             resends_allowed: BTreeMap::new(),
             after_completion: 0,
             landed_events: Vec::new(),
+            landed_envelopes: Vec::new(),
             steps: Vec::new(),
         }
     }
@@ -224,6 +235,7 @@ impl World {
         }
         if !landed.is_empty() {
             self.landed_events.push(env.id.clone());
+            self.landed_envelopes.push(env.clone());
         }
         for row in self.store.unpublished(1000).unwrap().into_iter().filter(|row| landed.contains(&row.id)) {
             let CountCommand::Did(did) = runner.command(&row).unwrap();
@@ -259,6 +271,12 @@ impl World {
         Ok(())
     }
 
+    fn redeliver(&mut self, from: usize) {
+        for env in self.landed_envelopes.iter().skip(from).rev() {
+            self.pending.push_front(env.clone());
+        }
+    }
+
     /// Redeliver every pending event with fresh reads and drain with no faults until nothing is left.
     fn settle(&mut self) -> Result<(), TestCaseError> {
         for w in 0..2 {
@@ -287,6 +305,7 @@ fn check(history: Vec<Op>) -> Result<(), TestCaseError> {
             Op::Load(w) => world.load(w),
             Op::Write { w, crash } => world.write(w, crash),
             Op::Drain { fail_at, crash_mark } => world.drain(fail_at, crash_mark)?,
+            Op::Redeliver { from } => world.redeliver(from),
         }
         prop_assert_eq!(world.after_completion, 0, "a commit landed after the instance completed");
     }
@@ -314,6 +333,27 @@ proptest! {
     fn the_saga_outbox_sends_each_committed_command_once_and_nothing_else(history in prop::collection::vec(op(), 1..40)) {
         check(history)?;
     }
+}
+
+#[test]
+fn a_crash_replay_of_committed_steps_is_one_of_the_histories() {
+    // Two steps commit, then the broker replays both (the offset commit was lost), and the last one once
+    // more: pinned so a shrink never loses it.
+    check(vec![
+        Op::Load(0),
+        Op::Write { w: 0, crash: false },
+        Op::Load(0),
+        Op::Write { w: 0, crash: false },
+        Op::Redeliver { from: 0 },
+        Op::Redeliver { from: 1 },
+        Op::Load(0),
+        Op::Write { w: 0, crash: false },
+        Op::Load(1),
+        Op::Write { w: 1, crash: false },
+        Op::Load(0),
+        Op::Write { w: 0, crash: false },
+    ])
+    .unwrap();
 }
 
 #[test]

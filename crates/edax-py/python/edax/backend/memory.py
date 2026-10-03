@@ -282,14 +282,22 @@ class MemorySagaStore(_StoreView):
     async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None:
         with errors.mapped():
             row = self._transactor._native.get().load_saga(self._transactor.token(tx), id)
-        return None if row is None else SagaInstance(_json.decode(row.state_json), row.version, row.completed)
+        if row is None:
+            return None
+        return SagaInstance(_json.decode(row.state_json), row.version, row.completed, row.folded)
 
     async def save(
-        self, id: str, state: Any, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
     ) -> int:
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
             return self._transactor._native.get().save_saga(
-                self._transactor.token(tx), id, version, _json.encode(state), list(commands)
+                self._transactor.token(tx), id, version, _json.encode(state), folded, list(commands)
             )
 
     async def complete(

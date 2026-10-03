@@ -79,6 +79,10 @@ class OrderSaga:
         return {"status": "open", "noted": name}, []
 
 
+#: The kernel's marks once the instance folded `OrderCreated` of `order-7`.
+CREATED = '{"order-7":{"sequence":1,"id":"order-7-OrderCreated"}}'
+
+
 def runner(store: edax.SagaStore, saga: OrderSaga | None = None) -> SagaRunner:
     return SagaRunner(saga or OrderSaga(), store, COMMANDS, now=lambda: 1_714_564_800_000_000_000)
 
@@ -102,7 +106,9 @@ async def test_a_step_persists_its_state_and_commands_and_a_completed_instance_t
         want_outbox: list[str]
 
     open_at = lambda v, noted=None: edax.SagaInstance(  # noqa: E731
-        {"status": "open"} if noted is None else {"status": "open", "noted": noted}, v
+        {"status": "open"} if noted is None else {"status": "open", "noted": noted},
+        v,
+        folded=f'{{"order-7":{{"sequence":1,"id":"order-7-{noted or "OrderCreated"}"}}}}',
     )
     tombstone = edax.SagaInstance(None, 3, completed=True)
     steps = [
@@ -139,7 +145,7 @@ async def test_saga_state_is_stored_as_a_copy() -> None:
     # what a later load reads: the stored instance is what was committed, not an alias.
     store = MemorySagaStore()
     state = {"status": "awaiting_payment", "items": ["sku-1"]}
-    await store.save("o1", state, 0, [])
+    await store.save("o1", state, 0, "", [])
     state["items"].append("sku-2")
     loaded = await store.load("o1")
     assert loaded is not None and loaded.state == {"status": "awaiting_payment", "items": ["sku-1"]}
@@ -210,11 +216,17 @@ class FailingSagaStore(MemorySagaStore):
     fail_write = False
 
     async def save(
-        self, id: str, state: Any, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
     ) -> int:
         if self.fail_write:
             raise edax.StoreError("saga store unavailable")
-        return await super().save(id, state, version, commands, tx)
+        return await super().save(id, state, version, folded, commands, tx)
 
     async def complete(
         self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
@@ -237,7 +249,7 @@ async def test_a_step_whose_write_does_not_land_sends_nothing(how: str) -> None:
         async with edax.transaction(db):
             await run.on_event(env("payment-7", "PaymentReceived"))
             raise RuntimeError("the unit of work failed after the saga step")
-    assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1)
+    assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1, folded=CREATED)
     assert await store.unpublished() == [], "nothing to send"
 
     store.fail_write = False
@@ -302,7 +314,9 @@ async def test_a_lost_write_response_converges_on_redelivery(lost: str) -> None:
         store.arm("save")
         with pytest.raises(edax.StoreError):
             await run.on_event(env("order-7", "OrderCreated"))
-        assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1), "the save landed"
+        assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1, folded=CREATED), (
+            "the save landed"
+        )
         await run.on_event(env("order-7", "Noted"))
     else:
         await run.on_event(env("order-7", "OrderCreated"))
@@ -313,6 +327,123 @@ async def test_a_lost_write_response_converges_on_redelivery(lost: str) -> None:
     instance = await store.load("order-7")
     assert instance is not None and instance.completed
     assert await sent_by_relay(run, store) == [Fulfill("order-7")]
+
+
+# =========================================================================
+# Redelivery after the step committed: a lost ack, a crash before the offset commit
+# =========================================================================
+
+
+@dataclass
+class Reserve:
+    sku: str
+    order_id: str
+    type: ClassVar[str] = "Reserve"
+
+
+RESERVE = edax.json_codec({"Reserve": Reserve})
+
+
+class ReserveSaga:
+    """Every event it folds asks the warehouse to reserve stock, so a fold run twice shows as a second
+    ``Reserve``: the workflow step whose repeat the reviewer named."""
+
+    def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
+        return "order-7"
+
+    def handle(self, state: Any, env: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
+        return (state or 0) + 1, [Reserve("sku-1", env.id)]
+
+
+def at(aggregate_id: str, sequence: int | None, id: str) -> edax.EventEnvelope:
+    return build_envelope(
+        aggregate_id, "OrderCreated", sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"}
+    )
+
+
+@pytest.mark.parametrize(
+    "deliveries, want",
+    [
+        pytest.param(
+            [at("order-7", 1, "o-1"), at("order-7", 1, "o-1")],
+            ["o-1"],
+            id="created_redelivered_after_ack_loss",
+        ),
+        pytest.param(
+            [
+                at("order-7", 1, "o-1"),
+                at("order-7", 2, "o-2"),
+                at("order-7", 1, "o-1"),
+                at("order-7", 2, "o-2"),
+            ],
+            ["o-1", "o-2"],
+            id="a_crash_replays_every_event_above_the_commit",
+        ),
+        pytest.param(
+            [
+                at("order-7", 1, "o-1"),
+                at("payment-7", 1, "p-1"),
+                at("order-7", 1, "o-1"),
+                at("payment-7", 1, "p-1"),
+            ],
+            ["o-1", "p-1"],
+            id="another_aggregates_event_between_them",
+        ),
+        pytest.param(
+            [at("order-7", None, "u-1"), at("order-7", None, "u-1")], ["u-1"], id="an_unsequenced_event_again"
+        ),
+        pytest.param(
+            # With no sequence there is no order to compare: only the last event is known.
+            [at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
+            ["u-1", "u-2", "u-1"],
+            id="an_older_unsequenced_event_is_folded_again",
+        ),
+    ],
+)
+async def test_an_event_redelivered_after_its_step_committed_is_not_folded_again(
+    deliveries: list[edax.EventEnvelope], want: list[str]
+) -> None:
+    """The step committed (state and ``Reserve`` in one write), then the ack was lost or the consumer crashed
+    before its offset commit, so the broker hands the same envelopes over again. Folding one again would
+    commit its ``Reserve`` a second time under the next version's command id, which a consumer deduplicating
+    by command id runs twice."""
+    store = MemorySagaStore()
+    run = SagaRunner(ReserveSaga(), store, RESERVE)
+    for delivery in deliveries:
+        await run.on_event(delivery)
+    sent = [run.command(row) for row in await store.unpublished()]
+    assert [r.order_id for r in sent] == want, "one Reserve per event folded"
+    instance = await store.load("order-7")
+    assert instance is not None and (instance.state, instance.version) == (len(want), len(want)), (
+        "one write per fold"
+    )
+
+
+async def test_a_redelivery_through_the_dispatcher_sends_reserve_once() -> None:
+    """The same fault end to end: the runner behind a guarded relay and the real dispatcher, the ack of the
+    committed step lost, the broker redelivering. The warehouse gets one ``Reserve``."""
+    store = MemorySagaStore()
+    run = SagaRunner(ReserveSaga(), store, RESERVE)
+    acks: list[str] = []
+    dispatcher = edax.KeyOrderedDispatcher(1, run.on_event, pacing=NO_WAIT)
+    dispatcher.start()
+    created = at("order-7", 1, "o-1")
+    for lost_ack in (True, False):
+        await dispatcher.submit(
+            edax.Delivery(created, lambda lost=lost_ack: None if lost else acks.append("ack"), lambda: None)
+        )
+        await dispatcher._queues[0].join()
+    await dispatcher.stop()
+    reserved: list[Reserve] = []
+
+    async def warehouse(cmd: Reserve) -> None:
+        reserved.append(cmd)
+
+    bus = edax.CommandBus()
+    bus.register("Reserve", warehouse)
+    await run.relay(bus.dispatch, pacing=NO_WAIT).drain()
+    assert reserved == [Reserve("sku-1", "o-1")], "the redelivered step sent nothing"
+    assert acks == ["ack"], "the redelivery itself settled cleanly"
 
 
 # =========================================================================
@@ -338,12 +469,18 @@ class RecordingSagaStore:
         return await self._inner.load(id, tx=self._none)
 
     async def save(
-        self, id: str, state: Any, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
     ) -> int:
         self.writes.append(
             ("save", tx if tx is not None else current_tx(self.transactor), [c.id for c in commands])
         )
-        return await self._inner.save(id, state, version, commands, tx=self._none)
+        return await self._inner.save(id, state, version, folded, commands, tx=self._none)
 
     async def complete(
         self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
@@ -455,7 +592,7 @@ class RunnerCase:
 async def test_runner_branches(case: RunnerCase) -> None:
     store = RecordingSagaStore()
     if case.preload is not None:
-        await store.save("order-7", {"status": "open"}, 0, [])
+        await store.save("order-7", {"status": "open"}, 0, "", [])
     if case.preload == "completed":
         await store.complete("order-7", 1, [])
     store.writes.clear()
@@ -554,6 +691,7 @@ OPS = st.one_of(
     st.tuples(st.just("load"), st.integers(0, 1)),
     st.tuples(st.just("write"), st.integers(0, 1), st.booleans()),
     st.tuples(st.just("drain"), st.one_of(st.none(), st.integers(0, 2)), st.booleans()),
+    st.tuples(st.just("redeliver"), st.integers(0, 3)),
 )
 
 
@@ -566,18 +704,21 @@ def test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else(
 
 
 async def _replay_saga(ops: list[tuple[Any, ...]]) -> None:
-    """After any history of stale reads, crashed commits, failed publishes and lost marks: nothing is sent
-    that no committed step decided, every committed command is sent, a re-send happens only after a lost
-    mark, nothing commits after completion, and every committed fold read the state the previous commit
-    left."""
+    """After any history of stale reads, crashed commits, failed publishes, lost marks and redeliveries of
+    committed events: nothing is sent that no committed step decided, every committed command is sent, a
+    re-send happens only after a lost mark, nothing commits after completion, no event's step commits twice,
+    and every committed fold read the state the previous commit left."""
     db = MemoryTransactor()
     store = CrashingMark(db)
     codec = edax.json_codec({"Did": Did})
+    # Each event from an aggregate of its own: two workers fold two of them at once, as they may only for
+    # events of different aggregates (a dispatcher serializes one aggregate's events).
     pending = [
-        build_envelope("flow-1", name, None, id=f"evt-{i}")
+        build_envelope(f"agg-{i}", name, 1, id=f"evt-{i}")
         for i, name in enumerate(["Step", "Step", "Finish"])
     ]
-    pending.append(build_envelope("flow-1", "Step", None, id="evt-late"))
+    pending.append(build_envelope("agg-late", "Step", 1, id="evt-late"))
+    landed_events: list[edax.EventEnvelope] = []
     taken: list[tuple[edax.EventEnvelope, edax.SagaInstance | None] | None] = [None, None]
     committed: set[str] = set()
     sends: dict[str, int] = {}
@@ -611,6 +752,8 @@ async def _replay_saga(ops: list[tuple[Any, ...]]) -> None:
             return
         landed = await unsent() - before
         assert not (was_completed and landed), "a commit landed after the instance completed"
+        if landed:
+            landed_events.append(event)
         for row in await store.unpublished(1000):
             if row.id in landed:
                 did = codec.unmarshal(row.command)
@@ -645,11 +788,18 @@ async def _replay_saga(ops: list[tuple[Any, ...]]) -> None:
             if crash_mark:
                 resends_allowed[row_id] = resends_allowed.get(row_id, 0) + 1
 
+    def redeliver(start: int) -> None:
+        """The broker hands over again every committed event from the ``start``-th on, in order: one lost
+        ack when it names the last, a crash above the committed offset when it names an earlier one."""
+        pending[:0] = landed_events[start:]
+
     for op in ops:
         if op[0] == "load":
             await load(op[1])
         elif op[0] == "write":
             await write(op[1], op[2])
+        elif op[0] == "redeliver":
+            redeliver(op[1])
         else:
             await drain(op[1], op[2])
 
@@ -679,3 +829,24 @@ async def _replay_saga(ops: list[tuple[Any, ...]]) -> None:
     # the instance after `Finish` committed nothing, so `Finish` is always the last step.
     assert len(set(folded)) == len(folded) == len(committed), "an event's step committed twice"
     assert folded[-1] == "evt-2", "a step committed after completion"
+
+
+async def test_a_crash_replay_of_committed_steps_is_one_of_the_histories() -> None:
+    """Two steps commit, then the broker replays both (the offset commit was lost) and the last one once
+    more: pinned so a shrink never loses it."""
+    await _replay_saga(
+        [
+            ("load", 0),
+            ("write", 0, False),
+            ("load", 0),
+            ("write", 0, False),
+            ("redeliver", 0),
+            ("redeliver", 1),
+            ("load", 0),
+            ("write", 0, False),
+            ("load", 1),
+            ("write", 1, False),
+            ("load", 0),
+            ("write", 0, False),
+        ]
+    )

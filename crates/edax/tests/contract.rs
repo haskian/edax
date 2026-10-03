@@ -1,5 +1,5 @@
-//! The Rust twin of Python's `edax.testing.contracts` clauses for the saga store, the saga outbox and the
-//! event store's snapshot and id rules: generic functions over the seam traits, so a backend an adopter
+//! The Rust twin of Python's `edax.testing.contracts` clauses for the saga store, the saga outbox, the
+//! event store's snapshot and id rules, and the idempotency store's held-key rule: generic functions over the seam traits, so a backend an adopter
 //! writes runs the same clauses, and every in-tree backend runs them here. Each clause is one invariant a
 //! backend must hold; the in-memory store is the reference.
 
@@ -10,7 +10,10 @@
     reason = "a contract clause's panic is its failure report"
 )]
 
-use edax::{Error, ErrorCode, EventStore, MemoryEventStore, MemorySagaStore, MemoryTx, Outbox, SagaCommand, SagaInstance, SagaStore, Snapshot};
+use edax::{
+    Claim, Error, ErrorCode, EventStore, IdempotencyStore, MemoryEventStore, MemoryIdempotencyStore, MemorySagaStore, MemoryTx, Outbox,
+    Record, SagaCommand, SagaInstance, SagaStore, Snapshot, Transactor,
+};
 use edax_event::{saga_command_id, Event, EventEnvelope};
 
 fn command(id: &str, version: u64, index: u64) -> SagaCommand {
@@ -38,7 +41,7 @@ where
     // Completion is a versioned tombstone: a stale completion conflicts, and the instance then reads as
     // completed one version on, not as absent.
     let store = new();
-    assert_eq!(store.save(&mut tx(), "order-1", &"open".to_owned(), 0, &[]).unwrap(), 1);
+    assert_eq!(store.save(&mut tx(), "order-1", &"open".to_owned(), 0, "", &[]).unwrap(), 1);
     assert!(is_conflict(store.complete(&mut tx(), "order-1", 6, &[])), "a stale completion conflicts");
     assert_eq!(store.complete(&mut tx(), "order-1", 1, &[]).unwrap(), 2);
     assert_eq!(store.load(&mut tx(), "order-1").unwrap(), Some(SagaInstance::Completed { version: 2 }));
@@ -46,9 +49,9 @@ where
     // A completed instance takes no write: the stale writer (ABA), the fresh start (resurrection), a
     // write at the tombstone's own version, and a second completion all conflict.
     for (name, got) in [
-        ("stale writer", store.save(&mut tx(), "order-1", &"two".to_owned(), 1, &[])),
-        ("fresh start", store.save(&mut tx(), "order-1", &"open".to_owned(), 0, &[])),
-        ("at the tombstone", store.save(&mut tx(), "order-1", &"two".to_owned(), 2, &[])),
+        ("stale writer", store.save(&mut tx(), "order-1", &"two".to_owned(), 1, "", &[])),
+        ("fresh start", store.save(&mut tx(), "order-1", &"open".to_owned(), 0, "", &[])),
+        ("at the tombstone", store.save(&mut tx(), "order-1", &"two".to_owned(), 2, "", &[])),
         ("second completion", store.complete(&mut tx(), "order-1", 2, &[])),
     ] {
         assert!(is_conflict(got), "{name}");
@@ -57,8 +60,8 @@ where
 
     // The step's commands commit with its state, oldest first; a refused write enqueues none.
     let store = new();
-    store.save(&mut tx(), "order-2", &"open".to_owned(), 0, &[command("order-2", 1, 0)]).unwrap();
-    assert!(is_conflict(store.save(&mut tx(), "order-2", &"lost".to_owned(), 0, &[command("order-2", 1, 0)])));
+    store.save(&mut tx(), "order-2", &"open".to_owned(), 0, "", &[command("order-2", 1, 0)]).unwrap();
+    assert!(is_conflict(store.save(&mut tx(), "order-2", &"lost".to_owned(), 0, "", &[command("order-2", 1, 0)])));
     store.complete(&mut tx(), "order-2", 1, &[command("order-2", 2, 0), command("order-2", 2, 1)]).unwrap();
     assert_eq!(unsent(&store, "order-2"), ["order-2:1:0", "order-2:2:0", "order-2:2:1"]);
     let row = store.unpublished(1000).unwrap().into_iter().find(|c| c.id == "order-2:2:1").unwrap();
@@ -69,6 +72,42 @@ where
     store.mark_published(&["order-2:1:0".to_owned(), "never-existed".to_owned()]).unwrap();
     assert_eq!(unsent(&store, "order-2"), ["order-2:2:0", "order-2:2:1"]);
     assert!(store.unpublished(1).unwrap().len() <= 1, "the limit holds");
+
+    // `save` keeps the folded marks as written and `load` hands them back: the runner skips an event
+    // redelivered after its step committed by them, so a store that drops them repeats the step.
+    let store = new();
+    let folded = r#"{"order-3":{"sequence":1,"id":"evt-1"}}"#;
+    store.save(&mut tx(), "order-3", &"open".to_owned(), 0, folded, &[]).unwrap();
+    let running = SagaInstance::Running { state: "open".to_owned(), version: 1, folded: folded.to_owned() };
+    assert_eq!(store.load(&mut tx(), "order-3").unwrap(), Some(running), "the marks round-trip");
+}
+
+/// The held-key rule of an idempotency store whose writes join the caller's transaction: `complete` and
+/// `release` of a key another open transaction holds never land over it, because that transaction's
+/// commit would overwrite the record or the release would free its claim. This clause is for a store that
+/// refuses with a transient conflict and writes nothing; one that blocks on a row lock instead would wait
+/// here forever, on one thread. `auto` is a handle that joins no transaction.
+fn idempotency_held_key_contract<S, T>(store: &S, transactor: &T, auto: impl Fn() -> T::Tx)
+where
+    S: IdempotencyStore<String, Tx = T::Tx>,
+    T: Transactor,
+{
+    let Claim::Won(handle) = store.claim(&mut auto(), "req-1", 1234).unwrap() else { panic!("a free key is won") };
+    // The holder stages the release of the committed claim: it holds the key until it ends.
+    let mut holder = transactor.begin().unwrap();
+    store.release(&mut holder, "req-1", &handle).unwrap();
+    let mut other = transactor.begin().unwrap();
+    let completed = store.complete(&mut other, "req-1", &handle, Record::done(1234, "late".to_owned()));
+    assert!(is_conflict(completed), "a complete of a held key is a conflict");
+    assert!(is_conflict(store.release(&mut other, "req-1", &handle)), "a release of a held key is a conflict");
+    transactor.commit(other).unwrap();
+    transactor.rollback(holder);
+    // Nothing the refused calls staged landed: the claim is still pending, and settles as usual.
+    let Claim::Prior(pending) = store.claim(&mut auto(), "req-1", 1234).unwrap() else { panic!("the key is held") };
+    assert!(matches!(pending.state, edax::State::Pending), "the refused calls wrote nothing");
+    store.complete(&mut auto(), "req-1", &handle, Record::done(1234, "done".to_owned())).unwrap();
+    let Claim::Prior(settled) = store.claim(&mut auto(), "req-1", 1234).unwrap() else { panic!("the key is settled") };
+    assert!(matches!(settled.state, edax::State::Done(ref result) if result == "done"));
 }
 
 /// The snapshot and id rules of the event store, against a fresh store from `new`.
@@ -108,6 +147,12 @@ where
 #[test]
 fn the_memory_saga_store_meets_the_saga_store_contract() {
     saga_store_contract(MemorySagaStore::<String>::new, MemoryTx::auto_commit);
+}
+
+#[test]
+fn the_memory_idempotency_store_meets_the_held_key_clause() {
+    let store = MemoryIdempotencyStore::<String>::new();
+    idempotency_held_key_contract(&store, &store.transactor(), MemoryTx::auto_commit);
 }
 
 #[test]

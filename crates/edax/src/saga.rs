@@ -12,8 +12,10 @@
 //! from the outbox instead of losing the command, so a command is sent at least once per committed step and a
 //! consumer deduplicates it by its id. Completion writes a tombstone: a late or redelivered event finds the
 //! instance completed and is ignored, and a writer that loaded the instance before it completed conflicts.
+//! A running instance remembers what it folded, so an event redelivered after its step committed (a lost
+//! ack, a crash before the offset commit) is skipped instead of folded again under new command ids.
 
-use edax_event::{saga_command_id, saga_write, EventEnvelope, Loaded, SagaCommand, SagaWrite};
+use edax_event::{saga_admit, saga_command_id, saga_write, EventEnvelope, Loaded, SagaAdmit, SagaCommand, SagaWrite};
 
 use crate::command::HandlerError;
 use crate::store::Outbox;
@@ -44,6 +46,9 @@ pub enum SagaInstance<S> {
         state: S,
         /// The version a write is conditional on.
         version: u64,
+        /// The kernel's marks of the events folded so far ([`edax_event::saga_admit`]): opaque text the
+        /// store keeps as the last write saved it.
+        folded: String,
     },
     /// A completed instance: a tombstone that keeps its version, so no write lands on it again.
     Completed {
@@ -61,6 +66,8 @@ pub enum SagaInstance<S> {
 ///   instance takes no write at all.
 /// - The step's `commands` are written in the same write as the state, so they commit or roll back
 ///   together, and the [`Outbox`] supertrait shows them only once committed, oldest first.
+/// - `save` keeps `folded` as it is and `load` returns it unchanged in [`SagaInstance::Running`]: the
+///   runner skips an event it already folded by it.
 /// - `complete` keeps the row as a tombstone at its new version rather than removing it; a durable store
 ///   purges tombstones by retention.
 pub trait SagaStore: Outbox<SagaCommand> {
@@ -71,8 +78,8 @@ pub trait SagaStore: Outbox<SagaCommand> {
 
     /// The instance for `id`, or `None` if there is none.
     fn load(&self, tx: &mut Self::Tx, id: &str) -> Result<Option<SagaInstance<Self::State>>, Error>;
-    /// Persist `state` and `commands` for `id` at `version + 1`; see the trait for the rule.
-    fn save(&self, tx: &mut Self::Tx, id: &str, state: &Self::State, version: u64, commands: &[SagaCommand]) -> Result<u64, Error>;
+    /// Persist `state`, `folded` and `commands` for `id` at `version + 1`; see the trait for the rule.
+    fn save(&self, tx: &mut Self::Tx, id: &str, state: &Self::State, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error>;
     /// Complete `id`: write its tombstone and `commands` at `version + 1`; see the trait for the rule.
     fn complete(&self, tx: &mut Self::Tx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error>;
 }
@@ -119,16 +126,18 @@ where
     /// (or the tombstone) with the commands the fold emitted, at the loaded version. Thread the same `tx`
     /// the events committed under so the write joins that unit of work. A conflict means another worker
     /// advanced the instance first; its error is transient, so the event is redelivered and folds the
-    /// winner's state, and nothing this fold decided is ever sent.
+    /// winner's state, and nothing this fold decided is ever sent. An event the instance already folded
+    /// (redelivered after its step committed) is skipped: no fold, no write, no command.
     pub fn run(&self, tx: &mut ST::Tx, env: &EventEnvelope) -> Result<(), HandlerError> {
         let Some(correlation_id) = self.saga.correlation_id(env) else { return Ok(()) };
-        let (loaded, state) = match self.store.load(tx, &correlation_id)? {
-            None => (Loaded::Absent, None),
-            Some(SagaInstance::Running { state, version }) => (Loaded::Active { version }, Some(state)),
+        let (loaded, state, folded) = match self.store.load(tx, &correlation_id)? {
+            None => (Loaded::Absent, None, String::new()),
+            Some(SagaInstance::Running { state, version, folded }) => (Loaded::Active { version }, Some(state), folded),
             // A completed workflow takes no event: the kernel's write for it is `Ignore`, so the fold is
             // not even run.
             Some(SagaInstance::Completed { .. }) => return Ok(()),
         };
+        let SagaAdmit::Fold { folded } = saga_admit(&folded, env)? else { return Ok(()) };
         let (new_state, commands) = self.saga.handle(state, env);
         let write = saga_write(loaded, new_state.is_none(), !commands.is_empty());
         let expected = match write {
@@ -138,7 +147,7 @@ where
         let rows = self.rows(&correlation_id, expected.saturating_add(1), &commands)?;
         // The kernel answers `Save` exactly when the fold keeps state, and `Complete` when it does not.
         match new_state {
-            Some(state) => self.store.save(tx, &correlation_id, &state, expected, &rows)?,
+            Some(state) => self.store.save(tx, &correlation_id, &state, expected, &folded, &rows)?,
             None => self.store.complete(tx, &correlation_id, expected, &rows)?,
         };
         Ok(())
@@ -273,11 +282,14 @@ mod tests {
             want: Option<SagaInstance<String>>,
             want_outbox: &'static [&'static str],
         }
-        let running = |version| Some(SagaInstance::Running { state: "open".to_owned(), version });
+        let running = |version, last: &str| {
+            let folded = format!(r#"{{"order-7":{{"sequence":1,"id":"{last}"}}}}"#);
+            Some(SagaInstance::Running { state: "open".to_owned(), version, folded })
+        };
         let steps = [
             Step { event: "Stray", want: None, want_outbox: &[] },
-            Step { event: "Created", want: running(1), want_outbox: &[] },
-            Step { event: "Noted", want: running(2), want_outbox: &[] },
+            Step { event: "Created", want: running(1, "order-7-Created"), want_outbox: &[] },
+            Step { event: "Noted", want: running(2, "order-7-Noted"), want_outbox: &[] },
             Step { event: "Paid", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
             // A redelivered `Paid` and a late `Cancelled` find a tombstone: no fold, no write, no command.
             Step { event: "Paid", want: Some(SagaInstance::Completed { version: 3 }), want_outbox: &["order-7:3:0"] },
@@ -344,11 +356,11 @@ mod tests {
             }
             loaded
         }
-        fn save(&self, tx: &mut MemoryTx, id: &str, state: &String, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+        fn save(&self, tx: &mut MemoryTx, id: &str, state: &String, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error> {
             if self.fail_write.get() {
                 return Err(Error::store("saga store unavailable"));
             }
-            self.landed(self.inner.save(tx, id, state, version, commands))
+            self.landed(self.inner.save(tx, id, state, version, folded, commands))
         }
         fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
             if self.fail_write.get() {
@@ -400,12 +412,77 @@ mod tests {
             let out = runner.run(&mut handle, &envelope("payment-7", "Paid"));
             assert_eq!(out.is_err(), fail_write, "{name}");
             tr.rollback(handle);
-            assert_eq!(instance(&inner), Some(SagaInstance::Running { state: "open".to_owned(), version: 1 }), "{name}");
+            let folded = r#"{"order-7":{"sequence":1,"id":"order-7-Created"}}"#.to_owned();
+            assert_eq!(instance(&inner), Some(SagaInstance::Running { state: "open".to_owned(), version: 1, folded }), "{name}");
             assert!(Outbox::<SagaCommand>::unpublished(&inner, 10).unwrap().is_empty(), "{name}: nothing to send");
 
             runner.store().fail_write.set(false);
             runner.run(&mut MemoryTx::auto_commit(), &envelope("payment-7", "Paid")).unwrap();
             assert_eq!(drain_all(&self::runner(inner)), [OrderCommand::Fulfill(Fulfill { order_id: "order-7".into() })], "{name}: redelivery");
+        }
+    }
+
+    /// Every event it folds emits one command naming the event, so a fold run twice shows as a
+    /// second command. The correlation is fixed, whatever the source aggregate.
+    struct Echo;
+
+    impl Saga for Echo {
+        type State = u32;
+        type Command = OrderCommand;
+
+        fn correlation_id(&self, _: &EventEnvelope) -> Option<String> {
+            Some("order-7".to_owned())
+        }
+
+        fn handle(&self, state: Option<u32>, env: &EventEnvelope) -> (Option<u32>, Vec<OrderCommand>) {
+            (Some(state.unwrap_or(0) + 1), vec![OrderCommand::Fulfill(Fulfill { order_id: env.id.clone() })])
+        }
+    }
+
+    #[test]
+    fn an_event_redelivered_after_its_step_committed_is_not_folded_again() {
+        // The ack of a committed step was lost, or the consumer crashed before the offset commit:
+        // the broker hands the same envelopes over again. Folding one twice would decide its command
+        // again under the next version's id, which a consumer deduplicating by command id runs twice.
+        let at = |aggregate_id: &str, sequence: Option<u64>, id: &str| EventEnvelope {
+            id: id.to_owned(),
+            sequence,
+            ..envelope(aggregate_id, "Created")
+        };
+        let cases: [(&str, Vec<EventEnvelope>, &[&str]); 5] = [
+            ("the last event again", vec![at("order-7", Some(1), "o-1"), at("order-7", Some(1), "o-1")], &["o-1"]),
+            (
+                "a crash replays every event above the commit",
+                vec![at("order-7", Some(1), "o-1"), at("order-7", Some(2), "o-2"), at("order-7", Some(1), "o-1"), at("order-7", Some(2), "o-2")],
+                &["o-1", "o-2"],
+            ),
+            (
+                "another aggregate's event between them",
+                vec![at("order-7", Some(1), "o-1"), at("payment-7", Some(1), "p-1"), at("order-7", Some(1), "o-1"), at("payment-7", Some(1), "p-1")],
+                &["o-1", "p-1"],
+            ),
+            ("an unsequenced event again", vec![at("order-7", None, "u-1"), at("order-7", None, "u-1")], &["u-1"]),
+            (
+                // With no sequence there is no order to compare: only the last one is known.
+                "an older unsequenced event is folded again",
+                vec![at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
+                &["u-1", "u-2", "u-1"],
+            ),
+        ];
+        for (name, deliveries, want) in cases {
+            let runner = SagaRunner::new(Echo, MemorySagaStore::<u32>::new(), JsonRegistryCodec::new(1).unwrap());
+            for env in &deliveries {
+                runner.run(&mut MemoryTx::auto_commit(), env).expect(name);
+            }
+            let rows = Outbox::<SagaCommand>::unpublished(runner.store(), 10).unwrap();
+            let sent: Vec<OrderCommand> = rows.iter().map(|row| runner.command(row).unwrap()).collect();
+            let want_sent: Vec<OrderCommand> =
+                want.iter().map(|id| OrderCommand::Fulfill(Fulfill { order_id: (*id).to_owned() })).collect();
+            assert_eq!(sent, want_sent, "{name}: commands");
+            // The command id carries the version its write produced: one write per fold, none skipped.
+            let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+            let want_ids: Vec<String> = (1..=want.len()).map(|version| format!("order-7:{version}:0")).collect();
+            assert_eq!(ids, want_ids, "{name}: one write per fold");
         }
     }
 

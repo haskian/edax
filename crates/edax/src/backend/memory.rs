@@ -466,16 +466,17 @@ impl<S: Serialize + DeserializeOwned> SagaStore for MemorySagaStore<S> {
         let Some(row) = self.inner.load(tx.0, id)? else { return Ok(None) };
         Ok(Some(match row.value {
             SagaRow::Completed => SagaInstance::Completed { version: row.version },
-            SagaRow::Active(state) => SagaInstance::Running {
+            SagaRow::Active { state, folded } => SagaInstance::Running {
                 state: serde_json::from_value(state).map_err(Error::codec)?,
                 version: row.version,
+                folded,
             },
         }))
     }
 
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &S, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+    fn save(&self, tx: &mut MemoryTx, id: &str, state: &S, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error> {
         let state = serde_json::to_value(state).map_err(Error::codec)?;
-        self.inner.save(tx.0, id, version, state, commands.to_vec())
+        self.inner.save(tx.0, id, version, state, folded.to_owned(), commands.to_vec())
     }
 
     fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
@@ -689,11 +690,11 @@ mod tests {
         // A stored state that cannot be read back as `S` is a codec error, never a silently invented
         // instance; an `S` that cannot be encoded never reaches the adapter.
         let lossy = MemorySagaStore::<Lossy>::new();
-        lossy.save(&mut MemoryTx::auto_commit(), "k", &Lossy, 0, &[]).unwrap();
+        lossy.save(&mut MemoryTx::auto_commit(), "k", &Lossy, 0, "", &[]).unwrap();
         assert!(matches!(lossy.load(&mut MemoryTx::auto_commit(), "k"), Err(Error { code: ErrorCode::Codec, .. })));
 
         let unencodable = MemorySagaStore::<Unencodable>::new();
-        assert!(matches!(unencodable.save(&mut MemoryTx::auto_commit(), "k", &Unencodable, 0, &[]), Err(Error { code: ErrorCode::Codec, .. })));
+        assert!(matches!(unencodable.save(&mut MemoryTx::auto_commit(), "k", &Unencodable, 0, "", &[]), Err(Error { code: ErrorCode::Codec, .. })));
         assert!(unencodable.load(&mut MemoryTx::auto_commit(), "k").unwrap().is_none(), "nothing was written");
     }
 }

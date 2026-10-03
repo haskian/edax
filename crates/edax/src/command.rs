@@ -72,11 +72,16 @@ pub trait IdempotencyStore<O> {
     /// Write the terminal record for `key`, replacing the pending claim `handle` names, and only that
     /// claim. Idempotent: a second write of the same record over it settles on the same value. A
     /// [`ErrorCode::Store`] error for a backend failure, or for a claim that lapsed and was taken over;
-    /// the middleware answers it by releasing the claim so the key does not stay pending.
+    /// the middleware answers it by releasing the claim so the key does not stay pending. A store whose
+    /// writes join the caller's transaction never settles a key another open transaction holds, because
+    /// that transaction's commit would overwrite the record: it blocks until that transaction ends, or
+    /// refuses with a transient [`ErrorCode::Concurrency`] error and writes nothing (the in-memory store
+    /// refuses).
     fn complete(&self, tx: &mut Self::Tx, key: &str, handle: &ClaimHandle, record: Record<O>) -> Result<(), Error>;
     /// Drop `key` while it still holds the claim `handle` names, so a transient failure can retry.
-    /// Idempotent: releasing an absent key, a key another claimant holds or a key already settled is
-    /// not a failure, and deletes nothing.
+    /// Idempotent: releasing an absent key, a key whose committed record is another claimant's, or a key
+    /// already settled is not a failure, and deletes nothing. A key another open transaction holds is
+    /// treated as in [`complete`](Self::complete): deleting it would free that transaction's claim.
     fn release(&self, tx: &mut Self::Tx, key: &str, handle: &ClaimHandle) -> Result<(), Error>;
 }
 

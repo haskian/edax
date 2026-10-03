@@ -26,14 +26,14 @@ def _verdict(verdict: Any) -> dict[str, int]:
 
 def test_golden_retries() -> None:
     for scenario in golden("retries.json"):
-        policy = _edax.retries(scenario["max_attempts"])
+        policy = _edax.retries(scenario["max_attempts"], scenario["sink"])
         for op in scenario["ops"]:
             name = op["op"]
             where = f"{scenario['name']}: {op}"
             if name == "attempt":
                 assert policy.attempt(op["id"], op["broker_attempt"]) == op["want"], where
             elif name == "failed":
-                verdict = policy.failed(op["id"], op["broker_attempt"], op["failure"], op["sink"])
+                verdict = policy.failed(op["id"], op["broker_attempt"], op["code"])
                 assert _verdict(verdict) == op["want"], where
             elif name == "succeeded":
                 policy.succeeded(op["id"])
@@ -46,9 +46,49 @@ def test_golden_retries() -> None:
                 assert {"attempts": tracked.attempts, "contended": tracked.contended} == op["want"], where
 
 
-def test_an_unknown_failure_kind_is_a_codec_error() -> None:
-    with pytest.raises(edax.CodecError, match="unknown failure kind"), edax.errors.mapped():
-        _edax.retries(0).failed("evt-1", 0, "poison", True)
+def _kind(code: str | None) -> str:
+    """The failure kind the kernel reads off ``code``, read back through a fresh policy with a sink and no
+    ceiling: a terminal failure dies at once, contention is tracked apart, a transient one is counted."""
+    policy = _edax.retries(0, True)
+    if policy.failed("evt-1", 0, code).dead:
+        return "terminal"
+    return "contended" if policy.tracked().contended else "transient"
+
+
+def test_golden_retry_failure() -> None:
+    """Every code's failure kind, through the policy's own entry point, and through the SDK's mapping from
+    an exception to the code it carries: an edax error by its class, a host exception by its verdict."""
+    rows = golden("retry_failure.json")
+    assert {row["code"] for row in rows} == {None, *_edax.error_codes()}, "every code has a row"
+    for row in rows:
+        assert _kind(row["code"]) == row["failure"], row
+        failure = (
+            ValueError("a host bug") if row["code"] is None else edax.errors.from_wire(f"{row['code']}: boom")
+        )
+        assert _kind(edax.errors._carried_code(failure)) == row["failure"], row
+
+
+class _HostRejection(Exception):
+    terminal = True
+
+
+@pytest.mark.parametrize(
+    "error, want",
+    [
+        pytest.param(
+            _HostRejection("insufficient funds"), "rejected", id="a_terminal_host_exception_is_rejected"
+        ),
+        pytest.param(ValueError("a host bug"), None, id="an_unclassified_exception_carries_no_code"),
+        pytest.param(edax.InProgress("fulfill-7"), "in_progress", id="an_edax_error_carries_its_own_code"),
+    ],
+)
+def test_the_code_a_failure_carries(error: Exception, want: str | None) -> None:
+    assert edax.errors._carried_code(error) == want
+
+
+def test_an_unknown_error_code_is_a_codec_error() -> None:
+    with pytest.raises(edax.CodecError, match="unknown error code: poison"), edax.errors.mapped():
+        _edax.retries(0, True).failed("evt-1", 0, "poison")
 
 
 @pytest.mark.parametrize(
@@ -273,6 +313,16 @@ def test_golden_idempotency_settle() -> None:
 
 def test_golden_saga() -> None:
     for row in golden("saga.json"):
+        if "admit" in row:
+            admit, want = row["admit"], row["want"]
+            env = build_envelope(admit["aggregate_id"], "OrderCreated", admit["sequence"], id=admit["id"])
+            if "error" in want:
+                with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+                    _edax.saga_admit(admit["folded"], env)
+                assert str(caught.value) == want["error"].removeprefix("codec: "), row
+                continue
+            assert _edax.saga_admit(admit["folded"], env) == want.get("folded"), row
+            continue
         if "command_id" in row:
             assert (
                 _edax.saga_command_id(row["correlation_id"], row["version"], row["index"])

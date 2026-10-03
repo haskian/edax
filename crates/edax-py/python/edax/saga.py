@@ -10,7 +10,9 @@ the version race sends nothing: its commands roll back with its state, and the r
 state. A crash after the commit re-sends from the outbox instead of losing the command, so a command is sent
 at least once per committed step and its consumer deduplicates it by the command id. Completion writes a
 tombstone: a late or redelivered event finds the instance completed and is ignored, and a writer that loaded
-the instance before it completed conflicts."""
+the instance before it completed conflicts. A running instance remembers what it folded, so an event
+redelivered after its step committed (a lost ack, a crash before the offset commit) is skipped instead of
+folded again under new command ids."""
 
 from __future__ import annotations
 
@@ -52,11 +54,13 @@ Completed = _Completed.COMPLETED
 class SagaInstance:
     """A stored saga instance: its accumulated ``state`` and the ``version`` a write is conditional on.
     ``completed`` marks a tombstone: the workflow has finished, ``state`` is ``None``, and no write lands on
-    it again."""
+    it again. ``folded`` is the kernel's record of the events the instance folded (``saga_admit``), opaque
+    text the store keeps as the last ``save`` wrote it, empty for a tombstone."""
 
     state: Any
     version: int = 0
     completed: bool = False
+    folded: str = ""
 
 
 class Saga(Protocol):
@@ -85,6 +89,9 @@ class SagaStore(Protocol):
     * The step's ``commands`` are written in the same write as the state, so they commit or roll back
       together. Each carries the id ``saga_command_id(id, version + 1, index)``; a store may key its outbox
       on it.
+    * ``save`` keeps ``folded`` as it is, and ``load`` returns it unchanged as
+      :attr:`SagaInstance.folded`: the runner skips an event it already folded by it. A store that drops
+      it repeats a step on every redelivery.
     * ``complete`` keeps the row as a tombstone at its new version rather than deleting it, so a stale
       writer conflicts and a late event cannot start the workflow again. A durable store purges tombstones by
       retention, longer than any redelivery window.
@@ -99,7 +106,13 @@ class SagaStore(Protocol):
 
     async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None: ...
     async def save(
-        self, id: str, state: Any, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
     ) -> int: ...
     async def complete(
         self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
@@ -137,7 +150,8 @@ class SagaRunner:
         falls back to the ambient :func:`~edax.store.current_tx` itself. A
         :class:`~edax.errors.ConcurrencyError` means another worker advanced the instance first; it is
         transient, so the event is redelivered and folds the winner's state, and nothing this fold decided
-        is ever sent."""
+        is ever sent. An event the instance already folded (redelivered after its step committed) is
+        skipped: no fold, no write, no command."""
         cid = self._saga.correlation_id(env)
         if cid is None:
             return
@@ -146,6 +160,10 @@ class SagaRunner:
             # The kernel's write for any fold of a completed instance is `ignore` (pinned by
             # `testdata/golden/saga.json`), so the fold is not even run.
             return
+        with errors.mapped():
+            folded = _edax.saga_admit("" if instance is None else instance.folded, env)
+        if folded is None:
+            return  # folded already: its step committed, and its commands are in the outbox
         loaded = "absent" if instance is None else "active"
         version = 0 if instance is None else instance.version
         new_state, commands = self._saga.handle(None if instance is None else instance.state, env)
@@ -156,7 +174,7 @@ class SagaRunner:
             return
         rows = self._rows(cid, write.expected + 1, commands)
         if write.action == "save":
-            await self._store.save(cid, new_state, write.expected, rows, tx)
+            await self._store.save(cid, new_state, write.expected, folded, rows, tx)
         else:
             await self._store.complete(cid, write.expected, rows, tx)
 
@@ -190,8 +208,9 @@ class SagaRunner:
         """A :class:`~edax.store.Relay` over this runner's command outbox that decodes each row and hands the
         command to ``dispatch`` (``CommandBus.dispatch``, behind :func:`~edax.command.idempotent`). The relay
         is at-least-once, so key the guard on the command's own identity, or publish the rows yourself with
-        ``Relay(store, publish)`` and key on ``row.id``. A terminal command failure dead-letters the row
-        through ``on_dead``; see :class:`~edax.store.Relay` for the rest of the policy."""
+        ``Relay(store, publish)`` and key on ``row.id``. Pass ``on_dead``: a terminal command failure then
+        dead-letters the row through it, while without a sink the row is handed back on every drain and
+        holds up the rows behind it. See :class:`~edax.store.Relay` for the rest of the policy."""
 
         async def publish(row: SagaCommand) -> None:
             await maybe_await(dispatch(self.command(row)))

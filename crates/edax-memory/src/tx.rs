@@ -347,7 +347,7 @@ mod tests {
         db.events.save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec()).expect("snapshot");
         db.projections.save(tx, "user-1", 0, doc()).expect("projection");
         won(db.claims.claim(tx, "req-A", HASH));
-        db.sagas.save(tx, "order-1", 0, state(), vec![]).expect("saga");
+        db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).expect("saga");
     }
 
     /// What a reader under `tx` sees of every seam: `(events, outbox, snapshot, projection, claim, saga)`.
@@ -418,7 +418,7 @@ mod tests {
                 write: |db, tx| db.events.append(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]),
             },
             Case { name: "projection row", write: |db, tx| db.projections.save(tx, "user-1", 0, doc()).map(|_| ()) },
-            Case { name: "saga instance", write: |db, tx| db.sagas.save(tx, "order-1", 0, state(), vec![]).map(|_| ()) },
+            Case { name: "saga instance", write: |db, tx| db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()) },
             Case { name: "saga completion", write: |db, tx| db.sagas.complete(tx, "order-1", 0, vec![]).map(|_| ()) },
         ];
         for c in cases {
@@ -814,10 +814,10 @@ mod tests {
         let handle = won(db.claims.claim(tx, "req-A", HASH));
         db.claims.release(tx, "req-A", &handle).unwrap();
         won(db.claims.claim(tx, "req-A", HASH));
-        assert_eq!(db.sagas.save(tx, "order-1", 0, state(), vec![]), Ok(1));
+        assert_eq!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]), Ok(1));
         assert_eq!(db.sagas.complete(tx, "order-1", 1, vec![]), Ok(2));
         assert!(db.sagas.load(tx, "order-1").unwrap().is_some_and(|row| row.value == SagaRow::Completed), "completed in the same transaction");
-        assert!(db.sagas.save(tx, "order-1", 0, state(), vec![]).is_err(), "and never started again");
+        assert!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).is_err(), "and never started again");
         // An empty batch is a version check only: it stages no tail and holds nothing.
         db.events.append(tx, "invoice-8", 0, vec![]).unwrap();
         db.events.append(NO_TX, "invoice-8", 0, vec![envelope("evt-9", Some(1))]).expect("not held");
@@ -849,7 +849,7 @@ mod tests {
             assert_eq!(db.claims.complete(tx, "req-A", b"", b"{}").map(|_| ()), want, "{name}: complete");
             assert_eq!(db.claims.release(tx, "req-A", b"").map(|_| ()), want, "{name}: release");
             assert_eq!(db.sagas.load(tx, "order-1").map(|_| ()), want, "{name}: saga load");
-            assert_eq!(db.sagas.save(tx, "order-1", 0, state(), vec![]).map(|_| ()), want, "{name}: saga save");
+            assert_eq!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()), want, "{name}: saga save");
             assert_eq!(db.sagas.complete(tx, "order-1", 0, vec![]).map(|_| ()), want, "{name}: saga complete");
             assert_eq!(db.tr.commit(tx).map(|_| ()), want, "{name}: commit");
             assert!(!db.tr.rollback(tx), "{name}: rollback");

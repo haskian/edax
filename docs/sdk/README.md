@@ -74,8 +74,8 @@ classDiagram
     }
     class SagaStore {
         +load(id, tx)
-        +save(id, state, version, tx)
-        +delete(id, version, tx)
+        +save(id, state, version, folded, commands, tx)
+        +complete(id, version, commands, tx)
     }
     class Producer {
         +publish(envelope)

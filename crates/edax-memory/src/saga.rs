@@ -16,7 +16,15 @@ use crate::tx::{held_by_other, store_view, Committed, MemoryState, MemoryTransac
 /// completed instead of starting the workflow again.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SagaRow {
-    Active(Value),
+    /// A running instance.
+    Active {
+        /// The state the saga folded.
+        state: Value,
+        /// The kernel's marks of the events folded so far (`edax_event::saga_admit`): opaque text the
+        /// store keeps as it was written.
+        folded: String,
+    },
+    /// The tombstone of a completed instance.
     Completed,
 }
 
@@ -87,13 +95,13 @@ impl MemorySagaStore {
         })
     }
 
-    /// Persist `state` and the step's `commands` at `version + 1` if the version `tx` sees still
-    /// equals `version` (an absent instance is at version 0); returns the new version. A version
-    /// mismatch, a completed instance, or an id another open transaction has written and not yet
-    /// committed is a conflict error; a command that does not belong to this write is a codec error.
+    /// Persist `state`, the `folded` marks and the step's `commands` at `version + 1` if the version
+    /// `tx` sees still equals `version` (an absent instance is at version 0); returns the new version.
+    /// A version mismatch, a completed instance, or an id another open transaction has written and not
+    /// yet committed is a conflict error; a command that does not belong to this write is a codec error.
     /// A refused write stages nothing.
-    pub fn save(&self, tx: i64, id: &str, version: u64, state: Value, commands: Vec<SagaCommand>) -> Result<u64, Error> {
-        self.write(tx, id, version, SagaRow::Active(state), commands)
+    pub fn save(&self, tx: i64, id: &str, version: u64, state: Value, folded: String, commands: Vec<SagaCommand>) -> Result<u64, Error> {
+        self.write(tx, id, version, SagaRow::Active { state, folded }, commands)
     }
 
     /// Complete the instance: write its tombstone and the step's `commands` at `version + 1` under
@@ -112,7 +120,7 @@ impl MemorySagaStore {
                         format_args!("saga {id} completed at version {stored}: a completed instance takes no write"),
                     ));
                 }
-                Some((stored, SagaRow::Active(_))) => *stored,
+                Some((stored, SagaRow::Active { .. })) => *stored,
                 None => 0,
             };
             if stored != version {
@@ -164,7 +172,7 @@ mod tests {
     /// A saga store holding one open instance at version 1.
     fn seeded() -> MemorySagaStore {
         let store = MemorySagaStore::new();
-        store.save(NO_TX, "order-1", 0, open(), vec![]).expect("seed saves");
+        store.save(NO_TX, "order-1", 0, open(), String::new(), vec![]).expect("seed saves");
         store
     }
 
@@ -173,7 +181,7 @@ mod tests {
         store.load(NO_TX, id).unwrap().map(|stored| {
             let status = match stored.value {
                 SagaRow::Completed => "completed".to_owned(),
-                SagaRow::Active(state) => state["status"].as_str().unwrap().to_owned(),
+                SagaRow::Active { state, .. } => state["status"].as_str().unwrap().to_owned(),
             };
             (stored.version, status)
         })
@@ -317,7 +325,7 @@ mod tests {
                 assert_eq!(store.complete(NO_TX, "order-1", 1, vec![]), Ok(2), "{}: tombstone", c.name);
             }
             let got = match c.write {
-                Write::Save(state) => store.save(NO_TX, c.id, c.version, serde_json::from_str(state).unwrap(), (c.commands)()),
+                Write::Save(state) => store.save(NO_TX, c.id, c.version, serde_json::from_str(state).unwrap(), String::new(), (c.commands)()),
                 Write::Complete => store.complete(NO_TX, c.id, c.version, (c.commands)()),
             };
             assert_eq!(wire(got), c.want.map_err(str::to_owned), "{}", c.name);
@@ -334,7 +342,7 @@ mod tests {
         let tx = store.transactor().begin();
         let duplicate = vec![command("order-1", 2, 0), command("order-1", 2, 0)];
         assert_eq!(
-            wire(store.save(tx, "order-1", 1, open(), duplicate)),
+            wire(store.save(tx, "order-1", 1, open(), String::new(), duplicate)),
             Err(r#"codec: saga command 1 of order-1 at version 2 is "order-1:2:0" for "order-1", expected "order-1:2:1""#.to_owned())
         );
         store.transactor().rollback(tx);
@@ -342,7 +350,7 @@ mod tests {
         state.committed.saga_commands.push(command("order-1", 2, 0));
         drop(state);
         assert_eq!(
-            wire(store.save(NO_TX, "order-1", 1, open(), vec![command("order-1", 2, 0)])),
+            wire(store.save(NO_TX, "order-1", 1, open(), String::new(), vec![command("order-1", 2, 0)])),
             Err("codec: saga command order-1:2:0 is already in the outbox".to_owned())
         );
     }
@@ -351,7 +359,7 @@ mod tests {
     fn the_outbox_shows_committed_commands_until_marked_sent() {
         let store = seeded();
         let tx = store.transactor().begin();
-        store.save(tx, "order-1", 1, open(), vec![command("order-1", 2, 0)]).unwrap();
+        store.save(tx, "order-1", 1, open(), String::new(), vec![command("order-1", 2, 0)]).unwrap();
         assert!(unsent_ids(&store).is_empty(), "a staged command is not one to send");
         store.transactor().commit(tx).unwrap();
         store.complete(NO_TX, "order-1", 2, vec![command("order-1", 3, 0), command("order-1", 3, 1)]).unwrap();
@@ -371,7 +379,7 @@ mod tests {
         assert_eq!(unsent_ids(&store), ["order-1:3:0", "order-1:3:1"], "idempotent, unknown ids ignored");
 
         let rolled_back = store.transactor().begin();
-        store.save(rolled_back, "order-9", 0, open(), vec![command("order-9", 1, 0)]).unwrap();
+        store.save(rolled_back, "order-9", 0, open(), String::new(), vec![command("order-9", 1, 0)]).unwrap();
         store.transactor().rollback(rolled_back);
         assert_eq!(unsent_ids(&store), ["order-1:3:0", "order-1:3:1"], "a rollback takes its commands with it");
     }
@@ -379,12 +387,14 @@ mod tests {
     #[test]
     fn load_returns_the_versioned_instance_its_tombstone_or_none() {
         let store = seeded();
-        assert_eq!(store.load(NO_TX, "order-1").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active(open()) }));
+        assert_eq!(store.load(NO_TX, "order-1").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active { state: open(), folded: String::new() } }));
         assert_eq!(store.load(NO_TX, "order-404").unwrap(), None);
 
         // Any JSON value is a state: a saga that keeps `null` is distinct from a completed one.
-        store.save(NO_TX, "order-2", 0, Value::Null, vec![]).unwrap();
-        assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active(Value::Null) }));
+        // The folded marks come back as they were written.
+        let folded = r#"{"order-2":{"sequence":1,"id":"evt-1"}}"#.to_owned();
+        store.save(NO_TX, "order-2", 0, Value::Null, folded.clone(), vec![]).unwrap();
+        assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active { state: Value::Null, folded } }));
         store.complete(NO_TX, "order-2", 1, vec![]).unwrap();
         assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 2, value: SagaRow::Completed }));
     }
@@ -394,11 +404,11 @@ mod tests {
         let store = seeded();
         let tr = store.transactor();
         let holder = tr.begin();
-        store.save(holder, "order-1", 1, open(), vec![]).expect("the holder saves");
-        assert_eq!(wire(store.save(NO_TX, "order-1", 2, open(), vec![])), Err("concurrency: expected 2, stored 1".to_owned()));
+        store.save(holder, "order-1", 1, open(), String::new(), vec![]).expect("the holder saves");
+        assert_eq!(wire(store.save(NO_TX, "order-1", 2, open(), String::new(), vec![])), Err("concurrency: expected 2, stored 1".to_owned()));
         assert!(tr.rollback(holder));
 
-        lock(&store.state).committed.sagas.insert("order-9".to_owned(), (u64::MAX, SagaRow::Active(open())));
-        assert_eq!(wire(store.save(NO_TX, "order-9", u64::MAX, open(), vec![])), Err("codec: saga order-9 is at the last version".to_owned()));
+        lock(&store.state).committed.sagas.insert("order-9".to_owned(), (u64::MAX, SagaRow::Active { state: open(), folded: String::new() }));
+        assert_eq!(wire(store.save(NO_TX, "order-9", u64::MAX, open(), String::new(), vec![])), Err("codec: saga order-9 is at the last version".to_owned()));
     }
 }

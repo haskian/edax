@@ -16,7 +16,7 @@ use edax_event::{EventEnvelope, Failure, Metadata, Namespace, Retries, SagaComma
 
 use crate::command::{code_of, is_terminal, HandlerError};
 use crate::pacing::Pacing;
-use crate::{Aggregate, AggregateCodec, Error, ErrorCode, EventCodec};
+use crate::{Aggregate, AggregateCodec, Error, EventCodec};
 
 /// A marshaled aggregate at a given version, so a load can skip replaying the whole stream.
 #[derive(Clone, Debug)]
@@ -137,7 +137,7 @@ pub(crate) fn in_unit_of_work() -> bool {
 /// unwinding; the caller sees the panic, the backend sees a settled transaction.
 ///
 /// Opening it on a database that already has a unit of work open on this thread is refused with the
-/// terminal [`ErrorCode::BadHandle`], before anything begins: the inner unit of work would commit on its
+/// terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle), before anything begins: the inner unit of work would commit on its
 /// own, and the outer rollback could not take it back. So [`Repository::save`] (which opens its own)
 /// inside a host's body is refused rather than committing apart from it; [`Repository::save_in`] joins
 /// the open one. The check keys on [`Transactor::identity`], so it catches every transactor over one
@@ -448,12 +448,18 @@ pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError
 /// [`on_dead`](Self::on_dead) sink and is marked, so one poison row cannot stall the outbox; a row
 /// handed back waits its backoff step before the drain returns the error, so a host looping on
 /// `drain` does not spin. With no sink a poison row is handed back on every drain, and its wait grows.
+/// A drain whose store call fails (`unpublished` or `mark_published`) waits too, one step per
+/// consecutive store failure, so a store that is down is not hammered either; a drain whose store
+/// calls succeed starts that count over.
 ///
 /// Overlapping drains of one relay take turns, so a timer and a "drain now" never publish one batch
 /// twice. Two relays over one store need [`Outbox::unpublished`] to lease the rows it returns.
 pub struct Relay<S, R = EventEnvelope> {
     store: S,
-    draining: Mutex<()>,
+    /// Taken for a whole drain, so drains take turns. Holds the consecutive store failures, the
+    /// backoff step of the next one.
+    draining: Mutex<u64>,
+    max_attempts: u32,
     retries: Mutex<Retries>,
     on_dead: Option<RelaySink<R>>,
     pacing: Pacing,
@@ -464,8 +470,9 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
     pub fn new(store: S) -> Self {
         Self {
             store,
-            draining: Mutex::new(()),
-            retries: Mutex::new(Retries::new(0)),
+            draining: Mutex::new(0),
+            max_attempts: 0,
+            retries: Mutex::new(Retries::new(0, false)),
             on_dead: None,
             pacing: Pacing::default(),
             _row: PhantomData,
@@ -474,13 +481,15 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
 
     /// Dead-letter a row whose publish failed transiently `n` times; `0` (the default) never does.
     pub fn max_attempts(self, n: u32) -> Self {
-        Self { retries: Mutex::new(Retries::new(n)), ..self }
+        let retries = Mutex::new(Retries::new(n, self.on_dead.is_some()));
+        Self { max_attempts: n, retries, ..self }
     }
 
     /// Where a row that cannot be published goes, instead of stalling the rows behind it. A sink
     /// that fails hands the row back, and the next drain tries the sink again.
     pub fn on_dead(mut self, sink: impl Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync + 'static) -> Self {
         self.on_dead = Some(Box::new(sink));
+        self.retries = Mutex::new(Retries::new(self.max_attempts, true));
         self
     }
 
@@ -499,11 +508,39 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
     /// loop to keep draining. `publish` is synchronous; wrap the call in your async runtime for a
     /// network transport. Its error is a [`HandlerError`], so a saga command dispatched through a
     /// [`CommandBus`](crate::CommandBus) keeps its verdict.
-    pub fn drain<F>(&self, batch: usize, mut publish: F) -> Result<usize, HandlerError>
+    pub fn drain<F>(&self, batch: usize, publish: F) -> Result<usize, HandlerError>
     where
         F: FnMut(&R) -> Result<(), HandlerError>,
     {
-        let _turn = lock(&self.draining);
+        let mut store_failures = lock(&self.draining);
+        let (settled, failed) = match self.publish_batch(batch, publish) {
+            Ok(drained) => {
+                *store_failures = 0;
+                drained
+            }
+            Err(error) => {
+                // The store failed, not a row: wait a step that grows while it stays down, so a host
+                // looping on `drain` neither spins nor hammers it.
+                self.pacing.wait(*store_failures);
+                *store_failures = store_failures.saturating_add(1);
+                return Err(error.into());
+            }
+        };
+        match failed {
+            Some((step, error)) => {
+                self.pacing.wait(step);
+                Err(error)
+            }
+            None => Ok(settled),
+        }
+    }
+
+    /// Read a batch, publish it in order until a row fails, and mark every row settled. Returns how
+    /// many rows settled and the failed row's backoff step and error; `Err` only for a store failure.
+    fn publish_batch<F>(&self, batch: usize, mut publish: F) -> Result<(usize, Option<(u64, HandlerError)>), Error>
+    where
+        F: FnMut(&R) -> Result<(), HandlerError>,
+    {
         let rows = self.store.unpublished(batch)?;
         let mut settled: Vec<String> = Vec::new();
         let mut failed: Option<(u64, HandlerError)> = None;
@@ -513,17 +550,12 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
                 settled.push(row.id().to_owned());
                 continue;
             };
-            let failure = match code_of(&*error) {
-                Some(ErrorCode::InProgress) => Failure::Contended,
-                _ if is_terminal(&*error) => Failure::Terminal,
-                _ => Failure::Transient,
-            };
-            let verdict = lock(&self.retries).failed(row.id(), 0, failure, self.on_dead.is_some());
+            let verdict = lock(&self.retries).failed(row.id(), 0, Failure::of(code_of(&*error)));
             let step = match verdict {
                 Verdict::Nack { step } => step,
                 Verdict::Dead { attempt } => {
-                    // The kernel answers `Dead` only when told a sink exists, so `None` here is a
-                    // sink that refused the row: it is handed back like any failure.
+                    // The kernel answers `Dead` only for a relay built with a sink, so `None` here is
+                    // unreachable and a sink that refused the row hands it back like any failure.
                     if self.on_dead.as_ref().is_some_and(|sink| sink(row, &error).is_ok()) {
                         lock(&self.retries).dead_lettered(row.id());
                         settled.push(row.id().to_owned());
@@ -538,13 +570,7 @@ impl<S: Outbox<R>, R: OutboxRow> Relay<S, R> {
         if !settled.is_empty() {
             self.store.mark_published(&settled)?;
         }
-        match failed {
-            Some((step, error)) => {
-                self.pacing.wait(step);
-                Err(error)
-            }
-            None => Ok(settled.len()),
-        }
+        Ok((settled.len(), failed))
     }
 }
 
@@ -1242,6 +1268,71 @@ mod tests {
             let want_waits: Vec<_> = c.want_waits.iter().map(|&step| step_wait(step)).collect();
             assert_eq!(*waits.lock().unwrap(), want_waits, "{}: waits", c.name);
         }
+    }
+
+    /// The event outbox with a script per store call: each `unpublished` and each `mark_published`
+    /// takes the next answer off its queue, `false` failing it, and succeeds once its queue is empty.
+    struct Scripted {
+        inner: MemoryEventStore,
+        reads: Mutex<std::collections::VecDeque<bool>>,
+        marks: Mutex<std::collections::VecDeque<bool>>,
+    }
+
+    impl Outbox<EventEnvelope> for Scripted {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+            if !self.reads.lock().expect("no panics").pop_front().unwrap_or(true) {
+                return Err(Error::store("database down"));
+            }
+            self.inner.unpublished(limit)
+        }
+        fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
+            if !self.marks.lock().expect("no panics").pop_front().unwrap_or(true) {
+                return Err(Error::store("connection lost"));
+            }
+            self.inner.mark_published(ids)
+        }
+    }
+
+    #[test]
+    fn a_store_that_fails_backs_the_drain_off_and_a_store_that_recovers_starts_over() {
+        // The relay's own store is down: a host looping on `drain` must wait a step that grows while
+        // it stays down, never spin on it, and start over once a drain's store calls succeed. A row's
+        // publish failure is the row's own step, kept apart from the store's.
+        struct Drain {
+            name: &'static str,
+            /// Whether the first row's publish fails, transiently.
+            publish_fails: bool,
+            want: Result<usize, &'static str>,
+            /// The backoff step this drain waits, if it waits.
+            want_wait: Option<u64>,
+        }
+        let drains = [
+            Drain { name: "the read fails: step 0", publish_fails: false, want: Err("store: database down"), want_wait: Some(0) },
+            Drain { name: "it fails again: step 1", publish_fails: false, want: Err("store: database down"), want_wait: Some(1) },
+            Drain { name: "the mark fails: the store's step 2", publish_fails: false, want: Err("store: connection lost"), want_wait: Some(2) },
+            Drain { name: "the store answers, a row fails: the row's step 0", publish_fails: true, want: Err("store: broker unavailable"), want_wait: Some(0) },
+            Drain { name: "the read fails after a recovery: step 0 again", publish_fails: false, want: Err("store: database down"), want_wait: Some(0) },
+            Drain { name: "everything lands: no wait", publish_fails: false, want: Ok(4), want_wait: None },
+            Drain { name: "the next store failure starts at step 0", publish_fails: false, want: Err("store: database down"), want_wait: Some(0) },
+        ];
+        let store = Scripted {
+            inner: outbox_of(4),
+            reads: Mutex::new([false, false, true, true, false, true, false].into()),
+            marks: Mutex::new([false].into()),
+        };
+        let (pacing, waits) = recorded();
+        let relay = Relay::new(store).pacing(pacing);
+        for drain in drains {
+            let before = waits.lock().unwrap().len();
+            let got = relay.drain(10, |env| match drain.publish_fails && env.sequence == Some(1) {
+                true => Err(Error::store("broker unavailable").into()),
+                false => Ok(()),
+            });
+            assert_eq!(got.map_err(|e| e.to_string()), drain.want.map_err(str::to_owned), "{}", drain.name);
+            let waited: Vec<_> = waits.lock().unwrap()[before..].to_vec();
+            assert_eq!(waited, drain.want_wait.map(step_wait).into_iter().collect::<Vec<_>>(), "{}: wait", drain.name);
+        }
+        assert!(relay.store().inner.unpublished(10).unwrap().is_empty(), "every row was marked in the end");
     }
 
     #[test]

@@ -240,7 +240,8 @@ Seams wired: `SagaStore` (`MemorySagaStore`), `SagaRunner`, `EventRouter`, `KeyO
 and a `CommandBus` behind the `idempotent` guard. `OrderSaga` waits for `Paid`, emits `Fulfill`, and
 returns `Completed`. `partition(aggregate_id)` pins each order to one worker, so `Created` lands
 before `Paid` without a lock. The runner saves each step's state and commands in one write, and
-`runner.relay(bus.dispatch)` sends the committed commands afterwards. The stream includes a
+`runner.relay(bus.dispatch, on_dead=dead_letter)` sends the committed commands afterwards, with a sink
+for a command that fails terminally. The stream includes a
 redelivered `Paid`: it finds the completed instance's tombstone and is ignored. `Fulfill` also carries the causation chain across the
 hop, as [sdk/sagas](../sdk/sagas.md#carrying-the-chain-across-the-hop) describes.
 

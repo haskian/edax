@@ -188,9 +188,11 @@ class Record:
 @dataclass(frozen=True)
 class Won:
     """What :meth:`IdempotencyStore.claim` returns to the caller that won: run the handler, then settle with
-    ``handle``. The handle names this claim and only this one. A fenced store (Redis) settles the key only
-    while it still holds this exact claim, so a claim that lapsed and was taken over is never settled by its
-    old owner. A store with no fence (memory) returns ``b""`` and ignores it."""
+    ``handle``. The handle names this claim and only this one. Every in-tree store fences on it (Redis on the
+    claim value, memory on a handle it mints per claim): it settles the key only while the key still holds
+    this exact claim, so a claim that lapsed and was taken over is never settled by its old owner, whose
+    ``complete`` raises :class:`~edax.errors.StoreError`. ``b""`` is only the default of a ``Won`` built by
+    hand, for a store whose claims never lapse."""
 
     handle: bytes = b""
 
@@ -213,7 +215,8 @@ class IdempotencyStore(Protocol):
       standalone: at-least-once.
     - *Declaration.* ``joins_transaction: ClassVar[bool]`` names which of the two you are; absent is
       ``False``. ``True`` obliges you to raise terminal :class:`~edax.errors.BadHandle` for a handle from
-      another database, never to auto-commit.
+      another database, never to auto-commit. The guard hands such a store its transaction's handle
+      explicitly, so a store over another database than ``unit_of_work`` fails at the claim.
     - *A loser inside a transaction* must block on the winner's row and then read it, or raise transient
       :class:`~edax.errors.StoreError`; it must never read a stale snapshot and report a win, which runs the
       handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
@@ -223,6 +226,10 @@ class IdempotencyStore(Protocol):
       no-op. A backend whose claims can lapse must fence both on the handle: write only while the key still
       holds that exact claim. A ``complete`` refused that way raises ``StoreError``, and the ``release`` the
       guard answers it with deletes nothing, because the key now holds another claim or a settled record.
+    - *A key another open transaction holds.* A ``joins_transaction`` store refuses ``complete`` and
+      ``release`` of a key another open transaction has written, with the transient
+      :class:`~edax.errors.ConcurrencyError`, and writes nothing: that transaction's commit would overwrite
+      the record, or the release would free its claim.
     - *Retention.* A record must outlive the longest window in which the same key can be redelivered.
     - *Record contents.* ``payload_hash`` is the kernel's unsigned 64-bit hash: store it losslessly, never a
       signed ``BIGINT``; one outside ``0 .. 2**64 - 1`` raises :class:`~edax.errors.CodecError`. ``result``
@@ -461,13 +468,16 @@ async def _guarded_in_one_commit(
     started: int | None = None  # set once the claim is won: only a won claim is settled
     how: Settlement = "released"
     try:
-        async with _transaction(unit_of_work, observe):
-            claimed = await store.claim(key, payload_hash)
+        # The handle goes to the store explicitly. Left to `current_tx`, a store over another database
+        # would find no ambient tx of its own and auto-commit the claim outside the guard's transaction,
+        # so a rollback would leave the key pending; given this handle it refuses with BadHandle.
+        async with _transaction(unit_of_work, observe) as tx:
+            claimed = await store.claim(key, payload_hash, tx=tx)
             if not isinstance(claimed, Won):
                 return _replay(name, key, payload_hash, claimed, observe, replay_as)
             started = perf_counter_ns()
             result = await run()
-            await store.complete(key, claimed.handle, Record(payload_hash, result=result))
+            await store.complete(key, claimed.handle, Record(payload_hash, result=result), tx=tx)
         how = "completed"
         return result
     finally:

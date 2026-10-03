@@ -60,7 +60,11 @@ Specification: `edax.command.IdempotencyStore`.
 - `complete` and `release` take the claim's handle and are idempotent.
 - If claims can lapse, both write only while the key still holds that exact claim. A release after
   the claim's own `complete` landed deletes nothing.
-- `complete` and `release` refuse a key another open transaction holds.
+- A `joins_transaction` store never settles a key another open transaction holds: `complete` and
+  `release` block until it ends, or raise a transient `ConcurrencyError` and write nothing. The
+  in-memory store raises. Clause: `test_a_key_another_open_transaction_holds_is_never_settled_over_it`.
+- A `joins_transaction` store raises the terminal `BadHandle` for a `tx` of another database. Clause:
+  `test_a_handle_of_another_database_is_refused`.
 - Retention outlives the longest redelivery window.
 - `payload_hash` round-trips as an unsigned 64-bit integer.
 
@@ -80,7 +84,10 @@ Specification: `edax.projection.ProjectionStore`.
 
 Specification: `edax.saga.SagaStore`.
 
-- `load` returns the stored instance (state plus version, or a completed tombstone), or `None`.
+- `load` returns the stored instance (state, version and `folded` marks, or a completed tombstone),
+  or `None`.
+- `save` keeps the `folded` marks exactly as written: opaque text the runner skips a redelivered
+  event by.
 - `save` and `complete` write at `version + 1` only if the store is still at `version`.
 - `complete` writes a tombstone; it never deletes the row. A completed instance takes no write at all.
 - The step's commands are written in the same write as the state: the saga outbox. A refused or
@@ -370,8 +377,8 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 |---|---|---|
 | `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
 | `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and *not* advancing on a conflict, independence per id, a save with no `tx` joining the ambient transaction, two writers at one version landing exactly one save, a staged row invisible to another transaction, and kernel paging when `supports_kernel_queries` is on |
-| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown correlation reading `None`, state round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
-| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key |
+| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown correlation reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
+| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that
 cannot apply. The flags are `supports_rollback`, `supports_snapshots`, `supports_outbox`,

@@ -12,10 +12,10 @@ use std::sync::mpsc::{channel, sync_channel, Receiver, SendError, Sender, SyncSe
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use edax_core::{Error, ErrorCode};
+use edax_core::Error;
 use edax_event::{partition, EventEnvelope, Failure, Retries, Verdict};
 
-use crate::command::{code_of, is_terminal, HandlerError};
+use crate::command::{code_of, HandlerError};
 use crate::pacing::Pacing;
 
 /// A broker delivery: the event plus the handles to settle it. Composition over the persisted
@@ -108,7 +108,7 @@ type DeadLetterHook = dyn Fn(DeadLetter) -> Result<(), HandlerError> + Send + Sy
 /// the later one. A transport that requeues a nacked delivery behind later ones instead reorders the key,
 /// and a handler on it skips a stale event itself ([`is_stale`](crate::is_stale), then
 /// [`advance`](crate::advance) after it applies). Every nack waits one step of the builder's [`Pacing`]
-/// first, or a handler failing on a downed dependency spins the broker as fast as it redelivers. An [`ErrorCode::InProgress`] failure waits the same way but never counts toward
+/// first, or a handler failing on a downed dependency spins the broker as fast as it redelivers. An [`ErrorCode::InProgress`](crate::ErrorCode::InProgress) failure waits the same way but never counts toward
 /// [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim expires.
 pub struct KeyOrderedDispatcher {
     senders: Vec<Queue>,
@@ -203,7 +203,7 @@ impl DispatcherBuilder {
     /// Spawn `workers` worker threads, each draining its own channel through the handler.
     ///
     /// # Errors
-    /// The terminal [`ErrorCode::BadHandle`] for zero workers, a wiring mistake; a store error when the
+    /// The terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle) for zero workers, a wiring mistake; a store error when the
     /// platform refuses a worker thread. A dispatcher missing a worker would nack that worker's partition on
     /// every delivery with no backoff, a hot loop, so it is never handed out: the threads already spawned
     /// are stopped and joined first.
@@ -228,7 +228,7 @@ impl DispatcherBuilder {
             let worker = Worker {
                 handler: Arc::clone(&self.handler),
                 on_dead: self.on_dead.clone(),
-                retries: Retries::new(self.max_attempts),
+                retries: Retries::new(self.max_attempts, self.on_dead.is_some()),
                 pacing: Arc::clone(&self.pacing),
             };
             senders.push(sender);
@@ -357,17 +357,16 @@ impl Worker {
             run_settler(on_ack);
             return;
         };
-        // A panic is unclassified, so it is transient: a bug on one payload is exactly the poison
-        // message the ceiling exists for, but a single panic cannot be told from a transient one.
-        // Another consumer holding the key's claim is contention, not a failed attempt: counting it
-        // would dead-letter a message whose holder is only slow.
-        let kind = match &failure {
-            HandlerFailure::Error(e) if code_of(&**e) == Some(ErrorCode::InProgress) => Failure::Contended,
-            HandlerFailure::Error(e) if is_terminal(&**e) => Failure::Terminal,
-            _ => Failure::Transient,
+        // A panic carries no code, so it is unclassified and transient: a bug on one payload is
+        // exactly the poison message the ceiling exists for, but a single panic cannot be told from a
+        // transient one. The kernel reads the code: another consumer holding the key's claim is
+        // contention, not a failed attempt, so it never dead-letters a message whose holder is slow.
+        let code = match &failure {
+            HandlerFailure::Error(e) => code_of(&**e),
+            HandlerFailure::Panic(_) => None,
         };
         let id = envelope.id.clone();
-        match self.retries.failed(&id, broker_attempt, kind, self.on_dead.is_some()) {
+        match self.retries.failed(&id, broker_attempt, Failure::of(code)) {
             Verdict::Nack { step } => self.nack_after_backoff(step, on_nack),
             Verdict::Dead { attempt } => {
                 // The sink runs before any ack. If it errors or panics, the delivery is nacked after
@@ -419,7 +418,7 @@ fn run_settler(f: Box<dyn FnOnce() + Send>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Error;
+    use crate::{Error, ErrorCode};
     use edax_event::Event;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

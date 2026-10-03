@@ -167,7 +167,7 @@ impl Rig {
     fn write_everything(&self, tx: &mut MemoryTx) -> Result<(), HandlerError> {
         self.dispatch_in(*tx, &deposit("req-A", 100))?;
         self.projections.save(tx, &mut Entity { id: "acct-1".into(), version: 0, document: json!({"balance": 100}) })?;
-        self.sagas.save(tx, "order-1", &"open".to_string(), 0, &[])?;
+        self.sagas.save(tx, "order-1", &"open".to_string(), 0, "", &[])?;
         Ok(())
     }
 

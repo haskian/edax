@@ -34,9 +34,10 @@ flowchart LR
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
 to a `KeyOrderedDispatcher`. It takes a command codec, `json_codec({"Fulfill": Fulfill})`, to put the
-commands in the outbox. `runner.relay(bus.dispatch)` sends them (`examples/py/saga.py`). In Rust, the
-codec is a `RegistryCodec` over the command enum, and `Relay::<_, SagaCommand>::new(store)` with
-`runner.command(row)` sends them.
+commands in the outbox. `runner.relay(bus.dispatch, on_dead=sink)` sends them (`examples/py/saga.py`).
+Pass `on_dead`: without a sink, a command that fails terminally is handed back on every drain, and
+the rows behind it wait. In Rust, the codec is a `RegistryCodec` over the command enum, and
+`Relay::<_, SagaCommand>::new(store).on_dead(sink)` with `runner.command(row)` sends them.
 
 ### The correlation rule
 
@@ -124,8 +125,8 @@ never calls `originate`, so a root event with no `ensure_ids()` has no chain at 
 
 | Method | Contract |
 |---|---|
-| `load(id, tx)` | the stored `SagaInstance` (state plus version, or a completed tombstone) or `None` |
-| `save(id, state, version, commands, tx)` | write the state **and** the step's commands at `version + 1` **only if** the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
+| `load(id, tx)` | the stored `SagaInstance` (state, version and `folded` marks, or a completed tombstone) or `None` |
+| `save(id, state, version, folded, commands, tx)` | write the state, the `folded` marks **and** the step's commands at `version + 1` **only if** the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
 | `complete(id, version, commands, tx)` | the same, writing a tombstone instead of state |
 | `unpublished(limit)` / `mark_published(ids)` | the saga outbox, read by the relay outside any `tx`: committed commands only, oldest first, pruned by id, idempotently |
 | `tx` | with `tx` given, or `current_tx` of the store's transactor set, a durable backend enlists the write in that unit of work |
@@ -136,6 +137,16 @@ unique per committed transition. A durable store can key the outbox row on it, a
 deduplicate on it. The in-memory backend refuses a command whose id is not that one, as `codec`. A durable store
 purges tombstones by retention, longer than any redelivery window. `SagaStoreContract` in
 `edax.testing` (and `crates/edax/tests/contract.rs` in Rust) holds a backend to every clause.
+
+`folded` is the kernel's record of the events the instance has folded (`saga_admit`). It is opaque
+text: the store keeps it in a text column, exactly as `save` wrote it, and `load` returns it. It
+holds one entry per source aggregate: the highest sequence and the last event id folded from it. So
+it grows with the aggregates a workflow touches, not with its events. Before it folds, the runner
+asks the kernel whether the instance has folded the event already. A repeat is skipped: no fold, no
+write, no command. That is what keeps a redelivered step from deciding its commands a second time
+under the next version's ids. The rule relies on the dispatcher handing one aggregate's events over in
+order, as the staleness rule does. An unsequenced event has no order, so only the last one folded from
+its aggregate is recognized.
 
 ## Optimistic concurrency
 
@@ -167,16 +178,18 @@ saga: storing the decision and the messages it produces happen in one transactio
 |---|---|---|
 | the write conflicts | the winner's | nothing of this fold is sent; the redelivery folds the winner's state |
 | the write fails, or the unit of work rolls back | unchanged | nothing to send; the redelivery decides again |
-| the write lands, then the response is lost | advanced | the redelivery reads the new state (or the tombstone) and does not repeat the step |
+| the write lands, then the response is lost | advanced | the redelivery finds the event in the instance's `folded` marks (or the tombstone) and skips it |
+| the step commits, then the ack is lost, or a crash replays every event above the committed offset | advanced | each redelivered event the instance folded is skipped: its command was committed once and is sent once |
 | crash after the commit, before the relay sends | advanced | the command waits in the outbox; the next drain sends it |
 | crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by command id |
-| a command fails terminally in the relay | advanced | the relay dead-letters the row through `on_dead`, and the rows behind it go out |
+| a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it |
 
 So a command is sent **at least once per committed step**, and never for a step that did not commit.
 Key the command's idempotency guard on something stable across re-sends: the command's own identity,
 or the row id. `test_saga.py::test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else`
 (hypothesis) and `crates/edax/tests/saga_model.rs` (proptest) check it over random histories of two
-workers with stale reads, crashed commits, failed publishes and lost marks.
+workers with stale reads, crashed commits, failed publishes, lost marks and redeliveries of committed
+events.
 
 ## One instance, end to end
 
@@ -189,6 +202,7 @@ stateDiagram-v2
     open --> conflicted : a racing writer advanced the version first
     conflicted --> open : the write rolled back with its commands; the event is redelivered
     open --> completed : handle returned Completed; tombstone and commands written at version plus one
+    open --> open : an event the instance folded already is redelivered and skipped
     completed --> completed : a redelivered or late event finds the tombstone and is not folded
 ```
 
