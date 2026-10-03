@@ -4,8 +4,9 @@ use serde_json::Value;
 
 use crate::Error;
 
-/// The read query shape and ordering key, re-exported from the kernel; see [`edax_cqrs::Query`] for wire rules.
-pub use edax_cqrs::{Query, SortKey};
+/// The read query shape, its ordering key and the page it answers with, re-exported from the kernel;
+/// see [`edax_cqrs::Query`] for wire rules.
+pub use edax_cqrs::{Page, Query, SortKey};
 
 /// A read model at a point in time: the queryable `document` and the `version` it was loaded at (`0` if never
 /// saved). A save persists at `version + 1` only if the store is still at `version`, then advances it.
@@ -28,17 +29,22 @@ pub trait ProjectionStore {
     fn get(&self, tx: &mut Self::Tx, id: &str) -> Result<Option<Entity>, Error>;
 
     /// Persist `entity.document` at `entity.version + 1` if the stored version still equals `entity.version`;
-    /// return [`Error::Concurrency`] otherwise. On success `entity.version` advances to the stored version.
+    /// return a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error otherwise. On success
+    /// `entity.version` advances to the stored version.
     fn save(&self, tx: &mut Self::Tx, entity: &mut Entity) -> Result<(), Error>;
 
-    /// Documents selected by `query` (see [`Query`]).
-    fn get_many(&self, tx: &mut Self::Tx, query: &Query) -> Result<Vec<Value>, Error>;
+    /// The page of documents `query` selects (see [`Query`]), with the cursor that resumes after it:
+    /// pass [`Page::next`] back as [`Query::after`] under the same sort. A backend that pages natively
+    /// mints `next` with [`edax_cqrs::encode_cursor`] and reads `after` with
+    /// [`edax_cqrs::decode_cursor`], so its cursors are every other backend's.
+    fn get_many(&self, tx: &mut Self::Tx, query: &Query) -> Result<Page, Error>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{MemoryProjectionStore, MemoryTx};
+    use crate::ErrorCode;
     use serde_json::json;
 
     fn entity(id: &str, doc: Value) -> Entity {
@@ -52,16 +58,15 @@ mod tests {
     /// bytes page exactly as the golden says. Re-declaring the shape here would fail this test.
     #[test]
     fn every_golden_query_round_trips_through_the_kernel_shape() {
-        let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/golden/query.json");
-        let raw = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        let cases: Vec<Value> = serde_json::from_str(&raw).expect("the golden is a JSON array");
+        let cases = edax_golden::read("query.json");
         // The round-trip only proves anything for fields the golden actually sets.
         for field in ["filter", "sort", "offset", "limit", "after"] {
             assert!(cases.iter().any(|c| c["query"].get(field).is_some()), "no golden case sets {field}");
         }
         for (i, case) in cases.iter().enumerate() {
+            if case["expected_page"].is_null() {
+                continue; // a refused spec: the kernel's error rows, replayed by the binding suites
+            }
             let spec: Query = serde_json::from_value(case["query"].clone())
                 .unwrap_or_else(|e| panic!("case {i}: the golden spec does not parse: {e}"));
             let bytes = serde_json::to_vec(&spec).expect("a Query is always serializable");
@@ -72,7 +77,7 @@ mod tests {
             let documents = serde_json::to_vec(&case["documents"]).expect("golden documents are JSON");
             let page = edax_cqrs::query_json(&bytes, &documents)
                 .unwrap_or_else(|e| panic!("case {i}: the kernel rejected the spec: {e}"));
-            let page: Value = serde_json::from_slice(&page).expect("a page is JSON");
+            let page: Value = serde_json::from_str(&page).expect("a page is JSON");
             assert_eq!(page, case["expected_page"], "case {i}");
         }
     }
@@ -102,7 +107,7 @@ mod tests {
 
         e.document = json!({"id": "u1", "n": 3});
         let err = store.save(&mut tx, &mut e).unwrap_err(); // e.version is still 1, store at 2
-        assert!(matches!(err, Error::Concurrency { expected: 1, stored: 2 }));
+        assert_eq!(err, Error::concurrency(1, 2));
     }
 
     /// Four read models, two of which tie on `age` — so a page boundary can land inside the tie.
@@ -115,8 +120,8 @@ mod tests {
         store
     }
 
-    fn field<'a>(page: &'a [Value], path: &str) -> Vec<&'a str> {
-        page.iter().map(|d| d[path].as_str().expect("a string field")).collect()
+    fn field<'a>(page: &'a Page, path: &str) -> Vec<&'a str> {
+        page.rows.iter().map(|d| d[path].as_str().expect("a string field")).collect()
     }
 
     #[test]
@@ -152,8 +157,15 @@ mod tests {
 
         let first = page(None);
         assert_eq!(field(&first, "id"), ["u3", "u0"]); // dot 29, then the first age-36 row by id
-        let cursor = edax_cqrs::encode_cursor(first.last().expect("a full page"), &sort);
-        assert_eq!(field(&page(Some(cursor)), "id"), ["u2", "u1"]); // the other age-36 row, then bob
+        let second = page(first.next);
+        assert_eq!(field(&second, "id"), ["u2", "u1"]); // the other age-36 row, then bob
+        assert_eq!(second.next, None, "nothing follows the last page");
+
+        // The cursor binds the sort it was minted under: replayed under another, it is refused.
+        let minted = page(None).next;
+        let other = Query { sort: vec![SortKey { path: "name".into(), desc: false }], after: minted, ..Default::default() };
+        let got = store.get_many(&mut MemoryTx::auto_commit(), &other);
+        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
     }
 
     #[test]
@@ -167,18 +179,17 @@ mod tests {
         // saved and then never paged. Rejected at the write, while the caller can still fix it.
         let mut scalar = Entity { id: "u9".into(), version: 0, document: json!(7) };
         let got = store.save(&mut tx, &mut scalar);
-        assert!(matches!(&got, Err(Error::Codec(_))), "got {got:?}");
+        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
         assert_eq!(scalar.version, 0, "a rejected save leaves the version alone");
         assert!(store.get(&mut tx, "u9").unwrap().is_none(), "nothing written");
 
-        // A cursor that is not base64 of a JSON tuple. (Without a sort key the kernel ignores `after`
-        // entirely, so the sort is what makes the cursor load-bearing.)
+        // A cursor that is not base64url of a kernel cursor.
         let q = Query {
             sort: vec![SortKey { path: "age".into(), desc: false }],
             after: Some("!! not base64 !!".into()),
             ..Default::default()
         };
         let got = store.get_many(&mut tx, &q);
-        assert!(matches!(&got, Err(Error::Codec(_))), "got {got:?}");
+        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
     }
 }

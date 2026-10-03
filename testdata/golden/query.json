@@ -2,27 +2,37 @@
   {
     "documents": [
       {
+        "id": "r0",
         "n": 3
       },
       {
+        "id": "r1",
         "n": 1
       },
       {
+        "id": "r2",
         "n": 2
       }
     ],
-    "expected_cursor": "WzMsbnVsbF0=",
-    "expected_page": [
-      {
-        "n": 1
-      },
-      {
-        "n": 2
-      },
-      {
-        "n": 3
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "r1",
+          "n": 1
+        },
+        {
+          "id": "r2",
+          "n": 2
+        },
+        {
+          "id": "r0",
+          "n": 3
+        }
+      ]
+    },
+    "name": "sort_ascending",
     "query": {
       "sort": [
         {
@@ -34,30 +44,41 @@
   {
     "documents": [
       {
+        "id": "r0",
         "n": 3
       },
       {
+        "id": "r1",
         "n": 1
       },
       {
+        "id": "r2",
         "n": 2
       },
       {
+        "id": "r3",
         "n": 5
       },
       {
+        "id": "r4",
         "n": 4
       }
     ],
-    "expected_cursor": "WzMsbnVsbF0=",
-    "expected_page": [
-      {
-        "n": 2
-      },
-      {
-        "n": 3
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlszLCJyMCJdfQ",
+      "rows": [
+        {
+          "id": "r2",
+          "n": 2
+        },
+        {
+          "id": "r0",
+          "n": 3
+        }
+      ]
+    },
+    "name": "offset_and_limit_with_more_rows",
     "query": {
       "limit": 2,
       "offset": 1,
@@ -71,23 +92,35 @@
   {
     "documents": [
       {
+        "id": "a",
         "n": 1
       },
-      {},
       {
+        "id": "b"
+      },
+      {
+        "id": "c",
         "n": 3
       }
     ],
-    "expected_cursor": "WzEsbnVsbF0=",
-    "expected_page": [
-      {},
-      {
-        "n": 3
-      },
-      {
-        "n": 1
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "b"
+        },
+        {
+          "id": "c",
+          "n": 3
+        },
+        {
+          "id": "a",
+          "n": 1
+        }
+      ]
+    },
+    "name": "descending_missing_path_first",
     "query": {
       "sort": [
         {
@@ -100,53 +133,77 @@
   {
     "documents": [
       {
+        "id": "a",
         "v": "a"
       },
       {
+        "id": "b",
         "v": 2
       },
       {
+        "id": "c",
         "v": true
       },
       {
+        "id": "d",
         "v": null
       },
       {
+        "id": "e",
         "v": [
           1
         ]
       },
       {
-        "v": {
-          "k": 1
-        }
-      }
-    ],
-    "expected_cursor": "W251bGwsbnVsbF0=",
-    "expected_page": [
-      {
-        "v": 2
-      },
-      {
-        "v": "a"
-      },
-      {
-        "v": true
-      },
-      {
-        "v": [
-          1
-        ]
-      },
-      {
+        "id": "f",
         "v": {
           "k": 1
         }
       },
       {
-        "v": null
+        "id": "g",
+        "v": false
       }
     ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "b",
+          "v": 2
+        },
+        {
+          "id": "a",
+          "v": "a"
+        },
+        {
+          "id": "g",
+          "v": false
+        },
+        {
+          "id": "c",
+          "v": true
+        },
+        {
+          "id": "e",
+          "v": [
+            1
+          ]
+        },
+        {
+          "id": "f",
+          "v": {
+            "k": 1
+          }
+        },
+        {
+          "id": "d",
+          "v": null
+        }
+      ]
+    },
+    "name": "mixed_types_total_order",
     "query": {
       "sort": [
         {
@@ -158,29 +215,38 @@
   {
     "documents": [
       {
+        "id": "a",
         "n": 2,
         "s": "open"
       },
       {
+        "id": "b",
         "n": 1,
         "s": "closed"
       },
       {
+        "id": "c",
         "n": 1,
         "s": "open"
       }
     ],
-    "expected_cursor": "WzIsbnVsbF0=",
-    "expected_page": [
-      {
-        "n": 1,
-        "s": "open"
-      },
-      {
-        "n": 2,
-        "s": "open"
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "c",
+          "n": 1,
+          "s": "open"
+        },
+        {
+          "id": "a",
+          "n": 2,
+          "s": "open"
+        }
+      ]
+    },
+    "name": "filter_then_sort",
     "query": {
       "filter": {
         "compare": {
@@ -199,23 +265,35 @@
   {
     "documents": [
       {
+        "id": "r0",
         "n": 1
       },
       {
+        "id": "r1",
+        "n": 1
+      },
+      {
+        "id": "r2",
         "n": 2
       },
       {
+        "id": "r3",
         "n": 3
       }
     ],
-    "expected_cursor": "WzIsbnVsbF0=",
-    "expected_page": [
-      {
-        "n": 2
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsyLCJyMiJdfQ",
+      "rows": [
+        {
+          "id": "r2",
+          "n": 2
+        }
+      ]
+    },
+    "name": "resume_after_a_cursor",
     "query": {
-      "after": "WzFd",
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJyMSJdfQ",
       "limit": 1,
       "sort": [
         {
@@ -227,28 +305,277 @@
   {
     "documents": [
       {
-        "n": 3
-      },
-      {
+        "id": "r0",
         "n": 1
       },
       {
+        "id": "r1",
         "n": 2
-      }
-    ],
-    "expected_cursor": "W10=",
-    "expected_page": [
-      {
-        "n": 3
       },
       {
+        "id": "r2",
+        "n": 3
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "r1",
+          "n": 2
+        },
+        {
+          "id": "r0",
+          "n": 1
+        }
+      ]
+    },
+    "name": "resume_descending",
+    "query": {
+      "after": "eyJzIjoiNTYxZTExOWViMjNiOGNkNSIsInYiOlszLCJyMiJdfQ",
+      "sort": [
+        {
+          "desc": true,
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "bal": 100,
+        "id": "a"
+      },
+      {
+        "bal": 100,
+        "id": "b"
+      },
+      {
+        "bal": 100,
+        "id": "c"
+      },
+      {
+        "bal": 200,
+        "id": "d"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiMzAxZDRkYzI2MmY1MGRiYiIsInYiOlsxMDAsImMiXX0",
+      "rows": [
+        {
+          "bal": 100,
+          "id": "c"
+        }
+      ]
+    },
+    "name": "resume_mid_tie",
+    "query": {
+      "after": "eyJzIjoiMzAxZDRkYzI2MmY1MGRiYiIsInYiOlsxMDAsImIiXX0",
+      "limit": 1,
+      "sort": [
+        {
+          "path": "bal"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a"
+      },
+      {
+        "id": "b"
+      },
+      {
+        "id": "c"
+      },
+      {
+        "id": "d",
+        "n": 1
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "c"
+        }
+      ]
+    },
+    "name": "resume_from_a_null_row",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOltudWxsLCJiIl19",
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
         "n": 1
       },
       {
+        "id": "r1",
         "n": 2
+      },
+      {
+        "id": "r2",
+        "n": 3
+      },
+      {
+        "id": "r3",
+        "n": 4
       }
     ],
-    "query": {}
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "r2",
+          "n": 3
+        },
+        {
+          "id": "r3",
+          "n": 4
+        }
+      ]
+    },
+    "name": "offset_after_a_cursor",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJyMCJdfQ",
+      "offset": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "v": 9007199254740993
+      },
+      {
+        "id": "b",
+        "v": 2.5
+      },
+      {
+        "id": "c",
+        "v": 9007199254740992
+      },
+      {
+        "id": "d",
+        "v": 2
+      },
+      {
+        "id": "e",
+        "v": -1.5
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "e",
+          "v": -1.5
+        },
+        {
+          "id": "d",
+          "v": 2
+        },
+        {
+          "id": "b",
+          "v": 2.5
+        },
+        {
+          "id": "c",
+          "v": 9007199254740992
+        },
+        {
+          "id": "a",
+          "v": 9007199254740993
+        }
+      ]
+    },
+    "name": "numeric_sort_by_value",
+    "query": {
+      "sort": [
+        {
+          "path": "v"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "s": "a"
+      },
+      {
+        "id": "b",
+        "s": "Z"
+      },
+      {
+        "id": "c",
+        "s": "🦀"
+      },
+      {
+        "id": "d",
+        "s": "ｱ"
+      },
+      {
+        "id": "e",
+        "s": ""
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "e",
+          "s": ""
+        },
+        {
+          "id": "b",
+          "s": "Z"
+        },
+        {
+          "id": "a",
+          "s": "a"
+        },
+        {
+          "id": "d",
+          "s": "ｱ"
+        },
+        {
+          "id": "c",
+          "s": "🦀"
+        }
+      ]
+    },
+    "name": "string_sort_by_code_point",
+    "query": {
+      "sort": [
+        {
+          "path": "s"
+        }
+      ]
+    }
   },
   {
     "documents": [
@@ -265,17 +592,21 @@
         "id": "c"
       }
     ],
-    "expected_cursor": "WzE1MCwiYSJd",
-    "expected_page": [
-      {
-        "bal": 300,
-        "id": "b"
-      },
-      {
-        "bal": 150,
-        "id": "a"
-      }
-    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjY4ZGI4ZTkzMDkxZGNjNCIsInYiOlsxNTAsImEiXX0",
+      "rows": [
+        {
+          "bal": 300,
+          "id": "b"
+        },
+        {
+          "bal": 150,
+          "id": "a"
+        }
+      ]
+    },
+    "name": "multi_key_tie_broken_by_the_second",
     "query": {
       "limit": 2,
       "sort": [
@@ -292,16 +623,161 @@
   {
     "documents": [
       {
+        "id": "r0",
+        "n": 3
+      },
+      {
+        "id": "r1",
         "n": 1
       },
       {
+        "id": "r2",
         "n": 2
       }
     ],
-    "expected_cursor": null,
-    "expected_page": [],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "r0",
+          "n": 3
+        },
+        {
+          "id": "r1",
+          "n": 1
+        }
+      ]
+    },
+    "name": "no_sort_keeps_input_order_and_mints_no_cursor",
+    "query": {
+      "limit": 2
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      },
+      {
+        "id": "r1",
+        "n": 2
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": []
+    },
+    "name": "offset_past_the_end",
     "query": {
       "offset": 5,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      },
+      {
+        "id": "r1",
+        "n": 2
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_cursor_under_another_sort",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJyMCJdfQ",
+      "sort": [
+        {
+          "path": "s"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      },
+      {
+        "id": "r1",
+        "n": 2
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_cursor_under_another_direction",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJyMCJdfQ",
+      "sort": [
+        {
+          "desc": true,
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      },
+      {
+        "id": "r1",
+        "n": 2
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_cursor_without_a_sort",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJyMCJdfQ"
+    }
+  },
+  {
+    "documents": [
+      {
+        "k": 1
+      },
+      {
+        "k": 1
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_next_from_a_row_without_an_id",
+    "query": {
+      "limit": 1,
+      "sort": [
+        {
+          "path": "k"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_unknown_field",
+    "query": {
+      "limt": 1,
       "sort": [
         {
           "path": "n"

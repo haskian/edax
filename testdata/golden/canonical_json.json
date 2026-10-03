@@ -1,0 +1,163 @@
+[
+  {
+    "canonical": "{\"a\":1,\"b\":2,\"c\":{\"y\":[{\"p\":2,\"q\":1}],\"z\":0}}",
+    "error": null,
+    "hash": 11414182837287527641,
+    "input": "{\"b\":2,\"a\":1,\"c\":{\"z\":0,\"y\":[{\"q\":1,\"p\":2}]}}",
+    "name": "keys_inserted_out_of_order"
+  },
+  {
+    "canonical": "{\"Z\":5,\"a\":6,\"aa\":7,\"z\":4,\"é\":3,\"🦀\":2,\"ｱ\":1}",
+    "error": null,
+    "hash": 3761666021241565388,
+    "input": "{\"ｱ\":1,\"🦀\":2,\"é\":3,\"z\":4,\"Z\":5,\"a\":6,\"aa\":7}",
+    "name": "keys_sort_by_utf16_code_units"
+  },
+  {
+    "canonical": "{\"a\":[1,2]}",
+    "error": null,
+    "hash": 5383069940983809135,
+    "input": " { \"a\" : [ 1 , 2 ] }\n",
+    "name": "whitespace_is_dropped"
+  },
+  {
+    "canonical": "{\"a\":2}",
+    "error": null,
+    "hash": 11257735581117493978,
+    "input": "{\"a\":1,\"a\":2}",
+    "name": "repeated_key_keeps_the_last_value"
+  },
+  {
+    "canonical": "{\"n\":[2,2,2,2,2]}",
+    "error": null,
+    "hash": 9900455777369940761,
+    "input": "{\"n\":[2,2.0,2e0,20e-1,2E+0]}",
+    "name": "int_and_whole_float_are_one_number"
+  },
+  {
+    "canonical": "{\"n\":[0,0]}",
+    "error": null,
+    "hash": 6467445276289336435,
+    "input": "{\"n\":[-0,-0.0]}",
+    "name": "negative_zero_is_zero"
+  },
+  {
+    "canonical": "{\"n\":[1.1,0.1,1.5e-7,0.000001,100,123456.789]}",
+    "error": null,
+    "hash": 7310637350898305536,
+    "input": "{\"n\":[1.10,0.1,1.5e-7,0.000001,1e2,123456.789]}",
+    "name": "fractions_are_shortest_round_trip"
+  },
+  {
+    "canonical": "{\"n\":[9007199254740992,-9007199254740992]}",
+    "error": null,
+    "hash": 16356309354030730882,
+    "input": "{\"n\":[9007199254740992,-9007199254740992]}",
+    "name": "integers_at_2_pow_53_stay_exact"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"n\":9007199254740993}",
+    "name": "integer_past_2_pow_53_is_refused"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"n\":-9007199254740993}",
+    "name": "negative_integer_past_2_pow_53_is_refused"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"n\":18446744073709551615}",
+    "name": "u64_max_is_refused"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 14 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"a\":[{\"b\":[1,9007199254740993]}]}",
+    "name": "nested_wide_integer_is_refused"
+  },
+  {
+    "canonical": "{\"n\":9007199254740992}",
+    "error": null,
+    "hash": 260451852649252988,
+    "input": "{\"n\":9007199254740993.0}",
+    "name": "float_past_2_pow_53_rounds_as_a_double"
+  },
+  {
+    "canonical": "{\"n\":[100000000000000000000,-100000000000000000000]}",
+    "error": null,
+    "hash": 9492069858581975810,
+    "input": "{\"n\":[1e20,-1e20]}",
+    "name": "whole_float_below_1e21_is_written_out"
+  },
+  {
+    "canonical": "{\"n\":[1e+21,1.5e+300,-1e+21]}",
+    "error": null,
+    "hash": 7004732179799722127,
+    "input": "{\"n\":[1e21,1.5e300,-1e21]}",
+    "name": "float_from_1e21_takes_an_exponent"
+  },
+  {
+    "canonical": "{\"s\":\"é/🦀\"}",
+    "error": null,
+    "hash": 8340796942788793332,
+    "input": "{\"s\":\"\\u00e9\\/\\ud83e\\udd80\"}",
+    "name": "escapes_are_decoded"
+  },
+  {
+    "canonical": "{\"s\":\"\\b\\f\\n\\r\\t\\u0001\\u001f\\\"\\\\\"}",
+    "error": null,
+    "hash": 16909044324919017214,
+    "input": "{\"s\":\"\\b\\f\\n\\r\\t\\u0001\\u001f\\\"\\\\\"}",
+    "name": "control_characters_are_escaped"
+  },
+  {
+    "canonical": "{\"s\":\"café ☕ 🦀\"}",
+    "error": null,
+    "hash": 938983860732305202,
+    "input": "{\"s\":\"café ☕ 🦀\"}",
+    "name": "non_ascii_stays_raw"
+  },
+  {
+    "canonical": "{\"id\":\"18446744073709551616\"}",
+    "error": null,
+    "hash": 16076251067210348664,
+    "input": "{\"id\":\"18446744073709551616\"}",
+    "name": "digits_in_a_string_are_text"
+  },
+  {
+    "canonical": "[true,false,null,[],{}]",
+    "error": null,
+    "hash": 7011917975338460009,
+    "input": "[true,false,null,[],{}]",
+    "name": "literals_and_nesting"
+  },
+  {
+    "canonical": null,
+    "error": "codec: number at byte 5 is out of range",
+    "hash": null,
+    "input": "{\"n\":1e400}",
+    "name": "number_out_of_range"
+  },
+  {
+    "canonical": null,
+    "error": "codec: unexpected end of hex escape at line 1 column 13",
+    "hash": null,
+    "input": "{\"s\":\"\\ud800\"}",
+    "name": "lone_surrogate"
+  },
+  {
+    "canonical": null,
+    "error": "codec: trailing characters at line 1 column 4",
+    "hash": null,
+    "input": "{} {}",
+    "name": "trailing_characters"
+  }
+]

@@ -1,0 +1,46 @@
+[
+  {
+    "code": null,
+    "failure": "transient"
+  },
+  {
+    "code": "concurrency",
+    "failure": "transient"
+  },
+  {
+    "code": "codec",
+    "failure": "terminal"
+  },
+  {
+    "code": "store",
+    "failure": "transient"
+  },
+  {
+    "code": "payload_mismatch",
+    "failure": "terminal"
+  },
+  {
+    "code": "in_progress",
+    "failure": "contended"
+  },
+  {
+    "code": "cached_failure",
+    "failure": "terminal"
+  },
+  {
+    "code": "handler_not_found",
+    "failure": "terminal"
+  },
+  {
+    "code": "already_registered",
+    "failure": "terminal"
+  },
+  {
+    "code": "bad_handle",
+    "failure": "terminal"
+  },
+  {
+    "code": "rejected",
+    "failure": "terminal"
+  }
+]

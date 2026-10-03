@@ -39,9 +39,9 @@ flowchart LR
 | Doc | What it answers |
 |---|---|
 | [Kernels overview](kernels/README.md) | what the kernels own, and what they are forbidden to do |
-| [edax-core](kernels/core.md) | hashing, backoff, the clock, id generation, error codes |
+| [edax-core](kernels/core.md) | hashing, backoff, the clock, id generation, the error taxonomy, the lock, settlement tokens |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
-| [edax-event](kernels/event.md) | partition, codec, upcast, causation, dedup, sequence |
+| [edax-event](kernels/event.md) | partition, codec, upcast, causation, staleness, dedup, sequence, the retry policy, the saga step |
 | [edax-cqrs](kernels/cqrs.md) | canonical JSON, the command hash, the idempotency record and decision |
 | [edax-kafka](kernels/kafka.md) | the record key and headers, the media types, the token-settled offset watermark |
 | [edax-redis](kernels/redis.md) | the idempotency ledger's value layout, its owner token, and the fence scripts |
@@ -62,7 +62,7 @@ flowchart LR
 | [Projections](sdk/projections.md) | read models, filters, sorting, the total order, keyset cursors |
 | [Errors](sdk/errors.md) | the taxonomy, and every path that branches on it |
 | [Observability](sdk/observability.md) | the `Observer`, `timing()`, the pull surface, the cardinality rule, the OTel mapping |
-| [Rust parity](sdk/rust-parity.md) | the name map, and where the two SDKs differ on purpose |
+| [Rust parity](sdk/rust-parity.md) | the Rust reference model: what it holds to the kernels, and where it differs on purpose |
 
 ### Backends — bring your own
 
@@ -80,7 +80,7 @@ flowchart LR
 | [Getting started](guides/getting-started.md) | build it, then wire one command end to end |
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
-| [Examples](guides/examples.md) | a tour of the seven runnable walkthroughs in `examples/py` |
+| [Examples](guides/examples.md) | the nineteen runnable examples in `examples/py`, in learning order |
 
 ## Three things to know before you build
 
@@ -96,4 +96,4 @@ flowchart LR
 
 - [`README.md`](../README.md) — the project overview and quickstart.
 - [`AGENTS.md`](../AGENTS.md) — operational rules for working in this repository.
-- [`examples/py`](../examples/py) — seven runnable walkthroughs, each ending in asserts.
+- [`examples/py`](../examples/py/README.md) — nineteen runnable examples, one idea each, each ending in asserts.

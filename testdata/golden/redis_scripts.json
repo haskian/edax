@@ -1,10 +1,18 @@
 [
   {
-    "body": "\nif redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then\n  return redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3]) and 1 or 0\nend\nreturn 0\n",
-    "name": "fenced_set"
+    "body": "\nlocal held = redis.call('GET', KEYS[1])\nif held then\n  return held\nend\nredis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])\nreturn false\n",
+    "name": "claim"
   },
   {
-    "body": "\nif redis.call('GETRANGE', KEYS[1], 0, #ARGV[1] - 1) == ARGV[1] then\n  return redis.call('DEL', KEYS[1])\nend\nreturn 0\n",
-    "name": "fenced_del"
+    "body": "\nlocal held = redis.call('GET', KEYS[1])\nif held == ARGV[1] or held == ARGV[2] then\n  redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])\n  return 1\nend\nreturn 0\n",
+    "name": "complete"
+  },
+  {
+    "body": "\nif redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('DEL', KEYS[1])\nend\nreturn 0\n",
+    "name": "release"
+  },
+  {
+    "body": "\nif redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('PEXPIRE', KEYS[1], ARGV[2])\nend\nreturn 0\n",
+    "name": "extend"
   }
 ]

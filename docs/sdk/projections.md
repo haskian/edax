@@ -4,8 +4,8 @@ The read side: a read model stored as one document per id, written with a versio
 with semantics the kernel decides.
 
 The event-sourced side replays events to rebuild an aggregate. A read model is the other shape: a
-current document you save and query directly. `ProjectionStore` is that seam, and no concrete store
-ships with edax — you bring one.
+current document you save and query directly. `ProjectionStore` is that seam. No durable store
+ships with edax; you bring one.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
     H -->|"fold the event into document"| N["Entity: id, version, document"]
     N --> S["ProjectionStore.save"]
     S -->|"compare-and-set on version"| D[("read model rows")]
-    D -->|"get_many: filter, sort, after"| Q["page of documents"]
+    D -->|"get_many: filter, sort, after"| Q["Page: rows and next"]
 ```
 
 ## `Entity`
@@ -24,7 +24,7 @@ Three fields, and the third carries the whole concurrency rule.
 
 | Field | Python type | Rust type | Meaning |
 |---|---|---|---|
-| `id` | `str` | `String` | the row key — normally the aggregate id the projection tracks |
+| `id` | `str` | `String` | the row key, normally the aggregate id the projection tracks |
 | `version` | `int` | `u64` | the version the entity was loaded at; `0` for one never saved |
 | `document` | `Any` | `serde_json::Value` | the queryable body, a JSON object |
 
@@ -36,8 +36,8 @@ one. On success the store advances `entity.version` in place, so the same object
 saved again without a reload.
 
 The Rust software development kit (SDK) pins both halves of that rule. `save_versions_then_get`
-asserts `e.version == 1` after the first save. `stale_version_conflicts` asserts `Error::Concurrency
-{ expected: 1, stored: 2 }` for the writer whose version is stale. Python asserts the same through
+asserts `e.version == 1` after the first save. `stale_version_conflicts` asserts
+`Error::concurrency(1, 2)` for the writer whose version is stale. Python asserts the same through
 `pytest.raises(ConcurrencyError)`.
 
 ```mermaid
@@ -86,7 +86,7 @@ handler needs.
 |---|---|
 | `get(id, tx=None)` | returns the current committed row plus the `tx`'s own staged writes, or `None` |
 | `save(entity, tx=None)` | compare-and-set on `entity.version`; on success advance `entity.version`, on mismatch raise `ConcurrencyError` and write nothing |
-| `get_many(...)` | optional; pages by the kernel's filter / sort / keyset rules |
+| `get_many(...)` | optional; returns a `Page` (`rows`, `next`) paged by the kernel's filter / sort / keyset rules, with `next` minted by `encode_cursor` and `after` read by `decode_cursor` |
 
 Two points a backend author gets wrong first.
 
@@ -95,8 +95,8 @@ a compare-and-set; two processes will interleave. Use `UPDATE ... WHERE version 
 affected row count, or a unique insert for version 1.
 
 *Enlist in the caller's transaction.* Every method takes an optional `tx`. With `tx` given, or with
-`current_tx()` set by an enclosing `transaction`, the store runs inside that transaction; with neither,
-it auto-commits. That is what lets a projection write commit with the events that produced it. See
+`current_tx` of its transactor set by an enclosing `transaction`, the store runs inside that
+transaction; with neither, it auto-commits. That is what lets a projection write commit with the events that produced it. See
 [transactions](./transactions.md).
 
 ### Rust and Python parity
@@ -105,8 +105,8 @@ it auto-commits. That is what lets a projection write commit with the events tha
 |---|---|---|
 | seam | `trait ProjectionStore` with associated `type Tx` | `Protocol ProjectionStore`, `tx` keyword argument |
 | query shape | `edax_cqrs::Query`, re-exported not re-declared | a `dict` built by `edax.query.build_spec` |
-| optional method | none — a trait has no optional items | `get_many` |
-| conflict | `Error::Concurrency { expected, stored }` | `ConcurrencyError` |
+| optional method | none: a trait has no optional items | `get_many` |
+| conflict | `Error::concurrency(expected, stored)`, code `concurrency` | `ConcurrencyError` |
 
 Rust re-exports the kernel's `Query` rather than declaring its own, so the spec the SDK serializes
 is by construction the one the kernel parses. Python builds the same JSON through `build_spec`,
@@ -115,17 +115,16 @@ which is shared by `edax.query.query` and by every backend's `get_many` so the t
 ## Keeping a projection up to date
 
 An event handler folds an envelope into an `Entity`. This is the handler from
-`examples/py/event_idempotency.py:58`, unedited:
+`examples/py/10_idempotent_events.py`, without the failure that example injects:
 
 ```python
-async def handle(env: edax.Envelope) -> None:
-    calls.append(env.id)
-    entity = await projections.get(env.aggregate_id)
-    if entity is None:
-        entity = Entity(env.aggregate_id, 0, {"id": env.aggregate_id, "balance": 0})
-    amount = int(env.event.data)
-    entity.document["balance"] = entity.document["balance"] + abs(amount)
-    await projections.save(entity)  # joins the guard's unit of work via current_tx()
+@router.on("Deposited")
+async def add_deposit(envelope: EventEnvelope) -> None:
+    row = await balances.get(envelope.aggregate_id)
+    if row is None:
+        row = Entity(envelope.aggregate_id, 0, {"balance": 0})
+    row.document["balance"] += json.loads(envelope.event.data)["amount"]
+    await balances.save(row)  # joins the guard's transaction
 ```
 
 Read it in four steps. Load the entity by aggregate id. Seed version `0` when the row does not
@@ -134,21 +133,22 @@ exist, so the first `save` is an insert. Fold the event into the document. Save,
 
 That fold is `balance + amount`, which is not idempotent: a redelivered envelope applied twice
 double-counts. The guard is what stops it, and what the guard is worth depends on whether the claim
-and this `save` commit together. `examples/py/event_idempotency.py` runs both modes and asserts the
-difference — balance `100` with a shared unit of work, balance `200` with a ledger of its own. See
-[idempotency](./idempotency.md).
+and this `save` commit together. `examples/py/10_idempotent_events.py` shares one unit of work and
+asserts each deposit counted once. `examples/py/19_fault_injection.py` puts the ledger in a database
+of its own. There a lost commit reply runs the handler twice, so its fold records the deposits it
+applied. See [idempotency](./idempotency.md).
 
 ## Querying
 
-A query is four independent parts, applied in a fixed order: **filter -> keyset(`after`) -> sort ->
-offset -> limit**.
+A query is independent parts applied in a fixed order: filter -> keyset(`after`) -> sort -> offset
+-> limit.
 
 ### Filter
 
 Build it with the constructors in `edax.filter`: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`,
 `starts_with`, `in_`, `contains`, `exists`, and the connectives `and_`, `or_`, `not_`. Each returns
-a plain dict in the kernel's canonical form. The abstract syntax tree and the null/missing rule —
-why `ne(p, x)` and `not_(eq(p, x))` differ. Read them in [kernels/filter](../kernels/filter.md).
+a plain dict in the kernel's canonical form. [kernels/filter](../kernels/filter.md) covers the
+abstract syntax tree and the null/missing rule, which is why `ne(p, x)` and `not_(eq(p, x))` differ.
 
 `edax.filter.matches(filter, document)` evaluates one document in process, which is how you test a
 filter without a store.
@@ -186,97 +186,113 @@ Three edges the test suite pins:
 ### Keyset cursors
 
 `offset` re-reads the prefix on every page and drifts when rows are inserted between calls. A keyset
-cursor does not: it names the last row of the page, and the next page starts *strictly* after it.
-Generate one with `encode_cursor(document, sort)` and pass it back as `after`.
+cursor does not: it names the last row of the page, and the next page starts strictly after it.
 
-`after` needs a non-empty `sort`. An unsorted query has no order to resume from, so the kernel
-ignores the cursor rather than rejecting it.
+`get_many` returns a `Page`: the `rows`, and `next`, the cursor the kernel minted from the last row
+under the query's own sort. Pass `next` back as `after` with the same filter and sort. The caller
+never restates the sort to build a cursor, so it cannot build one under the wrong sort. `next` is
+`None` when no row follows the page, so a paging loop needs no extra empty page to learn it is done.
+An unsorted query has no keyset to resume, so its `next` is always `None` and it pages by `offset`.
 
-`encode_cursor(doc, keys)` is `base64(json([values at the tiebroken sort paths]))`. A row reaches
-the next page only if its tuple sorts strictly after the cursor tuple. An equal tuple was the
-previous page's last row. A short cursor tuple pads with `null`, and a long one is truncated.
+The cursor binds the sort it was minted under. It is
+`base64url(canonical_json({"s": <fingerprint>, "v": [<values at the effective sort paths>]}))`,
+unpadded so it survives a URL query string, and the fingerprint is the payload hash of the effective
+sort. Replayed under another sort (another key, another direction, one key more) it is a terminal
+`CodecError`, not a page of garbage. So is a cursor on an unsorted query. A row reaches the next page
+only if its tuple sorts strictly after the cursor tuple; an equal tuple was the previous page's last
+row.
 
-**A backend does not have to re-derive any of that.** The kernel owns both halves of the round trip.
-Read the cursor with `decode_cursor` rather than parsing base64 and JSON yourself. Order by
-`effective_sort` rather than by the declared keys:
+The canonical form is RFC 8785, whose numbers are doubles. Say a page ends on a row whose sort value is
+an integer past 2^53. Then it cannot mint `next`: the query fails with `CodecError` rather than
+resume at the wrong row. Keep sort keys and ids that wide as strings.
+
+A backend does not re-derive any of that. The kernel owns both halves of the round trip.
+Read `after` with `decode_cursor`, which refuses a cursor minted under another sort, and mint `next`
+with `encode_cursor`. Order by `effective_sort` rather than by the declared keys:
 
 ```python
-from edax.query import decode_cursor, effective_sort
+from edax.query import decode_cursor, effective_sort, encode_cursor
 
 keys = effective_sort(spec["sort"])  # the declared sort plus the `id` tiebreak
 values = decode_cursor(spec["after"], spec["sort"])  # one value per key in `keys`, aligned
-# bind `keys` into ORDER BY and `values` into the keyset comparison
+# bind `keys` into ORDER BY and `values` into the keyset comparison; fetch limit + 1 rows
+# next = encode_cursor(rows[limit - 1], spec["sort"]) if more than `limit` came back, else None
 ```
 
-Both are pinned by `testdata/golden/cursor.json`, which every binding's suite reads. A backend that
-decodes differently fails a test instead of paging wrong in production. Hand-rolling the format is
-the error this exists to prevent. The pad-and-truncate rule above is easy to miss, and a cursor
-minted under a different sort then reads one way in your `WHERE` clause and another in the kernel.
+All three are pinned by `testdata/golden/cursor.json` and `query.json`, which every binding's suite
+reads. A backend that decodes differently fails a test instead of paging wrong in production.
+`ProjectionStoreContract` holds a backend that declares `supports_kernel_queries` to the same rules.
+Every row arrives once while another writer commits between pages. `next` is the kernel's cursor.
+A cursor under another sort is refused.
 
-**The document must carry a unique `"id"` for kernel-identical paging.** The kernel appends
-`{"path": "id"}` as a final sort key unless your sort already ends there. No two rows then share a
-full sort tuple. A page boundary landing inside a tie neither drops nor repeats a row.
-`encode_cursor` applies the same tiebreak, so a generated cursor always lines up with the paged
-order.
-
-Two consequences follow. An empty sort takes no tiebreak and no cursor. The no-sort case in
-`testdata/golden/query.json` generates `W10=`, the base64 of `[]`. Documents lacking a unique `id`
-get a tiebreak that resolves to `null` on every row, which breaks tie-free paging.
+The document must carry a non-null, unique `"id"`. The kernel appends `{"path": "id"}` as a
+final sort key unless your sort already ends there. No two rows then share a full sort tuple, and a
+page boundary landing inside a tie neither drops nor repeats a row. A row whose `id` is missing or
+`null` cannot mint a cursor: that is a `CodecError`. Rows tied on every other key would tie on the
+tiebreak too, and paging past them would drop the rest of the tie. An empty sort takes no
+tiebreak and no cursor.
 
 `MemoryProjectionStore` injects the row key as `"id"` before querying. That injected value is
 authoritative and overwrites any `"id"` already in the document. A durable backend must do the
 equivalent.
 
+### A strict spec
+
+The kernel reads the spec strictly, so a mistake fails instead of returning a plausible wrong page.
+Each of these is a terminal `CodecError`:
+
+- an unknown field anywhere. Think `{"dsc": True}` in a sort key, `"limt"` in the spec, or a typo
+  in a filter leaf;
+- a `None` comparand in `eq`, `ne`, a range or `in_`. It can match nothing. Ask
+  `exists(path, False)` for a missing or null path;
+- a path with an empty segment (`""`, `"a."`, `"a..b"`). A path is dot-delimited object keys. A key
+  containing `.` cannot be addressed. `tags.0` reads a key named `"0"`, never an array index;
+- an integer wider than 64 bits, which would otherwise be compared as the nearest float.
+
 ### A paging loop
 
-Built from `examples/py/projection_query.py:35`, which does the same two pages explicitly and
-asserts `["a1", "a2"]` then `["a3", "a6"]` — page 2 resumed past a tie on `balance`.
+Built from `examples/py/11_projection_query.py`, which runs this loop and asserts
+`["a1", "a2"]` then `["a3", "a6"]`: page 2 resumed past a tie on `balance`.
 
 ```python
 from edax.filter import and_, eq, gte
-from edax.query import encode_cursor, sort_key
+from edax.query import sort_key
 
-flt = and_(gte("balance", 100), eq("status", "active"))
-sort = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as tiebreak
+only = and_(gte("balance", 100), eq("status", "active"))
+order = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as the tiebreak
 
-cursor = None
+after = None
 while True:
-    page = await store.get_many(filter=flt, sort=sort, limit=2, after=cursor)
-    if not page:
-        break
-    for doc in page:
+    page = await store.get_many(filter=only, sort=order, limit=2, after=after)
+    for doc in page.rows:
         ...  # handle the row
-    cursor = encode_cursor(page[-1], sort)
+    if page.next is None:
+        break
+    after = page.next
 ```
-
-The loop stops on an empty page, which costs one extra round trip after the last full page. Break on
-`len(page) < limit` instead if that round trip matters and your backend never returns a short page
-early.
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant Caller
     participant Store as ProjectionStore backend
-    participant Kernel as kernel query_json
+    participant Kernel as kernel query
 
     Caller->>Store: get_many with filter, sort, limit 2
     activate Store
     Store->>Kernel: query spec plus the documents
     activate Kernel
-    Kernel-->>Store: filter then sort then limit
+    Kernel-->>Store: rows a1 and a2, next minted from a2 under the sort
     deactivate Kernel
-    Store-->>Caller: page 1 is a1 and a2
+    Store-->>Caller: Page(rows, next)
     deactivate Store
-    Caller->>Caller: encode_cursor of the last row under sort
-    Note over Caller,Kernel: the cursor is base64 of the sort tuple plus the id tiebreak
-    Caller->>Store: get_many with the same filter and sort plus after cursor
+    Note over Caller,Kernel: next is base64url of the sort fingerprint and a2's sort tuple
+    Caller->>Store: get_many with the same filter and sort plus after = next
     activate Store
     Store->>Kernel: query spec now carrying after
     activate Kernel
-    Kernel-->>Store: rows strictly after the cursor tuple
+    Kernel-->>Store: rows strictly after the cursor tuple, no next: nothing follows
     deactivate Kernel
-    Store-->>Caller: page 2 is a3 and a6
+    Store-->>Caller: page 2 is a3 and a6, next is None
     deactivate Store
 ```
 
@@ -288,32 +304,33 @@ The kernel's `query_json` is the reference applier, and a backend that pages dow
 assert against it. Two services then page the same read model identically, and a cursor generated by
 one binding is understood byte-for-byte by another.
 
-A backend may instead read the spec as its own query dialect. That is allowed and stated in the seam
-docstring — but then cursors are not portable across services, and you own that.
+A backend may instead read the spec as its own query dialect. The seam docstring allows it, but
+then cursors are not portable across services, and you own that.
 
-`MemoryProjectionStore.get_many` defers to the kernel, which is what makes it the reference for how
-a durable backend must behave.
+`MemoryProjectionStore.get_many` defers to the kernel, which makes it the reference for how a
+durable backend must behave.
 
 ### Query a list without a store
 
 `edax.query.query(documents, ...)` applies the same pipeline to a plain list in process, with
-`get_many`'s keyword arguments minus `tx`. Use it to test a spec, or to page a set you already hold.
+`get_many`'s keyword arguments minus `tx`, and returns the same `Page`. Use it to test a spec, or to
+page a set you already hold.
 
 ## Errors
 
 | Raised | When | Verdict |
 |---|---|---|
-| `ConcurrencyError` | `save` version mismatch, and nothing else | transient — reload and refold |
-| `CodecError` | a malformed filter, spec or cursor; a document the backend cannot marshal | terminal |
+| `ConcurrencyError` | `save` version mismatch, and nothing else | transient: reload and refold |
+| `CodecError` | a malformed or misspelled filter or spec, a `None` comparand, a cursor minted under another sort, a `next` from a row without an `id`; a document the backend cannot marshal | terminal |
 | `StoreError` | anything else the backend fails on | transient |
 
-The taxonomy matters here. A corrupt cursor tagged as a store failure would look transient, and the
-handler paging with it would be redelivered forever. `test_get_many_rejects_a_bad_spec_as_terminal`
-asserts `caught.value.terminal is True` for both a malformed cursor and an unknown filter operator.
+A corrupt cursor tagged as a store failure would look transient, and the handler paging with it
+would be redelivered forever. `test_get_many_rejects_a_bad_spec_as_terminal`
+asserts `caught.value.terminal is True` for each refusal above.
 
 A scalar or array document is rejected at `save`, not at the query. It has nowhere for the store to
 inject the row key as `"id"`. Such a row could be written and then never paged. The memory adapter
-returns `Codec` while the caller can still fix it, and leaves the entity's version alone.
+raises `CodecError` while the caller can still fix it, and leaves the entity's version alone.
 
 See [errors](./errors.md).
 
@@ -322,8 +339,7 @@ See [errors](./errors.md).
 A projection is eventually consistent behind the write side. The write commits, the relay drains the
 outbox afterwards, the broker delivers at-least-once, and the handler folds the event later still.
 Every one of those steps is a gap where a query returns a document that does not yet reflect a
-committed write. Say so in your application programming interface (API) rather than pretending
-otherwise.
+committed write. Say so in your application programming interface (API).
 
 What a reader should do about it:
 
@@ -331,24 +347,24 @@ What a reader should do about it:
   [`Repository`](./aggregates.md) and let its optimistic version reject the stale decision. A
   projection read cannot.
 - **Do not promise read-your-writes** unless the projection `save` shares a unit of work with the
-  write, as `shared_unit_of_work` in `examples/py/event_idempotency.py:122` does. Sharing a
+  write, as `examples/py/10_idempotent_events.py` does. Sharing a
   transactor is the only arrangement here that closes the gap.
 - **Return the version.** `Entity.version` is monotonic per row, so a caller can tell an unchanged
   document from a refreshed one, and a client can refuse to go backwards.
 - **Hold a cursor, not an offset, across pages.** A projection is being written while you page it;
   `offset` drifts under inserts, `after` does not.
-- **Keep the fold safe under redelivery.** The store's compare-and-set protects the *row*, not your
+- **Keep the fold safe under redelivery.** The store's compare-and-set protects the row, not your
   arithmetic. `balance + amount` applied twice is wrong however the version check went. Guard the
-  handler — see [idempotency](./idempotency.md).
+  handler; see [idempotency](./idempotency.md).
 
 ## See also
 
 - [kernels/filter](../kernels/filter.md) — the filter abstract syntax tree and the null/missing
   rule.
-- [kernels/event](../kernels/event.md) — the total order over JSON values and the cursor encoding.
+- [kernels/cqrs](../kernels/cqrs.md) — the total order over JSON values and the cursor encoding.
 - [sdk/aggregates](./aggregates.md) — the write side this read model trails.
 - [sdk/transactions](./transactions.md) — how a projection write joins the events' unit of work.
 - [sdk/idempotency](./idempotency.md) — what stops a redelivered event folding twice.
 - [sdk/errors](./errors.md) — transient against terminal, and what branches on it.
 - [backends/memory](../backends/memory.md) — `MemoryProjectionStore`, the reference implementation.
-- [guides/examples](../guides/examples.md) — `projection_query.py` end to end.
+- [guides/examples](../guides/examples.md) — `11_projection_query.py` end to end.

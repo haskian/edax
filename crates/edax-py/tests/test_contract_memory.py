@@ -12,10 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from conftest import SplitLedger
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
+    MemoryLedger,
     MemoryProjectionStore,
     MemorySagaStore,
     MemoryTransactor,
@@ -42,6 +42,8 @@ class TestMemoryEventStore(EventStoreContract):
 
 
 class TestMemoryProjectionStore(ProjectionStoreContract):
+    supports_kernel_queries = True
+
     @pytest.fixture
     def projection_store(self, db: MemoryTransactor) -> Any:
         return MemoryProjectionStore(db)
@@ -56,8 +58,22 @@ class TestMemorySagaStore(SagaStoreContract):
     def saga_store(self, db: MemoryTransactor) -> Any:
         return MemorySagaStore(db)
 
+    @pytest.fixture
+    def transactor(self, db: MemoryTransactor) -> Any:
+        return db
+
 
 class TestMemoryIdempotencyStore(IdempotencyStoreContract):
+    # The memory store's claims lapse through its `expire` hook, so the takeover clauses run on it too.
+    claims_expire = True
+    stores_raw_records = True
+
+    async def expire_claim(self, idempotency_store: Any, key: str) -> None:
+        assert idempotency_store.expire(key), f"{key} held nothing to lapse"
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        idempotency_store.put_raw(key, raw)
+
     @pytest.fixture
     def idempotency_store(self, db: MemoryTransactor) -> Any:
         return MemoryIdempotencyStore(db)
@@ -68,12 +84,21 @@ class TestMemoryIdempotencyStore(IdempotencyStoreContract):
         return MemoryEventStore(db)
 
 
-class TestSplitLedgerIdempotencyStore(IdempotencyStoreContract):
-    """The Redis shape: a ledger of its own, with no ``event_store`` fixture on purpose. The
-    rollback clause must skip, not error on the missing fixture."""
+class TestMemoryLedger(IdempotencyStoreContract):
+    """The Redis shape, shipped: a ledger of its own, with no ``event_store`` fixture on purpose. The store
+    declares ``joins_transaction = False``, so the clauses that need a shared rollback skip rather than
+    error on the missing fixture, and its claims lapse through ``expire`` the way Redis's TTL lapses them,
+    so the takeover clauses hold it to the clauses `test_redis.py` holds Redis to."""
 
-    joins_transaction = False
+    claims_expire = True
+    stores_raw_records = True
+
+    async def expire_claim(self, idempotency_store: Any, key: str) -> None:
+        assert idempotency_store.expire(key), f"{key} held nothing to lapse"
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        idempotency_store.put_raw(key, raw)
 
     @pytest.fixture
     def idempotency_store(self) -> Any:
-        return SplitLedger()
+        return MemoryLedger()

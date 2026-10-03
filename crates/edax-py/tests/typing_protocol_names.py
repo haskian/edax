@@ -11,7 +11,7 @@ the `/` markers on the Protocols this does not type-check.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from edax.aggregate import Aggregate, Event, EventEnvelope
 from edax.saga import Completed, Saga
@@ -32,7 +32,7 @@ class AccountCodec:
 
     type = "Account"
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> Account:
+    def load(self, id: str, version: int, data: bytes | None) -> Account:
         account = Account(id, version)
         if data is not None:
             account.balance = int(data)
@@ -55,7 +55,7 @@ class DepositCodec:
 class OrderSaga:
     """A `Saga` naming its parameters after the workflow rather than `env` / `state`."""
 
-    def correlation_id(self, message: EventEnvelope) -> Optional[str]:
+    def correlation_id(self, message: EventEnvelope) -> str | None:
         return message.aggregate_id
 
     def handle(self, order: Any, message: EventEnvelope) -> tuple[Any, list[Any]]:

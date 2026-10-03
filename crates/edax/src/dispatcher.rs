@@ -7,18 +7,16 @@
 //! plugs in as the per-event handler.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, sync_channel, Receiver, SendError, Sender, SyncSender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
-use edax_core::backoff_millis;
-use edax_event::{partition, EventEnvelope};
+use edax_core::Error;
+use edax_event::{partition, EventEnvelope, Failure, Retries, Verdict};
 
-use crate::command::is_terminal;
-use crate::Error;
+use crate::command::{code_of, HandlerError};
+use crate::pacing::Pacing;
 
 /// A broker delivery: the event plus the handles to settle it. Composition over the persisted
 /// [`EventEnvelope`] — the ack token is per-delivery transport state (a Kafka offset, an SQS receipt,
@@ -37,15 +35,33 @@ pub struct Delivery {
     pub attempt: u32,
     on_ack: Box<dyn FnOnce() + Send>,
     on_nack: Box<dyn FnOnce() + Send>,
+    live: Box<dyn Fn() -> bool + Send>,
 }
 
 impl Delivery {
+    /// A delivery that stays live until it is settled. See [`with_live`](Self::with_live) for a
+    /// transport that retires deliveries it already handed out.
     pub fn new(
         envelope: EventEnvelope,
         on_ack: impl FnOnce() + Send + 'static,
         on_nack: impl FnOnce() + Send + 'static,
     ) -> Self {
-        Self { envelope, attempt: 0, on_ack: Box::new(on_ack), on_nack: Box::new(on_nack) }
+        Self { envelope, attempt: 0, on_ack: Box::new(on_ack), on_nack: Box::new(on_nack), live: Box::new(|| true) }
+    }
+
+    /// Ask `live` before the handler runs and before the delivery settles. A log-based transport
+    /// retires every delivery it handed out from a partition it rewinds or loses — the kernel's
+    /// `OffsetTracker::is_live` — and fetches those messages again. A worker skips a delivery that
+    /// is no longer live: running it would apply a later event of its key ahead of the redelivered
+    /// earlier one, and settling it would settle nothing.
+    pub fn with_live(mut self, live: impl Fn() -> bool + Send + 'static) -> Self {
+        self.live = Box::new(live);
+        self
+    }
+
+    /// Whether the transport still counts on this delivery being settled.
+    pub fn is_live(&self) -> bool {
+        (self.live)()
     }
 
     /// The handler succeeded; the broker can drop the message.
@@ -63,7 +79,7 @@ impl Delivery {
 /// `panic!`), so a dead-letter sink can record it.
 #[derive(Debug)]
 pub enum HandlerFailure {
-    Error(Error),
+    Error(HandlerError),
     Panic(Box<dyn Any + Send>),
 }
 
@@ -79,19 +95,23 @@ pub struct DeadLetter {
     pub failure: HandlerFailure,
 }
 
-type Handler = dyn Fn(&EventEnvelope) -> Result<(), Error> + Send + Sync;
-type DeadLetterHook = dyn Fn(DeadLetter) -> Result<(), Error> + Send + Sync;
+type Handler = dyn Fn(&EventEnvelope) -> Result<(), HandlerError> + Send + Sync;
+type DeadLetterHook = dyn Fn(DeadLetter) -> Result<(), HandlerError> + Send + Sync;
 
 /// Fans one input stream out to a local pool of worker threads; `workers` is purely local parallelism. The
 /// worker for an event is `partition(aggregate_id, workers)`, so every event for an aggregate lands on the
 /// same worker and is handled in submitted order, while different aggregates run concurrently.
 ///
-/// Ordering holds for successful deliveries only: a nack requeues the delivery at the broker's tail, behind
-/// same-key deliveries already on this worker, so a handler that must not see its key out of order has to
-/// reject a stale event itself ([`should_apply`](crate::should_apply)). Every nack waits one step of the
-/// kernel's backoff schedule first, or a handler failing on a downed dependency spins the broker as fast as
-/// it redelivers. [`Error::InProgress`] waits the same way but never counts toward
-/// [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim expires.
+/// Ordering holds through a nack when the transport rewinds the way a log does: the nack seeks the
+/// partition back, the transport retires every delivery of it already handed out, and a worker skips a
+/// delivery that is no longer [`live`](Delivery::with_live), so the redelivered earlier event runs before
+/// the later one. A transport that requeues a nacked delivery behind later ones instead reorders the key,
+/// and a handler on it skips a stale event itself ([`is_stale`](crate::is_stale), then
+/// [`advance`](crate::advance) after it applies). Every nack waits one step of the builder's [`Pacing`]
+/// first, or a handler failing on a downed dependency spins the broker as fast as it redelivers. An
+/// [`ErrorCode::InProgress`](crate::ErrorCode::InProgress) failure waits the same way but never counts
+/// toward [`DispatcherBuilder::max_attempts`], and blocks every key on this worker until the peer's claim
+/// expires.
 pub struct KeyOrderedDispatcher {
     senders: Vec<Queue>,
     workers: Vec<JoinHandle<()>>,
@@ -126,7 +146,10 @@ pub struct DispatcherBuilder {
     max_attempts: u32,
     queue_depth: usize,
     on_dead: Option<Arc<DeadLetterHook>>,
-    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
+    pacing: Arc<Pacing>,
+    /// The worker threads' stack, `None` for the platform default. A test sets an impossible one to make
+    /// a spawn fail.
+    stack_size: Option<usize>,
 }
 
 impl DispatcherBuilder {
@@ -148,35 +171,49 @@ impl DispatcherBuilder {
     }
 
     /// Install the dead-letter sink. A delivery is dead-lettered (`on_dead` called, then the delivery acked,
-    /// not nacked) when the handler error is terminal (see [`crate::Error`]), so it dies on the first failure
+    /// not nacked) when the handler error is terminal (see [`HandlerError`]), so it dies on the first failure
     /// whatever `max_attempts` says, or when the failure is transient (a transient error or a panic) and this
     /// is the `max_attempts`-th failed attempt.
     ///
     /// Without a sink a dead delivery still nacks: never a silent drop. A sink that returns `Err` or panics
-    /// leaves the delivery neither acked nor nacked, so the broker redelivers on its session timeout and the
-    /// sink gets another try. Runs on a worker thread, hence the bounds.
+    /// nacks the delivery after one backoff step, like a transient failure, so the redelivery gives the sink
+    /// another try; leaving it unsettled would pin a log-based broker's commits, because nothing redelivers
+    /// it while the consumer lives. Runs on a worker thread, hence the bounds.
     pub fn on_dead<F>(mut self, on_dead: F) -> Self
     where
-        F: Fn(DeadLetter) -> Result<(), Error> + Send + Sync + 'static,
+        F: Fn(DeadLetter) -> Result<(), HandlerError> + Send + Sync + 'static,
     {
         self.on_dead = Some(Arc::new(on_dead));
         self
     }
 
-    /// Replace the backoff wait. Test-only: the schedule is the kernel's and a host must not bend it,
-    /// but a test asserting which steps were asked for should not pay them in wall time.
+    /// Give every worker thread after the first an impossible stack, so the platform refuses the second
+    /// spawn and the first worker has to be stopped and joined.
     #[cfg(test)]
-    fn sleeper<F>(mut self, sleeper: F) -> Self
-    where
-        F: Fn(Duration) + Send + Sync + 'static,
-    {
-        self.sleeper = Arc::new(sleeper);
+    fn stack_size_for_test(mut self, bytes: usize) -> Self {
+        self.stack_size = Some(bytes);
         self
     }
 
-    /// Spawn `max(1, workers)` worker threads, each draining its own channel through the handler.
-    pub fn build(self) -> KeyOrderedDispatcher {
-        let n = self.workers.max(1);
+    /// How a nack waits before it hands a delivery back: the backoff policy, the sleep and the jitter.
+    /// Default [`Pacing::default`].
+    pub fn pacing(mut self, pacing: Pacing) -> Self {
+        self.pacing = Arc::new(pacing);
+        self
+    }
+
+    /// Spawn `workers` worker threads, each draining its own channel through the handler.
+    ///
+    /// # Errors
+    /// The terminal [`ErrorCode::BadHandle`](crate::ErrorCode::BadHandle) for zero workers, a wiring
+    /// mistake; a store error when the platform refuses a worker thread. A dispatcher missing a worker
+    /// would nack that worker's partition on every delivery with no backoff, a hot loop, so it is never
+    /// handed out: the threads already spawned are stopped and joined first.
+    pub fn build(self) -> Result<KeyOrderedDispatcher, Error> {
+        let n = self.workers;
+        if n == 0 {
+            return Err(Error::bad_handle("a dispatcher needs at least one worker, got 0"));
+        }
         let mut senders = Vec::with_capacity(n);
         let mut handles = Vec::with_capacity(n);
         for i in 0..n {
@@ -192,30 +229,40 @@ impl DispatcherBuilder {
             };
             let worker = Worker {
                 handler: Arc::clone(&self.handler),
-                max_attempts: self.max_attempts,
                 on_dead: self.on_dead.clone(),
-                attempts: HashMap::new(),
-                contended: HashMap::new(),
-                sleeper: Arc::clone(&self.sleeper),
+                retries: Retries::new(self.max_attempts, self.on_dead.is_some()),
+                pacing: Arc::clone(&self.pacing),
             };
             senders.push(sender);
-            let name = format!("edax-worker-{i}");
-            // A refused thread drops its receiver, so `deliver` nacks that partition rather than
-            // stranding it — the same path a stopped dispatcher takes.
-            if let Ok(handle) = std::thread::Builder::new().name(name).spawn(move || worker.run(receiver)) {
-                handles.push(handle);
+            let mut thread = std::thread::Builder::new().name(format!("edax-worker-{i}"));
+            if let Some(bytes) = self.stack_size.filter(|_| i > 0) {
+                thread = thread.stack_size(bytes);
+            }
+            match thread.spawn(move || worker.run(receiver)) {
+                Ok(handle) => handles.push(handle),
+                Err(cause) => {
+                    // Closing every channel ends the workers already running; then wait for them.
+                    drop(senders);
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                    return Err(Error::store(format_args!("could not spawn dispatcher worker {i}: {cause}")));
+                }
             }
         }
-        KeyOrderedDispatcher { senders, workers: handles }
+        Ok(KeyOrderedDispatcher { senders, workers: handles })
     }
 }
 
 impl KeyOrderedDispatcher {
-    /// Spawn `max(1, workers)` worker threads with the default policy: a failing handler nacks and
-    /// the broker redelivers forever. See [`KeyOrderedDispatcher::builder`] to bound that.
-    pub fn new<H>(workers: usize, handler: H) -> Self
+    /// Spawn `workers` worker threads with the default policy: a failing handler nacks and the broker
+    /// redelivers forever. See [`KeyOrderedDispatcher::builder`] to bound that.
+    ///
+    /// # Errors
+    /// As [`DispatcherBuilder::build`].
+    pub fn new<H>(workers: usize, handler: H) -> Result<Self, Error>
     where
-        H: Fn(&EventEnvelope) -> Result<(), Error> + Send + Sync + 'static,
+        H: Fn(&EventEnvelope) -> Result<(), HandlerError> + Send + Sync + 'static,
     {
         Self::builder(workers, handler).build()
     }
@@ -223,7 +270,7 @@ impl KeyOrderedDispatcher {
     /// Start configuring a dispatcher; [`DispatcherBuilder::build`] spawns it.
     pub fn builder<H>(workers: usize, handler: H) -> DispatcherBuilder
     where
-        H: Fn(&EventEnvelope) -> Result<(), Error> + Send + Sync + 'static,
+        H: Fn(&EventEnvelope) -> Result<(), HandlerError> + Send + Sync + 'static,
     {
         DispatcherBuilder {
             workers,
@@ -231,7 +278,8 @@ impl KeyOrderedDispatcher {
             max_attempts: 0,
             queue_depth: DEFAULT_QUEUE_DEPTH,
             on_dead: None,
-            sleeper: Arc::new(std::thread::sleep),
+            pacing: Arc::new(Pacing::default()),
+            stack_size: None,
         }
     }
 
@@ -248,10 +296,15 @@ impl KeyOrderedDispatcher {
     /// full (see [`DispatcherBuilder::queue_depth`]).
     pub fn deliver(&self, delivery: Delivery) {
         let workers = u32::try_from(self.senders.len()).unwrap_or(u32::MAX);
-        let idx = partition(&delivery.envelope.aggregate_id, workers) as usize;
+        let idx = usize::try_from(partition(&delivery.envelope.aggregate_id, workers)).unwrap_or(usize::MAX);
         // The worker loop never unwinds, so the receiver lives until stop() consumes self. If it is
-        // gone anyway, nack rather than strand the delivery.
-        if let Err(SendError(delivery)) = self.senders[idx].send(delivery) {
+        // gone anyway — or the partition names no queue, which `partition`'s range rules out — nack
+        // rather than strand the delivery.
+        let Some(queue) = self.senders.get(idx) else {
+            delivery.nack();
+            return;
+        };
+        if let Err(SendError(delivery)) = queue.send(delivery) {
             delivery.nack();
         }
     }
@@ -266,23 +319,19 @@ impl KeyOrderedDispatcher {
     }
 }
 
-/// One worker thread's state. The attempt map is per worker and unlocked: an envelope id always
+/// One worker thread's state. The retry policy is per worker and unlocked: an envelope id always
 /// carries the same aggregate id, and the aggregate routes to exactly one worker for the life of
-/// the dispatcher, so no other thread ever reads or writes this entry. Entries for nacked messages
+/// the dispatcher, so no other thread ever reads or writes its entry. Entries for nacked messages
 /// that never come back stay until the id is seen again; bound with a TTL or LRU if a broker-side
 /// DLQ steals them under sustained failure.
 struct Worker {
     handler: Arc<Handler>,
-    max_attempts: u32,
     on_dead: Option<Arc<DeadLetterHook>>,
-    attempts: HashMap<String, u32>,
-    /// Backoff step per message currently losing a claim race. Separate from `attempts` because
-    /// contention is not a failed attempt; same unbounded-entry caveat.
-    contended: HashMap<String, u32>,
-    /// How a backoff step is waited out. Injectable so a test can assert the schedule it was asked
-    /// for instead of paying it in wall time: the table below covers several transient rows, and a
-    /// real sleep would make the suite spend seconds proving arithmetic.
-    sleeper: Arc<dyn Fn(Duration) + Send + Sync>,
+    /// The kernel's retry and dead-letter policy: when a failure is handed back, after which backoff
+    /// step, and when it dies. The worker performs what it answers.
+    retries: Retries,
+    /// How a backoff step is waited out: the builder's policy, sleep and jitter.
+    pacing: Arc<Pacing>,
 }
 
 impl Worker {
@@ -293,21 +342,51 @@ impl Worker {
         }
     }
 
-    /// Run the handler, then ack, nack or dead-letter the delivery by outcome.
+    /// Run the handler, then ack, nack or dead-letter the delivery as the retry policy answers. A
+    /// delivery the transport retired is skipped: not run when it is dead already, not settled when it
+    /// died while the handler ran. Its message comes back by a later fetch.
     fn settle(&mut self, delivery: Delivery) {
-        let Delivery { envelope, attempt: broker_attempt, on_ack, on_nack } = delivery;
-        let id = envelope.id.clone();
-        let Some(failure) = self.run_handler(&envelope) else {
-            self.contended.remove(&id);
-            self.attempts.remove(&id);
+        let Delivery { envelope, attempt: broker_attempt, on_ack, on_nack, live } = delivery;
+        if !live() {
+            return;
+        }
+        let outcome = self.run_handler(&envelope);
+        if !live() {
+            return;
+        }
+        let Some(failure) = outcome else {
+            self.retries.succeeded(&envelope.id);
             run_settler(on_ack);
             return;
         };
-        if matches!(&failure, HandlerFailure::Error(Error::InProgress(_))) {
-            self.on_contended(id, on_nack);
-            return;
+        // A panic carries no code, so it is unclassified and transient: a bug on one payload is
+        // exactly the poison message the ceiling exists for, but a single panic cannot be told from a
+        // transient one. The kernel reads the code: another consumer holding the key's claim is
+        // contention, not a failed attempt, so it never dead-letters a message whose holder is slow.
+        let code = match &failure {
+            HandlerFailure::Error(e) => code_of(&**e),
+            HandlerFailure::Panic(_) => None,
+        };
+        let id = envelope.id.clone();
+        match self.retries.failed(&id, broker_attempt, Failure::of(code)) {
+            Verdict::Nack { step } => self.nack_after_backoff(step, on_nack),
+            Verdict::Dead { attempt } => {
+                // The sink runs before any ack. If it errors or panics, the delivery is nacked after
+                // one backoff step, the transient path: a log-based broker never redelivers a
+                // delivery left unsettled while its consumer lives, so leaving it would pin the
+                // partition's commits. The policy keeps the attempt, so the redelivery dead-letters
+                // again and the sink gets another try.
+                let dead = DeadLetter { envelope, attempt, failure };
+                let sunk = self.on_dead.as_ref().is_some_and(|on_dead| matches!(catch_unwind(AssertUnwindSafe(|| on_dead(dead))), Ok(Ok(()))));
+                if sunk {
+                    run_settler(on_ack);
+                    self.retries.dead_lettered(&id);
+                } else {
+                    let step = self.retries.sink_failed(&id, attempt);
+                    self.nack_after_backoff(step, on_nack);
+                }
+            }
         }
-        self.on_failure(envelope, id, broker_attempt, failure, on_ack, on_nack);
     }
 
     /// The handler's verdict: `None` on success, otherwise how it failed. A panic must not kill the
@@ -322,65 +401,13 @@ impl Worker {
         }
     }
 
-    /// Another consumer holds this key's idempotency claim. Contention, not a failed attempt:
-    /// counting it would dead-letter a message whose holder is only slow, and nacking at once would
-    /// spin the broker until the claim's TTL expires. Wait one step of the kernel's backoff
-    /// schedule, then redeliver without touching the budget.
-    fn on_contended(&mut self, id: String, on_nack: Box<dyn FnOnce() + Send>) {
-        let entry = self.contended.entry(id).or_insert(0);
-        let step = *entry;
-        *entry += 1;
-        self.nack_after_backoff(step, on_nack);
-    }
-
-    /// Wait one step of the kernel's backoff schedule, then nack. Both failure arms wait: nacking at
-    /// once has a handler on a downed dependency spinning the broker as fast as it redelivers, and on a
-    /// seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
-    /// therefore every key routed to it — per-key ordering forbids skipping ahead.
-    fn nack_after_backoff(&self, step: u32, on_nack: Box<dyn FnOnce() + Send>) {
-        (self.sleeper)(Duration::from_millis(backoff_millis(step)));
+    /// Wait one step of the backoff schedule, then nack. Every failure arm waits: nacking at once has
+    /// a handler on a downed dependency spinning the broker as fast as it redelivers, and on a seeking
+    /// transport every nack re-reads the partition tail. The wait blocks this worker, and therefore
+    /// every key routed to it — per-key ordering forbids skipping ahead.
+    fn nack_after_backoff(&self, step: u64, on_nack: Box<dyn FnOnce() + Send>) {
+        self.pacing.wait(step);
         run_settler(on_nack);
-    }
-
-    /// Dead-letter the delivery or nack it for redelivery, per the builder's policy.
-    fn on_failure(
-        &mut self,
-        envelope: EventEnvelope,
-        id: String,
-        broker_attempt: u32,
-        failure: HandlerFailure,
-        on_ack: Box<dyn FnOnce() + Send>,
-        on_nack: Box<dyn FnOnce() + Send>,
-    ) {
-        self.contended.remove(&id);
-        let attempt = broker_attempt.max(self.attempts.get(&id).copied().unwrap_or(0)).saturating_add(1);
-        // A panic is unclassified, so it is transient: a bug on one payload is exactly the poison
-        // message the ceiling exists for, but a single panic cannot be told from a transient one.
-        let terminal = match &failure {
-            HandlerFailure::Error(e) => is_terminal(e),
-            HandlerFailure::Panic(_) => false,
-        };
-        let exhausted = self.max_attempts > 0 && attempt >= self.max_attempts;
-        match self.on_dead.clone() {
-            Some(on_dead) if terminal || exhausted => {
-                let dead = DeadLetter { envelope, attempt, failure };
-                // The sink runs before any ack: if it errors or panics, nothing is settled and the
-                // broker redelivers, so the message is never dropped. The attempt map keeps its old
-                // count, so the redelivery dead-letters again and the sink gets another try.
-                let Ok(Ok(())) = catch_unwind(AssertUnwindSafe(|| on_dead(dead))) else {
-                    return;
-                };
-                run_settler(on_ack);
-                self.attempts.remove(&id);
-            }
-            _ => {
-                // Recorded whatever the ceiling, so the backoff below grows across redeliveries: with
-                // the default `max_attempts = 0` an unrecorded attempt is always 1 and the wait a flat
-                // first step. The success path removes the entry either way.
-                self.attempts.insert(id, attempt);
-                self.nack_after_backoff(attempt.saturating_sub(1), on_nack);
-            }
-        }
     }
 }
 
@@ -393,8 +420,15 @@ fn run_settler(f: Box<dyn FnOnce() + Send>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Error, ErrorCode};
     use edax_event::Event;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// The kernel's wait for backoff step `step` under [`Pacing::recording`]'s draw.
+    fn kernel_wait(step: u64) -> Duration {
+        Pacing::recording().0.delay(step)
+    }
 
     fn envelope(aggregate_id: &str, name: &str, sequence: u64) -> EventEnvelope {
         EventEnvelope {
@@ -423,7 +457,8 @@ mod tests {
             Ok(())
         })
         .queue_depth(1)
-        .build();
+        .build()
+        .expect("the dispatcher's workers spawn");
 
         let deliver = |seq: u64| Delivery::new(envelope("order-a", "Tick", seq), || {}, || {});
         dispatcher.deliver(deliver(1));
@@ -453,13 +488,27 @@ mod tests {
     }
 
     #[test]
+    fn build_branches() {
+        // Zero workers is a wiring mistake, and a worker the platform refuses would leave its partition
+        // nacked on every delivery with no backoff: neither dispatcher is handed out.
+        let zero = KeyOrderedDispatcher::new(0, |_: &EventEnvelope| Ok(()));
+        assert!(matches!(&zero, Err(e) if e.code == ErrorCode::BadHandle && e.message.contains("got 0")), "zero workers");
+        let refused = KeyOrderedDispatcher::builder(2, |_: &EventEnvelope| Ok(()))
+            .stack_size_for_test(usize::MAX)
+            .build();
+        assert!(matches!(&refused, Err(e) if e.code == ErrorCode::Store && e.message.starts_with("could not spawn dispatcher worker 1")), "spawn refused");
+        let built = KeyOrderedDispatcher::new(2, |_: &EventEnvelope| Ok(())).expect("two workers spawn");
+        built.stop();
+    }
+
+    #[test]
     fn key_ordered_dispatch_preserves_per_aggregate_order() {
         let collected: Arc<Mutex<Vec<(String, u64)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&collected);
         let consumer = KeyOrderedDispatcher::new(2, move |env: &EventEnvelope| {
             sink.lock().unwrap().push((env.aggregate_id.clone(), env.sequence.unwrap()));
             Ok(())
-        });
+        }).expect("the dispatcher's workers spawn");
 
         // Interleave two aggregates' events; each aggregate's events are submitted in order.
         for seq in 1..=4u64 {
@@ -482,12 +531,12 @@ mod tests {
         // settle as a nack and the later deliveries must still be handled and acked.
         let acked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let nacked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let consumer = KeyOrderedDispatcher::new(0, |env: &EventEnvelope| {
+        let consumer = KeyOrderedDispatcher::new(1, |env: &EventEnvelope| {
             if env.event.name == "Boom" {
                 panic!("handler bug");
             }
             Ok(())
-        });
+        }).expect("the dispatcher's workers spawn");
 
         for (seq, name) in [(1, "Boom"), (2, "Tick"), (3, "Tick")] {
             let (a, n) = (Arc::clone(&acked), Arc::clone(&nacked));
@@ -539,7 +588,7 @@ mod tests {
         // An adapter's settle closure is the last thing that could unwind a worker. Nothing is left
         // that could settle *that* delivery, but the ones queued behind it must still be drained.
         let acked: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
-        let consumer = KeyOrderedDispatcher::new(1, |_: &EventEnvelope| Ok(()));
+        let consumer = KeyOrderedDispatcher::new(1, |_: &EventEnvelope| Ok(())).expect("the dispatcher's workers spawn");
         for seq in 1..=2u64 {
             let a = Arc::clone(&acked);
             consumer.deliver(Delivery::new(
@@ -563,11 +612,11 @@ mod tests {
         let consumer = KeyOrderedDispatcher::new(2, |env: &EventEnvelope| {
             // a transient downstream failure for one aggregate -> its delivery nacks for redelivery
             if env.aggregate_id == "order-b" {
-                Err(Error::Store("projection unavailable".into()))
+                Err(Error::store("projection unavailable").into())
             } else {
                 Ok(())
             }
-        });
+        }).expect("the dispatcher's workers spawn");
 
         for seq in 1..=3u64 {
             for agg in ["order-a", "order-b"] {
@@ -599,6 +648,9 @@ mod tests {
         Terminal,
         Transient,
         Panic,
+        InProgress,
+        CachedFailure,
+        Rejected,
     }
 
     /// What the `on_dead` hook does on each call, in order; the last entry repeats.
@@ -624,7 +676,7 @@ mod tests {
             want_settled: &'static [&'static str],
             want_dead: &'static [u32],
             /// Backoff steps waited, in order. A nack costs one step of the kernel's schedule; an
-            /// ack and a dead-letter cost none.
+            /// ack and a dead-letter cost none. An in-progress nack waits its own contention step.
             want_slept: &'static [u64],
         }
         let cases = [
@@ -656,7 +708,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack"],
                 want_dead: &[],
-                want_slept: &[100],
+                want_slept: &[0],
             },
             Case {
                 name: "the max_attempts ceiling dead-letters a transient error",
@@ -666,7 +718,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:nack", "3:ack"],
                 want_dead: &[3],
-                want_slept: &[100, 200],
+                want_slept: &[0, 1],
             },
             Case {
                 name: "max_attempts 0 disables the ceiling",
@@ -676,7 +728,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:nack", "3:nack", "4:nack"],
                 want_dead: &[],
-                want_slept: &[100, 200, 400, 800],
+                want_slept: &[0, 1, 2, 3],
             },
             Case {
                 name: "max_attempts 0 still dead-letters a terminal error",
@@ -706,7 +758,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack"],
                 want_dead: &[3],
-                want_slept: &[200],
+                want_slept: &[1],
             },
             Case {
                 name: "a success resets the in-process count",
@@ -716,7 +768,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack", "3:nack", "4:nack"],
                 want_dead: &[],
-                want_slept: &[100, 100, 200],
+                want_slept: &[0, 0, 1],
             },
             Case {
                 name: "no on_dead nacks a terminal error rather than dropping it",
@@ -726,7 +778,7 @@ mod tests {
                 on_dead: None,
                 want_settled: &["1:nack"],
                 want_dead: &[],
-                want_slept: &[100],
+                want_slept: &[0],
             },
             Case {
                 name: "no on_dead nacks at the ceiling rather than dropping",
@@ -736,37 +788,52 @@ mod tests {
                 on_dead: None,
                 want_settled: &["1:nack", "2:nack"],
                 want_dead: &[],
-                want_slept: &[100, 200],
+                want_slept: &[0, 1],
             },
             Case {
-                name: "on_dead returning Err leaves the delivery unsettled",
+                // A log-based broker never redelivers an unsettled delivery while its consumer
+                // lives, so a failed sink nacks through the backoff path instead of pinning commits.
+                name: "on_dead returning Err nacks after a backoff step",
                 outcomes: &[Outcome::Terminal],
                 broker_attempt: 0,
                 max_attempts: 3,
                 on_dead: Some(&[Sink::Err]),
-                want_settled: &[],
+                want_settled: &["1:nack"],
                 want_dead: &[1],
-                want_slept: &[],
+                want_slept: &[0],
             },
             Case {
-                name: "on_dead panicking leaves the delivery unsettled",
+                name: "on_dead panicking nacks after a backoff step",
                 outcomes: &[Outcome::Terminal],
                 broker_attempt: 0,
                 max_attempts: 3,
                 on_dead: Some(&[Sink::Panic]),
-                want_settled: &[],
+                want_settled: &["1:nack"],
                 want_dead: &[1],
-                want_slept: &[],
+                want_slept: &[0],
             },
             Case {
-                name: "a redelivery after a failed on_dead retries the sink at the same attempt",
+                // The failed sink's attempt is recorded like a failed handler's, so the redelivery
+                // dead-letters again at once, the sink sees the true count of handler runs, and the
+                // backoff grows with it.
+                name: "a redelivery after a failed on_dead retries the sink at the next attempt",
                 outcomes: &[Outcome::Transient, Outcome::Transient, Outcome::Transient],
                 broker_attempt: 0,
                 max_attempts: 2,
                 on_dead: Some(&[Sink::Panic, Sink::Ok]),
-                want_settled: &["1:nack", "3:ack"],
-                want_dead: &[2, 2],
-                want_slept: &[100],
+                want_settled: &["1:nack", "2:nack", "3:ack"],
+                want_dead: &[2, 3],
+                want_slept: &[0, 1],
+            },
+            Case {
+                name: "a sink failing on a terminal error keeps the first attempt and dead-letters next time",
+                outcomes: &[Outcome::Terminal, Outcome::Terminal],
+                broker_attempt: 0,
+                max_attempts: 0,
+                on_dead: Some(&[Sink::Err, Sink::Ok]),
+                want_settled: &["1:nack", "2:ack"],
+                want_dead: &[1, 2],
+                want_slept: &[0],
             },
             Case {
                 name: "a panicking handler is transient, not terminal",
@@ -776,7 +843,7 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack"],
                 want_dead: &[],
-                want_slept: &[100],
+                want_slept: &[0],
             },
             Case {
                 name: "a panicking handler counts toward the ceiling",
@@ -786,7 +853,41 @@ mod tests {
                 on_dead: Some(&[Sink::Ok]),
                 want_settled: &["1:nack", "2:ack"],
                 want_dead: &[2],
-                want_slept: &[100],
+                want_slept: &[0],
+            },
+            Case {
+                // Contention, not a failed attempt: it waits its own step and never counts, so a slow
+                // peer cannot push a message to the ceiling.
+                name: "in progress nacks without spending the budget",
+                outcomes: &[Outcome::InProgress, Outcome::InProgress, Outcome::Transient, Outcome::Transient],
+                broker_attempt: 0,
+                max_attempts: 2,
+                on_dead: Some(&[Sink::Ok]),
+                want_settled: &["1:nack", "2:nack", "3:nack", "4:ack"],
+                want_dead: &[2],
+                want_slept: &[0, 1, 0],
+            },
+            Case {
+                // A saga or a command dispatched inside the handler fails with the command path's
+                // error; a cached terminal failure keeps its verdict and dies at once.
+                name: "a replayed cached failure dead-letters on the first attempt",
+                outcomes: &[Outcome::CachedFailure],
+                broker_attempt: 0,
+                max_attempts: 5,
+                on_dead: Some(&[Sink::Ok]),
+                want_settled: &["1:ack"],
+                want_dead: &[1],
+                want_slept: &[],
+            },
+            Case {
+                name: "a host rejection marked terminal dead-letters on the first attempt",
+                outcomes: &[Outcome::Rejected],
+                broker_attempt: 0,
+                max_attempts: 5,
+                on_dead: Some(&[Sink::Ok]),
+                want_settled: &["1:ack"],
+                want_dead: &[1],
+                want_slept: &[],
             },
         ];
         for c in cases {
@@ -800,16 +901,16 @@ mod tests {
                 *runs += 1;
                 match outcome {
                     Outcome::Ok => Ok(()),
-                    Outcome::Terminal => Err(Error::Codec("bad bytes".into())),
-                    Outcome::Transient => Err(Error::Store("projection unavailable".into())),
+                    Outcome::Terminal => Err(Error::codec("bad bytes").into()),
+                    Outcome::Transient => Err(Error::store("projection unavailable").into()),
                     Outcome::Panic => panic!("handler bug"),
+                    Outcome::InProgress => Err(Error::new(ErrorCode::InProgress, "a-1").into()),
+                    Outcome::CachedFailure => Err(Error::new(ErrorCode::CachedFailure, "codec: bad bytes").into()),
+                    Outcome::Rejected => Err(crate::Terminal::new("order already shipped").into()),
                 }
             };
-            let slept: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
-            let recorder = Arc::clone(&slept);
-            let mut builder = KeyOrderedDispatcher::builder(1, handler)
-                .max_attempts(c.max_attempts)
-                .sleeper(move |d: Duration| recorder.lock().unwrap().push(d.as_millis() as u64));
+            let (pacing, slept) = Pacing::recording();
+            let mut builder = KeyOrderedDispatcher::builder(1, handler).max_attempts(c.max_attempts).pacing(pacing);
             if let Some(sinks) = c.on_dead {
                 let dead = Arc::clone(&dead);
                 builder = builder.on_dead(move |letter: DeadLetter| {
@@ -820,12 +921,12 @@ mod tests {
                     assert_eq!(letter.envelope.id, "a-1", "the sink gets the envelope");
                     match sink {
                         Sink::Ok => Ok(()),
-                        Sink::Err => Err(Error::Store("dead-letter sink unavailable".into())),
+                        Sink::Err => Err(Error::store("dead-letter sink unavailable").into()),
                         Sink::Panic => panic!("dead-letter sink bug"),
                     }
                 });
             }
-            let consumer = builder.build();
+            let consumer = builder.build().expect("the dispatcher's workers spawn");
             for n in 1..=c.outcomes.len() {
                 let (a, k) = (Arc::clone(&settled), Arc::clone(&settled));
                 let mut delivery = Delivery::new(
@@ -839,7 +940,55 @@ mod tests {
             consumer.stop();
             assert_eq!(*settled.lock().unwrap(), c.want_settled, "{}: settlements", c.name);
             assert_eq!(*dead.lock().unwrap(), c.want_dead, "{}: on_dead attempts", c.name);
-            assert_eq!(*slept.lock().unwrap(), c.want_slept, "{}: backoff steps", c.name);
+            let want_slept: Vec<Duration> = c.want_slept.iter().map(|&step| kernel_wait(step)).collect();
+            assert_eq!(*slept.lock().unwrap(), want_slept, "{}: backoff steps", c.name);
+        }
+    }
+
+    #[test]
+    fn liveness_branches() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // `dies` says when the transport retires the delivery: never, before the worker takes it,
+        // or while the handler runs (a rewind from another key's nack, a rebalance).
+        struct Case {
+            name: &'static str,
+            dies: Option<&'static str>,
+            fails: bool,
+            want_runs: usize,
+            want_settled: &'static [&'static str],
+        }
+        let cases = [
+            Case { name: "a live delivery runs and acks", dies: None, fails: false, want_runs: 1, want_settled: &["ack"] },
+            Case { name: "a live failing delivery nacks", dies: None, fails: true, want_runs: 1, want_settled: &["nack"] },
+            Case { name: "a dead delivery is skipped: no run, no settlement", dies: Some("before"), fails: false, want_runs: 0, want_settled: &[] },
+            Case { name: "a delivery that died mid-handler is not acked", dies: Some("during"), fails: false, want_runs: 1, want_settled: &[] },
+            Case { name: "a delivery that died mid-handler is not nacked either", dies: Some("during"), fails: true, want_runs: 1, want_settled: &[] },
+        ];
+        for c in cases {
+            let live = Arc::new(AtomicBool::new(c.dies != Some("before")));
+            let runs = Arc::new(Mutex::new(0usize));
+            let settled: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+            let (h_live, h_runs, fails, dies) = (Arc::clone(&live), Arc::clone(&runs), c.fails, c.dies);
+            let consumer = KeyOrderedDispatcher::builder(1, move |_: &EventEnvelope| {
+                *h_runs.lock().unwrap() += 1;
+                if dies == Some("during") {
+                    h_live.store(false, Ordering::SeqCst);
+                }
+                if fails {
+                    return Err(Error::store("projection unavailable").into());
+                }
+                Ok(())
+            })
+            .pacing(Pacing::recording().0)
+            .build()
+            .expect("the dispatcher's workers spawn");
+            let (a, n, l) = (Arc::clone(&settled), Arc::clone(&settled), Arc::clone(&live));
+            let delivery = Delivery::new(envelope("a", "Tick", 1), move || a.lock().unwrap().push("ack"), move || n.lock().unwrap().push("nack"))
+                .with_live(move || l.load(Ordering::SeqCst));
+            consumer.deliver(delivery);
+            consumer.stop();
+            assert_eq!(*runs.lock().unwrap(), c.want_runs, "{}: handler runs", c.name);
+            assert_eq!(*settled.lock().unwrap(), c.want_settled, "{}: settlements", c.name);
         }
     }
 
@@ -849,8 +998,9 @@ mod tests {
         use std::time::Duration;
 
         // End to end through the in-memory broker: a terminal event dies into the DLQ, a transient
-        // one is nacked, requeued and succeeds on redelivery, and every aggregate's deliveries are
-        // handled in the order they were submitted, whatever the settlement path.
+        // one is nacked, the partition rewinds and it succeeds on redelivery, and every aggregate's
+        // events are handled in order, whatever the settlement path: a copy retired by the rewind
+        // is skipped, never run ahead of the redelivered earlier event.
         let broker = MemoryBroker::new();
         let dlq = MemoryBroker::new();
         let handled: Arc<Mutex<Vec<(String, u64)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -861,8 +1011,8 @@ mod tests {
             let first_time = !seen.iter().any(|(a, s)| *a == env.aggregate_id && *s == env.sequence.unwrap());
             seen.push((env.aggregate_id.clone(), env.sequence.unwrap()));
             match (env.event.name.as_str(), first_time) {
-                ("Poison", _) => Err(Error::Codec("bad bytes".into())),
-                ("Flaky", true) => Err(Error::Store("projection unavailable".into())),
+                ("Poison", _) => Err(Error::codec("bad bytes").into()),
+                ("Flaky", true) => Err(Error::store("projection unavailable").into()),
                 _ => Ok(()),
             }
         })
@@ -871,31 +1021,41 @@ mod tests {
             dead_sink.publish(letter.envelope);
             Ok(())
         })
-        .build();
+        .pacing(Pacing::recording().0)
+        .build()
+        .expect("the dispatcher's workers spawn");
 
         for (agg, seq, name) in [("a", 1, "Poison"), ("b", 1, "Tick"), ("a", 2, "Tick"), ("a", 3, "Flaky"), ("b", 2, "Flaky"), ("a", 4, "Tick")] {
             broker.publish(envelope(agg, name, seq));
         }
         // Drain until the broker goes quiet. The wait bounds a lost redelivery: the loop ends when
         // no nack has landed within it.
-        let mut submitted: Vec<(String, u64)> = Vec::new();
-        while let Some(delivery) = broker.poll(Duration::from_millis(500)) {
-            submitted.push((delivery.envelope.aggregate_id.clone(), delivery.envelope.sequence.unwrap()));
+        while let Some(delivery) = broker.poll(Duration::from_millis(500)).expect("poll") {
             consumer.deliver(delivery);
         }
         consumer.stop();
 
         let handled = handled.lock().unwrap();
-        for agg in ["a", "b"] {
-            let want: Vec<u64> = submitted.iter().filter(|(a, _)| a == agg).map(|(_, s)| *s).collect();
+        for (agg, last) in [("a", 4), ("b", 2)] {
             let got: Vec<u64> = handled.iter().filter(|(a, _)| a == agg).map(|(_, s)| *s).collect();
-            assert_eq!(got, want, "aggregate {agg} was handled in submission order");
+            // A rewind re-runs what was already handled, so a sequence may repeat, but a handler
+            // never sees one before every lower one of its aggregate.
+            for (i, seq) in got.iter().enumerate() {
+                assert!((1..*seq).all(|lower| got[..i].contains(&lower)), "aggregate {agg} handled {seq} early: {got:?}");
+            }
+            assert_eq!(got.iter().max(), Some(&last), "aggregate {agg} reached its last event");
         }
-        assert_eq!(submitted.len(), 8, "the two flaky events were redelivered once each");
         assert!(broker.empty(), "every delivery was settled");
-        let dead = dlq.poll(Duration::ZERO).expect("the poison event reached the DLQ");
-        assert_eq!((dead.envelope.aggregate_id.as_str(), dead.envelope.sequence), ("a", Some(1)));
-        dead.ack();
-        assert!(dlq.empty(), "only the poison event died");
+        // Dead-lettering is at-least-once like every other settlement: a rewind of the partition (b-2's
+        // nack) can retire the poison's delivery after its sink ran and before its ack landed, so the
+        // redelivered copy dies again. The DLQ may hold the poison more than once, and nothing else.
+        let mut dead = Vec::new();
+        while let Some(letter) = dlq.poll(Duration::ZERO).expect("poll") {
+            dead.push((letter.envelope.aggregate_id.clone(), letter.envelope.sequence));
+            letter.ack();
+        }
+        assert!(!dead.is_empty(), "the poison event reached the DLQ");
+        assert!(dead.iter().all(|d| d == &("a".to_owned(), Some(1))), "only the poison event died: {dead:?}");
+        assert!(dlq.empty());
     }
 }

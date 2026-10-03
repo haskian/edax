@@ -10,20 +10,37 @@
 //!   its complement.
 //! - `And` / `Or` / `Not` combine leaves as ordinary booleans (`And([])` = true, `Or([])` = false).
 //!
-//! A consequence worth stating: `Ne(p, x)` does NOT match a document where `p` is absent/null
+//! So `Ne(p, x)` does NOT match a document where `p` is absent/null
 //! (the leaf is false), whereas `Not(Eq(p, x))` DOES (the inner leaf is false, negated to true).
 //!
-//! Value comparison: numbers compare numerically (so `1` and `1.0` are equal), two integers compare
-//! exactly (no `f64` rounding above 2^53), strings compare by Unicode order. Ordering (`Gt`/`Gte`/
-//! `Lt`/`Lte`) is defined only for two numbers or two strings; any other pairing (including
-//! mismatched types, bool, array, object) is not ordered and yields `false`. Equality is numeric for
-//! numbers and structural otherwise. Dates/timestamps need no special operator: as RFC3339 strings
-//! they sort correctly under the string ordering above.
+//! Value comparison:
+//! - **Equality** is numeric for numbers at every depth (`1 == 1.0`, `[1] == [1.0]`,
+//!   `{"a": 1} == {"a": 1.0}`), exact for two integers (no `f64` rounding above 2^53), and structural
+//!   otherwise. `Eq`, `Ne`, `In` and `Contains` all use it.
+//! - **Ordering** (`Gt`/`Gte`/`Lt`/`Lte`) is defined for two numbers, two strings (by Unicode code
+//!   point, which is UTF-8 byte order) and two bools (`false < true`), the same ranking the read
+//!   side's sort gives each pair. Any other pairing (mismatched types, arrays, objects) is not
+//!   ordered and yields `false`.
+//!
+//! Dates and timestamps need no operator of their own, but string order is chronological only for
+//! one fixed-width form in one zone: store them as UTC with a `Z` suffix and a fixed fraction width
+//! (`2024-01-01T00:00:00.000000Z`), or as epoch integers. A form that omits a zero fraction
+//! (`...00Z` sorts after `...00.500000Z`) or keeps an offset (`+01:00` sorts by wall time, not by
+//! instant) orders wrongly, silently.
 //!
 //! `StartsWith` is a string-prefix test (both operands must be strings, else `false`). `Contains`
 //! is the mirror of `In`: `In` tests a scalar path against a given set, `Contains` tests whether
 //! the **array** at a path includes a given value.
+//!
+//! What the kernel refuses, as `codec` errors, rather than reading silently wrong ([`Filter::validate`]):
+//! - an unknown field in any node (`{"compare": {..., "vlaue": 1}}`), so a typo is not a no-op;
+//! - a `null` comparand for `Compare` or inside `In`, which no present value could equal — ask
+//!   `Exists` for a missing or null path instead;
+//! - a path with an empty segment (`""`, `"a."`, `"a..b"`). A path is dot-delimited object keys:
+//!   a key containing `.` cannot be addressed, and a numeric segment is a key, never an array index;
+//! - an integer literal wider than 64 bits, which would otherwise be compared as the nearest float.
 
+use edax_core::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::cmp::Ordering;
@@ -54,7 +71,7 @@ pub enum Operator {
 /// `{"compare": {"path": "...", "op": "eq", "value": ...}}`, `{"and": [...]}`, `{"not": {...}}`.
 /// The bindings produce this exact shape, so a filter built in any language is identical.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Filter {
     /// Compare the value at `path` with `value` under `op`.
     Compare {
@@ -80,7 +97,8 @@ pub enum Filter {
         /// The element the array must contain.
         value: Value,
     },
-    /// Presence test: matches iff the path resolving to a value equals `exists`.
+    /// Presence test: matches iff the path being present (resolving to a non-null value) equals
+    /// `exists`.
     Exists {
         /// Dot-delimited path into the document.
         path: String,
@@ -248,20 +266,28 @@ fn number_cmp(a: &Number, b: &Number) -> Option<Ordering> {
     }
 }
 
+/// Equality with numbers compared by value at every depth, so a number means the same inside an
+/// array or an object as it does at the top level.
 fn value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => number_cmp(x, y) == Some(Ordering::Equal),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| value_eq(x, y)),
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(key, x)| y.get(key).is_some_and(|y| value_eq(x, y)))
+        }
         _ => a == b,
     }
 }
 
-/// Order two values within one type: numbers numerically, strings by Unicode. Any other pairing is
-/// unordered (`None`). The read-side query layers its cross-type total order on top of this, so both
-/// sides order a number or a string the same way.
+/// Order two values within one type: numbers numerically, strings by Unicode code point, bools
+/// `false < true`. Any other pairing is unordered (`None`). The read-side query layers its
+/// cross-type total order on top of this, so a sort and a range filter rank every orderable pair the
+/// same way.
 pub fn value_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => number_cmp(x, y),
         (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
         _ => None,
     }
 }
@@ -312,10 +338,57 @@ pub fn eval(filter: &Filter, doc: &Value) -> bool {
     }
 }
 
-/// JSON boundary for the bindings: parse a filter and a document, return the match decision.
-pub fn eval_json(filter_json: &[u8], doc_json: &[u8]) -> Result<bool, String> {
-    let filter: Filter = serde_json::from_slice(filter_json).map_err(|e| e.to_string())?;
-    let doc: Value = serde_json::from_slice(doc_json).map_err(|e| e.to_string())?;
+impl Filter {
+    /// Refuse what the grammar admits but no document could mean: a `null` comparand and a path
+    /// with an empty segment (see the module docs). Recursive, so a bad leaf under `And`, `Or` or
+    /// `Not` is found too.
+    pub fn validate(&self) -> Result<(), Error> {
+        match self {
+            Filter::Compare { path, value, .. } => {
+                check_path(path)?;
+                check_comparand(path, value)
+            }
+            Filter::In { path, values } => {
+                check_path(path)?;
+                values.iter().try_for_each(|value| check_comparand(path, value))
+            }
+            Filter::Contains { path, .. } | Filter::Exists { path, .. } => check_path(path),
+            Filter::And(filters) | Filter::Or(filters) => filters.iter().try_for_each(Filter::validate),
+            Filter::Not(filter) => filter.validate(),
+        }
+    }
+}
+
+/// A path is one or more dot-delimited object keys, none of them empty.
+pub(crate) fn check_path(path: &str) -> Result<(), Error> {
+    if path.split('.').any(str::is_empty) {
+        return Err(Error::codec(format_args!("path {path:?} has an empty segment")));
+    }
+    Ok(())
+}
+
+fn check_comparand(path: &str, value: &Value) -> Result<(), Error> {
+    if value.is_null() {
+        return Err(Error::codec(format_args!(
+            "a null comparand at {path:?} matches nothing; use exists({path:?}, false) for a missing or null path"
+        )));
+    }
+    Ok(())
+}
+
+/// Parse `json` as `T` under the strict reading every query spec gets: integer literals within 64
+/// bits, unknown fields refused by `T`'s own attributes. Shared with the read side's query parse.
+pub(crate) fn parse_spec<T: serde::de::DeserializeOwned>(json: &[u8]) -> Result<T, Error> {
+    crate::canonical::reject_wide_integers(json)?;
+    serde_json::from_slice(json).map_err(Error::codec)
+}
+
+/// JSON boundary for the bindings: parse a filter and a document, return the match decision. A
+/// filter the kernel refuses (see [`Filter::validate`]) or JSON it cannot read is a `codec` error.
+pub fn eval_json(filter_json: &[u8], doc_json: &[u8]) -> Result<bool, Error> {
+    let filter: Filter = parse_spec(filter_json)?;
+    filter.validate()?;
+    let doc: Value = serde_json::from_slice(doc_json).map_err(Error::codec)?;
     Ok(eval(&filter, &doc))
 }
 
@@ -337,6 +410,9 @@ mod tests {
             "owner": 5,
             "maybe": null,
             "big": 9_007_199_254_740_993u64,
+            "paid": true,
+            "amounts": [1, 2.5],
+            "totals": {"net": 100, "tax": 20},
         })
     }
 
@@ -364,6 +440,8 @@ mod tests {
             ("gte_at_the_boundary", gte("total", json!(5000)), true),
             ("lt_less", lt("total", json!(9999)), true),
             ("lte_at_the_boundary", lte("total", json!(5000)), true),
+            ("lte_below", lte("total", json!(9999)), true),
+            ("lte_above", lte("total", json!(4999)), false),
             ("strings_order_by_unicode", gt("name", json!("a")), true),
             ("mismatched_types_are_unordered", gt("sku", json!(4200)), false),
             ("compare_on_a_null_path_is_false", eq("maybe", json!(null)), false),
@@ -417,10 +495,85 @@ mod tests {
                 false,
             ),
             ("or_empty_is_vacuously_false", or(vec![]), false),
+            // Numbers mean the same at every depth as at the top level.
+            ("eq_array_is_numeric_per_element", eq("amounts", json!([1.0, 2.5])), true),
+            ("eq_array_needs_the_same_length", eq("amounts", json!([1.0])), false),
+            ("eq_array_needs_equal_elements", eq("amounts", json!([1, 2])), false),
+            ("eq_object_is_numeric_per_member", eq("totals", json!({"net": 100.0, "tax": 20})), true),
+            ("eq_object_needs_the_same_keys", eq("totals", json!({"net": 100, "fee": 20})), false),
+            ("eq_object_needs_the_same_size", eq("totals", json!({"net": 100})), false),
+            ("in_is_numeric_inside_arrays", is_in("amounts", vec![json!([1.0, 2.5])]), true),
+            ("contains_is_numeric", contains("amounts", json!(2.50)), true),
+            // Bools order `false < true`, as the sort ranks them.
+            ("gt_true_over_false", gt("paid", json!(false)), true),
+            ("lt_true_under_false", lt("paid", json!(false)), false),
+            ("gte_bool_at_the_boundary", gte("paid", json!(true)), true),
+            ("bool_against_a_number_is_unordered", gt("paid", json!(0)), false),
+            ("arrays_are_unordered", gt("amounts", json!([0])), false),
         ];
         for (name, filter, want) in cases {
             assert_eq!(eval(&filter, &doc()), want, "{name}");
         }
+    }
+
+    /// One case per arm of [`Filter::validate`], at the top level and nested.
+    #[test]
+    fn validate_branches() {
+        let ok: Result<(), &str> = Ok(());
+        let cases: Vec<(&str, Filter, Result<(), &str>)> = vec![
+            ("compare_with_a_value", eq("status", json!("open")), ok),
+            ("compare_with_null", eq("status", json!(null)), Err("null comparand")),
+            ("ne_with_null", ne("status", json!(null)), Err("null comparand")),
+            ("in_with_values", is_in("status", vec![json!("a"), json!("b")]), ok),
+            ("in_empty_matches_nothing_but_is_valid", is_in("status", vec![]), ok),
+            ("in_with_a_null_member", is_in("status", vec![json!("a"), json!(null)]), Err("null comparand")),
+            ("contains_null_asks_for_a_null_element", contains("tags", json!(null)), ok),
+            ("exists", exists("status", false), ok),
+            ("an_empty_path", eq("", json!(1)), Err("empty segment")),
+            ("a_trailing_dot", exists("a.", true), Err("empty segment")),
+            ("a_leading_dot", contains(".a", json!(1)), Err("empty segment")),
+            ("a_double_dot", is_in("a..b", vec![json!(1)]), Err("empty segment")),
+            ("a_compare_path_is_checked_before_its_value", eq("a..b", json!(null)), Err("empty segment")),
+            ("and_finds_a_bad_leaf", and(vec![exists("a", true), eq("b", json!(null))]), Err("null comparand")),
+            ("or_finds_a_bad_leaf", or(vec![exists("a.", true)]), Err("empty segment")),
+            ("not_finds_a_bad_leaf", not(eq("b", json!(null))), Err("null comparand")),
+            ("empty_and_or", and(vec![or(vec![])]), ok),
+        ];
+        for (name, filter, want) in cases {
+            match (filter.validate(), want) {
+                (Ok(()), Ok(())) => {}
+                (Err(error), Err(needle)) => {
+                    assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
+                    assert!(error.message.contains(needle), "{name}: {error}");
+                }
+                (got, want) => panic!("{name}: got {got:?}, want {want:?}"),
+            }
+        }
+    }
+
+    /// The JSON boundary reads a filter strictly: an unknown field anywhere, a wide integer, or a
+    /// filter `validate` refuses is an error, never a filter that silently means something else.
+    #[test]
+    fn eval_json_refusals() {
+        let document = serde_json::to_vec(&doc()).unwrap();
+        let cases: [(&str, &str); 7] = [
+            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#),
+            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#),
+            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#),
+            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#),
+            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#),
+            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#),
+            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#),
+        ];
+        for (name, filter) in cases {
+            let error = eval_json(filter.as_bytes(), &document).expect_err(name);
+            assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
+        }
+        // The widest integers that fit are exact, and a wide number written as a float is a float.
+        let fits = r#"{"compare": {"path": "big", "op": "lt", "value": 18446744073709551615}}"#;
+        assert_eq!(eval_json(fits.as_bytes(), &document), Ok(true));
+        let float = r#"{"compare": {"path": "big", "op": "lt", "value": 1.2e21}}"#;
+        assert_eq!(eval_json(float.as_bytes(), &document), Ok(true));
     }
 
     #[test]

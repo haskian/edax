@@ -9,7 +9,7 @@ name = "edax"
 dynamic = ["version"]
 description = "Polyglot event-sourcing toolkit"
 readme = "../../README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["event-sourcing", "cqrs", "idempotency", "outbox", "saga", "kafka"]
 authors = [{ name = "Crtomir Majer" }]
@@ -30,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Tech-specific adapters over a caller-owned client; install the extra to pull the client library.
-redis = ["redis>=4.2"]            # edax.backend.redis
+redis = ["redis>=8"]              # edax.backend.redis: 8 keeps a reply's error prefix in `status_code`
 kafka = ["aiokafka>=0.8"]         # edax.backend.kafka
 test = ["pytest", "pytest-asyncio", "hypothesis"]
 

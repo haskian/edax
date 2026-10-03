@@ -24,7 +24,7 @@ impl<E> Root<E> {
 
     /// The prospective version: the loaded one plus the events not yet persisted.
     pub fn current(&self) -> u64 {
-        self.version + self.pending.len() as u64
+        self.version.saturating_add(u64::try_from(self.pending.len()).unwrap_or(u64::MAX))
     }
 
     /// The events applied but not yet persisted, in order.
@@ -62,7 +62,7 @@ pub trait EventCodec {
     type Domain;
 
     /// Serialization is fallible in both directions, so both directions report it: a payload the
-    /// codec cannot write must reach the caller as [`Error::Codec`] — terminal, dead-lettered —
+    /// codec cannot write must reach the caller as a `codec` error — terminal, dead-lettered —
     /// instead of panicking inside whichever host thread happened to call [`save`](crate::Repository::save).
     fn marshal(&self, event: &Self::Domain) -> Result<Event, Error>;
     fn unmarshal(&self, raw: &Event) -> Result<Self::Domain, Error>;

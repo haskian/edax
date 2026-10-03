@@ -1,0 +1,58 @@
+[
+  {
+    "data_hex": "7b226163636f756e745f6964223a22616363742d31222c22616d6f756e745f63656e7473223a343230302c2263757272656e6379223a22555344227d",
+    "id": "acct-1-3",
+    "key": "acct-1-3",
+    "metadata": {
+      "trace": "abc"
+    },
+    "name": "deposit",
+    "payload_hash": 6469197963390200716,
+    "timestamp": 1714564800000000000
+  },
+  {
+    "data_hex": "7b2263757272656e6379223a22555344222c226163636f756e745f6964223a22616363742d31222c22616d6f756e745f63656e7473223a343230307d",
+    "id": "acct-1-3",
+    "key": "acct-1-3",
+    "metadata": {
+      "trace": "abc"
+    },
+    "name": "raw_bytes_not_canonical",
+    "payload_hash": 10416162560397857612,
+    "timestamp": 1714564800000000000
+  },
+  {
+    "data_hex": "7b226163636f756e745f6964223a22616363742d31222c22616d6f756e745f63656e7473223a343230302c2263757272656e6379223a22555344227d",
+    "id": "acct-1-3",
+    "key": "acct-1-3",
+    "metadata": {
+      "retry": "2",
+      "trace": "abc"
+    },
+    "name": "metadata_and_timestamp_take_no_part",
+    "payload_hash": 6469197963390200716,
+    "timestamp": 1714564800000000001
+  },
+  {
+    "data_hex": "",
+    "id": "acct-1-3",
+    "key": "acct-1-3",
+    "metadata": {
+      "trace": "abc"
+    },
+    "name": "empty_body",
+    "payload_hash": 14695981039346656037,
+    "timestamp": 1714564800000000000
+  },
+  {
+    "data_hex": "deadbeef",
+    "id": "acct-1-3",
+    "key": "acct-1-3",
+    "metadata": {
+      "trace": "abc"
+    },
+    "name": "non_utf8_body",
+    "payload_hash": 2841847738195052947,
+    "timestamp": 1714564800000000000
+  }
+]

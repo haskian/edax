@@ -1,470 +1,864 @@
-"""RedisIdempotencyStore over an in-memory fake, no server. Redis-only behaviour; the
-claim/complete/release contract runs under P2 in ``test_model.py``."""
+"""RedisIdempotencyStore against a Redis that runs the kernel's Lua: fakeredis (an embedded Lua interpreter)
+always, and a live server as well when ``EDAX_REDIS_URL`` names one. Nothing here re-implements a script.
+Each test takes a ledger under a prefix of its own, so a live database is shared safely. Timing faults that
+need a real server (a TCP proxy that drops a reply, a paused container) are in ``test_redis_live.py``; the
+claim/complete/release contract runs under P2 in ``test_model.py`` too."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, cast
 
 import edax
+import fakeredis
 import pytest
-from conftest import TTL_MS, FakeRedis
+import redis.asyncio
+import redis.exceptions
+from conftest import TTL_MS, Charge, fresh_prefix, golden, ledger_key
 from edax import _edax
-from edax.backend.redis import _CLAIM_ATTEMPTS, AsyncRedisClient, RedisIdempotencyStore
-from edax.command import Record, decode_record
-
-# The fence bodies and the value layout are the `edax-redis` kernel's, pinned by its golden vectors;
-# the adapter registers exactly these, so a second SDK's EVALSHA hashes to the same script.
-SET_IF_PREFIX = _edax.redis_fenced_set_script()
-DEL_IF_PREFIX = _edax.redis_fenced_del_script()
-
-
-def store(conn: Optional[FakeRedis] = None, claim_ttl_ms: Optional[int] = None) -> RedisIdempotencyStore:
-    """The store under test. ``claim_ttl_ms`` omitted keeps the backend's own default; the takeover
-    tests pass :data:`LAPSES` so the fake's clock can step past a claim without expiring its record."""
-    extra = {} if claim_ttl_ms is None else {"claim_ttl_ms": claim_ttl_ms}
-    return RedisIdempotencyStore(conn or FakeRedis(), prefix="idem:", ttl_ms=TTL_MS, **extra)
-
-
-#: A claim that lapses well inside the record's retention, so a takeover test can step the fake's clock
-#: past the claim without expiring the record it leaves behind.
-LAPSES = TTL_MS // 10
-
+from edax.backend.redis import (
+    CLAIM_SCRIPT,
+    COMPLETE_SCRIPT,
+    EXTEND_SCRIPT,
+    RELEASE_SCRIPT,
+    AsyncRedisClient,
+    RedisIdempotencyStore,
+)
+from edax.command import CommandBus, Record, Won, decode_record, idempotent
+from edax.testing import IdempotencyStoreContract
+from edax.testing.faults import LostReply
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 # A real dispatch outcome, not a stand-in: the record the middleware caches for a completed command.
-RECORD = Record(11258580006047770801, result={"account_id": "acct-1", "balance_cents": 4200})
-# The pending record the winner of a claim leaves behind, exactly as it sits in Redis: the
-# claimant's fence token, then the kernel's record JSON.
-OWNER = "0" * 32
-RECORD_JSON = b'{"payload_hash":11258580006047770801,"result":null,"error":null,"pending":true}'
-RECORD_BYTES = OWNER.encode() + RECORD_JSON
+HASH = 11258580006047770801
+RECORD = Record(HASH, result={"account_id": "acct-1", "balance_cents": 4200})
+#: Short enough that a PTTL read tells a claim from a record, long enough that nothing lapses by itself.
+CLAIM_TTL_MS = 6_000
+SCRIPTS = {
+    "claim": CLAIM_SCRIPT,
+    "complete": COMPLETE_SCRIPT,
+    "release": RELEASE_SCRIPT,
+    "extend": EXTEND_SCRIPT,
+}
 
 
-Call = Callable[[RedisIdempotencyStore], Awaitable[Any]]
+def _held_record(value: bytes) -> Record:
+    """The record a ledger value holds, read the way a claim reads the key's holder."""
+    prior = _edax.redis_claim_outcome(_edax.redis_new_claim(0), value)
+    assert prior is not None, "a fresh claim never equals a held value"
+    return decode_record(prior)
 
 
-@pytest.mark.parametrize(
-    "seam_method, call, holds_claim",
-    [
-        ("claim", lambda s: s.claim("order-7", RECORD.payload_hash), False),
-        # `complete` and `release` are fenced: without a claim of its own the store has nothing to
-        # settle and makes no call at all, so the claim has to be taken before the fault is armed.
-        ("complete", lambda s: s.complete("order-7", RECORD), True),
-        ("release", lambda s: s.release("order-7"), True),
-    ],
-)
-async def test_client_failure_maps_to_store_error(seam_method: str, call: Call, holds_claim: bool) -> None:
-    """Every seam method types a client failure as the contract's transient ``StoreError``, naming
-    the operation and the key and chaining the client's exception. An untyped error would read as
-    "no record" to the middleware, or be misclassified as terminal."""
-    conn = FakeRedis()
-    s = store(conn)
-    if holds_claim:
-        await s.claim("order-7", RECORD.payload_hash)
-    conn.fail = True
-    with pytest.raises(edax.StoreError, match=f"redis {seam_method} 'order-7'") as caught:
-        await call(s)
-    assert caught.value.terminal is False  # transient: the claim is released and retried
-    assert isinstance(caught.value.__cause__, RuntimeError)
-    assert "connection reset" in str(caught.value.__cause__)
+@dataclass
+class Ledger:
+    """One test's ledger: a client, a prefix of its own, and direct reads of what Redis holds."""
+
+    client: Any
+    prefix: str
+
+    def store(self, conn: Any | None = None, **settings: Any) -> RedisIdempotencyStore:
+        settings.setdefault("claim_ttl_ms", CLAIM_TTL_MS)
+        return RedisIdempotencyStore(conn or self.conn(), self.prefix, ttl_ms=TTL_MS, **settings)
+
+    def conn(self) -> AsyncRedisClient:
+        return AsyncRedisClient(self.client)
+
+    def rkey(self, key: str) -> bytes:
+        return ledger_key(self.prefix, key)
+
+    async def lapse(self, key: str) -> None:
+        """What the claim TTL does when it runs out, without waiting for it."""
+        await self.client.delete(self.rkey(key))
+
+    async def held(self, key: str) -> bytes | None:
+        return await self.client.get(self.rkey(key))
+
+    async def pttl(self, key: str) -> int:
+        return await self.client.pttl(self.rkey(key))
 
 
-async def test_claim_retries_when_key_vanishes_between_setnx_and_get() -> None:
-    # SET NX says the key exists, but the TTL (or a concurrent release) drops it before the GET. The
-    # claim loop must retry rather than treat a missing record as a prior one.
-    conn = FakeRedis()
-    s = store(conn)
-    conn.vanish_once = True
-    assert await s.claim("k1", 42) is None  # won on the retry
-    assert conn.set_nx_calls == 2  # lost once, retried, won
+@pytest.fixture
+def ledger(redis_client: Any) -> Ledger:
+    return Ledger(redis_client, fresh_prefix())
 
 
-async def test_claim_gives_up_when_the_key_keeps_vanishing() -> None:
-    """The SET NX -> GET retry is bounded: a key that never materializes fails fast instead of
-    spinning the dispatch forever."""
-
-    class AlwaysVanishes(FakeRedis):
-        async def set_nx_px(self, key: str, value: bytes, ttl_ms: int) -> bool:
-            self.set_nx_calls += 1
-            return False  # lost, yet the GET that follows finds nothing
-
-    conn = AlwaysVanishes()
-    with pytest.raises(edax.StoreError, match="record vanished"):
-        await store(conn).claim("k1", 42)
-    assert conn.set_nx_calls == _CLAIM_ATTEMPTS
+def near(ttl_ms: int, want_ms: int) -> bool:
+    """A PTTL read just after a write: at most the TTL written, and not much less."""
+    return want_ms - 2_000 < ttl_ms <= want_ms
 
 
-class _LostClaim(FakeRedis):
-    """A client that always loses the SET NX and answers the follow-up GET with ``reply``, so the
-    test drives the adapter's decoding of a prior record rather than a fake server's storage."""
-
-    def __init__(self, reply: Any) -> None:
-        super().__init__()
-        self._reply = reply
-
-    async def set_nx_px(self, key: str, value: bytes, ttl_ms: int) -> bool:
-        self.set_nx_calls += 1
-        return False
-
-    async def get(self, key: str) -> Any:
-        return self._reply
+# =========================================================================
+# The kernel's vectors, replayed against a server that runs the Lua
+# =========================================================================
 
 
-@pytest.mark.parametrize(
-    "branch, reply",
-    [
-        ("bytes_reply", RECORD_BYTES),  # a default redis-py client
-        ("bytearray_reply", bytearray(RECORD_BYTES)),
-        # A client built with decode_responses=True answers with str; treating it as bytes would
-        # raise AttributeError inside the claim and surface as a bogus CodecError.
-        ("str_reply", RECORD_BYTES.decode()),
-    ],
-)
-async def test_claim_decodes_the_prior_record_from_any_client_reply(branch: str, reply: Any) -> None:
-    prior = await store(_LostClaim(reply)).claim("order-7", RECORD.payload_hash)
-    assert prior == Record(RECORD.payload_hash, pending=True)
+async def test_golden_redis_fence(ledger: Ledger) -> None:
+    """``redis_fence.json``: what each script does to a key, row by row. The rows are the kernel's
+    specification; this runs the kernel's own script bytes against them, so a typo in either script, or
+    a fake that disagreed with Redis, fails here."""
+    conn = ledger.conn()
+    for c in golden("redis_fence.json"):
+        name, key = c["name"], c["name"]
+        if c["initial"] is not None:
+            await ledger.client.set(ledger.rkey(key), c["initial"].encode(), px=c["initial_ttl_ms"])
+        args = [a.encode() if isinstance(a, str) else a for a in c["args"]]
+        reply = await conn.eval(SCRIPTS[c["script"]], [ledger.rkey(key)], args)
+        assert (reply.decode() if isinstance(reply, bytes) else reply) == c["want_reply"], name
+        held = await ledger.held(key)
+        assert (held.decode() if held is not None else None) == c["want_value"], name
+        if c["want_ttl_ms"] is not None:
+            assert near(await ledger.pttl(key), c["want_ttl_ms"]), name
 
 
-async def test_complete_of_an_unencodable_result_is_terminal() -> None:
-    """A result the record codec cannot serialize fails identically on every redelivery, so it must
-    stay the terminal ``CodecError``. Typing it as the transient ``StoreError`` (the fate of anything
-    raised inside the client guard) would nack the same command until the broker gave up."""
-    conn = FakeRedis()
-    with pytest.raises(edax.CodecError, match="not JSON-encodable") as caught:
-        await store(conn).complete("order-7", Record(RECORD.payload_hash, result=object()))
-    assert caught.value.terminal is True
-    assert conn.map == {}  # nothing was written: the encode failed before the SET
-
-
-async def test_complete_under_a_malformed_owner_token_is_terminal() -> None:
-    """The kernel refuses to frame a value under a token it would never mint. That verdict is the
-    terminal ``CodecError``, not the transient ``StoreError`` the client guard hands out: a value the
-    kernel will not build is not built on the retry either."""
-    conn = FakeRedis()
-    s = store(conn)
-    await s.claim("order-7", RECORD.payload_hash)
-    s._owned["order-7"] = "not-a-fence-token"  # what a corrupted or foreign token would leave behind
-    with pytest.raises(edax.CodecError, match="owner token is") as caught:
-        await s.complete("order-7", RECORD)
-    assert caught.value.terminal is True
+# =========================================================================
+# Construction: a misconfigured store fails when built, not on every dispatch
+# =========================================================================
 
 
 @pytest.mark.parametrize(
-    "branch, stored, want",
+    "branch, settings, match",
     [
-        # The record half will not parse; the owner token in front of it is well formed.
-        ("unreadable_record", OWNER.encode() + b"{not json", "unreadable"),
-        # The value is too short to carry an owner token at all, so the split itself refuses it.
-        ("shorter_than_the_owner_token", b"{not json", "shorter than the 32-character owner token"),
+        ("empty_prefix", {"prefix": ""}, "prefix is empty"),
+        ("zero_ttl", {"ttl_ms": 0}, "ttl_ms is 0 ms"),
+        ("negative_claim_ttl", {"claim_ttl_ms": -5}, "claim_ttl_ms is -5 ms"),
+        ("float_ttl", {"ttl_ms": 2.5}, "ttl_ms must be a whole number"),
+        ("bool_ttl", {"ttl_ms": True}, "ttl_ms must be a whole number"),
+        ("ttl_past_the_largest_exact_integer", {"ttl_ms": 2**53}, "from 1 to 9007199254740991"),
+        ("zero_deadline", {"op_timeout_ms": 0}, "a deadline must be positive"),
+        ("float_deadline", {"op_timeout_ms": 1.5}, "op_timeout_ms must be a whole number"),
+        ("heartbeat_on_a_claim_ttl_too_short_to_divide", {"heartbeat": True, "claim_ttl_ms": 2}, "needs 3"),
     ],
 )
-async def test_claim_of_an_unreadable_value_is_terminal(branch: str, stored: bytes, want: str) -> None:
-    """A stored value that will not read back fails the same way on every retry, so it is a terminal
-    ``CodecError``; retrying or replaying it would loop until the TTL."""
-    conn = FakeRedis()
-    conn.map["idem:k1"] = (stored, TTL_MS)
-    with pytest.raises(edax.CodecError, match=want) as caught:
-        await store(conn).claim("k1", 42)
+def test_a_misconfigured_store_is_refused_when_built(
+    branch: str, settings: dict[str, Any], match: str
+) -> None:
+    """Every refused setting fails identically on every write, so it is the terminal ``BadHandle`` at
+    construction. Accepted, a zero or float TTL would fail every ``complete`` on the server as a
+    transient ``StoreError``, and the handler would re-run on every redelivery."""
+    kwargs: dict[str, Any] = {"prefix": "idem:", **settings}
+    prefix = kwargs.pop("prefix")
+    with pytest.raises(edax.BadHandle, match=match) as caught:
+        RedisIdempotencyStore(AsyncRedisClient(fakeredis.FakeAsyncRedis()), prefix, **kwargs)
     assert caught.value.terminal is True, branch
 
 
-class _RegisteredScript:
-    """What ``register_script`` hands back: a callable that sends EVALSHA with ``keys`` / ``args``
-    and only falls back to the source the server already holds."""
-
-    def __init__(self, calls: list[tuple[str, tuple, dict]], source: str, returns: Any) -> None:
-        self._calls = calls
-        self._source = source
-        self._returns = returns
-
-    async def __call__(self, keys: list[str], args: list[Any]) -> Any:
-        self._calls.append(("evalsha", (self._source,), {"keys": keys, "args": args}))
-        return self._returns
+@pytest.mark.parametrize(
+    "client", [fakeredis.FakeRedis(), redis.Redis()], ids=["fakeredis_sync", "redis_py_sync"]
+)
+def test_a_sync_client_is_refused_when_wrapped(client: Any) -> None:
+    """A sync client's calls return values, not awaitables, so every call would fail the same way:
+    terminal, and at wiring time."""
+    with pytest.raises(edax.BadHandle, match=r"needs a redis\.asyncio client"):
+        AsyncRedisClient(client)
 
 
-class _SpyRedisPy:
-    """Records the redis-py calls the adapter makes, so the test checks the adapter's translation
-    (``px=``, ``nx=True``, the NX ``None``, the registered scripts) rather than a fake server."""
+# =========================================================================
+# claim / complete / release / extend, one branch per case
+# =========================================================================
 
-    def __init__(
-        self, set_returns: Any = True, get_returns: Optional[bytes] = None, script_returns: Any = 1
-    ) -> None:
-        self.calls: list[tuple[str, tuple, dict]] = []
-        self.registered: list[str] = []
-        self._set_returns = set_returns
-        self._get_returns = get_returns
-        self._script_returns = script_returns
 
-    def register_script(self, source: str) -> _RegisteredScript:
-        self.registered.append(source)
-        return _RegisteredScript(self.calls, source, self._script_returns)
+def settled(handle: bytes, record: Record = RECORD) -> bytes:
+    return _edax.redis_settled_value(handle, edax.command.encode_record(record))
 
-    async def get(self, key: str) -> Optional[bytes]:
-        self.calls.append(("get", (key,), {}))
-        return self._get_returns
 
-    async def set(self, key: str, value: bytes, **kwargs: Any) -> Any:
-        self.calls.append(("set", (key, value), kwargs))
-        return self._set_returns
+async def test_claim_branches(ledger: Ledger) -> None:
+    s = ledger.store()
+    other = _edax.redis_new_claim(HASH)
 
-    async def delete(self, key: str) -> int:
-        self.calls.append(("delete", (key,), {}))
-        return 1
+    won = await s.claim("free", HASH)
+    assert isinstance(won, Won) and await ledger.held("free") == won.handle, "the handle is the value written"
+    assert near(await ledger.pttl("free"), CLAIM_TTL_MS), "a claim lives for the claim TTL"
+    assert _held_record(won.handle).pending
+
+    await ledger.client.set(ledger.rkey("held"), other, px=TTL_MS)
+    assert await s.claim("held", HASH) == Record(HASH, pending=True), "another's claim reads as pending"
+    assert await ledger.held("held") == other, "and is left alone"
+
+    await ledger.client.set(ledger.rkey("settled"), settled(other), px=TTL_MS)
+    assert await s.claim("settled", HASH) == RECORD, "a settled key replays its record"
+
+
+OWNER = b"0" * 32
 
 
 @pytest.mark.parametrize(
-    "branch, client, call, want_calls, want",
+    "branch, stored, want_hash, cause",
     [
         (
-            "get_returns_the_stored_bytes",
-            _SpyRedisPy(get_returns=RECORD_BYTES),
-            lambda c: c.get("idem:order-7"),
-            [("get", ("idem:order-7",), {})],
-            RECORD_BYTES,
+            "unversioned_value",
+            b"{not json",
+            42,
+            "stored value has layout version '{'; this kernel reads version '1'",
+        ),
+        ("too_short_for_a_token", b"1abc", 42, "stored value has no 32-character owner token"),
+        (
+            "not_utf8",
+            b"1" + OWNER + b"\xff",
+            42,
+            "stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 33",
+        ),
+        ("unreadable_record", b"1" + OWNER + b"{not json", 42, "key must be a string at line 1 column 2"),
+        (
+            "torn_record_keeps_no_hash",
+            b"1" + OWNER + b'{"payload_hash":11258580006047770801,"res',
+            42,
+            "EOF while parsing a string at line 1 column 41",
         ),
         (
-            "set_px_sets_the_ttl_without_nx",
-            _SpyRedisPy(),
-            lambda c: c.set_px("idem:order-7", RECORD_BYTES, TTL_MS),
-            [("set", ("idem:order-7", RECORD_BYTES), {"px": TTL_MS})],
-            None,
-        ),
-        (
-            "set_nx_px_won_is_true",
-            _SpyRedisPy(set_returns=True),
-            lambda c: c.set_nx_px("idem:order-7", RECORD_BYTES, TTL_MS),
-            [("set", ("idem:order-7", RECORD_BYTES), {"px": TTL_MS, "nx": True})],
-            True,
-        ),
-        # redis-py reports a lost NX as None, not False; the adapter must not read it as "won".
-        (
-            "set_nx_px_lost_none_is_false",
-            _SpyRedisPy(set_returns=None),
-            lambda c: c.set_nx_px("idem:order-7", RECORD_BYTES, TTL_MS),
-            [("set", ("idem:order-7", RECORD_BYTES), {"px": TTL_MS, "nx": True})],
-            False,
-        ),
-        (
-            "delete_removes_the_key",
-            _SpyRedisPy(),
-            lambda c: c.delete("idem:order-7"),
-            [("delete", ("idem:order-7",), {})],
-            None,
-        ),
-        (
-            "set_px_if_prefix_calls_the_registered_script",
-            _SpyRedisPy(script_returns=1),
-            lambda c: c.set_px_if_prefix("idem:order-7", OWNER.encode(), RECORD_BYTES, TTL_MS),
-            [
-                (
-                    "evalsha",
-                    (SET_IF_PREFIX,),
-                    {"keys": ["idem:order-7"], "args": [OWNER.encode(), RECORD_BYTES, TTL_MS]},
-                )
-            ],
-            True,
-        ),
-        # The fence reports a lost claim as 0, which the adapter must read as False, not truthy.
-        (
-            "delete_if_prefix_lost_the_fence_is_false",
-            _SpyRedisPy(script_returns=0),
-            lambda c: c.delete_if_prefix("idem:order-7", OWNER.encode()),
-            [("evalsha", (DEL_IF_PREFIX,), {"keys": ["idem:order-7"], "args": [OWNER.encode()]})],
-            False,
+            "wrong_type_keeps_the_stored_hash",
+            b"1" + OWNER + b'{"payload_hash":11258580006047770801,"pending":"settling"}',
+            HASH,
+            'invalid type: string "settling", expected a boolean',
         ),
     ],
 )
-async def test_async_redis_client_translates_each_seam_call(
-    branch: str,
-    client: _SpyRedisPy,
-    call: Callable[[AsyncRedisClient], Awaitable[Any]],
-    want_calls: list,
-    want: Any,
+async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
+    ledger: Ledger, branch: str, stored: bytes, want_hash: int, cause: str
 ) -> None:
-    got = await call(AsyncRedisClient(client))
-    assert got == want and got.__class__ is want.__class__
-    assert client.calls == want_calls
+    """A stored value no reader can decode, at either layer (the frame or the record half), still holds its
+    key, and nobody can settle it. The claim reads the kernel's terminal codec failure, as every SDK does,
+    and leaves the value alone; the guard replays it as ``CachedFailure`` on every redelivery, so the
+    handler never runs and the dispatcher dead-letters it. The failure keeps the stored hash where it
+    reads, else the claimant's."""
+    await ledger.client.set(ledger.rkey("k1"), stored, px=TTL_MS)
+    failed = Record(want_hash, error=f"unreadable idempotency record: {cause}", error_code="codec")
+    assert await ledger.store().claim("k1", 42) == failed, branch
+    assert await ledger.held("k1") == stored, f"{branch}: the claim wrote nothing"
+
+    runs = 0
+
+    async def handler(cmd: Charge) -> None:
+        nonlocal runs
+        runs += 1
+
+    bus = CommandBus(idempotent(ledger.store(), lambda c: c.request_id))
+    bus.register("Charge", handler)
+    # `Charge("k1")` hashes to neither 42 nor HASH: a stored hash that reads makes it a reused key.
+    replay = edax.PayloadMismatch if want_hash == HASH else edax.CachedFailure
+    for attempt in ("first delivery", "redelivery"):
+        with pytest.raises(replay) as caught:
+            await bus.dispatch(Charge("k1"))
+        error = caught.value
+        assert error.terminal, f"{branch}: {attempt}"
+        if isinstance(error, edax.CachedFailure):
+            assert error.original_code == "codec", f"{branch}: {attempt}"
+    assert runs == 0, f"{branch}: the handler never ran"
 
 
-async def test_claim_after_ttl_expiry_wins_again() -> None:
-    # The TTL bounds how long an outcome is replayable: past it the key is gone and the same command
-    # wins a fresh claim and re-runs. At-least-once by construction: size the TTL past the longest
-    # redelivery window (see the IdempotencyStore contract).
-    conn = FakeRedis()
-    s = store(conn)
-    assert await s.claim("k1", 42) is None
-    await s.complete("k1", Record(42, result=7))
-    assert await s.claim("k1", 42) is not None  # replayable inside the window
+async def test_complete_branches(ledger: Ledger) -> None:
+    s = ledger.store()
+    won = await s.claim("own", HASH)
+    assert isinstance(won, Won)
+    await s.complete("own", won.handle, RECORD)
+    assert await ledger.held("own") == settled(won.handle)
+    assert near(await ledger.pttl("own"), TTL_MS), "a record lives for the record TTL"
+    await s.complete("own", won.handle, RECORD)  # a re-sent complete settles on the same value
+    assert await s.claim("own", HASH) == RECORD
 
-    conn.now_ms = TTL_MS + 1  # the record expired
-    assert await s.claim("k1", 42) is None, "an expired key is claimable again"
-
-    # completing after the re-claim writes a record with a fresh TTL, replayable once more
-    await s.complete("k1", Record(42, result=8))
-    again = await s.claim("k1", 42)
-    assert again is not None and again.result == 8
-
-
-async def test_a_pending_claim_expires_on_the_claim_ttl_not_the_record_ttl() -> None:
-    """The two TTLs bound different things. A pending claim blocks its key only until
-    ``claim_ttl_ms``, so a worker that dies mid-handler cannot block it for the record's whole
-    retention — which is what one shared 24-hour value used to do."""
-    conn = FakeRedis()
-    s = store(conn, claim_ttl_ms=LAPSES)
-
-    assert await s.claim("order-7", RECORD.payload_hash) is None  # won, and then the worker dies
-    conn.now_ms += LAPSES + 1  # past the claim TTL, far short of the record TTL
-
-    other = store(conn, claim_ttl_ms=LAPSES)
-    assert await other.claim("order-7", RECORD.payload_hash) is None, "the key is free again"
+    lapsed = await s.claim("lapsed", HASH)
+    assert isinstance(lapsed, Won)
+    await ledger.lapse("lapsed")
+    with pytest.raises(
+        edax.StoreError, match="redis complete 'lapsed': the claim expired and was taken over"
+    ):
+        await s.complete("lapsed", lapsed.handle, RECORD)
+    assert await ledger.held("lapsed") is None, "no ghost key written over a lapsed claim"
 
 
-async def test_a_completed_record_outlives_the_claim_ttl() -> None:
-    """The converse: once the outcome is recorded it must survive for the dedup window, or a
-    redelivery inside that window re-runs the handler instead of replaying."""
-    conn = FakeRedis()
-    s = store(conn, claim_ttl_ms=LAPSES)
-
-    await s.claim("order-7", RECORD.payload_hash)
-    await s.complete("order-7", RECORD)
-    conn.now_ms += LAPSES + 1  # past the claim TTL
-
-    prior = await store(conn).claim("order-7", RECORD.payload_hash)
-    assert prior == RECORD, "the terminal record still replays"
+async def test_complete_of_an_unencodable_result_is_terminal_and_writes_nothing(ledger: Ledger) -> None:
+    """A result the record codec cannot serialize fails identically on every redelivery, so it must stay
+    the terminal ``CodecError``, raised before any I/O."""
+    s = ledger.store()
+    won = await s.claim("order-7", HASH)
+    assert isinstance(won, Won)
+    with pytest.raises(edax.CodecError, match="not JSON-encodable") as caught:
+        await s.complete("order-7", won.handle, Record(HASH, result=object()))
+    assert caught.value.terminal is True
+    assert await ledger.held("order-7") == won.handle, "nothing was written"
 
 
-async def test_a_worker_that_lost_its_claim_cannot_complete_over_the_new_holder() -> None:
-    """The fence. A claim expires mid-handler, another worker takes the key, and the first worker
-    finally finishes. Its ``complete`` must not overwrite the new holder's claim — the outcome it
-    carries belongs to a run nobody is waiting for any more — and it must say so rather than
-    reporting a success it did not record."""
-    conn = FakeRedis()
-    slow = store(conn, claim_ttl_ms=LAPSES)
-    fast = store(conn, claim_ttl_ms=LAPSES)
+def foreign_handles(own: bytes) -> list[tuple[str, bytes]]:
+    """Handles no claim of this store returned: each must be refused before any I/O."""
+    return [
+        ("empty", b""),
+        ("truncated_to_a_prefix", own[:3]),
+        ("bare_owner_token", own[1:33]),
+        ("uppercase_owner_token", own[:1] + own[1:33].upper() + own[33:]),
+        ("a_settled_value", settled(own)),
+    ]
 
-    assert await slow.claim("order-7", RECORD.payload_hash) is None
-    conn.now_ms += LAPSES + 1  # the slow worker's claim lapses while it is still working
-    assert await fast.claim("order-7", RECORD.payload_hash) is None, "the second worker takes over"
 
+@pytest.mark.parametrize("op", ["complete", "release", "extend"])
+async def test_a_handle_the_kernel_never_minted_is_refused_before_any_io(ledger: Ledger, op: str) -> None:
+    """A fence that compares only a prefix of the caller's width lets an empty token re-create an expired
+    key and a one-character token overwrite a live claim. A malformed handle is a terminal ``CodecError``
+    and the key is untouched."""
+    s = ledger.store()
+    won = await s.claim("order-7", HASH)
+    assert isinstance(won, Won)
+    calls: dict[str, Callable[[bytes], Awaitable[Any]]] = {
+        "complete": lambda h: s.complete("order-7", h, RECORD),
+        "release": lambda h: s.release("order-7", h),
+        "extend": lambda h: s.extend("order-7", h),
+    }
+    for name, handle in foreign_handles(won.handle):
+        with pytest.raises(edax.CodecError, match=r"claim handle is not a claim|owner token") as caught:
+            await calls[op](handle)
+        assert caught.value.terminal is True, name
+        assert await ledger.held("order-7") == won.handle, f"{name}: the key was touched"
+
+
+async def test_release_branches(ledger: Ledger) -> None:
+    s = ledger.store()
+    won = await s.claim("own", HASH)
+    assert isinstance(won, Won)
+    await s.release("own", won.handle)
+    assert await ledger.held("own") is None
+    await s.release("own", won.handle)  # releasing an absent key is a no-op
+    await s.release("never-claimed", won.handle)
+
+    # The complete landed, its reply was lost, and the guard releases. The record stays.
+    done = await s.claim("done", HASH)
+    assert isinstance(done, Won)
+    await s.complete("done", done.handle, RECORD)
+    await s.release("done", done.handle)
+    assert await s.claim("done", HASH) == RECORD, "a release never deletes a settled record"
+
+
+async def test_extend_branches(ledger: Ledger) -> None:
+    s = ledger.store()
+    won = await s.claim("own", HASH)
+    assert isinstance(won, Won)
+    await ledger.client.pexpire(ledger.rkey("own"), 500)
+    assert await s.extend("own", won.handle) is True
+    assert near(await ledger.pttl("own"), CLAIM_TTL_MS), "the lease is back to the claim TTL"
+
+    await s.complete("own", won.handle, RECORD)
+    assert await s.extend("own", won.handle) is False, "a settled record is no lease to extend"
+    assert near(await ledger.pttl("own"), TTL_MS), "and keeps its record TTL"
+    assert await s.extend("never-claimed", won.handle) is False
+    assert await ledger.held("never-claimed") is None, "no key created"
+
+
+# =========================================================================
+# two claims on one key in one store instance
+# =========================================================================
+
+
+# The takeover itself (a lapsed claim's complete refused, its release deleting nothing, a third claim
+# losing to the live one) is `IdempotencyStoreContract.test_a_lapsed_claim_settles_nothing_for_its_old_owner`,
+# which `TestRedisIdempotencyStore` runs. Extending is Redis's alone.
+
+
+async def test_a_stale_owner_cannot_extend_the_new_holders_lease(ledger: Ledger) -> None:
+    s = ledger.store()
+    a = await s.claim("k", HASH)
+    assert isinstance(a, Won)
+    await ledger.lapse("k")
+    b = await s.claim("k", HASH)
+    assert isinstance(b, Won)
+    await ledger.client.pexpire(ledger.rkey("k"), 900)
+    assert await s.extend("k", a.handle) is False, "the stale owner learns its lease is gone"
+    assert await ledger.pttl("k") <= 900, "and the new holder's TTL was not touched"
+
+
+@pytest.mark.parametrize("first_to_finish", ["stale", "live"])
+async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
+    ledger: Ledger, first_to_finish: str
+) -> None:
+    """Two claims on one key, through the guard. Two dispatches of one request share one bus and one
+    store. A's handler outlives its claim, and B takes the key over while A still runs. Whichever finishes
+    first, A's complete is refused: exactly one dispatch reports success and the ledger holds B's result.
+    Without the fence, A finishing first would complete over B's live claim and B would then write over
+    it, so both would report success. Both handlers ran, which is the documented at-least-once window a
+    lapse opens; the fence makes the ledger say so. Barriers order every step."""
+    store = ledger.store()
+    a_lapsed, b_started, a_finished, b_finished = (asyncio.Event() for _ in range(4))
+    runs: list[str] = []
+
+    async def handler(cmd: Charge) -> str:
+        runs.append("A" if not runs else "B")
+        me = runs[-1]
+        if me == "A":
+            await ledger.lapse(cmd.request_id)  # A's claim runs out mid-handler
+            a_lapsed.set()
+            await (b_started if first_to_finish == "stale" else b_finished).wait()
+        else:
+            b_started.set()
+            if first_to_finish == "stale":
+                await a_finished.wait()
+        return f"charged by {me}"
+
+    bus = CommandBus(idempotent(store, key=lambda c: c.request_id))
+    bus.register(Charge.type, handler)
+
+    first = asyncio.create_task(bus.dispatch(Charge("req-1")))
+    await a_lapsed.wait()
+    second = asyncio.create_task(bus.dispatch(Charge("req-1")))
+    if first_to_finish == "stale":
+        with pytest.raises(edax.StoreError, match="taken over"):
+            await first
+        a_finished.set()
+        assert await second == "charged by B"
+    else:
+        assert await second == "charged by B"
+        b_finished.set()
+        with pytest.raises(edax.StoreError, match="taken over"):
+            await first
+
+    assert runs == ["A", "B"]
+    assert await bus.dispatch(Charge("req-1")) == "charged by B", "the redelivery replays B's outcome"
+    assert runs == ["A", "B"], "and runs no handler"
+
+
+async def test_an_acknowledged_claim_lost_in_a_failover_is_one_more_at_least_once_window(
+    ledger: Ledger,
+) -> None:
+    """Redis replicates asynchronously, so a claim the primary acknowledged can be missing on the promoted
+    replica (``docs/backends/redis.md``, Durability). The key is then free and a second worker wins it:
+    both handlers run. The ledger stays consistent: the first worker's complete is refused, and the
+    second's outcome is the one recorded. Deleting the key models the promotion."""
+    a_store, b_store = ledger.store(), ledger.store()
+    a = await a_store.claim("k", HASH)
+    assert isinstance(a, Won)
+    await ledger.lapse("k")  # the replica that took over never saw the claim
+    b = await b_store.claim("k", HASH)
+    assert isinstance(b, Won)
+    await b_store.complete("k", b.handle, Record(HASH, result="B"))
     with pytest.raises(edax.StoreError, match="taken over"):
-        await slow.complete("order-7", RECORD)
-
-    held = await conn.get("idem:order-7")
-    assert held is not None and decode_record(_edax.redis_split_value(held).record).pending, (
-        "still the new holder's"
-    )
-
-    # And the new holder's own completion still works.
-    await fast.complete("order-7", RECORD)
-    assert await store(conn).claim("order-7", RECORD.payload_hash) == RECORD
+        await a_store.complete("k", a.handle, Record(HASH, result="A"))
+    assert await a_store.claim("k", HASH) == Record(HASH, result="B")
 
 
-async def test_a_worker_that_lost_its_claim_cannot_release_the_new_holders() -> None:
-    """The same fence on the delete path, which is the one that silently loses work: an unfenced
-    ``DEL`` here frees a key another worker is actively holding, so two handlers run for it."""
-    conn = FakeRedis()
-    slow = store(conn, claim_ttl_ms=LAPSES)
-    fast = store(conn, claim_ttl_ms=LAPSES)
-
-    await slow.claim("order-7", RECORD.payload_hash)
-    conn.now_ms += LAPSES + 1
-    await fast.claim("order-7", RECORD.payload_hash)
-
-    await slow.release("order-7")  # the lapsed worker gives up
-    prior = await store(conn).claim("order-7", RECORD.payload_hash)
-    assert prior is not None and prior.pending, "the new holder's claim survived the stale release"
+# =========================================================================
+# Lost replies, deadlines, error replies
+# =========================================================================
 
 
-async def test_the_fence_scripts_are_registered_once_not_shipped_per_call() -> None:
-    """Both Lua bodies are registered at construction, so each settled claim sends a hash instead
-    of the script source. Shipping the source on every ``eval`` costs a few hundred bytes per
-    dispatch on the hot path."""
-    client = _SpyRedisPy(script_returns=1)
-    adapter = AsyncRedisClient(client)
-    assert client.registered == [SET_IF_PREFIX, DEL_IF_PREFIX]
+async def test_a_claim_whose_reply_was_lost_and_resent_is_won(ledger: Ledger) -> None:
+    """redis-py re-sends a command whose reply was lost. The re-sent claim finds the claim its first send
+    wrote; the kernel reads its own value back as won, so the handler runs once. A store that read its own
+    claim as another's would raise ``InProgress`` on every redelivery until the claim TTL ran out."""
+    conn = LostReply(ledger.conn(), CLAIM_SCRIPT, resend=True)
+    runs: list[str] = []
 
-    for _ in range(3):
-        await adapter.set_px_if_prefix("idem:order-7", OWNER.encode(), RECORD_BYTES, TTL_MS)
-        await adapter.delete_if_prefix("idem:order-7", OWNER.encode())
-    assert client.registered == [SET_IF_PREFIX, DEL_IF_PREFIX], "re-registered on a later call"
-    assert len(client.calls) == 6
+    async def handler(cmd: Charge) -> str:
+        runs.append(cmd.request_id)
+        return "charged"
 
-
-async def test_a_failed_release_keeps_the_fence_for_the_retry() -> None:
-    """The delete is what the fence protects, so the token may only be dropped once the delete has
-    landed. Dropping it first leaves a failed ``DEL`` with the claim still in Redis and this caller
-    no longer holding its token — and the retry then issues an unfenced ``DEL`` that frees whatever
-    claim replaced it."""
-    conn = FakeRedis()
-    slow = store(conn, claim_ttl_ms=LAPSES)
-    fast = store(conn, claim_ttl_ms=LAPSES)
-
-    await slow.claim("order-7", RECORD.payload_hash)
-    conn.fail = True
-    with pytest.raises(edax.StoreError, match="redis release 'order-7'"):
-        await slow.release("order-7")
-    conn.fail = False
-
-    # The claim lapses and another worker takes it over before the release is retried.
-    conn.now_ms += LAPSES + 1
-    await fast.claim("order-7", RECORD.payload_hash)
-    await slow.release("order-7")
-
-    prior = await store(conn).claim("order-7", RECORD.payload_hash)
-    assert prior is not None and prior.pending, "the retried release deleted the new holder's claim"
+    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus.register(Charge.type, handler)
+    assert await bus.dispatch(Charge("req-1")) == "charged"
+    assert runs == ["req-1"] and not conn.armed
 
 
-async def test_a_refused_complete_keeps_the_fence_for_the_compensating_release() -> None:
-    """A refused ``complete`` is answered by the guard with ``release``, so the token may only be
-    dropped once the fence has served that release too. Dropping it inside ``complete`` leaves the
-    lapsed worker holding none, and its ``release`` then issues the plain unconditional ``DEL`` that
-    deletes the live claim of the worker which took the key over."""
-    conn = FakeRedis()
-    slow = store(conn, claim_ttl_ms=LAPSES)
-    fast = store(conn, claim_ttl_ms=LAPSES)
-
-    await slow.claim("order-7", RECORD.payload_hash)
-    conn.now_ms += LAPSES + 1  # the slow worker's claim lapses while it is still working
-    assert await fast.claim("order-7", RECORD.payload_hash) is None, "the second worker takes over"
-
-    with pytest.raises(edax.StoreError, match="taken over"):
-        await slow.complete("order-7", RECORD)
-    await slow.release("order-7")  # what the guard does next
-
-    prior = await store(conn).claim("order-7", RECORD.payload_hash)
-    assert prior is not None and prior.pending, "the compensating release deleted the new holder's claim"
-    assert "order-7" not in slow._owned, "the token outlived the release that consumed it"
+async def test_a_claim_whose_reply_was_lost_for_good_is_held_for_the_claim_ttl_only(ledger: Ledger) -> None:
+    """With no re-send the claim raises, the guard cannot know whether it landed, and compensates nothing:
+    no handle came back to release with. The key stays pending for the claim TTL, not the record TTL."""
+    conn = LostReply(ledger.conn(), CLAIM_SCRIPT, resend=False)
+    store = ledger.store(conn)
+    with pytest.raises(edax.StoreError, match="redis claim 'req-1': connection reset") as caught:
+        await store.claim("req-1", HASH)
+    assert caught.value.terminal is False
+    assert near(await ledger.pttl("req-1"), CLAIM_TTL_MS)
+    assert await store.claim("req-1", HASH) == Record(HASH, pending=True), "a redelivery sees InProgress"
 
 
-async def test_a_refused_complete_through_the_guard_does_not_free_the_new_holders_key() -> None:
-    """The same takeover through a real dispatch, which is how it reaches a user: the handler
-    succeeds, ``complete`` is refused because the claim lapsed mid-handler, and the guard answers
-    that with ``release``. Two handlers running one key is exactly what the fence exists to
-    prevent."""
+@pytest.mark.parametrize("resend", [False, True], ids=["reply_lost", "reply_lost_then_resent"])
+async def test_a_complete_whose_reply_was_lost_keeps_the_record(ledger: Ledger, resend: bool) -> None:
+    """The complete lands and its reply is lost. Without a re-send the dispatch fails and the guard
+    releases, and that release must not delete the record of committed work: the redelivery replays it
+    and the handler ran once. A release that matched the token in front of the record would delete it,
+    and the redelivery would charge twice."""
+    conn = LostReply(ledger.conn(), COMPLETE_SCRIPT, resend=resend)
+    runs: list[str] = []
 
-    @dataclass
-    class Deposit:
-        request_id: str
-        type: ClassVar[str] = "Deposit"
+    async def handler(cmd: Charge) -> str:
+        runs.append(cmd.request_id)
+        return "charged"
 
-    conn = FakeRedis()
-    ledger = store(conn, claim_ttl_ms=LAPSES)
-    taker = store(conn, claim_ttl_ms=LAPSES)
+    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus.register(Charge.type, handler)
+    if resend:
+        assert await bus.dispatch(Charge("req-1")) == "charged"
+    else:
+        with pytest.raises(edax.StoreError, match="redis complete 'req-1'"):
+            await bus.dispatch(Charge("req-1"))
+    assert await bus.dispatch(Charge("req-1")) == "charged", "the redelivery replays the record"
+    assert runs == ["req-1"], "the handler ran once"
 
-    async def handler(cmd: Deposit) -> str:
-        # The handler outruns its claim, and another worker takes the key over while it still runs.
-        conn.now_ms += LAPSES + 1
-        assert await taker.claim(cmd.request_id, RECORD.payload_hash) is None
-        return "done"
 
-    bus = edax.command.CommandBus(edax.command.idempotent(ledger, key=lambda c: c.request_id))
-    bus.register(Deposit.type, handler)
+async def test_a_release_whose_reply_was_lost_still_frees_the_key(ledger: Ledger) -> None:
+    """A transient failure releases the claim; the release lands and its reply is lost. The handler's own
+    error is the verdict, and the key is free for the redelivery."""
+    conn = LostReply(ledger.conn(), RELEASE_SCRIPT, resend=False)
+    attempts: list[int] = []
 
-    with pytest.raises(edax.StoreError, match="taken over"):
-        await bus.dispatch(Deposit("req-A"))
+    async def handler(cmd: Charge) -> str:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("downstream timed out")
+        return "charged"
 
-    held = await conn.get("idem:req-A")
-    assert held is not None and decode_record(_edax.redis_split_value(held).record).pending, (
-        "the guard's compensating release deleted the taker's live claim"
-    )
+    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus.register(Charge.type, handler)
+    with pytest.raises(RuntimeError, match="downstream timed out"):
+        await bus.dispatch(Charge("req-1"))
+    assert await ledger.held("req-1") is None
+    assert await bus.dispatch(Charge("req-1")) == "charged"
+
+
+class _Silent:
+    """A connection that never answers: a server that hangs, or a network that drops every packet."""
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        await asyncio.Event().wait()
+
+
+async def test_a_call_with_no_reply_fails_at_the_deadline() -> None:
+    """The deadline bounds each call, client retries included, so a hung server costs a dispatch
+    ``op_timeout_ms`` and not redis-py's ten retries of five seconds."""
+    store = RedisIdempotencyStore(_Silent(), "idem:", op_timeout_ms=20)
+    with pytest.raises(edax.StoreError, match="redis claim 'k': no reply within 20 ms") as caught:
+        await store.claim("k", HASH)
+    assert caught.value.terminal is False
+
+
+class _ScriptRaises:
+    """A ``redis.asyncio`` client whose every script raises ``error``, as redis-py builds it."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def execute_command(self, *args: Any, **options: Any) -> Any:  # what marks an async client
+        raise AssertionError("unused")
+
+    def register_script(self, source: str) -> Callable[..., Awaitable[Any]]:
+        async def run(keys: list[bytes], args: list[Any]) -> Any:
+            raise self._error
+
+        return run
+
+
+@pytest.mark.parametrize(
+    "branch, error, want, terminal",
+    [
+        # Built as redis-py's parser builds them: a mapped prefix is stripped and kept in status_code.
+        ("invalid_expire_time", redis.exceptions.ResponseError("invalid expire time", status_code="ERR"), edax.BadHandle, True),
+        ("no_permission", redis.exceptions.NoPermissionError("no permissions", status_code="NOPERM"), edax.BadHandle, True),
+        ("wrong_password", redis.exceptions.AuthenticationError("invalid password", status_code="WRONGPASS"), edax.BadHandle, True),
+        ("wrong_type", redis.exceptions.ResponseError("WRONGTYPE Operation against a key"), edax.CodecError, True),
+        ("read_only_replica_in_a_failover", redis.exceptions.ReadOnlyError("read only replica", status_code="READONLY"), edax.StoreError, False),
+        ("loading", redis.exceptions.BusyLoadingError("loading", status_code="LOADING"), edax.StoreError, False),
+        ("connection_reset", redis.exceptions.ConnectionError("reset by peer"), edax.StoreError, False),
+        ("client_timeout", redis.exceptions.TimeoutError("timed out"), edax.StoreError, False),
+        ("value_not_utf8_under_decode_responses", UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad"), edax.CodecError, True),
+    ],
+)  # fmt: skip
+async def test_a_client_failure_carries_the_kernels_verdict(
+    branch: str, error: BaseException, want: type[edax.EdaxError], terminal: bool
+) -> None:
+    """A deterministic failure (``WRONGTYPE``, a refused command or credential, a value the client cannot
+    decode) fails the same way on every retry, so it is terminal; a passing state (a replica during
+    failover, a connection reset) is transient. The kernel's ``reply_error`` reads the reply's prefix. Were
+    every failure a transient ``StoreError``, the handler would re-run forever."""
+    store = RedisIdempotencyStore(AsyncRedisClient(cast(Any, _ScriptRaises(error))), "idem:")
+    with pytest.raises(want, match="redis claim 'order-7'") as caught:
+        await store.claim("order-7", HASH)
+    assert caught.value.terminal is terminal, branch
+    assert caught.value.__cause__ is not None
+
+
+async def test_a_hash_under_the_key_is_a_terminal_wrongtype(ledger: Ledger) -> None:
+    """The same verdict from a real server: a hash where the ledger expects a string."""
+    await ledger.client.hset(ledger.rkey("k"), "field", "value")
+    with pytest.raises(edax.CodecError, match="WRONGTYPE") as caught:
+        await ledger.store().claim("k", HASH)
+    assert caught.value.terminal is True
+
+
+async def test_a_client_that_decodes_replies_reads_the_same_ledger() -> None:
+    """``decode_responses=True`` answers ``str``; the store reads it back as the kernel's bytes, so a prior
+    record, an own re-sent claim and a value that is not UTF-8 get the same verdicts as with bytes."""
+    server = fakeredis.FakeServer()
+    raw = fakeredis.FakeAsyncRedis(server=server)
+    text = fakeredis.FakeAsyncRedis(server=server, decode_responses=True)
+    store = RedisIdempotencyStore(AsyncRedisClient(text), "idem:")
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    await store.complete("k", won.handle, RECORD)
+    assert await store.claim("k", HASH) == RECORD
+
+    resent = RedisIdempotencyStore(LostReply(AsyncRedisClient(text), CLAIM_SCRIPT, resend=True), "idem:")
+    assert isinstance(await resent.claim("fresh", HASH), Won)
+
+    await raw.set(b"idem:binary", b"1" + b"\xff" * 40)
+    with pytest.raises(edax.CodecError, match="not UTF-8") as caught:
+        await store.claim("binary", HASH)
+    assert caught.value.terminal is True
+
+
+async def test_each_script_is_registered_once_and_sent_by_digest(ledger: Ledger) -> None:
+    """Every script is registered on first use and reused, so a dispatch sends a digest, not the source,
+    and every SDK's digest is the same because the body is the kernel's."""
+    registered: list[str] = []
+    client = ledger.client
+    original = client.register_script
+
+    def spy(source: str) -> Any:
+        registered.append(source)
+        return original(source)
+
+    client.register_script = spy
+    store = ledger.store()
+    for n in range(3):
+        won = await store.claim(f"k{n}", HASH)
+        assert isinstance(won, Won)
+        await store.complete(f"k{n}", won.handle, RECORD)
+    assert registered == [CLAIM_SCRIPT, COMPLETE_SCRIPT]
+
+
+# =========================================================================
+# Lease renewal
+# =========================================================================
+
+
+class Beats:
+    """The heartbeat's sleep, stepped by the test: the renewal parks here, and :meth:`beat` lets it run
+    one renewal and waits until it parks again or ends. No wall clock is involved."""
+
+    def __init__(self) -> None:
+        self.asked: list[float] = []
+        self._go = asyncio.Event()
+        self._parked = asyncio.Event()
+
+    async def sleep(self, seconds: float) -> None:
+        self.asked.append(seconds)
+        self._parked.set()
+        await self._go.wait()
+        self._go.clear()
+
+    async def beat(self, task: asyncio.Task[None]) -> None:
+        await self._parked.wait()
+        self._parked.clear()
+        self._go.set()
+        parked = asyncio.ensure_future(self._parked.wait())
+        await asyncio.wait({parked, task}, return_when=asyncio.FIRST_COMPLETED)
+        parked.cancel()
+
+
+def heartbeat_store(ledger: Ledger, conn: Any | None = None) -> tuple[RedisIdempotencyStore, Beats]:
+    beats = Beats()
+    return ledger.store(conn, heartbeat=True, sleep=beats.sleep), beats
+
+
+async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> None:
+    store, beats = heartbeat_store(ledger)
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    task = store._renewals[won.handle]
+    for _ in range(2):
+        await ledger.client.pexpire(ledger.rkey("k"), 500)
+        await beats.beat(task)
+        assert near(await ledger.pttl("k"), CLAIM_TTL_MS), "renewed to the claim TTL"
+    assert beats.asked == [CLAIM_TTL_MS / 3000] * 3, "every third of the claim TTL"
+    await store.complete("k", won.handle, RECORD)
+    await asyncio.sleep(0)
+    assert task.cancelled() and store._renewals == {}, "settling stops the renewal"
+
+
+@pytest.mark.parametrize("settle", ["release", "refused_complete"])
+async def test_every_settlement_stops_the_heartbeat(ledger: Ledger, settle: str) -> None:
+    """A renewal that outlived its settlement would hold a key nobody settles: every settle path stops it,
+    a refused one included."""
+    store, _ = heartbeat_store(ledger)
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    task = store._renewals[won.handle]
+    if settle == "release":
+        await store.release("k", won.handle)
+    else:
+        await ledger.lapse("k")
+        with pytest.raises(edax.StoreError, match="taken over"):
+            await store.complete("k", won.handle, RECORD)
+    await asyncio.sleep(0)
+    assert task.cancelled() and store._renewals == {}
+
+
+async def test_a_heartbeat_that_finds_its_claim_taken_over_stops(
+    ledger: Ledger, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The renewal is fenced like every write: once another worker holds the key, the old owner's beat is
+    refused, it says so, and it never touches the new holder's lease."""
+    store, beats = heartbeat_store(ledger)
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    task = store._renewals[won.handle]
+    await ledger.lapse("k")
+    taker = await ledger.store().claim("k", HASH)
+    assert isinstance(taker, Won)
+    await ledger.client.pexpire(ledger.rkey("k"), 900)
+    with caplog.at_level(logging.WARNING, logger="edax.backend.redis"):
+        await beats.beat(task)
+    assert task.done() and not task.cancelled()
+    assert "was lost before it settled" in caplog.text
+    assert await ledger.pttl("k") <= 900, "the new holder's lease was not extended"
+
+
+class _ExtendFails:
+    """A connection whose extend fails with ``error`` once, then works."""
+
+    def __init__(self, inner: AsyncRedisClient, error: BaseException) -> None:
+        self._inner = inner
+        self._error: BaseException | None = error
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        if script == EXTEND_SCRIPT and self._error is not None:
+            error, self._error = self._error, None
+            raise error
+        return await self._inner.eval(script, keys, args)
+
+
+@pytest.mark.parametrize(
+    "branch, error, keeps_beating",
+    [
+        ("transient_failure_retries_next_beat", redis.exceptions.ConnectionError("reset"), True),
+        ("terminal_failure_stops", edax.BadHandle("redis replied NOPERM"), False),
+    ],
+)
+async def test_a_failed_beat(ledger: Ledger, branch: str, error: BaseException, keeps_beating: bool) -> None:
+    store, beats = heartbeat_store(ledger, _ExtendFails(ledger.conn(), error))
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    task = store._renewals[won.handle]
+    await beats.beat(task)
+    assert task.done() is not keeps_beating, branch
+    if keeps_beating:
+        await ledger.client.pexpire(ledger.rkey("k"), 500)
+        await beats.beat(task)
+        assert near(await ledger.pttl("k"), CLAIM_TTL_MS), "the next beat renewed"
+    await store.release("k", won.handle)
+
+
+# =========================================================================
+# Two workers, one key: a property over claim, run, settle, extend, lapse and lost replies
+# =========================================================================
+
+
+@dataclass(frozen=True)
+class Step:
+    worker: int
+    op: str  # claim, run, complete, release, extend, lapse
+    fault: str  # none, lost, resent
+
+
+steps = st.lists(
+    st.builds(
+        Step,
+        st.integers(0, 1),
+        st.sampled_from(["claim", "run", "complete", "release", "extend", "lapse"]),
+        st.sampled_from(["none", "none", "lost", "resent"]),
+    ),
+    min_size=1,
+    max_size=30,
+)
+
+
+async def _two_workers(history: list[Step]) -> None:
+    """Replays ``history`` against fakeredis and checks the ledger's invariants after every step:
+    - a settled record, once written, is never deleted or overwritten (no record TTL runs here);
+    - at most one worker's outcome ever lands, so at most one side effect is recorded as the outcome;
+    - at most one worker's handle is the live claim.
+    ``lapse`` is the claim TTL running out: it removes a pending claim, never a record."""
+    client = fakeredis.FakeAsyncRedis()
+    ledger = Ledger(client, "idem:")
+    held: dict[int, bytes] = {}  # worker -> the handle of the claim it believes it holds
+    ran: set[int] = set()  # workers whose handler ran under their current claim
+    landed: set[bytes] = set()  # every settled value the key ever held
+    record: bytes | None = None
+    script_of = {
+        "claim": CLAIM_SCRIPT,
+        "complete": COMPLETE_SCRIPT,
+        "release": RELEASE_SCRIPT,
+        "extend": EXTEND_SCRIPT,
+    }
+
+    async def observe() -> bytes | None:
+        """Read the key and check every invariant against what it holds now."""
+        nonlocal record
+        value = await ledger.held("k")
+        if value is not None and not _held_record(value).pending:
+            landed.add(value)
+            record = record or value
+        assert len(landed) <= 1, f"two outcomes landed: {landed}"
+        assert record is None or value == record, f"the settled record was deleted or replaced: {value!r}"
+        assert sum(1 for h in held.values() if h == value) <= 1, "two workers hold the live claim"
+        return value
+
+    for s in history:
+        w = s.worker
+        conn: Any = ledger.conn()
+        if s.fault != "none" and s.op in script_of:
+            conn = LostReply(conn, script_of[s.op], resend=s.fault == "resent")
+        store = ledger.store(conn)
+        try:
+            if s.op == "claim" and w not in held:
+                claimed = await store.claim("k", HASH)
+                if isinstance(claimed, Won):
+                    held[w] = claimed.handle
+            elif s.op == "run" and w in held:
+                ran.add(w)
+            elif s.op == "complete" and w in ran:
+                handle = held.pop(w)
+                ran.discard(w)
+                try:
+                    await store.complete("k", handle, Record(HASH, result=f"worker {w}"))
+                finally:
+                    # Checked between the two writes, then the guard's compensation runs whatever the
+                    # complete did: a release that deleted a landed record must not hide behind it.
+                    await observe()
+                    await ledger.store().release("k", handle)
+            elif s.op == "release" and w in held:
+                ran.discard(w)
+                await store.release("k", held.pop(w))
+            elif s.op == "extend" and w in held:
+                await store.extend("k", held[w])
+            elif s.op == "lapse":
+                value = await ledger.held("k")
+                if value is not None and _held_record(value).pending:
+                    await ledger.lapse("k")
+        except edax.StoreError:
+            pass  # a lost reply or a refused complete: the property is about what the ledger holds
+        await observe()
+
+
+@settings(max_examples=300, deadline=None)
+@given(history=steps)
+def test_two_workers_on_one_key_never_land_two_outcomes(history: list[Step]) -> None:
+    asyncio.run(_two_workers(history))
+
+
+# =========================================================================
+# The conformance suite, with the takeover and concurrency clauses, against real Lua
+# =========================================================================
+
+
+class TestRedisIdempotencyStore(IdempotencyStoreContract):
+    claims_expire = True
+    stores_raw_records = True
+
+    @pytest.fixture
+    def idempotency_store(self, ledger: Ledger) -> Any:
+        return ledger.store()
+
+    async def expire_claim(self, idempotency_store: Any, key: str) -> None:
+        await idempotency_store._conn._client.delete(idempotency_store._key(key))
+
+    async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
+        # The record half of a well-framed value: what a torn or foreign record write leaves behind.
+        value = b"1" + OWNER + raw.encode()
+        await idempotency_store._conn._client.set(idempotency_store._key(key), value, px=TTL_MS)

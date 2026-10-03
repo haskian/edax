@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from . import _edax
 
-CORRELATION_ID = "correlation_id"
-CAUSATION_ID = "causation_id"
+#: The metadata key constant across one logical flow, read from the kernel rather than restated.
+CORRELATION_ID: str = _edax.correlation_id_key()
+#: The metadata key naming the event that directly caused this one.
+CAUSATION_ID: str = _edax.causation_id_key()
 
 
 def propagate(parent_metadata: dict[str, str], parent_event_id: str) -> dict[str, str]:

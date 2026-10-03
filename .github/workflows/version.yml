@@ -36,7 +36,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Which increment the commits imply is pure git, so it is decided before the toolchain is
-      # installed: roughly two pushes in five imply no release, and those pay nothing.
+      # installed: a push that implies no release skips the install.
       - id: increment
         run: |
           set -euo pipefail
@@ -76,9 +76,8 @@ jobs:
       - if: steps.increment.outputs.increment != ''
         uses: ./.github/actions/setup
 
-      # No release-worthy commit since the last tag (docs, chore, ci, refactor, perf) is the
-      # ordinary case, not a failure — and cog's exit code cannot report it, because cog exits 0
-      # whether it bumped or not.
+      # No release-worthy commit since the last tag (docs, chore, ci, refactor, perf) is a normal
+      # outcome. cog's exit code cannot report it, because cog exits 0 whether it bumped or not.
       - id: bump
         env:
           INCREMENT: ${{ steps.increment.outputs.increment }}

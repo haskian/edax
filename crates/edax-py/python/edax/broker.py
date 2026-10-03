@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Optional, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
-from ._async import maybe_await
 from .aggregate import Event, EventEnvelope
-from .dispatcher import AckFn, Delivery, KeyOrderedDispatcher
+from .dispatcher import AckFn, Delivery, KeyOrderedDispatcher, LiveFn, _always_live
+from .errors import is_terminal
+
+__all__ = [
+    "Consumer",
+    "KeyFn",
+    "Producer",
+    "UNDECODABLE",
+    "UndecodableDelivery",
+]
+
 
 logger = logging.getLogger("edax.broker")
 
@@ -26,13 +36,17 @@ UNDECODABLE = "edax.undecodable"
 class Producer(Protocol):
     """Publishes an envelope to the broker (encode + send). What an adapter must guarantee:
 
-    * ``publish`` returns only after the broker has durably accepted the message, leader ack or stronger.
-      Returning early lets the relay mark the outbox row published before the message exists: a lost event.
-    * On failure ``publish`` raises and the relay leaves the whole batch unmarked. Never swallow errors.
+    * ``publish`` returns only after every in-sync replica has the message (Kafka ``acks=all``), not the
+      leader alone. Returning early lets the relay mark the outbox row published before the message is
+      durable: a leader that fails before a follower copied it loses the event, and the outbox row says
+      it was sent.
+    * On failure ``publish`` raises: the relay marks the rows before it and hands that row and the rest back.
+      Never swallow errors.
     * The message key is ``aggregate_id``, or a function of it, so a per-key-ordered broker delivers one
       aggregate's events in ``sequence`` order.
     * Delivery is at-least-once: a crash between publish and ``mark_published`` publishes the envelope
-      again, so consumers dedup by ``env.id`` or by ``dedup`` on ``sequence``.
+      again, so consumers dedup by ``env.id`` (:func:`~edax.router.idempotent_by_id`), or drop a stale
+      ``sequence`` with :func:`~edax.is_stale`.
     * ``publish`` is called serially by one relay; it need not be thread-safe or reentrant.
     """
 
@@ -51,13 +65,17 @@ class Consumer(Protocol):
     * Ack means exactly this message. The dispatcher acks out of order, so an offset-based broker must track
       a per-partition watermark and commit only below the lowest unacked offset. A bare "commit current
       position" acknowledges messages still in flight and loses them on restart.
-    * Nack means redeliver, possibly behind later same-key messages already acked. Handlers tolerate that.
-    * Each delivery is settled exactly once, ack or nack, from any worker task on the same loop.
-    * Overall semantics are at-least-once: a crash before ``ack`` redelivers, so handlers are idempotent.
+    * Nack means redeliver. A log-based broker rewinds the partition, so the nacked message and every later
+      one, acked or not, come back in order; it retires the deliveries it already handed out
+      (``Delivery.live``) so a later one never runs ahead. Handlers tolerate the duplicates.
+    * Nothing redelivers a delivery left unsettled while the consumer lives: the loop settles every one.
+    * Each delivery is settled at most once, ack or nack, from any worker task on the same loop; a retired
+      one is not settled at all.
+    * Overall semantics are at-least-once: a crash before the commit redelivers, so handlers are idempotent.
     * ``run`` submits deliveries until cancelled or ``poll`` returns ``None``; the mixin provides it.
     """
 
-    async def poll(self) -> Optional[Delivery]: ...
+    async def poll(self) -> Delivery | None: ...
     async def run(self, dispatcher: KeyOrderedDispatcher) -> None: ...
 
 
@@ -67,7 +85,15 @@ class UndecodableDelivery(Delivery):
     :attr:`envelope` is only a stand-in carrying the raw payload under :data:`UNDECODABLE`."""
 
     def __init__(
-        self, payload: bytes, message_id: str, on_ack: AckFn, on_nack: AckFn, error: BaseException
+        self,
+        payload: bytes,
+        message_id: str,
+        on_ack: AckFn,
+        on_nack: AckFn,
+        error: BaseException,
+        *,
+        live: LiveFn = _always_live,
+        origin: Any = None,
     ) -> None:
         # `message_id` is the only identifier an undecodable payload has, so it becomes the stand-in id.
         envelope = EventEnvelope(
@@ -79,56 +105,56 @@ class UndecodableDelivery(Delivery):
             timestamp=0,
             sequence=None,
         )
-        super().__init__(envelope, on_ack, on_nack)
+        super().__init__(envelope, on_ack, on_nack, live=live, origin=origin)
         self.error = error
-
-
-async def _dead_letter(dispatcher: KeyOrderedDispatcher, poison: UndecodableDelivery) -> None:
-    """Settle a poison message through the dispatcher's dead-letter hook, the route a terminal handler
-    failure takes. The ack is the point: without it the transport's watermark pins on the message and the
-    consumer crash-loops after every restart. With no hook wired the message nacks, loud but never lost."""
-    # Read through the public accessors, because routing the poison message through `submit` would hand
-    # a handler an envelope with no event in it. Reported here, the one point every adapter's poison
-    # message passes, so a `Consumer` needs no observer of its own.
-    dispatcher.observer.undecodable(poison.envelope.id, poison.error)
-    on_dead = dispatcher.on_dead
-    if on_dead is None:
-        await poison.nack()
-        return
-    await maybe_await(on_dead(poison, poison.error))
-    await poison.ack()
 
 
 class _ConsumerLoop:
     """Mixin: :meth:`run` submits each :meth:`poll` result until cancelled or ``poll`` returns ``None``."""
 
-    async def poll(self) -> Optional[Delivery]:  # pragma: no cover - overridden
+    async def poll(self) -> Delivery | None:  # pragma: no cover - overridden
         raise NotImplementedError
 
     async def run(self, dispatcher: KeyOrderedDispatcher) -> None:
+        # Consecutive failed polls, for the backoff step; a poll that returns resets it.
+        failures = 0
         while True:
-            delivery = await self.poll()
+            try:
+                delivery = await self.poll()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # A terminal failure repeats on every poll: fail fast rather than loop on it.
+                if is_terminal(e):
+                    raise
+                # A transient one (a record middleware whose key service blipped) must not end the
+                # loop, because nothing would poll again. The poll already handed its message back.
+                logger.warning(
+                    "edax consumer: poll failed (%d in a row); retrying after a backoff step",
+                    failures + 1,
+                    exc_info=True,
+                )
+                await dispatcher.pacing.wait(failures)
+                failures += 1
+                continue
+            failures = 0
             if delivery is None:
                 return
+            if isinstance(delivery, UndecodableDelivery):
+                try:
+                    await dispatcher.settle_poison(delivery, delivery.error)
+                except Exception:
+                    # The nack itself failed (a transport fault). The loop goes on; the delivery is the
+                    # transport's to bring back on a rebalance or a restart.
+                    logger.exception(
+                        "edax consumer: settling poison message %s failed; the loop continues",
+                        delivery.envelope.id,
+                    )
+                continue
             try:
-                if isinstance(delivery, UndecodableDelivery):
-                    try:
-                        await _dead_letter(dispatcher, delivery)
-                    except Exception:
-                        # The sink failed, not the loop. Same outcome as a raising `on_dead` on the
-                        # dispatcher route: the message stays unsettled, the broker redelivers it on its
-                        # session timeout or a restart, and the sink gets another try. Nacking instead
-                        # would re-read every offset above the poison on a seeking transport, and the
-                        # poison route has no attempt budget to stop it.
-                        logger.exception(
-                            "edax consumer: dead-lettering poison message %s failed; the loop continues",
-                            delivery.envelope.id,
-                        )
-                else:
-                    await dispatcher.submit(delivery)
+                await dispatcher.submit(delivery)
             except asyncio.CancelledError:
-                # Cancelled after `poll` took the message: settle it, or it stays unsettled until the
-                # broker session times out and the transport's watermark pins on it. One rule for both
-                # routes, so a change to it cannot land on only one.
+                # Cancelled after `poll` took the message and before a worker owns it: settle it, or it
+                # stays unsettled and the transport's watermark pins on it.
                 await delivery.nack()
                 raise

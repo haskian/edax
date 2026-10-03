@@ -9,8 +9,8 @@ transaction (:func:`~edax.command.joins_transaction`):
   after the claim is compensated by hand, and ``complete`` deliberately runs *after* the commit:
   before it, a crash in between would leave a ``done`` record over work that never landed.
 
-The table below is one case per failure window. Each asserts both halves of the outcome — how many
-times the handler ran, and whether its write is visible — because either alone can look right while
+The table below is one case per failure window. Each asserts both halves of the outcome (how many
+times the handler ran, and whether its write is visible), because either alone can look right while
 the other is wrong.
 """
 
@@ -19,15 +19,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import BrokenCommitTransactor, RefusesToSettle, RefusingLedger, SplitLedger
-from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
-from edax.command import CommandBus, Record, idempotent, joins_transaction
+from conftest import RefusingLedger
+from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
+from edax.command import Claimed, CommandBus, Record, Won, _payload_hash, idempotent, joins_transaction
 from edax.projection import Entity
 from edax.router import idempotent_by_id
+from edax.testing.faults import BrokenCommit, CommitFault, Refusing
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -51,13 +52,11 @@ class Rig:
     ``runs`` counts handler invocations; ``landed()`` reports whether the handler's write survived.
     Between them the two say what actually happened, which no single assertion does."""
 
-    def __init__(
-        self, *, shared: bool, commit: Optional[str] = None, raises: Optional[Exception] = None
-    ) -> None:
+    def __init__(self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None) -> None:
         self.db = MemoryTransactor()
         self.projections = MemoryProjectionStore(self.db)
-        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else SplitLedger()
-        self.unit: Any = BrokenCommitTransactor(self.db, commit) if commit else self.db
+        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
+        self.unit: Any = BrokenCommit(self.db, commit) if commit else self.db
         self.runs = 0
         self._raises = raises
 
@@ -87,10 +86,10 @@ class Rig:
 class Case:
     name: str
     shared: bool
-    commit: Optional[str] = None  # None | "nothing_landed" | "lost_response"
-    raises: Optional[Exception] = None
-    first: Optional[type[BaseException]] = None  # what the first dispatch raises, if anything
-    second: Optional[type[BaseException]] = None  # what the redelivery raises, if anything
+    commit: CommitFault = None
+    raises: Exception | None = None
+    first: type[BaseException] | None = None  # what the first dispatch raises, if anything
+    second: type[BaseException] | None = None  # what the redelivery raises, if anything
     runs: int = 1  # handler invocations across both dispatches
     balance: int = 100  # what the projection holds at the end
 
@@ -198,16 +197,16 @@ class Broker:
     not an assertion about the guard's internals. ``deliver`` submits one message and drains, so a
     test reads ``acked`` / ``nacked`` straight after it."""
 
-    def __init__(self, *, shared: bool, fail_first: Optional[Exception] = None, uow: bool = True) -> None:
+    def __init__(self, *, shared: bool, fail_first: Exception | None = None, uow: bool = True) -> None:
         self.db = MemoryTransactor()
         self.projections = MemoryProjectionStore(self.db)
-        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else SplitLedger()
+        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.runs = 0
         self.acked: list[bytes] = []
         self.nacked: list[bytes] = []
         self._fail_first = fail_first
 
-        async def handler(env: edax.Envelope) -> None:
+        async def handler(env: edax.EventEnvelope) -> None:
             self.runs += 1
             entity = await self.projections.get(DOC)
             if entity is None:
@@ -230,7 +229,7 @@ class Broker:
         self.dead.append(delivery.envelope.id)
 
     async def deliver(self, mid: bytes = b"msg-1") -> None:
-        env = edax.Envelope(
+        env = edax.EventEnvelope(
             id="evt-1",
             aggregate_id=DOC,
             event=edax.Event("Deposited", 1, b"100"),
@@ -251,9 +250,9 @@ class Broker:
 
 @pytest.mark.parametrize("shared", [True, False], ids=["shared_unit_of_work", "ledger_of_its_own"])
 async def test_a_nack_releases_the_claim_so_the_redelivery_reruns(shared: bool) -> None:
-    """The guarantee both modes owe: a delivery that ends in a nack must leave its key **free**.
-    A claim still held after a nack is worse than no guard at all — the broker redelivers, the
-    guard reports ``InProgress`` or replays a success that never happened, and the work is lost."""
+    """The guarantee both modes owe: a delivery that ends in a nack must leave its key free. A claim
+    still held after a nack is worse than no guard at all: the broker redelivers, the guard reports
+    ``InProgress`` or replays a success that never happened, and the work is lost."""
     broker = Broker(shared=shared, fail_first=RuntimeError("projection store unavailable"))
 
     await broker.deliver()
@@ -338,18 +337,18 @@ async def test_a_nested_unit_of_work_is_refused() -> None:
 async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     """A loser's verdict raises from inside the guard, and an over-eager compensation there would
     delete the *winner's* live claim. Only the caller that won the claim may settle it."""
-    ledger = SplitLedger()
+    ledger = MemoryLedger()
     db = MemoryTransactor()
     bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
-    await ledger.claim("req-A", _hash_of(Deposit(100, "req-A")))
+    await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
     with pytest.raises(edax.InProgress):
         await bus.dispatch(Deposit(100, "req-A"))
 
-    still_held = await ledger.claim("req-A", _hash_of(Deposit(100, "req-A")))
-    assert still_held is not None and still_held.pending, "the winner's claim survived the loser"
+    still_held = await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
+    assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
 class ClaimRaisesLedger:
@@ -358,21 +357,21 @@ class ClaimRaisesLedger:
     Records every ``release`` so a test can prove the guard made none."""
 
     def __init__(self) -> None:
-        self._inner = SplitLedger()
+        self._inner = MemoryLedger()
         self.raise_on_claim = False
         self.releases: list[str] = []
 
-    async def claim(self, key: str, payload_hash: int, tx: Optional[Any] = None) -> Optional[Record]:
+    async def claim(self, key: str, payload_hash: int, tx: Any | None = None) -> Claimed:
         if self.raise_on_claim:
             raise edax.StoreError("could not serialize access to the idempotency table")
         return await self._inner.claim(key, payload_hash, tx=tx)
 
-    async def complete(self, key: str, record: Record, tx: Optional[Any] = None) -> None:
-        await self._inner.complete(key, record, tx=tx)
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any | None = None) -> None:
+        await self._inner.complete(key, handle, record, tx=tx)
 
-    async def release(self, key: str, tx: Optional[Any] = None) -> None:
+    async def release(self, key: str, handle: bytes, tx: Any | None = None) -> None:
         self.releases.append(key)
-        await self._inner.release(key, tx=tx)
+        await self._inner.release(key, handle, tx=tx)
 
 
 async def test_a_claim_that_raises_is_not_compensated() -> None:
@@ -386,7 +385,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
-    await ledger.claim("req-A", _hash_of(cmd))  # the winner, still pending
+    await ledger.claim("req-A", _payload_hash(cmd))  # the winner, still pending
 
     ledger.raise_on_claim = True
     with pytest.raises(edax.StoreError):
@@ -394,8 +393,8 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
 
     assert ledger.releases == [], "a failed claim must not be compensated"
     ledger.raise_on_claim = False
-    still_held = await ledger.claim("req-A", _hash_of(cmd))
-    assert still_held is not None and still_held.pending, "the winner's claim survived the loser"
+    still_held = await ledger.claim("req-A", _payload_hash(cmd))
+    assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
 class InsufficientFunds(Exception):
@@ -404,8 +403,9 @@ class InsufficientFunds(Exception):
     terminal: ClassVar[bool] = True
 
 
-class RefusingSplitLedger(RefusesToSettle, SplitLedger):
+def RefusingMemoryLedger() -> Any:
     """The split-store twin, where no rollback is coming and retention is what frees the key."""
+    return Refusing(MemoryLedger(), "complete", "release")
 
 
 @dataclass
@@ -447,7 +447,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
     ``max_attempts`` instead of dead-lettering on the first attempt.
     """
     db = MemoryTransactor()
-    ledger: Any = RefusingLedger(db) if case.shared else RefusingSplitLedger()
+    ledger: Any = RefusingLedger(db) if case.shared else RefusingMemoryLedger()
     runs = 0
 
     async def handler(cmd: Deposit) -> None:
@@ -473,7 +473,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
 
     if case.shared:
         # The host's rollback is what frees the claim, so the key is clear for a redelivery.
-        assert await ledger.claim("req-A", _hash_of(cmd)) is None
+        assert isinstance(await ledger.claim("req-A", _payload_hash(cmd)), Won)
     else:
         # No rollback is coming: the claim stays pending until the store's retention frees it. That
         # is the documented residual cost of a ledger of its own, not a leak.
@@ -487,20 +487,14 @@ async def test_joins_transaction_defaults_to_false_for_an_undeclared_store() -> 
     the compensating path, because a needless release costs one no-op delete while a skipped one
     leaves a ``done`` record over work that rolled back."""
 
-    # SplitLedger declares nothing, exactly like a store written before the attribute existed.
-    assert joins_transaction(SplitLedger()) is False
+    # ClaimRaisesLedger declares nothing, exactly like a store written before the attribute existed.
+    assert joins_transaction(ClaimRaisesLedger()) is False
     assert joins_transaction(MemoryIdempotencyStore()) is True
-    assert joins_transaction(SplitLedger()) is False
+    assert joins_transaction(MemoryLedger()) is False, "the shipped ledger of its own declares it"
 
 
 async def _never_completes(cmd: Any) -> None:
     raise AssertionError("the handler must not run when the claim is already held")
-
-
-def _hash_of(cmd: Any) -> int:
-    from edax.command import _payload_hash
-
-    return _payload_hash(cmd)
 
 
 # =========================================================================
@@ -529,8 +523,8 @@ class History:
     def __init__(self, shared: bool) -> None:
         self.db = MemoryTransactor()
         self.projections = MemoryProjectionStore(self.db)
-        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else SplitLedger()
-        self.unit = BrokenCommitTransactor(self.db, None)
+        self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
+        self.unit = BrokenCommit(self.db, None)
         self.shared = shared
 
         async def handler(cmd: Deposit) -> int:
@@ -563,20 +557,19 @@ class History:
     async def record(self, key: int) -> Any:
         """The key's stored record, read by claiming it. Only ever called after the history is
         over, so taking the claim cannot perturb what it reports."""
-        return await self.ledger.claim(str(key), _hash_of(Deposit(0, str(key))))
+        return await self.ledger.claim(str(key), _payload_hash(Deposit(0, str(key))))
 
 
 @given(ops=st.lists(op, max_size=8), shared=st.booleans())
 @settings(max_examples=300, deadline=None)
 def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared: bool) -> None:
-    """The invariant **both** modes owe, and the one whose absence silently drops work: a key that
-    reads back as a completed success must have had its handler's write land at least once.
+    """The invariant both modes owe: a key that reads back as a completed success must have had its
+    handler's write land at least once. Without it, work drops silently.
 
-    The converse is what separates the modes, and is asserted here too: with a shared unit of work
-    the count is *exactly* one, because the claim and the write are one commit. With a ledger of
-    its own it may be two — a commit that landed and lost its reply releases the claim over work
-    that survived — which is at-least-once, and the reason split mode may never be called
-    effectively-once.
+    The converse separates the modes, and is asserted here too: with a shared unit of work the count
+    is *exactly* one, because the claim and the write are one commit. With a ledger of its own it may
+    be two, because a commit that landed and lost its reply releases the claim over work that
+    survived. That is at-least-once, and the reason split mode may never be called effectively-once.
     """
 
     async def check() -> None:
@@ -585,7 +578,7 @@ def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared
         for key in range(3):
             applied = await history.applied(key)
             record = await history.record(key)
-            done = record is not None and not record.pending and record.error is None
+            done = not isinstance(record, Won) and not record.pending and record.error is None
             if done:
                 assert applied >= 1, f"key {key}: a done record over work that never landed"
                 if shared:
@@ -595,3 +588,53 @@ def test_a_done_record_never_covers_work_that_did_not_land(ops: list[Op], shared
                 assert applied == 0, f"key {key}: work landed without a record to show for it"
 
     asyncio.run(check())
+
+
+# =========================================================================
+# a ledger over another database than the guard's unit of work
+# =========================================================================
+
+
+@pytest.mark.parametrize("guard", ["idempotent", "idempotent_by_id"])
+@pytest.mark.parametrize("handler_fails", [False, True], ids=["handler_succeeds", "handler_fails"])
+async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
+    guard: str, handler_fails: bool
+) -> None:
+    """A ``joins_transaction`` ledger wired over another database than ``unit_of_work``: the guard's
+    transaction is not the ledger's, so the claim must not land outside it. Left to find no ambient tx of
+    its own, the store would auto-commit: a success would leave a ``done`` record the guard's commit never
+    covered, and a failed handler would roll back its work and leave the key pending for good. The guard
+    hands the store its transaction, which the store refuses with the terminal ``BadHandle`` before the
+    handler runs, so the dispatcher dead-letters the wiring mistake."""
+    db, other = MemoryTransactor(), MemoryTransactor()
+    ledger = MemoryIdempotencyStore(other)
+    runs = 0
+
+    async def handler(message: Any) -> None:
+        nonlocal runs
+        runs += 1
+        if handler_fails:
+            raise RuntimeError("projection store unavailable")
+
+    env = edax.EventEnvelope(
+        id="evt-1",
+        aggregate_id=DOC,
+        event=edax.Event("Deposited", 1, b'{"amount":100}'),
+        namespace={},
+        metadata={},
+        timestamp=1_714_564_800_000_000_000,
+        sequence=1,
+    )
+    if guard == "idempotent":
+        bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
+        bus.register("Deposit", handler)
+        dispatched, key = bus.dispatch(Deposit(100, "req-A")), "req-A"
+    else:
+        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db))
+        router.register("Deposited", handler)
+        dispatched, key = router.dispatch(env), env.id
+    with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):
+        await dispatched
+    assert runs == 0, "refused at the claim, before the handler ran"
+    assert isinstance(await ledger.claim(key, 0), Won), "no claim landed outside the guard's transaction"
+    assert (db.open_count(), other.open_count()) == (0, 0), "the guard's transaction rolled back"

@@ -1,20 +1,28 @@
 """Event router: dispatch an envelope to the handler registered for its event name, through a middleware
 chain. The read-side mirror of :class:`~edax.command.CommandBus`. No kernel is involved in routing: which
-worker handles an event is already decided by ``partition``/``rendezvous``. Pass ``router.dispatch`` to a
+worker handles an event is already decided by ``partition``. Pass ``router.dispatch`` to a
 :class:`~edax.dispatcher.KeyOrderedDispatcher` and events route by name with same-aggregate order preserved,
 and :func:`idempotent_by_id` is the consume-path middleware. See ``docs/sdk/consuming.md``."""
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
-from . import _edax
+from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from .aggregate import EventEnvelope
-from .command import IdempotencyStore, _guarded
+from .command import IdempotencyStore, _compose, _Guard, _guarded
 from .errors import AlreadyRegistered
 from .observe import Observer, _wrap
 from .store import Transactor
+
+__all__ = [
+    "EventHandler",
+    "EventMiddleware",
+    "EventRouter",
+    "idempotent_by_id",
+]
+
 
 EventHandler = Callable[[EventEnvelope], MaybeAwaitable[None]]
 EventMiddleware = Callable[[EventHandler], EventHandler]
@@ -25,15 +33,13 @@ class EventRouter:
     handler at :meth:`register` time, first middleware outermost. An event with no registered handler goes to
     ``on_unhandled``, also wrapped, or is ignored if that is unset; an ignored event runs no middleware."""
 
-    def __init__(self, *middleware: EventMiddleware, on_unhandled: Optional[EventHandler] = None) -> None:
+    def __init__(self, *middleware: EventMiddleware, on_unhandled: EventHandler | None = None) -> None:
         self._handlers: dict[str, EventHandler] = {}
         self._middleware = middleware
         self._on_unhandled = self._wrap(on_unhandled) if on_unhandled is not None else None
 
     def _wrap(self, handler: EventHandler) -> EventHandler:
-        for mw in reversed(self._middleware):
-            handler = mw(handler)
-        return handler
+        return _compose(self._middleware, handler)
 
     def register(self, name: str, handler: EventHandler) -> None:
         if name in self._handlers:
@@ -58,15 +64,16 @@ class EventRouter:
 
 def idempotent_by_id(
     store: IdempotencyStore,
-    unit_of_work: Optional[Transactor] = None,
+    unit_of_work: Transactor | None = None,
     *,
-    observer: Optional[Observer] = None,
+    observer: Observer | None = None,
 ) -> EventMiddleware:
     """Run a handler at most once per event ``id``, so a broker redelivery does not repeat its side effect.
-    Composes anywhere a handler is accepted. The key is ``env.id``, the hash the kernel's over the raw
-    ``event.data`` bytes. Without ``unit_of_work`` the store enlists in the ambient
-    :func:`~edax.store.current_tx`, which exists only if the host opened it outside this guard: a dispatcher
-    worker has none. ``unit_of_work`` closes that gap, so a failure of the commit releases the claim.
+    Composes anywhere a handler is accepted. The key and the hash are the kernel's rule
+    (``testdata/golden/event_idempotency.json``): ``env.id``, and FNV-1a over the raw ``event.data``
+    bytes. Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.store.current_tx`, which
+    exists only if the host opened it outside this guard: a dispatcher worker has none. ``unit_of_work``
+    closes that gap, so a failure of the commit releases the claim.
 
     Unlike :func:`~edax.command.idempotent`, no caller awaits an event handler's result, so a redelivery of
     a completed event skips silently. A redelivery while another worker holds the claim raises transient
@@ -81,10 +88,10 @@ def idempotent_by_id(
 
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(env: EventEnvelope) -> None:
-            hash_ = _edax.payload_hash(env.event.data)
-            await _guarded(
-                store, env.event.name, env.id, hash_, lambda: maybe_await(next_(env)), unit_of_work, observe
-            )
+            with errors.mapped():
+                rule = _edax.event_idempotency(env)
+            guard = _Guard(store, env.event.name, rule.key, rule.payload_hash, observe)
+            await _guarded(guard, lambda: maybe_await(next_(env)), unit_of_work)
 
         return handler
 

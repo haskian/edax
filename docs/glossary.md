@@ -42,7 +42,7 @@ vectors](kernels/golden-vectors.md).
 message key.
 
 **Envelope** — the wire form of a stored event: the event itself plus id, aggregate id, sequence,
-namespace, metadata and timestamp. `EventEnvelope` in Rust, `edax.Envelope` in Python.
+namespace, metadata and timestamp. `EventEnvelope` in Rust, `edax.EventEnvelope` in Python.
 
 **Optimistic concurrency** — `EventStore.append` and `ProjectionStore.save` are database-enforced
 compare-and-set operations on a version. A stale writer gets `ConcurrencyError` and nothing is
@@ -57,11 +57,12 @@ committed state and published events cannot diverge. `Relay` and `pump` drain it
 ## Transactions
 
 **Unit of work** — one transaction boundary that several stores share. Opened with
-`edax.transaction(store)` in Python.
+`edax.transaction(transactor)` in Python.
 
-**Ambient transaction** — the open handle a Python participant finds through `current_tx()`, carried
-in a `contextvars` variable. Rust has none; a Rust host passes the handle explicitly or publishes it
-through a `Fn() -> Tx` provider.
+**Ambient transaction** — the open handle a Python participant finds through
+`current_tx(transactor)`, keyed by its database and carried in a `contextvars` variable. Rust has
+none. A Rust host passes the handle explicitly, or publishes it to the guard through a
+`Fn(&C) -> Tx` provider keyed by the command.
 
 **`joins_transaction`** — an optional attribute an `IdempotencyStore` declares to say whether it can
 enlist in the caller's transaction. It defaults to `False`, which is the safe side. See
@@ -69,8 +70,9 @@ enlist in the caller's transaction. It defaults to `False`, which is the safe si
 
 ## Idempotency
 
-**Guard** — the idempotency middleware: `idempotent` and `idempotent_in` on the command path,
-`idempotent_by_id` and `idempotent_by_id_in` on the consume path.
+**Guard** — the idempotency middleware: `idempotent` on the command path, `idempotent_by_id` on
+the consume path. The Rust SDK adds `idempotent_in` and `idempotent_by_id_in`, which take the
+host's transaction handle.
 
 **Ledger** — the `IdempotencyStore` the guard writes to.
 
@@ -100,12 +102,17 @@ Redis ledger beside your aggregate database. Two independent commits cannot be m
 **Claim TTL** — how long a `pending` claim survives without a `complete`. It bounds how long a
 crashed worker blocks a key.
 
-**Fence** — a token a claimant holds and presents on `complete` or `release`. The store applies the
-call only when the token matches, so a losing claimant cannot settle the winner's claim.
+**Claim handle** — what a won claim returns (`Won(handle)`, `Claim::Won(ClaimHandle)`) and the
+claimant presents on `complete`, `release` and `extend`. In the Redis ledger it is the exact value the
+claim wrote.
+
+**Fence** — the check a store applies to a claim handle. The call writes only while the key still
+holds that exact claim. A claimant whose claim lapsed then cannot settle the new holder's claim, and a
+late release cannot delete a settled record.
 
 **Idempotent Consumer** — the pattern edax implements: a dedup table beside the business change.
 
-**Transactional Inbox** — the pattern edax does **not** implement. An inbox stores the message body
+**Transactional Inbox** — a pattern edax does not implement. An inbox stores the message body
 and acks the broker before processing. edax stores a key, a payload hash and an outcome, never the
 message.
 
@@ -122,8 +129,9 @@ What you get when the ledger shares the work's transaction.
 **Exactly-once** — edax does not promise it, and neither does any system built on two independent
 commits.
 
-**Partition** — the kernel's consistent-hash bucket for an aggregate id. It selects a dispatcher
-worker, so one aggregate stays ordered while other aggregates run in parallel.
+**Partition** — the kernel's local worker bucket for an aggregate id, `fnv1a32(id) % W`. It
+selects a dispatcher worker, so one aggregate stays ordered while other aggregates run in parallel.
+Broker placement is a separate decision: `edax-kafka`'s `partition_for` uses Kafka's murmur2 rule.
 
 **Settle** — to finish a delivery with `ack` or `nack`. Every delivery is settled exactly once.
 `ack` settles only that message; `nack` redelivers.
@@ -153,7 +161,7 @@ tree and has not been done. A custom serializer names its format the same way,
 **Transient** — worth retrying: `StoreError`, `ConcurrencyError`, `InProgress`.
 
 **Terminal** — never worth retrying: `CodecError`, `PayloadMismatch`, `CachedFailure`,
-`AlreadyRegistered`, `HandlerNotFound`, `BadHandle`.
+`AlreadyRegistered`, `HandlerNotFound`, `BadHandle`, `Rejected`.
 
 The kernel's `ErrorCode` carries the verdict, so no SDK restates it. See [errors](sdk/errors.md).
 
@@ -167,7 +175,7 @@ The kernel's `ErrorCode` carries the verdict, so no SDK restates it. See [errors
 evaluator that pins the match verdict. A missing or null path makes a leaf false, which is why
 `ne(p, x)` and `not_(eq(p, x))` differ.
 
-**Keyset cursor** — a base64 position token from the kernel's `query`, portable between services. A
+**Keyset cursor** — a base64url position token from the kernel's `query`, portable between services. A
 unique `id` tiebreak is appended automatically so paging never drops or repeats tied rows.
 
 **Upcast** — raising a stored event from its written version to the current one. The kernel plans

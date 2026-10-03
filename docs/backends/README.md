@@ -17,8 +17,8 @@ flowchart LR
 
 ## The seam contracts
 
-Each row is a summary. The specification is the docstring in the "Specification" column; read it
-before you implement, and prefer it over this table wherever the two read differently.
+Each list is a summary. The specification is the docstring each one names; read it before you
+implement, and trust it over this page wherever the two differ.
 
 ### `Transactor`
 
@@ -38,9 +38,12 @@ Specification: `edax.store.EventStore`.
 - `append` is a compare-and-set on the version, enforced in the database.
 - On a mismatch it raises `ConcurrencyError` and writes nothing.
 - Event rows and outbox rows commit together in the caller's `tx`.
-- `load` returns `sequence > after`, ascending and gap-free.
+- An envelope id is unique store-wide: an `append` carrying an id already stored raises `CodecError`.
+- `load` returns `sequence > after`, ascending and gap-free. The repository checks it and fails the load
+  on a gap or a repeat.
 - `load` includes the current transaction's own appends.
-- `load_snapshot` may lag the stream. It must never lead it.
+- `load_snapshot` may lag the stream. It must never lead it: `save_snapshot` refuses one past the
+  stream's version with `CodecError`, and an older snapshot never replaces a newer one.
 - `unpublished` returns committed, unmarked rows, oldest first.
 - Rows stay unmarked until `mark_published`, which is idempotent and durable.
 - Both outbox methods run outside any `tx`.
@@ -51,11 +54,17 @@ Specification: `edax.store.EventStore`.
 Specification: `edax.command.IdempotencyStore`.
 
 - `claim` is an atomic insert-if-absent, linearizable across every process sharing the ledger.
-- Exactly one concurrent claimant returns `None`. Every other returns the existing record.
+- Exactly one concurrent claimant returns `Won(handle)`. Every other returns the existing record.
 - Never a read then a write.
 - The inserted record carries `pending=True` and the given `payload_hash`, returned faithfully.
-- `complete` and `release` are idempotent.
-- `complete` and `release` refuse a key another open transaction holds.
+- `complete` and `release` take the claim's handle and are idempotent.
+- If claims can lapse, both write only while the key still holds that exact claim. A release after
+  the claim's own `complete` landed deletes nothing.
+- A `joins_transaction` store never settles a key another open transaction holds: `complete` and
+  `release` raise a transient `ConcurrencyError` and write nothing. Clause:
+  `test_a_key_another_open_transaction_holds_is_never_settled_over_it`.
+- A `joins_transaction` store raises the terminal `BadHandle` for a `tx` of another database. Clause:
+  `test_a_handle_of_another_database_is_refused`.
 - Retention outlives the longest redelivery window.
 - `payload_hash` round-trips as an unsigned 64-bit integer.
 
@@ -75,17 +84,32 @@ Specification: `edax.projection.ProjectionStore`.
 
 Specification: `edax.saga.SagaStore`.
 
-- `load` returns the stored instance, state plus version, or `None`.
-- `save` persists at `version + 1` only if the store is still at `version`.
-- `delete` removes at `version`. An absent instance is a no-op.
-- A durable backend enlists in `tx` or in the ambient `current_tx()`.
+- `load` returns the stored instance (state, version and `folded` marks, or a completed tombstone),
+  or `None`.
+- `save` keeps the `folded` marks exactly as written: opaque text the runner skips a redelivered
+  event by.
+- `save` and `complete` write at `version + 1` only if the store is still at `version`.
+- `complete` writes a tombstone; it never deletes the row. A completed instance takes no write at all.
+- The step's commands are written in the same write as the state: the saga outbox. A refused or
+  rolled-back write enqueues none.
+- `unpublished` and `mark_published` are the saga outbox's read side, as for the event outbox.
+- A durable backend enlists in `tx` or in the ambient `current_tx` of its transactor, and purges
+  tombstones by retention.
+
+### `Relay`
+
+Not a seam: the SDK's drain over any outbox. A row whose `publish` fails stops the batch; the rows
+published before it are marked. The kernel's retry policy dead-letters a terminal failure, or a
+transient one at `max_attempts`, through `on_dead`. So one poison row cannot stall the outbox. Any
+other failure is handed back after a growing backoff step. See [outbox](../sdk/outbox.md).
 
 ### `Producer`
 
 Specification: `edax.broker.Producer`.
 
-- `publish` returns only after the broker has durably accepted the message.
-- `publish` raises on failure, so the relay leaves the whole batch unmarked.
+- `publish` returns only after every in-sync replica has the message (Kafka `acks="all"`), not the
+  leader alone.
+- `publish` raises on failure, so the relay hands that row back (or dead-letters it).
 - A dispatcher `submit` is not a valid `publish`. It only enqueues.
 - The message key is the aggregate id, which preserves per-aggregate order.
 - Delivery is at-least-once.
@@ -99,9 +123,16 @@ Specification: `edax.broker.Consumer`.
 - Per-key order holds. Across keys, any order.
 - `ack` settles only that message.
 - On an offset broker that means a per-partition watermark, never "commit the current position".
-- `nack` returns the message for another attempt.
-- Every delivery is settled exactly once, by ack or by nack, possibly from another worker task.
+- `nack` returns the message for another attempt without reordering its key. A log rewinds the
+  partition and retires the deliveries of it already handed out (`Delivery.live`).
+- Nothing redelivers a delivery left unsettled while the consumer lives, so every one is settled.
+- Every delivery is settled at most once, by ack or by nack, possibly from another worker task. A
+  retired one is not settled at all.
 - Overall semantics are at-least-once.
+
+`edax.testing.BrokerContract` makes these clauses executable against your adapter, given a
+`broker_rig` (a `BrokerRig`). It checks per-key order, a nack that keeps the key's order, redelivery
+from the commit after a crash, and consumer groups.
 
 Two more rules cut across the table.
 
@@ -109,20 +140,14 @@ Two more rules cut across the table.
   else. A marshal failure is `CodecError`. Everything else is `StoreError`. See
   [errors](#3-map-your-clients-errors-onto-the-taxonomy).
 - **Transaction enlistment is uniform.** A store method given `tx=None` reads
-  `edax.store.current_tx()` and joins the ambient unit of work; with no handle and no ambient one it
-  runs standalone.
+  `edax.store.current_tx(transactor)` for its own transactor and joins that ambient unit of work.
+  With no handle and no ambient one, it runs standalone.
 
 ### Rust parity
 
-The Rust SDK declares the same seams as traits: `Transactor`, `EventStore: Transactor`,
-`IdempotencyStore<O>`, `ProjectionStore`, `SagaStore`. Two differences matter to a backend author.
-
-- Enlistment is typed, not declared. A Rust store names its handle as an associated `type Tx`, and a
-  store that needs none uses `()`. Python has no such type, so a ledger declares `joins_transaction`
-  instead.
-- There is no `Producer` / `Consumer` trait in Rust. The broker seam is the Python SDK's; the Rust
-  SDK ships only `MemoryBroker` for dev and tests. The `edax-kafka` and `edax-redis` kernels do ship
-  in Rust, so a Rust shell over them would start from the same decisions.
+The Rust SDK declares the same store seams as traits. A Rust store names its handle as an associated
+`type Tx` (`()` when it needs none), so it declares no `joins_transaction`. Rust has no `Producer` or
+`Consumer` trait. [Rust parity](../sdk/rust-parity.md) lists the rest.
 
 ## The seams and the backends that implement them today
 
@@ -155,7 +180,9 @@ classDiagram
         <<Protocol>>
         +load()
         +save()
-        +delete()
+        +complete()
+        +unpublished()
+        +mark_published()
     }
     Transactor <|.. MemoryTransactor : memory
     EventStore <|.. MemoryEventStore : memory
@@ -184,32 +211,32 @@ classDiagram
     Consumer <|.. KafkaConsumer : kafka
 ```
 
-`memory` covers every seam and is the reference implementation — see [memory](./memory.md). `redis`
-covers the ledger only, as the worked example of a store that cannot join your transaction — see
-[redis](./redis.md). `kafka` covers the broker seam — see [kafka](./kafka.md). The base package
+`memory` covers every seam and is the reference implementation; see [memory](./memory.md). `redis`
+covers the ledger only, as the worked example of a store that cannot join your transaction; see
+[redis](./redis.md). `kafka` covers the broker seam; see [kafka](./kafka.md). The base package
 depends on no broker or database library; `redis` and `kafka` wrap a client you own and construct.
 
 ## Adding a backend
 
-Adding support for a new technology is four decisions. Writing a backend, below, is the seam-by-seam
-checklist you then work through.
+Adding support for a new technology takes four decisions. Writing a backend, below, is the
+seam-by-seam checklist that follows.
 
 1. **Put every decision a second SDK must match in a kernel crate `edax-<tech>`, with a golden
    vector.** That means bytes, names, and any state machine two processes settle against.
-   `edax-kafka` holds the Kafka record and the offset watermark. `edax-redis` holds the ledger value
-   and the fence scripts. A decision left in one SDK is one the next SDK copies by hand, and then
-   drifts from.
+   `edax-kafka` holds the Kafka record and the offset watermark. `edax-redis` holds the ledger key,
+   value and scripts, and the verdict on a Redis reply. A decision left in one SDK is one the next
+   SDK copies by hand, and then drifts from.
 2. **Write the SDK adapter as an input and output (I/O) shell.** It calls the client and the kernel,
-   and decides nothing in between. Keep orchestration there: key prefixes, retry bounds, time to
-   live (TTL) defaults, and the client seam itself. `edax.backend.redis.RedisConn` is that seam for
-   Redis.
+   and decides nothing in between. Keep only the I/O there: time to live (TTL) values and their
+   defaults, deadlines, and the client seam itself. `edax.backend.redis.RedisConn` is that seam for
+   Redis: one `eval` that runs a kernel script.
 3. **Hold it to the contract tests.** The packaged suites in `edax.testing` cover the store seams.
    `crates/edax-py/tests/test_broker_contract.py` is the pattern for a broker: one rig fixture per
    adapter, one contract run over every rig. A technology-specific test then covers only what that
    technology can get wrong.
 4. **Ship it as its own wheel when it needs its own release cadence.** Until then the base package
    ships the module, and an extra installs the client. `edax[kafka]` and `edax[redis]` work that way
-   today. At the split the base wheel drops the module **and** `edax/backend/__init__.py` together.
+   today. At the split the base wheel drops the module and `edax/backend/__init__.py` together.
    That leaves `edax.backend` a namespace package, so the import path `edax.backend.<tech>` survives
    the move. A namespace package buys nothing before that point, while one wheel ships both halves.
 
@@ -225,13 +252,13 @@ followed by a write in Python holds only until two writers interleave.
 | `EventStore.append` | reject the write when the stored version moved | unique constraint on `(aggregate_id, sequence)`, or a row lock on the stream |
 | `IdempotencyStore.claim` | insert only if absent, and tell the loser it lost | `INSERT ... ON CONFLICT DO NOTHING`, then read the existing row |
 | `ProjectionStore.save` | write at `version + 1` only from `version` | `UPDATE ... WHERE version = ?`, checking the row count; a unique insert for version 1 |
-| `SagaStore.save` / `delete` | the same compare-and-set on the instance version | as above |
+| `SagaStore.save` / `complete` | the same compare-and-set on the instance version, refusing a tombstone, with the commands inserted in the same transaction | as above, plus an outbox table keyed by the command id |
 | `EventStore.unpublished` with N relays | hand each row to one relay | `SELECT ... WHERE published_at IS NULL FOR UPDATE SKIP LOCKED`, or a `leased_until` column |
 
-The last row is a choice, not a requirement. The polling contract does not lease rows, so **run one
-relay per store** unless you add leasing; two unleased relays return the same rows and publish them
+The last row is a choice, not a requirement. The polling contract does not lease rows, so run one
+relay per store unless you add leasing; two unleased relays return the same rows and publish them
 twice. The alternative is change data capture: `append` already wrote the outbox row inside the
-transaction, so a write-ahead-log consumer sees it exactly when it commits. Feed those envelopes to
+transaction, so a write-ahead-log consumer sees it when it commits. Feed those envelopes to
 `edax.store.pump` and let your change data capture (CDC) client's committed position be the
 acknowledgement.
 
@@ -243,37 +270,39 @@ and `SagaStore` take `tx` last and optional. Resolve an optional one in this ord
 order:
 
 1. the `tx` the caller passed.
-2. `edax.store.current_tx()`, the innermost active `transaction`.
-3. no transaction — auto-commit.
+2. `edax.store.current_tx(self.transactor)`, the open `transaction` over this store's database.
+3. no transaction: auto-commit.
 
-Refuse a handle that is not yours. Enlisting "anyway" silently drops the atomicity the caller asked
-for. The in-memory backend raises `BadHandle` on a foreign handle.
+Refuse a handle that is not yours. Enlisting anyway drops the atomicity the caller asked for without
+an error. The in-memory backend raises `BadHandle` on a foreign handle.
 `test_transactor.py::test_a_memory_store_refuses_a_foreign_tx` asserts it.
 
-A `Repository` inside `async with transaction(store)` joins the ambient transaction rather than opening
-a nested one, so a backend never needs savepoints.
+The ambient transaction is keyed by database, so step 2 names one. A store that is also the
+transactor (an `EventStore` that owns its pool) passes itself. A store whose transactions come from a
+shared transactor exposes it as its `transactor` attribute and passes that, so `transaction(store)`
+and `transaction(transactor)` open the same unit of work. Get this wrong and the store auto-commits
+inside the host's unit of work; the contract kit's ambient clauses catch it. See
+[transactions](../sdk/transactions.md#the-contract-in-full).
 
 ### 3. Map your client's errors onto the taxonomy
 
-The SDK branches on the *kind* of failure, never on message text. `terminal` is the kernel's verdict
+The SDK branches on the kind of failure, never on message text. `terminal` is the kernel's verdict
 per code, read at class-definition time.
 
 | Your client reports | Raise | Kind | What the SDK then does |
 |---|---|---|---|
 | the stored version did not match | `ConcurrencyError` | transient | the caller reloads the aggregate and retries |
-| connection reset, timeout, deadlock, serialization failure | `StoreError` | transient | the guard releases the claim; the dispatcher nacks and the broker redelivers |
-| a value will not marshal or a stored record will not decode | `CodecError` | terminal | the guard caches the failure; the dispatcher dead-letters instead of retrying |
+| connection reset, timeout, deadlock, serialization failure | `StoreError` | transient | the guard releases the claim; the dispatcher nacks after a backoff step and the broker redelivers |
+| a value will not marshal | `CodecError` | terminal | the guard caches the failure; the dispatcher dead-letters instead of retrying |
+| a stored record will not decode | nothing: return `decode_prior`'s record | terminal, as a cached `codec` failure | the guard replays `CachedFailure`; the handler never runs again for the key |
 
-Three traps are worth naming.
+Three traps:
 
-- **Never swallow a failed claim.** Report it — `raise StoreError` in Python,
-  `Err(Error::Store(..))` from `IdempotencyStore::claim` in Rust. Do not fold a failure into a prior
-  record. The guard reads that as a cached failure, which is terminal. The cause is then lost and a
-  transient fault is never retried. A loser inside a transaction reaches one of two outcomes: it
-  blocks on the winner's uncommitted row and then reads it, or it fails. A failure must be raised as
-  `StoreError`. Swallowing it and then reading under a stale snapshot finds no row, reports a win,
-  and runs the handler twice. Which outcome your database gives depends on its isolation level;
-  establishing that is your job as the backend author.
+- **Never swallow a failed claim.** Report it: `raise StoreError` in Python,
+  `Err(Error::store(..))` from `IdempotencyStore::claim` in Rust. Do not fold a failure into a prior
+  record. The guard reads that as a cached failure, which is terminal, so the cause is lost and a
+  transient fault is never retried. A loser inside a transaction has two correct outcomes and one
+  bug; see [idempotency](../sdk/idempotency.md#rules-and-constraints).
 - **Bound the blocking wait.** A claim is a remote call. Give it a lock or statement timeout and
   surface the expiry as `StoreError`.
 - **Keep the hash lossless.** `payload_hash` is an unsigned 64-bit number. A signed `BIGINT` column
@@ -282,20 +311,23 @@ Three traps are worth naming.
 
 A backend over a native module can reuse `edax.errors.mapped()`, which re-raises a `"<code>:
 <message>"` `RuntimeError` as the matching class. A backend over a Python client wraps its calls
-instead; `edax.backend.redis._as_store_error` is the pattern.
+instead; `edax.backend.redis.AsyncRedisClient.eval` and `RedisIdempotencyStore._eval` are the pattern.
 
 ### 4. Declare `joins_transaction` if you are a ledger
 
 Only `IdempotencyStore` needs this. The guard branches on it and cannot detect it, so declare it as
 a `ClassVar[bool]`:
 
-[Idempotency](../sdk/idempotency.md#the-two-modes) is the one home for the two guard modes, their
-orderings and the guarantee each one buys.
+```python
+class PostgresLedger:
+    joins_transaction: ClassVar[bool] = True  # claim, complete and release enlist in the caller's tx
+```
 
-`False` is the safe side. A needless compensation costs one no-op delete. A skipped one leaves a
-`done` record for work that rolled back. Declaring `True` obliges you to refuse a handle from
-another database rather than quietly auto-commit. `MemoryIdempotencyStore` declares `True`.
-`RedisIdempotencyStore` declares `False`.
+Absent means `False`, the safe side. Declaring `True` obliges you to refuse a handle from another
+database instead of auto-committing. `MemoryIdempotencyStore` declares `True`;
+`RedisIdempotencyStore` declares `False`. [Transactions](../sdk/transactions.md#joins_transaction)
+explains the default, and [idempotency](../sdk/idempotency.md#the-two-modes) the ordering each value
+selects.
 
 ### 5. Run the packaged conformance suite against it
 
@@ -314,12 +346,25 @@ class TestPostgresEventStore(EventStoreContract):
         return PostgresEventStore(pool)
 
 
+REDIS = redis.asyncio.Redis()  # the test server
+
+
 class TestRedisLedger(IdempotencyStoreContract):
-    joins_transaction = False  # a ledger of its own, so no rollback frees the claim
+    # The suite reads `joins_transaction` from the store, as the guard does. Redis declares False:
+    # a ledger of its own, so the rollback clauses skip. Its claims expire, so the takeover clauses run.
+    # It stores the kernel's record JSON, so the unreadable-record clause runs.
+    claims_expire = True
+    stores_raw_records = True
 
     @pytest.fixture
-    async def idempotency_store(self, conn):
-        return RedisIdempotencyStore(conn, prefix="test:idem:")
+    async def idempotency_store(self):
+        return RedisIdempotencyStore(AsyncRedisClient(REDIS), prefix="test:idem:")
+
+    async def expire_claim(self, idempotency_store, key):
+        await REDIS.delete(f"test:idem:{key}")  # what the claim TTL does when it runs out
+
+    async def put_raw_record(self, idempotency_store, key, raw):
+        await REDIS.set(f"test:idem:{key}", b"1" + b"0" * 32 + raw.encode())  # a torn row, unchecked
 ```
 
 Install with `pip install edax[test]` and set `asyncio_mode = "auto"` in your pytest configuration.
@@ -327,39 +372,29 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 
 | Contract | Fixture | Covers |
 |---|---|---|
-| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, an honoured `limit`, and the backlog count when `supports_unpublished_count` is on |
-| `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and *not* advancing on a conflict, independence per id |
-| `SagaStoreContract` | `saga_store` | an unknown correlation reading `None`, state round trip, compare-and-set on concurrent folds, a versioned delete |
-| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor unless `joins_transaction = False` | a free key won, a second claim losing and reading the winner's record, a completed result and a cached failure replaying, release freeing the key, releasing an absent key, the payload hash surviving as unsigned 64-bit, and a rollback freeing the claim when the ledger joins |
+| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
+| `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and not advancing on a conflict, independence per id, a save with no `tx` joining the ambient transaction, two writers at one version landing exactly one save, a staged row invisible to another transaction, and kernel paging when `supports_kernel_queries` is on |
+| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown correlation reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
+| `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key. With `stores_raw_records` and a `put_raw_record` hook: a record no reader can decode read as the kernel's cached `codec` failure, keeping the stored hash where it reads |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that
-cannot apply: `supports_rollback`, `supports_snapshots`, `supports_outbox`, `joins_transaction`,
-`supports_kernel_queries`, `supports_unpublished_count`. The defaults describe a transactional SQL
-backend, the strictest case.
+cannot apply. The flags are `supports_rollback`, `supports_snapshots`, `supports_outbox`,
+`supports_transactions`, `supports_kernel_queries`, `supports_unpublished_count`, `claims_expire`
+and `stores_raw_records`. The defaults describe a transactional SQL backend, the strictest case.
+The suite takes no `joins_transaction` flag. It reads the store's own declaration, the one the guard
+acts on, so a wrong declaration fails the clauses it governs instead of being restated beside them.
+
+Each seam with an optional `tx` has a clause for the ambient path too. The guards and the saga runner
+call a store with no `tx` inside `transaction(...)`, so that is the path production runs. A store
+that joins an explicit `tx` and auto-commits without one passes every explicit clause.
 Loosen them deliberately: every flag you turn off is a guarantee your callers lose.
 
-`edax.testing.faults` wraps any store to inject the failure a dict cannot fake. `LostResponse` lets
-the write **land** and then raises as though the reply never arrived. `Refusing` fails without
-writing. Both delegate rather than subclass, so they work over your store as well as the in-tree
-ones.
-
-The suite is not exhaustive, and one clause it cannot reach matters. Compare-and-set done by reading
-in Python and then writing passes every single-threaded test here. It loses updates under real
-concurrency. Get it from the database, per step 1.
-
-#### Beyond the packaged suite
-
-These in-tree suites go further than the package does, and are worth reading rather than running:
-
-| Suite | What it executes | Rust mirror |
-|---|---|---|
-| `test_broker_contract.py` | the `Producer` / `Consumer` contract over every in-tree adapter, parameterized by a rig fixture | — |
-| `test_model.py` (`P2`) | the `claim` / `complete` / `release` contract over random operation histories against a pure reference model | `crates/edax/tests/model.rs` |
-| `test_unit_of_work.py` | both guard orderings, one case per failure window | `crates/edax/tests/unit_of_work.rs` |
-
-`test_redis.py` and `test_kafka.py` are backend-specific by design: they cover what only that
-technology can get wrong (the fence, the commit watermark), and defer the seam contract to the
-suites above.
+`edax.testing.faults` wraps any store to inject the failure a dict cannot fake, such as a write
+that lands and loses its reply. The race clauses force the interleaving a read-then-write store
+loses, and need an async driver. A store that passes them can still lose under contention they do
+not produce, so get compare-and-set from the database anyway, per step 1.
+[Testing](../guides/testing.md#the-packaged-conformance-suite) covers the fault wrappers, the race
+and isolation clauses, and the in-tree suites a host can point at its own backend.
 
 ## What a backend must never do
 
@@ -367,9 +402,10 @@ suites above.
 It owns the record's wire shape, the filter semantics, the total order over JSON values and the
 error taxonomy. A backend may sort its own JSON keys, compute its own hash, or decide for itself
 that a record counts as a replay. It will agree with the other SDK until the first non-ASCII field
-name, and then stop. Read the record with `edax.command.decode_record`, write it with
-`encode_record`, and hand the prior record back to the guard unjudged. See
-[kernels](../kernels/README.md).
+name, and then stop. Read the record that holds a key with `edax.command.decode_prior`, write it with
+`encode_record`, and hand the prior record back to the guard unjudged. `decode_prior` never raises: a
+record no reader can decode comes back as the kernel's cached `codec` failure, the same one every SDK
+replays. See [kernels](../kernels/README.md).
 
 Three smaller prohibitions follow from the same rule.
 

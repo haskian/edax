@@ -16,3 +16,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 edax-golden.workspace = true
+proptest = "1"
+
+[lints]
+workspace = true

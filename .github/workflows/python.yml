@@ -8,7 +8,7 @@ on:
         type: string
         default: ubuntu-latest
       python-version:
-        description: Interpreter uv provisions for the venv. pyproject declares >=3.9.
+        description: Interpreter uv provisions for the venv. pyproject declares >=3.10.
         type: string
         default: "3.12"
 
@@ -33,7 +33,7 @@ jobs:
         working-directory: crates/edax-py
         run: |
           mise exec -- uv venv --python ${{ inputs.python-version }}
-          mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+          mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 
       - name: Lint
         run: mise exec -- ruff check .
@@ -66,6 +66,38 @@ jobs:
     env:
       # maturin develop installs into the venv named here; exporting it means no `activate`.
       VIRTUAL_ENV: ${{ github.workspace }}/crates/edax-py/.venv
+      # The Redis suites run against fakeredis always, and against this live server as well.
+      EDAX_REDIS_URL: redis://localhost:6379/0
+      # The Kafka suites run against the in-tree Kafka-shaped fake always, and the live module against
+      # this broker as well. The pause and restart tests need EDAX_KAFKA_CONTAINER, so they skip here.
+      EDAX_KAFKA_BOOTSTRAP: localhost:9092
+    # A service container needs a Linux runner, which every caller of this workflow uses.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+      kafka:
+        image: apache/kafka:3.8.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s --health-timeout 10s --health-retries 20
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -78,9 +110,9 @@ jobs:
 
       - name: Install test dependencies
         working-directory: crates/edax-py
-        run: mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+        run: mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis mypy "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 
-      # THIS STEP IS LOAD-BEARING. pytest never rebuilds the native module: without it the
+      # Do not remove or reorder. pytest never rebuilds the native module: without this step the
       # suite imports a stale _edax and passes green while proving nothing about the Rust
       # side. Any change under edax-core/-event/-cqrs/-memory/-kafka/-redis/-abi needs this
       # first.
@@ -88,19 +120,24 @@ jobs:
         working-directory: crates/edax-py
         run: mise exec -- maturin develop --release
 
+      # The shipped `_edax.pyi` against the module just built: a name, a parameter or a default the
+      # stub claims and the module lacks fails here, where `ty` would accept the call. The allowlist
+      # holds alef's own conventions only.
+      - name: Check the stub against the module
+        working-directory: crates/edax-py
+        run: .venv/bin/python -m mypy.stubtest edax._edax --allowlist stubtest-allowlist.txt
+
       - name: Test
         run: crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
 
-      # Every example ends in asserts and prints a final `ok:` line, so that marker is the success
-      # test. They run in this job rather than beside the linters because they import the compiled
-      # extension built above. The multi-thread tokio runtime the extension builds at import can
-      # segfault on Linux during interpreter shutdown, after main() and every assert have already
-      # passed; the `ok:` marker is printed last, so it proves success independent of that exit code.
+      # Every example ends in asserts and prints a final `ok:` line. They run in this job rather than
+      # beside the linters because they import the compiled extension built above. The exit code
+      # counts: the extension starts no runtime of its own, so nothing is left to crash at shutdown.
       - name: Examples
         run: |
           for f in examples/py/*.py; do
             echo "--- $f"
-            out=$(crates/edax-py/.venv/bin/python "$f") || true
+            out=$(crates/edax-py/.venv/bin/python "$f")
             echo "$out"
             echo "$out" | grep -q '^ok:' || { echo "FAILED: $f did not reach its ok: marker"; exit 1; }
           done

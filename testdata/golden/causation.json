@@ -47,5 +47,23 @@
     "parent_metadata": {
       "trace": "t-9"
     }
+  },
+  {
+    "expected": {
+      "causation_id": "evt-4",
+      "correlation_id": ""
+    },
+    "parent_event_id": "evt-4",
+    "parent_metadata": {
+      "correlation_id": ""
+    }
+  },
+  {
+    "expected": {
+      "causation_id": "",
+      "correlation_id": ""
+    },
+    "parent_event_id": "",
+    "parent_metadata": {}
   }
 ]

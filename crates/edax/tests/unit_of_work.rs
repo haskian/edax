@@ -10,6 +10,13 @@
 //! The Python twin is `tests/test_unit_of_work.py`; both must agree, because the guarantee is a
 //! property of the seam and not of one binding. `PROPTEST_CASES=4000` for a longer sweep.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "an integration test's helpers panic as its failure report, like the tests that call them"
+)]
+
 mod support;
 
 use support::Shared;
@@ -59,7 +66,7 @@ struct History {
     db: MemoryTransactor,
     projections: MemoryProjectionStore,
     ledger: Arc<edax::MemoryIdempotencyStore<i64>>,
-    bus: CommandBus<Deposit, i64>,
+    bus: CommandBus,
 }
 
 impl History {
@@ -80,14 +87,12 @@ impl History {
         } else {
             Arc::new(MemoryTx::auto_commit)
         };
-        bus.add_middleware(idempotent_in(
+        let guard = idempotent_in(
             Arc::clone(&ledger) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
             |cmd: &Deposit| Some(cmd.key.clone()),
             move |_: &Deposit| current(),
-        ));
-        bus.register(
-            "Deposit",
-            Box::new(move |cmd: &Deposit| {
+        );
+        let handler: edax::Handler<Deposit, i64> = Box::new(move |cmd: &Deposit| {
                 let mut tx = published.get();
                 let id = doc_id(cmd.key.parse::<u8>().unwrap());
                 let prior = store.get(&mut tx, &id)?;
@@ -97,13 +102,12 @@ impl History {
                     Entity { id: id.clone(), version, document: json!({"id": id, "applied": applied + 1}) };
                 store.save(&mut tx, &mut entity)?;
                 match cmd.outcome {
-                    1 => Err(Box::new(Error::Store("transient".into())) as edax::HandlerError),
-                    2 => Err(Box::new(Error::Codec("terminal".into())) as edax::HandlerError),
+                    1 => Err(Box::new(Error::store("transient")) as edax::HandlerError),
+                    2 => Err(Box::new(Error::codec("terminal")) as edax::HandlerError),
                     _ => Ok(applied + 1),
                 }
-            }),
-        )
-        .unwrap();
+            });
+        bus.register("Deposit", edax::wrap(handler, vec![guard])).unwrap();
 
         (Self { db, projections, ledger, bus }, handle)
     }
@@ -127,18 +131,18 @@ proptest! {
             if enlisted {
                 // The host owns the unit of work and publishes its handle; `commits == false`
                 // stands for a later write in the same unit of work failing.
-                let _ = h.db.transaction(|tx| {
+                let _: Result<(), edax::HandlerError> = h.db.transaction(|tx| {
                     handle.set(*tx);
                     // A failed dispatch aborts the unit of work, as a host that wraps
                     // `bus.dispatch` in one must: committing over it would keep writes the
                     // handler made before failing. `commits == false` then stands for a *later*
                     // write in the same unit of work failing after a clean dispatch.
-                    h.bus.dispatch(&cmd).map_err(|_| Error::Store("the dispatch failed".into()))?;
-                    if op.commits { Ok(()) } else { Err(Error::Store("a later write failed".into())) }
+                    h.bus.dispatch::<_, i64>(&cmd)?;
+                    if op.commits { Ok(()) } else { Err(Error::store("a later write failed").into()) }
                 });
                 handle.set(MemoryTx::auto_commit());
             } else {
-                let _ = h.bus.dispatch(&cmd);
+                let _ = h.bus.dispatch::<_, i64>(&cmd);
             }
         }
 
@@ -151,7 +155,7 @@ proptest! {
                 .map_or(0, |e| e.document["applied"].as_i64().unwrap_or(0));
             // Reading the record means claiming it, which is safe: the history is over.
             let prior = match h.ledger.claim(&mut tx, &key.to_string(), 0).unwrap() {
-                Claim::Won => None,
+                Claim::Won(_) => None,
                 Claim::Prior(record) => Some(record),
             };
             let done = matches!(prior.as_ref().map(|r| &r.state), Some(State::Done(_)));

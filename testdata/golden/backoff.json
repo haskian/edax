@@ -1,70 +1,498 @@
 [
   {
     "attempt": 0,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 100,
+    "entropy": 100,
     "expected_millis": 100
   },
   {
+    "attempt": 0,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 100,
+    "entropy": 101,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 0,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 100,
+    "entropy": 11400714819323198485,
+    "expected_millis": 45
+  },
+  {
     "attempt": 1,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 200,
+    "entropy": 200,
     "expected_millis": 200
   },
   {
+    "attempt": 1,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 200,
+    "entropy": 201,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 1,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 200,
+    "entropy": 11400714819323198485,
+    "expected_millis": 136
+  },
+  {
     "attempt": 2,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 400,
+    "entropy": 400,
     "expected_millis": 400
   },
   {
+    "attempt": 2,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 400,
+    "entropy": 401,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 2,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 400,
+    "entropy": 11400714819323198485,
+    "expected_millis": 55
+  },
+  {
     "attempt": 3,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 800,
+    "entropy": 800,
     "expected_millis": 800
   },
   {
+    "attempt": 3,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 800,
+    "entropy": 801,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 3,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 800,
+    "entropy": 11400714819323198485,
+    "expected_millis": 376
+  },
+  {
     "attempt": 4,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 1600,
+    "entropy": 1600,
     "expected_millis": 1600
   },
   {
+    "attempt": 4,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 1600,
+    "entropy": 1601,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 4,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 1600,
+    "entropy": 11400714819323198485,
+    "expected_millis": 1468
+  },
+  {
     "attempt": 5,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 3200,
+    "entropy": 3200,
     "expected_millis": 3200
   },
   {
+    "attempt": 5,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 3200,
+    "entropy": 3201,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 5,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 3200,
+    "entropy": 11400714819323198485,
+    "expected_millis": 1447
+  },
+  {
     "attempt": 6,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 6400,
+    "entropy": 6400,
     "expected_millis": 6400
   },
   {
+    "attempt": 6,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 6400,
+    "entropy": 6401,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 6,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 6400,
+    "entropy": 11400714819323198485,
+    "expected_millis": 3098
+  },
+  {
     "attempt": 7,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 12800,
+    "entropy": 12800,
     "expected_millis": 12800
   },
   {
+    "attempt": 7,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 12800,
+    "entropy": 12801,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 7,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 12800,
+    "entropy": 11400714819323198485,
+    "expected_millis": 9637
+  },
+  {
     "attempt": 8,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 25600,
+    "entropy": 25600,
     "expected_millis": 25600
   },
   {
+    "attempt": 8,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 25600,
+    "entropy": 25601,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 8,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 25600,
+    "entropy": 11400714819323198485,
+    "expected_millis": 12223
+  },
+  {
     "attempt": 9,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
+    "expected_millis": 30000
+  },
+  {
+    "attempt": 9,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 9,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 10,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 10,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 10,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 11,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 11,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 11,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 20,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 20,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 20,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 63,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 63,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 63,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 64,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 64,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 64,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 100,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 100,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 100,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 1000,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
   },
   {
     "attempt": 1000,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 1000,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 4294967295,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
     "expected_millis": 30000
+  },
+  {
+    "attempt": 4294967295,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 4294967295,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 18446744073709551615,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30000,
+    "expected_millis": 30000
+  },
+  {
+    "attempt": 18446744073709551615,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 30001,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 18446744073709551615,
+    "base_millis": 100,
+    "cap_millis": 30000,
+    "ceiling_millis": 30000,
+    "entropy": 11400714819323198485,
+    "expected_millis": 16388
+  },
+  {
+    "attempt": 5,
+    "base_millis": 0,
+    "cap_millis": 30000,
+    "ceiling_millis": 0,
+    "entropy": 18446744073709551615,
+    "expected_millis": 0
+  },
+  {
+    "attempt": 0,
+    "base_millis": 500,
+    "cap_millis": 50,
+    "ceiling_millis": 50,
+    "entropy": 77,
+    "expected_millis": 26
+  },
+  {
+    "attempt": 3,
+    "base_millis": 250,
+    "cap_millis": 2000,
+    "ceiling_millis": 2000,
+    "entropy": 1999,
+    "expected_millis": 1999
+  },
+  {
+    "attempt": 0,
+    "base_millis": 18446744073709551615,
+    "cap_millis": 18446744073709551615,
+    "ceiling_millis": 18446744073709551615,
+    "entropy": 18446744073709551615,
+    "expected_millis": 18446744073709551615
+  },
+  {
+    "attempt": 7,
+    "base_millis": 18446744073709551615,
+    "cap_millis": 18446744073709551615,
+    "ceiling_millis": 18446744073709551615,
+    "entropy": 12345,
+    "expected_millis": 12345
   }
 ]

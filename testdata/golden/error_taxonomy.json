@@ -31,9 +31,9 @@
   },
   {
     "code": "cached_failure",
-    "message": "codec error: invalid type: string, expected u64",
+    "message": "codec: invalid type: string, expected u64",
     "terminal": true,
-    "wire": "cached_failure: codec error: invalid type: string, expected u64"
+    "wire": "cached_failure: codec: invalid type: string, expected u64"
   },
   {
     "code": "handler_not_found",
@@ -52,5 +52,11 @@
     "message": "unknown transaction 7: not begun, or already committed or rolled back",
     "terminal": true,
     "wire": "bad_handle: unknown transaction 7: not begun, or already committed or rolled back"
+  },
+  {
+    "code": "rejected",
+    "message": "insufficient funds: balance 300, withdrawal 500",
+    "terminal": true,
+    "wire": "rejected: insufficient funds: balance 300, withdrawal 500"
   }
 ]

@@ -1,0 +1,339 @@
+[
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "write": "nothing"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "absent"
+    },
+    "want": {
+      "expected": 0,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 3
+    },
+    "want": {
+      "expected": 3,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "save"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "save"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "complete"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "active",
+      "version": 18446744073709551615
+    },
+    "want": {
+      "expected": 18446744073709551615,
+      "write": "complete"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": true,
+      "folded": "",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "completed": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": true,
+      "folded": "[1]",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "completed": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
+      "id": "evt-2",
+      "sequence": 2
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "payment-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
+      "id": "evt-p",
+      "sequence": 1
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"},\"payment-7\":{\"sequence\":1,\"id\":\"evt-p\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "id": "evt-u",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "id": "evt-v",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"id\":\"evt-v\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
+      "id": "evt-v",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-v\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
+      "id": "evt-x",
+      "sequence": 1
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-x\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "id": "evt-3",
+      "sequence": 3
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"sequence\":3,\"id\":\"evt-3\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "café",
+      "completed": false,
+      "folded": "{\"café\":{\"sequence\":18446744073709551615,\"id\":\"évt\"}}",
+      "id": "évt",
+      "sequence": 18446744073709551615
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "[1]",
+      "id": "evt-1",
+      "sequence": 1
+    },
+    "want": {
+      "error": "codec: saga folded marks \"[1]\": invalid type: sequence, expected a map at line 1 column 0"
+    }
+  },
+  {
+    "command_id": "order-7:1:0",
+    "correlation_id": "order-7",
+    "index": 0,
+    "version": 1
+  },
+  {
+    "command_id": "order-7:2:1",
+    "correlation_id": "order-7",
+    "index": 1,
+    "version": 2
+  },
+  {
+    "command_id": "a:1:2:0",
+    "correlation_id": "a:1",
+    "index": 0,
+    "version": 2
+  },
+  {
+    "command_id": ":1:0",
+    "correlation_id": "",
+    "index": 0,
+    "version": 1
+  },
+  {
+    "command_id": "café:18446744073709551615:18446744073709551615",
+    "correlation_id": "café",
+    "index": 18446744073709551615,
+    "version": 18446744073709551615
+  }
+]

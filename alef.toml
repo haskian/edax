@@ -5,20 +5,25 @@
 # is routed to the throwaway `.alef` dir and not shipped. In this alef version that output dir IS the
 # package dir, so it must NOT point at `python/edax` or alef overwrites the hand-written __init__.py.
 #
-# The `_edax.pyi` type stub is the one piece we DO ship (so checkers see Event/EventEnvelope fields):
-# it's committed at `crates/edax-py/python/edax/_edax.pyi` next to the compiled `_edax`, with a `py.typed`
-# marker (PEP 561) — we commit the generated binding so checkers don't need to regenerate it. The shipped
-# copy has alef's `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.
+# The `_edax.pyi` type stub is the one piece we DO ship, so checkers see the Event/EventEnvelope
+# fields. It is committed at `crates/edax-py/python/edax/_edax.pyi` next to the compiled `_edax`, with
+# a `py.typed` marker (PEP 561), so checkers need not regenerate it. The shipped copy has alef's
+# `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.
 #
-# Regenerate with --clean ONLY: `alef generate --lang python --clean`. A plain incremental
+# Regenerate with `scripts/regenerate_binding.sh`. It runs `alef generate --lang python --clean` and
+# then refreshes the shipped stub (the body of `.alef/_edax.pyi` under a fixed PEP 561 header, without
+# alef's `# alef:hash:` lines, so alef's cleanup ignores it). --clean ONLY: a plain incremental
 # `alef generate` is destructive here — on a cache hit it skips re-emitting `src/lib.rs` / the stub but
 # still runs cleanup, deleting them; `--clean` re-emits everything so cleanup has nothing to orphan.
-# After a regen, refresh the shipped stub (strip the alef header so cleanup ignores it):
-#   tail -n +6 crates/edax-py/.alef/_edax.pyi  -> body, under a hand-written PEP 561 header.
+#
+# alef also writes `crates/edax-abi-py/Cargo.toml` on every run, at a path it hardcodes as
+# `crates/<crate>-py/` with no setting to move it. That manifest is not a workspace member and nothing
+# builds it; the real binding manifest is `crates/edax-py/Cargo.toml`. It stays tracked because alef
+# would recreate it after any deletion.
 
 [workspace]
 languages = ["python"]
-alef_version = "0.86.0"
+alef_version = "0.103.12"
 
 [[crates]]
 name = "edax-abi"

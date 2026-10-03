@@ -1,34 +1,137 @@
 [
   {
+    "error": null,
     "expected": 11595573028929527419,
     "input": "{\"a\":1,\"b\":2}"
   },
   {
+    "error": null,
     "expected": 11595573028929527419,
     "input": "{ \"b\": 2, \"a\": 1 }"
   },
   {
+    "error": null,
     "expected": 1895731112057364838,
     "input": "{\"name\":\"café\"}"
   },
   {
-    "expected": 16704033900491412018,
+    "error": null,
+    "expected": 1895731112057364838,
+    "input": "{\"name\":\"caf\\u00e9\"}"
+  },
+  {
+    "error": null,
+    "expected": 902357593452078752,
     "input": "{\"n\":1.0}"
   },
   {
+    "error": null,
     "expected": 902357593452078752,
     "input": "{\"n\":1}"
   },
   {
+    "error": null,
+    "expected": 12928616634441290376,
+    "input": "{\"n\":1e2}"
+  },
+  {
+    "error": null,
+    "expected": 12928616634441290376,
+    "input": "{\"n\":100}"
+  },
+  {
+    "error": null,
+    "expected": 901236091591492757,
+    "input": "{\"n\":-0}"
+  },
+  {
+    "error": null,
+    "expected": 901236091591492757,
+    "input": "{\"n\":0}"
+  },
+  {
+    "error": null,
+    "expected": 5264773673182433970,
+    "input": "{\"crab\":\"\\ud83e\\udd80\"}"
+  },
+  {
+    "error": null,
+    "expected": 5264773673182433970,
+    "input": "{\"crab\":\"🦀\"}"
+  },
+  {
+    "error": null,
+    "expected": 11257735581117493978,
+    "input": "{\"a\":1,\"a\":2}"
+  },
+  {
+    "error": null,
+    "expected": 11257735581117493978,
+    "input": "{\"a\":2}"
+  },
+  {
+    "error": null,
+    "expected": 7825960502276836408,
+    "input": "{\"ls\":\" \"}"
+  },
+  {
+    "error": null,
+    "expected": 7825960502276836408,
+    "input": "{\"ls\":\"\\u2028\"}"
+  },
+  {
+    "error": null,
+    "expected": 1574613401485463088,
+    "input": "{\"n\":1e20}"
+  },
+  {
+    "error": null,
+    "expected": 1574613401485463088,
+    "input": "{\"n\":1.0E+20}"
+  },
+  {
+    "error": null,
+    "expected": 260451852649252988,
+    "input": "{\"n\":9007199254740992}"
+  },
+  {
+    "error": null,
+    "expected": 260451852649252988,
+    "input": "{\"n\":9007199254740992.0}"
+  },
+  {
+    "error": null,
     "expected": 3474255078535931528,
     "input": "{\"k\":\"v\",\"items\":[3,1,2]}"
   },
   {
+    "error": null,
     "expected": 1258681205203785116,
     "input": "{\"outer\":{\"z\":1,\"a\":2}}"
   },
   {
+    "error": null,
     "expected": 645223143103797797,
     "input": "{}"
+  },
+  {
+    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "expected": null,
+    "input": "{\"n\":9007199254740993}"
+  },
+  {
+    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "expected": null,
+    "input": "{\"n\":-9007199254740993}"
+  },
+  {
+    "error": "codec: number at byte 5 is out of range",
+    "expected": null,
+    "input": "{\"n\":1e400}"
+  },
+  {
+    "error": "codec: unexpected end of hex escape at line 1 column 13",
+    "expected": null,
+    "input": "{\"s\":\"\\ud800\"}"
   }
 ]

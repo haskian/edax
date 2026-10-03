@@ -8,15 +8,21 @@ stays hand-written: only you know which fields are state and which are derived. 
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Any
 
 import msgspec
 
 from .aggregate import Event
 from .errors import AlreadyRegistered, CodecError
-from .upcast import Upcaster
+from .upcast import Upcaster, upcast
+
+__all__ = [
+    "RegistryEventCodec",
+    "json_codec",
+    "msgpack_codec",
+]
 
 
 @contextmanager
@@ -39,7 +45,7 @@ class RegistryEventCodec:
         version: int,
         encode: Callable[[Any], bytes],
         decode: Callable[[bytes, type], Any],
-        upcasters: Optional[dict[str, Upcaster]] = None,
+        upcasters: dict[str, Upcaster] | None = None,
     ) -> None:
         # One version for the whole registry; split registries if one event must bump alone.
         self._version = version
@@ -55,7 +61,8 @@ class RegistryEventCodec:
                 raise AlreadyRegistered(
                     f"{type_.__name__} is registered under two event names: {first!r} and {name!r}"
                 )
-        # Without an upcaster an older payload decodes as-is, fine only while the shape is unchanged.
+        # Without an upcaster an older payload decodes as it is, fine only while the shape is unchanged;
+        # a newer writer's payload is refused either way.
         self._upcasters = dict(upcasters or {})
         # An upcaster keyed by an unregistered name never runs, so the stale payload it was written
         # for decodes as-is and reaches the handler with the old shape. A startup typo, not a
@@ -75,19 +82,19 @@ class RegistryEventCodec:
         type_ = self._by_name.get(event.name)
         if type_ is None:
             raise CodecError(f"no type registered for event {event.name!r}")
-        data = bytes(event.data)
-        upcaster = self._upcasters.get(event.name)
-        if upcaster is not None:
-            # No host-side version comparison: the kernel decides that a payload is current (empty
-            # plan) or from a *newer* writer than this codec (an error, not a silent decode).
-            with _as_codec_error(f"upcasting {event.name} v{event.version}->v{self._version}"):
-                data = upcaster.to(data, from_=event.version, to=self._version)
+        # On every unmarshal, with or without an upcaster for the name: the kernel decides that a payload
+        # is current, older (raised, or read as it is with no upcaster), or from a *newer* writer than
+        # this codec (an error, never a silent decode under the older schema).
+        with _as_codec_error(f"upcasting {event.name} v{event.version}->v{self._version}"):
+            data = upcast(
+                self._upcasters.get(event.name), bytes(event.data), from_=event.version, to=self._version
+            )
         with _as_codec_error(f"decoding {event.name} v{event.version}"):
             return self._decode(data, type_)
 
 
 def json_codec(
-    events: dict[str, type], *, version: int = 1, upcasters: Optional[dict[str, Upcaster]] = None
+    events: dict[str, type], *, version: int = 1, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
     """An EventCodec that serializes payloads as JSON (via msgspec). ``upcasters`` raise older stored
     payloads to ``version`` on load (see :class:`~edax.upcast.Upcaster`)."""
@@ -97,7 +104,7 @@ def json_codec(
 
 
 def msgpack_codec(
-    events: dict[str, type], *, version: int = 1, upcasters: Optional[dict[str, Upcaster]] = None
+    events: dict[str, type], *, version: int = 1, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
     """An EventCodec that serializes payloads as MessagePack (via msgspec) — smaller, binary.
     ``upcasters`` raise older stored payloads to ``version`` on load."""

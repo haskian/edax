@@ -4,16 +4,16 @@ use std::sync::{Mutex, MutexGuard};
 
 /// Lock a mutex, recovering from poisoning instead of panicking.
 ///
-/// These kernels run inside a native binding, where an unwinding panic crosses the host language's
-/// FFI boundary. Nothing inside a guarded section can panic, so the state behind a poisoned lock is
-/// still consistent — take it back rather than propagate a panic the host cannot catch.
+/// These kernels run inside a native binding. PyO3 catches a panic at the function boundary, but it
+/// surfaces as `PanicException`, a `BaseException` the SDK's `except Exception` arms never see, so a
+/// poisoned lock must not become a second panic on every later call. The state behind it is still
+/// consistent only because every caller's guarded section is panic-free: the workspace lints deny
+/// `unwrap`, `expect` and indexing in every crate that takes this lock.
 pub fn lock<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
     state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
-// A test asserts on the value it just built; a panic there is the failure report.
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

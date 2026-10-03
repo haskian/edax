@@ -25,6 +25,11 @@
     "n": 1024
   },
   {
+    "expected": 4199556836,
+    "id": "agg-1",
+    "n": 4294967295
+  },
+  {
     "expected": 0,
     "id": "agg-2",
     "n": 0
@@ -48,6 +53,11 @@
     "expected": 925,
     "id": "agg-2",
     "n": 1024
+  },
+  {
+    "expected": 4249889693,
+    "id": "agg-2",
+    "n": 4294967295
   },
   {
     "expected": 0,
@@ -75,6 +85,11 @@
     "n": 1024
   },
   {
+    "expected": 1461995252,
+    "id": "order-42",
+    "n": 4294967295
+  },
+  {
     "expected": 0,
     "id": "user:7",
     "n": 0
@@ -98,6 +113,11 @@
     "expected": 61,
     "id": "user:7",
     "n": 1024
+  },
+  {
+    "expected": 1931105341,
+    "id": "user:7",
+    "n": 4294967295
   },
   {
     "expected": 0,
@@ -125,6 +145,11 @@
     "n": 1024
   },
   {
+    "expected": 2166136261,
+    "id": "",
+    "n": 4294967295
+  },
+  {
     "expected": 0,
     "id": "🦀-aggregate",
     "n": 0
@@ -148,5 +173,70 @@
     "expected": 476,
     "id": "🦀-aggregate",
     "n": 1024
+  },
+  {
+    "expected": 1056221660,
+    "id": "🦀-aggregate",
+    "n": 4294967295
+  },
+  {
+    "expected": 0,
+    "id": "café",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "café",
+    "n": 1
+  },
+  {
+    "expected": 3,
+    "id": "café",
+    "n": 7
+  },
+  {
+    "expected": 73,
+    "id": "café",
+    "n": 256
+  },
+  {
+    "expected": 73,
+    "id": "café",
+    "n": 1024
+  },
+  {
+    "expected": 2821410889,
+    "id": "café",
+    "n": 4294967295
+  },
+  {
+    "expected": 0,
+    "id": "café",
+    "n": 0
+  },
+  {
+    "expected": 0,
+    "id": "café",
+    "n": 1
+  },
+  {
+    "expected": 1,
+    "id": "café",
+    "n": 7
+  },
+  {
+    "expected": 55,
+    "id": "café",
+    "n": 256
+  },
+  {
+    "expected": 55,
+    "id": "café",
+    "n": 1024
+  },
+  {
+    "expected": 3604845623,
+    "id": "café",
+    "n": 4294967295
   }
 ]

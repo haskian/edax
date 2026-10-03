@@ -1,7 +1,7 @@
 """Guards over the shipped examples: what they demonstrate must match what the SDK documents.
 
 An example is the shape an adopter copies, so a mistake in one propagates into services the project
-never sees. These load each example as a module rather than running it, so a guard costs nothing and
+never sees. Most guards load each example as a module without running it, so they cost nothing and
 cannot depend on a broker.
 """
 
@@ -41,8 +41,8 @@ def test_no_example_command_hashes_its_type(path: Path) -> None:
 
     Declared as a dataclass *instance* field it enters the hash, and a Rust command carrying the same
     business fields does not hash it. A service sharing a ledger across the two languages then gets
-    ``PayloadMismatch`` on every genuine cross-language duplicate — the guarantee the kernel exists to
-    provide. ``docs/sdk/commands.md`` states the rule; this pins it for every example.
+    ``PayloadMismatch`` on every genuine cross-language duplicate. ``docs/sdk/commands.md`` states the
+    rule; this pins it for every example.
     """
     for name, value in vars(load(path)).items():
         if not (isinstance(value, type) and dataclasses.is_dataclass(value)):
@@ -52,3 +52,14 @@ def test_no_example_command_hashes_its_type(path: Path) -> None:
         assert "type" not in {f.name for f in dataclasses.fields(value)}, (
             f"{path.name}: {name}.type is an instance field, so it is hashed; declare it ClassVar"
         )
+
+
+@pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
+async def test_every_example_runs_to_its_ok_marker(path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Every example ends in asserts and a final ``ok:`` line. Run here as well as in CI's examples
+    step, so a change that breaks the documented wiring fails the suite a developer runs, not only a
+    later CI job. Every example runs on the in-memory backends by default. `16_redis_ledger` and
+    `17_kafka` switch to a real server when ``EDAX_REDIS_URL`` or ``EDAX_KAFKA_BOOTSTRAP`` names one, as
+    CI's test job does."""
+    await load(path).main()
+    assert "\nok:" in capsys.readouterr().out, f"{path.name} did not reach its ok: marker"

@@ -1,0 +1,485 @@
+[
+  {
+    "max_attempts": 3,
+    "name": "transient_failures_back_off_then_die_at_the_ceiling",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 1
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 2
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 1
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 3
+        }
+      },
+      {
+        "id": "evt-1",
+        "op": "dead_lettered"
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 3,
+    "name": "a_terminal_failure_dies_on_its_first_attempt",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "codec",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 1
+        }
+      },
+      {
+        "id": "evt-1",
+        "op": "dead_lettered"
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 3,
+    "name": "with_no_sink_a_dead_message_nacks_with_a_growing_step",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "codec",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "codec",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 1
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 2
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 3
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "max_attempts_zero_has_no_ceiling",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": null,
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 1
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 2
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "codec",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 4
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 3,
+    "name": "a_broker_attempt_raises_the_count",
+    "ops": [
+      {
+        "broker_attempt": 2,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 3
+      },
+      {
+        "broker_attempt": 2,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 3
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 5,
+    "name": "a_lower_broker_attempt_never_lowers_it",
+    "ops": [
+      {
+        "broker_attempt": 3,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 3
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 5
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 5
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "contention_waits_its_own_step_and_never_counts",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "in_progress",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "in_progress",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 1
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "in_progress",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 2
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 1
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 1
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "in_progress",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 3,
+    "name": "success_forgets_both_counts",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "in_progress",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 1
+        }
+      },
+      {
+        "id": "evt-1",
+        "op": "succeeded"
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 1
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "a_failed_sink_keeps_the_attempt_and_the_redelivery_dies_again",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 2
+        }
+      },
+      {
+        "attempt": 2,
+        "id": "evt-1",
+        "op": "sink_failed",
+        "want": 1
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 3
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 3
+        }
+      },
+      {
+        "id": "evt-1",
+        "op": "dead_lettered"
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "ids_are_counted_apart",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-2",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 2
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-2",
+        "op": "attempt",
+        "want": 2
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 2,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "the_count_saturates_at_the_ceiling_of_u32",
+    "ops": [
+      {
+        "broker_attempt": 4294967295,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 4294967295
+      },
+      {
+        "broker_attempt": 4294967295,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 4294967294
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 4294967295
+      }
+    ],
+    "sink": true
+  }
+]

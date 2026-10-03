@@ -20,25 +20,24 @@ Reproduce a reported failure with the printed example, or re-run with
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any
 
 import edax
+import fakeredis
 import pytest
 from conftest import (
+    NO_WAIT,
     TTL_MS,
     Counter,
-    FakeRedis,
-    FlakyEventStore,
-    FlakyIdempotency,
-    FlakyProjectionStore,
     Tick,
     agg_id,
     build_envelope,
     counter_repo,
     expect,
-    fields,
+    ledger_key,
     recorded_backoff,
     same,
     sequence_of,
@@ -46,14 +45,16 @@ from conftest import (
 )
 from edax import command as C
 from edax.aggregate import WireFormat
-from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore
-from edax.backend.redis import RedisIdempotencyStore
+from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore
+from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
+from edax.testing.faults import LostResponse
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 # Native calls plus an `asyncio.run` per example blow past hypothesis' 200 ms default deadline on a
 # cold run; the properties are deterministic, so the deadline buys nothing here.
 MODEL = settings(max_examples=200, deadline=None)
+
 
 # "Lost response" faults are rare on purpose: histories stay mostly clean so the happy paths still
 # get exercised. `lost` (bool) is true ~1 in 5; `lost_kind` loses the claim (1) or the outcome (2).
@@ -84,11 +85,11 @@ class Load:
 @dataclass
 class Drain:
     limit: int
-    fail_at: Optional[int]
+    fail_at: int | None
     lost_mark: bool  # mark_published lands, then its response is lost
 
 
-StoreOp = Union[Append, Load, Drain]
+StoreOp = Append | Load | Drain
 
 store_op = st.one_of(
     st.builds(Append, st.integers(0, 2), st.integers(-2, 2), st.integers(0, 3), st.integers(0, 2), lost_flag),
@@ -151,7 +152,7 @@ class Sink:
     def __init__(self) -> None:
         self.reset()
 
-    def reset(self, fail_at: Optional[int] = None) -> None:
+    def reset(self, fail_at: int | None = None) -> None:
         self.seen: list[edax.EventEnvelope] = []
         self.fail_at = fail_at
 
@@ -162,11 +163,11 @@ class Sink:
 
 
 class StoreReplay:
-    def __init__(self, store: FlakyEventStore) -> None:
+    def __init__(self, store: Any) -> None:  # a LostResponse over the memory event store
         self.store = store
         self.model = OutboxModel()
         self.sink = Sink()
-        self.relay = edax.Relay(store, self.sink.publish)
+        self.relay = edax.Relay(store, self.sink.publish, pacing=NO_WAIT)
         self.tx: Any = None
 
     async def step(self, op: StoreOp) -> None:
@@ -187,7 +188,7 @@ class StoreReplay:
         envs = self.model.envelopes(op, expected)
         clean = expected == stored
         if op.lost:
-            self.store.arm_lost_response = "append"
+            self.store.arm("append")
         # Clean: the write lands (the caller only sees a StoreError if its response is lost).
         # Conflict: rejected before anything is written, whatever the arm says.
         exc = (edax.StoreError if op.lost else None) if clean else edax.ConcurrencyError
@@ -197,8 +198,8 @@ class StoreReplay:
             self.model.appended(op.agg, envs)
         elif op.lost:
             # The trip never fired, so the arm survives: a lost write is never mistaken for a conflict.
-            assert self.store.arm_lost_response == "append"
-            self.store.arm_lost_response = None
+            assert self.store.armed == "append"
+            self.store.arm(None)
         await self.load(Load(op.agg, 0))
         stream = self.model.stream(op.agg)
         assert [e.sequence for e in stream] == list(range(1, len(stream) + 1))
@@ -213,14 +214,16 @@ class StoreReplay:
         lost = op.lost_mark and bool(batch) and not failed
         self.sink.reset(op.fail_at)
         if lost:
-            self.store.arm_lost_response = "mark_published"
+            self.store.arm("mark_published")
         with expect(edax.StoreError if failed or lost else None):
             n = await self.relay.drain(op.limit)
         if failed:
-            # Nothing is marked published when the batch fails part-way: the rows stay for the next
-            # drain (at-least-once, never a drop).
+            # The published prefix is marked, and the failed row and everything behind it stay for the
+            # next drain (at-least-once, never a drop, never out of order).
+            assert op.fail_at is not None
             self.model.failed_drains += 1
             same(self.sink.seen, batch[: op.fail_at + 1])
+            self.model.drained(op.fail_at)
         else:
             # Marked — even when the mark's response was lost — so the batch never republishes.
             self.model.drained(len(batch))
@@ -247,7 +250,7 @@ class StoreReplay:
 async def _replay_store(history: list[StoreOp]) -> None:
     # No open unit of work: the model describes committed state, and an outbox drain reads only
     # committed rows, so every op auto-commits (`tx=None` outside any `transaction`).
-    r = StoreReplay(FlakyEventStore())
+    r = StoreReplay(LostResponse(MemoryEventStore()))
     for op in history:
         await r.step(op)
     await r.finish()
@@ -299,15 +302,27 @@ class SeedPending:
 
 @dataclass
 class Release:
+    """Release the claim a ``SeedPending`` took on ``key``, by its handle, if that claim still holds it."""
+
     key: int
 
 
 @dataclass
 class Expire:
-    """Advance the redis clock past the TTL so every record expires (redis param only)."""
+    """Every record's TTL runs out, pending claims included: a Redis TTL, or memory's ``expire`` hook."""
 
 
-BusOp = Union[Dispatch, SeedPending, Release, Expire]
+@dataclass
+class Corrupt:
+    """Another writer leaves bytes no reader can decode under ``key``: a record whose ``pending`` is a
+    word, keeping the hash of a command carrying ``payload``, or with ``payload`` ``None`` a torn write
+    whose hash does not read either."""
+
+    key: int
+    payload: int | None
+
+
+BusOp = Dispatch | SeedPending | Release | Expire | Corrupt
 
 bus_op = st.one_of(
     st.builds(
@@ -321,28 +336,55 @@ bus_op = st.one_of(
     st.builds(SeedPending, st.integers(0, 2), st.integers(0, 2)),
     st.builds(Release, st.integers(0, 2)),
     st.builds(Expire),
+    st.builds(Corrupt, st.integers(0, 2), st.none() | st.integers(0, 2)),
 )
 
 
-def _idempotency_backend(backend: str) -> tuple[Any, Any]:
-    """A flaky idempotency store plus its clock handle. ``conn`` is the ``FakeRedis`` for the redis
-    param (so an ``Expire`` op can advance time) and ``None`` for memory (no TTL)."""
+#: Stores ``raw`` as a key's settled record, unchecked, the way the backend persists a record.
+PutRaw = Callable[[str, str], Awaitable[None]]
+
+
+def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None]], PutRaw]:
+    """A flaky idempotency store, how to make every key's TTL run out (``FLUSHALL`` on the fakeredis client,
+    memory's ``expire`` hook per key) and how to leave unreadable bytes under a key. Built inside the
+    replay's event loop, which the fake client binds to. fakeredis runs the kernel's own Lua; memory runs
+    the kernel's own fence."""
     if backend == "memory":
-        return FlakyIdempotency(MemoryIdempotencyStore()), None
-    conn = FakeRedis()
-    # Both TTLs are the test's one clock tick, so an `Expire` op means "every record is gone",
-    # pending claims included. In production they differ: a short claim TTL bounds how long a dead
-    # worker blocks a key, a long record TTL is the dedup window.
-    redis = RedisIdempotencyStore(conn, prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS)
-    return FlakyIdempotency(redis), conn
+        memory = MemoryIdempotencyStore()
+
+        async def lapse_memory() -> None:
+            for key in range(3):
+                memory.expire(str(key))
+
+        async def put_raw_memory(key: str, raw: str) -> None:
+            memory.put_raw(key, raw)
+
+        return LostResponse(memory), lapse_memory, put_raw_memory
+    client = fakeredis.FakeAsyncRedis()
+
+    async def lapse_redis() -> None:
+        await client.flushall()
+
+    async def put_raw_redis(key: str, raw: str) -> None:
+        await client.set(ledger_key("idem:", key), b"1" + b"0" * 32 + raw.encode(), px=TTL_MS)
+
+    # A short claim TTL bounds how long a dead worker blocks a key, a long record TTL is the dedup
+    # window. `Expire` stands for both running out; claim lapses mid-handler are the two-worker
+    # property's (`test_redis.py`).
+    redis = RedisIdempotencyStore(
+        AsyncRedisClient(client), prefix="idem:", ttl_ms=TTL_MS, claim_ttl_ms=TTL_MS // 10
+    )
+    return LostResponse(redis), lapse_redis, put_raw_redis
 
 
 class Slot(Enum):
     PENDING = "pending"
+    UNREADABLE = "unreadable"
 
 
-# model[key] = (payload hash, slot); slot is Slot.PENDING, ("done", value) or ("failed", message)
-Record = tuple[int, Any]
+# model[key] = (payload hash, slot); slot is Slot.PENDING, Slot.UNREADABLE, ("done", value) or
+# ("failed", message). An unreadable record whose hash does not read holds `None`: the claimant's.
+Record = tuple[int | None, Any]
 KEEP = object()  # Expectation.slot: leave model[key] as it is
 
 
@@ -351,16 +393,17 @@ class Expectation:
     """What the model says one dispatch does: what it raises or returns, how many times the handler
     runs, which seam (if any) loses its response, and what the key's record is afterwards."""
 
-    raises: Optional[type[BaseException]] = None
-    match: Optional[str] = None
+    raises: type[BaseException] | None = None
+    match: str | None = None
     value: Any = None
     runs: int = 0
-    arm: Optional[str] = None
+    arm: str | None = None
     slot: Any = KEEP  # KEEP, None (record removed) or a Record
 
 
-def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
-    """The P2 oracle: pure, no awaits."""
+def decide(prior: Record | None, op: Dispatch, hash_: int) -> Expectation:
+    """The P2 oracle: pure, no awaits. Both stores fence their settle writes on the claim's handle (memory
+    and Redis alike): a release deletes nothing once the claim's own ``complete`` has landed."""
     if op.kind == 2:
         # Routing precedes the middleware chain: no claim, no handler, no record.
         return Expectation(raises=C.HandlerNotFound)
@@ -376,11 +419,10 @@ def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
         done: Record = (hash_, ("done", value))
         failed: Record = (hash_, ("failed", "terminal"))
         if op.lost == 2:
-            # The outcome write lands, then loses its response. The key ends free either way: a
-            # released claim is gone, and a `complete` whose reply was lost is cleaned up by the
-            # middleware's release. The outcome is dropped and a redelivery re-runs (at-least-once)
-            # rather than finding a claim stuck pending. The fence does not apply: `complete` already
-            # handed the claim back, so that release is the seam's plain unconditional delete.
+            # The outcome write lands, then loses its response, and the middleware answers with a
+            # release. A released claim is gone either way. A `complete` that landed stays: the release
+            # carries the claim's handle and the key now holds the settled record, so a redelivery
+            # replays it.
             #
             # What the *caller* sees differs by path. After a failed handler the handler's own error
             # survives, because a compensation the store refuses must not replace the verdict `retry`
@@ -388,10 +430,10 @@ def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
             if op.outcome == 1:
                 return Expectation(raises=RuntimeError, match="transient", arm="release", runs=1, slot=None)
             if op.outcome == 2:
-                return Expectation(raises=edax.CodecError, arm="complete", runs=1, slot=None)
+                return Expectation(raises=edax.CodecError, arm="complete", runs=1, slot=failed)
             # Success: the store's failure is the only news there is, and the caller must not report
-            # a success that was never recorded.
-            return Expectation(raises=edax.StoreError, arm="complete", runs=1, slot=None)
+            # a success it never heard back about.
+            return Expectation(raises=edax.StoreError, arm="complete", runs=1, slot=done)
         return (
             Expectation(value=value, runs=1, slot=done),
             Expectation(raises=RuntimeError, match="transient", runs=1, slot=None),  # released
@@ -399,6 +441,12 @@ def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
         )[op.outcome]
     # Taken key: the kernel decides, and the handler never runs.
     prior_hash, slot = prior
+    if slot is Slot.UNREADABLE:
+        # The kernel reads it as a cached codec failure, under the stored hash where that reads, else
+        # the claimant's: a reused key, or a terminal replay. Never a run, never a raise of its own.
+        if prior_hash is not None and prior_hash != hash_:
+            return Expectation(raises=edax.PayloadMismatch)
+        return Expectation(raises=C.CachedFailure, match="codec: unreadable idempotency record")
     if prior_hash != hash_:
         return Expectation(raises=edax.PayloadMismatch)
     if slot is Slot.PENDING:
@@ -410,11 +458,14 @@ def decide(prior: Optional[Record], op: Dispatch, hash_: int) -> Expectation:
 
 
 class BusReplay:
-    def __init__(self, store: Any, conn: Any) -> None:
+    def __init__(self, store: Any, lapse: Callable[[], Awaitable[None]], put_raw: PutRaw) -> None:
         self.store = store
-        self.conn = conn
+        self.lapse = lapse
+        self.put_raw = put_raw
         self.calls = [0, 0]
         self.model: dict[int, Record] = {}
+        # The handle of each pending claim a SeedPending took, so a Release can name it.
+        self.seeded: dict[int, bytes] = {}
         self.bus = C.CommandBus(C.idempotent(store, _bus_key))
         self.bus.register("A", self.handler)
         self.bus.register("B", self.handler)
@@ -434,25 +485,22 @@ class BusReplay:
             await self.seed_pending(op)
         elif isinstance(op, Release):
             await self.release(op)
+        elif isinstance(op, Corrupt):
+            await self.corrupt(op)
         else:
             await self.expire(op)
 
     async def dispatch(self, op: Dispatch) -> None:
         cmd = make_cmd(op.kind, op.key, op.payload, op.outcome)
-        hash_ = edax.payload_hash_json(C._payload_json(cmd))
+        hash_ = C._payload_hash(cmd)
         prior = self.model.get(op.key)
         e = decide(prior, op, hash_)
-        if op.kind != 2:
-            # The middleware's branch is the kernel's decision; check it agrees with the model.
-            want = "proceed" if prior is None else "replay" if prior[0] == hash_ else "payload_mismatch"
-            prior_hash = None if prior is None else prior[0]
-            assert edax.idempotency_decision(current=hash_, prior=prior_hash) == want
 
         want_calls = list(self.calls)
         if e.runs:
             want_calls[op.kind] += e.runs
         if e.arm:
-            self.store.arm_lost_response = e.arm
+            self.store.arm(e.arm)
         with expect(e.raises, e.match):
             assert await self.bus.dispatch(cmd) == e.value
         assert self.calls == want_calls
@@ -464,30 +512,48 @@ class BusReplay:
     async def seed_pending(self, op: SeedPending) -> None:
         # An in-flight winner: claim takes the key if free and leaves any existing record alone.
         cmd = make_cmd(0, op.key, op.payload, 0)
-        hash_ = edax.payload_hash_json(C._payload_json(cmd))
-        prior = await self.store.claim(str(op.key), hash_)
-        if prior is None:
+        hash_ = C._payload_hash(cmd)
+        claimed = await self.store.claim(str(op.key), hash_)
+        if isinstance(claimed, C.Won):
             assert op.key not in self.model
             self.model[op.key] = (hash_, Slot.PENDING)
+            self.seeded[op.key] = claimed.handle
         else:
-            assert self.model[op.key][0] == prior.payload_hash
+            stored = self.model[op.key][0]
+            assert claimed.payload_hash == (hash_ if stored is None else stored)
 
     async def release(self, op: Release) -> None:
-        await self.store.release(str(op.key))
+        handle = self.seeded.pop(op.key, None)
+        if handle is None:
+            return  # no claim of the test's own to release: a guard only ever releases its own
+        await self.store.release(str(op.key), handle)
         self.model.pop(op.key, None)
 
+    async def corrupt(self, op: Corrupt) -> None:
+        if op.payload is None:
+            await self.put_raw(str(op.key), '{"payload_hash":')
+            self.model[op.key] = (None, Slot.UNREADABLE)
+        else:
+            hash_ = C._payload_hash(make_cmd(0, op.key, op.payload, 0))
+            await self.put_raw(str(op.key), f'{{"payload_hash":{hash_},"pending":"settling"}}')
+            self.model[op.key] = (hash_, Slot.UNREADABLE)
+        self.seeded.pop(op.key, None)  # the seeded claim is gone: its handle settles nothing now
+
     async def expire(self, op: Expire) -> None:
-        if self.conn is not None:  # redis param: advance past the TTL, every record expires
-            self.conn.now_ms += TTL_MS + 1
-            self.model.clear()
+        await self.lapse()  # every TTL runs out
+        self.model.clear()
+        self.seeded.clear()
 
     async def finish(self) -> None:
         # Every modeled record is readable back through the seam with the same hash and state.
-        for key, (hash_, slot) in self.model.items():
+        for key, (stored, slot) in self.model.items():
+            hash_ = 0 if stored is None else stored
             record = await self.store.claim(str(key), hash_)
-            assert record is not None, f"key {key} should still hold a record"
+            assert not isinstance(record, C.Won), f"key {key} should still hold a record"
             assert record.payload_hash == hash_
-            if slot is Slot.PENDING:
+            if slot is Slot.UNREADABLE:
+                assert record.error_code == "codec" and record.result is None
+            elif slot is Slot.PENDING:
                 assert record.pending
             elif slot[0] == "done":
                 assert record.result == slot[1]
@@ -495,8 +561,9 @@ class BusReplay:
                 assert record.error == slot[1]
 
 
-async def _replay_bus(history: list[BusOp], store: Any, conn: Any) -> None:
-    r = BusReplay(store, conn)
+async def _replay_bus(history: list[BusOp], backend: str) -> None:
+    store, lapse, put_raw = _idempotency_backend(backend)
+    r = BusReplay(store, lapse, put_raw)
     for op in history:
         await r.step(op)
     await r.finish()
@@ -506,8 +573,7 @@ async def _replay_bus(history: list[BusOp], store: Any, conn: Any) -> None:
 @MODEL
 @given(history=st.lists(bus_op, min_size=1, max_size=24))
 def test_idempotent_bus_matches_model(backend: str, history: list[BusOp]) -> None:
-    store, conn = _idempotency_backend(backend)
-    asyncio.run(_replay_bus(history, store, conn))
+    asyncio.run(_replay_bus(history, backend))
 
 
 # =========================================================================
@@ -627,7 +693,7 @@ class Reload:
     agg: int
 
 
-RepoOp = Union[Apply, Reload]
+RepoOp = Apply | Reload
 
 repo_op = st.one_of(
     st.builds(
@@ -658,7 +724,7 @@ class FoldModel:
 
 
 class RepoReplay:
-    def __init__(self, store: FlakyEventStore) -> None:
+    def __init__(self, store: LostResponse) -> None:
         self.store = store
         self.ids = iter(range(1, 1_000_000))
         self.repo = counter_repo(store, self.ids)
@@ -696,8 +762,8 @@ class RepoReplay:
         assert [e.sequence for e in envs] == list(range(version + 1, version + len(op.ticks) + 1))
         assert all(dict(e.namespace) == namespace and dict(e.metadata) == metadata for e in envs)
         assert instance.pending == []
-        assert instance.sequence.initial == version + len(op.ticks)
-        assert instance.sequence.updates == 0
+        assert instance.version.initial == version + len(op.ticks)
+        assert instance.version.updates == 0
         ticks.extend(op.ticks)
 
         # Stamping survives the store, not just the returned envelopes.
@@ -715,11 +781,11 @@ class RepoReplay:
         # instead, landing nothing: that is the transaction contract, pinned in test_transactor.)
         instance = await self.instance(op.agg)
         instance.apply(*[Tick(t) for t in op.ticks])
-        self.store.arm_lost_response = "commit"
+        self.store.arm("commit")
         with expect(edax.StoreError):
             await self.repo.save(instance, namespace=namespace, metadata=metadata)
         assert len(instance.pending) == len(op.ticks)
-        assert instance.sequence.updates == len(op.ticks)
+        assert instance.version.updates == len(op.ticks)
         self.model.ticks[op.agg].extend(op.ticks)
         self.model.snapped[op.agg] = len(self.model.ticks[op.agg])
 
@@ -739,13 +805,13 @@ class RepoReplay:
             await self.repo.save(stale_agg, namespace=namespace, metadata=metadata)
         # The failed save leaves the aggregate untouched so the caller can retry.
         assert len(stale_agg.pending) == len(op.ticks)
-        assert stale_agg.sequence.updates == len(op.ticks)
+        assert stale_agg.version.updates == len(op.ticks)
 
     async def reload(self, op: Reload) -> None:
         want, version = self.model.total(op.agg), self.model.version(op.agg)
         loaded = await self.repo.load(agg_id(op.agg))
         assert loaded.n == want
-        assert loaded.sequence.initial == version
+        assert loaded.version.initial == version
 
         # The snapshot path must agree with a pure replay: rebuild the same stream in a store that
         # has no snapshot at all and load again.
@@ -755,21 +821,24 @@ class RepoReplay:
             await fresh.append(ftx, agg_id(op.agg), 0, events)
             replayed = await counter_repo(fresh, self.ids).load(agg_id(op.agg), tx=ftx)
         assert replayed.n == want
-        assert replayed.sequence.initial == version
+        assert replayed.version.initial == version
 
         self.live[op.agg] = loaded
 
     async def finish(self) -> None:
         # Every save that landed snapshotted in the same unit of work, so the snapshot tracks the
-        # stream exactly: it never leads it, and a lost commit response no longer leaves it behind.
+        # stream exactly: it never leads it, and a lost commit response does not leave it behind.
         for agg, ticks in self.model.ticks.items():
             snap = await self.store.load_snapshot(self.tx, agg_id(agg))
+            if not ticks:
+                assert snap is None, "no save carried a version, so none snapshotted"
+                continue
             assert snap is not None and snap.version == self.model.snapped[agg] == len(ticks)
 
 
 async def _replay_repo(history: list[RepoOp]) -> None:
     # No open unit of work, as in `_replay_store`: each save is the repository's own transaction.
-    r = RepoReplay(FlakyEventStore())
+    r = RepoReplay(LostResponse(MemoryEventStore()))
     for op in history:
         await r.step(op)
     await r.finish()
@@ -812,11 +881,11 @@ def test_kernel_serializer_roundtrip(
     namespace: dict[str, str],
     metadata: dict[str, str],
     timestamp: int,
-    sequence: Optional[int],
+    sequence: int | None,
 ) -> None:
     """Pins the binding boundary in both formats, including non-ASCII text and arbitrary bytes — the
     ``café`` class of bug, where a host-side encoding choice diverges from the kernel's."""
-    env = edax.Envelope(
+    env = edax.EventEnvelope(
         id=id_,
         aggregate_id=aggregate_id,
         event=edax.Event(name, version, data),
@@ -825,8 +894,8 @@ def test_kernel_serializer_roundtrip(
         timestamp=timestamp,
         sequence=sequence,
     )
-    codec = edax.kernel(fmt)
-    assert fields(codec.decode(codec.encode(env))) == fields(env)
+    codec = edax.KernelSerializer(fmt)
+    assert codec.decode(codec.encode(env)) == env
 
 
 @given(fmt=st.sampled_from(["json", "msgpack"]), wire=st.binary(min_size=1, max_size=32))
@@ -836,7 +905,7 @@ def test_kernel_serializer_rejects_garbage(fmt: WireFormat, wire: bytes) -> None
     # and the serializer maps it to the terminal CodecError, so a consumer dead-letters the poison
     # message instead of treating it as a transient RuntimeError.
     try:
-        edax.kernel(fmt).decode(wire)
+        edax.KernelSerializer(fmt).decode(wire)
     except edax.CodecError as e:
         assert e.terminal is True
         assert isinstance(e.__cause__, RuntimeError)
@@ -863,11 +932,11 @@ class Get:
 @dataclass
 class Page:
     offset: int
-    limit: Optional[int]
+    limit: int | None
     desc: bool
 
 
-ProjOp = Union[Save, Get, Page]
+ProjOp = Save | Get | Page
 
 proj_op = st.one_of(
     st.builds(Save, st.integers(0, 5), st.integers(-2, 2), st.integers(0, 9), lost_flag),
@@ -877,7 +946,7 @@ proj_op = st.one_of(
 
 
 class ProjectionReplay:
-    def __init__(self, store: FlakyProjectionStore) -> None:
+    def __init__(self, store: LostResponse) -> None:
         self.store = store
         self.model: dict[int, tuple[int, int]] = {}  # id -> (version, n)
 
@@ -896,7 +965,7 @@ class ProjectionReplay:
         clean = expected == stored
         lost = clean and op.lost
         if lost:
-            self.store.arm_lost_response = "save"
+            self.store.arm("save")
         exc = (edax.StoreError if lost else None) if clean else edax.ConcurrencyError
         with expect(exc):
             await self.store.save(entity)
@@ -926,11 +995,11 @@ class ProjectionReplay:
         )
         ids = [f"u{i}" for i in sorted(self.model, reverse=op.desc)]
         want = ids[op.offset :] if op.limit is None else ids[op.offset : op.offset + op.limit]
-        assert [d["id"] for d in page] == want
+        assert [d["id"] for d in page.rows] == want
 
 
 async def _replay_projection(history: list[ProjOp]) -> None:
-    r = ProjectionReplay(FlakyProjectionStore())
+    r = ProjectionReplay(LostResponse(MemoryProjectionStore()))
     for op in history:
         await r.step(op)
 

@@ -1,202 +1,443 @@
-"""Saga seam exercised by a tiny order-shipping process manager."""
+"""Saga seam exercised by an order process manager: the runner, the saga outbox, the tombstone, and the
+relay that sends the commands. The faults are the ones a saga meets in production: two workers folding one
+instance at once, a crash on either side of the commit, a relay that dies after it sent and before it
+marked, a lost response, and late or redelivered events after completion."""
 
 import asyncio
 import copy
 import pickle
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import FlakySagaStore, build_envelope
-from edax.backend.memory import MemorySagaStore
-from edax.saga import Completed, SagaRunner
+from conftest import NO_WAIT, build_envelope
+from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
+from edax.saga import Completed, SagaCommand, SagaRunner
 from edax.store import Tx, current_tx
+from edax.testing.faults import LostResponse
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 
-def env(aggregate_id: str, name: str) -> edax.EventEnvelope:
-    return build_envelope(aggregate_id, name, 1, data=b'{"total": 1200}', metadata={"trace": "t-1"})
+def env(aggregate_id: str, name: str, order_id: str = "order-7") -> edax.EventEnvelope:
+    """An event of `aggregate_id` about `order_id`: the order and its payment are two aggregates with one
+    correlation, so two workers can fold one instance at once."""
+    return build_envelope(
+        aggregate_id,
+        name,
+        1,
+        id=f"{aggregate_id}-{name}",
+        data=b'{"total": 1200}',
+        metadata={"order": order_id},
+    )
 
 
 @dataclass
-class ShipOrder:
+class Fulfill:
     order_id: str
-    type: ClassVar[str] = "ShipOrder"  # routing only: a class attribute stays out of the hash
+    type: ClassVar[str] = "Fulfill"  # routing only: a class attribute stays out of the hash
+
+
+@dataclass
+class Refund:
+    order_id: str
+    type: ClassVar[str] = "Refund"
+
+
+COMMANDS = edax.json_codec({"Fulfill": Fulfill, "Refund": Refund})
 
 
 class OrderSaga:
-    """Created -> (wait for payment) -> on PaymentReceived emit ShipOrder and complete."""
+    """`OrderCreated` opens the instance; `PaymentReceived` fulfills it and `OrderCancelled` refunds it,
+    both completing it. `Noted` keeps it running. The correlation is the order, whatever the aggregate."""
 
-    # The parameter is named `env` because the `Saga` protocol names it that and it is not
-    # positional-only, so a keyword call has to reach it.
-    def correlation_id(self, env: edax.EventEnvelope) -> Optional[str]:
-        if env.event.name in ("OrderCreated", "PaymentReceived"):
-            return env.aggregate_id
-        return None  # unrelated event: ignore
+    def __init__(self) -> None:
+        self.folds = 0
 
-    def handle(self, state: Any, env: edax.EventEnvelope) -> tuple[Any, list[Any]]:
-        if env.event.name == "OrderCreated":
-            return {"status": "awaiting_payment"}, []
-        if env.event.name == "PaymentReceived":
-            if state is None:  # no live instance (e.g. redelivery after completion): complete, no-op
-                return Completed, []
-            return Completed, [ShipOrder(env.aggregate_id)]  # complete + emit
-        return state, []
+    def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
+        return env.metadata.get("order")
 
-
-async def instance(store: edax.SagaStore, correlation_id: str) -> edax.SagaInstance:
-    """The stored instance, or fail naming the correlation. These assertions are about *what* was
-    saved, so "nothing was saved" has to read as its own failure."""
-    loaded = await store.load(correlation_id)
-    assert loaded is not None, f"no saga instance stored for {correlation_id!r}"
-    return loaded
+    def handle(self, state: Any, env: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
+        self.folds += 1
+        order_id = env.metadata["order"]
+        name = env.event.name
+        if state is None:
+            return ({"status": "open"}, []) if name == "OrderCreated" else (Completed, [])
+        if name == "PaymentReceived":
+            return Completed, [Fulfill(order_id)]
+        if name == "OrderCancelled":
+            return Completed, [Refund(order_id)]
+        return {"status": "open", "noted": name}, []
 
 
-async def test_saga_lifecycle_and_redelivery() -> None:
+#: The kernel's marks once the instance folded `OrderCreated` of `order-7`.
+CREATED = '{"order-7":{"sequence":1,"id":"order-7-OrderCreated"}}'
+
+
+def runner(store: edax.SagaStore, saga: OrderSaga | None = None) -> SagaRunner:
+    return SagaRunner(saga or OrderSaga(), store, COMMANDS, now=lambda: 1_714_564_800_000_000_000)
+
+
+async def sent_by_relay(run: SagaRunner, store: edax.SagaStore) -> list[Any]:
+    """Drain every committed command through the runner's relay, recording the decoded commands."""
+    sent: list[Any] = []
+    relay = run.relay(sent.append, pacing=NO_WAIT)
+    for _ in range(50):  # bounded, so a relay that never drains fails instead of hanging
+        if not await relay.drain():
+            break
+    assert await store.unpublished() == []
+    return sent
+
+
+async def test_a_step_persists_its_state_and_commands_and_a_completed_instance_takes_no_event() -> None:
+    @dataclass
+    class Step:
+        event: str
+        want: edax.SagaInstance | None
+        want_outbox: list[str]
+
+    open_at = lambda v, noted=None: edax.SagaInstance(  # noqa: E731
+        {"status": "open"} if noted is None else {"status": "open", "noted": noted},
+        v,
+        folded=f'{{"order-7":{{"sequence":1,"id":"order-7-{noted or "OrderCreated"}"}}}}',
+    )
+    tombstone = edax.SagaInstance(None, 3, completed=True)
+    steps = [
+        Step("Stray", None, []),  # nothing loaded, nothing kept, no command: no write at all
+        Step("OrderCreated", open_at(1), []),
+        Step("Noted", open_at(2, "Noted"), []),
+        Step("PaymentReceived", tombstone, ["order-7:3:0"]),
+        # A redelivered payment, a late cancel and a fresh create all find the tombstone: no fold, no
+        # write, no command. Completion is final.
+        Step("PaymentReceived", tombstone, ["order-7:3:0"]),
+        Step("OrderCancelled", tombstone, ["order-7:3:0"]),
+        Step("OrderCreated", tombstone, ["order-7:3:0"]),
+    ]
     store = MemorySagaStore()
-    dispatched: list[ShipOrder] = []
-    runner = SagaRunner(OrderSaga(), store, dispatch=dispatched.append)
-
-    await runner.on_event(env("o1", "SomethingElse"))  # no correlation -> ignored
-    assert await store.load("o1") is None and dispatched == []
-
-    await runner.on_event(env("o1", "OrderCreated"))  # creates instance
-    assert (await instance(store, "o1")).state == {"status": "awaiting_payment"}
-    assert dispatched == []
-
-    await runner.on_event(env("o1", "PaymentReceived"))  # emits command, completes
-    assert await store.load("o1") is None  # instance removed
-    assert dispatched == [ShipOrder("o1")]
-
-    await runner.on_event(env("o1", "PaymentReceived"))  # redelivery after completion: safe no-op
-    assert len(dispatched) == 1
-
-
-async def test_saga_version_advances_and_stale_write_conflicts() -> None:
-    store = MemorySagaStore()
-    assert await store.save("o1", {"n": 1}, 0) == 1  # first write at v0 -> v1
-    assert (await instance(store, "o1")).version == 1
-    assert await store.save("o1", {"n": 2}, 1) == 2  # at the loaded version -> v2
-    with pytest.raises(edax.ConcurrencyError):
-        await store.save("o1", {"n": 3}, 1)  # stale version -> conflict
-    with pytest.raises(edax.ConcurrencyError):
-        await store.delete("o1", 1)  # stale version -> conflict
-    assert (await instance(store, "o1")).version == 2  # a refused delete keeps the instance
-    await store.delete("o1", 2)  # at the current version -> removed
-    assert await store.load("o1") is None
-    await store.delete("o1", 2)  # already gone: idempotent, whatever version it carries
-    await store.delete("never-saved", 7)
-    assert await store.load("o1") is None and await store.load("never-saved") is None
+    saga = OrderSaga()
+    run = runner(store, saga)
+    for step in steps:
+        await run.on_event(env("order-7", step.event))
+        assert await store.load("order-7") == step.want, step.event
+        assert [c.id for c in await store.unpublished()] == step.want_outbox, step.event
+    assert saga.folds == 4, "a completed instance's events are not even folded"
+    row = (await store.unpublished())[0]
+    assert (row.correlation_id, row.command.name, bytes(row.command.data), row.timestamp) == (
+        "order-7",
+        "Fulfill",
+        b'{"order_id":"order-7"}',
+        1_714_564_800_000_000_000,
+    )
+    assert await sent_by_relay(run, store) == [Fulfill("order-7")]
 
 
 async def test_saga_state_is_stored_as_a_copy() -> None:
-    # State crosses the native store as JSON, so a caller mutating the object it saved cannot
-    # change what a later load reads: the stored instance is what was committed, not an alias.
+    # State crosses the native store as JSON, so a caller mutating the object it saved cannot change
+    # what a later load reads: the stored instance is what was committed, not an alias.
     store = MemorySagaStore()
     state = {"status": "awaiting_payment", "items": ["sku-1"]}
-    await store.save("o1", state, 0)
+    await store.save("o1", state, 0, "", [])
     state["items"].append("sku-2")
-    assert (await instance(store, "o1")).state == {"status": "awaiting_payment", "items": ["sku-1"]}
+    loaded = await store.load("o1")
+    assert loaded is not None and loaded.state == {"status": "awaiting_payment", "items": ["sku-1"]}
+
+
+# =========================================================================
+# Races: two workers on one instance, forced into one interleaving
+# =========================================================================
+
+
+class RacingStore(MemorySagaStore):
+    """The real store, with a hook run once between a worker's load and its write: the interleaving the
+    version exists for, forced deterministically instead of with tasks and sleeps."""
+
+    def __init__(self, transactor: MemoryTransactor) -> None:
+        super().__init__(transactor)
+        self.after_load: Callable[[], Awaitable[None]] | None = None
+
+    async def load(self, id: str, tx: Tx | None = None) -> edax.SagaInstance | None:
+        loaded = await super().load(id, tx)
+        hook, self.after_load = self.after_load, None
+        if hook is not None:
+            await hook()
+        return loaded
+
+
+@pytest.mark.parametrize(
+    "loser, winner, want",
+    [
+        # Payment and cancellation race. The cancel commits a Refund first; the
+        # payment fold's Fulfill must never go out.
+        pytest.param(
+            "PaymentReceived", "OrderCancelled", [Refund("order-7")], id="cancel_wins_no_fulfill_escapes"
+        ),
+        pytest.param(
+            "OrderCancelled", "PaymentReceived", [Fulfill("order-7")], id="payment_wins_no_refund_escapes"
+        ),
+    ],
+)
+async def test_the_fold_that_loses_the_version_race_sends_nothing(
+    loser: str, winner: str, want: list[Any]
+) -> None:
+    db = MemoryTransactor()
+    store = RacingStore(db)
+    await runner(store).on_event(env("order-7", "OrderCreated"))
+
+    async def the_other_worker_commits_first() -> None:
+        await runner(MemorySagaStore(db)).on_event(env("order-7", winner))
+
+    store.after_load = the_other_worker_commits_first
+    loser_runner = runner(store)
+    with pytest.raises(edax.ConcurrencyError):
+        await loser_runner.on_event(env("payment-7", loser))
+    assert not edax.is_terminal(edax.ConcurrencyError("x")), "the conflict is redelivered, not dead-lettered"
+    await loser_runner.on_event(env("payment-7", loser))  # the redelivery finds the tombstone
+    assert await store.load("order-7") == edax.SagaInstance(None, 2, completed=True)
+    assert await sent_by_relay(loser_runner, store) == want
+
+
+# =========================================================================
+# Crashes on either side of the commit, and lost responses
+# =========================================================================
 
 
 class FailingSagaStore(MemorySagaStore):
-    """Fault injection: when ``fail_write`` is set, every write (save *and* delete) fails, a store
-    that dies after the runner has already dispatched its commands."""
+    """The real store, whose writes fail while ``fail_write`` is set: the store went away mid-step."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.fail_write = False
+    fail_write = False
 
-    async def save(self, id: str, state: Any, version: int, tx: Optional[Tx] = None) -> int:
+    async def save(
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
+    ) -> int:
         if self.fail_write:
             raise edax.StoreError("saga store unavailable")
-        return await super().save(id, state, version, tx)
+        return await super().save(id, state, version, folded, commands, tx)
 
-    async def delete(self, id: str, version: int, tx: Optional[Tx] = None) -> None:
+    async def complete(
+        self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+    ) -> int:
         if self.fail_write:
             raise edax.StoreError("saga store unavailable")
-        await super().delete(id, version, tx)
+        return await super().complete(id, version, commands, tx)
 
 
-async def test_saga_partial_failure_redelivers_at_least_once() -> None:
-    # The runner dispatches before it persists, so a failure on either side leaves the instance alive
-    # and the event redeliverable: at-least-once, with duplicate commands the idempotent bus absorbs.
-    store = FailingSagaStore()
-    dispatched: list[ShipOrder] = []
+@pytest.mark.parametrize("how", ["store_refuses_the_write", "unit_of_work_rolls_back"])
+async def test_a_step_whose_write_does_not_land_sends_nothing(how: str) -> None:
+    # Crash before the commit: the commands are part of the write, so nothing is left to send, and the
+    # redelivery decides again from the state that did land.
+    db = MemoryTransactor()
+    store = FailingSagaStore(db)
+    run = runner(store)
+    await run.on_event(env("order-7", "OrderCreated"))
+    store.fail_write = how == "store_refuses_the_write"
+    with pytest.raises((edax.StoreError, RuntimeError)):
+        async with edax.transaction(db):
+            await run.on_event(env("payment-7", "PaymentReceived"))
+            raise RuntimeError("the unit of work failed after the saga step")
+    assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1, folded=CREATED)
+    assert await store.unpublished() == [], "nothing to send"
 
-    def failing_dispatch(cmd: ShipOrder) -> None:
-        dispatched.append(cmd)
-        raise edax.StoreError("command bus unavailable")
-
-    ok = SagaRunner(OrderSaga(), store, dispatch=dispatched.append)
-    failing = SagaRunner(OrderSaga(), store, dispatch=failing_dispatch)
-    payment = env("o1", "PaymentReceived")
-
-    await ok.on_event(env("o1", "OrderCreated"))
-    assert (await instance(store, "o1")).state == {"status": "awaiting_payment"}
-
-    # Dispatch fails: the instance must survive so the redelivery can re-emit the command.
-    with pytest.raises(edax.StoreError):
-        await failing.on_event(payment)
-    assert len(dispatched) == 1
-    assert (await instance(store, "o1")).state == {"status": "awaiting_payment"}
-
-    # Redelivery: the command dispatches, but persisting the completion fails. The instance is still
-    # open, so the event redelivers again and the command is emitted a second time.
-    store.fail_write = True
-    with pytest.raises(edax.StoreError):
-        await ok.on_event(payment)
-    assert len(dispatched) == 2
-    assert (await instance(store, "o1")).state == {"status": "awaiting_payment"}
-
-    # Healthy redelivery: completes and removes the instance (third dispatch of the same command).
     store.fail_write = False
-    await ok.on_event(payment)
-    assert len(dispatched) == 3
-    assert await store.load("o1") is None
-
-    # A fourth redelivery finds no instance: no command, no error.
-    await ok.on_event(payment)
-    assert len(dispatched) == 3
+    await run.on_event(env("payment-7", "PaymentReceived"))
+    assert await sent_by_relay(run, store) == [Fulfill("order-7")]
 
 
-async def test_saga_lost_save_response_converges_on_redelivery() -> None:
-    # A "lost response" is worse than the plain failure above: the write *lands*, then the runner sees
-    # a StoreError as if it hadn't. Redelivery reads the landed state, so it is not a replay of the old
-    # step: the saga folds the already-advanced state and does not repeat the side effect.
+class CrashingMark(MemorySagaStore):
+    """The outbox, whose ``mark_published`` fails while ``crash`` is set: the relay died after it sent."""
 
-    # Lost delete: completion persists (instance removed), but on_event still raises. The redelivery
-    # loads None and completes as a no-op, so the ShipOrder command is dispatched exactly once.
-    store = FlakySagaStore()
-    dispatched: list[ShipOrder] = []
-    runner = SagaRunner(OrderSaga(), store, dispatch=dispatched.append)
-    await runner.on_event(env("o1", "OrderCreated"))
-    store.arm_lost_response = "delete"
+    crash = False
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        if self.crash:
+            raise edax.StoreError("relay crashed before the mark")
+        await super().mark_published(ids)
+
+
+async def test_a_committed_command_survives_a_crash_and_a_resend_is_deduplicated() -> None:
+    # Crash after the commit, before the send: the command waits in the outbox and the next relay sends
+    # it. Crash after the send, before the mark: the relay sends it again (at-least-once), and the guard
+    # keyed by the command's id runs the handler once (effectively-once).
+    store = CrashingMark()
+    run = runner(store)
+    await run.on_event(env("order-7", "OrderCreated"))
+    await run.on_event(env("payment-7", "PaymentReceived"))
+    # The process dies here: nothing was sent, and the row is still waiting.
+    assert [c.id for c in await store.unpublished()] == ["order-7:2:0"]
+
+    handled: list[Any] = []
+    row_id: list[str] = []
+
+    async def fulfill(cmd: Fulfill) -> None:
+        handled.append(cmd)
+
+    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(), lambda cmd: row_id[-1]))
+    bus.register("Fulfill", fulfill)
+
+    async def publish(row: SagaCommand) -> None:
+        row_id.append(row.id)
+        await bus.dispatch(run.command(row))
+
+    relay = edax.Relay(store, publish, pacing=NO_WAIT)
+    store.crash = True
+    with pytest.raises(edax.StoreError, match="before the mark"):
+        await relay.drain()
+    store.crash = False
+    assert await relay.drain() == 1, "re-sent after the crash"
+    assert await relay.drain() == 0, "and marked"
+    assert row_id == ["order-7:2:0", "order-7:2:0"], "sent twice"
+    assert handled == [Fulfill("order-7")], "applied once"
+
+
+@pytest.mark.parametrize("lost", ["save", "complete"])
+async def test_a_lost_write_response_converges_on_redelivery(lost: str) -> None:
+    # The write lands, then the runner sees a StoreError as if it hadn't. The redelivery reads what
+    # landed, so it never repeats the step: a lost `complete` finds the tombstone, a lost `save` folds the
+    # advanced state. Either way the command committed once and is sent once.
+    store: Any = LostResponse(MemorySagaStore())
+    run = runner(store)
+    if lost == "save":
+        store.arm("save")
+        with pytest.raises(edax.StoreError):
+            await run.on_event(env("order-7", "OrderCreated"))
+        assert await store.load("order-7") == edax.SagaInstance({"status": "open"}, 1, folded=CREATED), (
+            "the save landed"
+        )
+        await run.on_event(env("order-7", "Noted"))
+    else:
+        await run.on_event(env("order-7", "OrderCreated"))
+    store.arm("complete")
     with pytest.raises(edax.StoreError):
-        await runner.on_event(env("o1", "PaymentReceived"))
-    assert len(dispatched) == 1
-    assert await store.load("o1") is None  # delete landed despite the lost response
-    await runner.on_event(env("o1", "PaymentReceived"))
-    assert len(dispatched) == 1  # redelivery finds no instance: no duplicate command
+        await run.on_event(env("payment-7", "PaymentReceived"))
+    await run.on_event(env("payment-7", "PaymentReceived"))
+    instance = await store.load("order-7")
+    assert instance is not None and instance.completed
+    assert await sent_by_relay(run, store) == [Fulfill("order-7")]
 
-    # Lost save: the state write lands at v1, then on_event raises. Redelivery loads the *new* state
-    # (not the pre-save None), folds OrderCreated again idempotently, and re-saves at v2: no rewind,
-    # no duplicate side effect. The workflow then completes normally, dispatching once.
-    store = FlakySagaStore()
-    dispatched = []
-    runner = SagaRunner(OrderSaga(), store, dispatch=dispatched.append)
-    store.arm_lost_response = "save"
-    with pytest.raises(edax.StoreError):
-        await runner.on_event(env("o2", "OrderCreated"))
-    assert (await instance(store, "o2")).state == {"status": "awaiting_payment"}  # save landed at v1
-    assert dispatched == []
-    await runner.on_event(env("o2", "OrderCreated"))
-    assert (await instance(store, "o2")).version == 2  # redelivery advanced the same state, did not rewind
-    await runner.on_event(env("o2", "PaymentReceived"))
-    assert dispatched == [ShipOrder("o2")]
-    assert await store.load("o2") is None
+
+# =========================================================================
+# Redelivery after the step committed: a lost ack, a crash before the offset commit
+# =========================================================================
+
+
+@dataclass
+class Reserve:
+    sku: str
+    order_id: str
+    type: ClassVar[str] = "Reserve"
+
+
+RESERVE = edax.json_codec({"Reserve": Reserve})
+
+
+class ReserveSaga:
+    """Every event it folds asks the warehouse to reserve stock, so a fold run twice shows as a second
+    ``Reserve``, a workflow step that must not repeat."""
+
+    def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
+        return "order-7"
+
+    def handle(self, state: Any, env: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
+        return (state or 0) + 1, [Reserve("sku-1", env.id)]
+
+
+def at(aggregate_id: str, sequence: int | None, id: str) -> edax.EventEnvelope:
+    return build_envelope(
+        aggregate_id, "OrderCreated", sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"}
+    )
+
+
+@pytest.mark.parametrize(
+    "deliveries, want",
+    [
+        pytest.param(
+            [at("order-7", 1, "o-1"), at("order-7", 1, "o-1")],
+            ["o-1"],
+            id="created_redelivered_after_ack_loss",
+        ),
+        pytest.param(
+            [
+                at("order-7", 1, "o-1"),
+                at("order-7", 2, "o-2"),
+                at("order-7", 1, "o-1"),
+                at("order-7", 2, "o-2"),
+            ],
+            ["o-1", "o-2"],
+            id="a_crash_replays_every_event_above_the_commit",
+        ),
+        pytest.param(
+            [
+                at("order-7", 1, "o-1"),
+                at("payment-7", 1, "p-1"),
+                at("order-7", 1, "o-1"),
+                at("payment-7", 1, "p-1"),
+            ],
+            ["o-1", "p-1"],
+            id="another_aggregates_event_between_them",
+        ),
+        pytest.param(
+            [at("order-7", None, "u-1"), at("order-7", None, "u-1")], ["u-1"], id="an_unsequenced_event_again"
+        ),
+        pytest.param(
+            # With no sequence there is no order to compare: only the last event is known.
+            [at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
+            ["u-1", "u-2", "u-1"],
+            id="an_older_unsequenced_event_is_folded_again",
+        ),
+    ],
+)
+async def test_an_event_redelivered_after_its_step_committed_is_not_folded_again(
+    deliveries: list[edax.EventEnvelope], want: list[str]
+) -> None:
+    """The step committed (state and ``Reserve`` in one write), then the ack was lost or the consumer crashed
+    before its offset commit, so the broker hands the same envelopes over again. Folding one again would
+    commit its ``Reserve`` a second time under the next version's command id, which a consumer deduplicating
+    by command id runs twice."""
+    store = MemorySagaStore()
+    run = SagaRunner(ReserveSaga(), store, RESERVE)
+    for delivery in deliveries:
+        await run.on_event(delivery)
+    sent = [run.command(row) for row in await store.unpublished()]
+    assert [r.order_id for r in sent] == want, "one Reserve per event folded"
+    instance = await store.load("order-7")
+    assert instance is not None and (instance.state, instance.version) == (len(want), len(want)), (
+        "one write per fold"
+    )
+
+
+async def test_a_redelivery_through_the_dispatcher_sends_reserve_once() -> None:
+    """The same fault end to end: the runner behind a guarded relay and the real dispatcher, the ack of the
+    committed step lost, the broker redelivering. The warehouse gets one ``Reserve``."""
+    store = MemorySagaStore()
+    run = SagaRunner(ReserveSaga(), store, RESERVE)
+    acks: list[str] = []
+    dispatcher = edax.KeyOrderedDispatcher(1, run.on_event, pacing=NO_WAIT)
+    dispatcher.start()
+    created = at("order-7", 1, "o-1")
+    for lost_ack in (True, False):
+        await dispatcher.submit(
+            edax.Delivery(created, lambda lost=lost_ack: None if lost else acks.append("ack"), lambda: None)
+        )
+        await dispatcher._queues[0].join()
+    await dispatcher.stop()
+    reserved: list[Reserve] = []
+
+    async def warehouse(cmd: Reserve) -> None:
+        reserved.append(cmd)
+
+    bus = edax.CommandBus()
+    bus.register("Reserve", warehouse)
+    await run.relay(bus.dispatch, pacing=NO_WAIT).drain()
+    assert reserved == [Reserve("sku-1", "o-1")], "the redelivered step sent nothing"
+    assert acks == ["ack"], "the redelivery itself settled cleanly"
 
 
 # =========================================================================
@@ -205,37 +446,58 @@ async def test_saga_lost_save_response_converges_on_redelivery() -> None:
 
 
 class RecordingSagaStore:
-    """A SagaStore fake that records the ``tx`` each write ran under, so a test can prove the
-    runner threaded it. Resolving the ambient :func:`current_tx` is the store's job, as the
-    ``SagaStore`` contract requires, so the fake does it too. The instances live in a
-    :class:`MemorySagaStore` that auto-commits: the recorded handles are stand-ins from a fake
-    transactor, which a real memory store would refuse."""
+    """A SagaStore fake that records each write and the ``tx`` it ran under, so a test can prove the runner
+    threaded it. Resolving the ambient :func:`current_tx` is the store's job, as the ``SagaStore`` contract
+    requires, so the fake does it too. The instances live in a :class:`MemorySagaStore` that auto-commits:
+    the recorded handles are stand-ins from a fake transactor, which a real memory store would refuse."""
 
     def __init__(self) -> None:
         self._inner = MemorySagaStore()
+        #: The fake database whose ambient tx the recorded writes resolve.
+        self.transactor = _OneTx()
         # Explicit, so the inner store never joins the fake's ambient tx, which it would refuse.
         self._none = self._inner.transactor.auto_commit()
-        self.txs: list[Any] = []
+        self.writes: list[tuple[str, Any, list[str]]] = []
 
-    async def load(self, id: str, tx: Optional[Tx] = None) -> Optional[edax.SagaInstance]:
+    async def load(self, id: str, tx: Tx | None = None) -> edax.SagaInstance | None:
         return await self._inner.load(id, tx=self._none)
 
-    async def save(self, id: str, state: Any, version: int, tx: Optional[Tx] = None) -> int:
-        self.txs.append(tx if tx is not None else current_tx())
-        return await self._inner.save(id, state, version, tx=self._none)
+    async def save(
+        self,
+        id: str,
+        state: Any,
+        version: int,
+        folded: str,
+        commands: Sequence[SagaCommand],
+        tx: Tx | None = None,
+    ) -> int:
+        self.writes.append(
+            ("save", tx if tx is not None else current_tx(self.transactor), [c.id for c in commands])
+        )
+        return await self._inner.save(id, state, version, folded, commands, tx=self._none)
 
-    async def delete(self, id: str, version: int, tx: Optional[Tx] = None) -> None:
-        self.txs.append(tx if tx is not None else current_tx())
-        await self._inner.delete(id, version, tx=self._none)
+    async def complete(
+        self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+    ) -> int:
+        self.writes.append(
+            ("complete", tx if tx is not None else current_tx(self.transactor), [c.id for c in commands])
+        )
+        return await self._inner.complete(id, version, commands, tx=self._none)
+
+    async def unpublished(self, limit: int = 100) -> list[SagaCommand]:
+        return await self._inner.unpublished(limit)
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        await self._inner.mark_published(ids)
 
 
 class NoneStateSaga:
     """Keeps ``None`` as its state: legitimate, and distinct from ``Completed``."""
 
-    def correlation_id(self, e: edax.EventEnvelope) -> Optional[str]:
-        return e.aggregate_id
+    def correlation_id(self, e: edax.EventEnvelope, /) -> str | None:
+        return e.metadata.get("order")
 
-    def handle(self, state: Any, e: edax.EventEnvelope) -> tuple[Any, list[Any]]:
+    def handle(self, state: Any, e: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
         return None, []
 
 
@@ -248,100 +510,132 @@ class _OneTx:
 @dataclass
 class RunnerCase:
     saga: Any
-    tx: Any  # explicit tx passed to on_event
-    ambient: bool  # run inside transaction(_OneTx())
-    async_dispatch: bool
-    racer: bool  # the dispatch callback writes the same instance first
-    raises: Optional[type[BaseException]]
-    state_after: Any  # the store's state after the event, or Completed if removed
-    txs: list[Any]
-    preload: bool = True  # whether an open instance exists before the event
+    event: str
+    preload: str | None  # None: no instance; "open": an open one at v1; "completed": a tombstone at v2
+    tx: Any = None  # explicit tx passed to on_event
+    ambient: bool = False  # run inside transaction(_OneTx())
+    want_writes: list[tuple[str, Any, list[str]]] | None = None
+    want_state: Any = None
+    order: str | None = "order-7"  # the correlation the event names; None names none
 
 
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
-            RunnerCase(NoneStateSaga(), None, False, False, False, None, None, [None]),
+            RunnerCase(NoneStateSaga(), "Noted", "open", want_writes=[("save", None, [])], want_state=None),
             id="none_state_is_saved_not_completed",
         ),
         pytest.param(
-            RunnerCase(OrderSaga(), None, False, True, False, None, Completed, [None]),
-            id="async_dispatch_is_awaited_before_persist",
-        ),
-        pytest.param(
-            RunnerCase(OrderSaga(), "explicit-tx", True, False, False, None, Completed, ["explicit-tx"]),
-            id="explicit_tx_wins_over_ambient",
-        ),
-        pytest.param(
-            RunnerCase(OrderSaga(), None, True, False, False, None, Completed, ["ambient-tx"]),
-            id="ambient_tx_is_joined",
+            RunnerCase(OrderSaga(), "Noted", "open", want_writes=[("save", None, [])], want_state="noted"),
+            id="a_fold_that_keeps_state_saves_it",
         ),
         pytest.param(
             RunnerCase(
                 OrderSaga(),
-                None,
-                False,
-                False,
-                True,
-                edax.ConcurrencyError,
-                {"status": "racer"},
-                [None, None],
+                "PaymentReceived",
+                "open",
+                want_writes=[("complete", None, ["order-7:2:0"])],
+                want_state=Completed,
             ),
-            id="racing_writer_between_load_and_save_conflicts",
+            id="completion_writes_the_tombstone_with_its_commands",
         ),
         pytest.param(
-            RunnerCase(OrderSaga(), None, False, False, False, None, Completed, [], preload=False),
-            id="completing_with_no_instance_loaded_writes_nothing",
+            RunnerCase(
+                OrderSaga(),
+                "PaymentReceived",
+                "open",
+                tx="explicit-tx",
+                ambient=True,
+                want_writes=[("complete", "explicit-tx", ["order-7:2:0"])],
+                want_state=Completed,
+            ),
+            id="explicit_tx_wins_over_ambient",
+        ),
+        pytest.param(
+            RunnerCase(
+                OrderSaga(),
+                "PaymentReceived",
+                "open",
+                ambient=True,
+                want_writes=[("complete", "ambient-tx", ["order-7:2:0"])],
+                want_state=Completed,
+            ),
+            id="ambient_tx_is_joined",
+        ),
+        pytest.param(
+            RunnerCase(OrderSaga(), "PaymentReceived", None, want_writes=[], want_state=None),
+            id="completing_with_no_instance_and_no_command_writes_nothing",
+        ),
+        pytest.param(
+            RunnerCase(
+                OrderSaga(), "OrderCreated", None, want_writes=[("save", None, [])], want_state="open"
+            ),
+            id="a_first_event_creates_the_instance_at_version_zero",
+        ),
+        pytest.param(
+            RunnerCase(OrderSaga(), "OrderCancelled", "completed", want_writes=[], want_state=Completed),
+            id="a_completed_instance_takes_no_write",
+        ),
+        pytest.param(
+            RunnerCase(OrderSaga(), "Unrelated", None, want_writes=[], want_state=None, order=None),
+            id="an_event_with_no_correlation_is_ignored",
         ),
     ],
 )
 async def test_runner_branches(case: RunnerCase) -> None:
     store = RecordingSagaStore()
-    if case.preload:
-        await store.save("o1", {"status": "awaiting_payment"}, 0)  # an open instance at v1
-    store.txs.clear()
-    dispatched: list[Any] = []
-
-    async def async_dispatch(cmd: Any) -> None:
-        await asyncio.sleep(0)
-        dispatched.append(cmd)
-
-    def sync_dispatch(cmd: Any) -> None:
-        dispatched.append(cmd)
-
-    async def racing_dispatch(cmd: Any) -> None:
-        dispatched.append(cmd)
-        await store.save("o1", {"status": "racer"}, 1)  # a cross-aggregate writer got there first
-
-    dispatch = racing_dispatch if case.racer else async_dispatch if case.async_dispatch else sync_dispatch
-    runner = SagaRunner(case.saga, store, dispatch=dispatch)
-    event = env("o1", "PaymentReceived")
-
-    async def run_event() -> None:
-        if case.raises is None:
-            await runner.on_event(event, tx=case.tx)
-        else:
-            with pytest.raises(case.raises):
-                await runner.on_event(event, tx=case.tx)
-
+    if case.preload is not None:
+        await store.save("order-7", {"status": "open"}, 0, "", [])
+    if case.preload == "completed":
+        await store.complete("order-7", 1, [])
+    store.writes.clear()
+    run = SagaRunner(case.saga, store, COMMANDS)
+    event = env("order-7", case.event)
+    if case.order is None:
+        event = build_envelope("order-7", case.event, 1, metadata={})
     if case.ambient:
-        async with edax.transaction(_OneTx()):
-            await run_event()
+        async with edax.transaction(store.transactor):
+            await run.on_event(event, tx=case.tx)
     else:
-        await run_event()
+        await run.on_event(event, tx=case.tx)
 
-    instance = await store.load("o1")
-    if case.state_after is Completed:
+    assert store.writes == case.want_writes
+    instance = await store.load("order-7")
+    if case.want_state is Completed:
+        assert instance is not None and instance.completed
+    elif case.want_state is None and case.preload is None:
         assert instance is None
+    elif case.want_state == "noted":
+        assert instance is not None and instance.state == {"status": "open", "noted": "Noted"}
+    elif case.want_state == "open":
+        assert instance is not None and instance.state == {"status": "open"}
     else:
-        assert instance is not None and instance.state == case.state_after
-    # An empty `txs` is the assertion for the no-instance case: completing a correlation that was
-    # never open must not write, because a versioned delete is a write a concurrent creator of the
-    # same correlation would conflict with.
-    assert store.txs == case.txs
-    # OrderSaga emits ShipOrder on PaymentReceived, but only with a live instance to complete.
-    assert len(dispatched) == (1 if isinstance(case.saga, OrderSaga) and case.preload else 0)
+        assert instance is not None and instance.state is None and not instance.completed
+
+
+async def test_the_runners_relay_keeps_the_commands_verdict() -> None:
+    # The relay is where the command runs, so it is where its verdict lands: a terminal failure
+    # dead-letters the row and the rows behind it go out; a transient one hands the row back.
+    store = MemorySagaStore()
+    run = runner(store)
+    for order in ("order-1", "order-2"):
+        await run.on_event(env(order, "OrderCreated", order))
+        await run.on_event(env(order, "PaymentReceived", order))
+    sent: list[Any] = []
+    dead: list[str] = []
+
+    async def dispatch(cmd: Fulfill) -> None:
+        if cmd.order_id == "order-1":
+            raise edax.Rejected("order already shipped")
+        sent.append(cmd)
+
+    async def on_dead(row: SagaCommand, error: BaseException) -> None:
+        dead.append(row.id)
+
+    assert await run.relay(dispatch, on_dead=on_dead, pacing=NO_WAIT).drain() == 2
+    assert (dead, sent) == (["order-1:2:0"], [Fulfill("order-2")])
+    assert await store.unpublished() == []
 
 
 def test_completed_sentinel_identity_survives_copy_and_pickle() -> None:
@@ -350,3 +644,203 @@ def test_completed_sentinel_identity_survives_copy_and_pickle() -> None:
     assert copy.copy(Completed) is Completed
     assert copy.deepcopy(Completed) is Completed
     assert pickle.loads(pickle.dumps(Completed)) is Completed
+
+
+# =========================================================================
+# Model: two workers, stale reads, crashes and a lossy relay
+# =========================================================================
+
+
+@dataclass
+class Did:
+    step: int
+    event: str
+    type: ClassVar[str] = "Did"
+
+
+class CountSaga:
+    """Every event emits a command naming the step it made; `Finish` completes the instance."""
+
+    def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
+        return "flow-1"
+
+    def handle(self, state: Any, env: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
+        step = (state or 0) + 1
+        did = Did(step, env.id)
+        return (Completed if env.event.name == "Finish" else step), [did]
+
+
+class StaleRead(MemorySagaStore):
+    """Answers ``load`` with what one worker read earlier, so its write races whatever committed since."""
+
+    def __init__(self, transactor: MemoryTransactor, loaded: edax.SagaInstance | None) -> None:
+        super().__init__(transactor)
+        self._loaded = loaded
+
+    async def load(self, id: str, tx: Tx | None = None) -> edax.SagaInstance | None:
+        return self._loaded
+
+
+OPS = st.one_of(
+    st.tuples(st.just("load"), st.integers(0, 1)),
+    st.tuples(st.just("write"), st.integers(0, 1), st.booleans()),
+    st.tuples(st.just("drain"), st.one_of(st.none(), st.integers(0, 2)), st.booleans()),
+    st.tuples(st.just("redeliver"), st.integers(0, 3)),
+)
+
+
+@settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(st.lists(OPS, max_size=40))
+def test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else(
+    ops: list[tuple[Any, ...]],
+) -> None:
+    asyncio.run(_replay_saga(ops))
+
+
+async def _replay_saga(ops: list[tuple[Any, ...]]) -> None:
+    """After any history of stale reads, crashed commits, failed publishes, lost marks and redeliveries of
+    committed events: nothing is sent that no committed step decided, every committed command is sent, a
+    re-send happens only after a lost mark, nothing commits after completion, no event's step commits twice,
+    and every committed fold read the state the previous commit left."""
+    db = MemoryTransactor()
+    store = CrashingMark(db)
+    codec = edax.json_codec({"Did": Did})
+    # Each event from an aggregate of its own: two workers fold two of them at once, as they may only for
+    # events of different aggregates (a dispatcher serializes one aggregate's events).
+    pending = [
+        build_envelope(f"agg-{i}", name, 1, id=f"evt-{i}")
+        for i, name in enumerate(["Step", "Step", "Finish"])
+    ]
+    pending.append(build_envelope("agg-late", "Step", 1, id="evt-late"))
+    landed_events: list[edax.EventEnvelope] = []
+    taken: list[tuple[edax.EventEnvelope, edax.SagaInstance | None] | None] = [None, None]
+    committed: set[str] = set()
+    sends: dict[str, int] = {}
+    resends_allowed: dict[str, int] = {}
+    steps: list[int] = []
+    folded: list[str] = []
+
+    async def unsent() -> set[str]:
+        return {c.id for c in await store.unpublished(1000)}
+
+    async def load(w: int) -> None:
+        if taken[w] is None and pending:
+            taken[w] = (pending.pop(0), await MemorySagaStore(db).load("flow-1"))
+
+    async def write(w: int, crash: bool) -> None:
+        held = taken[w]
+        if held is None:
+            return
+        event, loaded = held
+        taken[w] = None
+        was_completed = (await MemorySagaStore(db).load("flow-1") or edax.SagaInstance(None)).completed
+        before = await unsent()
+        run = SagaRunner(CountSaga(), StaleRead(db, loaded), codec)
+        try:
+            async with edax.transaction(db):
+                await run.on_event(event)
+                if crash:
+                    raise RuntimeError("crashed before the commit")
+        except (edax.ConcurrencyError, RuntimeError):
+            pending.insert(0, event)  # redelivered
+            return
+        landed = await unsent() - before
+        assert not (was_completed and landed), "a commit landed after the instance completed"
+        if landed:
+            landed_events.append(event)
+        for row in await store.unpublished(1000):
+            if row.id in landed:
+                did = codec.unmarshal(row.command)
+                steps.append(did.step)
+                folded.append(did.event)
+        committed.update(landed)
+
+    async def drain(fail_at: int | None, crash_mark: bool) -> None:
+        index = 0
+        sent: list[str] = []
+
+        async def publish(row: SagaCommand) -> None:
+            nonlocal index
+            at, index = index, index + 1
+            if at == fail_at:
+                raise edax.StoreError("broker unavailable")
+            sent.append(row.id)
+
+        store.crash = crash_mark
+        try:
+            await edax.Relay(store, publish, pacing=NO_WAIT).drain(10)
+        except edax.StoreError:
+            pass
+        finally:
+            store.crash = False
+        for row_id in sent:
+            assert row_id in committed, f"sent {row_id}, which no committed step decided"
+            sends[row_id] = sends.get(row_id, 0) + 1
+            assert sends[row_id] <= 1 + resends_allowed.get(row_id, 0), (
+                f"{row_id} re-sent without a lost mark"
+            )
+            if crash_mark:
+                resends_allowed[row_id] = resends_allowed.get(row_id, 0) + 1
+
+    def redeliver(start: int) -> None:
+        """The broker hands over again every committed event from the ``start``-th on, in order: one lost
+        ack when it names the last, a crash above the committed offset when it names an earlier one."""
+        pending[:0] = landed_events[start:]
+
+    for op in ops:
+        if op[0] == "load":
+            await load(op[1])
+        elif op[0] == "write":
+            await write(op[1], op[2])
+        elif op[0] == "redeliver":
+            redeliver(op[1])
+        else:
+            await drain(op[1], op[2])
+
+    # Settle: redeliver what is pending with fresh reads, then drain with no faults.
+    for w in (0, 1):
+        held = taken[w]
+        if held is not None:
+            pending.insert(0, held[0])
+            taken[w] = None
+    # Bounded, so a store or runner that never converges fails here instead of hanging the suite.
+    for _ in range(50):
+        if not pending:
+            break
+        await load(0)
+        await write(0, False)
+    assert not pending, "the pending events never settled"
+    for _ in range(50):
+        if not await unsent():
+            break
+        await drain(None, False)
+
+    final = await MemorySagaStore(db).load("flow-1")
+    assert final is not None and final.completed, "every event was folded once the races settled"
+    assert set(sends) == committed, "every committed command sent, nothing else"
+    assert steps == list(range(1, len(steps) + 1)), "a stale fold landed"
+    # One command per committed transition, and no event's step committed twice. An event that reached
+    # the instance after `Finish` committed nothing, so `Finish` is always the last step.
+    assert len(set(folded)) == len(folded) == len(committed), "an event's step committed twice"
+    assert folded[-1] == "evt-2", "a step committed after completion"
+
+
+async def test_a_crash_replay_of_committed_steps_is_one_of_the_histories() -> None:
+    """Two steps commit, then the broker replays both (the offset commit was lost) and the last one once
+    more: pinned so a shrink never loses it."""
+    await _replay_saga(
+        [
+            ("load", 0),
+            ("write", 0, False),
+            ("load", 0),
+            ("write", 0, False),
+            ("redeliver", 0),
+            ("redeliver", 1),
+            ("load", 0),
+            ("write", 0, False),
+            ("load", 1),
+            ("write", 1, False),
+            ("load", 0),
+            ("write", 0, False),
+        ]
+    )

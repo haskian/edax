@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use edax_core::AdapterError;
+use edax_core::Error;
 
 /// One realistic envelope; every case overrides only the field under test.
 pub(crate) fn envelope(id: &str, sequence: Option<u64>) -> edax_event::EventEnvelope {
@@ -30,6 +30,6 @@ pub(crate) fn ids(envs: &[edax_event::EventEnvelope]) -> Vec<String> {
 }
 
 /// The wire form of a result, so every exact-message assertion below pins what a binding sees.
-pub(crate) fn wire<T>(result: Result<T, AdapterError>) -> Result<T, String> {
+pub(crate) fn wire<T>(result: Result<T, Error>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }

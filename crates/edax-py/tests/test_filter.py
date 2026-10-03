@@ -2,14 +2,12 @@
 semantics from JSON; the table below pins the dict each constructor emits, which is the only part
 the SDK owns — a wrong key or op name would sail past the golden vectors."""
 
-import json
-from pathlib import Path
 from typing import Any
 
+import edax
 import pytest
+from conftest import golden
 from edax import filter as F
-
-GOLDEN = Path(__file__).resolve().parents[3] / "testdata" / "golden"
 
 # One realistic read-model row, shared by every case; each case overrides only the path it probes.
 ACCOUNT: dict[str, Any] = {
@@ -24,8 +22,15 @@ ACCOUNT: dict[str, Any] = {
 
 
 def test_golden_filter() -> None:
-    for c in json.loads((GOLDEN / "filter.json").read_text()):
-        assert F.matches(c["filter"], c["document"]) == c["expected"], c
+    """The match decision per row, and the refusals: a ``None`` comparand, an empty path segment, a typo
+    or an unknown node is the terminal ``CodecError``, never a filter that silently matches nothing."""
+    for c in golden("filter.json"):
+        if c["error_code"] is not None:
+            with pytest.raises(edax.CodecError) as caught:
+                F.matches(c["filter"], c["document"])
+            assert caught.value.code == c["error_code"], c["name"]
+            continue
+        assert F.matches(c["filter"], c["document"]) == c["expected"], c["name"]
 
 
 # One constructor per row, with the canonical form it must build beside it. Rows run to 156

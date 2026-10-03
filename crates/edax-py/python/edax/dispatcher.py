@@ -6,45 +6,84 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from time import perf_counter_ns
-from typing import Callable, Optional, Union
+from typing import Any, cast
 
 from . import _edax
 from ._async import MaybeAwaitable, maybe_await
+from ._owned import ThreadBound
 from .aggregate import EventEnvelope
-from .errors import InProgress, is_terminal
-from .observe import Observer, _wrap, error_type
-from .store import _current_transactor, _current_tx
+from .errors import CodecError, InProgress, _carried_code
+from .observe import DeliveryOutcome, Observer, _wrap, error_type
+from .pacing import Pacing
+from .store import _dead_letter, _leave_every_unit_of_work
+
+__all__ = [
+    "AckFn",
+    "DeadLetterFn",
+    "Delivery",
+    "DispatcherStats",
+    "Handler",
+    "KeyOrderedDispatcher",
+    "LiveFn",
+]
+
 
 logger = logging.getLogger("edax.dispatcher")
 
-#: How a backoff step is waited out. The schedule is the kernel's and a host must not bend it, but a
-#: test asserting which steps were asked for should not pay them in wall time, so this is the seam a
-#: test patches. The Rust dispatcher takes the same injection through its builder.
-_sleep = asyncio.sleep
+
+def _worker_cancelled() -> bool:
+    """Whether the running task itself has been asked to cancel, as against a handler awaiting a
+    future someone else cancelled. ``Task.cancelling`` exists from 3.11; on 3.10 every
+    ``CancelledError`` counts as the worker's own, so a worker can still end that way there, and
+    :attr:`DispatcherStats.running` reports it."""
+    task = asyncio.current_task()
+    cancelling = getattr(task, "cancelling", None)
+    return cancelling is None or cancelling() > 0
+
 
 Handler = Callable[[EventEnvelope], MaybeAwaitable[None]]
 AckFn = Callable[[], MaybeAwaitable[None]]
+LiveFn = Callable[[], bool]
 DeadLetterFn = Callable[["Delivery", BaseException], MaybeAwaitable[None]]
+
+
+def _always_live() -> bool:
+    """The liveness of a delivery whose transport never retires one it handed out."""
+    return True
 
 
 @dataclass
 class Delivery:
-    """A broker delivery: the event plus the two handles that settle it. The transport handle (a Kafka
+    """A broker delivery: the event plus the handles that settle it. The transport handle (a Kafka
     offset, an SQS receipt) is per-delivery state, not stable across redelivery, so the adapter captures it
     in the ``on_ack`` / ``on_nack`` closures instead of on the persisted :class:`EventEnvelope`. A
-    :class:`KeyOrderedDispatcher` acks on success and nacks if the handler raises."""
+    :class:`KeyOrderedDispatcher` acks on success and nacks if the handler raises.
+
+    ``live`` tells whether the transport still counts on this delivery. A log-based transport (Kafka, the
+    in-memory broker) retires every delivery it handed out from a partition a nack rewinds or a rebalance
+    takes away, and fetches those messages again. A worker skips a delivery that is no longer live: no
+    handler run and no settlement, so a later event of a key never runs ahead of the redelivered earlier
+    one. ``origin`` is the transport's own record of the message, for a dead-letter sink that republishes
+    it (a Kafka consumer sets a :class:`~edax.backend.kafka.KafkaFetched`); ``None`` when there is none."""
 
     envelope: EventEnvelope
     on_ack: AckFn
     on_nack: AckFn
     attempt: int = 0  # the broker's own redelivery count if it keeps one, else 0; see max_attempts
+    live: LiveFn = _always_live
+    origin: Any = None
+    #: Whether :meth:`ack` or :meth:`nack` has been called: a worker stopped before either hands it back.
+    settled: bool = field(default=False, init=False)
 
     async def ack(self) -> None:
+        self.settled = True
         await maybe_await(self.on_ack())
 
     async def nack(self) -> None:
+        self.settled = True
         await maybe_await(self.on_nack())
 
 
@@ -55,7 +94,7 @@ class _Stop(enum.Enum):
 
 
 # What a worker queue carries: a bare envelope, a settleable delivery, or the stop sentinel.
-_QueueItem = Union[EventEnvelope, Delivery, _Stop]
+_QueueItem = EventEnvelope | Delivery | _Stop
 
 
 @dataclass(frozen=True)
@@ -69,21 +108,33 @@ class DispatcherStats:
     in_flight: int
     attempts_tracked: int
     contended_tracked: int
+    #: Every worker is alive. ``False`` before :meth:`KeyOrderedDispatcher.start`, after
+    #: :meth:`~KeyOrderedDispatcher.stop`, and once any worker has died: a dead worker strands every
+    #: key routed to it, so a health check must read this, not just "was started".
     running: bool
+    #: How many workers are alive, against ``len(queue_depth)`` started.
+    workers_alive: int
+    #: Handlers running right now: a subset of ``in_flight``, without the items waiting out a backoff step
+    #: or a settlement. A rebalance waits for this to reach zero before another member takes the keys.
+    handling: int
 
 
 class KeyOrderedDispatcher:
     """Fans one broker partition or key-shared subscription out to a local pool of asyncio workers. Worker
     is ``partition(aggregate_id, workers)``, so one aggregate's events stay on one worker in FIFO order while
     different aggregates progress in parallel. ``max_queue`` bounds each worker's queue for backpressure
-    (``submit`` awaits when full); ``0`` makes it unbounded. Per-key order holds for successful deliveries
-    only: a nack returns the delivery to the broker tail, so a key that ever nacks is reordered against
-    itself and handlers must tolerate that.
+    (``submit`` awaits when full); ``0`` makes it unbounded. Per-key order holds through a nack on a
+    transport that rewinds, as a log does: the nack seeks the partition back, the transport retires the
+    deliveries of it already handed out, and a worker skips a delivery that is no longer
+    :attr:`~Delivery.live`, so the redelivered earlier event runs first. On a transport that requeues a
+    nacked delivery behind later ones instead, a key that nacks is reordered against itself.
 
     A raising handler nacks unless ``on_dead`` is set. With it, a terminal error dead-letters on the first
     attempt whatever ``max_attempts`` says, and a transient one at the ``max_attempts``-th failed attempt
-    (``0`` disables the ceiling). Every nack waits one step of the kernel's backoff schedule first, or a
-    handler failing on a downed dependency polls the broker as fast as it redelivers.
+    (``0`` disables the ceiling). A sink that raises nacks the delivery the same way, so the redelivery
+    gives it another try. Every nack waits one step of ``pacing`` first (default: the kernel's jittered
+    backoff on ``asyncio.sleep``), or a handler failing on a downed dependency polls the broker as fast as
+    it redelivers.
     :class:`~edax.errors.InProgress` waits the same way but never counts, because it is contention rather
     than a failed attempt. The wait blocks that worker and every key routed to it, because per-key ordering
     forbids skipping ahead. Attempt counting and sink behaviour: ``docs/sdk/consuming.md``.
@@ -100,34 +151,47 @@ class KeyOrderedDispatcher:
         *,
         max_queue: int = 1024,
         max_attempts: int = 0,
-        on_dead: Optional[DeadLetterFn] = None,
-        observer: Optional[Observer] = None,
+        on_dead: DeadLetterFn | None = None,
+        observer: Observer | None = None,
+        pacing: Pacing | None = None,
     ) -> None:
+        if workers < 1:
+            raise ValueError(f"a dispatcher needs at least one worker, got {workers}")
         self.handler = handler
-        self._max_attempts = max_attempts
+        self._pacing = pacing or Pacing()
+        # The kernel's retry and dead-letter policy: when a failure is handed back, after which backoff
+        # step, and when it dies. Built on first use, on the loop's thread, because the native handle is
+        # bound to the thread that builds it and a dispatcher may be built on another. Entries for nacked
+        # messages that never come back stay until the id is seen again.
+        self._retries = ThreadBound.lazy(
+            lambda: _edax.retries(max_attempts, on_dead is not None), "KeyOrderedDispatcher"
+        )
         self._on_dead = on_dead
         self._observer = _wrap(observer)
         self._queues: list[asyncio.Queue[_QueueItem]] = [
-            asyncio.Queue[_QueueItem](maxsize=max_queue) for _ in range(max(1, workers))
+            asyncio.Queue[_QueueItem](maxsize=max_queue) for _ in range(workers)
         ]
         self._tasks: list[asyncio.Task[None]] = []
+        # Set by `stop()` and cleared by `start()`: a submit in between would queue an item no worker
+        # will ever take, so it is refused.
+        self._stopping = False
         # Items taken off a queue whose handler has not returned (or, for a Delivery, not settled).
         # `qsize()` stops counting an item the moment a worker takes it, so `idle()` needs this too.
         self._in_flight = 0
-        # Entries for nacked messages that never come back stay until the id is seen again.
-        self._attempts: dict[str, int] = {}
-        # Backoff step per message losing a claim race. Separate from `_attempts`: contention is not a
-        # failed attempt, and the same unbounded-entry caveat applies.
-        self._contended: dict[str, int] = {}
+        self._handling = 0
 
     def stats(self) -> DispatcherStats:
         """A snapshot for a health check or a gauge; cheap, no locking, read from the loop's thread."""
+        alive = sum(not task.done() for task in self._tasks)
+        tracked = self._retries.get().tracked()
         return DispatcherStats(
             queue_depth=[q.qsize() for q in self._queues],
             in_flight=self._in_flight,
-            attempts_tracked=len(self._attempts),
-            contended_tracked=len(self._contended),
-            running=bool(self._tasks),
+            attempts_tracked=tracked.attempts,
+            contended_tracked=tracked.contended,
+            running=bool(self._tasks) and alive == len(self._tasks),
+            workers_alive=alive,
+            handling=self._handling,
         )
 
     def idle(self) -> bool:
@@ -136,17 +200,16 @@ class KeyOrderedDispatcher:
         return stats.in_flight == 0 and not any(stats.queue_depth)
 
     @property
-    def on_dead(self) -> Optional[DeadLetterFn]:
+    def on_dead(self) -> DeadLetterFn | None:
         """The dead-letter sink, or ``None``. A :class:`~edax.broker.Consumer` that must settle a message
-        no handler may see — a payload that will not decode — routes it here, the same exit a terminal
+        no handler may see (a payload that will not decode) routes it here, the same exit a terminal
         handler failure takes. Set at construction: workers read it, so it is not swapped mid-run."""
         return self._on_dead
 
     @property
-    def observer(self) -> Observer:
-        """The guarded observer, for the consumer loop that settles poison messages outside
-        :meth:`submit` and still has to report them; never ``None``."""
-        return self._observer
+    def pacing(self) -> Pacing:
+        """How a nack waits; a :class:`~edax.broker.Consumer` loop waits the same way after a failed poll."""
+        return self._pacing
 
     def _worker_index(self, aggregate_id: str) -> int:
         return _edax.partition(aggregate_id, len(self._queues))
@@ -154,8 +217,7 @@ class KeyOrderedDispatcher:
     async def _run(self, queue: asyncio.Queue[_QueueItem]) -> None:
         # A task copies its creator's context, so a dispatcher started inside `transaction` would hand every
         # handler that caller's tx from a second task, which the Transactor contract forbids.
-        _current_tx.set(None)
-        _current_transactor.set(None)
+        _leave_every_unit_of_work()
         while True:
             item = await queue.get()
             if item is _Stop.TOKEN:
@@ -169,7 +231,14 @@ class KeyOrderedDispatcher:
                 else:
                     # Bare envelope: fire-and-forget, so no settlement and no `Observer.delivery` either;
                     # a host wanting numbers for this path times the handler with `observe.timing`.
-                    await maybe_await(self.handler(item))
+                    await self._handle(item)
+            except asyncio.CancelledError:
+                # This worker is being stopped mid-settlement, in the handler, the sink or a backoff wait:
+                # hand the delivery back before the cancel ends the worker, so it is redelivered rather
+                # than stranded. One that already settled has nothing left to hand back.
+                if isinstance(item, Delivery) and not item.settled:
+                    await asyncio.shield(self._nack_quietly(item))
+                raise
             except Exception:
                 # Named per arm: a bare envelope is fire-and-forget, so nothing settles it and
                 # "settling failed" would send an operator to the wrong layer.
@@ -179,76 +248,138 @@ class KeyOrderedDispatcher:
                 self._in_flight -= 1
                 queue.task_done()
 
+    async def _handle(self, env: EventEnvelope) -> None:
+        """Run the handler, counted in :attr:`DispatcherStats.handling` while it runs."""
+        self._handling += 1
+        try:
+            await maybe_await(self.handler(env))
+        finally:
+            self._handling -= 1
+
     async def _settle(self, delivery: Delivery) -> None:
         """Run the handler, settle the delivery by its outcome, and report that outcome once. The
         duration is taken before any settlement, so it covers the handler only and a latency histogram
         over it is not polluted by the backoff wait."""
-        attempt = max(delivery.attempt, self._attempts.get(delivery.envelope.id, 0)) + 1
+        attempt = self._retries.get().attempt(delivery.envelope.id, delivery.attempt)
+        if not delivery.live():
+            # A rewind or a rebalance retired it before this worker took it: the transport fetches it
+            # again behind the earlier event of its key, so running it now would reorder the key.
+            self._observer.delivery(delivery.envelope.event.name, "stale", attempt, 0, None)
+            return
         started = perf_counter_ns()
-        error: Optional[Exception] = None
+        error: BaseException | None = None
         try:
-            await maybe_await(self.handler(delivery.envelope))
-        except Exception as e:  # noqa: BLE001 - handler failed -> nack or dead-letter below
+            await self._handle(delivery.envelope)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as e:
+            if isinstance(e, asyncio.CancelledError) and _worker_cancelled():
+                raise  # this worker is being stopped, not the handler failing: `_run` hands it back
+            # Any other BaseException (a `CancelledError` from a future someone else cancelled, a
+            # native `PanicException`) fails this delivery only. Letting it end the worker would
+            # strand every key routed to it, with nothing to notice.
             error = e
         duration_ns = perf_counter_ns() - started
-        # A settlement that raises (`on_dead`, the nack) propagates to the worker's catch-all with the
+        cause = error_type(error) if error is not None else None
+        if not delivery.live():
+            # Retired while the handler ran: its ack or nack would settle nothing, and a dead-letter
+            # would be repeated by the redelivered copy. That copy settles it instead.
+            self._observer.delivery(delivery.envelope.event.name, "stale", attempt, duration_ns, cause)
+            return
+        # A settlement that raises (the ack, the nack) propagates to the worker's catch-all with the
         # delivery neither acked nor nacked; reported as such so the arm is visible, not silent.
-        outcome = "unsettled"
+        outcome: DeliveryOutcome = "unsettled"
         try:
             outcome = await self._ack_nack_or_dead(delivery, error, attempt)
         finally:
-            cause = error_type(error) if error is not None else None
             self._observer.delivery(delivery.envelope.event.name, outcome, attempt, duration_ns, cause)
 
-    async def _ack_nack_or_dead(self, delivery: Delivery, error: Optional[Exception], attempt: int) -> str:
-        """Settle by the handler's outcome and return which arm settled it: ``ack``, ``nack``, ``dead``,
-        ``in_progress``, or ``unsettled`` for an ack that did not land (a raising nack or ``on_dead``
-        propagates instead)."""
+    async def _ack_nack_or_dead(
+        self, delivery: Delivery, error: BaseException | None, attempt: int
+    ) -> DeliveryOutcome:
+        """Settle by the handler's outcome as the kernel's retry policy answers, and return which arm settled
+        it: ``ack``, ``nack``, ``dead``, ``in_progress``, ``sink_failed``, or ``unsettled`` for an ack that
+        did not land (a raising nack propagates instead)."""
         env_id = delivery.envelope.id
+        policy = self._retries.get()
         if error is None:
             acked = await self._ack_or_log(delivery)
-            self._contended.pop(env_id, None)
-            self._attempts.pop(env_id, None)
+            policy.succeeded(env_id)
             return "ack" if acked else "unsettled"
-        if isinstance(error, InProgress):
-            # Contention, not a failed attempt: wait one backoff step, then redeliver without touching the
-            # attempt budget. Nacking at once would poll the broker until the claim's TTL.
-            step = self._contended.get(env_id, 0)
-            self._contended[env_id] = step + 1
-            await self._nack_after_backoff(delivery, step)
-            return "in_progress"
-        self._contended.pop(env_id, None)
-        terminal = is_terminal(error)
-        dead = terminal or (0 < self._max_attempts <= attempt)
-        if dead and self._on_dead is not None:
-            logger.warning(
-                "edax dispatcher: dead-lettering %s after %d attempt(s) (terminal=%s)",
-                env_id,
-                attempt,
-                terminal,
-            )
-            # on_dead raising propagates before any ack/nack: the broker redelivers.
-            await maybe_await(self._on_dead(delivery, error))
+        # The kernel reads the failure's code: `in_progress` is contention, which waits its own step and
+        # never counts toward the ceiling, since nacking at once would poll the broker until the claim's
+        # TTL. A BaseException that is not an Exception (a cancel from elsewhere, a native panic) carries
+        # no code: nothing says it repeats, so it is retried like a transient failure.
+        code = _carried_code(error) if isinstance(error, Exception) else None
+        verdict = policy.failed(env_id, delivery.attempt, code)
+        if verdict.dead:
+            if not await self._sink(delivery, error, verdict.attempt):
+                return "sink_failed"
             acked = await self._ack_or_log(delivery)
-            self._attempts.pop(env_id, None)
             return "dead" if acked else "unsettled"
-        # Whether redelivery reorders against already-acked same-aggregate messages is the broker's.
-        # Recorded whatever the ceiling, so the backoff below grows across redeliveries: with the
-        # default `max_attempts=0` an unrecorded attempt is always 1 and the wait a flat first step.
-        self._attempts[env_id] = attempt
-        # Transient failure: waited the same way as the InProgress arm, one step of the kernel's
-        # schedule before handing the delivery back.
-        await self._nack_after_backoff(delivery, attempt - 1)
-        return "nack"
+        # Whether redelivery reorders against already-acked same-aggregate messages is the broker's. Every
+        # failure that is handed back waits one step of the kernel's schedule first.
+        await self._nack_after_backoff(delivery, verdict.step)
+        return "in_progress" if isinstance(error, InProgress) else "nack"
+
+    async def _sink(self, delivery: Delivery, error: BaseException, attempt: int) -> bool:
+        """Hand ``delivery`` to ``on_dead``; return whether the sink took it. A sink that raises nacks the
+        delivery after one backoff step, the transient path, and the policy keeps the attempt so the
+        redelivery reaches the sink again with a longer wait. Leaving it unsettled instead would pin a
+        log-based broker for good: nothing redelivers a delivery while its consumer lives."""
+        # The kernel answers `dead` only to a policy built with a sink, so a dead verdict means one is set.
+        on_dead = cast("DeadLetterFn", self._on_dead)
+        policy = self._retries.get()
+        step = await _dead_letter(
+            logger, policy, delivery.envelope.id, attempt, lambda: on_dead(delivery, error)
+        )
+        if step is None:
+            return True
+        await self._nack_after_backoff(delivery, step)
+        return False
+
+    async def settle_poison(self, delivery: Delivery, error: BaseException) -> DeliveryOutcome:
+        """Settle a polled message no handler may see (a payload that will not decode) the way a
+        terminal handler failure settles: ``on_dead``, then ack. With no sink, or a sink that raises, it is
+        nacked after one backoff step, counted by its id like a failed attempt, so one poison message
+        cannot spin the consumer against the broker. Reported through
+        :meth:`~edax.observe.Observer.undecodable`. Returns ``dead``, ``nack`` or ``sink_failed``.
+
+        A :class:`~edax.broker.Consumer` loop calls this in place of :meth:`submit`; routing the message
+        through :meth:`submit` would hand a handler an envelope with no event in it."""
+        env_id = delivery.envelope.id
+        self._observer.undecodable(env_id, error)
+        # A payload that will not decode fails alike on every delivery: terminal by construction, whatever
+        # exception the decoder raised.
+        verdict = self._retries.get().failed(env_id, delivery.attempt, CodecError.code)
+        try:
+            if not verdict.dead:
+                logger.error(
+                    "edax dispatcher: poison message %s with no on_dead wired; nacking it after a backoff",
+                    env_id,
+                )
+                await self._nack_after_backoff(delivery, verdict.step)
+                return "nack"
+            if not await self._sink(delivery, error, verdict.attempt):
+                return "sink_failed"
+            await delivery.ack()
+            return "dead"
+        except asyncio.CancelledError:
+            # The consumer loop is stopped mid-settlement, in the sink or the backoff wait: hand the
+            # message back before the cancel ends it, as a worker does.
+            if not delivery.settled:
+                await asyncio.shield(self._nack_quietly(delivery))
+            raise
 
     async def _nack_after_backoff(self, delivery: Delivery, step: int) -> None:
-        """Wait one step of the kernel's backoff schedule, then nack. Both failure arms wait: nacking at
+        """Wait one step of the backoff schedule, then nack. Every failure arm waits: nacking at
         once has a handler on a downed dependency polling the broker as fast as it redelivers, and on a
         seeking transport every nack re-reads the partition tail. The wait blocks this worker, and
-        therefore every key routed to it — per-key ordering forbids skipping ahead. A nack that raises
-        leaves the delivery unsettled and propagates to the worker's catch-all, as an `on_dead` raise
-        does."""
-        await _sleep(_edax.backoff_millis(step) / 1000)
+        therefore every key routed to it: per-key ordering forbids skipping ahead. A cancel during the
+        wait reaches the worker, which nacks the delivery before it ends, so a stopped worker strands
+        nothing. A nack that raises leaves the delivery unsettled and propagates to the worker's
+        catch-all."""
+        await self._pacing.wait(step)
         try:
             await delivery.nack()
         except Exception as e:
@@ -276,23 +407,80 @@ class KeyOrderedDispatcher:
             return False
         return True
 
+    async def _nack_quietly(self, delivery: Delivery) -> None:
+        """Hand a delivery back on shutdown. A nack that fails is reported, never raised: the
+        shutdown goes on, and the delivery stays unsettled until the transport redelivers it."""
+        try:
+            await delivery.nack()
+        except Exception as e:  # noqa: BLE001 - reported to the observer; the shutdown goes on
+            self._observer.settlement_failed(delivery.envelope.event.name, delivery.envelope.id, e)
+
+    def _on_worker_done(self, task: asyncio.Task[None]) -> None:
+        """Log a worker that ended while the dispatcher was meant to be running. Its keys are
+        stranded from here on; :attr:`DispatcherStats.running` reads ``False`` until a restart."""
+        if self._stopping:
+            return
+        error = None if task.cancelled() else task.exception()
+        logger.error(
+            "edax dispatcher: a worker ended while running; every key routed to it is stranded",
+            exc_info=error,
+        )
+
     def start(self) -> None:
         if self._tasks:
             # A second worker on one queue would consume it concurrently and break per-key order.
             raise RuntimeError("dispatcher already started")
+        self._stopping = False
         self._tasks = [asyncio.create_task(self._run(q)) for q in self._queues]
+        for task in self._tasks:
+            task.add_done_callback(self._on_worker_done)
 
-    async def submit(self, item: Union[EventEnvelope, Delivery]) -> None:
-        """Submit a bare envelope (fire-and-forget) or a :class:`Delivery` (acked/nacked by outcome)."""
+    async def submit(self, item: EventEnvelope | Delivery) -> None:
+        """Submit a bare envelope (fire-and-forget) or a :class:`Delivery` (acked/nacked by outcome).
+        Before :meth:`start` the item waits in its queue. After :meth:`stop` it is refused with
+        :class:`RuntimeError`, because no worker would ever take it."""
+        if self._stopping:
+            raise RuntimeError("dispatcher is stopped: a submitted item would never be handled or settled")
         env = item.envelope if isinstance(item, Delivery) else item
         await self._queues[self._worker_index(env.aggregate_id)].put(item)
 
-    async def stop(self) -> None:
-        """Signal workers to finish queued events, then wait for the drain. Idempotent."""
-        if not self._tasks:
-            # A second stop would queue a sentinel no worker takes, so a later `join()` would hang.
+    async def stop(self, timeout: float | None = None) -> None:
+        """Refuse further submits, let the workers finish what is queued, and wait up to ``timeout``
+        seconds (``None`` waits for the drain). At the deadline, or if ``stop`` itself is cancelled, the
+        workers still running are cancelled: a delivery a handler held is nacked, and so is every
+        delivery still queued, so nothing submitted is left unsettled. Returns only once no worker is
+        left, so a :meth:`start` after it never runs two workers on one queue. Idempotent."""
+        self._stopping = True
+        tasks = self._tasks
+        if not tasks:
             return
-        tasks, self._tasks = self._tasks, []
-        for q in self._queues:
-            await q.put(_Stop.TOKEN)
-        await asyncio.gather(*tasks)
+        try:
+            await asyncio.wait_for(self._drain(tasks), timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "edax dispatcher: stop() passed its %ss deadline; cancelling %d worker(s)",
+                timeout,
+                sum(not task.done() for task in tasks),
+            )
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._nack_queued()
+            self._tasks = []
+
+    async def _drain(self, tasks: list[asyncio.Task[None]]) -> None:
+        # A dead worker takes no sentinel, and its queue may be full: skip it, or the put blocks.
+        for queue, task in zip(self._queues, tasks, strict=True):
+            if not task.done():
+                await queue.put(_Stop.TOKEN)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _nack_queued(self) -> None:
+        """Hand back every delivery left in a queue once no worker is left to take it."""
+        for queue in self._queues:
+            while not queue.empty():
+                item = queue.get_nowait()
+                queue.task_done()
+                if isinstance(item, Delivery):
+                    await self._nack_quietly(item)

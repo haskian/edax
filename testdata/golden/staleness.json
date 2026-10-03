@@ -1,0 +1,118 @@
+[
+  {
+    "advanced": null,
+    "incoming": null,
+    "op": "pair",
+    "stale": false,
+    "stored": null
+  },
+  {
+    "advanced": 5,
+    "incoming": null,
+    "op": "pair",
+    "stale": false,
+    "stored": 5
+  },
+  {
+    "advanced": 0,
+    "incoming": 0,
+    "op": "pair",
+    "stale": false,
+    "stored": null
+  },
+  {
+    "advanced": 6,
+    "incoming": 6,
+    "op": "pair",
+    "stale": false,
+    "stored": 5
+  },
+  {
+    "advanced": 5,
+    "incoming": 5,
+    "op": "pair",
+    "stale": false,
+    "stored": 5
+  },
+  {
+    "advanced": 5,
+    "incoming": 4,
+    "op": "pair",
+    "stale": true,
+    "stored": 5
+  },
+  {
+    "advanced": 0,
+    "incoming": 0,
+    "op": "pair",
+    "stale": false,
+    "stored": 0
+  },
+  {
+    "advanced": 18446744073709551615,
+    "incoming": 18446744073709551615,
+    "op": "pair",
+    "stale": false,
+    "stored": 18446744073709551614
+  },
+  {
+    "advanced": 18446744073709551615,
+    "incoming": 18446744073709551614,
+    "op": "pair",
+    "stale": true,
+    "stored": 18446744073709551615
+  },
+  {
+    "applied": [
+      1,
+      2,
+      5,
+      null
+    ],
+    "name": "an_unsequenced_event_keeps_the_mark",
+    "op": "fold",
+    "stream": [
+      1,
+      2,
+      5,
+      null,
+      3
+    ],
+    "watermark": 5
+  },
+  {
+    "applied": [
+      1,
+      2,
+      2,
+      3
+    ],
+    "name": "a_redelivery_after_a_seek_back",
+    "op": "fold",
+    "stream": [
+      1,
+      2,
+      1,
+      2,
+      3
+    ],
+    "watermark": 3
+  },
+  {
+    "applied": [
+      3,
+      4,
+      4
+    ],
+    "name": "out_of_order_copies",
+    "op": "fold",
+    "stream": [
+      3,
+      1,
+      2,
+      4,
+      4
+    ],
+    "watermark": 4
+  }
+]

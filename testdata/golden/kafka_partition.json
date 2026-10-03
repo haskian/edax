@@ -1,0 +1,450 @@
+[
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -973932308,
+    "key_hex": "3231",
+    "name": "kafka_utils_test_21",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -973932308,
+    "key_hex": "3231",
+    "name": "kafka_utils_test_21",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -973932308,
+    "key_hex": "3231",
+    "name": "kafka_utils_test_21",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 40,
+    "java_murmur2": -973932308,
+    "key_hex": "3231",
+    "name": "kafka_utils_test_21",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1173551340,
+    "java_murmur2": -973932308,
+    "key_hex": "3231",
+    "name": "kafka_utils_test_21",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -790332482,
+    "key_hex": "666f6f626172",
+    "name": "kafka_utils_test_foobar",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -790332482,
+    "key_hex": "666f6f626172",
+    "name": "kafka_utils_test_foobar",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 6,
+    "java_murmur2": -790332482,
+    "key_hex": "666f6f626172",
+    "name": "kafka_utils_test_foobar",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 66,
+    "java_murmur2": -790332482,
+    "key_hex": "666f6f626172",
+    "name": "kafka_utils_test_foobar",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1357151166,
+    "java_murmur2": -790332482,
+    "key_hex": "666f6f626172",
+    "name": "kafka_utils_test_foobar",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -985981536,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e672d737472696e67",
+    "name": "kafka_utils_test_long",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": -985981536,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e672d737472696e67",
+    "name": "kafka_utils_test_long",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 8,
+    "java_murmur2": -985981536,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e672d737472696e67",
+    "name": "kafka_utils_test_long",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 12,
+    "java_murmur2": -985981536,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e672d737472696e67",
+    "name": "kafka_utils_test_long",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1161502112,
+    "java_murmur2": -985981536,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e672d737472696e67",
+    "name": "kafka_utils_test_long",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -1486304829,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e6765722d737472696e67",
+    "name": "kafka_utils_test_longer",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": -1486304829,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e6765722d737472696e67",
+    "name": "kafka_utils_test_longer",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 11,
+    "java_murmur2": -1486304829,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e6765722d737472696e67",
+    "name": "kafka_utils_test_longer",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 19,
+    "java_murmur2": -1486304829,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e6765722d737472696e67",
+    "name": "kafka_utils_test_longer",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 661178819,
+    "java_murmur2": -1486304829,
+    "key_hex": "612d6c6974746c652d6269742d6c6f6e6765722d737472696e67",
+    "name": "kafka_utils_test_longer",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": -58897971,
+    "key_hex": "6c6b6a683233346c68396669756839307932336f697568736166756a6861646f66323239706872396831396838396838",
+    "name": "kafka_utils_test_48_bytes",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": -58897971,
+    "key_hex": "6c6b6a683233346c68396669756839307932336f697568736166756a6861646f66323239706872396831396838396838",
+    "name": "kafka_utils_test_48_bytes",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 5,
+    "java_murmur2": -58897971,
+    "key_hex": "6c6b6a683233346c68396669756839307932336f697568736166756a6861646f66323239706872396831396838396838",
+    "name": "kafka_utils_test_48_bytes",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 77,
+    "java_murmur2": -58897971,
+    "key_hex": "6c6b6a683233346c68396669756839307932336f697568736166756a6861646f66323239706872396831396838396838",
+    "name": "kafka_utils_test_48_bytes",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 2088585677,
+    "java_murmur2": -58897971,
+    "key_hex": "6c6b6a683233346c68396669756839307932336f697568736166756a6861646f66323239706872396831396838396838",
+    "name": "kafka_utils_test_48_bytes",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": 479470107,
+    "key_hex": "616263",
+    "name": "kafka_utils_test_abc",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": 479470107,
+    "key_hex": "616263",
+    "name": "kafka_utils_test_abc",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 3,
+    "java_murmur2": 479470107,
+    "key_hex": "616263",
+    "name": "kafka_utils_test_abc",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 7,
+    "java_murmur2": 479470107,
+    "key_hex": "616263",
+    "name": "kafka_utils_test_abc",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 479470107,
+    "java_murmur2": 479470107,
+    "key_hex": "616263",
+    "name": "kafka_utils_test_abc",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "",
+    "name": "empty_key",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "",
+    "name": "empty_key",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 9,
+    "java_murmur2": null,
+    "key_hex": "",
+    "name": "empty_key",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 81,
+    "java_murmur2": null,
+    "key_hex": "",
+    "name": "empty_key",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 275646681,
+    "java_murmur2": null,
+    "key_hex": "",
+    "name": "empty_key",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "aggregate_id",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "aggregate_id",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 9,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "aggregate_id",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 17,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "aggregate_id",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1264086717,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "aggregate_id",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "636166c3a92d37",
+    "name": "non_ascii_nfc",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": null,
+    "key_hex": "636166c3a92d37",
+    "name": "non_ascii_nfc",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 11,
+    "java_murmur2": null,
+    "key_hex": "636166c3a92d37",
+    "name": "non_ascii_nfc",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 19,
+    "java_murmur2": null,
+    "key_hex": "636166c3a92d37",
+    "name": "non_ascii_nfc",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 868686419,
+    "java_murmur2": null,
+    "key_hex": "636166c3a92d37",
+    "name": "non_ascii_nfc",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "63616665cc812d37",
+    "name": "non_ascii_nfd",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": null,
+    "key_hex": "63616665cc812d37",
+    "name": "non_ascii_nfd",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 8,
+    "java_murmur2": null,
+    "key_hex": "63616665cc812d37",
+    "name": "non_ascii_nfd",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 60,
+    "java_murmur2": null,
+    "key_hex": "63616665cc812d37",
+    "name": "non_ascii_nfd",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1064465360,
+    "java_murmur2": null,
+    "key_hex": "63616665cc812d37",
+    "name": "non_ascii_nfd",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "fffe80007f",
+    "name": "high_bytes",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 1,
+    "java_murmur2": null,
+    "key_hex": "fffe80007f",
+    "name": "high_bytes",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 4,
+    "java_murmur2": null,
+    "key_hex": "fffe80007f",
+    "name": "high_bytes",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 28,
+    "java_murmur2": null,
+    "key_hex": "fffe80007f",
+    "name": "high_bytes",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 544914328,
+    "java_murmur2": null,
+    "key_hex": "fffe80007f",
+    "name": "high_bytes",
+    "partitions": 2147483647
+  },
+  {
+    "error": "codec: a topic has at least one partition, got 0",
+    "expected": null,
+    "java_murmur2": null,
+    "key_hex": "6167672d31",
+    "name": "no_partitions",
+    "partitions": 0
+  }
+]

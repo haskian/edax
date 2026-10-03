@@ -119,7 +119,7 @@ def extract(files: list[Path], into: Path) -> int:
 
 
 def main(argv: list[str]) -> int:
-    files = [*sorted(ROOT.joinpath("docs").rglob("*.md")), ROOT / "README.md"]
+    files = [*sorted(ROOT.joinpath("docs").rglob("*.md")), ROOT / "README.md", ROOT / "examples/py/README.md"]
     if argv[:1] == ["--extract"]:
         if len(argv) != 2:
             print("usage: doclint.py [--extract DIR]", file=sys.stderr)

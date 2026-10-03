@@ -1,0 +1,44 @@
+[
+  {
+    "case": "deposit",
+    "json": "{\"account_id\":\"acct-1\",\"amount_cents\":4200,\"currency\":\"EUR\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473cd1068a863757272656e6379a3455552",
+    "name": "Deposited",
+    "version": 1
+  },
+  {
+    "case": "negative_and_wide_amount",
+    "json": "{\"account_id\":\"acct-1\",\"amount_cents\":-9007199254740993,\"currency\":\"USD\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473d3ffdfffffffffffffa863757272656e6379a3555344",
+    "name": "Deposited",
+    "version": 1
+  },
+  {
+    "case": "optional_field_absent",
+    "json": "{\"account_id\":\"acct-1\",\"amount_cents\":500,\"memo\":null}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473cd01f4a46d656d6fc0",
+    "name": "Withdrawn",
+    "version": 1
+  },
+  {
+    "case": "non_ascii_text",
+    "json": "{\"account_id\":\"acct-é\",\"amount_cents\":500,\"memo\":\"café ☕ 🦀\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a7616363742dc3a9ac616d6f756e745f63656e7473cd01f4a46d656d6fae636166c3a920e2989520f09fa680",
+    "name": "Withdrawn",
+    "version": 1
+  },
+  {
+    "case": "lists",
+    "json": "{\"tags\":[\"vip\",\"\"],\"flags\":[true,false]}",
+    "msgpack_hex": "82a47461677392a3766970a0a5666c61677392c3c2",
+    "name": "Tagged",
+    "version": 1
+  },
+  {
+    "case": "unit_variant",
+    "json": "{}",
+    "msgpack_hex": "80",
+    "name": "Frozen",
+    "version": 1
+  }
+]

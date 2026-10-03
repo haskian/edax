@@ -10,10 +10,9 @@ document missing ``p``, while ``not_(eq(p, x))`` does.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from . import _edax, errors
+from . import _edax, _json, errors
 
 Filter = dict[str, Any]  # one filter node in the kernel's canonical form
 
@@ -78,4 +77,4 @@ def not_(filter: Filter) -> Filter:
 def matches(filter: Filter, document: Any) -> bool:
     """Return whether ``document`` satisfies ``filter``."""
     with errors.mapped():
-        return _edax.eval_filter(json.dumps(filter), json.dumps(document))
+        return _edax.eval_filter(_json.encode(filter), _json.encode(document))

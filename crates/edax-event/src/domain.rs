@@ -7,13 +7,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Multi-tenancy / routing keys carried alongside an event. BTreeMap so encoded bytes are
-/// deterministic (key order is fixed) — golden-vector consistency depends on this.
+/// Multi-tenancy / routing keys carried alongside an event. A `BTreeMap` fixes the key order, so the
+/// encoded bytes are deterministic and the golden vectors hold.
 pub type Namespace = BTreeMap<String, String>;
 
 /// Free-form context propagated with an event (trace ids, tenant, user, ...).
-// string values only in v0.0.x. Host-encode structured values (e.g. json). Widen to
-// bytes if a real need shows up — costs a wire-format bump, so not done speculatively.
+// String values only: a host encodes a structured value itself (as JSON, say). Widening to bytes
+// would cost a wire-format bump, so it waits for a real need.
 pub type Metadata = BTreeMap<String, String>;
 
 /// An event whose domain payload the host has already serialized to bytes.
@@ -36,7 +36,8 @@ pub struct EventEnvelope {
     pub id: String,
     /// The aggregate this event belongs to: the ordering and partitioning key.
     pub aggregate_id: String,
-    /// The event itself, payload included.
+    /// The event itself, payload included. A map on the wire, like the envelope.
+    #[serde(deserialize_with = "crate::codec::map_only")]
     pub event: Event,
     /// Per-aggregate ordinal. `None` for events published without an aggregate sequence.
     pub sequence: Option<u64>,

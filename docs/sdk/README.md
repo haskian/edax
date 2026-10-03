@@ -3,8 +3,8 @@
 What the software development kit (SDK) layer gives you, where each piece lives, and how far the two
 SDKs agree.
 
-The kernels own no I/O, so persistence and transport are the SDK's job. The SDK offers **seams** — a
-`Protocol` in Python, a trait in Rust — that you implement against your own database or broker, plus
+The kernels own no I/O, so persistence and transport are the SDK's job. The SDK offers seams (a
+`Protocol` in Python, a trait in Rust) that you implement against your own database or broker, plus
 the orchestration over them. No durable store ships; you bring one.
 
 ## The whole pipeline
@@ -35,8 +35,8 @@ at-least-once, which is why the guard and the version compare-and-set exist.
 |---|---|---|
 | `EventStore` | `Repository` loads from snapshot plus replay, saves pending events under optimistic concurrency | [aggregates](aggregates.md) |
 | `EventStore` (outbox half) | `Relay.drain` polls it, `pump` feeds it from change data capture | [outbox](outbox.md) |
-| `IdempotencyStore` | `idempotent`, `idempotent_in`, `idempotent_by_id`, `idempotent_by_id_in` | [idempotency](idempotency.md) |
-| `Transactor` | `transaction`, `transaction`, `current_tx` | [transactions](transactions.md) |
+| `IdempotencyStore` | `idempotent` and `idempotent_by_id`; in Rust also `idempotent_in` and `idempotent_by_id_in` | [idempotency](idempotency.md) |
+| `Transactor` | `transaction` and `current_tx`; in Rust `transaction` and `retry_transaction` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
 | `SagaStore` | `SagaRunner` correlates, folds, emits commands, persists at the loaded version | [sagas](sagas.md) |
 | `Producer`, `Consumer` | `KeyOrderedDispatcher` fans deliveries to workers by partition; `EventRouter` routes by event name | [consuming](consuming.md) |
@@ -62,9 +62,9 @@ classDiagram
         +mark_published(ids)
     }
     class IdempotencyStore {
-        +claim(key, payload_hash)
-        +complete(key, record)
-        +release(key)
+        +claim(key, payload_hash, tx)
+        +complete(key, handle, record, tx)
+        +release(key, handle, tx)
         +joins_transaction
     }
     class ProjectionStore {
@@ -74,8 +74,8 @@ classDiagram
     }
     class SagaStore {
         +load(id, tx)
-        +save(id, state, version, tx)
-        +delete(id, version, tx)
+        +save(id, state, version, folded, commands, tx)
+        +complete(id, version, commands, tx)
     }
     class Producer {
         +publish(envelope)
@@ -102,12 +102,10 @@ implementing.
 
 ## Rust and Python parity
 
-Both SDKs call the same kernels, so every shared decision matches. The orchestration differs where
-the language does. [Rust parity](rust-parity.md) is the one home for the name map and the
-differences.
-
-Two asymmetries are deliberate, not gaps. Rust has no ambient transaction, and Rust has no guard
-that owns the transaction.
+The Rust `edax` crate is a reference model, not a deployable SDK. It holds this SDK's orchestration to
+the same kernels from a second language. [Rust parity](rust-parity.md) says what it covers and where it
+differs on purpose. It has no ambient transaction: a nested unit of work on one database is refused
+instead. And it has no guard that owns the transaction.
 
 ## Where to start
 
@@ -118,4 +116,4 @@ promises: [delivery guarantees](../guides/delivery-guarantees.md).
 
 - [Architecture](../architecture.md) — why the kernel and SDK boundary sits where it does.
 - [Backends](../backends/README.md) — the seam contracts, and writing your own.
-- [Examples](../guides/examples.md) — seven runnable walkthroughs.
+- [Examples](../../examples/py/README.md) — nineteen runnable examples, one idea each, in learning order.

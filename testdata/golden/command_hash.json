@@ -18,6 +18,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
+    "error": null,
     "expected": 5704958604844255308,
     "name": "whole_command_including_the_idempotency_key_field",
     "type": "order.place"
@@ -41,6 +42,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
+    "error": null,
     "expected": 10289792630790996900,
     "name": "array_order_is_data",
     "type": "order.place"
@@ -64,8 +66,81 @@
       "total_cents": 4200,
       "weight_kg": 1.0
     },
-    "expected": 16467952698827956314,
-    "name": "whole_number_float_stays_a_float",
+    "error": null,
+    "expected": 12082406226159317240,
+    "name": "whole_number_float_hashes_as_the_integer",
+    "type": "order.place"
+  },
+  {
+    "command": {
+      "currency": "USD",
+      "customer": "Ada Lovelace",
+      "note": "leave at the door",
+      "order_id": "ord-7f3c",
+      "reference": 42,
+      "request_id": "req-7f3c-1",
+      "shipping": {
+        "city": "NYC",
+        "zip": "10001"
+      },
+      "tags": [
+        "eu",
+        "paid"
+      ],
+      "total_cents": 4200,
+      "weight_kg": 1
+    },
+    "error": null,
+    "expected": 12082406226159317240,
+    "name": "whole_number_float_given_as_an_int",
+    "type": "order.place"
+  },
+  {
+    "command": {
+      "currency": "USD",
+      "customer": "Ada Lovelace",
+      "note": "leave at the door",
+      "order_id": "ord-7f3c",
+      "reference": 9007199254740992,
+      "request_id": "req-7f3c-1",
+      "shipping": {
+        "city": "NYC",
+        "zip": "10001"
+      },
+      "tags": [
+        "eu",
+        "paid"
+      ],
+      "total_cents": 4200,
+      "weight_kg": 2.5
+    },
+    "error": null,
+    "expected": 10476427186104985315,
+    "name": "integer_at_2_pow_53_stays_exact",
+    "type": "order.place"
+  },
+  {
+    "command": {
+      "currency": "USD",
+      "customer": "Ada Lovelace",
+      "note": "leave at the door",
+      "order_id": "ord-7f3c",
+      "reference": 9007199254740993,
+      "request_id": "req-7f3c-1",
+      "shipping": {
+        "city": "NYC",
+        "zip": "10001"
+      },
+      "tags": [
+        "eu",
+        "paid"
+      ],
+      "total_cents": 4200,
+      "weight_kg": 2.5
+    },
+    "error": "codec: command payload canonicalization failed: integer at byte 105 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "expected": null,
+    "name": "integer_past_2_pow_53_is_refused",
     "type": "order.place"
   },
   {
@@ -87,8 +162,9 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
-    "expected": 8578608830267292902,
-    "name": "u64_above_i64_max_stays_an_integer",
+    "error": "codec: command payload canonicalization failed: integer at byte 105 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "expected": null,
+    "name": "u64_above_i64_max_is_refused",
     "type": "order.place"
   },
   {
@@ -110,6 +186,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
+    "error": null,
     "expected": 2723030285912343926,
     "name": "unset_optional_is_null_not_omitted",
     "type": "order.place"
@@ -133,6 +210,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
+    "error": null,
     "expected": 18118625569556382165,
     "name": "non_ascii_hashes_as_utf8",
     "type": "order.place"
@@ -153,6 +231,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
+    "error": null,
     "expected": 7348149613423359681,
     "name": "empty_array_and_null_nested_field",
     "type": "order.place"

@@ -11,6 +11,13 @@
 //! Run a longer sweep with `PROPTEST_CASES=2000 cargo test -p edax --test model`. A failure writes a
 //! regression seed to `tests/model.proptest-regressions`, which later runs replay first.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "an integration test's helpers panic as its failure report, like the tests that call them"
+)]
+
 mod support;
 
 use support::Shared;
@@ -19,13 +26,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use edax::command::{Claim, Record, State};
+use edax::command::{Claim, State};
 use edax::{
-    idempotent, Aggregate, AggregateCodec, Command, CommandBus, CommandBusError, Delivery, Entity, Error, EventCodec,
-    EventStore, IdempotencyStore, JsonCodec, KeyOrderedDispatcher, MemoryEventStore, MemoryIdempotencyStore,
-    MemoryProjectionStore, MemoryTx, ProjectionStore, Query, Relay, Repository, Root,
+    idempotent, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
+    EventStore, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher, MemoryEventStore,
+    MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Outbox, Pacing, ProjectionStore, Query, Relay, Repository, Root,
 };
-use edax_cqrs::{command_hash, decide, Decision, SortKey};
+use edax_cqrs::{command_hash, SortKey};
 use edax_event::{Event, EventEnvelope, Metadata, Namespace};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -81,33 +88,29 @@ fn envelope(id: String, aggregate_id: String, name: &str, sequence: u64) -> Even
 /// and P6 all assert on a stale write.
 fn expect_conflict<T: std::fmt::Debug>(got: Result<T, Error>, expected: u64, stored: u64) -> Result<(), TestCaseError> {
     match got {
-        Err(Error::Concurrency { expected: e, stored: s }) => {
-            prop_assert_eq!((e, s), (expected, stored));
+        Err(e) => {
+            prop_assert_eq!(e, Error::concurrency(expected, stored));
             Ok(())
         }
         other => Err(TestCaseError::fail(format!("expected conflict, got {other:?}"))),
     }
 }
 
-/// The message of a `CommandBusError::Handler`, or a test failure — every P2 dispatch arm pulls the
-/// handler error out this way before matching on its text.
-fn handler_err(got: Result<u8, CommandBusError>) -> Result<String, TestCaseError> {
+/// The text of a dispatch failure, or a test failure — every P2 dispatch arm pulls the handler error
+/// out this way before matching on its text.
+fn handler_err(got: Result<u8, HandlerError>) -> Result<String, TestCaseError> {
     match got {
-        Err(CommandBusError::Handler(e)) => Ok(e.to_string()),
+        Err(e) => Ok(e.to_string()),
         other => Err(TestCaseError::fail(format!("expected handler error, got {other:?}"))),
     }
 }
 
-/// The cached message from a replayed terminal failure. Asserts the concrete variant, not just the
-/// text: `is_terminal` matches on the variant, and that is what stops a redelivery loop. The bus and
-/// the event router report this verdict as the same `Error::CachedFailure`, so the downcast target
-/// is the SDK taxonomy, not a bus-local twin of it.
-fn cached_failure(got: Result<u8, CommandBusError>) -> Result<String, TestCaseError> {
+/// The kernel error a dispatch failed with, or a test failure. Asserts the code, not just the text:
+/// `is_terminal` reads the code, and that is what stops a redelivery loop. The bus and the event
+/// router report a verdict as the same kernel error.
+fn kernel_err(got: Result<u8, HandlerError>) -> Result<Error, TestCaseError> {
     match got {
-        Err(CommandBusError::Handler(e)) => match e.downcast_ref::<Error>() {
-            Some(Error::CachedFailure(msg)) => Ok(msg.clone()),
-            _ => Err(TestCaseError::fail(format!("expected CachedFailure, got {e}"))),
-        },
+        Err(e) => e.downcast_ref::<Error>().cloned().ok_or_else(|| TestCaseError::fail(format!("not a kernel error: {e}"))),
         other => Err(TestCaseError::fail(format!("expected handler error, got {other:?}"))),
     }
 }
@@ -153,7 +156,7 @@ where
     S::Tx: Default,
 {
     let store = new_store();
-    let relay = Relay::new(store.clone());
+    let relay = Relay::new(store.clone()).pacing(Pacing::instant());
     let mut model = StoreModel::default();
     let mut tx = S::Tx::default(); // the auto-commit handle: the model describes committed state
 
@@ -192,7 +195,7 @@ where
                     // inside the batch would slip past it and break the gap-free ascending `load`.
                     // Codec (terminal), not Store: the same batch fails identically every retry.
                     prop_assert!(
-                        matches!(&got, Err(Error::Codec(m)) if m.contains("expected")),
+                        matches!(&got, Err(Error { code: ErrorCode::Codec, message: m }) if m.contains("expected")),
                         "a non-dense batch must be rejected whole and terminally, got {got:?}"
                     );
                 } else {
@@ -226,7 +229,7 @@ where
                 let got = relay.drain(limit, |env: &EventEnvelope| {
                     seen.push(env.clone());
                     if fail_at == Some(seen.len() as u8 - 1) {
-                        Err(Error::Store("publisher unavailable".into()))
+                        Err(Error::store("publisher unavailable").into())
                     } else {
                         Ok(())
                     }
@@ -236,12 +239,13 @@ where
                 if failed {
                     let k = fail_at.unwrap() as usize;
                     prop_assert!(
-                        matches!(got, Err(Error::Store(_))),
+                        matches!(got.as_ref().map_err(|e| e.downcast_ref::<Error>().map(|e| e.code)), Err(Some(ErrorCode::Store))),
                         "drain should surface the publish error"
                     );
                     prop_assert_eq!(&seen, &batch[..=k].to_vec());
-                    // Nothing is marked published when the batch fails part-way: the rows stay
-                    // for the next drain (at-least-once, never a drop).
+                    // The published prefix is marked, and the failed row and everything behind it
+                    // stay for the next drain (at-least-once, never a drop, never out of order).
+                    model.outbox.drain(..k);
                     prop_assert_eq!(store.unpublished(1000).unwrap(), model.outbox.clone());
                     model.failed_drains += 1;
                 } else {
@@ -362,26 +366,24 @@ proptest! {
 
     #[test]
     fn idempotent_bus_matches_model(history in prop::collection::vec(bus_op(), 1..24)) {
-        let store: Arc<dyn IdempotencyStore<u8, Tx = MemoryTx> + Send + Sync> = Arc::new(MemoryIdempotencyStore::<u8>::new());
+        let memory = MemoryIdempotencyStore::<u8>::new();
+        let store: Arc<dyn IdempotencyStore<u8, Tx = MemoryTx> + Send + Sync> = Arc::new(memory.clone());
         let calls = [Arc::new(Shared::<usize>::default()), Arc::new(Shared::<usize>::default())];
 
-        let mut bus: CommandBus<Cmd, u8> =
-            CommandBus::new().with(idempotent(Arc::clone(&store), |c: &Cmd| Some(c.key.to_string())));
+        let mut bus = CommandBus::new();
         for (kind, name) in [(0u8, "A"), (1u8, "B")] {
             let counter = Arc::clone(&calls[kind as usize]);
-            bus.register(
-                name,
-                Box::new(move |cmd: &Cmd| {
-                    counter.set(counter.get() + 1);
-                    match cmd.outcome {
-                        0 => Ok(cmd.payload + 10 * kind),
-                        1 => Err("transient".into()),
-                        // a Codec error is the kernel's terminal class: cached, never retried
-                        _ => Err(Error::Codec("terminal".into()).into()),
-                    }
-                }),
-            )
-            .unwrap();
+            let guard = idempotent(Arc::clone(&store), |c: &Cmd| Some(c.key.to_string()));
+            let handler: edax::Handler<Cmd, u8> = Box::new(move |cmd: &Cmd| {
+                counter.set(counter.get() + 1);
+                match cmd.outcome {
+                    0 => Ok(cmd.payload + 10 * kind),
+                    1 => Err("transient".into()),
+                    // a Codec error is the kernel's terminal class: cached, never retried
+                    _ => Err(Error::codec("terminal").into()),
+                }
+            });
+            bus.register(name, wrap(handler, vec![guard])).unwrap();
         }
 
         let mut model: HashMap<u8, (u64, Slot)> = HashMap::new();
@@ -392,14 +394,11 @@ proptest! {
                 BusOp::Dispatch { kind, key, payload, outcome } => {
                     let hash = cmd_hash(payload);
                     let before: Vec<usize> = calls.iter().map(|c| c.get()).collect();
-                    let got = bus.dispatch(&Cmd { kind, key, payload, outcome });
+                    let got = bus.dispatch::<Cmd, u8>(&Cmd { kind, key, payload, outcome });
 
                     if kind == 2 {
                         // Routing precedes the middleware chain: no claim, no handler, no record.
-                        match got {
-                            Err(CommandBusError::NotFound(t)) => prop_assert_eq!(t, "Z"),
-                            other => prop_assert!(false, "expected NotFound, got {:?}", other.err()),
-                        }
+                        prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::HandlerNotFound, "Z"));
                         prop_assert_eq!(calls.iter().map(|c| c.get()).collect::<Vec<_>>(), before);
                         continue;
                     }
@@ -408,7 +407,6 @@ proptest! {
                     match prior {
                         // Free key: this dispatch wins the claim and runs the handler exactly once.
                         None => {
-                            prop_assert_eq!(decide(None, hash), Decision::Proceed);
                             prop_assert_eq!(calls[kind as usize].get(), before[kind as usize] + 1);
                             match outcome {
                                 0 => {
@@ -420,34 +418,30 @@ proptest! {
                                     prop_assert_eq!(handler_err(got)?, "transient");
                                 }
                                 _ => {
-                                    // terminal: cached so a redelivery replays the failure
-                                    let msg = Error::Codec("terminal".into()).to_string();
-                                    prop_assert_eq!(handler_err(got)?, msg.clone());
-                                    model.insert(key, (hash, Slot::Failed(msg)));
+                                    // terminal: cached with its code so a redelivery replays the failure
+                                    prop_assert_eq!(kernel_err(got)?, Error::codec("terminal"));
+                                    model.insert(key, (hash, Slot::Failed("terminal".to_owned())));
                                 }
                             }
                         }
 
                         // Taken key: the kernel decides, and the handler never runs.
                         Some((prior_hash, slot)) => {
-                            let decision = decide(Some(prior_hash), hash);
                             prop_assert_eq!(calls.iter().map(|c| c.get()).collect::<Vec<_>>(), before);
                             if prior_hash != hash {
-                                prop_assert_eq!(decision, Decision::PayloadMismatch);
-                                let e = handler_err(got)?;
-                                prop_assert!(e.contains("reused with a different"), "got {e}");
+                                prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::PayloadMismatch, key.to_string()));
                             } else {
-                                prop_assert_eq!(decision, Decision::Replay);
                                 match slot {
                                     Slot::Pending => {
-                                        let e = handler_err(got)?;
-                                        prop_assert!(e.contains("in-flight"), "got {e}");
+                                        prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::InProgress, key.to_string()));
                                     }
                                     Slot::Done(v) => prop_assert_eq!(got.ok(), Some(v)),
-                                    // The cached failure replays as CachedFailure, which `is_terminal`
-                                    // recognizes — so `retry` returns at once and a broker stops
-                                    // redelivering a command that already failed deterministically.
-                                    Slot::Failed(msg) => prop_assert_eq!(cached_failure(got)?, msg),
+                                    // The cached failure replays as `cached_failure`, terminal, with the
+                                    // original code in its message — so `retry` returns at once and a
+                                    // broker stops redelivering a command that already failed.
+                                    Slot::Failed(msg) => {
+                                        prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::CachedFailure, format!("codec: {msg}")))
+                                    }
                                 }
                             }
                         }
@@ -456,13 +450,16 @@ proptest! {
 
                 BusOp::SeedPending { key, payload } => {
                     let hash = cmd_hash(payload);
-                    // `complete` overwrites whatever is there — that is its contract.
-                    store.complete(&mut tx, &key.to_string(), Record::pending(hash)).unwrap();
+                    // Another worker's live claim: whatever the key held lapses, and a fresh claim takes it.
+                    memory.expire(&key.to_string());
+                    let claimed = store.claim(&mut tx, &key.to_string(), hash).unwrap();
+                    prop_assert!(matches!(claimed, Claim::Won(_)), "a lapsed key is free");
                     model.insert(key, (hash, Slot::Pending));
                 }
 
                 BusOp::Release { key } => {
-                    store.release(&mut tx, &key.to_string()).unwrap();
+                    // The key is freed whoever holds it, as a claim or record TTL running out frees it.
+                    memory.expire(&key.to_string());
                     model.remove(&key);
                 }
             }
@@ -476,10 +473,12 @@ proptest! {
                     match slot {
                         Slot::Pending => prop_assert_eq!(&r.state, &State::Pending),
                         Slot::Done(v) => prop_assert_eq!(&r.state, &State::Done(*v)),
-                        Slot::Failed(msg) => prop_assert_eq!(&r.state, &State::Failed(msg.clone())),
+                        Slot::Failed(msg) => {
+                            prop_assert_eq!(&r.state, &State::Failed { code: Some(ErrorCode::Codec), message: msg.clone() })
+                        }
                     }
                 }
-                Claim::Won => prop_assert!(false, "key {key} should still hold a record"),
+                Claim::Won(_) => prop_assert!(false, "key {key} should still hold a record"),
             }
         }
     }
@@ -502,14 +501,18 @@ proptest! {
         let nacked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
         let sink = Arc::clone(&handled);
-        let dispatcher = KeyOrderedDispatcher::new(workers, move |env: &EventEnvelope| {
+        // No wall time per nack: `Pacing::instant()` waits out the kernel's schedule in no time.
+        let dispatcher = KeyOrderedDispatcher::builder(workers, move |env: &EventEnvelope| {
             sink.lock().unwrap().push((env.aggregate_id.clone(), env.sequence.unwrap()));
             if env.event.name == "Fail" {
-                Err(Error::Store("handler failed".into()))
+                Err(Error::store("handler failed").into())
             } else {
                 Ok(())
             }
-        });
+        })
+        .pacing(Pacing::instant())
+        .build()
+        .expect("the dispatcher's workers spawn");
 
         let mut seq: HashMap<u8, u64> = HashMap::new();
         let mut expected_ack: Vec<String> = Vec::new();
@@ -588,9 +591,9 @@ impl AggregateCodec for CounterCodec {
     fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<Counter, Error> {
         let n = match data {
             Some(d) => std::str::from_utf8(d)
-                .map_err(|e| Error::Codec(e.to_string()))?
+                .map_err(Error::codec)?
                 .parse()
-                .map_err(|e: std::num::ParseIntError| Error::Codec(e.to_string()))?,
+                .map_err(Error::codec)?,
             None => 0,
         };
         Ok(Counter {
@@ -676,7 +679,7 @@ proptest! {
                     prop_assert!(instance.root().pending().is_empty());
                     ticks_model.extend(ticks.iter().copied());
 
-                    // Stamping survives the store, not just the returned envelopes (G5 at this layer).
+                    // Stamping survives the store, not just the returned envelopes.
                     let stored = store.load(&mut tx, &agg_id(agg), version).unwrap();
                     prop_assert!(stored.iter().all(|e| e.namespace == namespace && e.metadata == metadata));
 
@@ -716,9 +719,10 @@ proptest! {
             }
         }
 
+        // Every save that appends snapshots (the default interval); a save with nothing pending, none.
         for (agg, ticks) in &model {
             let snap = store.load_snapshot(&mut tx, &agg_id(*agg)).unwrap();
-            prop_assert_eq!(snap.map(|s| s.version), Some(ticks.len() as u64));
+            prop_assert_eq!(snap.map(|s| s.version), (!ticks.is_empty()).then_some(ticks.len() as u64));
         }
     }
 }
@@ -780,14 +784,14 @@ proptest! {
     #[test]
     fn codecs_reject_garbage(bytes in prop::collection::vec(any::<u8>(), 1..16)) {
         let raw = Event { name: "Payload".into(), version: 3, data: bytes };
-        // Whatever the bytes are, a codec either decodes them or returns Error::Codec — never panics.
+        // Whatever the bytes are, a codec either decodes them or returns Error::codec — never panics.
         let json = JsonCodec::<Payload>::new("Payload", 3);
         if let Err(e) = json.unmarshal(&raw) {
-            prop_assert!(matches!(e, Error::Codec(_)));
+            prop_assert_eq!(e.code, ErrorCode::Codec);
         }
         #[cfg(feature = "msgpack")]
         if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload", 3).unmarshal(&raw) {
-            prop_assert!(matches!(e, Error::Codec(_)));
+            prop_assert_eq!(e.code, ErrorCode::Codec);
         }
     }
 }
@@ -886,7 +890,7 @@ where
                     ids.reverse();
                 }
                 let want: Vec<String> = ids.into_iter().skip(offset).take(limit.unwrap_or(usize::MAX)).collect();
-                let got: Vec<String> = page.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+                let got: Vec<String> = page.rows.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
                 prop_assert_eq!(got, want);
             }
         }
@@ -930,10 +934,7 @@ fn concurrent_appends_one_winner() {
         let winners = results.iter().filter(|r| r.is_ok()).count();
         assert_eq!(winners, 1, "exactly one append may win round {round}");
         for e in results.iter().filter_map(|r| r.as_ref().err()) {
-            assert!(
-                matches!(e, Error::Concurrency { expected, stored } if *expected == round && *stored == round + 1),
-                "loser should see the winner's version, got {e}"
-            );
+            assert_eq!(*e, Error::concurrency(round, round + 1), "loser should see the winner's version");
         }
 
         let mut tx = MemoryTx::auto_commit();

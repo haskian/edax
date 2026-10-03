@@ -3,15 +3,15 @@
 From a fresh checkout to a running service: install the toolchain, build the native module, run both
 test suites, then wire a command-handling service in three steps.
 
-The toolchain is pinned with [mise](https://mise.jdx.dev). `cargo`, `maturin` and `uv` are **not**
-on your `PATH` — every invocation is prefixed with `mise exec --`. The Python software development
+The toolchain is pinned with [mise](https://mise.jdx.dev). `cargo`, `maturin` and `uv` are not on
+your `PATH`, so every invocation is prefixed with `mise exec --`. The Python software development
 kit (SDK) imports a compiled Rust extension, so a build step sits between a kernel change and a
 passing Python test.
 
 ```mermaid
 flowchart LR
     A["mise install"] -->|"pins uv, maturin, ruff, ty"| B["mise exec -- uv venv"]
-    B -->|"creates crates/edax-py/.venv"| C["uv pip install msgspec pytest pytest-asyncio hypothesis"]
+    B -->|"creates crates/edax-py/.venv"| C["uv pip install msgspec pytest pytest-asyncio hypothesis redis fakeredis aiokafka"]
     C -->|"runtime and test deps"| D["mise exec -- maturin develop"]
     D -->|"compiles and installs the _edax native module"| E["pytest"]
     D -->|"same kernels, no build step needed"| F["cargo test --workspace"]
@@ -23,16 +23,17 @@ flowchart LR
 mise install          # once per checkout; `mise trust` first if mise refuses the config
 ```
 
-`mise.toml` pins `uv`, `maturin`, `ruff` and `ty`. The Rust channel is **not** pinned there — it
-comes from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file
-(`mise.toml:1`). Pinning Rust in both places overrides that file and silently drops `clippy`.
+`mise.toml` pins `uv`, `maturin`, `alef`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
+from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file (see
+the comment at the top of `mise.toml`). Pinning Rust in both places overrides that file and drops
+`clippy` with no warning.
 
 ## Build
 
 ```sh
 cd crates/edax-py
 mise exec -- uv venv && source .venv/bin/activate
-mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis
+mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 mise exec -- maturin develop
 ```
 
@@ -44,7 +45,7 @@ mise exec -- maturin develop -m crates/edax-py/Cargo.toml
 ```
 
 `maturin develop` installs into the virtual environment named by `VIRTUAL_ENV`, so either activate
-the venv or export it (continuous integration (CI) exports it — `.github/workflows/python.yml:54`).
+the venv or export it. Continuous integration (CI) exports it in `.github/workflows/python.yml`.
 
 **Use `crates/edax-py/.venv/bin/python`.** It is the interpreter that has `edax` and `msgspec`
 installed; the repo-root `.venv` lacks `msgspec` (`AGENTS.md`). Every command below names it
@@ -61,15 +62,14 @@ mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
 ```
 
-Run **both**. `cargo test` alone misses binding regressions; `pytest` alone misses kernel ones.
+Run both. `cargo test` alone misses binding regressions; `pytest` alone misses kernel ones.
 
 ## The stale native module trap
 
 `pytest` never rebuilds `_edax`. It imports the `.so` that is already installed in the venv. Change
 anything under `edax-core`, `edax-event`, `edax-cqrs`, `edax-memory`, `edax-kafka`,
-`edax-redis` or `edax-abi` and run
-`pytest` without rebuilding, and the suite tests the *previously compiled* kernel: it passes green
-and proves nothing.
+`edax-redis` or `edax-abi` and run `pytest` without rebuilding, and the suite tests the previously
+compiled kernel: it passes green and proves nothing.
 
 ```mermaid
 sequenceDiagram
@@ -90,16 +90,14 @@ sequenceDiagram
     So-->>Pytest: the kernel you changed
 ```
 
-Changes confined to `crates/edax-py/python/edax/` need no rebuild — that package is plain Python.
+Changes confined to `crates/edax-py/python/edax/` need no rebuild: that package is plain Python.
 
-CI runs the steps in the right order, with the build step marked as required
-(`.github/workflows/python.yml:69`).
+CI runs the steps in the right order, the build before the tests (`.github/workflows/python.yml`).
 
 ## A first service
 
 Three steps. Each one runs on its own; each adds one guarantee. The in-memory backend
-(`edax.backend.memory`) keeps the real contracts, so a rollback in step 3 genuinely leaves nothing
-behind.
+(`edax.backend.memory`) keeps the real contracts, so a rollback in step 3 leaves nothing behind.
 
 ### Step 1 — an aggregate and a `Repository`
 
@@ -110,7 +108,6 @@ after it, and appends the pending events back under optimistic concurrency.
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
 
 from edax import Aggregate, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryTransactor
@@ -134,7 +131,7 @@ class Account(Aggregate):
 class AccountCodec:  # how the aggregate snapshots
     type = "Account"
 
-    def load(self, id: str, version: int, data: Optional[bytes]) -> Account:
+    def load(self, id: str, version: int, data: bytes | None) -> Account:
         account = Account(id, version)
         if data is not None:
             account.balance = int(data)
@@ -154,7 +151,7 @@ async def main() -> None:
     await repo.save(account)
 
     reloaded = await repo.load("acct-1")
-    print(reloaded.balance, reloaded.sequence.current)  # 100 1
+    print(reloaded.balance, reloaded.version.current)  # 100 1
 
 
 asyncio.run(main())
@@ -164,21 +161,22 @@ asyncio.run(main())
 `expected_version` and writes a fresh snapshot. Replay during `load` calls `transition` instead, so
 a replayed event is never re-queued.
 
-### Step 2 — a `CommandBus` with `idempotent` and `retry`
+### Step 2 — a `CommandBus` with `idempotent`
 
 A command bus routes by command type through a middleware chain. `idempotent` is the guard: it
 claims the idempotency key in a ledger, so the second dispatch of one key replays the first outcome
-instead of running the handler again. `retry` sits inside it, so every attempt shares one claim.
+instead of running the handler again. `retry` waits for Step 3, because a retry must re-run a whole
+unit of work.
 
 <!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 from edax import Aggregate, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
-from edax.command import CommandBus, idempotent, retry
+from edax.command import CommandBus, idempotent
 
 # ... Deposited, Account and AccountCodec exactly as in step 1 ...
 
@@ -206,13 +204,12 @@ async def main() -> None:
         await repo.save(account)
         return account.balance
 
-    # guard outermost (one claim per request), retry inside it (retries share that claim)
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of))
     bus.register("Deposit", deposit)
 
     first = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
     second = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
-    print(first, second)  # 100 100 — the second call replayed, it did not deposit again
+    print(first, second)  # 100 100: the second call replayed, it did not deposit again
 
 
 asyncio.run(main())
@@ -222,19 +219,22 @@ asyncio.run(main())
 the one the key was read from. Reuse the key with a different body and the guard raises
 `PayloadMismatch`.
 
-### Step 3 — one transaction around the dispatch
+### Step 3 — one unit of work per dispatch, and `retry` around it
 
-`transaction` opens the unit of work and publishes it to `current_tx()`. The ledger, the events, the
-snapshot and the outbox rows all enlist. They commit together, or they roll back together. The
-`Relay` then drains the transactional Outbox, and sees exactly one row: the replay wrote nothing.
+Pass `unit_of_work=db` and the guard opens the unit of work and publishes it to `current_tx(db)`. The
+ledger, the events, the snapshot and the outbox rows all enlist. They commit together, or they roll
+back together. `retry` goes outside the guard, so a failed attempt rolls back whole and the next one
+starts from committed state. `retry` refuses to run inside an open transaction: a second attempt
+there would apply the first attempt's staged writes again. The `Relay` then drains the
+transactional Outbox, and sees one row: the replay wrote nothing.
 
 <!-- doclint: continues -->
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec, transaction
+from edax import Aggregate, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -249,15 +249,16 @@ async def main() -> None:
     async def deposit(cmd: Deposit) -> int:
         account = await repo.load(cmd.account_id)
         account.apply(Deposited(cmd.amount))
-        await repo.save(account)  # joins the ambient unit of work via current_tx()
+        await repo.save(account)  # joins the guard's unit of work via current_tx(db)
         return account.balance
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of), retry(3))
+    # claim, events, snapshot, outbox: one commit or one rollback per attempt
+    ledger = MemoryIdempotencyStore(db)
+    bus = CommandBus(retry(3), idempotent(ledger, key=request_id_of, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit) -> int:
-        async with transaction(db):  # claim, events, snapshot, outbox: one commit or one rollback
-            return await bus.dispatch(cmd)
+        return await bus.dispatch(cmd)  # no transaction around the dispatch
 
     first = await submit(Deposit("acct-1", 100, "req-A"))
     second = await submit(Deposit("acct-1", 100, "req-A"))
@@ -270,13 +271,13 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The dispatch and the commit are now one boundary, which is what makes the write effectively-once for
-state in that database. A ledger that lives in a *different* database cannot join this transaction,
-and the guarantee drops to at-least-once with a dedup window — see
+The dispatch and the commit are now one boundary, which makes the write effectively-once for state
+in that database. A ledger that lives in a different database cannot join this transaction, and the
+guarantee drops to at-least-once with a dedup window; see
 [delivery-guarantees.md](./delivery-guarantees.md).
 
-`examples/py/command_handling.py` is the fuller version of this, with the `PayloadMismatch` case and
-deterministic ids so its asserts hold.
+`examples/py/05_idempotent_commands.py` is the fuller version of this, with the `PayloadMismatch`
+case. The [examples README](../../examples/py/README.md) goes on from there, one idea per file.
 
 ## The build pipeline
 
@@ -285,7 +286,7 @@ kernels decide, and where alef's output stops and hand-written code begins.
 
 ```mermaid
 flowchart LR
-    subgraph kernels["kernel crates — pure, no I/O"]
+    subgraph kernels["kernel crates: pure, no I/O"]
         direction TB
         K1["edax-core"]
         K2["edax-event"]
@@ -325,10 +326,10 @@ alef generate --lang python --clean
 A plain incremental `alef generate` is destructive here: on a cache hit it skips re-emitting
 `src/lib.rs` and the stub but still runs cleanup, deleting them (`alef.toml`).
 
-The binding crate does type conversion, error-to-exception mapping, Python-idiomatic config and
-async-runtime integration — nothing else. Neither the binding nor the SDK may re-derive kernel
-logic; if a rule must match across versions or languages, it belongs in a kernel with a golden
-vector (`AGENTS.md`).
+The binding crate does type conversion, error-to-exception mapping and Python-idiomatic config,
+and nothing else. Every `edax-abi` method is synchronous, so the binding links no async runtime.
+Neither the binding nor the SDK may re-derive kernel logic; if a rule must match across versions or
+languages, it belongs in a kernel with a golden vector (`AGENTS.md`).
 
 ## What to read next, in order
 
@@ -345,8 +346,7 @@ vector (`AGENTS.md`).
 
 ## See also
 
-- [./examples.md](./examples.md) — a tour of `examples/py`, including `event_idempotency`, the one
-  to read for guarantees.
+- [./examples.md](./examples.md) — how the examples in `examples/py` run, and how CI checks them.
 - [./testing.md](./testing.md) — the three test layers and the commands to run them all.
 - [../kernels/golden-vectors.md](../kernels/golden-vectors.md) — the cross-language contract and how
   to regenerate it.

@@ -20,8 +20,8 @@ skip_ci = "[skip ci]"
 # rather than dirtying the next one.
 #
 # Deliberately not `--locked`: Cargo.lock records the members' own versions, so set_version.py has
-# just made it stale, and `--locked` exists to forbid exactly the update that has to happen here.
-# It failed every bump at the hook, before any tag was cut.
+# just made it stale, and `--locked` forbids the very update that has to happen here. With it, every
+# bump fails at this hook before cog cuts a tag.
 pre_bump_hooks = [
     "python3 scripts/set_version.py {{version}}",
     "cargo check --workspace --quiet",

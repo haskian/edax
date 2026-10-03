@@ -7,13 +7,13 @@
 //! idempotency store and disagree on a verdict leave one caching a failure the other would release:
 //! a durable replay inconsistency. So the verdict lives here, pinned by
 //! `testdata/golden/error_taxonomy.json`, and every SDK derives its own from [`ErrorCode::is_terminal`].
+//! The verdict for a failure with no code is here too ([`verdict`]): such a failure is a `store`
+//! failure, the same class and the same verdict, pinned by `testdata/golden/error_wire.json`.
 //!
-//! Failures cross a native binding as `"<code>: <message>"`. [`ErrorCode::tag`] is the one place
-//! that builds that string and [`ErrorCode::split`] the one place that takes it apart. Only some
-//! codes cross the wire today (the backend stores emit `concurrency`, `codec`, `store` and
-//! `bad_handle`); the
-//! others are raised inside an SDK. One enum covers both: a binding parses every code so a kind
-//! that starts crossing later needs no new parser, and terminality is pinned for all of them.
+//! Every kernel function fails with the one [`Error`] type, so the code comes from the kernel and
+//! never from a caller's choice. Failures cross a native binding as `"<code>: <message>"`:
+//! [`ErrorCode::tag`] is the one place that builds that string and [`Error::from_wire`] the one
+//! place that takes it apart.
 
 /// The `"<code>: <message>"` wire form splits on the first `": "`. A bare colon is part of the message.
 const SEPARATOR: &str = ": ";
@@ -86,29 +86,42 @@ error_codes! {
     /// A handler is already registered for this type: a wiring mistake at startup.
     AlreadyRegistered = "already_registered" => terminal,
     /// A transaction handle names no open transaction — never begun, already settled, or belonging
-    /// to another store. A wiring mistake: the same handle fails the same way every time, so a
-    /// transient verdict would have a host retry it forever.
+    /// to another store — or a store refuses its own configuration or a server refuses the command.
+    /// A wiring mistake: the same call fails the same way every time, so a transient verdict would
+    /// have a host retry it forever.
     BadHandle = "bad_handle" => terminal,
+    /// A host's own business rejection ("insufficient funds"), marked terminal by the host. The same
+    /// command is rejected the same way on every retry, so the guard caches it.
+    Rejected = "rejected" => terminal,
 }
 
 impl ErrorCode {
-    /// The code for a stable name, or `None` for a name the taxonomy does not know. A caller keeps
-    /// its own default for `None`; the kernel does not guess.
-    pub fn parse(code: &str) -> Option<ErrorCode> {
-        ErrorCode::ALL.iter().copied().find(|c| c.as_str() == code)
-    }
-
     /// Build the wire form `"<code>: <message>"`.
     pub fn tag(self, message: impl std::fmt::Display) -> String {
         format!("{}{SEPARATOR}{message}", self.as_str())
     }
 
     /// Take a wire form apart into its code and message. `None` if there is no `": "` separator or
-    /// the code before it is unknown; the caller then keeps the whole string.
+    /// the code before it is unknown; [`Error::from_wire`] then classifies the whole string.
     pub fn split(wire: &str) -> Option<(ErrorCode, &str)> {
         let (code, message) = wire.split_once(SEPARATOR)?;
-        ErrorCode::parse(code).map(|c| (c, message))
+        code.parse().ok().map(|c| (c, message))
     }
+}
+
+/// The verdict for a failure, from its code if it has one. A failure no code classifies — a host's
+/// own error, a wire string with an unknown code — is a `store` failure, so transient: a wrongly
+/// transient failure is redelivered loudly and the work survives, while a wrongly terminal one is
+/// cached under its key and poisons it. The default lives here, pinned by
+/// `testdata/golden/error_wire.json`, so two SDKs sharing one idempotency store cannot pick
+/// different ones.
+pub fn verdict(code: Option<ErrorCode>) -> bool {
+    code.unwrap_or(ErrorCode::Store).is_terminal()
+}
+
+/// The verdict for a wire string: the verdict of the failure [`Error::from_wire`] reads from it.
+pub fn verdict_of_wire(wire: &str) -> bool {
+    Error::from_wire(wire).is_terminal()
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -118,73 +131,84 @@ impl std::fmt::Display for ErrorCode {
 }
 
 impl std::str::FromStr for ErrorCode {
-    type Err = String;
+    type Err = Error;
 
+    /// The code for a stable name. A name the taxonomy does not know is a `codec` error: the same
+    /// name fails the same way every time.
     fn from_str(code: &str) -> Result<Self, Self::Err> {
-        ErrorCode::parse(code).ok_or_else(|| format!("unknown error code: {code}"))
+        ErrorCode::ALL
+            .iter()
+            .copied()
+            .find(|c| c.as_str() == code)
+            .ok_or_else(|| Error::codec(format_args!("unknown error code: {code}")))
     }
 }
 
-/// A failure of a backend store or broker. Typed, so a Rust consumer reads the fields instead of
-/// parsing them back out of a message. Four codes of the taxonomy are here — `concurrency`, `codec`,
-/// `store` and `bad_handle`; the rest are raised inside an SDK, never by a store.
+/// A failure, as every kernel function and every SDK reports it: a [`code`](Error::code) from the
+/// taxonomy and a human message. One type for the whole toolkit, so a verdict has one source and
+/// a failure renders one way in every SDK.
 ///
-/// `Display` is the one place that renders the `"<code>: <message>"` wire form, through
-/// [`ErrorCode::tag`]. A binding boundary calls `to_string()` and adds nothing.
+/// `Display` is the wire form `"<code>: <message>"`, built by [`ErrorCode::tag`]. A binding crosses
+/// it with `to_string()` and adds nothing, and an idempotency guard caches `code` and `message`
+/// side by side, so a replay in any SDK keeps the original code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AdapterError {
-    /// The expected version did not match the stored one: a concurrent writer got there first.
-    /// Versions are the stores' `i64`; the SDK converts at its seam.
-    Concurrency {
-        /// The version the caller wrote against.
-        expected: i64,
-        /// The version the store actually holds.
-        stored: i64,
-    },
-    /// A deterministic failure: malformed JSON, or a batch that fails the same way on every retry.
-    Codec(String),
-    /// The store failed for a reason other than a conflict. No in-memory store raises it; it is
-    /// the variant a durable store maps a backend failure to.
-    Store(String),
-    /// The transaction token names no open transaction: never begun, or already settled. Terminal,
-    /// because the same token fails the same way on every retry.
-    BadHandle(String),
+pub struct Error {
+    /// The kind of failure, which carries the terminal / transient verdict.
+    pub code: ErrorCode,
+    /// What went wrong, without the code.
+    pub message: String,
 }
 
-impl AdapterError {
-    /// The kernel's code for this failure, which carries the terminal / transient verdict. Exhaustive: a new
-    /// variant must name its code.
-    pub fn code(&self) -> ErrorCode {
-        match self {
-            AdapterError::Concurrency { .. } => ErrorCode::Concurrency,
-            AdapterError::Codec(_) => ErrorCode::Codec,
-            AdapterError::Store(_) => ErrorCode::Store,
-            AdapterError::BadHandle(_) => ErrorCode::BadHandle,
+impl Error {
+    /// A failure of kind `code`.
+    pub fn new(code: ErrorCode, message: impl std::fmt::Display) -> Self {
+        Error { code, message: message.to_string() }
+    }
+
+    /// A deterministic marshaling failure: malformed JSON, an unknown format, a batch that fails
+    /// the same way on every retry. Takes any `Display`, so a serializer's own error passes as is.
+    pub fn codec(cause: impl std::fmt::Display) -> Self {
+        Error::new(ErrorCode::Codec, cause)
+    }
+
+    /// The backing store failed for a reason other than a version conflict.
+    pub fn store(cause: impl std::fmt::Display) -> Self {
+        Error::new(ErrorCode::Store, cause)
+    }
+
+    /// An optimistic write found another version than the one it expected.
+    pub fn concurrency(expected: impl std::fmt::Display, stored: impl std::fmt::Display) -> Self {
+        Error::new(ErrorCode::Concurrency, format_args!("expected {expected}, stored {stored}"))
+    }
+
+    /// A transaction handle that names no open transaction.
+    pub fn bad_handle(cause: impl std::fmt::Display) -> Self {
+        Error::new(ErrorCode::BadHandle, cause)
+    }
+
+    /// The failure a wire string names: its code and message if [`ErrorCode::split`] finds a code,
+    /// else a `store` failure carrying the whole string, so a host still logs the original text and
+    /// decides nothing itself. The inverse of `Display` for every failure this kernel renders.
+    pub fn from_wire(wire: &str) -> Self {
+        match ErrorCode::split(wire) {
+            Some((code, message)) => Error::new(code, message),
+            None => Error::store(wire),
         }
     }
 
-    /// A deterministic marshaling failure, so a host does not retry it. The one constructor a
-    /// backend crate uses for a serializer's own error, which is why it takes any `Display`.
-    pub fn codec(cause: impl std::fmt::Display) -> Self {
-        AdapterError::Codec(cause.to_string())
+    /// The code's verdict: whether the failure repeats identically on retry.
+    pub fn is_terminal(&self) -> bool {
+        self.code.is_terminal()
     }
 }
 
-impl std::fmt::Display for AdapterError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let wire = match self {
-            AdapterError::Concurrency { expected, stored } => {
-                self.code().tag(format_args!("expected {expected}, stored {stored}"))
-            }
-            AdapterError::Codec(message) | AdapterError::Store(message) | AdapterError::BadHandle(message) => {
-                self.code().tag(message)
-            }
-        };
-        f.write_str(&wire)
+        f.write_str(&self.code.tag(&self.message))
     }
 }
 
-impl std::error::Error for AdapterError {}
+impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
@@ -194,7 +218,6 @@ mod tests {
     fn every_code_round_trips_through_its_name_and_wire_form() {
         for code in ErrorCode::ALL {
             let name = code.as_str();
-            assert_eq!(ErrorCode::parse(name), Some(*code), "{name}: parse(as_str)");
             assert_eq!(name.parse::<ErrorCode>(), Ok(*code), "{name}: FromStr");
             assert_eq!(code.to_string(), name, "{name}: Display");
             assert_eq!(
@@ -214,113 +237,117 @@ mod tests {
     }
 
     #[test]
-    fn split_branches() {
+    fn an_unknown_name_is_a_codec_error() {
+        // The same name fails the same way every time, so a binding that reports it must not read
+        // as a transient store failure.
+        let err = "timeout".parse::<ErrorCode>().expect_err("not a code");
+        assert_eq!(err, Error::codec("unknown error code: timeout"));
+        assert_eq!(err.to_string(), "codec: unknown error code: timeout");
+        assert!(err.is_terminal());
+    }
+
+    #[test]
+    fn split_and_verdict_branches() {
+        // One row per branch of `split` and `verdict_of_wire`; `error_wire.json` pins the same rows
+        // for every SDK.
         struct Case {
             name: &'static str,
             wire: &'static str,
             want: Option<(ErrorCode, &'static str)>,
+            terminal: bool,
         }
         let cases = [
+            Case { name: "known_terminal_code", wire: "codec: bad json", want: Some((ErrorCode::Codec, "bad json")), terminal: true },
             Case {
-                name: "known_code",
-                wire: "codec: bad json",
-                want: Some((ErrorCode::Codec, "bad json")),
+                name: "known_transient_code",
+                wire: "store: connection reset",
+                want: Some((ErrorCode::Store, "connection reset")),
+                terminal: false,
             },
-            // The message may itself contain the separator; only the first one splits.
             Case {
                 name: "separator_inside_the_message",
                 wire: "store: redis: connection reset",
                 want: Some((ErrorCode::Store, "redis: connection reset")),
+                terminal: false,
             },
-            Case {
-                name: "empty_message",
-                wire: "concurrency: ",
-                want: Some((ErrorCode::Concurrency, "")),
-            },
-            Case {
-                name: "unknown_code",
-                wire: "timeout: deadline exceeded",
-                want: None,
-            },
-            Case {
-                name: "no_separator",
-                wire: "connection reset by peer",
-                want: None,
-            },
-            Case {
-                name: "colon_without_space",
-                wire: "codec:no space",
-                want: None,
-            },
-            Case {
-                name: "empty",
-                wire: "",
-                want: None,
-            },
+            Case { name: "empty_message", wire: "concurrency: ", want: Some((ErrorCode::Concurrency, "")), terminal: false },
+            Case { name: "unknown_code", wire: "timeout: deadline exceeded", want: None, terminal: false },
+            Case { name: "no_separator", wire: "connection reset by peer", want: None, terminal: false },
+            Case { name: "colon_without_space", wire: "codec:no space", want: None, terminal: false },
+            Case { name: "uppercase_code", wire: "CODEC: x", want: None, terminal: false },
+            Case { name: "empty", wire: "", want: None, terminal: false },
         ];
         for c in cases {
-            assert_eq!(ErrorCode::split(c.wire), c.want, "{}", c.name);
+            assert_eq!(ErrorCode::split(c.wire), c.want, "{}: split", c.name);
+            let (code, message) = c.want.unwrap_or((ErrorCode::Store, c.wire));
+            assert_eq!(Error::from_wire(c.wire), Error::new(code, message), "{}: from_wire", c.name);
+            assert_eq!(verdict_of_wire(c.wire), c.terminal, "{}: verdict", c.name);
         }
-        assert_eq!(
-            "timeout".parse::<ErrorCode>(),
-            Err("unknown error code: timeout".to_owned())
-        );
+        assert_eq!(verdict(None), ErrorCode::Store.is_terminal(), "a failure no code classifies is a store failure");
     }
 
     #[test]
-    fn adapter_error_display_is_the_tagged_wire_form() {
-        // One case per variant. The wire string is what a binding crosses and what its parser
-        // (`ErrorCode::split`, Python's `from_runtime`) takes apart, so the round trip is pinned too.
+    fn error_display_is_the_tagged_wire_form() {
+        // One case per constructor. The wire string is what a binding crosses and what its parser
+        // takes apart, so the round trip is pinned too.
         struct Case {
             name: &'static str,
-            error: AdapterError,
+            error: Error,
             code: ErrorCode,
             wire: &'static str,
         }
         let cases = [
             Case {
                 name: "concurrency_carries_both_versions_in_order",
-                error: AdapterError::Concurrency { expected: 3, stored: 4 },
+                error: Error::concurrency(3, 4),
                 code: ErrorCode::Concurrency,
                 wire: "concurrency: expected 3, stored 4",
             },
             Case {
                 name: "concurrency_renders_a_negative_version_as_is",
-                error: AdapterError::Concurrency { expected: -1, stored: i64::MAX },
+                error: Error::concurrency(-1, i64::MAX),
                 code: ErrorCode::Concurrency,
                 wire: "concurrency: expected -1, stored 9223372036854775807",
             },
             Case {
                 name: "codec_is_terminal",
-                error: AdapterError::Codec("invalid type: string, expected u64".to_owned()),
+                error: Error::codec("invalid type: string, expected u64"),
                 code: ErrorCode::Codec,
                 wire: "codec: invalid type: string, expected u64",
             },
             Case {
                 name: "store_is_transient",
-                error: AdapterError::Store("connection to the event store was reset".to_owned()),
+                error: Error::store("connection to the event store was reset"),
                 code: ErrorCode::Store,
                 wire: "store: connection to the event store was reset",
             },
             Case {
                 name: "bad_handle_names_the_token",
-                error: AdapterError::BadHandle("unknown transaction 7".to_owned()),
+                error: Error::bad_handle("unknown transaction 7"),
                 code: ErrorCode::BadHandle,
                 wire: "bad_handle: unknown transaction 7",
             },
             Case {
+                name: "any_code_through_new",
+                error: Error::new(ErrorCode::Rejected, "insufficient funds"),
+                code: ErrorCode::Rejected,
+                wire: "rejected: insufficient funds",
+            },
+            Case {
                 // The message may itself hold the separator; the code is still the first segment.
                 name: "codec_message_with_a_separator_inside",
-                error: AdapterError::codec("redis: connection reset"),
+                error: Error::codec("redis: connection reset"),
                 code: ErrorCode::Codec,
                 wire: "codec: redis: connection reset",
             },
         ];
         for case in cases {
-            assert_eq!(case.error.code(), case.code, "{} code", case.name);
+            assert_eq!(case.error.code, case.code, "{} code", case.name);
+            assert_eq!(case.error.is_terminal(), case.code.is_terminal(), "{} verdict", case.name);
             assert_eq!(case.error.to_string(), case.wire, "{} wire", case.name);
             let message = case.wire.split_once(": ").map(|(_, m)| m);
             assert_eq!(ErrorCode::split(case.wire), message.map(|m| (case.code, m)), "{} split", case.name);
+            assert_eq!(Some(case.error.message.as_str()), message, "{} message", case.name);
         }
     }
 }

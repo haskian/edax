@@ -1,12 +1,23 @@
 [workspace]
 resolver = "2"
 members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-abi"]
+# Its own workspace: it turns on serde_json features that must never reach the main build.
+exclude = ["crates/edax-cqrs/feature-check"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/crtomirmajer/edax"
+
+# One no-panic posture for every crate the native binding links (each opts in with
+# `[lints] workspace = true`). PyO3 does catch a panic at the function boundary, but it surfaces as
+# `PanicException`, a `BaseException` the SDK's `except Exception` arms never see. So a fallible step
+# returns an error instead. Tests opt out through `clippy.toml`.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
 
 [workspace.dependencies]
 edax-golden = { path = "crates/edax-golden" }

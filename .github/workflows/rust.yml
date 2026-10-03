@@ -21,7 +21,7 @@ jobs:
         with:
           cargo-cache-key: rust
 
-      # Warnings are currently zero across the workspace; -D keeps it that way.
+      # -D warnings fails the job on any new warning.
       - name: Clippy
         run: mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 
@@ -31,3 +31,9 @@ jobs:
       # them with PROPTEST_CASES for a deeper sweep.
       - name: Test
         run: mise exec -- cargo test --workspace
+
+      # The canonical form (idempotency hashes, cursors) must not depend on serde_json features an
+      # adopter's build can switch on. This crate replays the golden vectors with them enabled; it is
+      # its own workspace, so the features never reach the build above.
+      - name: Canonical form under serde_json features
+        run: mise exec -- cargo test --manifest-path crates/edax-cqrs/feature-check/Cargo.toml

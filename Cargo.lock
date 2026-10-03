@@ -72,6 +72,7 @@ dependencies = [
  "edax-kafka",
  "edax-memory",
  "edax-redis",
+ "serde",
  "serde_json",
 ]
 
@@ -80,6 +81,7 @@ name = "edax-core"
 version = "0.1.0"
 dependencies = [
  "edax-golden",
+ "proptest",
  "serde_json",
  "uuid",
 ]
@@ -91,8 +93,10 @@ dependencies = [
  "base64",
  "edax-core",
  "edax-golden",
+ "proptest",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
 ]
 
 [[package]]
@@ -102,6 +106,7 @@ dependencies = [
  "base64",
  "edax-core",
  "edax-golden",
+ "proptest",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -122,6 +127,7 @@ dependencies = [
  "edax-core",
  "edax-event",
  "edax-golden",
+ "proptest",
  "serde_json",
 ]
 
@@ -132,6 +138,8 @@ dependencies = [
  "edax-core",
  "edax-cqrs",
  "edax-event",
+ "edax-kafka",
+ "proptest",
  "serde_json",
 ]
 
@@ -141,10 +149,8 @@ version = "0.1.0"
 dependencies = [
  "edax-abi",
  "pyo3",
- "pyo3-async-runtimes",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -180,30 +186,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "futures-channel"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
-dependencies = [
- "futures-core",
-]
-
-[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
-
-[[package]]
-name = "futures-macro"
-version = "0.3.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "futures-task"
@@ -218,7 +204,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
 dependencies = [
  "futures-core",
- "futures-macro",
  "futures-task",
  "pin-project-lite",
  "slab",
@@ -364,20 +349,6 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
-]
-
-[[package]]
-name = "pyo3-async-runtimes"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e7364a95bf00e8377bbf9b0f09d7ff9715a29d8fcf93b47d1a967363b973178"
-dependencies = [
- "futures-channel",
- "futures-util",
- "once_cell",
- "pin-project-lite",
- "pyo3",
- "tokio",
 ]
 
 [[package]]
@@ -546,6 +517,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -599,6 +576,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -632,15 +620,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "tokio"
-version = "1.52.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
-dependencies = [
- "pin-project-lite",
 ]
 
 [[package]]
