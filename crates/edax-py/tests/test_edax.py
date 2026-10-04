@@ -124,15 +124,16 @@ def test_a_serializer_refuses_the_other_kind() -> None:
 
 
 def test_golden_envelope_decode() -> None:
-    """The message evolution rule, one wire value per case in both formats: an unknown field and a missing
-    optional field read, a positional (array) message, a repeated field and trailing bytes are refused. A
-    newer producer's field therefore never turns a message into poison for this reader."""
+    """The message evolution rule, one wire value per case in both formats and of its kind: an unknown
+    field and a missing optional field read, a positional (array) message, a repeated field, trailing
+    bytes and a tenant outside the key rule are refused. A newer producer's field therefore never turns a
+    message into poison for this reader, and a poisoned tenant never reaches a key."""
     for case in golden("envelope_decode.json"):
         for fmt in ("json", "msgpack"):
             wire = bytes.fromhex(case[f"{fmt}_hex"])
             got: dict[str, Any]
             try:
-                got = {"message": message_as_obj(edax.KernelSerializer(fmt).decode(wire))}
+                got = {"message": message_as_obj(edax.KernelSerializer(fmt, case["kind"]).decode(wire))}
             except edax.CodecError as e:
                 got = {"error_code": e.code}
             assert got == case["want"], (case["name"], fmt)

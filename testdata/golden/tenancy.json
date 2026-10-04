@@ -216,6 +216,150 @@
     "tenant": "é"
   },
   {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
     "composes_keys": true,
     "error": "codec: tenancy pool requires a tenant, and none was given",
     "expected": null,
@@ -432,6 +576,150 @@
     "tenant": "é"
   },
   {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:éééééééééééééééééééééééééééééééé:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:éééééééééééééééééééééééééééééééé:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:éééééééééééééééééééééééééééééééé:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "64:éééééééééééééééééééééééééééééééé:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
     "composes_keys": false,
     "error": "codec: tenancy bridge requires a tenant, and none was given",
     "expected": null,
@@ -646,5 +934,149 @@
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
   }
 ]

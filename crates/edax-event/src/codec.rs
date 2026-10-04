@@ -12,13 +12,16 @@
 //! - A message is a **map** keyed by field name in both formats, never a positional array. A reader
 //!   refuses an array where a map belongs.
 //! - A reader **ignores a field it does not know**, so a writer may add one and an older reader keeps
-//!   decoding (forward compatible). An optional field (`sequence`, `occurred_at`, `idempotency_key`,
-//!   a command's `aggregate_id`) is written as `null` and reads as `None` when missing; every other
-//!   field is required.
+//!   decoding (forward compatible). An optional field (`tenant`, `sequence`, `occurred_at`,
+//!   `idempotency_key`, a command's `aggregate_id`) is written as `null` and reads as `None` when
+//!   missing; every other field is required.
 //! - **Trailing bytes** after the message are refused in both formats: a frame holds one message.
 //! - A repeated field is refused; a repeated key inside `extensions` or `metadata` keeps its last value.
 //! - An [`Extensions`](crate::domain::Extensions) key outside [`check_extensions`] is refused on
 //!   encode and on decode, so a producer never writes what every consumer would refuse.
+//! - A `tenant` outside [`check_tenant`] (empty, or over [`edax_core::TENANT_MAX`] bytes) is refused
+//!   on encode and on decode, so a tenant another service minted is checked before any key is composed
+//!   from it.
 //!
 //! The bytes do not say which kind they hold: the media type does. A transport that carries one, such
 //! as a Kafka `content-type` header, decodes by it ([`Format::from_media_type`]), and a decode of the
