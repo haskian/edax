@@ -225,7 +225,7 @@ async def _two_workers(history: list[Step]) -> None:
 
     async def peek() -> Any:
         try:
-            async with ledger.transactor.transaction() as tx:
+            async with ledger.transactor.begin() as tx:
                 seen = await peek_store.claim("k", 7, tx=tx)
                 raise _Peeked(seen)
         except _Peeked as p:

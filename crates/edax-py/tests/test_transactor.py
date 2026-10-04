@@ -18,6 +18,7 @@ import edax
 import pytest
 from conftest import Counter, FakeKafkaClient, Tick, build_message, claimed, counter_repo
 from edax import EventMessage, KeyOrderedDispatcher, Snapshot, _edax, current_tx, transaction
+from edax._owned import ThreadBound
 from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import (
     MemoryBroker,
@@ -31,6 +32,7 @@ from edax.command import CommandBus, Record, Won, idempotent
 from edax.projection import Entity
 from edax.store import Tx
 from edax.testing import drafted
+from edax.testing.faults import BrokenCommit, LostResponse
 
 
 class CountingTransactor:
@@ -41,7 +43,7 @@ class CountingTransactor:
         self.begun = self.committed = self.rolled_back = 0
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[str]:
+    async def begin(self) -> AsyncIterator[str]:
         self.begun += 1
         tx = f"tx-{self.begun}"
         try:
@@ -120,7 +122,7 @@ class RecordingStore:
         self.transactor = transactor
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[str]:
+    async def begin(self) -> AsyncIterator[str]:
         yield "store-own-tx"
 
     async def append(
@@ -160,7 +162,7 @@ async def test_repository_save_enlists_caller_tx() -> None:
 
 async def test_repository_save_opens_its_own_tx_when_none_passed() -> None:
     store, repo, acct = _repo_with_pending()
-    await repo.save(acct)  # no tx, no open unit of work -> store.transaction()
+    await repo.save(acct)  # no tx, no open unit of work -> store.begin()
 
     assert [op for op, _ in store.calls] == ["append", "snapshot"]
     assert all(seen == "store-own-tx" for _, seen in store.calls)
@@ -176,6 +178,24 @@ async def test_repository_save_joins_ambient_tx_without_threading() -> None:
 
     assert all(seen == tx for _, seen in store.calls)  # the ambient tx, not "store-own-tx"
     assert tr.committed == 1
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        pytest.param(MemoryTransactor, id="memory_transactor"),
+        pytest.param(MemoryEventStore, id="memory_event_store"),
+        pytest.param(lambda: BrokenCommit(MemoryTransactor(), arm=None), id="broken_commit"),
+        pytest.param(lambda: LostResponse(MemoryEventStore()), id="lost_response"),
+    ],
+)
+def test_no_seam_opens_a_unit_of_work_it_does_not_publish(opener: Callable[[], object]) -> None:
+    """``edax.transaction`` is the one opener named ``transaction``. A method of that name once opened the
+    backend's unit of work without publishing it: a ``Repository.save`` given no tx inside it committed on its
+    own and survived the block's rollback, and the nesting guard never fired. The hook is ``begin``."""
+    built = opener()
+    assert hasattr(built, "begin"), "the backend hook edax.transaction calls"
+    assert not hasattr(built, "transaction"), "an opener that would bypass current_tx"
 
 
 async def test_repository_load_joins_ambient_tx() -> None:
@@ -364,7 +384,7 @@ class Rig:
         # A losing claim proves the key is taken; a winning probe must be undone, so it runs in a
         # transaction of its own that is rolled back.
         try:
-            async with self.db.transaction() as probe:
+            async with self.db.begin() as probe:
                 taken = not isinstance(await self.claims.claim(claimed("req-A"), 0, tx=probe), Won)
                 raise _Undo
         except _Undo:
@@ -480,10 +500,10 @@ async def test_completing_or_releasing_a_held_claim_conflicts(branch: str, write
     # a terminal record written under another token, and a losing claimant's release would free the
     # winner's key. Redis fences both; the memory backend refuses both, even with the right handle.
     rig = Rig()
-    async with rig.db.transaction() as holder:
+    async with rig.db.begin() as holder:
         won = await rig.claims.claim("req-A", HASH, tx=holder)
         assert isinstance(won, Won), "the holder wins the key"
-        async with rig.db.transaction() as other:
+        async with rig.db.begin() as other:
             with pytest.raises(edax.ConcurrencyError):
                 await write(rig.claims, won.handle, other)
         with pytest.raises(edax.ConcurrencyError):
@@ -500,14 +520,14 @@ def test_the_auto_commit_token_comes_from_the_native_binding() -> None:
 async def test_open_count_reports_unsettled_transactions() -> None:
     db = MemoryTransactor()
     assert db.open_count() == 0, "a fresh transactor holds nothing open"
-    async with db.transaction():
+    async with db.begin():
         assert db.open_count() == 1, "the unit of work is open inside its block"
-        async with db.transaction():
+        async with db.begin():
             assert db.open_count() == 2, "each begin opens one"
     assert db.open_count() == 0, "a commit closes its transaction"
 
     with pytest.raises(RuntimeError, match="rolled back"):
-        async with db.transaction():
+        async with db.begin():
             raise RuntimeError("rolled back")
     assert db.open_count() == 0, "a rollback closes its transaction too"
 
@@ -564,17 +584,53 @@ def test_a_native_handle_used_from_another_thread_raises_bad_handle(case: Foreig
     assert raised[0].terminal is True, "a wiring mistake is not retried"
 
 
+def test_a_handle_whose_owner_thread_exited_raises_bad_handle_on_a_thread_reusing_its_ident() -> None:
+    """Python recycles a thread ident once its thread exits, while PyO3 checks the Rust thread id, which
+    it never recycles. A guard keyed on the ident let a new thread holding the dead owner's ident through,
+    and the native call panicked. The handle here is a plain object: a native one dropped after its owner
+    exits cannot be dropped on its own thread, which PyO3 reports as an unraisable error."""
+    bound: ThreadBound[object] = ThreadBound.lazy(object, "MemoryTransactor")
+    owner_ident: list[int] = []
+
+    def own() -> None:
+        bound.get()
+        owner_ident.append(threading.get_ident())
+
+    owner = threading.Thread(target=own)
+    owner.start()
+    owner.join()
+    seen: list[tuple[bool, str]] = []
+
+    def use() -> None:
+        try:
+            bound.get()
+            outcome = "served"
+        except edax.BadHandle:
+            outcome = "BadHandle"
+        seen.append((threading.get_ident() == owner_ident[0], outcome))
+
+    for _ in range(50):
+        thread = threading.Thread(target=use)
+        thread.start()
+        thread.join()
+        if seen[-1][0]:
+            break
+    if not seen[-1][0]:
+        pytest.skip("this platform did not recycle the owner's thread ident")
+    assert {outcome for _, outcome in seen} == {"BadHandle"}, seen
+
+
 async def test_a_released_claim_with_nothing_committed_does_not_shadow_or_erase_a_winner() -> None:
     """A release with nothing committed must stage no delete. With one, the releaser's own re-claim
     reads its staged delete instead of the winner's record and wins a second time, and its commit
     erases the winner's record, so the next dispatch runs the handler again."""
     db = MemoryTransactor()
     ledger = MemoryIdempotencyStore(db)
-    async with db.transaction() as releaser:
+    async with db.begin() as releaser:
         mine = await ledger.claim("req-1", 7, tx=releaser)
         assert isinstance(mine, Won)
         await ledger.release("req-1", mine.handle, tx=releaser)  # a transient failure gave the claim up
-        async with db.transaction() as winner:
+        async with db.begin() as winner:
             won = await ledger.claim("req-1", 7, tx=winner)
             assert isinstance(won, Won), "the released key is free"
             await ledger.complete("req-1", won.handle, Record(7, result=42), tx=winner)
@@ -596,7 +652,7 @@ async def test_a_release_of_a_committed_claim_holds_the_key_until_it_ends() -> N
     ledger = MemoryIdempotencyStore(db)
     won = await ledger.claim("req-1", 7)
     assert isinstance(won, Won)
-    async with db.transaction() as releaser:
+    async with db.begin() as releaser:
         await ledger.release("req-1", won.handle, tx=releaser)
         held = await ledger.claim("req-1", 7)
         assert not isinstance(held, Won) and held.pending, "a claimant waits on the held key"
@@ -610,7 +666,7 @@ async def test_a_release_of_a_committed_claim_holds_the_key_until_it_ends() -> N
     await other.complete(
         "req-2", won.handle, Record(7, error="the order is malformed", error_code="rejected")
     )
-    async with other.transactor.transaction() as releaser:
+    async with other.transactor.begin() as releaser:
         await other.release("req-2", won.handle, tx=releaser)
     settled = await other.claim("req-2", 7)
     assert not isinstance(settled, Won) and settled.error_code == "rejected", "the settled record stays"

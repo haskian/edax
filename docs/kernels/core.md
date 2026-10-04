@@ -202,8 +202,9 @@ SDK states this default for itself.
 What *branches* on the verdict — the exception hierarchy, `is_terminal`, the retry middleware, the
 idempotency guards, the dead-letter path — belongs to the SDK and is documented in
 [../sdk/errors.md](../sdk/errors.md). The short version: nothing above the kernel states its own
-verdict. Python reads it at class-definition time and reads the unclassified default from
-`error_verdict`; Rust reads the code off the error and asks `edax_core::verdict`.
+verdict. Both SDKs read the code off the error and ask the kernel: Python through
+`error_code_is_terminal`, with the unclassified default from `error_verdict`; Rust through
+`edax_core::verdict`.
 
 ## See also
 

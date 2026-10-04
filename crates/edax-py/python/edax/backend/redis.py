@@ -232,7 +232,7 @@ class RedisIdempotencyStore:
                 renewed = await self.extend(key, handle)
             except EdaxError as e:
                 logger.warning("edax redis: renewing the claim on %r failed: %s", key, e)
-                if e.terminal:
+                if errors.is_terminal(e):
                     return
                 continue
             if not renewed:

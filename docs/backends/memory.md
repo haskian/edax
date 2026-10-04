@@ -10,7 +10,7 @@ development and tests. It is not durable.
 ```mermaid
 classDiagram
     class MemoryTransactor {
-        +transaction()
+        +begin()
         +auto_commit()
         +token()
     }
@@ -36,7 +36,7 @@ classDiagram
 
 | Class | Seam | Notes |
 |---|---|---|
-| `MemoryTransactor` | `Transactor` | the transaction boundary; `transaction()` yields a `MemoryTx` |
+| `MemoryTransactor` | `Transactor` | the transaction boundary; `begin()` yields a `MemoryTx` to `edax.transaction` |
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
 | `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works; `append` stamps `recorded_at` from `now=` (default: the kernel clock) |
 | `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `forget(key)` deletes a settled record, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |

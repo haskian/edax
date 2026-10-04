@@ -24,7 +24,8 @@ implement, and trust it over this page wherever the two differ.
 
 Specification: `edax.store.Transactor`.
 
-- `transaction()` is an async context manager.
+- `begin()` is an async context manager. The SDK calls it from `edax.transaction(t)`; a host never
+  calls it directly.
 - A clean exit commits. An exception rolls back and re-raises.
 - One handle every participant store accepts, atomic as a set.
 - A participant handed the same handle reads its own uncommitted writes.
@@ -184,7 +185,7 @@ The Rust SDK declares the same store seams as traits. A Rust store names its han
 classDiagram
     class Transactor {
         <<Protocol>>
-        +transaction()
+        +begin()
     }
     class EventStore {
         <<Protocol>>

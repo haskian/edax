@@ -51,7 +51,7 @@ _NO_TX: int = _edax.no_tx()
 
 @dataclass(frozen=True)
 class MemoryTx:
-    """The handle :meth:`MemoryTransactor.transaction` yields: the transactor it belongs to and the
+    """The handle :meth:`MemoryTransactor.begin` yields: the transactor it belongs to and the
     native token of the open transaction. Every memory store over that transactor accepts it."""
 
     transactor: MemoryTransactor
@@ -71,7 +71,7 @@ class MemoryTransactor:
         self._native = ThreadBound(_edax.memory_transactor(), "MemoryTransactor")
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[MemoryTx]:
+    async def begin(self) -> AsyncIterator[MemoryTx]:
         token = self._native.get().begin()
         try:
             yield MemoryTx(self, token)
@@ -142,7 +142,7 @@ class MemoryEventStore(_StoreView):
     the native :class:`~edax.aggregate.EventDraft` and come back as :class:`~edax.aggregate.EventMessage`.
     ``now`` is the store's clock: ``append`` stamps every draft's ``recorded_at`` with one reading of it
     (default: the kernel clock, Unix nanoseconds). An ``EventStore`` is a :class:`~edax.store.Transactor`:
-    ``transaction()`` is the :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the
+    ``begin()`` is the :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the
     database's unit of work. The outbox is read by the relay outside any transaction and holds committed
     rows only."""
 
@@ -153,8 +153,8 @@ class MemoryEventStore(_StoreView):
         # The native store cannot call back into Python, so the view reads the clock and hands it in.
         self._now = now or _edax.current_timestamp
 
-    def transaction(self) -> AbstractAsyncContextManager[MemoryTx]:
-        return self._transactor.transaction()
+    def begin(self) -> AbstractAsyncContextManager[MemoryTx]:
+        return self._transactor.begin()
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         with errors.mapped():

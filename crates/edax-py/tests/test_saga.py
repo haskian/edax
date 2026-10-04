@@ -529,7 +529,7 @@ class NoneStateSaga:
 
 class _OneTx:
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[str]:
+    async def begin(self) -> AsyncIterator[str]:
         yield "ambient-tx"
 
 

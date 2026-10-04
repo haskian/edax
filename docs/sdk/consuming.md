@@ -95,7 +95,8 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-Submitting a bare message instead of a `Delivery` runs the handler and settles nothing: the
+In both SDKs, submitting a bare message instead of a `Delivery` runs the handler and nothing else.
+A failure waits no backoff step, reaches no `on_dead` and is not counted. This is the
 fire-and-forget path.
 
 **Lineage.** The Python worker runs each handler under `propagate` of the message it delivers, so a
@@ -220,8 +221,8 @@ ceiling survive a restart. Neither in-tree backend reads one from its client, so
 | `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
 | Raised `InProgress` | sleep one backoff step, then nack; the budget is untouched | same |
 
-Terminal versus transient is the kernel's verdict, read through `err.terminal`. See
-[errors.md](./errors.md).
+Terminal versus transient is the kernel's verdict for the code the error carries, read through
+`edax.is_terminal(err)`. See [errors.md](./errors.md).
 `examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
 that passes, and one that reaches `max_attempts`.
 
@@ -271,10 +272,12 @@ pool.
 
 Both attempt maps grow by one entry per failing message id and shrink when that id is acked or
 dead-lettered. The attempt count is kept whatever `max_attempts` says, including `0`, so the backoff
-grows across redeliveries instead of repeating a flat first step. Entries for nacked messages that
-never come back stay until the id is seen again. Bound them with a time to live (TTL) or a least
-recently used (LRU) cache. That matters when a broker-side dead-letter queue steals them under
-sustained failure.
+grows across redeliveries instead of repeating a flat first step. An entry for a nacked message
+that never comes back stays for the life of the dispatcher. That happens when a broker-side
+dead-letter queue takes the message, or when a rebalance moves its partition to another consumer.
+Neither SDK bounds the maps today; this is a known limit. Python reports their size as
+`stats().attempts_tracked` and `stats().contended_tracked`, and steady growth there is this case. A
+bare message is never counted, because nothing settles it.
 
 ## Commands off a broker
 

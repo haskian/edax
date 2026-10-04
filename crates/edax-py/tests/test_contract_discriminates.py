@@ -490,7 +490,7 @@ class CheckThenActEventStore:
         self.rows: dict[str, list[EventMessage]] = {}
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[list[tuple[str, list[EventMessage]]]]:
+    async def begin(self) -> AsyncIterator[list[tuple[str, list[EventMessage]]]]:
         staged: list[tuple[str, list[EventMessage]]] = []
         yield staged  # an exception skips the apply: the rollback
         for agg, events in staged:
@@ -529,7 +529,7 @@ class OverlayDb:
         self._minted = 0
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[int]:
+    async def begin(self) -> AsyncIterator[int]:
         self._minted += 1
         tx = self._minted
         self.open[tx] = {}
@@ -702,7 +702,7 @@ class LockingEventStore:
         self._minted = 0
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[tuple[int, list[tuple[str, list[EventMessage]]]]]:
+    async def begin(self) -> AsyncIterator[tuple[int, list[tuple[str, list[EventMessage]]]]]:
         self._minted += 1
         tx = self._minted
         staged: list[tuple[str, list[EventMessage]]] = []
@@ -743,10 +743,10 @@ class LockingLedger(OverlayLedger):
         self.timeout = timeout
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[int]:
+    async def begin(self) -> AsyncIterator[int]:
         opened: list[int] = []
         try:
-            async with super().transaction() as tx:
+            async with super().begin() as tx:
                 opened.append(tx)
                 yield tx
         finally:

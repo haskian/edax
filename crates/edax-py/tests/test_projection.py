@@ -164,12 +164,12 @@ async def test_paging_reads_every_row_once_while_other_transactions_commit_betwe
     seen: list[str] = []
     page = await store.get_many(sort=sort, limit=2)
     seen.extend(d["name"] for d in page.rows)
-    async with store.transactor.transaction():
+    async with store.transactor.begin():
         await store.save(Entity("u4", 0, {"id": "u4", "name": "eve", "age": 37}))  # after the cursor
         await store.save(Entity("u5", 0, {"id": "u5", "name": "abe", "age": 20}))  # before it: never seen
     reader = store.transactor.auto_commit()
     with pytest.raises(_RollBack):
-        async with store.transactor.transaction() as pending:
+        async with store.transactor.begin() as pending:
             await store.save(Entity("u6", 0, {"id": "u6", "name": "fay", "age": 50}), tx=pending)
             for _ in range(len(USERS) + 1):  # bounded: a cursor that repeats a row must fail, not hang
                 if page.next is None:
