@@ -243,6 +243,34 @@ async def test_a_topic_reported_with_no_partitions_is_refused_and_sends_nothing(
     assert client.sent == []
 
 
+class _FrozenBroker(SpyProducerClient):
+    """A broker that stopped answering, as an idempotent ``AIOKafkaProducer`` sees it: it never expires
+    the batch, so the send waits forever."""
+
+    async def send_and_wait(self, *args: Any, **kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("side", ["producer", "dead_letter_sink"])
+async def test_a_send_to_a_frozen_broker_times_out_as_transient(side: str) -> None:
+    """Both senders bound the send, so a relay or a dispatcher stuck on a frozen broker gets a failure to
+    retry instead of a hang. The failure is transient, because the next try may find the broker back."""
+    client = _FrozenBroker(3)
+    msg = build_message("acct-1", "Deposited", 1)
+    if side == "producer":
+        send = KafkaProducer(client, "orders", publish_timeout_s=0.01).publish(msg)
+    else:
+        fetched = KafkaFetched(
+            "orders", 2, 41, b"acct-1", b'{"id":"x"}', ((CONTENT_TYPE, b"application/json"),)
+        )
+        delivery = edax.Delivery(msg, lambda: None, lambda: None, origin=fetched)
+        sink = KafkaDeadLetterSink(client, "orders.dlq", publish_timeout_s=0.01)
+        send = sink(delivery, edax.CodecError("bad"))
+    with pytest.raises(TimeoutError, match=r"no ack within 0\.01s; the record may still land") as raised:
+        await send
+    assert not edax.errors.is_terminal(raised.value)
+
+
 def test_two_serializers_for_one_media_type_are_refused() -> None:
     """One topic, one decoder per media type: a second claimant would decode typed records one way and
     header-less records another."""

@@ -144,7 +144,22 @@ def _check_consumer(client: ConsumerClient) -> None:
         )
 
 
-async def _send(client: ProducerClient, topic: str, record: KafkaRecord) -> None:
+async def _send(client: ProducerClient, topic: str, record: KafkaRecord, timeout_s: float) -> None:
+    """Send ``record`` to ``topic`` and wait for the ack, raising a transient :class:`TimeoutError` after
+    ``timeout_s``. With ``enable_idempotence=True`` aiokafka never expires a batch, so without this bound a
+    send to a broker that stopped answering waits forever. A send cut off at the deadline may still land:
+    the batch stays in the client, so the caller's retry can write a second copy, which consumers dedup by
+    ``msg.id``."""
+    try:
+        await asyncio.wait_for(_place_and_send(client, topic, record), timeout_s)
+    except asyncio.TimeoutError as e:
+        raise TimeoutError(
+            f"kafka send to {topic!r}: no ack within {timeout_s}s; the record may still land, so a retry "
+            "may write it twice"
+        ) from e
+
+
+async def _place_and_send(client: ProducerClient, topic: str, record: KafkaRecord) -> None:
     """Send ``record`` to ``topic`` on the kernel's partition for its key: Java's default partitioner over
     the final key and the topic's partition count from the client's metadata. One placement for the
     producer and the dead-letter sink."""
@@ -199,18 +214,20 @@ class KafkaDeadLetterSink:
     caller-owned, started ``AIOKafkaProducer``: the record as fetched, plus where it came from and why
     (:meth:`KafkaFetched.dead_letter`), on the kernel's partition for its key. A raise (the topic is
     down) nacks the delivery for another try. A delivery that did not come from a
-    :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`."""
+    :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`.
+    ``publish_timeout_s`` bounds each send, as on :class:`KafkaProducer`."""
 
-    def __init__(self, client: ProducerClient, topic: str) -> None:
+    def __init__(self, client: ProducerClient, topic: str, *, publish_timeout_s: float = 30.0) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
+        self._publish_timeout_s = publish_timeout_s
 
     async def __call__(self, delivery: Delivery, error: BaseException) -> None:
         fetched = delivery.origin
         if not isinstance(fetched, KafkaFetched):
             raise TypeError(f"delivery {delivery.message.id} carries no Kafka record to dead-letter")
-        await _send(self._client, self._topic, fetched.dead_letter(error))
+        await _send(self._client, self._topic, fetched.dead_letter(error), self._publish_timeout_s)
 
 
 class RecordMiddleware(Protocol):
@@ -255,7 +272,12 @@ class KafkaProducer:
 
     The relay marks an outbox row published once :meth:`publish` returns, so the client must ack on every
     in-sync replica: build it with ``enable_idempotence=True``, which implies ``acks="all"`` and keeps a
-    retried send from writing a duplicate. A client that acks on the leader alone gets a warning here."""
+    retried send from writing a duplicate. A client that acks on the leader alone gets a warning here.
+
+    ``publish_timeout_s`` bounds each :meth:`publish`, metadata lookup and ack included, because an
+    idempotent aiokafka producer retries a send to a broker that stopped answering without end. At the
+    deadline :meth:`publish` raises a transient :class:`TimeoutError`. The record may still land, so the
+    relay's retry can publish it twice: the at-least-once that consumers already dedup by ``msg.id``."""
 
     def __init__(
         self,
@@ -267,10 +289,12 @@ class KafkaProducer:
         key: KeyFn | None = None,
         middleware: Sequence[RecordMiddleware] = (),
         tenancy: Tenancy = Tenancy.SILO,
+        publish_timeout_s: float = 30.0,
     ) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
+        self._publish_timeout_s = publish_timeout_s
         self._serializer = _check_kind(serializer or KernelSerializer("json"), "event", "serializer")
         self._commands = _check_kind(
             command_serializer or KernelSerializer("json", "command"), "command", "command_serializer"
@@ -290,7 +314,7 @@ class KafkaProducer:
             record = _edax.kafka_record(key, value, serializer.media_type)
         for m in self._middleware:
             record = m.on_publish(record)
-        await _send(self._client, self._topic, record)
+        await _send(self._client, self._topic, record, self._publish_timeout_s)
 
 
 class KafkaConsumer(_ConsumerLoop):
