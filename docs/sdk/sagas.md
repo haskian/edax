@@ -54,6 +54,9 @@ bus, and their commands still never meet under one key.
   there is none. A completed instance takes no event: the runner returns before it folds.
 - `None` ignores the event. The runner returns before it touches the store, so an unrelated event
   costs nothing and writes nothing.
+- Where one store serves every tenant, compose the tenant in here, with `tenant_key(mode, id,
+  msg.tenant)`. Two tenants' instances would otherwise fold into one. See
+  [multi-tenancy](../guides/multi-tenancy.md).
 
 The instance id is the saga's own key, not the aggregate id: one instance spans several
 aggregates. It is often derived from the aggregate id, as in `examples/py/13_saga.py`, and that

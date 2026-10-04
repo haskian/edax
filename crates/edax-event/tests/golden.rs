@@ -126,6 +126,7 @@ fn envelope_cases() -> Vec<Value> {
             EventMessage {
                 id: "evt-2".into(),
                 aggregate_id: "agg-2".into(),
+                tenant: None,
                 sequence: None,
                 name: "OrderPlaced".into(),
                 version: 2,
@@ -189,6 +190,11 @@ fn envelope_cases() -> Vec<Value> {
             e.data = vec![0xab; 256];
             e.id = "e".repeat(32);
         })),
+        // A tenant is a typed field, so it is on the wire as itself and not as a metadata key. The
+        // separator and the non-ASCII cases are what `edax_core::scoped` must keep injective.
+        ("tenanted", with(&|e| e.tenant = Some("acme".into()))),
+        ("tenant_holding_the_key_separator", with(&|e| e.tenant = Some("a:b".into()))),
+        ("tenant_non_ascii_at_the_length_limit", with(&|e| e.tenant = Some("é".repeat(32)))),
     ];
     let with_command = |edit: &dyn Fn(&mut CommandMessage)| {
         let mut cmd = base_command();
@@ -197,6 +203,7 @@ fn envelope_cases() -> Vec<Value> {
     };
     let commands: Vec<(&str, CommandMessage)> = vec![
         ("command_base", base_command()),
+        ("command_tenanted", with_command(&|c| c.tenant = Some("acme".into()))),
         ("command_without_key_or_target", with_command(&|c| {
             c.idempotency_key = None;
             c.aggregate_id = None;
@@ -207,6 +214,7 @@ fn envelope_cases() -> Vec<Value> {
             "order-7",
             4,
             1,
+            None,
             edax_event::Event { name: "Fulfill".into(), version: 2, data: b"{}".to_vec() },
             &base_event().id,
             &base_event().correlation_id,
@@ -508,6 +516,7 @@ fn event_idempotency_cases() -> Vec<Value> {
     let base = EventMessage {
         id: "acct-1-3".to_owned(),
         aggregate_id: "acct-1".to_owned(),
+        tenant: None,
         sequence: Some(3),
         name: "Deposited".to_owned(),
         version: 1,
@@ -744,13 +753,15 @@ fn saga_cases() -> Vec<Value> {
     }
     // The command message a step's outbox holds: keyed and ordered by the instance, the folded event's
     // child in lineage.
-    let cause = base_event();
+    // A pooled saga: the instance id is the host's own composition, and the row inherits its tenant.
+    let cause = EventMessage { tenant: Some("acme".into()), ..base_event() };
+    let instance = edax_core::scoped("acme", "order-7");
     let payload = edax_event::Event { name: "Fulfill".into(), version: 2, data: br#"{"order":"order-7"}"#.to_vec() };
-    let command = edax_event::saga_command("shipping", "order-7", 4, 1, payload.clone(), &cause.id, &cause.correlation_id, 1_700_000_000_000_000_001);
+    let command = edax_event::saga_command("shipping", &instance, 4, 1, cause.tenant.as_deref(), payload.clone(), &cause.id, &cause.correlation_id, 1_700_000_000_000_000_001);
     cases.push(json!({
         "saga_command": {
             "saga": "shipping",
-            "instance_id": "order-7", "version": 4, "index": 1, "issued_at": 1_700_000_000_000_000_001_i64,
+            "instance_id": instance, "version": 4, "index": 1, "issued_at": 1_700_000_000_000_000_001_i64,
             "command": serde_json::to_value(&payload).unwrap(),
             "cause": serde_json::to_value(&cause).unwrap(),
         },

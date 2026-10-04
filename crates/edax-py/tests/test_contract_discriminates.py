@@ -471,6 +471,16 @@ class OwnCursor(_Delegating):
         return Page(page.rows, str(start + len(page.rows)) if more else None)
 
 
+class DropsTheRowKey(_Delegating):
+    """`get_many` returns the stored document alone — `SELECT doc` where the key is its own column.
+    Rows then carry whatever `id` a writer happened to save, so a filter or a cursor over `id` reads
+    the wrong rows."""
+
+    async def get_many(self, **kwargs: Any) -> Page:
+        page = await self._inner.get_many(**kwargs)
+        return Page([{k: v for k, v in row.items() if k != "id"} for row in page.rows], page.next)
+
+
 class CheckThenActEventStore:
     """A check-then-act store: the version check is a read in Python, then a database round trip, then the
     insert, staged in the unit of work and applied on commit. Every clause that runs one writer at a time
@@ -864,6 +874,13 @@ BROKEN: list[Broken] = [
         _PagingContract,
         "test_get_many_pages_every_row_once_by_its_next_cursor",
         lambda db: EndlessNext(MemoryProjectionStore(db)),
+    ),
+    Broken(
+        "row_key_is_not_the_id",
+        _PagingContract,
+        "test_get_many_returns_the_row_key_as_the_id",
+        lambda db: DropsTheRowKey(MemoryProjectionStore(db)),
+        expect="the id is the row key",
     ),
     Broken(
         "own_cursor_is_not_the_kernels",

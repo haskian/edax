@@ -9,6 +9,7 @@ pub(crate) const RECORDED_AT: i64 = 1_714_564_800_000_000_000;
 /// The draft of event `name` at `sequence` of `aggregate_id`, with id `"{aggregate_id}-{sequence}"`.
 pub(crate) fn draft(aggregate_id: &str, name: &str, sequence: u64, data: &[u8]) -> EventDraft {
     EventDraft {
+        tenant: None,
         id: format!("{aggregate_id}-{sequence}"),
         aggregate_id: aggregate_id.to_owned(),
         sequence: Some(sequence),

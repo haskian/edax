@@ -13,7 +13,7 @@ crate's whole dependency set is `uuid`
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
 | `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not on the ABI; only its callers are |
-| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first | yes | indirectly, via `claim_key.json` / `saga.json` | not on the ABI; only its callers are |
+| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `check_tenant` on the ABI |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |

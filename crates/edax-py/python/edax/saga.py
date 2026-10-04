@@ -133,7 +133,13 @@ class SagaRunner:
     state and commands in one write at the loaded version. Pass :meth:`on_event` to an ``EventRouter`` or
     ``KeyOrderedDispatcher``, and send the commands with :meth:`relay`. ``commands`` marshals the saga's
     command objects into the outbox and back, like an event codec: ``json_codec({"Fulfill": Fulfill})``.
-    ``now`` stamps each command's ``issued_at`` (default: the kernel clock)."""
+    ``now`` stamps each command's ``issued_at`` (default: the kernel clock).
+
+    Where one store holds every tenant, compose the tenant into the saga's own
+    :meth:`Saga.instance_id`, with :func:`~edax.tenancy.tenant_key`: two tenants' instances of one saga
+    would otherwise fold into each other. The runner keys by what that returns, so a row's id and the
+    instance key stay one string. Every command a step emits inherits the folded event's ``tenant``,
+    which is what keeps the claim its bus makes inside the same tenant."""
 
     def __init__(
         self,
@@ -199,7 +205,15 @@ class SagaRunner:
         with errors.mapped():
             return [
                 _edax.saga_command(
-                    saga, instance_id, version, index, payload, cause_id, cause_correlation_id, issued_at
+                    saga,
+                    instance_id,
+                    version,
+                    index,
+                    payload,
+                    cause_id,
+                    cause_correlation_id,
+                    issued_at,
+                    cause.tenant,
                 )
                 for index, payload in enumerate(payloads)
             ]

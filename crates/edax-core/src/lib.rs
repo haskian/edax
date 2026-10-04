@@ -28,6 +28,6 @@ pub use clock::current_timestamp;
 pub use error::{verdict, verdict_of_wire, Error, ErrorCode};
 pub use guid::{guid, guid_simple};
 pub use hash::{fnv1a32, fnv1a64};
-pub use key::scoped;
+pub use key::{check_tenancy, check_tenant, scoped, tenant_key, Tenancy, TENANT_MAX};
 pub use sync::lock;
 pub use token::{TokenMint, NO_TOKEN};

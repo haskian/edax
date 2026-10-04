@@ -138,7 +138,7 @@ def test_the_repr_names_every_field_and_the_public_module() -> None:
     for model in (MESSAGE, DRAFT, COMMAND, EVENT, edax.Lineage("a", "b")):
         assert type(model).__module__ == "edax", type(model)
     assert repr(MESSAGE) == (
-        "EventMessage(id='e1', aggregate_id='acct-1', sequence=3, name='Deposited', version=1, "
+        "EventMessage(id='e1', aggregate_id='acct-1', tenant=None, sequence=3, name='Deposited', version=1, "
         "data=b'\\x00\\x01', correlation_id='flow-1', causation_id='cmd-1', occurred_at=41, recorded_at=42, "
         "extensions={'traceparent': '00-a-b-01'}, metadata={'trace': 'x'})"
     )

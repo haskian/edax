@@ -109,7 +109,9 @@ Five promises, and each has a failure mode behind it.
 
 The key is what preserves order. Kafka orders within a partition, and the key chooses the
 partition, so one aggregate's messages stay in one partition and arrive in the order they were
-published. A command that targets an aggregate shares its partition with that aggregate's events. Override it with `key=` if your partitioning differs, a tenant id for instance.
+published. A command that targets an aggregate shares its partition with that aggregate's events. Pass `tenancy=Tenancy.POOL` where one topic serves every tenant, and the key is that ordering key
+composed with the message's `tenant`. Override the rule outright with `key=` if your partitioning
+differs, and then composing it is yours to do.
 Per-aggregate order then holds only if that key is still a function of the aggregate id. With no
 `key=` the adapter passes no override at all, so the default is the kernel's own rule and
 `testdata/golden/kafka_record.json` is what pins it.

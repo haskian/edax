@@ -29,6 +29,7 @@
 //! messages with a format the lib doesn't know still routes and orders correctly.
 
 use crate::domain::{check_extensions, Kind, Message};
+use edax_core::check_tenant;
 use edax_core::Error;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -47,6 +48,15 @@ pub enum Format {
     Json,
     /// Compact MessagePack; `data` is native bytes.
     Msgpack,
+}
+
+/// The field rules the codec holds every message to, in both directions: the extension key rule, and
+/// the tenant rule when the message names a tenant. Checking on decode as well as on encode makes the
+/// wire a trust boundary, so a tenant minted by another service is checked before a key is composed
+/// from it.
+fn check_message<M: Message>(msg: &M) -> Result<(), Error> {
+    check_extensions(msg.extensions())?;
+    msg.tenant().map_or(Ok(()), check_tenant)
 }
 
 impl Format {
@@ -121,9 +131,9 @@ impl Format {
 
     /// Encode a message of either kind to this format's canonical wire bytes: a map keyed by field
     /// name in both formats (MessagePack through `to_vec_named`, never the positional array). A bad
-    /// extension key is a `codec` error; nothing else can fail.
+    /// extension key or tenant id is a `codec` error; nothing else can fail.
     pub fn encode<M: Message + Serialize>(self, msg: &M) -> Result<Vec<u8>, Error> {
-        check_extensions(msg.extensions())?;
+        check_message(msg)?;
         Ok(self.encode_value(msg))
     }
 
@@ -132,7 +142,7 @@ impl Format {
     /// same way every time.
     pub fn decode<M: Message + DeserializeOwned>(self, bytes: &[u8]) -> Result<M, Error> {
         let msg: M = self.decode_value(bytes)?;
-        check_extensions(msg.extensions())?;
+        check_message(&msg)?;
         Ok(msg)
     }
 

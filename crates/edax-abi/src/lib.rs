@@ -239,6 +239,37 @@ pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), Strin
     edax_event::check_extensions(&ordered(extensions)).map_err(wire)
 }
 
+/// Refuse a tenant id that breaks the rule, as a `codec:` error. A tenant id is 1 to 64 bytes; the
+/// charset is open, because `tenant_key` is injective over any bytes. See [`edax_core::check_tenant`].
+pub fn check_tenant(tenant: &str) -> Result<(), String> {
+    edax_core::check_tenant(tenant).map_err(wire)
+}
+
+/// The key a seam is called with under the tenancy `mode` (`"silo"`, `"pool"` or `"bridge"`): the
+/// `key` itself, or `key` composed with its tenant. A mode that requires a tenant and a call that
+/// names none is a `codec:` error, so a pool can never read an uncomposed key. Pinned by
+/// `testdata/golden/tenancy.json`. See [`edax_core::tenant_key`].
+pub fn tenant_key(mode: &str, key: &str, tenant: Option<String>) -> Result<String, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    edax_core::tenant_key(mode, tenant.as_deref(), key).map_err(wire)
+}
+
+/// Whether the tenancy `mode` requires every message and keyed call to name a tenant, and whether it
+/// composes that tenant into the key. One call, so a binding reads both rules from the kernel rather
+/// than restating them. See [`edax_core::Tenancy`].
+pub fn tenancy_rules(mode: &str) -> Result<TenancyRules, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    Ok(TenancyRules { requires_tenant: mode.requires_tenant(), composes_keys: mode.composes_keys() })
+}
+
+/// What a tenancy mode demands, as [`tenancy_rules`] reports it.
+pub struct TenancyRules {
+    /// Every message and keyed call must name a tenant.
+    pub requires_tenant: bool,
+    /// The tenant is composed into every key a seam is called with.
+    pub composes_keys: bool,
+}
+
 // ---- idempotency ---------------------------------------------------------
 
 /// Stable 64-bit hash of arbitrary bytes (FNV-1a). A command's guard hashes with
@@ -410,6 +441,9 @@ pub struct EventDraft {
     pub id: String,
     /// The aggregate this event belongs to.
     pub aggregate_id: String,
+    /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
+    /// derives from this message is composed from it; see `tenant_key`.
+    pub tenant: Option<String>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name.
@@ -438,6 +472,9 @@ pub struct EventMessage {
     pub id: String,
     /// The aggregate this event belongs to: its ordering key.
     pub aggregate_id: String,
+    /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
+    /// derives from this message is composed from it; see `tenant_key`.
+    pub tenant: Option<String>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name a consumer routes and unmarshals by.
@@ -468,6 +505,9 @@ pub struct CommandMessage {
     pub idempotency_key: Option<String>,
     /// The aggregate the command targets, if any: its ordering key.
     pub aggregate_id: Option<String>,
+    /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
+    /// derives from this message is composed from it; see `tenant_key`.
+    pub tenant: Option<String>,
     /// The command type name a handler is registered under.
     pub name: String,
     /// The payload schema version.
@@ -504,6 +544,7 @@ fn kernel_event_draft(d: EventDraft) -> edax_event::EventDraft {
     edax_event::EventDraft {
         id: d.id,
         aggregate_id: d.aggregate_id,
+        tenant: d.tenant,
         sequence: d.sequence,
         name: d.name,
         version: d.version,
@@ -520,6 +561,7 @@ fn kernel_event_message(m: EventMessage) -> edax_event::EventMessage {
     edax_event::EventMessage {
         id: m.id,
         aggregate_id: m.aggregate_id,
+        tenant: m.tenant,
         sequence: m.sequence,
         name: m.name,
         version: m.version,
@@ -537,6 +579,7 @@ fn record_event_message(m: edax_event::EventMessage) -> EventMessage {
     EventMessage {
         id: m.id,
         aggregate_id: m.aggregate_id,
+        tenant: m.tenant,
         sequence: m.sequence,
         name: m.name,
         version: m.version,
@@ -555,6 +598,7 @@ fn kernel_command_message(m: CommandMessage) -> edax_event::CommandMessage {
         id: m.id,
         idempotency_key: m.idempotency_key,
         aggregate_id: m.aggregate_id,
+        tenant: m.tenant,
         name: m.name,
         version: m.version,
         data: m.data,
@@ -571,6 +615,7 @@ fn record_command_message(m: edax_event::CommandMessage) -> CommandMessage {
         id: m.id,
         idempotency_key: m.idempotency_key,
         aggregate_id: m.aggregate_id,
+        tenant: m.tenant,
         name: m.name,
         version: m.version,
         data: m.data,
@@ -749,7 +794,9 @@ pub fn saga_command_id(instance_id: &str, version: u64, index: u64) -> String {
 /// committed `version`, folding the event `cause_id` of the flow `cause_correlation_id`: the row its
 /// outbox holds and the message its relay sends. `command` is the host codec's output. Its `id` is
 /// [`saga_command_id`], its `idempotency_key` that id under the saga's name, its aggregate the
-/// instance, and its lineage the folded event's child. Pinned by `testdata/golden/saga.json`. See
+/// instance, its tenant the folded event's, and its lineage the folded event's child. Where one store
+/// holds every tenant, the instance id is the host's own composition, so nothing here composes again.
+/// Pinned by `testdata/golden/saga.json`. See
 /// [`edax_event::saga_command`].
 #[allow(clippy::too_many_arguments)] // the kernel's own parameter list, one for one
 pub fn saga_command(
@@ -761,12 +808,14 @@ pub fn saga_command(
     cause_id: &str,
     cause_correlation_id: &str,
     issued_at: i64,
+    tenant: Option<String>,
 ) -> CommandMessage {
     record_command_message(edax_event::saga_command(
         saga,
         instance_id,
         version,
         index,
+        tenant.as_deref(),
         kernel_event(command),
         cause_id,
         cause_correlation_id,
@@ -1545,6 +1594,7 @@ mod tests {
     /// One realistic event draft; every case overrides only the field under test.
     fn draft(id: &str, sequence: Option<u64>) -> EventDraft {
         EventDraft {
+            tenant: None,
             id: id.to_owned(),
             aggregate_id: "invoice-7".to_owned(),
             sequence,
@@ -1567,6 +1617,7 @@ mod tests {
     /// One realistic command message; every case overrides only the field under test.
     fn command_message(aggregate_id: Option<&str>) -> CommandMessage {
         CommandMessage {
+            tenant: None,
             id: "cmd-1".to_owned(),
             idempotency_key: Some("req-42".to_owned()),
             aggregate_id: aggregate_id.map(str::to_owned),
@@ -1805,8 +1856,9 @@ mod tests {
     fn saga_command_crosses_the_outbox_row() {
         let command = Event { name: "Fulfill".to_owned(), version: 3, data: br#"{"order_id":"order-7"}"#.to_vec() };
         let cause = event_message("evt-1", Some(1));
-        let row = saga_command("shipping", "order-7", 2, 1, command, &cause.id, &cause.correlation_id, 7);
+        let row = saga_command("shipping", "order-7", 2, 1, command, &cause.id, &cause.correlation_id, 7, None);
         let want = CommandMessage {
+            tenant: None,
             id: "order-7:2:1".to_owned(),
             idempotency_key: Some("8:shipping:order-7:2:1".to_owned()),
             aggregate_id: Some("order-7".to_owned()),
@@ -2281,7 +2333,7 @@ mod tests {
         let fulfill = || {
             let command = Event { name: "Fulfill".to_owned(), version: 1, data: br#"{"order_id":"order-1"}"#.to_vec() };
             let cause = event_message("evt-1", Some(1));
-            saga_command("shipping", "order-1", 2, 0, command, &cause.id, &cause.correlation_id, 7)
+            saga_command("shipping", "order-1", 2, 0, command, &cause.id, &cause.correlation_id, 7, None)
         };
         assert_eq!(store.complete_saga(NO_TX, "order-1", 1, vec![fulfill()]).unwrap(), 2);
         let done = store.load_saga(NO_TX, "order-1").unwrap().expect("a tombstone");

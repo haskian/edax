@@ -7,7 +7,8 @@
 //!
 //! Three tiers of fields, so every key has one owner:
 //!
-//! - a **typed field** is one an edax kernel or SDK decision reads;
+//! - a **typed field** is one an edax kernel or SDK decision reads, `tenant` among them: it is what
+//!   [`edax_core::tenant_key`] composes a seam's key from, under a mode the host fixes once;
 //! - [`Extensions`] belong to edax extensions (trace context, request origin), under the key rule in
 //!   [`check_extensions`];
 //! - [`Metadata`] belongs to the application and is opaque to edax.
@@ -78,6 +79,8 @@ pub struct EventDraft {
     pub id: String,
     /// The aggregate this event belongs to.
     pub aggregate_id: String,
+    /// The tenant this event belongs to, `None` in a single-tenant deployment.
+    pub tenant: Option<String>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name.
@@ -104,6 +107,7 @@ impl EventDraft {
         EventMessage {
             id: self.id,
             aggregate_id: self.aggregate_id,
+            tenant: self.tenant,
             sequence: self.sequence,
             name: self.name,
             version: self.version,
@@ -125,6 +129,11 @@ pub struct EventMessage {
     pub id: String,
     /// The aggregate this event belongs to: its ordering key.
     pub aggregate_id: String,
+    /// The tenant this event belongs to, `None` in a single-tenant deployment. A missing field reads as
+    /// `None`. Every key a seam derives from this message is composed from it; see
+    /// [`edax_core::tenant_key`].
+    #[serde(default)]
+    pub tenant: Option<String>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream. A missing field
     /// reads as `None`.
     #[serde(default)]
@@ -172,6 +181,11 @@ pub struct CommandMessage {
     /// The aggregate the command targets, if any: its ordering key. A missing field reads as `None`.
     #[serde(default)]
     pub aggregate_id: Option<String>,
+    /// The tenant this command belongs to, `None` in a single-tenant deployment. A missing field reads
+    /// as `None`. The idempotency claim and the aggregate's stream are both keyed from it; see
+    /// [`edax_core::tenant_key`].
+    #[serde(default)]
+    pub tenant: Option<String>,
     /// The command type name a handler is registered under.
     pub name: String,
     /// The payload schema version.
@@ -223,6 +237,9 @@ pub trait Message: sealed::Sealed {
 
     /// The key that orders this message against others. See [`ordering_key`].
     fn ordering_key(&self) -> &str;
+
+    /// The tenant this message belongs to, which the codec holds to [`edax_core::check_tenant`].
+    fn tenant(&self) -> Option<&str>;
 }
 
 impl Message for EventMessage {
@@ -240,6 +257,10 @@ impl Message for EventMessage {
     fn ordering_key(&self) -> &str {
         &self.aggregate_id
     }
+
+    fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
+    }
 }
 
 impl Message for CommandMessage {
@@ -251,6 +272,10 @@ impl Message for CommandMessage {
 
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+
+    fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
     }
 
     fn ordering_key(&self) -> &str {

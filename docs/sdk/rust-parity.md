@@ -13,7 +13,8 @@ only when a shared decision needs a second implementation to pin it, never to ma
 |---|---|---|
 | aggregate | `Aggregate`, `Root` | `Aggregate`, `Version` |
 | event codec | `RegistryCodec<T, PayloadFormat>`, `SerdeCodec<T, PayloadFormat>`, `Upcaster` | `json_codec()`, `msgpack_codec()`, `Upcaster` |
-| repository | `Repository` (`load` / `save`, `load_in` / `save_in`, `save_with` for a lineage) | `Repository` (`tx=None` joins the ambient unit of work; `save(commands=...)` stages a command outbox) |
+| repository | `Repository` (`load` / `save`, `load_in` / `save_in`, `save_with` for a lineage, `load_for` / `load_for_in` for a tenant) | `Repository` (`tx=None` joins the ambient unit of work; `save(commands=...)` stages a command outbox; `load(tenant=...)` for a tenant) |
+| tenancy | `Repository::tenancy(Tenancy)`, and `edax_core::tenant_key` where a host keys | `tenancy=` on `Repository`, `idempotent` and `KafkaProducer`; `edax.tenant_key` where a host keys |
 | outbox drain | `Relay::drain` over any `Outbox<R>` | `Relay.drain` and `Relay.run`, plus `pump` |
 | command bus | `CommandBus` (`register::<C, O>`, `wrap`), `retry`, `idempotent`, `idempotent_in`, `Terminal` | `CommandBus` (`dispatch`, `dispatch_message`), `command_message`, `current_command`, `retry`, `idempotent`, `forget`, `Rejected` |
 | consume path | `KeyOrderedDispatcher`, `Delivery::with_live`, `EventRouter`, `idempotent_by_id` | `KeyOrderedDispatcher`, `Delivery.live`, `EventRouter`, `idempotent_by_id` |

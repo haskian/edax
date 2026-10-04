@@ -35,6 +35,7 @@ so a new kind is a compile error in every SDK rather than a silent default.
 | `id` | `String`, the event's unique id | `String`, this message instance | the event guard; the causation of a child; the retry policy's attempt count |
 | `idempotency_key` | — | `Option<String>`, the client's intent; `None` makes no claim | the command guard, through `claim_key` |
 | `aggregate_id` | `String` | `Option<String>`, the target, if any | the ordering key |
+| `tenant` | `Option<String>` | `Option<String>` | `tenant_key`: every key a seam is called with |
 | `sequence` | `Option<u64>`, the per-aggregate ordinal | — | `is_stale`, `advance`, `check_batch` |
 | `name` | `String` | `String` | routing, `upcast_plan`, the command hash |
 | `version` | `u32`, the payload schema version | `u32` | `upcast_plan` |

@@ -32,6 +32,7 @@ from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
 from ..errors import CodecError, mapped
 from ..observe import error_type
+from ..tenancy import Tenancy, tenant_key
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
     from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
@@ -246,6 +247,12 @@ class KafkaProducer:
     client's own partitioner never runs, so this producer places a key exactly where a Java producer,
     Kafka Connect or a Rust edax shell does, whatever partitioner the client library defaults to.
 
+    ``tenancy`` is how the deployment separates tenants, fixed here as it is on a
+    :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the record key is the
+    kernel's ordering key composed with the message's ``tenant``, so two tenants' same-named aggregates
+    take different partitions and a consumer of a shared topic reads the tenant off the key. An explicit
+    ``key`` replaces that rule outright, and then composing it is the caller's own job.
+
     The relay marks an outbox row published once :meth:`publish` returns, so the client must ack on every
     in-sync replica: build it with ``enable_idempotence=True``, which implies ``acks="all"`` and keeps a
     retried send from writing a duplicate. A client that acks on the leader alone gets a warning here."""
@@ -259,6 +266,7 @@ class KafkaProducer:
         command_serializer: Serializer | None = None,
         key: KeyFn | None = None,
         middleware: Sequence[RecordMiddleware] = (),
+        tenancy: Tenancy = Tenancy.SILO,
     ) -> None:
         _check_producer(client)
         self._client = client
@@ -268,13 +276,16 @@ class KafkaProducer:
             command_serializer or KernelSerializer("json", "command"), "command", "command_serializer"
         )
         self._key = key
+        self._tenancy = tenancy
         self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
 
     async def publish(self, msg: EventMessage | CommandMessage) -> None:
         serializer = self._serializer if message_kind(msg) == "event" else self._commands
         value = serializer.encode(msg)
-        # The key function's override, else the kernel's ordering key: the one the golden vector pins.
-        key = self._key(msg) if self._key else ordering_key(msg)
+        # The key function's override, else the kernel's ordering key under this producer's tenancy:
+        # the aggregate (or a command's own id), composed with the tenant where the mode composes.
+        with mapped():
+            key = self._key(msg) if self._key else tenant_key(self._tenancy, ordering_key(msg), msg.tenant)
         with mapped():
             record = _edax.kafka_record(key, value, serializer.media_type)
         for m in self._middleware:

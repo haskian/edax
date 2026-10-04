@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
-use edax_core::lock;
+use edax_core::{lock, tenant_key, Tenancy};
 use edax_event::{
     check_extensions, originate, EventDraft, EventMessage, Extensions, Failure, Lineage, Message, Metadata, Retries,
     Verdict,
@@ -249,6 +249,7 @@ pub struct Repository<S, EC, AC> {
     aggregates: AC,
     new_id: Box<dyn Fn() -> String + Send + Sync>,
     snapshot_every: u64,
+    tenancy: Tenancy,
 }
 
 impl<S, EC, AC> Repository<S, EC, AC>
@@ -258,7 +259,19 @@ where
     EC: EventCodec<Domain = <AC::Aggregate as Aggregate>::Event>,
 {
     pub fn new(store: S, events: EC, aggregates: AC) -> Self {
-        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), snapshot_every: 1 }
+        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), snapshot_every: 1, tenancy: Tenancy::Silo }
+    }
+
+    /// How this repository separates tenants, fixed here rather than per call, so no two calls of one
+    /// service can key differently. The default is [`Tenancy::Silo`]: no tenant, no composed key.
+    ///
+    /// Under [`Tenancy::Pool`] every stream and snapshot key is the aggregate id composed with its
+    /// tenant ([`edax_core::tenant_key`]), and a load or save that names no tenant is a terminal
+    /// `codec` error rather than a read of the whole pool. Under [`Tenancy::Bridge`] a tenant is
+    /// required and keys stay bare, because this repository's store already holds one tenant.
+    pub fn tenancy(mut self, mode: Tenancy) -> Self {
+        self.tenancy = mode;
+        self
     }
 
     /// How often a save writes a snapshot: each time the aggregate's version crosses a multiple of
@@ -282,13 +295,27 @@ where
     /// Rehydrate the aggregate (snapshot, then replay the events after it) in a unit of work of its
     /// own. Inside a transaction the caller already opened, use [`Repository::load_in`].
     pub fn load(&self, aggregate_id: &str) -> Result<AC::Aggregate, Error> {
-        self.store.transaction(|tx| self.load_in(tx, aggregate_id))
+        self.load_for(None, aggregate_id)
+    }
+
+    /// [`Repository::load`] for one tenant, in a unit of work of its own. The loaded aggregate carries
+    /// the tenant ([`Root::tenant`]), so the save that follows stamps and keys the same one.
+    pub fn load_for(&self, tenant: Option<&str>, aggregate_id: &str) -> Result<AC::Aggregate, Error> {
+        self.store.transaction(|tx| self.load_for_in(tx, tenant, aggregate_id))
     }
 
     /// [`Repository::load`] inside the caller's transaction: the read sees that transaction's own
     /// appends, so a save then a load in one unit of work agree (read-your-writes).
     pub fn load_in(&self, tx: &mut S::Tx, aggregate_id: &str) -> Result<AC::Aggregate, Error> {
-        self.replay(tx, aggregate_id)
+        self.load_for_in(tx, None, aggregate_id)
+    }
+
+    /// [`Repository::load_for`] inside the caller's transaction.
+    pub fn load_for_in(&self, tx: &mut S::Tx, tenant: Option<&str>, aggregate_id: &str) -> Result<AC::Aggregate, Error> {
+        let key = tenant_key(self.tenancy, tenant, aggregate_id)?;
+        let mut agg = self.replay(tx, &key, aggregate_id)?;
+        agg.root_mut().tenant = tenant.map(ToOwned::to_owned);
+        Ok(agg)
     }
 
     /// Persist the aggregate's pending events in a unit of work of its own; return the committed
@@ -378,6 +405,10 @@ where
         let initial = root.version;
         let current = root.current();
         let aggregate_id = root.id.clone();
+        // The tenant comes from the aggregate the caller loaded, never from this call, so a save cannot
+        // name a tenant the load did not.
+        let tenant = root.tenant.clone();
+        let key = tenant_key(self.tenancy, tenant.as_deref(), &aggregate_id)?;
 
         // Marshal the whole batch before the first write: a payload that cannot be written fails the
         // save outright, so a half-marshaled batch can never reach the store.
@@ -390,6 +421,7 @@ where
                 Ok(EventDraft {
                     id: (self.new_id)(),
                     aggregate_id: aggregate_id.clone(),
+                    tenant: tenant.clone(),
                     sequence: Some(initial.saturating_add(1).saturating_add(u64::try_from(i).unwrap_or(u64::MAX))),
                     name: payload.name,
                     version: payload.version,
@@ -407,12 +439,12 @@ where
         // save outright.
         let snapshot = if edax_event::snapshot_due(self.snapshot_every, initial, current) {
             let data = self.aggregates.dump(agg)?;
-            Some(Snapshot { aggregate_id: aggregate_id.clone(), type_name: self.aggregates.type_name().to_string(), version: current, data })
+            Some(Snapshot { aggregate_id: key.clone(), type_name: self.aggregates.type_name().to_string(), version: current, data })
         } else {
             None
         };
 
-        let events = self.store.append(tx, &aggregate_id, initial, drafts)?;
+        let events = self.store.append(tx, &key, initial, drafts)?;
         if let Some(snapshot) = snapshot {
             self.store.save_snapshot(tx, &snapshot)?;
         }
@@ -424,17 +456,17 @@ where
     /// format no longer loads — is ignored and the stream replays from version 0. The loaded tail is
     /// held to the kernel's dense-run rule, so a store that returns a gap or a repeat fails the load
     /// instead of folding the wrong state.
-    fn replay(&self, tx: &mut S::Tx, id: &str) -> Result<AC::Aggregate, Error> {
+    fn replay(&self, tx: &mut S::Tx, key: &str, id: &str) -> Result<AC::Aggregate, Error> {
         let cached = self
             .store
-            .load_snapshot(tx, id)?
+            .load_snapshot(tx, key)?
             .filter(|s| s.type_name == self.aggregates.type_name())
             .and_then(|s| self.aggregates.load(id, s.version, Some(&s.data)).ok().map(|agg| (s.version, agg)));
         let (base, mut agg) = match cached {
             Some(found) => found,
             None => (0, self.aggregates.load(id, 0, None)?),
         };
-        let events = self.store.load(tx, id, base)?;
+        let events = self.store.load(tx, key, base)?;
         let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
         edax_event::check_batch(base, &sequences)?;
         // Dense from `base`, so the last sequence is the count past it.

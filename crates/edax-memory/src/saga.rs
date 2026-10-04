@@ -170,7 +170,7 @@ mod tests {
     fn command(id: &str, version: u64, index: u64) -> CommandMessage {
         let payload = Event { name: "Fulfill".to_owned(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() };
         let cause = event("evt-1", Some(1));
-        saga_command("shipping", id, version, index, payload, &cause.id, &cause.correlation_id, 1_714_564_800_000_000_000)
+        saga_command("shipping", id, version, index, cause.tenant.as_deref(), payload, &cause.id, &cause.correlation_id, 1_714_564_800_000_000_000)
     }
 
     /// A saga store holding one open instance at version 1.

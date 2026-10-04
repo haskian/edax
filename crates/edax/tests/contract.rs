@@ -26,7 +26,7 @@ use edax_event::{saga_command, Event};
 /// event: the kernel's row.
 fn command(id: &str, version: u64, index: u64) -> CommandMessage {
     let payload = Event { name: "Fulfill".into(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() };
-    saga_command("order", id, version, index, payload, &format!("{id}-paid"), "corr-1", 1_714_564_800_000_000_000)
+    saga_command("order", id, version, index, None, payload, &format!("{id}-paid"), "corr-1", 1_714_564_800_000_000_000)
 }
 
 fn is_conflict<T: std::fmt::Debug>(got: Result<T, Error>) -> bool {

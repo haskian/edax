@@ -86,13 +86,16 @@ def _body(aggregate_id: str) -> bytes:
     return f'{{"account_id":"{aggregate_id}","amount":100,"currency":"EUR"}}'.encode()
 
 
-def draft(aggregate_id: str, sequence: int | None, *, name: str = "Deposited") -> EventDraft:
+def draft(
+    aggregate_id: str, sequence: int | None, *, name: str = "Deposited", tenant: str | None = None
+) -> EventDraft:
     """One event draft as a repository writes it: a fresh time-ordered id, a real JSON body, the lineage of
     a new flow, and the application's metadata."""
     flow = _edax.guid()
     return EventDraft(
         id=_edax.guid(),
         aggregate_id=aggregate_id,
+        tenant=tenant,
         sequence=sequence,
         name=name,
         version=1,
@@ -118,6 +121,7 @@ def event(
     extensions: dict[str, str] | None = None,
     metadata: dict[str, str] | None = None,
     recorded_at: int = 0,
+    tenant: str | None = None,
 ) -> EventMessage:
     """A stored event built by hand, for a test or an example that publishes one with no store behind it.
 
@@ -129,6 +133,7 @@ def event(
     return EventMessage(
         id=message_id,
         aggregate_id=aggregate_id,
+        tenant=tenant,
         sequence=sequence,
         name=name,
         version=version,
@@ -398,7 +403,8 @@ class EventStoreContract:
                 causation_id=_edax.guid(),
                 occurred_at=occurred_at,
                 extensions={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
-                metadata={"tenant": "acme", "note": "déjà-vu"},
+                tenant="acme",
+                metadata={"note": "déjà-vu"},
             )
             for n, occurred_at in ((1, 1_700_000_000_000_000_000), (2, None))
         ]
@@ -756,6 +762,25 @@ class ProjectionStoreContract:
         for doc_id, rank in zip(ids, ranks, strict=True):
             await projection_store.save(Entity(doc_id, 0, {"id": doc_id, "run": run, "rank": rank}))
         return [doc_id for _, doc_id in sorted(zip(ranks, ids, strict=True))]
+
+    async def test_get_many_returns_the_row_key_as_the_id(self, projection_store: Any) -> None:
+        """ "Documents need a unique ``id`` field", and the row key is what fills it: the kernel sorts
+        its keyset tiebreak on ``id`` and mints every cursor from it.
+
+        The key is authoritative, so it overwrites an ``id`` the saved document carries. A store that
+        returns the stored document alone pages correctly only while every writer remembers to copy the
+        key into the document, and a filter on ``id`` — how one shared store serves several tenants —
+        reads another tenant's rows the moment one writer forgets.
+        """
+        if not self.supports_kernel_queries:
+            raise pytest.skip.Exception("backend pages in its own dialect")
+        run = _id("run")
+        await projection_store.save(Entity(f"{run}-a", 0, {"run": run}))
+        await projection_store.save(Entity(f"{run}-b", 0, {"run": run, "id": "stale"}))
+
+        page = await projection_store.get_many(filter=eq("run", run), sort=[sort_key("run")])
+        keys = sorted(row.get("id", "") for row in page.rows)  # absent reads as "", so this asserts
+        assert keys == [f"{run}-a", f"{run}-b"], "the id is the row key, not the document's own"
 
     async def test_get_many_pages_every_row_once_by_its_next_cursor(self, projection_store: Any) -> None:
         """ "Keyset resume strictly after the cursor tuple", and a ``next`` minted only while rows
