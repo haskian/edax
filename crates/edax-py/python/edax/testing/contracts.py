@@ -460,7 +460,7 @@ class EventStoreContract:
         agg = _id("acct")
         for tenant in ("acme", "globex"):
             key = tenant_key(Tenancy.POOL, agg, tenant)
-            async with event_store.transaction() as tx:
+            async with event_store.begin() as tx:
                 await event_store.append(tx, key, 0, [draft(agg, 1, tenant=tenant)])
                 loaded = await event_store.load(tx, key)
                 assert [(e.aggregate_id, e.tenant) for e in loaded] == [(agg, tenant)], (
@@ -471,7 +471,7 @@ class EventStoreContract:
                     await event_store.save_snapshot(tx, Snapshot(key, "Account", 1, tenant.encode()))
                     snap = await event_store.load_snapshot(tx, key)
                     assert snap is not None and snap.data == tenant.encode(), f"{tenant}'s snapshot"
-        async with event_store.transaction() as tx:
+        async with event_store.begin() as tx:
             assert await event_store.load(tx, agg) == [], "nothing under the draft's bare aggregate id"
 
     async def test_a_rollback_removes_the_appended_events(self, event_store: Any) -> None:
@@ -1092,14 +1092,14 @@ class CommandOutboxContract:
         event_store = request.getfixturevalue("event_store")
         agg = _id("order")
         with pytest.raises(_RolledBack):
-            async with event_store.transaction() as tx:
+            async with event_store.begin() as tx:
                 await event_store.append(tx, agg, 0, [draft(agg, 1)])
                 await command_outbox.enqueue(tx, [_command(agg)])
                 assert await self._waiting(command_outbox, agg) == [], "a staged command is not one to send"
                 raise _RolledBack
         assert await self._waiting(command_outbox, agg) == [], "the rollback took the command with the events"
         sent = [_command(agg), _command(agg)]
-        async with event_store.transaction() as tx:
+        async with event_store.begin() as tx:
             await event_store.append(tx, agg, 0, [draft(agg, 1)])
             await command_outbox.enqueue(tx, sent)
         assert await self._waiting(command_outbox, agg) == sent, "every field as sent, the tenant included"
@@ -1111,7 +1111,7 @@ class CommandOutboxContract:
         from ..backend.memory import MemoryTransactor  # another database than any adopter's outbox
 
         agg = _id("order")
-        async with MemoryTransactor().transaction() as foreign:
+        async with MemoryTransactor().begin() as foreign:
             with pytest.raises(BadHandle):
                 await command_outbox.enqueue(foreign, [_command(agg)])
         assert await self._waiting(command_outbox, agg) == [], "the refused enqueue wrote nothing"
@@ -1123,10 +1123,10 @@ class CommandOutboxContract:
         event_store = request.getfixturevalue("event_store")
         agg = _id("order")
         first = _command(agg)
-        async with event_store.transaction() as tx:
+        async with event_store.begin() as tx:
             await command_outbox.enqueue(tx, [first])
         with pytest.raises(CodecError):
-            async with event_store.transaction() as tx:
+            async with event_store.begin() as tx:
                 await command_outbox.enqueue(tx, [_command(agg), _replace(first, data=b'{"order_id":"x"}')])
         assert await self._waiting(command_outbox, agg) == [first], "the refused batch wrote nothing"
 
@@ -1138,7 +1138,7 @@ class CommandOutboxContract:
         agg = _id("order")
         batches = [[_command(agg), _command(agg)], [_command(agg)]]
         for batch in batches:
-            async with event_store.transaction() as tx:
+            async with event_store.begin() as tx:
                 await command_outbox.enqueue(tx, batch)
         assert await self._waiting(command_outbox, agg) == [c for batch in batches for c in batch]
         assert len(await command_outbox.unpublished(limit=2)) == 2, "three rows wait, so the limit decides"
@@ -1151,7 +1151,7 @@ class CommandOutboxContract:
         event_store = request.getfixturevalue("event_store")
         agg = _id("order")
         first, second = _command(agg), _command(agg)
-        async with event_store.transaction() as tx:
+        async with event_store.begin() as tx:
             await command_outbox.enqueue(tx, [first, second])
         await command_outbox.mark_published([first.id])
         await command_outbox.mark_published([first.id, _edax.guid()])
