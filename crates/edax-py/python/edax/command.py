@@ -721,6 +721,10 @@ async def _guarded_around_the_work(
         try:
             async with _unit(unit_of_work, guard.observe):
                 result = await run()
+                done = Record(payload_hash, result=result)
+                # Encoded before the commit: refused after it, the release would let a retry run work
+                # that already landed. Refused here, the work rolls back and the codec failure is cached.
+                encode_record(done)
         except BaseException as e:
             # The kernel's settle table: a terminal failure is cached with its code; a transient one, or a
             # cancel, releases the claim so a retry or a redelivery can re-run. Shielded in every case: a
@@ -730,7 +734,7 @@ async def _guarded_around_the_work(
             record = None if code is None else Record(payload_hash, error=str(e), error_code=code)
             how = await asyncio.shield(_settle_failure(store, key, handle, record))
             raise
-        refusal = await _complete_or_release(store, key, handle, Record(payload_hash, result=result))
+        refusal = await _complete_or_release(store, key, handle, done)
         if refusal is not None:
             how = "released"
             raise refusal

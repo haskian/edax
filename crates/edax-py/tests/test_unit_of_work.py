@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar
 
 import edax
@@ -48,15 +49,18 @@ class Rig:
     ``runs`` counts handler invocations; ``landed()`` reports whether the handler's write survived.
     Between them the two say what actually happened, which no single assertion does."""
 
-    def __init__(self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None) -> None:
+    def __init__(
+        self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None, result: Any = None
+    ) -> None:
         self.db = MemoryTransactor()
         self.projections = MemoryProjectionStore(self.db)
         self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.unit: Any = BrokenCommit(self.db, commit) if commit else self.db
         self.runs = 0
         self._raises = raises
+        self._result = result
 
-        async def handler(cmd: Deposit) -> int:
+        async def handler(cmd: Deposit) -> Any:
             self.runs += 1
             entity = await self.projections.get(DOC)
             if entity is None:
@@ -65,7 +69,7 @@ class Rig:
             await self.projections.save(entity)
             if self._raises is not None:
                 raise self._raises
-            return int(entity.document["balance"])
+            return int(entity.document["balance"]) if self._result is None else self._result
 
         self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
         self.bus.register("Deposit", handler)
@@ -84,8 +88,10 @@ class Case:
     shared: bool
     commit: CommitFault = None
     raises: Exception | None = None
+    result: Any = None  # what the handler returns instead of the balance
     first: type[BaseException] | None = None  # what the first dispatch raises, if anything
     second: type[BaseException] | None = None  # what the redelivery raises, if anything
+    cached_code: str | None = None  # the code a cached failure replays with
     runs: int = 1  # handler invocations across both dispatches
     balance: int = 100  # what the projection holds at the end
 
@@ -140,6 +146,19 @@ CASES = [
         raises=edax.CodecError("malformed payload"),
         first=edax.CodecError,
         second=edax.CachedFailure,
+        cached_code="codec",
+        runs=1,
+        balance=0,
+    ),
+    Case(
+        # Encoded before the commit: refused after it, the claim would be released over work that landed,
+        # and the redelivery would run it again.
+        "split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure",
+        shared=False,
+        result={"at": datetime(2024, 1, 1)},  # naive: no offset to compare by
+        first=edax.CodecError,
+        second=edax.CachedFailure,
+        cached_code="codec",
         runs=1,
         balance=0,
     ),
@@ -170,14 +189,16 @@ CASES = [
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 async def test_unit_of_work_windows(case: Case) -> None:
-    rig = Rig(shared=case.shared, commit=case.commit, raises=case.raises)
+    rig = Rig(shared=case.shared, commit=case.commit, raises=case.raises, result=case.result)
 
     for expected in (case.first, case.second):
         if expected is None:
             await rig.dispatch()
         else:
-            with pytest.raises(expected):
+            with pytest.raises(expected) as raised:
                 await rig.dispatch()
+    if case.second is edax.CachedFailure:
+        assert raised.value.original_code == case.cached_code, case.name
 
     assert rig.runs == case.runs, f"{case.name}: handler ran {rig.runs}x"
     assert await rig.balance() == case.balance, case.name

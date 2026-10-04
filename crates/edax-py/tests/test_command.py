@@ -1145,20 +1145,26 @@ async def test_concurrent_dispatches_of_one_key_run_the_handler_once() -> None:
     assert calls == 1
 
 
-async def test_unserializable_result_is_terminal_and_releases_the_claim() -> None:
-    # A handler result the record encoder rejects fails identically on every re-run. Untyped it would
-    # be transient: the claim released, the message redelivered, the handler re-run — forever.
+async def test_unserializable_result_is_terminal_and_cached() -> None:
+    # A handler result the record encoder rejects fails identically on every re-run. Released, the
+    # claim would let a retry run the side effect again; cached, the retry replays the codec failure.
     store = CountingIdempotencyStore()
     bus = C.CommandBus(C.idempotent(store, scope="test"))
+    runs = 0
 
     async def handler(cmd: CreateUser) -> object:
+        nonlocal runs
+        runs += 1
         return object()
 
     bus.register("user.create", handler)
     with pytest.raises(edax.CodecError, match="not JSON-encodable") as caught:
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
     assert caught.value.terminal is True
-    assert store.releases == 1  # not left pending either
+    with pytest.raises(edax.CachedFailure) as replayed:
+        await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
+    assert replayed.value.original_code == "codec"
+    assert (runs, store.releases) == (1, 0)
 
 
 @pytest.mark.parametrize(
