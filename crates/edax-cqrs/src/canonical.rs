@@ -12,13 +12,15 @@
 //!   the rest as lowercase `\u00xx`), and write everything else as raw UTF-8. An input escape is
 //!   decoded first, so `"\u00e9"` and `"é"` are one string. A lone surrogate is a `codec` error.
 //!
-//! One rule is the kernel's own. A double holds every integer up to 2^53 exactly and rounds the
-//! ones past it, so JCS would write `9007199254740993` as `9007199254740992`: two ids one apart
-//! would hash alike. So an integer literal whose magnitude exceeds 2^53 is a `codec` error, never a
-//! silent rounding. The check reads the input text before `serde_json` parses it, so no feature of
-//! any dependency (`arbitrary_precision` keeps number text, `preserve_order` keeps key order) can
-//! hide a literal or move the bytes. A number too large for a double (`1e400`) is a `codec` error
-//! too. `testdata/golden/canonical_json.json` pins the form.
+//! One rule is the kernel's own. A double rounds an integer past 2^53, so JCS would write
+//! `9007199254740993` as `9007199254740992`: two ids one apart would hash alike. And 2^53 itself is
+//! ambiguous, since `2^53 + 1` reads back as it. So an integer literal outside the I-JSON safe range
+//! (RFC 7493), `-(2^53 - 1)..=2^53 - 1`, is a `codec` error, never a silent rounding. That is
+//! JavaScript's `Number.MAX_SAFE_INTEGER` and the bound off-the-shelf JCS libraries enforce, so
+//! every number the kernel accepts, they accept too. The check reads the input text before
+//! `serde_json` parses it, so no feature of any dependency (`arbitrary_precision` keeps number text,
+//! `preserve_order` keeps key order) can hide a literal or move the bytes. A number too large for a
+//! double (`1e400`) is a `codec` error too. `testdata/golden/canonical_json.json` pins the form.
 
 use edax_core::Error;
 use serde_json::Value;
@@ -33,16 +35,21 @@ pub fn canonical_json(json: &[u8]) -> Result<Vec<u8>, Error> {
 /// Refuse an integer literal outside the 64-bit range anywhere in `json`.
 ///
 /// A query spec states a comparand exactly, and `serde_json` reads `2^70` as the nearest float, so
-/// `eq(x, 2**70)` would also match `2**70 + 1`. The input text is the one place the width is still
-/// known. A wider number written as a float (`1e21`) is a float and passes.
+/// `eq(x, 2**70)` would also match `2**70 + 1`; a document holding `2^70` would be read as that
+/// float. The input text is the one place the width is still known. A wider number written as a
+/// float (`1e21`) is a float and passes.
 pub(crate) fn reject_wide_integers(json: &[u8]) -> Result<(), Error> {
     check_numbers(json, Width::Bits64)
 }
 
+/// The largest integer magnitude the canonical form keeps exact: `2^53 - 1`, I-JSON's safe range.
+pub(crate) const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
 /// The integers a reader keeps exactly.
 #[derive(Clone, Copy)]
 enum Width {
-    /// Magnitude at most 2^53: what an IEEE 754 double, and so RFC 8785, holds exactly.
+    /// Magnitude at most [`MAX_SAFE_INTEGER`]: what an IEEE 754 double, and so RFC 8785, holds
+    /// without ambiguity.
     Double,
     /// `i64::MIN ..= u64::MAX`: what the filter and the sort compare exactly.
     Bits64,
@@ -51,14 +58,14 @@ enum Width {
 impl Width {
     fn holds(self, n: i128) -> bool {
         match self {
-            Width::Double => n.unsigned_abs() <= 1 << 53,
+            Width::Double => n.unsigned_abs() <= u128::from(MAX_SAFE_INTEGER),
             Width::Bits64 => (i128::from(i64::MIN)..=i128::from(u64::MAX)).contains(&n),
         }
     }
 
     fn range(self) -> &'static str {
         match self {
-            Width::Double => "-2^53..=2^53, the integers RFC 8785 keeps exact",
+            Width::Double => "-(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
             Width::Bits64 => "the 64-bit range",
         }
     }
@@ -153,12 +160,13 @@ mod tests {
             ("float_from_1e21_takes_an_exponent", "[1e21,1.5e300]", Ok("[1e+21,1.5e+300]")),
             // A fraction or an exponent makes a float, and a float past 2^53 rounds as a float does.
             ("float_past_2_pow_53_rounds", "9007199254740993.0", Ok("9007199254740992")),
-            // --- numbers: the 2^53 boundary ---
-            ("integers_at_2_pow_53_stay_exact", "[9007199254740992,-9007199254740992]", Ok("[9007199254740992,-9007199254740992]")),
-            ("integer_past_2_pow_53", "9007199254740993", Err("codec: integer at byte 0 is outside -2^53..=2^53, the integers RFC 8785 keeps exact")),
-            ("negative_integer_past_2_pow_53", "[-9007199254740993]", Err("codec: integer at byte 1 is outside -2^53..=2^53, the integers RFC 8785 keeps exact")),
-            ("integer_past_i128", "1000000000000000000000000000000000000000000", Err("codec: integer at byte 0 is outside -2^53..=2^53, the integers RFC 8785 keeps exact")),
-            ("nested_wide_integer", r#"{"a":[{"b":18446744073709551615}]}"#, Err("codec: integer at byte 11 is outside -2^53..=2^53, the integers RFC 8785 keeps exact")),
+            // --- numbers: the safe-integer boundary, 2^53 - 1 ---
+            ("safe_integers_stay_exact", "[9007199254740991,-9007199254740991]", Ok("[9007199254740991,-9007199254740991]")),
+            // 2^53 + 1 reads back as 2^53, so 2^53 itself is ambiguous: I-JSON calls it unsafe.
+            ("integer_at_2_pow_53", "9007199254740992", Err("codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact")),
+            ("negative_integer_at_2_pow_53", "[-9007199254740992]", Err("codec: integer at byte 1 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact")),
+            ("integer_past_i128", "1000000000000000000000000000000000000000000", Err("codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact")),
+            ("nested_wide_integer", r#"{"a":[{"b":18446744073709551615}]}"#, Err("codec: integer at byte 11 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact")),
             ("out_of_range", "[1e400]", Err("codec: number at byte 1 is out of range")),
             ("negative_out_of_range", "[-1e400]", Err("codec: number at byte 1 is out of range")),
             // A token the lexer does not read as a number is left to the grammar check.
@@ -215,9 +223,9 @@ mod tests {
     }
 
     #[test]
-    fn the_form_is_a_fixed_point_inside_2_pow_53() {
+    fn the_form_is_a_fixed_point_inside_the_safe_integers() {
         // Canonicalizing canonical bytes changes nothing, so a store may re-canonicalize safely...
-        for input in [r#"{"b":[1.5,2.0,{"y":null,"x":"\u00e9"}],"a":-0}"#, "1e21", "9007199254740992", r#""\ud83e\udd80""#] {
+        for input in [r#"{"b":[1.5,2.0,{"y":null,"x":"\u00e9"}],"a":-0}"#, "1e21", "9007199254740991", r#""\ud83e\udd80""#] {
             let once = canonical(input).unwrap();
             assert_eq!(canonical(&once), Ok(once.clone()), "{input}");
         }
@@ -225,6 +233,6 @@ mod tests {
         // an integer literal that wide is refused on the way back in.
         let once = canonical("1e20").unwrap();
         assert_eq!(once, "100000000000000000000");
-        assert!(canonical(&once).is_err_and(|e| e.contains("outside -2^53..=2^53")));
+        assert!(canonical(&once).is_err_and(|e| e.contains("outside -(2^53-1)..=2^53-1")));
     }
 }

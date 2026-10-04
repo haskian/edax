@@ -49,36 +49,50 @@
     "name": "fractions_are_shortest_round_trip"
   },
   {
-    "canonical": "{\"n\":[9007199254740992,-9007199254740992]}",
+    "canonical": "{\"n\":[9007199254740991,-9007199254740991]}",
     "error": null,
-    "hash": 16356309354030730882,
-    "input": "{\"n\":[9007199254740992,-9007199254740992]}",
-    "name": "integers_at_2_pow_53_stay_exact"
+    "hash": 10916657580296745662,
+    "input": "{\"n\":[9007199254740991,-9007199254740991]}",
+    "name": "safe_integers_stay_exact"
   },
   {
     "canonical": null,
-    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"n\":9007199254740992}",
+    "name": "integer_at_2_pow_53_is_refused"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "hash": null,
+    "input": "{\"n\":-9007199254740992}",
+    "name": "negative_integer_at_2_pow_53_is_refused"
+  },
+  {
+    "canonical": null,
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "hash": null,
     "input": "{\"n\":9007199254740993}",
     "name": "integer_past_2_pow_53_is_refused"
   },
   {
     "canonical": null,
-    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "hash": null,
     "input": "{\"n\":-9007199254740993}",
     "name": "negative_integer_past_2_pow_53_is_refused"
   },
   {
     "canonical": null,
-    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "hash": null,
     "input": "{\"n\":18446744073709551615}",
     "name": "u64_max_is_refused"
   },
   {
     "canonical": null,
-    "error": "codec: integer at byte 14 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 14 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "hash": null,
     "input": "{\"a\":[{\"b\":[1,9007199254740993]}]}",
     "name": "nested_wide_integer_is_refused"

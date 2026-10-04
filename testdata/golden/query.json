@@ -465,6 +465,41 @@
     "documents": [
       {
         "id": "a",
+        "n": 5.808820077685227e+16
+      },
+      {
+        "id": "b",
+        "n": 5.808820077685227e+16
+      },
+      {
+        "id": "c"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYiJdfQ",
+      "rows": [
+        {
+          "id": "b",
+          "n": 5.808820077685227e+16
+        }
+      ]
+    },
+    "name": "resume_after_a_whole_number_double_past_2_pow_53",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYSJdfQ",
+      "limit": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
         "v": 9007199254740993
       },
       {
@@ -757,6 +792,33 @@
     "error_code": "codec",
     "expected_page": null,
     "name": "refused_next_from_a_row_without_an_id",
+    "query": {
+      "limit": 1,
+      "sort": [
+        {
+          "path": "k"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": {
+          "n": 0
+        },
+        "k": 1
+      },
+      {
+        "id": {
+          "n": 1
+        },
+        "k": 1
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_next_from_a_row_with_an_object_id",
     "query": {
       "limit": 1,
       "sort": [

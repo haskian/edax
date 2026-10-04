@@ -24,10 +24,13 @@
 //!
 //! The cursor is `base64url(canonical_json({"s": <sort fingerprint>, "v": [<sort-key values>]}))`,
 //! unpadded so it survives a URL query string. The canonical form is RFC 8785, whose numbers are
-//! doubles, so a sort value that is an integer past 2^53 cannot be minted into a cursor. The
-//! fingerprint is the [`crate::payload_hash`] of the canonical effective sort, as 16 lowercase hex
-//! digits.
+//! doubles, so a sort value that is an integer outside `-(2^53-1)..=2^53-1` cannot be minted into a
+//! cursor. RFC 8785 writes a whole-number double past that range as integer digits
+//! (`5.808820077685227e16` as `58088200776852270`), so the decoder reads any integer outside the
+//! range back as the double it came from. The fingerprint is the [`crate::payload_hash`] of the
+//! canonical effective sort, as 16 lowercase hex digits.
 
+use crate::canonical::MAX_SAFE_INTEGER;
 use crate::filter::{self, Filter};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use edax_core::Error;
@@ -149,8 +152,8 @@ fn directed(key: &SortKey, order: Ordering) -> Ordering {
 }
 
 /// The unique document path appended as the final sort key, so no two rows share a full sort tuple.
-/// A row a cursor is minted from must carry a non-null value here; a backend that keys its rows by
-/// something else injects it under this name (the in-memory store injects its row key).
+/// A row a cursor is minted from must carry a string or a number here; a backend that keys its rows
+/// by something else injects it under this name (the in-memory store injects its row key).
 pub const TIEBREAK_PATH: &str = "id";
 
 /// The keys a page is actually ordered by: `sort` with an ascending [`TIEBREAK_PATH`] key appended
@@ -198,19 +201,20 @@ fn fingerprint(keys: &[SortKey]) -> Result<String, Error> {
 /// services. [`query`] mints [`Page::next`] with it; a backend that pages natively mints its own
 /// with it too.
 ///
-/// Refused as `codec`: an empty sort (nothing to resume by); a row whose [`TIEBREAK_PATH`] is
-/// missing or null — rows tied on every other key would then tie on the tiebreak too, and paging
-/// past them would drop the rest of the tie; and a sort value that is an integer past 2^53, which the
-/// canonical form would round onto its neighbour and so resume at the wrong row.
+/// Refused as `codec`: an empty sort (nothing to resume by); a row whose [`TIEBREAK_PATH`] is not a
+/// string or a number — a missing or null one, an array or an object each compare equal to their own
+/// kind, so rows tied on every other key would tie on the tiebreak too, and paging past them would
+/// drop the rest of the tie; and a sort value that is an integer outside `-(2^53-1)..=2^53-1`, which
+/// the canonical form would round onto its neighbour and so resume at the wrong row.
 pub fn encode_cursor(doc: &Value, sort: &[SortKey]) -> Result<String, Error> {
     let keys = effective_sort(sort);
     if keys.is_empty() {
         return Err(unsorted_cursor());
     }
     let values: Vec<Value> = keys.iter().map(|k| at(doc, &k.path).clone()).collect();
-    if at(doc, TIEBREAK_PATH).is_null() {
+    if !matches!(at(doc, TIEBREAK_PATH), Value::String(_) | Value::Number(_)) {
         return Err(Error::codec(format_args!(
-            "a keyset cursor needs a non-null `{TIEBREAK_PATH}` on the row it resumes after"
+            "a keyset cursor needs a string or number `{TIEBREAK_PATH}` on the row it resumes after"
         )));
     }
     let json = serde_json::to_vec(&CursorWire { s: fingerprint(&keys)?, v: values }).map_err(Error::codec)?;
@@ -242,7 +246,25 @@ pub fn decode_cursor(cursor: &str, sort: &[SortKey]) -> Result<Vec<Value>, Error
             keys.len()
         )));
     }
-    Ok(wire.v)
+    Ok(wire.v.into_iter().map(as_minted).collect())
+}
+
+/// A cursor value as it was minted. [`encode_cursor`] refuses an integer outside the safe range, so
+/// an integer outside it is a whole-number double that RFC 8785 wrote out. Read as an exact integer
+/// it would sit beside the row's own value, and the walk would repeat that row or skip its ties.
+fn as_minted(value: Value) -> Value {
+    match value {
+        Value::Number(n) => {
+            let magnitude = n.as_i64().map(i64::unsigned_abs).or_else(|| n.as_u64());
+            match (magnitude, n.as_f64()) {
+                (Some(magnitude), Some(double)) if magnitude > MAX_SAFE_INTEGER => Value::from(double),
+                _ => Value::Number(n),
+            }
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(as_minted).collect()),
+        Value::Object(fields) => Value::Object(fields.into_iter().map(|(k, v)| (k, as_minted(v))).collect()),
+        other => other,
+    }
 }
 
 /// Whether a document sorts strictly after the cursor tuple under the given keys. An equal tuple is
@@ -290,9 +312,11 @@ pub fn query_spec(spec: &[u8]) -> Result<Query, Error> {
 }
 
 /// JSON boundary for [`query`]: the spec and a JSON array of documents in, the [`Page`] as
-/// `{"rows": [...], "next": cursor|null}` out. The spec is read strictly (see [`query_spec`]).
+/// `{"rows": [...], "next": cursor|null}` out. The spec is read strictly (see [`query_spec`]), and so
+/// are the documents (see [`filter::check_document`]).
 pub fn query_json(spec: &[u8], docs: &[u8]) -> Result<String, Error> {
     let spec = query_spec(spec)?;
+    filter::check_document(docs)?;
     let docs: Vec<Value> = serde_json::from_slice(docs).map_err(Error::codec)?;
     serde_json::to_string(&query(&spec, docs)?).map_err(Error::codec)
 }
@@ -313,6 +337,7 @@ pub fn effective_sort_json(sort: &[u8]) -> Result<String, Error> {
 
 /// Boundary helper: mint the cursor that resumes after a document under the sort keys (both JSON).
 pub fn encode_cursor_json(doc: &[u8], sort: &[u8]) -> Result<String, Error> {
+    filter::check_document(doc)?;
     let doc: Value = serde_json::from_slice(doc).map_err(Error::codec)?;
     let keys: Vec<SortKey> = filter::parse_spec(sort)?;
     encode_cursor(&doc, &keys)
@@ -416,7 +441,10 @@ mod tests {
         let sorted = keys(&[("n", false)]);
         let cursor = encode_cursor(&json!({"id": "a", "n": 1}), &sorted).unwrap();
         let tied_without_ids = vec![json!({"k": 1}), json!({"k": 1}), json!({"k": 1})];
-        let wide = vec![json!({"id": "a", "n": 9_007_199_254_740_993u64}), json!({"id": "b", "n": u64::MAX})];
+        // Object ids compare by rank only, so these three tie on the tiebreak as null ids would.
+        let tied_object_ids: Vec<Value> = (0..3).map(|n| json!({"id": {"tenant": "t1", "n": n}, "k": 1})).collect();
+        let wide = vec![json!({"id": "a", "n": 9_007_199_254_740_992u64}), json!({"id": "b", "n": u64::MAX})];
+        let wide_document = br#"[{"id": "a", "n": 18446744073709551617}]"#;
         let cases: Vec<(&str, Value, Vec<Value>, &str)> = vec![
             ("a_cursor_without_a_sort", json!({"after": cursor}), docs(), "takes no cursor"),
             ("a_cursor_under_another_sort", json!({"sort": [{"path": "s"}], "after": cursor}), docs(), "another sort"),
@@ -424,22 +452,35 @@ mod tests {
             ("a_sort_path_with_an_empty_segment", json!({"sort": [{"path": "a..b"}]}), docs(), "empty segment"),
             ("a_filter_the_kernel_refuses", json!({"filter": {"compare": {"path": "n", "op": "eq", "value": null}}}), docs(), "null comparand"),
             // Tied rows with no id: minting `next` would drop the rest of the tie, so it is refused.
-            ("next_from_a_row_without_an_id", json!({"sort": [{"path": "k"}], "limit": 1}), tied_without_ids, "non-null `id`"),
-            // A page ending on a sort value past 2^53: the RFC 8785 cursor would round it, so resume at
-            // the wrong row. One below the boundary pages (`cursor_branches`).
-            ("next_from_a_sort_value_past_2_pow_53", json!({"sort": [{"path": "n"}], "limit": 1}), wide, "outside -2^53..=2^53"),
+            ("next_from_a_row_without_an_id", json!({"sort": [{"path": "k"}], "limit": 1}), tied_without_ids, "string or number `id`"),
+            ("next_from_a_row_with_an_object_id", json!({"sort": [{"path": "k"}], "limit": 1}), tied_object_ids, "string or number `id`"),
+            // A page ending on a sort value at 2^53: the RFC 8785 cursor could not tell it from
+            // 2^53 + 1, so it would resume at the wrong row. One below the boundary pages (`cursor_branches`).
+            ("next_from_a_sort_value_at_2_pow_53", json!({"sort": [{"path": "n"}], "limit": 1}), wide, "outside -(2^53-1)..=2^53-1"),
         ];
         for (name, spec, docs, needle) in cases {
             let error = run(spec, docs).expect_err(name);
             assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
             assert!(error.message.contains(needle), "{name}: {error}");
         }
+        // A document integer wider than 64 bits would be read as the nearest float and come back
+        // rounded, so the JSON boundary refuses it as it refuses one in the spec.
+        let error = query_json(b"{}", wide_document).expect_err("a wide document integer");
+        assert_eq!(error.to_string(), "codec: integer at byte 18 is outside the 64-bit range");
     }
 
     #[test]
     fn keyset_paging_walks_every_row_exactly_once() {
         // One row per page, resuming from the previous page's `next`: no row may be dropped or repeated.
         let tied = vec![json!({"id": "a", "bal": 100}), json!({"id": "b", "bal": 100}), json!({"id": "c", "bal": 100})];
+        // Whole-number doubles past 2^53, which RFC 8785 writes as integer digits: tied, then one
+        // whose digits sit above the double, then a row with no value at all.
+        let wide_doubles = vec![
+            json!({"id": "a", "n": 5.808820077685227e16}),
+            json!({"id": "b", "n": 5.808820077685227e16}),
+            json!({"id": "c", "n": 1.1108287563226614e18}),
+            json!({"id": "d"}),
+        ];
         type Case = (&'static str, Vec<Value>, Vec<SortKey>, Vec<&'static str>);
         let cases: Vec<Case> = vec![
             ("unique_sort_key", docs(), keys(&[("n", false)]), vec!["a", "b", "c", "d"]),
@@ -447,6 +488,7 @@ mod tests {
             ("tied_sort_key_broken_by_id", tied, keys(&[("bal", false)]), vec!["a", "b", "c"]),
             ("sort_already_ends_in_id", docs(), keys(&[("n", false), ("id", false)]), vec!["a", "b", "c", "d"]),
             ("sort_ends_in_id_descending", docs(), keys(&[("id", true)]), vec!["d", "c", "b", "a"]),
+            ("whole_number_doubles_past_2_pow_53", wide_doubles, keys(&[("n", false)]), vec!["a", "b", "c", "d"]),
         ];
         for (name, documents, sort, want) in cases {
             let mut seen: Vec<String> = Vec::new();
@@ -498,16 +540,25 @@ mod tests {
         assert!(encode_cursor(&json!({"id": "a"}), &[]).is_err(), "an unsorted query mints no cursor");
         assert!(encode_cursor(&json!({"n": 1}), &sort).is_err(), "a missing id");
         assert!(encode_cursor(&json!({"n": 1, "id": null}), &sort).is_err(), "a null id");
+        assert!(encode_cursor(&json!({"n": 1, "id": ["a"]}), &sort).is_err(), "an array id");
+        assert!(encode_cursor(&json!({"n": 1, "id": {"k": "a"}}), &sort).is_err(), "an object id");
+        assert!(encode_cursor(&json!({"n": 1, "id": 7}), &sort).is_ok(), "a number id");
         // A sort value nested to the canonical form's depth bound, which the cursor's own two levels
         // then exceed: refused as `codec`, never a cursor no reader could parse.
         let deep = (0..127).fold(json!(1), |inner, _| json!([inner]));
         let error = encode_cursor(&json!({"id": "a", "n": deep}), &sort).expect_err("too deep");
         assert!(error.message.contains("recursion limit exceeded"), "{error}");
         // The widest integers the cursor text keeps exact round-trip; one past them is refused.
-        let edge = json!({"id": "a", "n": -9_007_199_254_740_992i64});
-        assert_eq!(decode_cursor(&encode_cursor(&edge, &sort).unwrap(), &sort), Ok(vec![json!(-9_007_199_254_740_992i64), json!("a")]));
-        let error = encode_cursor(&json!({"id": "a", "n": -9_007_199_254_740_993i64}), &sort).expect_err("past 2^53");
-        assert!(error.message.contains("outside -2^53..=2^53"), "{error}");
+        let edge = json!({"id": "a", "n": -9_007_199_254_740_991i64});
+        assert_eq!(decode_cursor(&encode_cursor(&edge, &sort).unwrap(), &sort), Ok(vec![json!(-9_007_199_254_740_991i64), json!("a")]));
+        let error = encode_cursor(&json!({"id": "a", "n": -9_007_199_254_740_992i64}), &sort).expect_err("at 2^53");
+        assert!(error.message.contains("outside -(2^53-1)..=2^53-1"), "{error}");
+        // A whole-number double past the safe range is written as integer digits that are not its
+        // exact value (`58088200776852270`); it decodes as the double, nested values included.
+        let double = json!({"id": "a", "n": 5.808820077685227e16});
+        assert_eq!(decode_cursor(&encode_cursor(&double, &sort).unwrap(), &sort), Ok(vec![json!(5.808820077685227e16), json!("a")]));
+        let nested = json!({"id": "a", "n": {"k": [-1.1108287563226614e18]}});
+        assert_eq!(decode_cursor(&encode_cursor(&nested, &sort).unwrap(), &sort), Ok(vec![nested["n"].clone(), json!("a")]));
         // decode: every refusal arm
         let cases: [(&str, String, Vec<SortKey>, &str); 6] = [
             ("unsorted", wire(json!({"s": print, "v": [1, "a"]})), vec![], "takes no cursor"),
@@ -598,6 +649,7 @@ mod tests {
         assert_eq!(decode_cursor_json(cursor.as_bytes(), sort).unwrap(), r#"[1,"a"]"#);
         assert_eq!(effective_sort_json(sort).unwrap(), r#"[{"path":"n","desc":false},{"path":"id","desc":false}]"#);
         assert!(encode_cursor_json(b"not json", sort).is_err());
+        assert!(encode_cursor_json(br#"{"id":"a","n":18446744073709551617}"#, sort).is_err(), "a wide document integer");
         assert!(encode_cursor_json(doc, b"not json").is_err());
         assert!(decode_cursor_json(b"not base64!", sort).is_err());
         assert!(decode_cursor_json(&[0xff], sort).is_err(), "a cursor is text");
@@ -608,13 +660,22 @@ mod tests {
     /// One change between two pages of a paging walk.
     #[derive(Debug, Clone)]
     enum Change {
-        Insert(Option<u8>),
+        Insert(Option<Value>),
         Delete(usize),
+    }
+
+    /// A sort value: a small integer, so rows tie often, or a whole-number double past 2^53, which
+    /// the cursor carries as integer digits.
+    fn sort_value() -> impl Strategy<Value = Value> {
+        prop_oneof![
+            3 => (0u8..4).prop_map(Value::from),
+            1 => prop::sample::select(vec![5.808820077685227e16, 1.1108287563226614e18]).prop_map(Value::from),
+        ]
     }
 
     fn change() -> impl Strategy<Value = Change> {
         prop_oneof![
-            (prop::option::weighted(0.8, 0u8..4)).prop_map(Change::Insert),
+            (prop::option::weighted(0.8, sort_value())).prop_map(Change::Insert),
             (0usize..64).prop_map(Change::Delete),
         ]
     }
@@ -629,21 +690,32 @@ mod tests {
     }
 
     proptest! {
+        /// Every finite double a row sorts by comes back from its cursor as that same double, so the
+        /// walk resumes exactly at its row.
+        #[test]
+        fn a_double_sort_value_round_trips_through_the_cursor(
+            n in prop::num::f64::NORMAL | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO,
+        ) {
+            let sort = keys(&[("n", false)]);
+            let tuple = decode_cursor(&encode_cursor(&json!({"id": "a", "n": n}), &sort).unwrap(), &sort).unwrap();
+            prop_assert_eq!(tuple.first().and_then(Value::as_f64), Some(n));
+        }
+
         /// Keyset paging while other writers insert and delete rows between pages (rows never change
         /// their sort key, the stable-sort premise). No row is returned twice, every row present for
         /// the whole walk is returned exactly once, and rows arrive in the sort's order.
         #[test]
         fn paging_under_concurrent_inserts_and_deletes_never_skips_or_repeats(
-            initial in prop::collection::vec(prop::option::weighted(0.8, 0u8..4), 0..12),
+            initial in prop::collection::vec(prop::option::weighted(0.8, sort_value()), 0..12),
             sort in sorts(),
             limit in 1usize..4,
             changes in prop::collection::vec(prop::collection::vec(change(), 0..3), 0..40),
         ) {
-            let row = |id: usize, k: Option<u8>| match k {
+            let row = |id: usize, k: Option<Value>| match k {
                 Some(k) => json!({"id": format!("r{id:03}"), "k": k}),
                 None => json!({"id": format!("r{id:03}")}),
             };
-            let mut table: Vec<Value> = initial.iter().enumerate().map(|(i, k)| row(i, *k)).collect();
+            let mut table: Vec<Value> = initial.into_iter().enumerate().map(|(i, k)| row(i, k)).collect();
             let mut next_id = table.len();
             let mut survivors: std::collections::BTreeSet<String> =
                 table.iter().map(|r| r["id"].as_str().unwrap().to_owned()).collect();

@@ -383,11 +383,22 @@ pub(crate) fn parse_spec<T: serde::de::DeserializeOwned>(json: &[u8]) -> Result<
     serde_json::from_slice(json).map_err(Error::codec)
 }
 
+/// Refuse a document the filter and the sort could not compare exactly: one holding an integer
+/// literal wider than 64 bits, which `serde_json` reads as the nearest float, so it would come back
+/// rounded and match or sort as its neighbour. The query spec refuses the same literals. A `codec`
+/// error. Every boundary that reads a document from text runs it, a projection store's save among
+/// them, so such a document is refused where it is written rather than read back changed.
+pub fn check_document(json: &[u8]) -> Result<(), Error> {
+    crate::canonical::reject_wide_integers(json)
+}
+
 /// JSON boundary for the bindings: parse a filter and a document, return the match decision. A
-/// filter the kernel refuses (see [`Filter::validate`]) or JSON it cannot read is a `codec` error.
+/// filter the kernel refuses (see [`Filter::validate`]), a document [`check_document`] refuses, or
+/// JSON it cannot read is a `codec` error.
 pub fn eval_json(filter_json: &[u8], doc_json: &[u8]) -> Result<bool, Error> {
     let filter: Filter = parse_spec(filter_json)?;
     filter.validate()?;
+    check_document(doc_json)?;
     let doc: Value = serde_json::from_slice(doc_json).map_err(Error::codec)?;
     Ok(eval(&filter, &doc))
 }
@@ -556,17 +567,20 @@ mod tests {
     #[test]
     fn eval_json_refusals() {
         let document = serde_json::to_vec(&doc()).unwrap();
-        let cases: [(&str, &str); 7] = [
-            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#),
-            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#),
-            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#),
-            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#),
-            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#),
-            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#),
-            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#),
+        let wide_document = br#"{"big": 18446744073709551617}"#;
+        let cases: [(&str, &str, &[u8]); 8] = [
+            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#, &document),
+            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#, &document),
+            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#, &document),
+            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#, &document),
+            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#, &document),
+            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#, &document),
+            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#, &document),
+            // Read as the nearest float, the document would match `eq(big, 2^64)`.
+            ("a_document_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1}}"#, wide_document),
         ];
-        for (name, filter) in cases {
-            let error = eval_json(filter.as_bytes(), &document).expect_err(name);
+        for (name, filter, document) in cases {
+            let error = eval_json(filter.as_bytes(), document).expect_err(name);
             assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
         }
         // The widest integers that fit are exact, and a wide number written as a float is a float.

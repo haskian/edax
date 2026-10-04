@@ -75,7 +75,7 @@ def build_spec(
         spec["offset"] = offset
     if limit is not None:
         spec["limit"] = limit
-    if after:
+    if after is not None:
         spec["after"] = after
     return spec
 
@@ -100,7 +100,7 @@ def encode_cursor(document: Document, sort: list[SortKey]) -> str:
     """Mint the keyset cursor that resumes after ``document`` under ``sort``. Portable across bindings.
 
     :func:`query` already returns it as ``Page.next``; this is for a backend that pages natively and mints
-    its own. The document needs a non-null ``"id"``, the kernel's tiebreak, else a
+    its own. The document needs a string or number ``"id"``, the kernel's tiebreak, else a
     :class:`~edax.errors.CodecError`: rows tied on every other key would tie on it too, and paging past
     them would drop the rest of the tie."""
     with errors.mapped():

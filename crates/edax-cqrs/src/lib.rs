@@ -9,7 +9,8 @@
 //!
 //! - [`canonical_json`] — re-emit JSON in the RFC 8785 canonical form so the same logical command
 //!   serializes identically regardless of how the host produced it, or which `serde_json` features a
-//!   build turned on. An integer literal past 2^53, which that form would round, is refused.
+//!   build turned on. An integer literal outside `-(2^53-1)..=2^53-1`, which that form would round,
+//!   is refused.
 //! - [`payload_hash`] — a stable hash of bytes, for idempotency-key payload binding.
 //! - [`command_hash`] — *which* bytes a command's idempotency hash covers: its name and the whole
 //!   command value, serialized, canonicalized, hashed. The input rule is the kernel's, not the host's.
@@ -66,8 +67,9 @@ pub fn payload_hash(bytes: &[u8]) -> u64 {
 /// encoder (Python: `msgspec.json.encode`) and hands the kernel the JSON — that is what
 /// [`command_hash_json`] is. Both paths land on the same bytes because canonicalization removes
 /// everything an encoder is free to choose: key order, whitespace, string escaping, and how a number
-/// is spelled (`2` and `2.0` are one number). A command holding an integer past 2^53 is refused, since
-/// the canonical form's doubles would round it onto its neighbour.
+/// is spelled (`2` and `2.0` are one number). A command holding an integer outside
+/// `-(2^53-1)..=2^53-1` is refused, since the canonical form's doubles would round it onto its
+/// neighbour.
 ///
 /// What the value *contains* is its wire shape — the field names and which fields exist — and
 /// that belongs to the host, as it does for events: two services that share an idempotency store

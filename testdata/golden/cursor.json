@@ -242,11 +242,11 @@
   },
   {
     "document": {
-      "id": 9007199254740992,
-      "n": -9007199254740992
+      "id": 9007199254740991,
+      "n": -9007199254740991
     },
     "error": null,
-    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlstOTAwNzE5OTI1NDc0MDk5Miw5MDA3MTk5MjU0NzQwOTkyXX0",
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlstOTAwNzE5OTI1NDc0MDk5MSw5MDA3MTk5MjU0NzQwOTkxXX0",
     "expected_effective_sort": [
       {
         "desc": false,
@@ -258,13 +258,83 @@
       }
     ],
     "expected_tuple": [
-      -9007199254740992,
-      9007199254740992
+      -9007199254740991,
+      9007199254740991
     ],
     "name": null,
     "sort": [
       {
         "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "f1",
+      "n": 5.808820077685227e+16
+    },
+    "error": null,
+    "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiZjEiXX0",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      5.808820077685227e+16,
+      "f1"
+    ],
+    "name": null,
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "f2",
+      "m": [
+        1e+20
+      ],
+      "n": -1.1108287563226614e+18
+    },
+    "error": null,
+    "expected_cursor": "eyJzIjoiZTAyZjNiZWYwNjY1YmY0NSIsInYiOlstMTExMDgyODc1NjMyMjY2MTQwMCxbMTAwMDAwMDAwMDAwMDAwMDAwMDAwXSwiZjIiXX0",
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": true,
+        "path": "m"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      -1.1108287563226614e+18,
+      [
+        1e+20
+      ],
+      "f2"
+    ],
+    "name": null,
+    "sort": [
+      {
+        "path": "n"
+      },
+      {
+        "desc": true,
+        "path": "m"
       }
     ]
   },
@@ -388,7 +458,7 @@
     "document": {
       "n": 1
     },
-    "error": "codec: a keyset cursor needs a non-null `id` on the row it resumes after",
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
     "expected_cursor": null,
     "expected_effective_sort": [
       {
@@ -413,7 +483,7 @@
       "id": null,
       "n": 1
     },
-    "error": "codec: a keyset cursor needs a non-null `id` on the row it resumes after",
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
     "expected_cursor": null,
     "expected_effective_sort": [
       {
@@ -435,10 +505,13 @@
   },
   {
     "document": {
-      "id": "a",
-      "n": 9007199254740993
+      "id": [
+        "t1",
+        1
+      ],
+      "n": 1
     },
-    "error": "codec: integer at byte 29 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
     "expected_cursor": null,
     "expected_effective_sort": [
       {
@@ -451,7 +524,60 @@
       }
     ],
     "expected_tuple": null,
-    "name": "encode_a_sort_value_past_2_pow_53",
+    "name": "encode_from_a_row_with_an_array_id",
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": {
+        "n": 1,
+        "tenant": "t1"
+      },
+      "n": 1
+    },
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
+    "expected_cursor": null,
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "encode_from_a_row_with_an_object_id",
+    "sort": [
+      {
+        "path": "n"
+      }
+    ]
+  },
+  {
+    "document": {
+      "id": "a",
+      "n": 9007199254740992
+    },
+    "error": "codec: integer at byte 29 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "expected_cursor": null,
+    "expected_effective_sort": [
+      {
+        "desc": false,
+        "path": "n"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": null,
+    "name": "encode_a_sort_value_at_2_pow_53",
     "sort": [
       {
         "path": "n"

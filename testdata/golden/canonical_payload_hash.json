@@ -91,13 +91,13 @@
   },
   {
     "error": null,
-    "expected": 260451852649252988,
-    "input": "{\"n\":9007199254740992}"
+    "expected": 257637102881600503,
+    "input": "{\"n\":9007199254740991}"
   },
   {
     "error": null,
-    "expected": 260451852649252988,
-    "input": "{\"n\":9007199254740992.0}"
+    "expected": 257637102881600503,
+    "input": "{\"n\":9007199254740991.0}"
   },
   {
     "error": null,
@@ -115,12 +115,12 @@
     "input": "{}"
   },
   {
-    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "expected": null,
     "input": "{\"n\":9007199254740993}"
   },
   {
-    "error": "codec: integer at byte 5 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: integer at byte 5 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "expected": null,
     "input": "{\"n\":-9007199254740993}"
   },
