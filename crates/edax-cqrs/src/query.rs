@@ -158,7 +158,7 @@ fn compare_values(collation: Option<Collation>, a: &Value, b: &Value) -> Orderin
         // orders them. A string that is not decimal text sorts after every decimal text, and among
         // its own kind by code point, so the order stays total.
         (Some(Collation::Decimal), Value::String(x), Value::String(y)) => {
-            filter::collated_cmp(collation, a, b).unwrap_or_else(|| {
+            crate::decimal::decimal_cmp(x, y).unwrap_or_else(|| {
                 let other_text = |text: &str| !crate::decimal::is_decimal(text);
                 other_text(x).cmp(&other_text(y)).then_with(|| x.cmp(y))
             })

@@ -222,17 +222,14 @@ class SagaRunner:
 
     async def _fold(self, instance_id: str, msg: EventMessage, tx: Tx | None) -> None:
         instance = await self._store.load(instance_id, tx)
+        completed, folded = (False, "") if instance is None else (instance.completed, instance.folded)
         with errors.mapped():
-            if instance is None:
-                admit = _edax.saga_admit(False, "", msg)
-            else:
-                admit = _edax.saga_admit(instance.completed, instance.folded, msg)
+            admit = _edax.saga_admit(completed, folded, msg)
         if admit.action != "fold":
             # A tombstone, an event folded already, or one below the mark: no step for it. Pinned by
             # `testdata/golden/saga.json`.
             self._observer.saga_skipped(self._saga.name, cast("SagaSkip", admit.action), msg.id)
             return
-        folded = admit.folded
         new_state, commands = self._saga.handle(None if instance is None else instance.state, msg)
         loaded = None if instance is None else instance.version
         with errors.mapped():
@@ -241,7 +238,7 @@ class SagaRunner:
             return
         rows = self._rows(instance_id, write.version, commands, msg)
         if write.action == "save":
-            await self._store.save(instance_id, new_state, write.expected, folded, rows, tx)
+            await self._store.save(instance_id, new_state, write.expected, admit.folded, rows, tx)
         else:
             await self._store.complete(instance_id, write.expected, rows, tx)
 
