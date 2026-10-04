@@ -110,6 +110,8 @@ class Raising(edax.Observer):
         _boom()
 
     def revoke_overrun(self, handling: int) -> None:
+        _boom()
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         _boom()
 

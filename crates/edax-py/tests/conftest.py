@@ -227,6 +227,7 @@ class Recording(edax.Observer):
 
     def revoke_overrun(self, handling: int) -> None:
         self.revoke_overruns.append(handling)
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         assert reason in SAGA_SKIPS, reason
         self.saga_skips.append((name, reason, event_id))
