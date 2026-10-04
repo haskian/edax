@@ -20,7 +20,17 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
-from .aggregate import Aggregate, CommandMessage, Event, EventDraft, EventMessage, Lineage, Payload, Version
+from .aggregate import (
+    Aggregate,
+    CommandMessage,
+    Event,
+    EventDraft,
+    EventMessage,
+    Lineage,
+    Payload,
+    Version,
+    _replace,
+)
 from .causation import _stamp
 from .errors import BadHandle, ConcurrencyError, _carried_code
 from .observe import Observer, TransactionOutcome, _wrap
@@ -469,7 +479,9 @@ class Repository(Generic[A]):
         ``commands`` go to the repository's :class:`CommandOutbox` in the same transaction as the events,
         so a command is sent only if the events it follows from landed. Build each with
         :func:`~edax.command.command_message`. A repository built without an outbox raises
-        :class:`TypeError` before anything is written.
+        :class:`TypeError` before anything is written. Each command belongs to the aggregate's tenant, as
+        its events do: one that names no tenant is stored with the aggregate's, and one that names another
+        raises :class:`~edax.errors.CodecError` before anything is written.
 
         Every event of one save shares one ``lineage``: the one given, else the ambient
         :func:`~edax.causation.current_lineage` of the message being handled, else a new flow.
@@ -510,16 +522,33 @@ class Repository(Generic[A]):
                 )
                 for i, event in enumerate(events, start=1)
             ]
+        owned = [_owned_by(command, tenant) for command in commands or ()]
         async with self._enlist(tx) as tx:
             stored = await self._store.append(tx, key, initial, drafts)
-            if commands and self._commands is not None:
-                await self._commands.enqueue(tx, commands)
+            if owned and self._commands is not None:
+                await self._commands.enqueue(tx, owned)
             if _edax.snapshot_due(self._snapshot_every, initial, current):
                 snapshot = Snapshot(key, self._aggregates.type, current, self._aggregates.dump(aggregate))
                 await self._store.save_snapshot(tx, snapshot)
         aggregate.pending.clear()
         aggregate.version = Version(current)
         return stored
+
+
+def _owned_by(command: CommandMessage, tenant: str | None) -> CommandMessage:
+    """``command`` as a save of ``tenant``'s aggregate sends it. A command that names no tenant takes the
+    aggregate's, so the relay keys it and the bus claims it inside that tenant, where the events it
+    follows from already are; one that names another tenant is refused, because a save cannot move a
+    command across tenants the load never named."""
+    if command.tenant == tenant:
+        return command
+    if command.tenant is None:
+        stamped: CommandMessage = _replace(command, tenant=tenant)
+        return stamped
+    raise errors.CodecError(
+        f"command {command.id} names tenant {command.tenant!r}, "
+        f"but it is saved with an aggregate of tenant {tenant!r}"
+    )
 
 
 Publish = Callable[[Any], MaybeAwaitable[None]]

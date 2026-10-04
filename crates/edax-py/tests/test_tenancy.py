@@ -231,6 +231,50 @@ async def test_a_bridge_leaves_the_keys_bare() -> None:
     assert globex.balance == 10, "one store, one stream: a bridge separates by store, not by key"
 
 
+@dataclass
+class Ship:
+    order_id: str
+
+    type = "Ship"
+
+
+@pytest.mark.parametrize(
+    "name, mode, loaded_for, named, want",
+    [
+        ("a command naming no tenant takes the aggregate's", Tenancy.POOL, "acme", None, "acme"),
+        ("a command naming the aggregate's tenant is kept", Tenancy.POOL, "acme", "acme", "acme"),
+        ("a bridge stamps it too", Tenancy.BRIDGE, "acme", None, "acme"),
+        ("a silo aggregate with no tenant sends none", Tenancy.SILO, None, None, None),
+        ("a command naming another tenant is refused", Tenancy.POOL, "acme", "globex", CodecError),
+        ("a silo aggregate cannot send one into a tenant", Tenancy.SILO, None, "acme", CodecError),
+    ],
+)
+async def test_a_saved_command_belongs_to_the_aggregates_tenant(
+    name: str, mode: Tenancy, loaded_for: str | None, named: str | None, want: str | type[Exception] | None
+) -> None:
+    """A command saved beside a tenant's events is that tenant's too. Left without one, a pool relay
+    could not key it and a pool bus could not claim it, and the failure would surface only at publish,
+    long after the save committed."""
+    db = MemoryTransactor()
+    store, outbox = MemoryEventStore(db), MemoryCommandOutbox(db)
+    events = json_codec({"Deposited": Deposited})
+    repo = Repository(store, events, AccountCodec(), commands=outbox, tenancy=mode)
+    account = await repo.load("order-1", tenant=loaded_for)
+    account.apply(Deposited(10))
+    ship = command_message(Ship("order-1"), aggregate_id="order-1", tenant=named)
+    if want is CodecError:
+        with pytest.raises(CodecError):
+            await repo.save(account, commands=[ship])
+        assert await outbox.unpublished(10) == [], f"{name}: no command was written"
+        assert await store.unpublished(10) == [], f"{name}: and no event"
+        return
+    stored = await repo.save(account, commands=[ship])
+    rows = await outbox.unpublished(10)
+    assert [row.tenant for row in rows] == [want], name
+    assert [row.tenant for row in stored] == [want], f"{name}: the same tenant as the events"
+    assert rows == [_replace(ship, tenant=want)], f"{name}: every other field as built"
+
+
 # ---- the command side ----------------------------------------------------
 
 
