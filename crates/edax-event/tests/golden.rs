@@ -724,8 +724,10 @@ fn saga_cases() -> Vec<Value> {
     // per branch of `saga_admit`. A tombstone folds nothing, even under marks no runner wrote.
     let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
     let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
-    let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
-    let admits: [(bool, &str, &str, Option<u64>, &str); 14] = [
+    let unsequenced = r#"{"order-7":{"unsequenced":"evt-u"}}"#;
+    // One aggregate's sequenced and unsequenced events folded, then replayed after a crash: both repeat.
+    let mixed = r#"{"order-7":{"sequence":2,"id":"evt-2","unsequenced":"evt-v"}}"#;
+    let admits: [(bool, &str, &str, Option<u64>, &str); 16] = [
         (true, "", "order-7", Some(1), "evt-1"),
         (true, "[1]", "order-7", Some(1), "evt-1"),
         (false, "", "order-7", Some(1), "evt-1"),
@@ -736,6 +738,8 @@ fn saga_cases() -> Vec<Value> {
         (false, unsequenced, "order-7", None, "evt-u"),
         (false, unsequenced, "order-7", None, "evt-v"),
         (false, two, "order-7", None, "evt-v"),
+        (false, mixed, "order-7", Some(2), "evt-2"),
+        (false, mixed, "order-7", None, "evt-v"),
         (false, one, "order-7", Some(1), "evt-x"),
         (false, unsequenced, "order-7", Some(3), "evt-3"),
         (false, r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
@@ -746,6 +750,7 @@ fn saga_cases() -> Vec<Value> {
         let want = match edax_event::saga_admit(completed, folded, &env) {
             Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
             Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
+            Ok(edax_event::SagaAdmit::BelowMark) => json!({ "below_mark": true }),
             Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
             Err(e) => json!({ "error": e.to_string() }),
         };
@@ -773,6 +778,28 @@ fn saga_cases() -> Vec<Value> {
         },
         "want": serde_json::to_value(&command).unwrap(),
     }));
+    // The event a dead saga command folds back into its instance, and a row that names no instance.
+    let stray = edax_event::CommandMessage { aggregate_id: None, ..command.clone() };
+    let failures = [
+        (command.clone(), Some(edax_core::ErrorCode::Rejected), "out of stock"),
+        (command, None, "warehouse API timed out"),
+        (stray, Some(edax_core::ErrorCode::Rejected), "out of stock"),
+    ];
+    for (row, code, error) in failures {
+        let want = match edax_event::saga_command_failed(&row, code, error, 1_700_000_000_000_000_002) {
+            Ok(event) => serde_json::to_value(&event).unwrap(),
+            Err(e) => json!({ "error": e.to_string() }),
+        };
+        cases.push(json!({
+            "saga_command_failed": {
+                "command": serde_json::to_value(&row).unwrap(),
+                "code": code.map(edax_core::ErrorCode::as_str),
+                "error": error,
+                "recorded_at": 1_700_000_000_000_000_002_i64,
+            },
+            "want": want,
+        }));
+    }
     cases
 }
 

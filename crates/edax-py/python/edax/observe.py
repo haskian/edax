@@ -49,7 +49,9 @@ __all__ = [
     "METRIC_PROCESS_DURATION",
     "METRIC_SENT_MESSAGES",
     "Observer",
+    "SAGA_SKIPS",
     "SETTLEMENTS",
+    "SagaSkip",
     "Settlement",
     "TRANSACTIONS",
     "TimingRecorder",
@@ -148,6 +150,16 @@ TRANSACTIONS: Final[tuple[TransactionOutcome, ...]] = get_args(TransactionOutcom
 #: ``timing`` outcomes: ``ok`` when the handler returned, ``error`` when it raised.
 HandlerOutcome = Literal["ok", "error"]
 HANDLER_OUTCOMES: Final[tuple[HandlerOutcome, ...]] = get_args(HandlerOutcome)
+#: ``Observer.saga_skipped`` reasons: why a :class:`~edax.saga.SagaRunner` did not fold an event. The
+#: kernel's ``saga_admit`` answer, verbatim:
+#:
+#: - ``completed``: the instance is a tombstone. A late or redelivered event, normal after completion.
+#: - ``repeat``: the instance folded this very event id. A redelivery, or a replay after a crash.
+#: - ``below_mark``: the event's sequence is below the highest one the instance folded from its
+#:   aggregate. A replay after a crash looks like this, but so does a dead-lettered event re-driven after a
+#:   later one folded, which is then never folded. Worth a look when it follows a re-drive.
+SagaSkip = Literal["completed", "repeat", "below_mark"]
+SAGA_SKIPS: Final[tuple[SagaSkip, ...]] = get_args(SagaSkip)
 
 
 def error_type(e: BaseException) -> str:
@@ -169,7 +181,8 @@ class Observer:
 
     Wire an instance explicitly (``observer=``) on :class:`~edax.dispatcher.KeyOrderedDispatcher`,
     :class:`~edax.store.Relay`, :class:`~edax.store.Repository`, :func:`~edax.store.transaction`,
-    :func:`~edax.command.idempotent` and :func:`~edax.router.idempotent_by_id`; there is no default
+    :func:`~edax.command.idempotent`, :func:`~edax.router.idempotent_by_id` and
+    :class:`~edax.saga.SagaRunner`; there is no default
     global. Every call is guarded by the SDK: an observer that raises is logged and never fails a
     dispatch, a drain, a transaction or a settlement. Metric labels follow the cardinality rule in
     the module docstring."""
@@ -284,6 +297,17 @@ class Observer:
         failed they count rows the next drain sends again, at-least-once as ever.
         Label by :func:`error_type` of ``error``. Read a sustained rate as a relay that is stuck, and
         pair it with the ``oldest_timestamp`` gauge going stale."""
+
+    def saga_skipped(self, name: str, reason: SagaSkip, event_id: str) -> None:
+        """A :class:`~edax.saga.SagaRunner` routed an event to an instance and did not fold it: no fold,
+        no write, no command. Fires once per skipped event, before ``on_event`` returns.
+
+        ``name`` is the saga's name, a closed set. ``reason`` is one of :data:`SAGA_SKIPS`, the kernel's
+        answer. ``event_id`` is for the log line, never a label. Read ``repeat`` as the redelivery rate,
+        and a ``below_mark`` after a dead-lettered event was re-driven as that event lost: the instance
+        moved past it.
+
+        Not fired for an event the saga's ``instance_id`` ignores: no instance was asked."""
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         """A consumer polled a message whose payload the serializer rejected: a poison message. No

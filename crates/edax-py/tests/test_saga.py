@@ -5,6 +5,7 @@ marked, a lost response, and late or redelivered events after completion."""
 
 import asyncio
 import copy
+import json
 import pickle
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import NO_WAIT, build_message
+from conftest import NO_WAIT, Recording, build_message
 from edax import CommandMessage
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
 from edax.command import Handler
@@ -416,6 +417,22 @@ def at(aggregate_id: str, sequence: int | None, id: str) -> edax.EventMessage:
             ["u-1", "u-2", "u-1"],
             id="an_older_unsequenced_event_is_folded_again",
         ),
+        pytest.param(
+            [
+                at("order-7", 2, "o-2"),
+                at("order-7", None, "u-1"),
+                at("order-7", 2, "o-2"),
+                at("order-7", None, "u-1"),
+            ],
+            ["o-2", "u-1"],
+            id="a_crash_replays_one_aggregates_sequenced_and_unsequenced_events",
+        ),
+        pytest.param(
+            # The limit of the sequence mark: once a later event folded, a re-driven dead letter is below it.
+            [at("order-7", 3, "o-3"), at("order-7", 5, "o-5"), at("order-7", 4, "o-4")],
+            ["o-3", "o-5"],
+            id="a_re_driven_dead_letter_below_the_mark_is_not_folded",
+        ),
     ],
 )
 async def test_an_event_redelivered_after_its_step_committed_is_not_folded_again(
@@ -462,6 +479,113 @@ async def test_a_redelivery_through_the_dispatcher_sends_reserve_once() -> None:
     await run.relay(bus, pacing=NO_WAIT).drain()
     assert reserved == [Reserve("sku-1", "o-1")], "the redelivered step sent nothing"
     assert acks == ["ack"], "the redelivery itself settled cleanly"
+
+
+@pytest.mark.parametrize(
+    "deliveries, preload_completed, want_skips",
+    [
+        pytest.param([at("order-7", 1, "o-1")], False, [], id="a_fold_reports_nothing"),
+        pytest.param(
+            [at("order-7", 1, "o-1"), at("order-7", 1, "o-1")],
+            False,
+            [("reserve", "repeat", "o-1")],
+            id="a_repeat_by_its_id",
+        ),
+        pytest.param(
+            [at("order-7", 3, "o-3"), at("order-7", 5, "o-5"), at("order-7", 4, "o-4")],
+            False,
+            [("reserve", "below_mark", "o-4")],
+            id="below_the_mark_is_reported_apart_from_a_repeat",
+        ),
+        pytest.param(
+            [at("order-7", 1, "o-1")], True, [("reserve", "completed", "o-1")], id="a_tombstone_folds_nothing"
+        ),
+    ],
+)
+async def test_every_event_an_instance_does_not_fold_is_reported_with_the_kernels_reason(
+    deliveries: list[edax.EventMessage], preload_completed: bool, want_skips: list[tuple[str, str, str]]
+) -> None:
+    """A skip writes nothing and returns normally, so the observer is the only place it shows: a
+    ``below_mark`` after a re-drive is an event the instance will never fold."""
+    store = MemorySagaStore()
+    if preload_completed:
+        await store.complete("order-7", 0, [])
+    observer = Recording()
+    run = SagaRunner(ReserveSaga(), store, RESERVE, observer=observer)
+    for delivery in deliveries:
+        await run.on_event(delivery)
+    assert observer.saga_skips == want_skips
+
+
+class ShippingSaga:
+    """``Shipped`` sends ``Fulfill`` and waits for its outcome. A failed ``Fulfill`` comes back as a
+    :data:`~edax.saga.SAGA_COMMAND_FAILED` event, and the saga compensates with a ``Refund``."""
+
+    name: ClassVar[str] = "shipping"
+
+    def __init__(self) -> None:
+        self.failures: list[edax.SagaCommandFailed] = []
+
+    def instance_id(self, env: edax.EventMessage, /) -> str | None:
+        return env.metadata.get("order")
+
+    def handle(self, state: Any, env: edax.EventMessage, /) -> tuple[Any, list[Any]]:
+        if env.name == edax.SAGA_COMMAND_FAILED:
+            self.failures.append(json.loads(env.data))
+            return Completed, [Refund(env.aggregate_id)]
+        return {"status": "shipping"}, [Fulfill(env.metadata["order"])]
+
+
+@pytest.mark.parametrize(
+    "failure, max_attempts, want_code, want_error",
+    [
+        pytest.param(edax.Rejected("out of stock"), 0, "rejected", "out of stock", id="a_rejected_command"),
+        pytest.param(
+            RuntimeError("warehouse API timed out"),
+            1,
+            None,
+            "warehouse API timed out",
+            id="a_transient_failure_at_the_ceiling_carries_no_code",
+        ),
+    ],
+)
+async def test_a_dead_command_folds_back_into_its_instance_as_a_failure(
+    failure: Exception, max_attempts: int, want_code: str | None, want_error: str
+) -> None:
+    """A rejected command saves no event, so without the sink the instance would wait forever. The sink
+    folds the failure into the instance that sent the command, and the saga compensates."""
+    store = MemorySagaStore()
+    saga = ShippingSaga()
+    observer = Recording()
+    run = SagaRunner(saga, store, COMMANDS, now=lambda: 1_714_564_800_000_000_000, observer=observer)
+    await run.on_event(env("order-7", "Shipped"))
+    refunds: list[Refund] = []
+
+    async def fulfill(cmd: Fulfill) -> None:
+        raise failure
+
+    async def refund(cmd: Refund) -> None:
+        refunds.append(cmd)
+
+    bus = edax.CommandBus()
+    bus.register("Fulfill", fulfill)
+    bus.register("Refund", refund)
+    [shipped] = await store.unpublished()
+    relay = run.relay(bus, on_dead=run.command_failed, max_attempts=max_attempts, pacing=NO_WAIT)
+    assert await relay.drain() == 1, "the dead Fulfill is settled"
+    assert saga.failures == [
+        {"command_id": "order-7:1:0", "command": "Fulfill", "code": want_code, "error": want_error}
+    ]
+    [compensation] = await store.unpublished()
+    assert (compensation.id, compensation.causation_id) == ("order-7:2:0", "order-7:1:0:failed")
+    instance = await store.load("order-7")
+    assert instance is not None and (instance.completed, instance.version) == (True, 2)
+    assert await relay.drain() == 1 and refunds == [Refund("order-7")], "the Refund is sent"
+
+    # The sink runs again for the same row (its mark was lost): the completed instance folds nothing.
+    await run.command_failed(shipped, failure)
+    assert len(saga.failures) == 1 and await store.unpublished() == []
+    assert observer.saga_skips == [("shipping", "completed", "order-7:1:0:failed")]
 
 
 # =========================================================================

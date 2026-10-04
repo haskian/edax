@@ -11,7 +11,7 @@ from typing import Any
 import edax
 import msgspec
 import pytest
-from conftest import build_message, golden, message_as_obj, recording_pacing
+from conftest import build_message, golden, message_as_obj, message_from_obj, recording_pacing
 from edax import _edax
 from edax.backend.memory import MemoryEventStore
 from edax.codec import json_codec, msgpack_codec
@@ -320,7 +320,21 @@ def test_golden_saga() -> None:
                 assert str(caught.value) == want["error"].removeprefix("codec: "), row
                 continue
             got = _edax.saga_admit(admit["completed"], admit["folded"], env)
-            assert got == want.get("folded"), row
+            # A skip's vector is keyed by the kernel's answer: `{"repeat": true}` is the action `repeat`.
+            action = "fold" if "folded" in want else next(iter(want))
+            assert (got.action, got.folded) == (action, want.get("folded", "")), row
+            continue
+        if "saga_command_failed" in row:
+            failure, want = row["saga_command_failed"], row["want"]
+            command = message_from_obj(failure["command"])
+            assert isinstance(command, edax.CommandMessage), row
+            args = (command, failure["error"], failure["recorded_at"], failure["code"])
+            if "error" in want:
+                with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+                    _edax.saga_command_failed(*args)
+                assert str(caught.value) == want["error"].removeprefix("codec: "), row
+                continue
+            assert message_as_obj(_edax.saga_command_failed(*args)) == want, row
             continue
         if "command_id" in row:
             assert (

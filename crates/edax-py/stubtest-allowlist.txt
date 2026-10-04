@@ -32,6 +32,7 @@ edax\._edax\.RedisScripts
 edax\._edax\.Retries
 edax\._edax\.RetriesTracked
 edax\._edax\.RetryVerdict
+edax\._edax\.SagaAdmit
 edax\._edax\.SagaRow
 edax\._edax\.SagaWrite
 edax\._edax\.SnapshotResult

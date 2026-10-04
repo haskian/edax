@@ -109,6 +109,7 @@ class Raising(edax.Observer):
         _boom()
 
     def revoke_overrun(self, handling: int) -> None:
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         _boom()
 
 
@@ -618,6 +619,7 @@ _HOOK_ARGS: dict[str, tuple[Any, ...]] = {
     "poll_failed": (ConnectionError("broker unreachable"),),
     "commit_failed": (TimeoutError(),),
     "revoke_overrun": (2,),
+    "saga_skipped": ("order", "repeat", "evt-1"),
 }
 
 

@@ -780,22 +780,57 @@ pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> 
     Ok(SagaWrite { action: action.to_owned(), expected, version })
 }
 
+/// Whether a saga step folds an event: `action` is `"fold"`, with the marks to save with the step in
+/// `folded`, or a skip (write nothing, `folded` empty): `"completed"` (a tombstone), `"repeat"` (an
+/// event the instance folded), or `"below_mark"` (a sequence below the one the instance folded from
+/// its aggregate, assumed folded). See [`edax_event::SagaAdmit`].
+pub struct SagaAdmit {
+    pub action: String,
+    pub folded: String,
+}
+
 /// Whether an instance that saved the marks `folded` (empty for a new instance), or is `completed`
-/// (a tombstone), folds `message`: `None` when it does not (a tombstone, or a redelivery of an event
-/// it folded: skip it, write nothing), else the marks to save with the step. Marks this function did
-/// not write are a `codec:` error. See [`edax_event::saga_admit`].
-pub fn saga_admit(completed: bool, folded: &str, message: EventMessage) -> Result<Option<String>, String> {
+/// (a tombstone), folds `message`. Marks this function did not write are a `codec:` error. See
+/// [`edax_event::saga_admit`].
+pub fn saga_admit(completed: bool, folded: &str, message: EventMessage) -> Result<SagaAdmit, String> {
     let msg = kernel_event_message(message);
-    Ok(match edax_event::saga_admit(completed, folded, &msg).map_err(wire)? {
-        edax_event::SagaAdmit::Completed | edax_event::SagaAdmit::Repeat => None,
-        edax_event::SagaAdmit::Fold { folded } => Some(folded),
-    })
+    let (action, folded) = match edax_event::saga_admit(completed, folded, &msg).map_err(wire)? {
+        edax_event::SagaAdmit::Completed => ("completed", String::new()),
+        edax_event::SagaAdmit::Repeat => ("repeat", String::new()),
+        edax_event::SagaAdmit::BelowMark => ("below_mark", String::new()),
+        edax_event::SagaAdmit::Fold { folded } => ("fold", folded),
+    };
+    Ok(SagaAdmit { action: action.to_owned(), folded })
 }
 
 /// The id of the `index`-th command a saga step committed at `version`:
 /// `"{instance_id}:{version}:{index}"`. See [`edax_event::saga_command_id`].
 pub fn saga_command_id(instance_id: &str, version: u64, index: u64) -> String {
     edax_event::saga_command_id(instance_id, version, index)
+}
+
+/// The name of the event [`saga_command_failed`] builds: `"SagaCommandFailed"`. See
+/// [`edax_event::SAGA_COMMAND_FAILED`].
+pub fn saga_command_failed_name() -> String {
+    edax_event::SAGA_COMMAND_FAILED.to_owned()
+}
+
+/// The event a saga folds when `command`, a row its outbox sent, died of the failure `error` with the
+/// taxonomy `code` (`None` when no code classifies it): named `"SagaCommandFailed"`, for the instance
+/// the row names, with the JSON payload `command_id`, `command`, `code` and `error`. `recorded_at` is
+/// the caller's clock. An unknown code, or a row that names no instance, is a `codec:` error. Pinned
+/// by `testdata/golden/saga.json`. See [`edax_event::saga_command_failed`].
+// `code` is optional, so it trails: alef moves optional parameters to the end of the signature.
+pub fn saga_command_failed(
+    command: CommandMessage,
+    error: &str,
+    recorded_at: i64,
+    code: Option<String>,
+) -> Result<EventMessage, String> {
+    let code = code.map(|code| code.parse::<edax_core::ErrorCode>()).transpose().map_err(wire)?;
+    edax_event::saga_command_failed(&kernel_command_message(command), code, error, recorded_at)
+        .map(record_event_message)
+        .map_err(wire)
 }
 
 /// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
@@ -1843,12 +1878,18 @@ mod tests {
 
     #[test]
     fn saga_admit_crosses_the_marks_as_text() {
-        let env = |id: &str| event_message(id, Some(1));
-        let folded = saga_admit(false, "", env("evt-1")).unwrap().expect("a new instance folds");
-        assert_eq!(saga_admit(false, &folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
-        assert_eq!(saga_admit(true, &folded, env("evt-2")).unwrap(), None, "a tombstone folds nothing");
-        assert!(saga_admit(false, &folded, env("evt-2")).unwrap().is_some(), "the next event folds");
-        assert!(saga_admit(false, "[1]", env("evt-1")).unwrap_err().starts_with("codec: saga folded marks"));
+        let env = |id: &str, sequence: u64| event_message(id, Some(sequence));
+        let first = saga_admit(false, "", env("evt-1", 2)).unwrap();
+        assert_eq!(first.action, "fold", "a new instance folds");
+        let answer = |completed: bool, event: EventMessage| {
+            let admit = saga_admit(completed, &first.folded, event).unwrap();
+            (admit.action, admit.folded.is_empty())
+        };
+        assert_eq!(answer(false, env("evt-1", 2)), ("repeat".to_owned(), true), "a redelivery is skipped");
+        assert_eq!(answer(false, env("evt-0", 1)), ("below_mark".to_owned(), true), "an older sequence is skipped apart");
+        assert_eq!(answer(true, env("evt-2", 3)), ("completed".to_owned(), true), "a tombstone folds nothing");
+        assert_eq!(answer(false, env("evt-2", 3)), ("fold".to_owned(), false), "the next event folds");
+        assert!(saga_admit(false, "[1]", env("evt-1", 1)).err().is_some_and(|e| e.starts_with("codec: saga folded marks")));
     }
 
     #[test]
@@ -2337,7 +2378,7 @@ mod tests {
         let store = memory_transactor();
         assert!(store.load_saga(NO_TX, "order-1").unwrap().is_none());
 
-        let folded = r#"{"order-1":{"sequence":1,"id":"evt-1"}}"#;
+        let folded = r#"{"order-1":{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}"#;
         assert_eq!(store.save_saga(NO_TX, "order-1", 0, r#"{"status":"awaiting_payment"}"#, folded, vec![]).unwrap(), 1);
         let row = store.load_saga(NO_TX, "order-1").unwrap().expect("saved");
         assert_eq!((row.version, row.completed, row.folded.as_str()), (1, false, folded), "the marks cross as they were saved");

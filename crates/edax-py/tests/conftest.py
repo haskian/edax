@@ -36,7 +36,7 @@ from edax.backend.memory import (
     MemoryIdempotencyStore,
     MemoryTransactor,
 )
-from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
+from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SAGA_SKIPS, SETTLEMENTS, TRANSACTIONS
 from edax.testing import event as build_message
 from edax.testing import event_of
 from edax.testing.faults import Refusing
@@ -171,6 +171,7 @@ class Recording(edax.Observer):
         self.poll_failures: list[type[BaseException]] = []
         self.commit_failures: list[type[BaseException]] = []
         self.revoke_overruns: list[int] = []
+        self.saga_skips: list[tuple[str, str, str]] = []  # (name, reason, event_id)
 
     def claim(self, name: str, verdict: str) -> None:
         assert verdict in CLAIM_VERDICTS, verdict
@@ -220,6 +221,9 @@ class Recording(edax.Observer):
 
     def revoke_overrun(self, handling: int) -> None:
         self.revoke_overruns.append(handling)
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        assert reason in SAGA_SKIPS, reason
+        self.saga_skips.append((name, reason, event_id))
 
 
 class SeqSerializer:
