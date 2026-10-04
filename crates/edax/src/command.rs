@@ -380,13 +380,6 @@ pub struct IdempotencyKey {
     pub tenant: Option<String>,
 }
 
-impl IdempotencyKey {
-    /// `key` sent by `tenant`.
-    pub fn for_tenant(tenant: impl Into<String>, key: impl Into<String>) -> Self {
-        Self { key: key.into(), tenant: Some(tenant.into()) }
-    }
-}
-
 impl From<String> for IdempotencyKey {
     fn from(key: String) -> Self {
         Self { key, tenant: None }
