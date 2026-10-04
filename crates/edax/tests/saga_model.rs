@@ -216,7 +216,7 @@ impl World {
         let Some((env, loaded)) = self.workers[w].taken.take() else { return };
         let was_completed = self.completed();
         let before = self.unsent();
-        let runner = SagaRunner::new(CountSaga, StaleRead { inner: self.store.clone(), loaded }, JsonRegistryCodec::new(1).unwrap());
+        let runner = SagaRunner::new(CountSaga, StaleRead { inner: self.store.clone(), loaded }, JsonRegistryCodec::new().unwrap());
         let tr = self.store.transactor();
         let mut tx = tr.begin().unwrap();
         let out = runner.run(&mut tx, &env);

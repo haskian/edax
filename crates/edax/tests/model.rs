@@ -613,7 +613,7 @@ impl AggregateCodec for CounterCodec {
 type CounterRepo = Repository<MemoryEventStore, JsonCodec<Tick>, CounterCodec>;
 
 fn counter_repo(store: MemoryEventStore) -> CounterRepo {
-    Repository::new(store, JsonCodec::<Tick>::new("Tick", 1), CounterCodec).with_ids(next_id)
+    Repository::new(store, JsonCodec::<Tick>::new("Tick"), CounterCodec).with_ids(next_id)
 }
 
 #[derive(Debug, Clone)]
@@ -786,15 +786,15 @@ proptest! {
 
     #[test]
     fn codecs_roundtrip(event in payload_strategy()) {
-        let json = JsonCodec::<Payload>::new("Payload", 3);
+        let json = JsonCodec::<Payload>::new("Payload");
         let raw = json.marshal(&event).unwrap();
         prop_assert_eq!(&raw.name, "Payload");
-        prop_assert_eq!(raw.version, 3);
+        prop_assert_eq!(raw.version, 1);
         prop_assert_eq!(json.unmarshal(&raw).unwrap(), event.clone());
 
         #[cfg(feature = "msgpack")]
         {
-            let mp = edax::MsgpackCodec::<Payload>::new("Payload", 3);
+            let mp = edax::MsgpackCodec::<Payload>::new("Payload");
             let raw = mp.marshal(&event).unwrap();
             prop_assert_eq!(&raw.name, "Payload");
             prop_assert_eq!(mp.unmarshal(&raw).unwrap(), event);
@@ -803,14 +803,14 @@ proptest! {
 
     #[test]
     fn codecs_reject_garbage(bytes in prop::collection::vec(any::<u8>(), 1..16)) {
-        let raw = Event { name: "Payload".into(), version: 3, data: bytes };
+        let raw = Event { name: "Payload".into(), version: 1, data: bytes };
         // Whatever the bytes are, a codec either decodes them or returns Error::codec — never panics.
-        let json = JsonCodec::<Payload>::new("Payload", 3);
+        let json = JsonCodec::<Payload>::new("Payload");
         if let Err(e) = json.unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
         #[cfg(feature = "msgpack")]
-        if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload", 3).unmarshal(&raw) {
+        if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload").unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
     }

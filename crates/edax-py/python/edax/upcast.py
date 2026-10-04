@@ -27,7 +27,8 @@ def schema_version(version: int, what: str = "version") -> int:
 
 
 class Upcaster:
-    """Registry of ``version -> version+1`` transforms for one event type."""
+    """Registry of ``version -> version+1`` transforms for one event type. The type's schema version is
+    one past its highest step: to bump a type whose shape did not change, register an identity step."""
 
     def __init__(self) -> None:
         self._steps: dict[int, Upcast] = {}
@@ -48,6 +49,15 @@ class Upcaster:
         :class:`~edax.errors.CodecError` on a missing step or when ``from_ > to``; both are deterministic,
         so a redelivery must dead-letter rather than retry."""
         return upcast(self, data, from_=from_, to=to)
+
+
+def target(upcaster: Upcaster | None) -> int:
+    """The schema version an event name with ``upcaster`` writes and raises older payloads to: one past
+    its highest step, or the first version (1) when it has none. A hole in the steps raises
+    :class:`~edax.errors.CodecError`, since a payload stored at the missing version could never be
+    raised. Pinned by ``testdata/golden/upcast.json``."""
+    with errors.mapped():
+        return _edax.upcast_target(None if upcaster is None else list(upcaster._steps))
 
 
 def upcast(upcaster: Upcaster | None, data: bytes, *, from_: int, to: int) -> bytes:

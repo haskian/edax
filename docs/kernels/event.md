@@ -275,6 +275,26 @@ one. The vector also pins that `available` is a set: unsorted and repeated entri
 span of 2^32 versions fails at its second step without walking the span, and an identity span is an
 empty plan. Every error row carries the kernel's exact message, and both SDK suites compare it.
 
+### Each event name has its own version
+
+`upcast_target(available)` is the schema version a codec writes for one event name, and the `to` it
+raises that name's older payloads to. It is one past the highest step, or `FIRST_VERSION` (1) when
+`available` is `None` or empty. The steps are the version's only source. A codec has no separate
+version setting that could disagree with them, and raising one name's version never moves another's.
+To bump a name whose shape did not change, register an identity step.
+
+| `available` | Result |
+|---|---|
+| `None` or `[]` | 1 |
+| `[1, 2]`, in any order, repeats collapsed | 3 |
+| `[2, 3]`, a chain that starts above 1 | 4; its older versions are retired, so a v1 payload is refused at load |
+| a hole, such as `[1, 3]` | error naming the first missing version: a v2 payload could never be raised |
+| a step at `u32::MAX` | error: its output has no schema version |
+
+A codec asks once per name, when it is built, so a broken chain fails at startup and not on the first
+old row. Every row of `upcast.json` pins `target` (or `target_error`) for its `available` beside the
+plan, so a third SDK derives the same version for the same steps.
+
 ```python
 from edax.upcast import Upcaster
 
@@ -288,15 +308,18 @@ upcaster.to(b"x", from_=1, to=4)  # raises CodecError: missing upcast step 3
 let plan = edax_event::upcast_plan(1, 3, Some(&[1, 2]))?;    // [1, 2]
 assert!(edax_event::upcast_plan(1, 3, Some(&[1])).is_err()); // missing step 2
 assert!(edax_event::upcast_plan(5, 1, None).is_err());       // a newer writer, no upcaster
+assert_eq!(edax_event::upcast_target(Some(&[1, 2]))?, 3);    // the name writes v3
+assert!(edax_event::upcast_target(Some(&[1, 3])).is_err());  // a hole: no target
 ```
 
-Both SDKs wire this into their event codecs. Python's `RegistryEventCodec.unmarshal` and Rust's
-`RegistryCodec` / `SerdeCodec::unmarshal` ask the kernel before decoding, with the name's `Upcaster`
-steps or `None`, and no host-side version comparison. Both failures are deterministic, so they are
-`codec` errors and the dispatcher dead-letters on the first attempt instead of nacking forever.
-`Upcaster.step` (both SDKs) refuses a second transform for one version as `already_registered`.
-A schema version is a `u32`. In Python, a negative or oversized version is refused at wiring:
-`Upcaster.step` and a codec's `version` raise `ValueError`, before any message is stamped.
+Both SDKs wire this into their event codecs. Python's `RegistryEventCodec` and Rust's `RegistryCodec`
+/ `SerdeCodec` ask `upcast_target` for each name when they are built, and stamp that version on
+marshal. On unmarshal they ask `upcast_plan` before decoding, with the name's `Upcaster` steps or
+`None`, and no host-side version comparison. Every failure is deterministic, so each is a `codec`
+error: a broken chain fails the codec's construction, and a bad payload dead-letters on the first
+attempt instead of nacking forever. `Upcaster.step` (both SDKs) refuses a second transform for one
+version as `already_registered`. A schema version is a `u32`. In Python, a negative or oversized step
+is refused at wiring: `Upcaster.step` raises `ValueError`, before any message is stamped.
 
 ## `retry` — when a failed message dies
 

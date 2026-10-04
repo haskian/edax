@@ -16,7 +16,7 @@ import msgspec
 
 from .aggregate import Event, Payload
 from .errors import AlreadyRegistered, CodecError
-from .upcast import Upcaster, schema_version, upcast
+from .upcast import Upcaster, target, upcast
 
 __all__ = [
     "RegistryEventCodec",
@@ -37,18 +37,19 @@ def _as_codec_error(what: str) -> Iterator[None]:
 
 class RegistryEventCodec:
     """Maps event names to types and serializes each whole. Build via :func:`json_codec` /
-    :func:`msgpack_codec` rather than directly."""
+    :func:`msgpack_codec` rather than directly.
+
+    Each name has its own schema version: 1, or one past the highest step of its
+    :class:`~edax.upcast.Upcaster`. When one payload changes, give that name an upcaster (or one more
+    step); every other name keeps its version."""
 
     def __init__(
         self,
         events: dict[str, type],
-        version: int,
         encode: Callable[[Any], bytes],
         decode: Callable[[bytes, type], Any],
         upcasters: dict[str, Upcaster] | None = None,
     ) -> None:
-        # One version for the whole registry; split registries if one event must bump alone.
-        self._version = schema_version(version)
         self._encode = encode
         self._decode = decode
         self._by_name = dict(events)
@@ -70,13 +71,19 @@ class RegistryEventCodec:
         dangling = sorted(self._upcasters.keys() - self._by_name.keys())
         if dangling:
             raise CodecError(f"upcasters registered for unknown event names: {dangling}")
+        # The upcaster is a name's only version source, so the two cannot disagree, and a hole in its
+        # chain fails here rather than on the first stored payload at the missing version.
+        self._versions: dict[str, int] = {}
+        for name in self._by_name:
+            with _as_codec_error(f"the upcaster for {name!r}"):
+                self._versions[name] = target(self._upcasters.get(name))
 
     def marshal(self, event: Any) -> Event:
         name = self._by_type.get(type(event))
         if name is None:
             raise CodecError(f"no event name registered for {type(event).__name__}")
         with _as_codec_error(f"encoding {name}"):
-            return Event(name, self._version, self._encode(event))
+            return Event(name, self._versions[name], self._encode(event))
 
     def unmarshal(self, event: Payload) -> Any:
         """The domain object behind ``event``: an :class:`~edax.aggregate.Event`, an
@@ -87,30 +94,30 @@ class RegistryEventCodec:
         # On every unmarshal, with or without an upcaster for the name: the kernel decides that a payload
         # is current, older (raised, or read as it is with no upcaster), or from a *newer* writer than
         # this codec (an error, never a silent decode under the older schema).
-        with _as_codec_error(f"upcasting {event.name} v{event.version}->v{self._version}"):
-            data = upcast(
-                self._upcasters.get(event.name), bytes(event.data), from_=event.version, to=self._version
-            )
+        version = self._versions[event.name]
+        with _as_codec_error(f"upcasting {event.name} v{event.version}->v{version}"):
+            data = upcast(self._upcasters.get(event.name), bytes(event.data), from_=event.version, to=version)
         with _as_codec_error(f"decoding {event.name} v{event.version}"):
             return self._decode(data, type_)
 
 
 def json_codec(
-    events: dict[str, type], *, version: int = 1, upcasters: dict[str, Upcaster] | None = None
+    events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
-    """An EventCodec that serializes payloads as JSON (via msgspec). ``upcasters`` raise older stored
-    payloads to ``version`` on load (see :class:`~edax.upcast.Upcaster`). A ``version`` that is not an
-    unsigned 32-bit integer raises :class:`ValueError` here, not on the first event."""
+    """An EventCodec that serializes payloads as JSON (via msgspec). A name writes version 1, or one past
+    the highest step of its upcaster in ``upcasters``, which raises its older stored payloads on load
+    (see :class:`~edax.upcast.Upcaster`). A hole in a chain raises :class:`~edax.errors.CodecError` here,
+    not on the first event."""
     return RegistryEventCodec(
-        events, version, msgspec.json.encode, lambda b, t: msgspec.json.decode(b, type=t), upcasters
+        events, msgspec.json.encode, lambda b, t: msgspec.json.decode(b, type=t), upcasters
     )
 
 
 def msgpack_codec(
-    events: dict[str, type], *, version: int = 1, upcasters: dict[str, Upcaster] | None = None
+    events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
-    """An EventCodec that serializes payloads as MessagePack (via msgspec) — smaller, binary.
-    ``upcasters`` raise older stored payloads to ``version`` on load."""
+    """An EventCodec that serializes payloads as MessagePack (via msgspec) — smaller, binary. Versions and
+    ``upcasters`` work as in :func:`json_codec`."""
     return RegistryEventCodec(
-        events, version, msgspec.msgpack.encode, lambda b, t: msgspec.msgpack.decode(b, type=t), upcasters
+        events, msgspec.msgpack.encode, lambda b, t: msgspec.msgpack.decode(b, type=t), upcasters
     )
