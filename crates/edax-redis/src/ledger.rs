@@ -87,10 +87,8 @@ fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
     Ok(())
 }
 
-/// How many times per claim TTL a heartbeat renews a held claim: it waits a third of the TTL between
-/// renewals. One renewal that stalls for the whole `op_timeout_ms` then leaves the next one only
-/// `claim_ttl_ms / 3 - op_timeout_ms` to land, so [`check_config`] refuses a deadline of a third of
-/// the TTL or more.
+/// How many times per claim TTL a heartbeat renews a held claim: it sends a renewal every third of the
+/// TTL, timed from the claim's send. [`check_config`] refuses a deadline of a third of the TTL or more.
 pub const HEARTBEATS_PER_TTL: i64 = 3;
 
 /// Refuse the settings a ledger store is built with, as a `bad_handle` error naming the first one
@@ -98,11 +96,13 @@ pub const HEARTBEATS_PER_TTL: i64 = 3;
 /// `prefix`, a `ttl_ms` or `claim_ttl_ms` Redis would refuse, an `op_timeout_ms` deadline that is not
 /// positive, or a `heartbeat` whose `op_timeout_ms` is not under `claim_ttl_ms / HEARTBEATS_PER_TTL`.
 ///
-/// The heartbeat bound: the last renewal that landed set the lease to `claim_ttl_ms`. The next one
-/// starts a third of it later and may stall for `op_timeout_ms` with no reply. The one after starts
-/// another third later, at `2 * claim_ttl_ms / 3 + op_timeout_ms`, and must land before the lease
-/// lapses at `claim_ttl_ms`. Otherwise one stalled renewal lets a second worker win the key while the
-/// first still runs its handler.
+/// The heartbeat bound: the store sends beat `k` at `start + k * claim_ttl_ms / 3`, where `start` is
+/// when it sent the claim, on a monotonic clock. A beat's reply time never moves the next beat. A beat
+/// sent at `S` that lands sets the lease to at least `S + claim_ttl_ms`, since it lands no earlier than
+/// it is sent. If the next beat stalls, the one after is sent at `S + 2 * claim_ttl_ms / 3` and lands
+/// within `op_timeout_ms`, so before `S + claim_ttl_ms` whenever `op_timeout_ms` is under a third of the
+/// TTL. Otherwise one stalled renewal lets a second worker win the key while the first still runs its
+/// handler.
 pub fn check_config(prefix: &str, ttl_ms: i64, claim_ttl_ms: i64, op_timeout_ms: i64, heartbeat: bool) -> Result<(), Error> {
     check_prefix(prefix)?;
     check_ttl("ttl_ms", ttl_ms)?;

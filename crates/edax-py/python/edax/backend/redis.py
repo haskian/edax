@@ -103,12 +103,14 @@ class RedisIdempotencyStore:
         op_timeout_ms: int = 5_000,
         heartbeat: bool = False,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """``prefix`` is required and has no default: it is part of the ledger's identity, not a
         cosmetic namespace. Two services sharing one Redis under one prefix share a key space, and a
         request id both use is one claim. Name the service and the environment,
         ``"billing:prod:idem:"``. A second SDK's store must use the same prefix to share the ledger.
-        ``sleep`` is how the heartbeat waits between renewals; a test steps it instead of sleeping."""
+        ``sleep`` and ``clock`` are how the heartbeat waits and tells time, ``clock`` the running event
+        loop's monotonic ``time()`` by default; a test steps both instead of sleeping."""
         for name, value in (
             ("ttl_ms", ttl_ms),
             ("claim_ttl_ms", claim_ttl_ms),
@@ -127,6 +129,7 @@ class RedisIdempotencyStore:
         # handles, so one can never stop or replace the other's renewal.
         self._renewals: dict[bytes, asyncio.Task[None]] = {}
         self._sleep = sleep
+        self._clock = clock
 
     def _key(self, key: str) -> bytes:
         with errors.mapped():
@@ -156,6 +159,8 @@ class RedisIdempotencyStore:
             # Building the value is the kernel's, not the client's: a hash it refuses is a terminal
             # CodecError, never the transient StoreError an I/O failure gets.
             claim = _edax.redis_new_claim(payload_hash)
+        # Read before the send: the claim's lease runs from when it lands, never earlier.
+        sent_at = self._now()
         reply = await self._eval("claim", key, [claim, self._claim_ttl_ms])
         with errors.mapped():
             # A reply equal to this claim is its own first send, landed with its reply lost: won. A value
@@ -164,7 +169,7 @@ class RedisIdempotencyStore:
         if prior is not None:
             return decode_prior(prior, payload_hash)  # replayed as cached, never re-run
         if self._heartbeat:
-            self._renewals[claim] = asyncio.create_task(self._renew(key, claim))
+            self._renewals[claim] = asyncio.create_task(self._renew(key, claim, sent_at))
         return Won(claim)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
@@ -221,13 +226,21 @@ class RedisIdempotencyStore:
                 return
         raise StoreError(f"redis forget {key!r}: the key changed on every one of {_FORGET_READS} reads")
 
-    async def _renew(self, key: str, handle: bytes) -> None:
-        """The heartbeat: extend the claim every third of its TTL until it is settled or refused. A
-        transient failure is retried on the next beat: the kernel keeps ``op_timeout_ms`` under a third
-        of the TTL, so the next beat still lands before the lease lapses. A terminal failure would fail
-        every beat, so it stops the renewal."""
+    def _now(self) -> float:
+        return self._clock() if self._clock is not None else asyncio.get_running_loop().time()
+
+    async def _renew(self, key: str, handle: bytes, sent_at: float) -> None:
+        """The heartbeat: extend the claim every third of its TTL until it is settled or refused. Beat
+        ``k`` is sent at ``sent_at + k * claim_ttl / 3``, ``sent_at`` being when the claim was sent, so a
+        slow reply never delays the next beat. A beat sent at ``S`` that lands holds the lease to at least
+        ``S + claim_ttl``. A transient failure is retried on the next beat, sent at ``S + 2 * claim_ttl / 3``:
+        the kernel keeps ``op_timeout_ms`` under a third of the TTL, so it lands before the lease lapses. A
+        terminal failure would fail every beat, so it stops the renewal."""
+        interval_s = self._claim_ttl_ms / _HEARTBEATS_PER_TTL / 1000
+        due = sent_at
         while True:
-            await self._sleep(self._claim_ttl_ms / _HEARTBEATS_PER_TTL / 1000)
+            due += interval_s
+            await self._sleep(max(0.0, due - self._now()))
             try:
                 renewed = await self.extend(key, handle)
             except EdaxError as e:
