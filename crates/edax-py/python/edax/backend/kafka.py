@@ -144,6 +144,21 @@ def _check_consumer(client: ConsumerClient) -> None:
         )
 
 
+def _check_listener(client: ConsumerClient) -> None:
+    """Refuse a client the group assigns partitions to but that has no rebalance listener. Without one a
+    revoked partition keeps its bookkeeping. Once its watermark is due, every commit names it, the client
+    refuses the whole commit, and no partition commits again until a restart. The probe reads a private
+    attribute of ``AIOKafkaConsumer``; a different client, or one assigned its partitions by hand, is not
+    judged."""
+    subscription = getattr(client, "_subscription", None)
+    if subscription is not None and subscription.partitions_auto_assigned() and subscription.listener is None:
+        raise ValueError(
+            "KafkaConsumer.run: the client is subscribed without a rebalance listener, so a revoked "
+            "partition keeps its bookkeeping and blocks every later commit. Subscribe with "
+            "listener=consumer.rebalance_listener()."
+        )
+
+
 async def _send(client: ProducerClient, topic: str, record: KafkaRecord, timeout_s: float) -> None:
     """Send ``record`` to ``topic`` and wait for the ack, raising a transient :class:`TimeoutError` after
     ``timeout_s``. With ``enable_idempotence=True`` aiokafka never expires a batch, so without this bound a
@@ -338,7 +353,8 @@ class KafkaConsumer(_ConsumerLoop):
     Acks never wait on the broker. :meth:`run` commits what the kernel says is due every
     ``commit_interval_s`` seconds in one call, under a ``commit_timeout_s`` deadline, and once more when it
     ends; :meth:`flush` commits on demand. A rebalance needs :meth:`rebalance_listener` passed to
-    ``subscribe``: it drains the revoked partitions, commits, and resets them.
+    ``subscribe``: it commits, resets the revoked partitions, and waits for their running handlers.
+    :meth:`run` refuses a subscribed client without a listener.
 
     The offset bookkeeping is native state bound to the thread that built the consumer. Build it on
     the thread that runs it: a call from any other thread raises the terminal
@@ -379,7 +395,7 @@ class KafkaConsumer(_ConsumerLoop):
         """Drop the bookkeeping for a revoked partition and retire its deliveries, so the dispatcher skips
         the ones still queued. Its unsettled offsets are the new owner's to redeliver from the last
         committed watermark, and a stale watermark here would otherwise refuse a lower, correct commit if
-        the partition is assigned back. :meth:`rebalance_listener` calls it after draining."""
+        the partition is assigned back. :meth:`rebalance_listener` calls it after committing."""
         self._tracker.get().reset(tp.topic, tp.partition)
 
     async def flush(self) -> None:
@@ -411,13 +427,16 @@ class KafkaConsumer(_ConsumerLoop):
 
     async def run(self, dispatcher: KeyOrderedDispatcher) -> None:
         """Poll and submit until cancelled or the client stops, committing on the interval. Refuses a
-        dispatcher without ``on_dead`` with :class:`ValueError`, before it polls anything."""
+        dispatcher without ``on_dead``, and a client subscribed without :meth:`rebalance_listener`, with
+        :class:`ValueError`, before it polls anything. The listener is checked here rather than at build,
+        because the client subscribes with this consumer's listener after the consumer is built."""
         if dispatcher.on_dead is None:
             raise ValueError(
                 "KafkaConsumer.run needs a dispatcher with on_dead: a nack rewinds the partition, so a "
                 "message that fails for good with no sink stalls its partition forever. Wire a "
                 "KafkaDeadLetterSink or another sink."
             )
+        _check_listener(self._client)
         self._dispatcher = dispatcher
         committer = asyncio.create_task(self._commit_loop())
         try:

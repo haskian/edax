@@ -65,7 +65,8 @@ serializer. It is also the default for a record that carries no `content-type` h
 Everything after the `*` is keyword-only, so adding an argument later cannot shift a positional one.
 
 Building an adapter checks the client's settings that lose data. A consumer that auto-commits, or
-has no `group_id`, raises `ValueError`. A producer that acks on the leader alone warns. The probes
+has no `group_id`, raises `ValueError`. So does `run` over a client subscribed without
+`rebalance_listener()`. A producer that acks on the leader alone warns. The probes
 read private `aiokafka` attributes, so a client of another library is not judged.
 
 ```python
@@ -401,7 +402,10 @@ It leaves the rest to the host:
   up to `drain_timeout_s`. No key is then handled by two members at once. The new owner starts from
   the commit, so the skipped work runs there: at-least-once. Keep `drain_timeout_s` above the slowest
   handler and below the client's `max_poll_interval_ms`. Without the listener, a revoked partition
-  keeps its stale bookkeeping, and the queued work of it runs alongside the new owner.
+  keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark is
+  due, the client refuses every commit that names it, so no partition commits again. So `run` refuses an
+  `AIOKafkaConsumer` subscribed to topics with no listener, with `ValueError`. A client assigned its
+  partitions by hand (`assign`) has no rebalance and needs none.
 - **Threads.** `KafkaConsumer` keeps its offset bookkeeping in native state bound to the thread that
   built it. Build the consumer on the thread that runs its event loop. A consumer built on the main
   thread and run in `threading.Thread(target=asyncio.run, ...)` raises the terminal `BadHandle` on

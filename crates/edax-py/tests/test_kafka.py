@@ -890,12 +890,30 @@ async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept:
     assert client.commits == []
 
 
-async def test_run_refuses_a_dispatcher_without_a_sink() -> None:
-    """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its
-    partition forever. The run refuses before it polls anything."""
-    client, consumer = await kafka_consumer(1)
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None)
-    with pytest.raises(ValueError, match="on_dead"):
+@pytest.mark.parametrize(
+    ("listener", "on_dead", "raises"),
+    [
+        pytest.param(True, None, "on_dead", id="a_dispatcher_without_a_sink"),
+        pytest.param(
+            False, sink_ok, "without a rebalance listener", id="a_client_subscribed_without_a_listener"
+        ),
+    ],
+)
+async def test_run_refuses_a_wiring_that_stalls(
+    listener: bool, on_dead: Callable[[edax.Delivery, BaseException], Awaitable[None]] | None, raises: str
+) -> None:
+    """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its partition
+    forever. A client the group assigns partitions to, with no listener, keeps a revoked partition's
+    bookkeeping, and the client then refuses every commit that names it. The run refuses both before
+    it polls anything."""
+    cluster = FakeKafkaCluster()
+    client = FakeKafkaClient(cluster)
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
+    consumer = KafkaConsumer(client, serializer=IdSerializer())
+    client.subscribe(["t"], listener=consumer.rebalance_listener() if listener else None)
+    await cluster.join(client)
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, on_dead=on_dead)
+    with pytest.raises(ValueError, match=raises):
         await consumer.run(dispatcher)
     assert client.cursor == 0, "nothing was polled"
 
@@ -1030,7 +1048,8 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     Its replacement starts at the group's commit, so every offset from 10 runs again and none below it."""
     cluster = FakeKafkaCluster()
     first = FakeKafkaClient(cluster)
-    first.subscribe(["t"])
+    first_consumer = KafkaConsumer(first, serializer=IdSerializer(), commit_interval_s=0.001)
+    first.subscribe(["t"], listener=first_consumer.rebalance_listener())
     await cluster.join(first)
     await publish_all(
         first, "t", IdSerializer(), [build_message(f"k{i % 3}", "Tick", 1, id=str(i)) for i in range(20)]
@@ -1045,7 +1064,6 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
             await stuck.wait()  # mid-batch: this one never finishes before the crash
 
     first_dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=first_handler, on_dead=sink_ok)
-    first_consumer = KafkaConsumer(first, serializer=IdSerializer(), commit_interval_s=0.001)
     first_dispatcher.start()
     first_run = asyncio.create_task(first_consumer.run(first_dispatcher))
     while cluster.committed.get(TP0, 0) < 10:
@@ -1058,14 +1076,14 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     assert cluster.committed[TP0] == committed, "a dead member's commit landed"
 
     second = FakeKafkaClient(cluster)
-    second.subscribe(["t"])
+    second_consumer = KafkaConsumer(second, serializer=IdSerializer(), commit_interval_s=0.001)
+    second.subscribe(["t"], listener=second_consumer.rebalance_listener())
     await cluster.join(second)
 
     async def second_handler(env: edax.EventMessage) -> None:
         handled.append(("second", int(env.id)))
 
     second_dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=second_handler, on_dead=sink_ok)
-    second_consumer = KafkaConsumer(second, serializer=IdSerializer(), commit_interval_s=0.001)
     await _drive(second_consumer, second_dispatcher, lambda: cluster.committed.get(TP0) == 20)
 
     redone = sorted(offset for who, offset in handled if who == "second")
@@ -1220,7 +1238,8 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
     middleware), plus where it came from and why, on the kernel's partition for its key."""
     cluster = FakeKafkaCluster(partitions=3)
     client = FakeKafkaClient(cluster)
-    client.subscribe(["t"])
+    consumer = KafkaConsumer(client, serializer=_SchemaSerializer(), commit_interval_s=0.001)
+    client.subscribe(["t"], listener=consumer.rebalance_listener())
     await cluster.join(client)
     producer = KafkaProducer(client, "t", serializer=_SchemaSerializer(), middleware=[_TraceHeader()])
     await producer.publish(build_message("acct-9", "Tick", 1, id="BAD" if cause == "poison" else "7"))
@@ -1231,7 +1250,6 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=handler, on_dead=KafkaDeadLetterSink(client, "t.dlq")
     )
-    consumer = KafkaConsumer(client, serializer=_SchemaSerializer(), commit_interval_s=0.001)
     source_tp = next(TopicPartition("t", p) for p in range(3) if cluster.logs[("t", p)])
     await _drive(consumer, dispatcher, lambda: any(cluster.logs[("t.dlq", p)] for p in range(3)))
 

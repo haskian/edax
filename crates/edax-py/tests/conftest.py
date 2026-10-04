@@ -530,6 +530,17 @@ class FakeKafkaCluster:
         await self.rebalance()
 
 
+@dataclass(frozen=True)
+class FakeSubscription:
+    """What the adapter reads of aiokafka's ``SubscriptionState``: a topic subscription, whose partitions
+    the group assigns, and the rebalance listener it was made with."""
+
+    listener: Any
+
+    def partitions_auto_assigned(self) -> bool:
+        return True
+
+
 class FakeKafkaClient:
     """One ``AIOKafkaConsumer`` member and an ``AIOKafkaProducer`` in one object, over a
     :class:`FakeKafkaCluster` (its own one-partition cluster unless given one). A client built without a
@@ -554,7 +565,7 @@ class FakeKafkaClient:
         self._group_id = group_id
         self._enable_auto_commit = enable_auto_commit
         self._sender = types.SimpleNamespace(_acks=acks)
-        self.listener: Any = None
+        self._subscription: FakeSubscription | None = None
         self.assignment: set[TopicPartition] = set()
         self.position: dict[TopicPartition, int] = {}
         self.seek_log: list[tuple[TopicPartition, int]] = []
@@ -591,7 +602,11 @@ class FakeKafkaClient:
     # --- the consumer -----------------------------------------------------------------------------
 
     def subscribe(self, topics: Sequence[str], listener: Any = None) -> None:
-        self.listener = listener
+        self._subscription = FakeSubscription(listener)
+
+    @property
+    def listener(self) -> Any:
+        return None if self._subscription is None else self._subscription.listener
 
     def _held(self) -> list[TopicPartition]:
         return self.cluster.topic_partitions() if self._standalone else sorted(self.assignment)
