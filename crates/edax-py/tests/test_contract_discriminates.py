@@ -14,7 +14,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +22,7 @@ import pytest
 from edax import _edax
 from edax.aggregate import EventMessage, _replace
 from edax.backend.memory import (
+    MemoryCommandOutbox,
     MemoryEventStore,
     MemoryIdempotencyStore,
     MemoryLedger,
@@ -36,6 +37,7 @@ from edax.query import Page
 from edax.saga import SagaInstance
 from edax.store import Snapshot, current_tx
 from edax.testing import (
+    CommandOutboxContract,
     EventStoreContract,
     IdempotencyStoreContract,
     ProjectionStoreContract,
@@ -122,13 +124,15 @@ class AlwaysWins(_Delegating):
 
 
 class SignedHash(_Delegating):
-    """The payload hash stored in a signed 64-bit column without a cast. Everything passes until a
-    hash above 2^63 appears, and then a genuine duplicate reads as `PayloadMismatch`."""
+    """The payload hash stored in a signed 64-bit column and read back without a cast. The write keeps the
+    bits, and the read re-signs them: everything passes until a hash above 2^63 appears, and then a genuine
+    duplicate reads as `PayloadMismatch`."""
 
     async def claim(self, key: str, payload_hash: int, tx: Any = None) -> Claimed:
-        wrapped = payload_hash - 2**64 if payload_hash >= 2**63 else payload_hash
-        prior = await self._inner.claim(key, wrapped, tx)
-        return prior
+        prior = await self._inner.claim(key, payload_hash, tx)
+        if isinstance(prior, Won) or prior.payload_hash < 2**63:
+            return prior
+        return replace(prior, payload_hash=prior.payload_hash - 2**64)
 
 
 class SnapshotsWithoutChecks(_Delegating):
@@ -229,6 +233,83 @@ class MarksTheWholeInstance(_Delegating):
         instances = {i.rsplit(":", 2)[0] for i in ids}
         rows = await self._inner.unpublished(1000)
         await self._inner.mark_published([c.id for c in rows if c.aggregate_id in instances] + list(ids))
+
+
+class KeysByTheDraft(_Delegating):
+    """Files each event under its own `aggregate_id` column instead of the key `append` was called with: a
+    schema whose stream key is the event's aggregate id. Under a pool the drafts keep the bare id, so two
+    tenants' same-named aggregates land in one stream."""
+
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        stream = events[0].aggregate_id if events else aggregate_id
+        return await self._inner.append(tx, stream, expected, events)
+
+
+class SagaDropsTheTenant(_Delegating):
+    """The saga outbox persists the command columns it was written for, from before the tenant existed. A
+    pooled bus then refuses every command the saga sends."""
+
+    async def save(
+        self, id: str, state: Any, version: int, folded: str, commands: Any, tx: Any = None
+    ) -> int:
+        return await self._inner.save(
+            id, state, version, folded, [_replace(c, tenant=None) for c in commands], tx
+        )
+
+    async def complete(self, id: str, version: int, commands: Any, tx: Any = None) -> int:
+        return await self._inner.complete(id, version, [_replace(c, tenant=None) for c in commands], tx)
+
+
+class OutboxDropsTheTenant(_Delegating):
+    """The command outbox without a tenant column: the relay then publishes commands a pooled producer
+    cannot key."""
+
+    async def enqueue(self, tx: Any, commands: Any) -> None:
+        await self._inner.enqueue(tx, [_replace(c, tenant=None) for c in commands])
+
+
+class OutboxIgnoresTheTx(_Delegating):
+    """Writes every command at once, in a connection of its own, whatever ``tx`` it is handed: the dual
+    write the outbox exists to remove. A command is sent though its events rolled back, and a ``tx`` of
+    another database is never noticed."""
+
+    def __init__(self, inner: MemoryCommandOutbox, db: MemoryTransactor) -> None:
+        super().__init__(inner)
+        self._auto_commit = db.auto_commit()
+
+    async def enqueue(self, tx: Any, commands: Any) -> None:
+        await self._inner.enqueue(self._auto_commit, commands)
+
+
+class OutboxUpserts(_Delegating):
+    """``INSERT ... ON CONFLICT (id) DO UPDATE``: a repeated id replaces the waiting row instead of being
+    refused, so a second command under one id silently overwrites the first."""
+
+    async def enqueue(self, tx: Any, commands: Any) -> None:
+        try:
+            await self._inner.enqueue(tx, commands)
+        except CodecError:
+            await self._inner.mark_published([c.id for c in commands])
+            await self._inner.enqueue(tx, commands)
+
+
+class OutboxNewestFirst(_Delegating):
+    """``ORDER BY issued_at DESC``: the relay sends a later decision about an aggregate ahead of an
+    earlier one."""
+
+    async def unpublished(self, limit: int = 100) -> list[Any]:
+        return list(reversed(await self._inner.unpublished(1000)))[:limit]
+
+
+class OutboxRefusesUnknownIds(_Delegating):
+    """``mark_published`` checks each id and raises for one it does not hold, so the relay's re-mark
+    after a lost response fails the drain."""
+
+    async def mark_published(self, ids: Any) -> None:
+        waiting = {c.id for c in await self._inner.unpublished(1000)}
+        if not set(ids) <= waiting:
+            raise StoreError(f"unknown command ids: {sorted(set(ids) - waiting)}")
+        await self._inner.mark_published(ids)
 
 
 class DropsMetadata(_Delegating):
@@ -917,6 +998,7 @@ BROKEN: list[Broken] = [
         IdempotencyStoreContract,
         "test_the_record_keeps_the_payload_hash_it_was_given",
         lambda db: SignedHash(MemoryIdempotencyStore(db)),
+        expect="stored losslessly",
     ),
     Broken(
         "snapshot_leads_the_stream",
@@ -1147,6 +1229,68 @@ BROKEN: list[Broken] = [
         lambda db: OverlayLedger(release_shadows=True),
         lambda db, store: {"event_store": store},
         expect="must replay the winner",
+    ),
+    # Tenancy: each store passes every clause that sends no tenant or keys by the bare id.
+    Broken(
+        "event_store_keys_by_the_draft",
+        EventStoreContract,
+        "test_the_stream_is_named_by_the_argument_not_the_draft",
+        lambda db: KeysByTheDraft(MemoryEventStore(db)),
+        expect="under the key",
+    ),
+    Broken(
+        "saga_outbox_drops_the_tenant",
+        SagaStoreContract,
+        "test_the_steps_commands_commit_with_its_state",
+        lambda db: SagaDropsTheTenant(MemorySagaStore(db)),
+        expect="its tenant",
+    ),
+    # The command outbox.
+    Broken(
+        "command_outbox_drops_the_tenant",
+        CommandOutboxContract,
+        "test_enqueued_commands_commit_and_roll_back_with_the_events",
+        lambda db: OutboxDropsTheTenant(MemoryCommandOutbox(db)),
+        lambda db, store: {"event_store": MemoryEventStore(db)},
+        expect="the tenant included",
+    ),
+    Broken(
+        "command_outbox_sends_a_rolled_back_command",
+        CommandOutboxContract,
+        "test_enqueued_commands_commit_and_roll_back_with_the_events",
+        lambda db: OutboxIgnoresTheTx(MemoryCommandOutbox(db), db),
+        lambda db, store: {"event_store": MemoryEventStore(db)},
+        expect="a staged command is not one to send",
+    ),
+    Broken(
+        "command_outbox_writes_under_a_foreign_tx",
+        CommandOutboxContract,
+        "test_a_handle_of_another_database_is_refused",
+        lambda db: OutboxIgnoresTheTx(MemoryCommandOutbox(db), db),
+        expect="BadHandle",
+    ),
+    Broken(
+        "command_outbox_upserts_a_repeated_id",
+        CommandOutboxContract,
+        "test_an_id_already_waiting_is_refused",
+        lambda db: OutboxUpserts(MemoryCommandOutbox(db)),
+        lambda db, store: {"event_store": MemoryEventStore(db)},
+        expect="CodecError",
+    ),
+    Broken(
+        "command_outbox_pages_newest_first",
+        CommandOutboxContract,
+        "test_unpublished_is_oldest_commit_first",
+        lambda db: OutboxNewestFirst(MemoryCommandOutbox(db)),
+        lambda db, store: {"event_store": MemoryEventStore(db)},
+    ),
+    Broken(
+        "command_outbox_refuses_an_unknown_id",
+        CommandOutboxContract,
+        "test_mark_published_is_idempotent_and_ignores_unknown_ids",
+        lambda db: OutboxRefusesUnknownIds(MemoryCommandOutbox(db)),
+        lambda db, store: {"event_store": MemoryEventStore(db)},
+        expect="unknown command ids",
     ),
 ]
 

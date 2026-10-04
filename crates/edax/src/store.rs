@@ -217,6 +217,12 @@ pub trait Outbox<R> {
 /// `&mut Tx` through these writes, then commit so they land atomically. The outbox's read side is the
 /// [`Outbox`] supertrait. Event ids are unique store-wide: an append carrying an id the store already
 /// holds is refused, or marking one row published would prune the other unpublished.
+///
+/// The stream is named by the `aggregate_id` argument of [`append`](Self::append), [`load`](Self::load)
+/// and [`load_snapshot`](Self::load_snapshot), and by [`Snapshot::aggregate_id`] for
+/// [`save_snapshot`](Self::save_snapshot): never by a draft's own `aggregate_id`. Under
+/// [`Tenancy::Pool`] the repository passes the id composed with the tenant while every draft keeps the
+/// bare id, so a store keying its rows by the draft merges two tenants' same-named aggregates.
 pub trait EventStore: Transactor + Outbox<EventMessage> {
     /// Events for the aggregate with `sequence > after`, in order (`after` skips a snapshot).
     fn load(&self, tx: &mut Self::Tx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error>;

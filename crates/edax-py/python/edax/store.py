@@ -233,6 +233,11 @@ class EventStore(Protocol):
     transactional outbox, all under one transaction so state and to-publish rows land together.
     What a backend must guarantee; worked examples in ``docs/backends/README.md``.
 
+    - *Stream key.* ``append``, ``load`` and ``load_snapshot`` name the stream by their ``aggregate_id``
+      argument, and ``save_snapshot`` by the snapshot's ``aggregate_id``: never by a draft's own
+      ``aggregate_id``. Under :attr:`~edax.tenancy.Tenancy.POOL` the repository passes the id composed with
+      the tenant, while every draft keeps the bare id, so a store keying its rows by the draft merges two
+      tenants' same-named aggregates into one stream.
     - *Versions.* An aggregate's version is the ``sequence`` of its last stored event, ``0`` for an empty
       stream. ``Repository`` assigns ``sequence = expected_version + 1 .. + n``; a store never renumbers.
     - *Optimistic concurrency.* ``append`` succeeds only if the stored version equals ``expected_version``,

@@ -68,10 +68,12 @@ from ..filter import eq
 from ..projection import Entity
 from ..query import encode_cursor, sort_key
 from ..store import Snapshot, Tx, transaction
+from ..tenancy import Tenancy, tenant_key
 
 __all__ = [
     "BrokerContract",
     "BrokerRig",
+    "CommandOutboxContract",
     "EventStoreContract",
     "IdempotencyStoreContract",
     "ProjectionStoreContract",
@@ -87,10 +89,10 @@ def _body(aggregate_id: str) -> bytes:
 
 
 def draft(
-    aggregate_id: str, sequence: int | None, *, name: str = "Deposited", tenant: str | None = None
+    aggregate_id: str, sequence: int | None, *, name: str = "Deposited", tenant: str | None = "acme"
 ) -> EventDraft:
-    """One event draft as a repository writes it: a fresh time-ordered id, a real JSON body, the lineage of
-    a new flow, and the application's metadata."""
+    """One event draft as a repository of a multi-tenant deployment writes it: a fresh time-ordered id, the
+    tenant, a real JSON body, the lineage of a new flow, and the application's metadata."""
     flow = _edax.guid()
     return EventDraft(
         id=_edax.guid(),
@@ -103,7 +105,7 @@ def draft(
         correlation_id=flow,
         causation_id=flow,
         extensions={},
-        metadata={"tenant": "acme"},
+        metadata={"channel": "web"},
     )
 
 
@@ -448,6 +450,29 @@ class EventStoreContract:
             await event_store.append(tx, b, 0, [draft(b, 1)])
             assert len(await event_store.load(tx, a)) == 1
             assert len(await event_store.load(tx, b)) == 1
+
+    async def test_the_stream_is_named_by_the_argument_not_the_draft(self, event_store: Any) -> None:
+        """ "``append``, ``load`` and the snapshot calls name the stream by the key they are called with,
+        never by a draft's own ``aggregate_id``." Under :attr:`~edax.tenancy.Tenancy.POOL` the repository
+        calls with the aggregate id composed with its tenant, while every draft keeps the bare id. A store
+        that keys its rows by the draft merges two tenants' same-named aggregates into one stream: the
+        second tenant's append conflicts, and its load reads the first tenant's events."""
+        agg = _id("acct")
+        for tenant in ("acme", "globex"):
+            key = tenant_key(Tenancy.POOL, agg, tenant)
+            async with event_store.transaction() as tx:
+                await event_store.append(tx, key, 0, [draft(agg, 1, tenant=tenant)])
+                loaded = await event_store.load(tx, key)
+                assert [(e.aggregate_id, e.tenant) for e in loaded] == [(agg, tenant)], (
+                    f"{tenant}'s event under the key {key!r} it was appended with"
+                )
+                if self.supports_snapshots:
+                    # Lags nothing under the key's own stream, so a store that checks it there accepts it.
+                    await event_store.save_snapshot(tx, Snapshot(key, "Account", 1, tenant.encode()))
+                    snap = await event_store.load_snapshot(tx, key)
+                    assert snap is not None and snap.data == tenant.encode(), f"{tenant}'s snapshot"
+        async with event_store.transaction() as tx:
+            assert await event_store.load(tx, agg) == [], "nothing under the draft's bare aggregate id"
 
     async def test_a_rollback_removes_the_appended_events(self, event_store: Any) -> None:
         """ "a rollback removes all of them." This is what lets a failed handler leave no trace, and
@@ -833,7 +858,7 @@ class ProjectionStoreContract:
 def _saga_command(cid: str, version: int, index: int) -> CommandMessage:
     """The ``index``-th command a saga step committing ``version`` of instance ``cid`` sends: the kernel's
     row, with a real ``Fulfill`` payload, caused by the ``OrderPaid`` event ``evt-<cid>-<version>`` of the
-    flow ``flow-<cid>``."""
+    flow ``flow-<cid>``, in that event's tenant."""
     payload = Event("Fulfill", 1, f'{{"order_id":"{cid}"}}'.encode())
     return _edax.saga_command(
         "order",
@@ -844,6 +869,7 @@ def _saga_command(cid: str, version: int, index: int) -> CommandMessage:
         f"evt-{cid}-{version}",
         f"flow-{cid}",
         1_714_564_800_000_000_001,
+        "acme",
     )
 
 
@@ -926,7 +952,7 @@ class SagaStoreContract:
         sent = [_saga_command(cid, 1, 0).id, _saga_command(cid, 2, 0).id, want.id]
         assert await self._unpublished(saga_store, cid) == sent
         row = next(c for c in await saga_store.unpublished(limit=1000) if c.id == want.id)
-        assert row == want, "every field of the command, its lineage and issued_at included"
+        assert row == want, "every field of the command, its tenant, lineage and issued_at included"
 
     async def test_mark_published_prunes_commands_idempotently(self, saga_store: Any) -> None:
         """A relay is at-least-once, so it re-marks after a lost response: a second mark and an unknown
@@ -1023,6 +1049,113 @@ class SagaStoreContract:
                 await saga_store.save(cid, {"step": "awaiting_payment"}, 0, "", [])
                 raise RuntimeError("the handler failed")
         assert await saga_store.load(cid) is None, "the rollback took the save with it"
+
+
+def _command(aggregate_id: str) -> CommandMessage:
+    """One command a save sends, as :func:`~edax.command.command_message` builds it: a fresh id, a client
+    request key, the target aggregate, the tenant of the aggregate it is saved with, a real JSON body, the
+    lineage of the flow that decided it, a trace parent and the application's metadata."""
+    return CommandMessage(
+        id=_edax.guid(),
+        idempotency_key=_id("req"),
+        aggregate_id=aggregate_id,
+        tenant="acme",
+        name="Ship",
+        version=1,
+        data=f'{{"order_id":"{aggregate_id}","memo":"déjà-vu"}}'.encode(),
+        correlation_id=_edax.guid(),
+        causation_id=_edax.guid(),
+        issued_at=_edax.current_timestamp(),
+        extensions={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+        metadata={"channel": "web"},
+    )
+
+
+class CommandOutboxContract:
+    """The command outbox: the commands :meth:`~edax.store.Repository.save` sends, written under the save's
+    ``tx`` so they commit with its events, and drained by a :class:`~edax.store.Relay` once committed.
+
+    Supply a ``command_outbox`` fixture, and an ``event_store`` fixture over the same database: the outbox
+    writes under the event store's ``tx``.
+    """
+
+    async def _waiting(self, command_outbox: Any, aggregate_id: str) -> list[CommandMessage]:
+        return [c for c in await command_outbox.unpublished(limit=1000) if c.aggregate_id == aggregate_id]
+
+    async def test_enqueued_commands_commit_and_roll_back_with_the_events(
+        self, command_outbox: Any, request: Any
+    ) -> None:
+        """ "``enqueue`` writes the messages under ``tx``", so a command is sent only if the events it
+        follows from landed. One rolled back with its events never reaches the relay, and one committed
+        comes back whole: a column the store forgot, such as the tenant a pooled bus claims inside, is a
+        command its consumer cannot run."""
+        event_store = request.getfixturevalue("event_store")
+        agg = _id("order")
+        with pytest.raises(_RolledBack):
+            async with event_store.transaction() as tx:
+                await event_store.append(tx, agg, 0, [draft(agg, 1)])
+                await command_outbox.enqueue(tx, [_command(agg)])
+                assert await self._waiting(command_outbox, agg) == [], "a staged command is not one to send"
+                raise _RolledBack
+        assert await self._waiting(command_outbox, agg) == [], "the rollback took the command with the events"
+        sent = [_command(agg), _command(agg)]
+        async with event_store.transaction() as tx:
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
+            await command_outbox.enqueue(tx, sent)
+        assert await self._waiting(command_outbox, agg) == sent, "every field as sent, the tenant included"
+
+    async def test_a_handle_of_another_database_is_refused(self, command_outbox: Any) -> None:
+        """ "A backend over another database than the event store refuses it with the terminal
+        ``BadHandle``." Written anyway, the command commits on its own, and is sent when the events it
+        follows from roll back."""
+        from ..backend.memory import MemoryTransactor  # another database than any adopter's outbox
+
+        agg = _id("order")
+        async with MemoryTransactor().transaction() as foreign:
+            with pytest.raises(BadHandle):
+                await command_outbox.enqueue(foreign, [_command(agg)])
+        assert await self._waiting(command_outbox, agg) == [], "the refused enqueue wrote nothing"
+
+    async def test_an_id_already_waiting_is_refused(self, command_outbox: Any, request: Any) -> None:
+        """ "A command id is unique among the rows waiting": the relay marks rows by id, so a second row
+        under one id would be pruned unsent with the first. A repeat is the terminal ``CodecError``, and
+        the batch that carries it writes nothing."""
+        event_store = request.getfixturevalue("event_store")
+        agg = _id("order")
+        first = _command(agg)
+        async with event_store.transaction() as tx:
+            await command_outbox.enqueue(tx, [first])
+        with pytest.raises(CodecError):
+            async with event_store.transaction() as tx:
+                await command_outbox.enqueue(tx, [_command(agg), _replace(first, data=b'{"order_id":"x"}')])
+        assert await self._waiting(command_outbox, agg) == [first], "the refused batch wrote nothing"
+
+    async def test_unpublished_is_oldest_commit_first(self, command_outbox: Any, request: Any) -> None:
+        """ "``unpublished`` returns committed unmarked rows, oldest commit first", and ``limit`` decides the
+        page. A relay publishes in that order, so a store that pages newest first sends a later decision
+        about one aggregate ahead of an earlier one."""
+        event_store = request.getfixturevalue("event_store")
+        agg = _id("order")
+        batches = [[_command(agg), _command(agg)], [_command(agg)]]
+        for batch in batches:
+            async with event_store.transaction() as tx:
+                await command_outbox.enqueue(tx, batch)
+        assert await self._waiting(command_outbox, agg) == [c for batch in batches for c in batch]
+        assert len(await command_outbox.unpublished(limit=2)) == 2, "three rows wait, so the limit decides"
+
+    async def test_mark_published_is_idempotent_and_ignores_unknown_ids(
+        self, command_outbox: Any, request: Any
+    ) -> None:
+        """ "``mark_published`` is idempotent; unknown ids are ignored." A relay is at-least-once, so it
+        re-marks after a lost response; a marked command stops coming back while the rest still wait."""
+        event_store = request.getfixturevalue("event_store")
+        agg = _id("order")
+        first, second = _command(agg), _command(agg)
+        async with event_store.transaction() as tx:
+            await command_outbox.enqueue(tx, [first, second])
+        await command_outbox.mark_published([first.id])
+        await command_outbox.mark_published([first.id, _edax.guid()])
+        assert await self._waiting(command_outbox, agg) == [second], "only the marked command was pruned"
 
 
 class IdempotencyStoreContract:
@@ -1579,12 +1712,16 @@ class BrokerContract:
     nothing, and consumer groups that each read every message."""
 
     async def test_publish_then_poll_keeps_each_keys_order(self, broker_rig: Any) -> None:
+        """Per-key order, and every field as published: the tenant a pooled consumer keys by, the lineage
+        and the context a handler reads."""
         msgs = [message(agg, seq) for seq in (1, 2, 3) for agg in ("a", "b")]
         for msg in msgs:
             await broker_rig.publish(msg)
         consumer = await broker_rig.consumer("g")
+        published = {msg.id: msg for msg in msgs}
         seen: dict[str, list[int | None]] = {}
         for d in await _poll(consumer, len(msgs)):
+            assert d.message == published[d.message.id], "delivered as published, the tenant included"
             seen.setdefault(event_of(d.message).aggregate_id, []).append(event_of(d.message).sequence)
             await d.ack()
         assert seen == {"a": [1, 2, 3], "b": [1, 2, 3]}
@@ -1677,12 +1814,14 @@ class BrokerContract:
 
     async def test_a_command_is_delivered_whole_and_keyed_by_its_id(self, broker_rig: Any) -> None:
         """A broker carries commands as well as events. A command that names no aggregate is ordered by its
-        own id, so two of them never wait on each other, and every field arrives as published."""
+        own id, so two of them never wait on each other, and every field arrives as published, the tenant
+        a pooled bus claims inside included."""
         commands = [
             CommandMessage(
                 id=f"cmd-{n}",
                 idempotency_key=f"req-{n}",
                 aggregate_id=None,
+                tenant="acme",
                 name="Deposit",
                 version=1,
                 data=b'{"amount_cents":4200}',
@@ -1690,7 +1829,7 @@ class BrokerContract:
                 causation_id="evt-1",
                 issued_at=_edax.current_timestamp(),
                 extensions={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
-                metadata={"tenant": "acme"},
+                metadata={"channel": "web"},
             )
             for n in (1, 2)
         ]
