@@ -1376,7 +1376,7 @@ pub struct KafkaDue {
     pub offset: i64,
 }
 
-/// One partition's bookkeeping, for a health check, a gauge or a rebalance drain.
+/// One partition's bookkeeping, for a health check or a gauge.
 pub struct PartitionStats {
     /// The topic this partition belongs to.
     pub topic: String,
@@ -1384,8 +1384,8 @@ pub struct PartitionStats {
     pub partition: i32,
     /// Offsets delivered but not yet settled, retired ones included.
     pub unsettled: u64,
-    /// Unsettled offsets whose token is still live: work a handler may still settle. A rebalance
-    /// drain waits for this to reach zero.
+    /// Unsettled offsets whose token is still live: work a handler may still settle. A retired
+    /// offset waits for a fetch instead.
     pub live: u64,
     /// The highest offset booked.
     pub max_delivered: i64,
