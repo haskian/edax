@@ -31,11 +31,11 @@ byte. The in-memory stores are one implementation (`edax-memory`) behind both.
 
 - **No ambient transaction.** Rust has no `current_tx`. A handler is a synchronous closure on its caller's
   thread. So a participant takes the handle explicitly (`&mut Tx`). A guard gets it from a provider closure
-  the host passes (`idempotent_in(store, scope, tenancy, key, current)`). The closure takes the command or the event
+  the host passes to `idempotent_in(store, scope, tenancy, key, current)`. The closure takes the command or the event
   message, so each worker can return its own handle.
-- **No ambient message.** Rust has no `current_command` and no ambient lineage. A command is a plain value:
-  the guard reads its key and the command's tenant through a closure, `idempotent(store, scope, tenancy,
-  key)`, which returns an `IdempotencyKey` (a plain `String` is a key with no tenant), and a save takes
+- **No ambient message.** Rust has no `current_command` and no ambient lineage. A command is a plain value.
+  The guard reads its key and the command's tenant through a closure, `idempotent(store, scope, tenancy,
+  key)`, which returns an `IdempotencyKey` (a plain `String` is a key with no tenant). A save takes
   its `Lineage` explicitly through `save_with`. The claim key, tenant included, and the hash are the
   kernel's (`claim_key`, `event_idempotency`), so both SDKs claim the same key with the same hash under
   every tenancy. Rust has no `forget` helper: a host deletes a settled record through its store with

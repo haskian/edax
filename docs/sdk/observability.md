@@ -663,6 +663,7 @@ class OtelObserver(Observer):
 
     def revoke_overrun(self, handling: int) -> None:
         revoke_overrun.add(1, SYSTEM)
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         saga_skipped.add(1, {"edax.saga": name, "edax.reason": reason})
 ```

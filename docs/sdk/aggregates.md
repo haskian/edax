@@ -102,9 +102,9 @@ the older schema. A name with no upcaster reads an older payload as it is. `Upca
 second transform for one version (`AlreadyRegistered`). `examples/py/04_upcasting.py` reads a version
 1 event as version 2.
 
-Rust's `JsonRegistryCodec::<AccountEvent>::new()` is the same registry: one event name per variant of
+Rust's `JsonRegistryCodec::<AccountEvent>::new()` is the same registry. It has one event name per variant of
 the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
-`.upcaster(name, Upcaster)` per name, which sets that name's version the same way. It writes the same
+`.upcaster(name, Upcaster)` per name. The upcaster sets that name's version the same way. It writes the same
 name and bytes as Python's `json_codec` for the same event, pinned by
 `testdata/golden/event_codec.json`, so a stream reads the same from either SDK.
 `JsonCodec::<T>::new(name)` remains for one event type under one name; `.with_upcaster(Upcaster)` sets

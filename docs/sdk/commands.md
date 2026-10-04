@@ -71,9 +71,9 @@ would not do that. That is one key and two numbers, so a genuine duplicate raise
 A dataclass is read through its declared fields, defaults included. A command may be decoded off a
 queue with a defaulted field left implicit. It hashes as the one its constructor builds. The hashed
 form is RFC 8785, whose numbers are doubles, so an `amount: float` built with `2` and the same command
-decoded as `2.0` bind to one key. A double rounds an integer past 2^53, so a command carrying an
+decoded as `2.0` bind to one key. A double rounds an integer past 2^53. So a command carrying an
 integer outside -(2^53 - 1) to 2^53 - 1 (a 64-bit id, say) is refused as a terminal `CodecError`
-before any claim: carry such ids as strings.
+before any claim. Carry such ids as strings.
 A command decoded from the wire hashes after its upcast, as the dispatched one does.
 
 In Rust, register each command type as its own struct on the type-erased `CommandBus`. Never route
@@ -245,7 +245,7 @@ await forget(ledger, "billing.worker", received_key(msg))  # the scope and key t
 
 `forget(store, scope, key, *, tenancy=Tenancy.SILO, tenant=None, tx=None)` deletes the record the
 guard stored under `claim_key(scope, key, tenancy=..., tenant=...)`. Pass the guard's tenancy and the
-message's tenant: a pool's record lives under the composed key, and a pool or a bridge refuses a
+message's tenant. A pool's record lives under the composed key. A pool or a bridge refuses a
 `forget` with no tenant as `CodecError` rather than delete nothing. The kernel's
 [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it may
 delete.

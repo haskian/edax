@@ -95,7 +95,7 @@ outside the safe range, so canonicalizing it a second time is refused.
 
 Every row is a case in the kernel's own table-driven test, and `testdata/golden/canonical_json.json`
 carries the input, the canonical text (or the error) and the hash for every SDK to check. A keyset
-cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint, so a sort
+cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint. So a sort
 value that is an integer outside the safe range cannot be minted into a cursor either. A whole float
 past 2^53 can: RFC 8785 writes it as integer digits, so `decode_cursor` reads an integer outside the
 safe range back as the double it was minted from.

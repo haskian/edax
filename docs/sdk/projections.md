@@ -205,7 +205,7 @@ row.
 The canonical form is RFC 8785, whose numbers are doubles. Say a page ends on a row whose sort value is
 an integer outside -(2^53 - 1) to 2^53 - 1. Then it cannot mint `next`: the query fails with
 `CodecError` rather than resume at the wrong row. Keep sort keys and ids that wide as strings. A
-float sort value pages exactly at any size: RFC 8785 writes a whole float past 2^53 as an integer,
+float sort value pages exactly at any size. RFC 8785 writes a whole float past 2^53 as an integer,
 and the kernel reads an integer outside that range back as the float it was minted from.
 
 A backend does not re-derive any of that. The kernel owns both halves of the round trip.
@@ -236,7 +236,7 @@ The document must carry a unique `"id"` that is a string or a number. The kernel
 `{"path": "id"}` as a final sort key unless your sort already ends there. No two rows then share a
 full sort tuple, and a page boundary landing inside a tie neither drops nor repeats a row. A row
 whose `id` is missing, `null`, an array or an object cannot mint a cursor: that is a `CodecError`.
-Arrays and objects compare by type alone, so rows tied on every other key would tie on the tiebreak
+Arrays and objects compare by type alone. Rows tied on every other key would tie on the tiebreak
 too, and paging past them would drop the rest of the tie. An empty sort takes no tiebreak and no
 cursor.
 
