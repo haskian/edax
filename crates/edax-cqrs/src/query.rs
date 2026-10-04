@@ -192,14 +192,16 @@ fn directed(key: &SortKey, order: Ordering) -> Ordering {
 pub const TIEBREAK_PATH: &str = "id";
 
 /// The keys a page is actually ordered by: `sort` with an ascending [`TIEBREAK_PATH`] key appended
-/// unless it is already the last key. Empty for an empty sort: an unsorted query keeps input order
-/// and takes no cursor.
+/// unless it is already the last key, with no collation. A collated id key is no tiebreak: under the
+/// decimal collation `"7"` and `"07"` tie. Empty for an empty sort: an unsorted query keeps input
+/// order and takes no cursor.
 ///
 /// A backend translating a [`Query`] into its own dialect orders by exactly these keys, tiebreak
 /// included, or its pages disagree with the kernel at every tie.
 pub fn effective_sort(sort: &[SortKey]) -> Vec<SortKey> {
     let mut keys = sort.to_vec();
-    if !keys.is_empty() && keys.last().map(|k| k.path.as_str()) != Some(TIEBREAK_PATH) {
+    let ends_on_tiebreak = keys.last().is_some_and(|k| k.path == TIEBREAK_PATH && k.collation.is_none());
+    if !keys.is_empty() && !ends_on_tiebreak {
         keys.push(SortKey::new(TIEBREAK_PATH, false));
     }
     keys
@@ -661,6 +663,11 @@ mod tests {
         assert_eq!(effective_sort(&[]), vec![], "an unsorted query takes no tiebreak");
         assert_eq!(effective_sort(&keys(&[("n", false)])), keys(&[("n", false), ("id", false)]));
         assert_eq!(effective_sort(&keys(&[("id", true)])), keys(&[("id", true)]), "a terminal id key is kept as-is");
+        assert_eq!(
+            effective_sort(&[SortKey::decimal("id", false)]),
+            vec![SortKey::decimal("id", false), SortKey::new("id", false)],
+            "a collated id key ties \"7\" and \"07\": the plain id follows it"
+        );
     }
 
     /// The JSON boundary reads the spec strictly: a typo or a wide integer is an error, not a query
