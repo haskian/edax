@@ -95,7 +95,8 @@ Variations, from strictest down:
   starts a dedicated data plane per tenant. The data plane is a silo; the control plane is a pool, so
   it takes the pool rules.
 
-**In edax.** `Tenancy.SILO`, the default. A tenant is optional and no key carries one. Stamp one
+**In edax.** `Tenancy.SILO`, the default of a repository and a producer. The idempotency guards,
+`claim_key` and `forget` have no default, so pass it there. A tenant is optional and no key carries one. Stamp one
 anyway if the data may ever move into a pool: the field travels, costs almost nothing, and gives you
 an audit trail.
 

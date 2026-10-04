@@ -216,7 +216,7 @@ async def test_command_hash_sees_host_values_by_value(
         runs.append(cmd)
         return "charged"
 
-    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test"))
+    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     assert await bus.dispatch(first, idempotency_key="req-1") == "charged"
     assert await bus.dispatch(second, idempotency_key="req-1") == "charged"
@@ -237,7 +237,7 @@ async def test_command_refusals_are_codec_errors_before_the_handler(branch: str,
     async def handler(cmd: Charge) -> None:
         runs.append(cmd)
 
-    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test"))
+    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     with pytest.raises(edax.CodecError) as caught:
         await bus.dispatch(cmd, idempotency_key="req-1")

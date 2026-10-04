@@ -156,7 +156,9 @@ runs the own-ledger mode through the commit-lands-reply-lost window, with `Broke
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
 db = MemoryTransactor()
 balances = MemoryProjectionStore(db)
-router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances"))
+router = EventRouter(
+    idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
+)
 ```
 
 ## The record lifecycle
@@ -365,7 +367,9 @@ both. So `retry` refuses to run while any `transaction` is open, and goes outsid
 
 ```python
 # examples/py/05_idempotent_commands.py: retry outermost, the guard owns the unit of work.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
+bus = CommandBus(
+    retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
+)
 ```
 
 **Store contract clauses for a claim taken inside a transaction**:

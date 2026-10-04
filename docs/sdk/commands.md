@@ -147,23 +147,24 @@ current. A codec that names the command other than `cmd.type` raises `CodecError
 
 ## Scope names the guard
 
-`idempotent(store, scope="billing")` deduplicates by the message's idempotency key. `scope` is
-required. The guard claims the kernel's
+`idempotent(store, scope="billing", tenancy=Tenancy.SILO)` deduplicates by the message's idempotency
+key. `scope` and `tenancy` are required. The guard claims the kernel's
 [`claim_key(scope, key)`](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims),
 never the raw key, so two guards on one ledger never meet. An ingress guard that takes client
 requests and a consumer guard that takes commands off a topic may see the same key. Each replays
 only its own outcome.
 
 ```python
-ingress = CommandBus(idempotent(ledger, scope="billing.api", unit_of_work=db))
-worker = CommandBus(idempotent(ledger, scope="billing.worker", unit_of_work=db))
+ingress = CommandBus(idempotent(ledger, scope="billing.api", tenancy=Tenancy.SILO, unit_of_work=db))
+worker = CommandBus(idempotent(ledger, scope="billing.worker", tenancy=Tenancy.SILO, unit_of_work=db))
 ```
 
 Name a service, or a stage within one. The
 [claim key](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims) section says why
-the scope has no default.
+the scope has no default. The tenancy has none either: a pooled deployment that missed one guard
+would claim outside its tenant without an error.
 
-Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL` as well. The claim is then that
+Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL`. The claim is then that
 scoped key composed with the message's `tenant`: `claim_key("billing.api", "req-1", tenancy=POOL,
 tenant="acme")` is `4:acme:edax:cmd:11:billing.api:req-1`. One request id reused by two tenants claims
 two rows instead of replaying one tenant's result to the other. Under a pool or a bridge a message
@@ -434,7 +435,9 @@ The wiring `examples/py/05_idempotent_commands.py` runs, with a `submit` entry p
 ```python
 # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
 # attempt rolls back whole. retry refuses to run inside an open transaction.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
+bus = CommandBus(
+    retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
+)
 bus.register("Deposit", deposit)
 
 

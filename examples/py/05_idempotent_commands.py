@@ -16,7 +16,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import Aggregate, CommandBus, PayloadMismatch, Repository, idempotent, json_codec, retry
+from edax import Aggregate, CommandBus, PayloadMismatch, Repository, Tenancy, idempotent, json_codec, retry
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 
 
@@ -70,7 +70,9 @@ async def main() -> None:
     # 2. The recommended wiring: retry outermost, the guard owns the unit of work.
     #    Step 6 shows what retry adds. Open no transaction around a dispatch.
     #    The scope names this guard, so another service sharing the ledger never replays it.
-    bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), db, scope="accounts-api"))
+    bus = CommandBus(
+        retry(3), idempotent(MemoryIdempotencyStore(db), db, scope="accounts-api", tenancy=Tenancy.SILO)
+    )
     bus.register("Deposit", deposit)
 
     # 3. The first request deposits.

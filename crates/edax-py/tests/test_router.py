@@ -166,7 +166,9 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
 
     # A sync handler raises while the middleware is *building* the awaitable, so the guard has to
     # call it inside its own try or the claim is left pending and the failure never cached.
-    guarded = idempotent_by_id(store, scope=SCOPE)(run if case.sync else async_handler)
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(
+        run if case.sync else async_handler
+    )
     if case.held:
         assert isinstance(await store.claim(event_claimed(deposited().id), edax.payload_hash(DEPOSITED)), Won)
         store.claims = 0
@@ -323,7 +325,7 @@ async def test_claim_enlists_in_the_ambient_tx(
         nonlocal calls
         calls += 1
 
-    guarded = idempotent_by_id(store, scope=SCOPE)(handler)
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(handler)
     env = deposited()
     try:
         async with transaction(store):
@@ -365,7 +367,9 @@ async def test_redelivery_through_the_dispatcher_is_skipped_and_acked() -> None:
         nonlocal calls
         calls += 1
 
-    router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore(), scope=SCOPE))
+    router = edax.EventRouter(
+        idempotent_by_id(MemoryIdempotencyStore(), scope=SCOPE, tenancy=edax.Tenancy.SILO)
+    )
     router.register("Deposited", handler)
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=router.dispatch)
     dispatcher.start()

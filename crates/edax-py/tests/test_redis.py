@@ -243,7 +243,7 @@ async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
         nonlocal runs
         runs += 1
 
-    bus = CommandBus(idempotent(ledger.store(), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Charge", handler)
     # `Charge("k1")` hashes to neither 42 nor HASH: a stored hash that reads makes it a reused key.
     replay = edax.PayloadMismatch if want_hash == HASH else edax.CachedFailure
@@ -464,7 +464,7 @@ async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
                 await a_finished.wait()
         return f"charged by {me}"
 
-    bus = CommandBus(idempotent(store, scope="test"))
+    bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
 
     first = asyncio.create_task(bus.dispatch(Charge("req-1"), idempotency_key="req-1"))
@@ -523,7 +523,7 @@ async def test_a_claim_whose_reply_was_lost_and_resent_is_won(ledger: Ledger) ->
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
     assert runs == ["req-1"] and not conn.armed
@@ -554,7 +554,7 @@ async def test_a_complete_whose_reply_was_lost_keeps_the_record(ledger: Ledger, 
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     if resend:
         assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
@@ -579,7 +579,7 @@ async def test_a_release_whose_reply_was_lost_still_frees_the_key(ledger: Ledger
             raise RuntimeError("downstream timed out")
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     with pytest.raises(RuntimeError, match="downstream timed out"):
         await bus.dispatch(Charge("req-1"), idempotency_key="req-1")

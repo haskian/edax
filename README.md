@@ -47,7 +47,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec
+from edax import Aggregate, Relay, Repository, Tenancy, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -101,7 +101,7 @@ async def main() -> None:
     # The guard opens the unit of work: claim, events, snapshot and outbox commit together.
     # retry sits outside it, so a failed attempt rolls back whole before the next one starts.
     ledger = MemoryIdempotencyStore(db)
-    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", unit_of_work=db))
+    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit, request_id: str) -> int:

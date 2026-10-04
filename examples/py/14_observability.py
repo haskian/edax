@@ -22,6 +22,7 @@ from edax import (
     EventDraft,
     Observer,
     Relay,
+    Tenancy,
     current_timestamp,
     idempotent,
     timing,
@@ -73,7 +74,7 @@ async def main() -> None:
 
     # 1. timing() outermost, so it times every dispatch, the replayed ones too.
     ledger = MemoryIdempotencyStore(db)
-    guard = idempotent(ledger, db, scope="accounts-api", observer=observer)
+    guard = idempotent(ledger, db, scope="accounts-api", observer=observer, tenancy=Tenancy.SILO)
     bus = CommandBus(timing(record_latency, lambda cmd: cmd.type), guard)
 
     async def deposit(cmd: Deposit) -> int:

@@ -257,7 +257,7 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
         nonlocal runs
         runs += 1
 
-    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE))
+    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO))
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 
@@ -290,7 +290,7 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
     async def handler(env: edax.EventMessage) -> None:
         raise edax.Rejected("insufficient funds: balance 300, withdrawal 500")
 
-    guarded = edax.idempotent_by_id(ledger, scope=SCOPE)(handler)
+    guarded = edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO)(handler)
     env = build_message("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     with pytest.raises(edax.Rejected):
         await maybe_await(guarded(env))
@@ -313,7 +313,7 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
         nonlocal runs
         runs += 1
 
-    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE))
+    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO))
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 

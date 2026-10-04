@@ -302,7 +302,9 @@ event is already decided by its ordering key. The router runs each handler under
 event, so an event a handler saves continues the flow.
 
 ```python
-router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore(), scope="balances"))
+router = edax.EventRouter(
+    idempotent_by_id(MemoryIdempotencyStore(), scope="balances", tenancy=edax.Tenancy.SILO)
+)
 
 
 @router.on("Deposited")

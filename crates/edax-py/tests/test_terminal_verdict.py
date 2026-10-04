@@ -137,7 +137,7 @@ async def _through_the_guard(source: Source) -> Outcome:
         source.fail()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Withdraw", handler)
     seen: list[str] = []
     for _ in range(2):
@@ -215,7 +215,9 @@ async def _through_the_saga_relay(source: Source) -> Outcome:
         source.fail()
 
     db = MemoryTransactor()
-    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(db), scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(MemoryIdempotencyStore(db), scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("Withdraw", command)
     store = MemorySagaStore(db)
     runner = edax.SagaRunner(_WithdrawSaga(), store, edax.json_codec({"Withdraw": Withdraw}))
@@ -312,7 +314,7 @@ async def test_a_cancel_is_never_cached() -> None:
             await gate.wait()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Withdraw", handler)
     task = asyncio.ensure_future(bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id))
     await asyncio.sleep(0)

@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import CachedFailure, CommandBus, IdempotencyStore, Rejected, guid, idempotent
+from edax import CachedFailure, CommandBus, IdempotencyStore, Rejected, Tenancy, guid, idempotent
 from edax.backend.memory import MemoryLedger
 
 
@@ -43,7 +43,7 @@ async def charge_twice(ledger: IdempotencyStore) -> None:
             raise CardDeclined(f"card {cmd.card} declined")
         return f"charged {cmd.amount}"
 
-    bus = CommandBus(idempotent(ledger, scope="payments"))
+    bus = CommandBus(idempotent(ledger, scope="payments", tenancy=Tenancy.SILO))
     bus.register("ChargeCard", charge)
 
     # 1. A charge, then the same message again: replayed from the ledger.

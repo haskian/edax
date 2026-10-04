@@ -174,7 +174,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import Aggregate, Repository, json_codec
+from edax import Aggregate, Repository, Tenancy, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent
 
@@ -199,7 +199,7 @@ async def main() -> None:
         await repo.save(account)
         return account.balance
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), scope="accounts"))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO))
     bus.register("Deposit", deposit)
 
     # "req-A" is the client's idempotency key, such as an HTTP Idempotency-Key header
@@ -234,7 +234,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import Aggregate, Relay, Repository, json_codec
+from edax import Aggregate, Relay, Repository, Tenancy, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
@@ -254,7 +254,7 @@ async def main() -> None:
 
     # claim, events, snapshot, outbox: one commit or one rollback per attempt
     ledger = MemoryIdempotencyStore(db)
-    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", unit_of_work=db))
+    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db))
     bus.register("Deposit", deposit)
 
     async def submit(cmd: Deposit, request_id: str) -> int:

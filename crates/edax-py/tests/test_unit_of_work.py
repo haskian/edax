@@ -71,7 +71,9 @@ class Rig:
                 raise self._raises
             return int(entity.document["balance"]) if self._result is None else self._result
 
-        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
+        self.bus = CommandBus(
+            idempotent(self.ledger, scope="test", unit_of_work=self.unit, tenancy=edax.Tenancy.SILO)
+        )
         self.bus.register("Deposit", handler)
 
     async def dispatch(self) -> Any:
@@ -234,7 +236,9 @@ class Broker:
                 failure, self._fail_first = self._fail_first, None  # one-shot
                 raise failure
 
-        guard = idempotent_by_id(self.ledger, unit_of_work=self.db if uow else None, scope=SCOPE)
+        guard = idempotent_by_id(
+            self.ledger, unit_of_work=self.db if uow else None, scope=SCOPE, tenancy=edax.Tenancy.SILO
+        )
         router = edax.EventRouter(guard)
         router.register("Deposited", handler)
         self.dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, max_attempts=2, on_dead=self._dead)
@@ -349,7 +353,7 @@ async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     delete the *winner's* live claim. Only the caller that won the claim may settle it."""
     ledger = MemoryLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
@@ -394,7 +398,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     case deletes the winner's live claim. Retention settles the first case instead."""
     ledger = ClaimRaisesLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
@@ -468,7 +472,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
         runs += 1
         raise case.handler_error
 
-    bus = CommandBus(idempotent(ledger, scope="test"))
+    bus = CommandBus(idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", handler)
     cmd = Deposit(100, "req-A")
 
@@ -553,7 +557,9 @@ class History:
                 raise edax.CodecError("terminal")
             return int(entity.document["applied"])
 
-        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
+        self.bus = CommandBus(
+            idempotent(self.ledger, scope="test", unit_of_work=self.unit, tenancy=edax.Tenancy.SILO)
+        )
         self.bus.register("Deposit", handler)
 
     async def run(self, ops: list[Op]) -> None:
@@ -633,11 +639,13 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
         DOC, "Deposited", 1, id="evt-1", data=b'{"amount":100}', recorded_at=1_714_564_800_000_000_000
     )
     if guard == "idempotent":
-        bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+        bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
         bus.register("Deposit", handler)
         dispatched, key = bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A"), claimed("req-A")
     else:
-        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db, scope=SCOPE))
+        router = edax.EventRouter(
+            idempotent_by_id(ledger, unit_of_work=db, scope=SCOPE, tenancy=edax.Tenancy.SILO)
+        )
         router.register("Deposited", handler)
         dispatched, key = router.dispatch(env), event_claimed(env.id)
     with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):

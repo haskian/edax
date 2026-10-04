@@ -49,7 +49,7 @@ SCOPE = "test"
 
 def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
     """The ledger key a guard of ``scope`` claims for ``idempotency_key``: the kernel's ``claim_key``."""
-    return edax.claim_key(scope, idempotency_key)
+    return edax.claim_key(scope, idempotency_key, tenancy=edax.Tenancy.SILO)
 
 
 def event_claimed(event_id: str, scope: str = SCOPE) -> str:

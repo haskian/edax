@@ -56,7 +56,7 @@ async def test_none_result_is_replayed_as_a_success() -> None:
     # A handler that returns None (the common case) must replay as None, not as "no result" or as
     # a failure; the golden vector pins this for both SDKs.
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     calls = 0
 
     async def handler(cmd: CreateUser) -> None:
@@ -220,7 +220,7 @@ async def test_golden_command_hash_holds_through_the_middleware(shape: str) -> N
     for case in cases:
         cmd = _golden_command(case["type"], case["command"], shape)
         store = MemoryIdempotencyStore()
-        bus = C.CommandBus(C.idempotent(store, scope="test"))
+        bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
         bus.register(case["type"], handler)
         runs.clear()
         if case["error"] is not None:
@@ -397,7 +397,7 @@ def test_hash_is_independent_of_how_the_command_was_built(case: ConstructionCase
 
 async def test_bus_idempotency() -> None:
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"), C.retry(3))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO), C.retry(3))
 
     calls = 0
 
@@ -482,7 +482,9 @@ async def test_transient_failure_releases_claim_so_a_retry_reruns() -> None:
     # A non-terminal (transient) handler failure must NOT poison the key: the claim is released so a
     # fresh dispatch of the same key runs the handler again rather than replaying the error forever.
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))  # no retry: observe one run at a time
+    bus = C.CommandBus(
+        C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO)
+    )  # no retry: observe one run at a time
     calls = 0
 
     async def handler(cmd: CreateUser) -> str:
@@ -503,7 +505,7 @@ async def test_transient_failure_releases_claim_so_a_retry_reruns() -> None:
 
 async def test_terminal_failure_is_cached_and_replayed() -> None:
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     calls = 0
 
     async def handler(cmd: CreateUser) -> str:
@@ -536,7 +538,7 @@ async def test_pending_claim_raises_in_progress_not_none() -> None:
     async def must_not_run(c: Any) -> None:
         raise AssertionError("handler must not run")
 
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("user.create", must_not_run)
     with pytest.raises(edax.InProgress):
         await bus.dispatch(cmd, idempotency_key="req-1")
@@ -787,7 +789,9 @@ async def test_retry_inside_idempotent_shares_one_claim() -> None:
     store = CountingIdempotencyStore()
     # Order matters: idempotent first (outermost), retry inside it.
     pacing, slept = recording_pacing()
-    bus = C.CommandBus(C.idempotent(store, scope="test"), C.retry(2, pacing=pacing))
+    bus = C.CommandBus(
+        C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO), C.retry(2, pacing=pacing)
+    )
     calls = 0
 
     async def handler(cmd: CreateUser) -> str:
@@ -955,11 +959,19 @@ async def test_retry_refuses_to_run_inside_an_open_transaction(case: PlacementCa
         return cmd.request_id
 
     if case.wiring == "inside_the_guard":
-        bus = C.CommandBus(C.idempotent(ledger, unit_of_work=db, scope="test"), C.retry(3, pacing=NO_WAIT))
+        bus = C.CommandBus(
+            C.idempotent(ledger, unit_of_work=db, scope="test", tenancy=edax.Tenancy.SILO),
+            C.retry(3, pacing=NO_WAIT),
+        )
     elif case.wiring == "under_the_host":
-        bus = C.CommandBus(C.retry(3, pacing=NO_WAIT), C.idempotent(ledger, scope="test"))
+        bus = C.CommandBus(
+            C.retry(3, pacing=NO_WAIT), C.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO)
+        )
     else:
-        bus = C.CommandBus(C.retry(3, pacing=NO_WAIT), C.idempotent(ledger, unit_of_work=db, scope="test"))
+        bus = C.CommandBus(
+            C.retry(3, pacing=NO_WAIT),
+            C.idempotent(ledger, unit_of_work=db, scope="test", tenancy=edax.Tenancy.SILO),
+        )
     bus.register("Deposit", deposit)
     command = Deposit("acct-1", 100, "req-1")
 
@@ -1040,7 +1052,7 @@ class IdemCase:
 )
 async def test_idempotent_branches(case: IdemCase) -> None:
     store = case.store()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     calls = 0
 
     async def handler(cmd: Any) -> str:
@@ -1088,7 +1100,7 @@ async def test_cancellation_never_strands_a_pending_claim(case: CancelCase) -> N
             await super().complete(key, handle, record, tx)
 
     store = CancellableStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     started = asyncio.Event()
     calls = 0
 
@@ -1119,7 +1131,7 @@ async def test_concurrent_dispatches_of_one_key_run_the_handler_once() -> None:
     # wins and runs the handler; the losers see the pending record and raise InProgress rather than a
     # bogus None; once the winner completes, a later dispatch replays its result.
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     release = asyncio.Event()
     calls = 0
 
@@ -1153,7 +1165,7 @@ async def test_unserializable_result_is_terminal_and_cached() -> None:
     # A handler result the record encoder rejects fails identically on every re-run. Released, the
     # claim would let a retry run the side effect again; cached, the retry replays the codec failure.
     store = CountingIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     runs = 0
 
     async def handler(cmd: CreateUser) -> object:
@@ -1311,7 +1323,7 @@ async def test_a_second_cancel_does_not_abandon_the_claim(case: CancelCase) -> N
             raise ConnectionError("downstream call reset")
         return f"user:{cmd.email}"
 
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("user.create", handler)
     task = asyncio.create_task(bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1"))
     await running.wait()
@@ -1366,7 +1378,7 @@ async def test_a_cancel_at_the_claims_first_suspension_point_never_strands_the_k
         runs.append(cmd.email)
         return f"user:{cmd.email}"
 
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("user.create", handler)
     task = asyncio.create_task(bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1"))
     await asyncio.sleep(0)  # the dispatch runs up to its first suspension point
@@ -1406,7 +1418,7 @@ async def test_one_key_reused_by_another_command_type_is_a_payload_mismatch() ->
     replay each other's result: the second is refused, its handler never runs."""
     fields = golden("command_hash.json")[0]["command"]
     store = MemoryIdempotencyStore()
-    bus = C.CommandBus(C.idempotent(store, scope="test"))
+    bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     ran: list[str] = []
 
     async def place(cmd: GoldenPlaceOrder) -> str:

@@ -361,7 +361,7 @@ class Rig:
         self.claims = MemoryIdempotencyStore(self.db)
         self.repo = counter_repo(self.store, iter(range(1, 100)))
         self.calls = 0
-        self.bus = CommandBus(idempotent(self.claims, scope="test"))
+        self.bus = CommandBus(idempotent(self.claims, scope="test", tenancy=edax.Tenancy.SILO))
         self.bus.register("Deposit", self._deposit)
 
     async def _deposit(self, cmd: Deposit) -> int:
