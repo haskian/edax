@@ -36,7 +36,7 @@ from edax.backend.memory import (
     MemoryIdempotencyStore,
     MemoryTransactor,
 )
-from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
+from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SAGA_SKIPS, SETTLEMENTS, TRANSACTIONS
 from edax.testing import event as build_message
 from edax.testing import event_of
 from edax.testing.faults import Refusing
@@ -167,6 +167,7 @@ class Recording(edax.Observer):
         self.drains: list[tuple[int, int, int | None]] = []
         self.drain_failures: list[type[BaseException]] = []
         self.undecodables: list[tuple[str, type[BaseException]]] = []
+        self.saga_skips: list[tuple[str, str, str]] = []  # (name, reason, event_id)
 
     def claim(self, name: str, verdict: str) -> None:
         assert verdict in CLAIM_VERDICTS, verdict
@@ -197,6 +198,10 @@ class Recording(edax.Observer):
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         self.undecodables.append((message_id, type(error)))
+
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        assert reason in SAGA_SKIPS, reason
+        self.saga_skips.append((name, reason, event_id))
 
 
 class SeqSerializer:

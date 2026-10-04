@@ -18,7 +18,7 @@ only when a shared decision needs a second implementation to pin it, never to ma
 | outbox drain | `Relay::drain` over any `Outbox<R>` | `Relay.drain` and `Relay.run`, plus `pump` |
 | command bus | `CommandBus` (`register::<C, O>`, `wrap`), `retry`, `idempotent`, `idempotent_in`, `Terminal` | `CommandBus` (`dispatch`, `dispatch_message`), `command_message`, `current_command`, `retry`, `idempotent`, `forget`, `Rejected` |
 | consume path | `KeyOrderedDispatcher`, `Delivery::with_live`, `EventRouter`, `idempotent_by_id` | `KeyOrderedDispatcher`, `Delivery.live`, `EventRouter`, `idempotent_by_id` |
-| saga | `Saga`, `SagaRunner`, `SagaStore` with its outbox | the same, plus `SagaRunner.relay` |
+| saga | `Saga`, `SagaRunner` with `command_failed`, `SagaStore` with its outbox | the same, plus `SagaRunner.relay` and the `saga_skipped` observation |
 | transaction | `Transactor` (with `identity`), `transaction`, `retry_transaction` | `Transactor`, `transaction`, `current_tx` |
 | messages | `EventMessage`, `EventDraft`, `CommandMessage`, `Lineage` from `edax-event` | the same native classes |
 | in-memory backends | `MemoryTransactor` and its stores, `MemoryLedger`, `MemoryBroker` (`with_partitions`, `group`, `crash`) | the same, plus `MemoryCommandOutbox` and the Redis and Kafka adapters |

@@ -946,7 +946,7 @@ class SagaStoreContract:
         after its step committed by these marks. A store that drops them folds the event again, and the step's
         commands go out a second time under new ids."""
         cid = _id("corr")
-        folded = f'{{"{cid}":{{"sequence":1,"id":"evt-1"}}}}'
+        folded = f'{{"{cid}":{{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}}}'
         await saga_store.save(cid, {"step": "one"}, 0, folded, [])
         instance = await saga_store.load(cid)
         assert instance is not None and instance.folded == folded, "the marks come back as they were saved"

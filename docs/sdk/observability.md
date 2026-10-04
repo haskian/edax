@@ -16,6 +16,7 @@ flowchart LR
     T["transaction, Repository, the guards"] -->|"transaction(outcome, duration_ns)"| OBS
     R["Relay"] -->|"drain(published, duration_ns, oldest_timestamp), drain_failed(error)"| OBS
     L["consumer loop, any Consumer"] -->|"undecodable(message_id, error)"| OBS
+    SR["SagaRunner"] -->|"saga_skipped(name, reason, event_id)"| OBS
     OBS --> EXP["host adapter: OpenTelemetry, a dict"]
     D -->|"stats(), idle()"| PULL["health check"]
     R -->|"last"| PULL
@@ -41,7 +42,7 @@ published.
 
 ## The Observer
 
-`edax.Observer` is a class of eight no-op methods. Subclass it and override what you export. Every
+`edax.Observer` is a class of nine no-op methods. Subclass it and override what you export. Every
 argument is a plain value. Where an exception is passed, it is for the log line; a metric adapter
 labels it with `error_type(error)`, never with its message.
 
@@ -55,12 +56,13 @@ labels it with `error_type(error)`, never with its message.
 | `drain(published, duration_ns, oldest_timestamp)` | `Relay` | none | a drain completed |
 | `drain_failed(error)` | `Relay` | none | a drain raised |
 | `undecodable(message_id, error)` | the consumer loop, for any `Consumer` | none | a poison message: a polled payload the serializer rejected |
+| `saga_skipped(name, reason, event_id)` | `SagaRunner` | `SAGA_SKIPS`: `completed`, `repeat`, `below_mark` | a saga instance did not fold an event routed to it |
 
 ### Method by method
 
 Each entry says when the method fires, what its arguments mean, what to read from it, and what it
 is not. Each outcome set is also a `Literal` type: `ClaimVerdict`, `Settlement`, `DeliveryOutcome`,
-`TransactionOutcome`, `HandlerOutcome`. The hooks are annotated with it, and the tuple is `get_args`
+`TransactionOutcome`, `HandlerOutcome`, `SagaSkip`. The hooks are annotated with it, and the tuple is `get_args`
 of it, so a type checker catches a branch on a string the SDK never sends.
 
 Hooks are synchronous. An `async def` hook returns a coroutine nobody awaits, so its metric would
@@ -70,7 +72,8 @@ carries on. Hand the value to a task or queue of your own instead.
 The four methods that happen inside a handler take `name` first. It is the command type,
 `cmd.type`, on the command bus, and the event name, `msg.name`, on the consume path. That is
 the closed set the bus and the router register handlers under, so it is safe as a label.
-`transaction`, `drain`, `drain_failed` and `undecodable` have no handler to name.
+`transaction`, `drain`, `drain_failed` and `undecodable` have no handler to name. `saga_skipped`
+takes the saga's `name`, another closed set.
 
 #### `claim(name, verdict)`: a dispatch lost the idempotency claim
 
@@ -208,6 +211,18 @@ the sink raises. This fires once per poisoned delivery, from the loop, for any `
 publishing a shape this consumer cannot read: a contract problem, not a retry problem. The message
 never reached a worker, so no `delivery` reports it.
 
+#### `saga_skipped(name, reason, event_id)`: an event a saga instance did not fold
+
+A `SagaRunner` routed an event to an instance, and the kernel's `saga_admit` answered that the
+instance does not fold it: no fold, no write, no command. This fires once per skipped event, before
+`on_event` returns, and also for the failure event `command_failed` folds.
+
+`name` is the saga's name. `reason` is one of `SAGA_SKIPS`, the kernel's answer. `completed` is a
+tombstone, and `repeat` an event id the instance folded. `below_mark` is a sequence below the highest
+one the instance folded from its aggregate. `event_id` is for the log line, never a label. Read `repeat` as the redelivery rate. Read a `below_mark` that follows a re-drive of a
+dead-lettered event as that event lost: the instance moved past it ([sagas](./sagas.md#sagastore)).
+An event the saga's `instance_id` ignores never reaches an instance, so it is not reported.
+
 #### `timing()` rows: handler latency
 
 `timing()` is middleware, not an `Observer` method, and uses the same vocabulary. It hands its
@@ -233,6 +248,7 @@ it.
 | How long do we hold a database connection? | `transaction` |
 | Is the outbox falling behind? | `drain` with `oldest_timestamp`, and `drain_failed` |
 | Is a producer publishing something we cannot read? | `undecodable` |
+| Did a saga skip an event it should have folded? | `saga_skipped` with `below_mark` |
 | Are the workers keeping up right now? | `stats().queue_depth` and `in_flight`, below |
 
 ### Wiring
@@ -247,6 +263,7 @@ from edax import (
     KeyOrderedDispatcher,
     Relay,
     Repository,
+    SagaRunner,
     idempotent,
     idempotent_by_id,
     transaction,
@@ -259,6 +276,7 @@ bus = CommandBus(idempotent(ledger, scope="accounts", observer=observer))
 router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, observer=observer))
 dispatcher = KeyOrderedDispatcher(4, router.dispatch, on_dead=sink, observer=observer)
 relay = Relay(store, producer.publish, observer=observer)
+runner = SagaRunner(saga, saga_store, commands, observer=observer)
 
 async with transaction(db, observer=observer):  # a unit of work you open yourself
     ...
@@ -439,6 +457,7 @@ time of writing and are kept in `observe.py` rather than a golden file for that 
 | `drain(..., oldest_timestamp)` | gauge, `edax.outbox.oldest`, the timestamp in seconds; the lag is `now - value` at query time | — |
 | `drain_failed` | counter, `edax.drain.failed` | `error.type` |
 | `undecodable` | counter, `edax.undecodable` | `error.type` |
+| `saga_skipped(name, reason, ...)` | counter, `edax.saga.skipped` | `edax.saga=name`, `edax.reason` |
 | `stats().queue_depth` | observable gauge, `edax.dispatcher.queue_depth` | — |
 
 Commands are not messaging. A dispatch on the bus is an in-process call, and the messaging
@@ -502,6 +521,7 @@ transactions = meter.create_histogram(
 outbox_oldest = meter.create_gauge("edax.outbox.oldest", unit=DURATION_UNIT)
 drain_failed = meter.create_counter("edax.drain.failed")
 undecodable = meter.create_counter("edax.undecodable")
+saga_skipped = meter.create_counter("edax.saga.skipped")
 
 
 class OtelObserver(Observer):
@@ -546,6 +566,9 @@ class OtelObserver(Observer):
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         undecodable.add(1, {**SYSTEM, "error.type": error_type(error)})
+
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        saga_skipped.add(1, {"edax.saga": name, "edax.reason": reason})
 ```
 
 ### Tracing middleware

@@ -45,7 +45,7 @@ pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, Err
 pub use edax_event::{advance, is_stale, originate, propagate};
 // The message shapes the SDK's seams take and return, and the lineage a save is handed.
 pub use edax_event::{CommandMessage, EventDraft, EventMessage, Extensions, Lineage, Metadata};
-pub use saga::{Saga, SagaInstance, SagaRunner, SagaStore};
+pub use saga::{Saga, SagaCommandFailed, SagaInstance, SagaRunner, SagaStore, SAGA_COMMAND_FAILED};
 pub use store::{retry_transaction, transaction, EventStore, Outbox, OutboxRow, Relay, RelaySink, Repository, Snapshot, Transactor};
 
 #[cfg(test)]

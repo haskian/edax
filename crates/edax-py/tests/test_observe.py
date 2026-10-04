@@ -79,6 +79,9 @@ class Raising(edax.Observer):
     def undecodable(self, message_id: str, error: BaseException) -> None:
         _boom()
 
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        _boom()
+
 
 DEPOSITED = b'{"account_id":"acct-1","amount_cents":4200,"currency":"USD"}'
 
@@ -550,6 +553,7 @@ _HOOK_ARGS: dict[str, tuple[Any, ...]] = {
     "drain": (3, 7_800, 1_000),
     "drain_failed": (RuntimeError("broker down"),),
     "undecodable": ("orders/0/17", ValueError("not msgpack")),
+    "saga_skipped": ("order", "repeat", "evt-1"),
 }
 
 

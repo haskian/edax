@@ -328,12 +328,44 @@ code and for none.
 `saga_admit(completed, folded, msg)` answers whether a runner folds `msg` at all. A completed
 instance (a tombstone) folds nothing: `Completed`, so a late or redelivered event cannot start a
 finished workflow again. `folded` is the text the instance's last write saved, empty for a new
-instance. It holds one mark per source aggregate: the highest sequence and the last event id folded
-from it. A redelivered event is a `Repeat` when its id is its aggregate's mark or its sequence is
-below it. The runner skips a repeat, so a step whose ack was lost does not decide its commands
-again. Anything else is `Fold { folded }`, the marks to save with the step. An unsequenced event is
-a repeat only of the last one folded from its aggregate. Marks the function did not write are a
-`codec` error.
+instance. It holds one mark per source aggregate, with two ids kept apart. One is the id of the
+event at the highest sequence folded from it. The other is the id of the last unsequenced event
+folded from it. An unsequenced event never overwrites the sequenced id, so a crash replay of an
+aggregate that mixes both is skipped whole. The answers:
+
+| The event | Answer |
+|---|---|
+| its id is one of its aggregate's two ids | `Repeat`: a redelivery, or a replay after a crash |
+| its sequence is below its aggregate's highest | `BelowMark`: assumed folded, see below |
+| anything else | `Fold { folded }`: the marks to save with the step |
+
+The runner folds nothing on `Completed`, `Repeat` or `BelowMark`, so a step whose ack was lost does
+not decide its commands again. An unsequenced event is a repeat only of the last unsequenced one
+folded from its aggregate. Marks the function did not write are a `codec` error.
+
+`BelowMark` rests on order: a dispatcher hands one aggregate's events over in order, so a lower
+sequence was folded before. A dead letter breaks that. If the dispatcher dead-letters sequence 4 and
+then sequence 5 folds, a re-drive of sequence 4 is below the mark and never folds. The kernel cannot
+tell it from a crash replay, so it answers `BelowMark` apart from `Repeat`, and the Python runner
+reports it (`Observer.saga_skipped`). A host must re-drive a dead-lettered saga event before any
+later event of its aggregate reaches the saga, or repair the instance by hand.
+
+`saga_command_failed(command, code, error, recorded_at)` builds the event a saga folds when a
+command its outbox sent died: the reply a participant that rejected it never sends. Both runners
+call it from their relay's dead-letter sink (`command_failed`) and fold the event into the instance
+the row names, so the saga can compensate:
+
+| Field | Value | Why |
+|---|---|---|
+| `id` | `"{command.id}:failed"` | a sink that runs twice for one row builds the same event; the instance skips the second |
+| `aggregate_id` | the command's: the instance | the runner folds it there, without the saga's `instance_id` |
+| `sequence` | `None` | the failure has no place in an aggregate's order |
+| `name` | `SagaCommandFailed` | the saga's `handle` branches on it |
+| `data` | JSON `{"command_id", "command", "code", "error"}` | the dead command, the failure's taxonomy code (`null` when none classifies it) and its message |
+| `tenant`, lineage | the command's tenant; the command's child | the failure stays in the command's tenant and flow |
+| `recorded_at` | the runner's clock | as a command's `issued_at` |
+
+A row that names no instance is a `codec` error.
 
 `saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. The
 loaded instance is absent or running, since `saga_admit` skips a completed one:
@@ -349,15 +381,16 @@ with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no ne
 `saga_write` returns a `codec` error.
 
 The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
-index, command, cause_id, cause_correlation_id, issued_at)` builds each one as a `CommandMessage`, so
-both SDKs write the same row. `saga` is the saga's name. `cause_id` and `cause_correlation_id` are the
-folded event's `id` and `correlation_id`:
+index, tenant, command, cause_id, cause_correlation_id, issued_at)` builds each one as a
+`CommandMessage`, so both SDKs write the same row. `saga` is the saga's name. `tenant`,
+`cause_id` and `cause_correlation_id` are the folded event's `tenant`, `id` and `correlation_id`:
 
 | Field | Value | Why |
 |---|---|---|
 | `id` | `saga_command_id(instance_id, version, index)` = `"{instance_id}:{version}:{index}"` | unique per committed transition; a re-sent row keeps it |
 | `idempotency_key` | `scoped(saga, id)` = `"{len(saga)}:{saga}:{id}"`, with `len` in UTF-8 bytes | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
 | `aggregate_id` | the instance id | one instance's commands keep their order on every transport, and a store can find its rows |
+| `tenant` | the folded event's | the command inherits the tenancy of the fact that caused it, so the bus that runs it claims inside that tenant |
 | `correlation_id` | the folded event's | the command stays in the event's flow, not the instance's |
 | `causation_id` | the folded event's id | the event caused the command |
 | `name`, `version`, `data` | the saga's command, marshaled by the runner's codec | — |
