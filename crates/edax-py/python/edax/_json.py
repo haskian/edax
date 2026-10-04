@@ -10,8 +10,8 @@ Two host types get the form every SDK writes, so they compare by value and hash 
 
 - A ``Decimal`` becomes the kernel's canonical decimal text, a JSON string: ``Decimal("9.50")`` and
   ``Decimal("9.5")`` are both ``"9.5"``, at any precision, and no double is involved. Equality and the hash
-  see one value. A range filter or a sort orders decimal text by value only under the decimal collation,
-  which :mod:`edax.filter` sets for a ``Decimal`` comparand, and ``sort_key(..., decimal=True)`` for a sort.
+  see one value. A range filter or a sort orders decimal text by value only under the decimal collation.
+  :mod:`edax.filter` sets it for a ``Decimal`` comparand, and ``sort_key(..., decimal=True)`` for a sort.
   ``NaN``, an infinity and a value past 1000 digits are refused.
 - A ``datetime`` becomes the kernel's fixed-width UTC text (``2024-01-01T00:30:00.000000Z``), so string order
   is instant order: ``+01:00`` is converted, and a whole second gets ``.000000``. A naive ``datetime`` is

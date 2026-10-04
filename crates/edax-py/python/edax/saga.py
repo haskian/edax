@@ -194,8 +194,8 @@ class SagaRunner:
         transient, so the event is redelivered and folds the winner's state, and nothing this fold decided
         is ever sent. An event the instance already folded (redelivered after its step committed) is
         skipped: no fold, no write, no command. So is an event whose sequence is below the one the instance
-        folded from its aggregate: in order delivery folded it before, but a dead-lettered event re-driven
-        after a later one lands there too, and never folds. The observer hears every skip.
+        folded from its aggregate. Under in-order delivery that event folded before. A dead-lettered event
+        re-driven after a later one lands there too, and never folds. The observer hears every skip.
 
         Each command is a child of ``msg``: it carries the event's ``correlation_id``, and the event's id
         as its ``causation_id``. The fold runs under the ambient lineage of ``msg`` too."""

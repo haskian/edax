@@ -82,8 +82,8 @@ def idempotent_by_id(
     ``scope`` names this consumer, usually the read model or the side effect it guards: ``"balances"``,
     ``"receipts"``. Each consumer keeps its own record of the events it handled, so two consumers guarding
     over one ledger each run their handler once, instead of the second skipping what the first did.
-    ``tenancy`` is how the deployment separates tenants, as on :func:`~edax.command.idempotent`: under
-    :attr:`~edax.tenancy.Tenancy.POOL` the key carries the event's ``tenant``, and under a pool or a bridge
+    ``tenancy`` is how the deployment separates tenants, as on :func:`~edax.command.idempotent`. Under
+    :attr:`~edax.tenancy.Tenancy.POOL` the key carries the event's ``tenant``. Under a pool or a bridge,
     an event that names no tenant raises :class:`~edax.errors.CodecError` before any claim.
 
     Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.store.current_tx`, which

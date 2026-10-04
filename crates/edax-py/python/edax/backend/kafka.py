@@ -284,21 +284,21 @@ class KafkaProducer:
     Kafka Connect or a Rust edax shell does, whatever partitioner the client library defaults to.
 
     ``tenancy`` is how the deployment separates tenants, fixed here as it is on a
-    :class:`~edax.store.Repository`. The kernel keys the record: under :attr:`~edax.tenancy.Tenancy.POOL`
-    the message's ordering key composed with its ``tenant``, so two tenants' same-named aggregates take
-    different partitions, and every SDK producing to the topic places one aggregate on one partition
-    (``testdata/golden/kafka_record.json``). A pooled message with no tenant raises
+    :class:`~edax.store.Repository`. The kernel keys the record. Under :attr:`~edax.tenancy.Tenancy.POOL`
+    the key is the message's ordering key composed with its ``tenant``, so two tenants' same-named
+    aggregates take different partitions. Every SDK producing to the topic places one aggregate on one
+    partition (``testdata/golden/kafka_record.json``). A pooled message with no tenant raises
     :class:`~edax.errors.CodecError`. An explicit ``key`` replaces that rule outright, and then composing
-    it is the caller's own job; an exception the ``key`` function raises propagates unchanged.
+    it is the caller's own job. An exception the ``key`` function raises propagates unchanged.
 
     The relay marks an outbox row published once :meth:`publish` returns, so the client must ack on every
     in-sync replica: build it with ``enable_idempotence=True``, which implies ``acks="all"`` and keeps a
     retried send from writing a duplicate. A client that acks on the leader alone gets a warning here.
 
     ``publish_timeout_s`` bounds each :meth:`publish`, metadata lookup and ack included, because an
-    idempotent aiokafka producer retries a send to a broker that stopped answering without end. At the
+    idempotent aiokafka producer never stops retrying a send to a broker that stopped answering. At the
     deadline :meth:`publish` raises a transient :class:`TimeoutError`. The record may still land, so the
-    relay's retry can publish it twice: the at-least-once that consumers already dedup by ``msg.id``."""
+    relay's retry can publish it twice. Consumers already dedup that second copy by ``msg.id``."""
 
     def __init__(
         self,
@@ -440,7 +440,7 @@ class KafkaConsumer(_ConsumerLoop):
     async def run(self, dispatcher: KeyOrderedDispatcher) -> None:
         """Poll and submit until cancelled or the client stops, committing on the interval. Refuses a
         dispatcher without ``on_dead``, and a client subscribed without :meth:`rebalance_listener`, with
-        :class:`ValueError`, before it polls anything. The listener is checked here rather than at build,
+        :class:`ValueError`, before it polls anything. It checks the listener here rather than at build,
         because the client subscribes with this consumer's listener after the consumer is built."""
         if dispatcher.on_dead is None:
             raise ValueError(

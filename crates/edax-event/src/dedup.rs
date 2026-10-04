@@ -13,7 +13,7 @@ use crate::domain::EventMessage;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventIdempotency {
     /// The ledger key: the message id under the guard's scope, `"edax:evt:{len(scope)}:{scope}:{id}"`,
-    /// composed with the message's tenant under [`Tenancy::Pool`]. The id, not the content: two events
+    /// composed with the message's tenant under [`Tenancy::Pool`]. It keys on the id because two events
     /// with equal bodies are still two events, and a redelivery of one carries the same id.
     pub key: String,
     /// FNV-1a over the raw `data` bytes, the same function as `edax_cqrs::payload_hash`. Raw,

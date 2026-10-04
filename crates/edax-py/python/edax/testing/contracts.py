@@ -467,7 +467,7 @@ class EventStoreContract:
                     f"{tenant}'s event under the key {key!r} it was appended with"
                 )
                 if self.supports_snapshots:
-                    # Lags nothing under the key's own stream, so a store that checks it there accepts it.
+                    # Version 1 is the head of the key's own stream, so a store that checks lag accepts it.
                     await event_store.save_snapshot(tx, Snapshot(key, "Account", 1, tenant.encode()))
                     snap = await event_store.load_snapshot(tx, key)
                     assert snap is not None and snap.data == tenant.encode(), f"{tenant}'s snapshot"

@@ -82,13 +82,12 @@ class RedisIdempotencyStore:
     ``claim_ttl_ms`` bounds how long a pending claim blocks its key when its worker dies. Without
     ``heartbeat`` it must exceed the longest handler run; with it, the store renews each claim every
     ``claim_ttl_ms / 3`` while it is held. ``op_timeout_ms`` is the deadline on each Redis call, client
-    retries included; with ``heartbeat`` it must be under ``claim_ttl_ms / 3``, so a renewal that stalls
-    for the whole deadline still leaves the next one time to land. A misconfigured store raises
-    terminal :class:`~edax.errors.BadHandle` when built. A
-    client or server failure raises transient :class:`~edax.errors.StoreError`, a deterministic one
-    (``WRONGTYPE``, a refused command) terminal. A stored value no reader can decode is the kernel's
-    terminal ``codec`` failure, which the guard replays as :class:`~edax.errors.CachedFailure`. See
-    ``docs/backends/redis.md``."""
+    retries included. With ``heartbeat`` it must be under ``claim_ttl_ms / 3``, so a renewal that stalls
+    for the whole deadline still leaves the next one time to land. A misconfigured store raises terminal
+    :class:`~edax.errors.BadHandle` when built. A client or server failure raises transient
+    :class:`~edax.errors.StoreError`, a deterministic one (``WRONGTYPE``, a refused command) terminal. A
+    stored value no reader can decode is the kernel's terminal ``codec`` failure, which the guard replays
+    as :class:`~edax.errors.CachedFailure`. See ``docs/backends/redis.md``."""
 
     # Redis cannot enlist in another database's transaction, so the guard must compensate by hand.
     joins_transaction: ClassVar[bool] = False
@@ -109,8 +108,8 @@ class RedisIdempotencyStore:
         cosmetic namespace. Two services sharing one Redis under one prefix share a key space, and a
         request id both use is one claim. Name the service and the environment,
         ``"billing:prod:idem:"``. A second SDK's store must use the same prefix to share the ledger.
-        ``sleep`` and ``clock`` are how the heartbeat waits and tells time, ``clock`` the running event
-        loop's monotonic ``time()`` by default; a test steps both instead of sleeping."""
+        ``sleep`` and ``clock`` are how the heartbeat waits and tells time. ``clock`` defaults to the
+        running event loop's monotonic ``time()``. A test steps both instead of sleeping."""
         for name, value in (
             ("ttl_ms", ttl_ms),
             ("claim_ttl_ms", claim_ttl_ms),

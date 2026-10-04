@@ -421,7 +421,7 @@ def claim_key(scope: str, idempotency_key: str, *, tenancy: Tenancy, tenant: str
     """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``, in a
     deployment that separates tenants by ``tenancy``. Two scopes never share a ledger key. Under
     :attr:`~edax.tenancy.Tenancy.POOL` the key carries ``tenant``, so two tenants never share one either.
-    A mode that requires a tenant and a call that names none raises :class:`~edax.errors.CodecError`.
+    Under a mode that requires a tenant, a call that names none raises :class:`~edax.errors.CodecError`.
     The composition is the kernel's, pinned by ``testdata/golden/claim_key.json``, so a guard in another
     binding sharing the ledger claims the same row."""
     with errors.mapped():
@@ -447,8 +447,8 @@ async def forget(
     """Delete the record the :func:`idempotent` guard named ``scope`` keeps for ``idempotency_key``, so the
     next dispatch of that key runs its handler again. Use it to re-drive a dead-lettered command whose
     failure was cached. Pass the guard's ``tenancy`` and the command's ``tenant``: the record lives under
-    the key :func:`claim_key` composes from them, and a mode that requires a tenant raises
-    :class:`~edax.errors.CodecError` without one rather than delete nothing. ``tenancy`` has no default:
+    the key :func:`claim_key` composes from them. A mode that requires a tenant raises
+    :class:`~edax.errors.CodecError` without one, instead of deleting nothing. ``tenancy`` has no default:
     a pooled caller that left it out would compose the silo key and delete nothing. The *Forget* clause of
     :class:`IdempotencyStore` says what happens to a claim still in flight and to a key with no record."""
     await store.forget(claim_key(scope, idempotency_key, tenancy=tenancy, tenant=tenant), tx)
@@ -542,7 +542,7 @@ def idempotent(
 
     ``scope`` names this guard, usually the service or the stage it guards: ``"api"`` at ingress,
     ``"billing-worker"`` on a consumer. The ledger key is the kernel's :func:`claim_key` of the scope, the
-    message's ``idempotency_key`` and, under a pool, its ``tenant``, so two guards that share a ledger never
+    message's ``idempotency_key`` and, under a pool, its ``tenant``. Two guards that share a ledger never
     replay each other's outcome for one key. The kernel hashes the message name with the value the handler
     receives, so one key reused by another command, or with another payload, raises
     :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same scope, tenancy,
@@ -750,8 +750,8 @@ async def _settle_failure(
     """Settle the claim after the handler failed: cache ``record``, or release when there is nothing to
     cache or the store would not take the record. Never raises; returns how the claim ended: ``cached``,
     ``released``, or ``refused`` when the store would not take the release. The handler's exception is
-    the verdict the caller,
-    :func:`retry` and the dispatcher act on, so a compensation the store refuses must not replace it.
+    the verdict the caller, :func:`retry` and the dispatcher act on, so a compensation the store refuses
+    must not replace it.
     Inside the host's transaction that refusal is usually the abort the handler's own failed statement
     caused, and the host's rollback frees the claim; on a ledger of its own the claim stays pending until
     its retention frees it. Either way the claim is settled by something other than this call."""
@@ -814,8 +814,8 @@ async def _complete_or_release(
     """Overwrite the pending claim with its terminal record; if that write fails, release the
     claim instead of leaving it pending for the store's whole retention. Both carry the claim's handle,
     so a fenced store deletes nothing when the write did land and only its reply was lost. Returns
-    ``None`` once the record is written, or the error ``complete`` raised once the release has landed,
-    for the caller to raise or log: the ledger then holds no record. A release that fails too raises."""
+    ``None`` once the record is written. When ``complete`` raises and the release lands, returns that
+    error for the caller to raise or log, and the ledger holds no record. A release that fails too raises."""
     try:
         await store.complete(key, handle, record)
     except BaseException as e:  # noqa: BLE001 - the record failed or was cancelled, not the handler; returned

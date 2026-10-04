@@ -1,6 +1,6 @@
 //! Read-side event router. [`EventRouter`] dispatches an event to the handler registered for its name,
 //! through a middleware chain, and plugs into a [`crate::dispatcher::KeyOrderedDispatcher`].
-//! [`idempotent_by_id`] claims the event id under the consumer's scope, making a handler's side effect
+//! [`idempotent_by_id`] claims the event id under the consumer's scope, so a handler's side effect is
 //! effectively-once.
 
 use std::sync::Arc;

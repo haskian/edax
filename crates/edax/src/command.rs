@@ -397,8 +397,8 @@ impl From<&str> for IdempotencyKey {
 /// `scope`, `tenancy` and that key, so two guards with different scopes on one store (an ingress and a
 /// consumer, say) never replay each other's outcome, and a Python guard of the same scope claims the same
 /// row. Under [`Tenancy::Pool`] the key carries the tenant, so one request id reused by two tenants claims
-/// two rows; under a pool or a bridge a command whose key names no tenant is the terminal `codec` error,
-/// before any claim. The guard binds the command's idempotency hash (see [`Command`]) to the claim, so
+/// two rows. Under a pool or a bridge, a command whose key names no tenant is the terminal `codec` error,
+/// raised before any claim. The guard binds the command's idempotency hash (see [`Command`]) to the claim, so
 /// reusing the key with a different command errors. See `docs/sdk/idempotency.md`.
 ///
 /// The first dispatch of a key wins the claim and runs the handler; a later one replays the prior record or

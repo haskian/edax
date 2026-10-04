@@ -171,9 +171,9 @@ class KeyOrderedDispatcher:
         # step, and when it dies. Entries for nacked messages that never come back stay until the id is
         # seen again.
         self._retries = _retry_policy(max_attempts, on_dead is not None, "KeyOrderedDispatcher")
-        # The policy's map sizes as plain values, copied after every settlement on the loop's thread, so
-        # `stats()` never touches the native handle: read from a metrics thread first, it would bind
-        # the handle to that thread and fail every delivery after.
+        # The policy's map sizes as plain values, copied on the loop's thread after every settlement.
+        # `stats()` reads these and never touches the native handle. Read from a metrics thread first,
+        # the handle would bind to that thread and fail every delivery after.
         self._tracked = _edax.RetriesTracked(0, 0)
         self._on_dead = on_dead
         self._observer = _wrap(observer)
@@ -191,7 +191,7 @@ class KeyOrderedDispatcher:
 
     def stats(self) -> DispatcherStats:
         """A snapshot for a health check or a gauge; cheap and without locking. It reads plain values
-        only, so a metrics thread may call it too; read off the loop, it may be one settlement behind."""
+        only, so a metrics thread may call it too. Read off the loop, it may be one settlement behind."""
         alive = sum(not task.done() for task in self._tasks)
         tracked = self._tracked
         return DispatcherStats(

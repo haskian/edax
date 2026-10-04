@@ -247,8 +247,8 @@ pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), Strin
     edax_event::check_extensions(&ordered(extensions)).map_err(wire)
 }
 
-/// The longest tenant id the key rule allows, in bytes. A call, because the generator binds functions
-/// and not constants: a host reads the limit from here instead of restating it. See
+/// The longest tenant id the key rule allows, in bytes. It is a function because the generator binds
+/// functions, not constants. A host reads the limit from here instead of restating it. See
 /// [`edax_core::TENANT_MAX`].
 pub fn tenant_max() -> u32 {
     // 64 by definition, so the conversion never saturates.

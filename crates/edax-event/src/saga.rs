@@ -116,7 +116,7 @@ pub enum SagaAdmit {
     /// replay after a crash. Skip it and write nothing, so its commands are not decided a second time.
     Repeat,
     /// The event's sequence is below the highest one the instance folded from its aggregate. In order
-    /// delivery folded it before, so skip it like a repeat. Unproven, though: an event that was
+    /// delivery folded it before, so skip it like a repeat. Order does not prove it: an event that was
     /// dead-lettered and then re-driven after a later one folded lands here too, and is never folded.
     /// A runner reports this answer apart from [`SagaAdmit::Repeat`], so that loss is visible.
     BelowMark,

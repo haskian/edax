@@ -155,7 +155,7 @@ impl Inner {
 /// another's.
 ///
 /// The bookkeeping holds only while the partition is assigned. A revoked partition's unsettled
-/// offsets are the new owner's to redeliver from the last committed watermark — at-least-once. So on
+/// offsets are the new owner's to redeliver from the last committed watermark (at-least-once). So on
 /// revoke a rebalance listener first commits what is [`due`](Self::due), while the partition is still
 /// this member's, then calls [`reset`](Self::reset) for it, which retires every delivery of it still
 /// queued. It may then wait, under its own deadline, for the handlers still running, so the new

@@ -18,7 +18,7 @@ table moves verbatim to a data-only golden file.
 **Cardinality rule.** A metric adapter must label only by ``name`` / ``outcome`` / ``verdict`` /
 ``how`` / ``error_type``. On the command bus ``name`` is the command type a handler is registered
 under: the closed set the bus knows. On the consume path it is the ``msg.name`` the producer wrote,
-read before any routing, so an unhandled name reaches the observer too: an adapter maps every name
+read before any routing, so an unhandled name reaches the observer too. An adapter maps every name
 its router does not register to one fixed value. Never label by ``key``, ``event_id``,
 ``message_id``, ``correlation_id`` or ``aggregate_id``: per-message ids are unbounded and belong on
 spans and logs only. The ``*_id`` arguments the :class:`Observer` receives exist for the log line,
@@ -293,8 +293,8 @@ class Observer:
         the backoff wait and before the error re-raises to the caller.
 
         ``published`` and ``dead_lettered`` count what the drain did before it failed, so the sent and
-        dead-letter counters lose no row: ``0`` when ``unpublished`` failed. When ``mark_published``
-        failed they count rows the next drain sends again, at-least-once as ever.
+        dead-letter counters lose no row. Both are ``0`` when ``unpublished`` failed. When
+        ``mark_published`` failed they count rows the next drain sends again (at-least-once).
         Label by :func:`error_type` of ``error``. Read a sustained rate as a relay that is stuck, and
         pair it with the ``oldest_timestamp`` gauge going stale."""
 

@@ -239,9 +239,9 @@ fn fingerprint(keys: &[SortKey]) -> Result<String, Error> {
 /// with it too.
 ///
 /// Refused as `codec`: an empty sort (nothing to resume by); a row whose [`TIEBREAK_PATH`] is not a
-/// string or a number — a missing or null one, an array or an object each compare equal to their own
+/// string or a number (a missing or null one, an array or an object each compare equal to their own
 /// kind, so rows tied on every other key would tie on the tiebreak too, and paging past them would
-/// drop the rest of the tie; and a sort value that is an integer outside `-(2^53-1)..=2^53-1`, which
+/// drop the rest of the tie); and a sort value that is an integer outside `-(2^53-1)..=2^53-1`, which
 /// the canonical form would round onto its neighbour and so resume at the wrong row.
 pub fn encode_cursor(doc: &Value, sort: &[SortKey]) -> Result<String, Error> {
     let keys = effective_sort(sort);

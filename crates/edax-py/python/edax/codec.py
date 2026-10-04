@@ -105,9 +105,9 @@ def json_codec(
     events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
     """An EventCodec that serializes payloads as JSON (via msgspec). A name writes version 1, or one past
-    the highest step of its upcaster in ``upcasters``, which raises its older stored payloads on load
-    (see :class:`~edax.upcast.Upcaster`). A hole in a chain raises :class:`~edax.errors.CodecError` here,
-    not on the first event."""
+    the highest step of its upcaster in ``upcasters``. The upcaster raises that name's older stored
+    payloads on load (see :class:`~edax.upcast.Upcaster`). A hole in a chain raises
+    :class:`~edax.errors.CodecError` here, not on the first event."""
     return RegistryEventCodec(
         events, msgspec.json.encode, lambda b, t: msgspec.json.decode(b, type=t), upcasters
     )
@@ -116,7 +116,7 @@ def json_codec(
 def msgpack_codec(
     events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
-    """An EventCodec that serializes payloads as MessagePack (via msgspec) — smaller, binary. Versions and
+    """An EventCodec that serializes payloads as MessagePack (via msgspec), smaller and binary. Versions and
     ``upcasters`` work as in :func:`json_codec`."""
     return RegistryEventCodec(
         events, msgspec.msgpack.encode, lambda b, t: msgspec.msgpack.decode(b, type=t), upcasters

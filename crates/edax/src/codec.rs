@@ -597,9 +597,9 @@ mod tests {
         }
     }
 
-    /// The review's probe: Deposited changed shape at v2, then only Withdrawn changes. Withdrawn gets its
-    /// own step, and Deposited keeps reading its v1 and v2 rows; under one shared registry version both
-    /// failed with a missing step 2.
+    /// Deposited changed shape at v2, then only Withdrawn changes. Withdrawn gets its own step, and
+    /// Deposited keeps reading its v1 and v2 rows. Under one shared registry version both failed with a
+    /// missing step 2.
     #[test]
     fn bumping_one_name_moves_no_other() {
         let cents = |data: Vec<u8>| {

@@ -150,8 +150,8 @@ enum Queue {
 }
 
 impl Queue {
-    /// Blocks while a bounded queue is full. The error hands the item back so the caller can
-    /// abandon it, which is the whole point of returning it by value.
+    /// Blocks while a bounded queue is full. The error hands the item back by value, so the caller
+    /// can abandon it.
     #[allow(clippy::result_large_err)]
     fn send(&self, item: Item) -> Result<(), SendError<Item>> {
         match self {
