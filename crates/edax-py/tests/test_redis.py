@@ -133,7 +133,11 @@ async def test_golden_redis_fence(ledger: Ledger) -> None:
         ("ttl_past_the_largest_exact_integer", {"ttl_ms": 2**53}, "from 1 to 9007199254740991"),
         ("zero_deadline", {"op_timeout_ms": 0}, "a deadline must be positive"),
         ("float_deadline", {"op_timeout_ms": 1.5}, "op_timeout_ms must be a whole number"),
-        ("heartbeat_on_a_claim_ttl_too_short_to_divide", {"heartbeat": True, "claim_ttl_ms": 2}, "needs 3"),
+        (
+            "heartbeat_whose_deadline_is_a_third_of_the_claim_ttl",
+            {"heartbeat": True, "claim_ttl_ms": 15_000, "op_timeout_ms": 5_000},
+            "op_timeout_ms is under 1/3 of claim_ttl_ms",
+        ),
     ],
 )
 def test_a_misconfigured_store_is_refused_when_built(
@@ -727,7 +731,8 @@ class Beats:
 
 def heartbeat_store(ledger: Ledger, conn: Any | None = None) -> tuple[RedisIdempotencyStore, Beats]:
     beats = Beats()
-    return ledger.store(conn, heartbeat=True, sleep=beats.sleep), beats
+    # The kernel refuses a heartbeat whose deadline is a third of the claim TTL or more.
+    return ledger.store(conn, heartbeat=True, op_timeout_ms=CLAIM_TTL_MS // 4, sleep=beats.sleep), beats
 
 
 async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> None:
@@ -745,22 +750,62 @@ async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> 
     assert task.cancelled() and store._renewals == {}, "settling stops the renewal"
 
 
-@pytest.mark.parametrize("settle", ["release", "refused_complete"])
-async def test_every_settlement_stops_the_heartbeat(ledger: Ledger, settle: str) -> None:
+class _LateReply:
+    """A connection whose ``script`` call lands on the server at once and replies only when ``reply`` is
+    set, the way a slow network returns a write that already happened."""
+
+    def __init__(self, inner: AsyncRedisClient, script: str) -> None:
+        self._inner = inner
+        self._script = script
+        self.landed = asyncio.Event()
+        self.reply = asyncio.Event()
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        result = await self._inner.eval(script, keys, args)
+        if script == self._script:
+            self.landed.set()
+            await self.reply.wait()
+        return result
+
+
+@pytest.mark.parametrize(
+    "settle, late",
+    [
+        pytest.param("release", False, id="release"),
+        pytest.param("refused_complete", False, id="refused_complete"),
+        pytest.param("complete", True, id="complete_replying_late"),
+        pytest.param("release", True, id="release_replying_late"),
+    ],
+)
+async def test_every_settlement_stops_the_heartbeat(
+    ledger: Ledger, caplog: pytest.LogCaptureFixture, settle: str, late: bool
+) -> None:
     """A renewal that outlived its settlement would hold a key nobody settles: every settle path stops it,
-    a refused one included."""
-    store, _ = heartbeat_store(ledger)
+    a refused one included. It stops before the settling call, so a beat due while that call's reply is
+    late never finds the settled key and reports a claim lost that was not."""
+    gate = _LateReply(ledger.conn(), SCRIPTS[settle]) if late else None
+    store, beats = heartbeat_store(ledger, gate)
     won = await store.claim("k", HASH)
     assert isinstance(won, Won)
     task = store._renewals[won.handle]
-    if settle == "release":
-        await store.release("k", won.handle)
-    else:
+    if settle == "refused_complete":
         await ledger.lapse("k")
         with pytest.raises(edax.StoreError, match="taken over"):
             await store.complete("k", won.handle, RECORD)
+    else:
+        call = (
+            store.release("k", won.handle) if settle == "release" else store.complete("k", won.handle, RECORD)
+        )
+        settling = asyncio.ensure_future(call)
+        if gate is not None:
+            await gate.landed.wait()
+            with caplog.at_level(logging.WARNING, logger="edax.backend.redis"):
+                await beats.beat(task)  # the beat that comes due while the reply is on its way
+            gate.reply.set()
+        await settling
     await asyncio.sleep(0)
     assert task.cancelled() and store._renewals == {}
+    assert "was lost before it settled" not in caplog.text
 
 
 async def test_a_heartbeat_that_finds_its_claim_taken_over_stops(

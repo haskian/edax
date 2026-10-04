@@ -1376,7 +1376,7 @@ pub struct KafkaDue {
     pub offset: i64,
 }
 
-/// One partition's bookkeeping, for a health check, a gauge or a rebalance drain.
+/// One partition's bookkeeping, for a health check or a gauge.
 pub struct PartitionStats {
     /// The topic this partition belongs to.
     pub topic: String,
@@ -1384,8 +1384,8 @@ pub struct PartitionStats {
     pub partition: i32,
     /// Offsets delivered but not yet settled, retired ones included.
     pub unsettled: u64,
-    /// Unsettled offsets whose token is still live: work a handler may still settle. A rebalance
-    /// drain waits for this to reach zero.
+    /// Unsettled offsets whose token is still live: work a handler may still settle. A retired
+    /// offset waits for a fetch instead.
     pub live: u64,
     /// The highest offset booked.
     pub max_delivered: i64,
@@ -2587,7 +2587,7 @@ mod tests {
     #[test]
     fn redis_refusals_cross_with_the_kernels_codes() {
         assert_eq!(redis_ledger_key("idem:", "k"), Ok(b"idem:k".to_vec()));
-        assert_eq!(redis_check_config("idem:", 1, 3, 1, true), Ok(()));
+        assert_eq!(redis_check_config("idem:", 1, 4, 1, true), Ok(()));
         assert_eq!(redis_heartbeats_per_ttl(), 3);
         assert_eq!(redis_forget_reads(), 3);
         for refused in [

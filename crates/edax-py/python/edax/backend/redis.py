@@ -82,7 +82,9 @@ class RedisIdempotencyStore:
     ``claim_ttl_ms`` bounds how long a pending claim blocks its key when its worker dies. Without
     ``heartbeat`` it must exceed the longest handler run; with it, the store renews each claim every
     ``claim_ttl_ms / 3`` while it is held. ``op_timeout_ms`` is the deadline on each Redis call, client
-    retries included. A misconfigured store raises terminal :class:`~edax.errors.BadHandle` when built. A
+    retries included; with ``heartbeat`` it must be under ``claim_ttl_ms / 3``, so a renewal that stalls
+    for the whole deadline still leaves the next one time to land. A misconfigured store raises
+    terminal :class:`~edax.errors.BadHandle` when built. A
     client or server failure raises transient :class:`~edax.errors.StoreError`, a deterministic one
     (``WRONGTYPE``, a refused command) terminal. A stored value no reader can decode is the kernel's
     terminal ``codec`` failure, which the guard replays as :class:`~edax.errors.CachedFailure`. See
@@ -168,15 +170,15 @@ class RedisIdempotencyStore:
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         """Write the terminal record for ``key`` under ``ttl_ms``, replacing the claim ``handle`` names and
         only that one. A claim already taken over is reported, not overwritten: another worker owns it."""
-        try:
-            # Encoded and framed before any I/O: an unencodable result or a handle the kernel never
-            # minted is a terminal CodecError, and a transient verdict would redeliver it forever.
-            body = encode_record(record)
-            with errors.mapped():
-                value = _edax.redis_settled_value(handle, body)
-            written = await self._eval("complete", key, [handle, value, self._ttl_ms])
-        finally:
-            self._stop_renewing(handle)
+        # Stopped before the call, not after it: a beat while the reply is late would find the settled
+        # value and report the claim lost.
+        self._stop_renewing(handle)
+        # Encoded and framed before any I/O: an unencodable result or a handle the kernel never minted is
+        # a terminal CodecError, and a transient verdict would redeliver it forever.
+        body = encode_record(record)
+        with errors.mapped():
+            value = _edax.redis_settled_value(handle, body)
+        written = await self._eval("complete", key, [handle, value, self._ttl_ms])
         if not written:
             # Loud on purpose: the outcome was not recorded, so the caller must not report success.
             raise StoreError(
@@ -187,12 +189,10 @@ class RedisIdempotencyStore:
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         """Delete ``key`` while it still holds the claim ``handle`` names. A release that arrives after the
         claim lapsed, or after its own ``complete`` landed with the reply lost, deletes nothing."""
-        try:
-            with errors.mapped():
-                _edax.redis_check_claim(handle)
-            await self._eval("release", key, [handle])
-        finally:
-            self._stop_renewing(handle)
+        self._stop_renewing(handle)  # before the call, as in `complete`
+        with errors.mapped():
+            _edax.redis_check_claim(handle)
+        await self._eval("release", key, [handle])
 
     async def extend(self, key: str, handle: bytes) -> bool:
         """Reset the claim's TTL to ``claim_ttl_ms`` while the key still holds the claim ``handle`` names.
@@ -223,8 +223,9 @@ class RedisIdempotencyStore:
 
     async def _renew(self, key: str, handle: bytes) -> None:
         """The heartbeat: extend the claim every third of its TTL until it is settled or refused. A
-        transient failure is retried on the next beat, since one missed beat still leaves a third of the
-        lease; a terminal one would fail every beat, so it stops the renewal."""
+        transient failure is retried on the next beat: the kernel keeps ``op_timeout_ms`` under a third
+        of the TTL, so the next beat still lands before the lease lapses. A terminal failure would fail
+        every beat, so it stops the renewal."""
         while True:
             await self._sleep(self._claim_ttl_ms / _HEARTBEATS_PER_TTL / 1000)
             try:

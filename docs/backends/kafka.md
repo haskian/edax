@@ -47,10 +47,11 @@ classDiagram
 ## Constructing them
 
 ```
-KafkaProducer(client, topic, *, serializer=None, command_serializer=None, key=None, middleware=())
+KafkaProducer(client, topic, *, serializer=None, command_serializer=None, key=None, middleware=(),
+              publish_timeout_s=30.0)
 KafkaConsumer(client, *, serializer=None, serializers=(), middleware=(),
               commit_interval_s=1.0, commit_timeout_s=10.0)
-KafkaDeadLetterSink(client, topic)
+KafkaDeadLetterSink(client, topic, *, publish_timeout_s=30.0)
 consumer.rebalance_listener(drain_timeout_s=30.0)
 ```
 
@@ -64,7 +65,8 @@ serializer. It is also the default for a record that carries no `content-type` h
 Everything after the `*` is keyword-only, so adding an argument later cannot shift a positional one.
 
 Building an adapter checks the client's settings that lose data. A consumer that auto-commits, or
-has no `group_id`, raises `ValueError`. A producer that acks on the leader alone warns. The probes
+has no `group_id`, raises `ValueError`. So does `run` over a client subscribed without
+`rebalance_listener()`. A producer that acks on the leader alone warns. The probes
 read private `aiokafka` attributes, so a client of another library is not judged.
 
 ```python
@@ -386,8 +388,13 @@ It leaves the rest to the host:
   watermark exists to avoid: an offset still on a worker is reported as done, and a restart
   never redelivers it. So `KafkaConsumer` refuses a client that auto-commits, and one with no
   `group_id`, whose every commit would fail.
-- **Timeouts.** `getone` blocks until a message arrives, by design. A send is bounded by the client's
-  `request_timeout_ms` and batch expiry. A commit is not, so the adapter bounds it with
+- **Timeouts.** `getone` blocks until a message arrives, by design. The client does not bound a
+  send. With `enable_idempotence=True`, `aiokafka` never expires a batch and never raises
+  `RequestTimedOutError`, so a send to a broker that stopped answering waits forever. The adapter
+  bounds each send with `publish_timeout_s`. At the deadline the producer and the dead-letter sink
+  raise a transient `TimeoutError`. The outcome of that send is unknown. The batch stays in the
+  client and may still land, so the retry can write a second copy, which consumers dedup by
+  `msg.id`. The client does not bound a commit either, so the adapter bounds it with
   `commit_timeout_s`.
 - **Rebalance.** The watermark bookkeeping holds only while the partition is assigned. Pass
   `consumer.rebalance_listener()` to `subscribe`. On revoke it commits what is due, resets the
@@ -395,7 +402,10 @@ It leaves the rest to the host:
   up to `drain_timeout_s`. No key is then handled by two members at once. The new owner starts from
   the commit, so the skipped work runs there: at-least-once. Keep `drain_timeout_s` above the slowest
   handler and below the client's `max_poll_interval_ms`. Without the listener, a revoked partition
-  keeps its stale bookkeeping, and the queued work of it runs alongside the new owner.
+  keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark is
+  due, the client refuses every commit that names it, so no partition commits again. So `run` refuses an
+  `AIOKafkaConsumer` subscribed to topics with no listener, with `ValueError`. A client assigned its
+  partitions by hand (`assign`) has no rebalance and needs none.
 - **Threads.** `KafkaConsumer` keeps its offset bookkeeping in native state bound to the thread that
   built it. Build the consumer on the thread that runs its event loop. A consumer built on the main
   thread and run in `threading.Thread(target=asyncio.run, ...)` raises the terminal `BadHandle` on
