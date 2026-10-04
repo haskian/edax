@@ -49,7 +49,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "edax"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "edax-abi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "edax-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-golden",
  "proptest",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "edax-cqrs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "edax-core",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "edax-event"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "edax-core",
@@ -116,14 +116,14 @@ dependencies = [
 
 [[package]]
 name = "edax-golden"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "edax-kafka"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-core",
  "edax-event",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "edax-memory"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "edax-py"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-abi",
  "pyo3",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "edax-redis"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",

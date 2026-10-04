@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.3.0](https://github.com/crtomirmajer/edax/compare/d4d14b10d42050b7eaae2699228e46c9852dedf4..v0.3.0) - 2026-10-04
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) split events and commands into flat typed messages (#16) - ([d4d14b1](https://github.com/crtomirmajer/edax/commit/d4d14b10d42050b7eaae2699228e46c9852dedf4)) - Črtomir Majer
+
+- - -
+
 ## [v0.2.0](https://github.com/crtomirmajer/edax/compare/88e611c13041143e088e174432bbb97742913c19..v0.2.0) - 2026-10-03
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) address the nine-crate review (104 findings) (#15) - ([a7896aa](https://github.com/crtomirmajer/edax/commit/a7896aa3577d976a32f68b85945c95d8f5486a1f)) - Črtomir Majer
