@@ -442,7 +442,7 @@ async def forget(
     scope: str,
     idempotency_key: str,
     *,
-    tenancy: Tenancy = Tenancy.SILO,
+    tenancy: Tenancy,
     tenant: str | None = None,
     tx: Tx | None = None,
 ) -> None:
@@ -450,7 +450,8 @@ async def forget(
     next dispatch of that key runs its handler again. Use it to re-drive a dead-lettered command whose
     failure was cached. Pass the guard's ``tenancy`` and the command's ``tenant``: the record lives under
     the key :func:`claim_key` composes from them, and a mode that requires a tenant raises
-    :class:`~edax.errors.CodecError` without one rather than delete nothing. The *Forget* clause of
+    :class:`~edax.errors.CodecError` without one rather than delete nothing. ``tenancy`` has no default:
+    a pooled caller that left it out would compose the silo key and delete nothing. The *Forget* clause of
     :class:`IdempotencyStore` says what happens to a claim still in flight and to a key with no record."""
     await store.forget(claim_key(scope, idempotency_key, tenancy=tenancy, tenant=tenant), tx)
 

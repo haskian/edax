@@ -382,7 +382,7 @@ async def test_forget_lets_a_cached_failure_run_again() -> None:
         await bus.dispatch(ORDER, idempotency_key="req-7")
     assert runs == 1, "the cached failure replays without a run"
 
-    await forget(ledger, "orders-worker", "req-7")
+    await forget(ledger, "orders-worker", "req-7", tenancy=edax.Tenancy.SILO)
     assert await bus.dispatch(ORDER, idempotency_key="req-7") == "placed"
     assert runs == 2, "the re-driven command ran again"
 

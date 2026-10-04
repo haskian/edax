@@ -240,14 +240,16 @@ as `CachedFailure`, by design. When an operator fixes the cause and re-drives th
 dead-letter queue, the cached failure must go first.
 
 ```python
+from edax import Tenancy
 from edax.command import forget, received_key
 
-await forget(ledger, "billing.worker", received_key(msg))  # the scope and key the guard claimed
+# The scope, key and tenancy the guard claimed with.
+await forget(ledger, "billing.worker", received_key(msg), tenancy=Tenancy.SILO)
 ```
 
-`forget(store, scope, key, *, tenancy=Tenancy.SILO, tenant=None, tx=None)` deletes the record the
-guard stored under `claim_key(scope, key, tenancy=..., tenant=...)`. Pass the guard's tenancy and the
-message's tenant. A pool's record lives under the composed key. A pool or a bridge refuses a
+`forget(store, scope, key, *, tenancy, tenant=None, tx=None)` deletes the record the
+guard stored under `claim_key(scope, key, tenancy=..., tenant=...)`. Pass the guard's tenancy, which has no
+default, and the message's tenant. A pool's record lives under the composed key. A pool or a bridge refuses a
 `forget` with no tenant as `CodecError` rather than delete nothing. The kernel's
 [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it may
 delete.
