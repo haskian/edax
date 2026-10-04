@@ -243,7 +243,7 @@ down: nothing is consumed meanwhile.
 
 A `KafkaConsumer` commit raised or passed its deadline, on the interval or before a revoke. The
 watermarks stay due, and the next interval tries again. This fires once per failed commit while
-`run` feeds a dispatcher; the last flush after `run` ends only logs. Label by `error_type(error)`.
+`run` feeds a dispatcher, the last flush on its way out included. Label by `error_type(error)`.
 Read a sustained rate as a consumer whose progress is not saved: a restart or a rebalance
 redelivers everything since the last commit that landed.
 

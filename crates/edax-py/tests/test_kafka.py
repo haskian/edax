@@ -1046,6 +1046,24 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     assert client.commits == [3] and consumer.stats()[TP0].committed == 3
 
 
+async def test_the_last_commit_after_run_ends_reaches_the_observer() -> None:
+    """The interval never fires here, so the one commit attempted is the flush ``run`` does on its way
+    out. Its failure is a counter too, not only a log line."""
+    client = FakeKafkaClient()
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
+    client.cluster.pause_commits()
+    handled: list[str] = []
+    observer = Recording()
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok, observer=observer
+    )
+    consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_interval_s=60, commit_timeout_s=0.05)
+    await _drive(consumer, dispatcher, lambda: handled == ["0"])
+    assert handled == ["0"]
+    assert client.commits == []
+    assert observer.commit_failures == [asyncio.TimeoutError]
+
+
 async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(slept: list[int]) -> None:
     """A consumer dies mid-batch: it committed up to offset 10, handled more, and holds one in flight.
     Its replacement starts at the group's commit, so every offset from 10 runs again and none below it."""

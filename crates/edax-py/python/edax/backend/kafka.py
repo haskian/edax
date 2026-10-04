@@ -419,7 +419,7 @@ class KafkaConsumer(_ConsumerLoop):
             await self.flush()
         except Exception as e:
             logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=True)
-            # Absent only for the last flush after `run` ends, whose failure the log line carries.
+            # Absent for a flush called outside `run`, whose failure the log line carries.
             if self._dispatcher is not None:
                 self._dispatcher.observer.commit_failed(e)
 
@@ -445,10 +445,13 @@ class KafkaConsumer(_ConsumerLoop):
         try:
             await super().run(dispatcher)
         finally:
-            self._dispatcher = None
             committer.cancel()
             await asyncio.gather(committer, return_exceptions=True)
-            await asyncio.shield(self._flush_quietly())
+            try:
+                # Still attached, so a failed last commit reaches the observer, not only the log.
+                await asyncio.shield(self._flush_quietly())
+            finally:
+                self._dispatcher = None
 
     def rebalance_listener(self, drain_timeout_s: float = 30.0) -> ConsumerRebalanceListener:
         """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke it commits
