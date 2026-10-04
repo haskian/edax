@@ -26,13 +26,12 @@ from ..aggregate import (
     MessageKind,
     Serializer,
     message_kind,
-    ordering_key,
 )
 from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
 from ..errors import CodecError, mapped
 from ..observe import error_type
-from ..tenancy import Tenancy, tenant_key
+from ..tenancy import Tenancy
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
     from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
@@ -280,10 +279,12 @@ class KafkaProducer:
     Kafka Connect or a Rust edax shell does, whatever partitioner the client library defaults to.
 
     ``tenancy`` is how the deployment separates tenants, fixed here as it is on a
-    :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the record key is the
-    kernel's ordering key composed with the message's ``tenant``, so two tenants' same-named aggregates
-    take different partitions and a consumer of a shared topic reads the tenant off the key. An explicit
-    ``key`` replaces that rule outright, and then composing it is the caller's own job.
+    :class:`~edax.store.Repository`. The kernel keys the record: under :attr:`~edax.tenancy.Tenancy.POOL`
+    the message's ordering key composed with its ``tenant``, so two tenants' same-named aggregates take
+    different partitions, and every SDK producing to the topic places one aggregate on one partition
+    (``testdata/golden/kafka_record.json``). A pooled message with no tenant raises
+    :class:`~edax.errors.CodecError`. An explicit ``key`` replaces that rule outright, and then composing
+    it is the caller's own job; an exception the ``key`` function raises propagates unchanged.
 
     The relay marks an outbox row published once :meth:`publish` returns, so the client must ack on every
     in-sync replica: build it with ``enable_idempotence=True``, which implies ``acks="all"`` and keeps a
@@ -321,12 +322,15 @@ class KafkaProducer:
     async def publish(self, msg: EventMessage | CommandMessage) -> None:
         serializer = self._serializer if message_kind(msg) == "event" else self._commands
         value = serializer.encode(msg)
-        # The key function's override, else the kernel's ordering key under this producer's tenancy:
-        # the aggregate (or a command's own id), composed with the tenant where the mode composes.
+        # Host code, so outside `mapped()`: its own TypeError stays a transient failure.
+        key = self._key(msg) if self._key else None
+        # The kernel keys the record: the override, else the ordering key under this producer's tenancy.
+        tenancy, media_type = self._tenancy.value, serializer.media_type
         with mapped():
-            key = self._key(msg) if self._key else tenant_key(self._tenancy, ordering_key(msg), msg.tenant)
-        with mapped():
-            record = _edax.kafka_record(key, value, serializer.media_type)
+            if isinstance(msg, EventMessage):
+                record = _edax.kafka_event_record(tenancy, msg, value, media_type, key)
+            else:
+                record = _edax.kafka_command_record(tenancy, msg, value, media_type, key)
         for m in self._middleware:
             record = m.on_publish(record)
         await _send(self._client, self._topic, record, self._publish_timeout_s)

@@ -27,6 +27,7 @@ from conftest import (
     event_of,
     sequence_of,
 )
+from edax.aggregate import _replace
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import MemoryBroker, MemoryEventStore
 from edax.broker import UNDECODABLE, Consumer, UndecodableDelivery, _ConsumerLoop
@@ -604,6 +605,14 @@ class GhostRig(MemoryRig):
         return Ghost()
 
 
+class DropsTheTenantRig(MemoryRig):
+    """A broker adapter whose wire schema has no tenant field: every message arrives tenant-less, so a
+    pooled consumer can key and claim nothing it receives."""
+
+    async def publish(self, env: edax.EventMessage | edax.CommandMessage) -> None:
+        await super().publish(_replace(env, tenant=None))
+
+
 class SharedGroupRig(MemoryRig):
     """Every group is the one consumer: a projection and a saga compete for each message."""
 
@@ -626,6 +635,14 @@ class SharedGroupRig(MemoryRig):
         pytest.param(GhostRig, "test_a_nack_never_reorders_its_key", id="a_ghost_delivery_after_settlement"),
         pytest.param(
             SharedGroupRig, "test_every_consumer_group_reads_every_message", id="groups_that_compete"
+        ),
+        pytest.param(
+            DropsTheTenantRig, "test_publish_then_poll_keeps_each_keys_order", id="an_event_loses_its_tenant"
+        ),
+        pytest.param(
+            DropsTheTenantRig,
+            "test_a_command_is_delivered_whole_and_keyed_by_its_id",
+            id="a_command_loses_its_tenant",
         ),
     ],
 )

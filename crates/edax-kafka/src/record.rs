@@ -6,8 +6,9 @@
 //! [`encode_record`] / [`decode_record`], run the kernel codec end to end. The golden vectors pin them.
 //!
 //! The key is the message's ordering key unless the host overrides it: an event's aggregate id, a
-//! command's target aggregate or else its own id. One aggregate's messages then share one partition
-//! and keep their order.
+//! command's target aggregate or else its own id, composed with the message's tenant where the
+//! deployment's [`Tenancy`] composes keys ([`record_key`]). One aggregate's messages then share one
+//! partition and keep their order, and two tenants' same-named aggregates do not share a key.
 //!
 //! One header, [`CONTENT_TYPE`], because it is the one a consumer reads: [`route`] picks the
 //! serializer by it, and its media type names both the format and the kind. No aggregate id (it is
@@ -25,7 +26,7 @@
 //!
 //! Placement is [`crate::partition_for`]: the shell passes the partition it names with the record.
 
-use edax_core::{Error, ErrorCode};
+use edax_core::{tenant_key, Error, ErrorCode, Tenancy};
 use edax_event::{Format, Kind, Message};
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -70,25 +71,34 @@ pub struct KafkaRecord {
     pub headers: Vec<KafkaHeader>,
 }
 
-/// Build the record for a message of either kind from value bytes the caller already encoded.
-///
-/// `key` overrides the partitioning key; `None` uses [`Message::ordering_key`]: an event's aggregate,
-/// a command's target aggregate or else its own id. One aggregate's messages, and a command with the
-/// events it causes, then share one partition and keep their order. `content_type` names the format
-/// and kind of `value`, so a host serializer must carry a media type of its own and register it in
-/// every SDK that reads the topic.
-pub fn record<M: Message>(msg: &M, key: Option<&str>, value: Vec<u8>, content_type: &str) -> KafkaRecord {
-    keyed_record(key.unwrap_or(msg.ordering_key()), value, content_type)
+/// The partitioning key of `msg` under `tenancy`: its [`Message::ordering_key`] (an event's aggregate,
+/// a command's target aggregate or else its own id), composed with its tenant where the mode composes
+/// keys ([`edax_core::tenant_key`]). Under [`Tenancy::Pool`] two tenants' same-named aggregates then
+/// take two keys, and every producer of one topic places an aggregate on one partition. A mode that
+/// requires a tenant and a message that names none is a `codec` error.
+pub fn record_key<M: Message>(tenancy: Tenancy, msg: &M) -> Result<String, Error> {
+    tenant_key(tenancy, msg.tenant(), msg.ordering_key())
 }
 
-/// Build the record for value bytes the caller already encoded, under a key the caller already chose:
-/// [`record`] with the key decided. The [`CONTENT_TYPE`] header names the format and kind of `value`.
-pub fn keyed_record(key: &str, value: Vec<u8>, content_type: &str) -> KafkaRecord {
-    KafkaRecord {
-        key: key.as_bytes().to_vec(),
-        value,
-        headers: vec![KafkaHeader::new(CONTENT_TYPE, content_type.as_bytes())],
-    }
+/// Build the record for a message of either kind from value bytes the caller already encoded.
+///
+/// `key` overrides the partitioning key outright, and composing a tenant into it is then the host's
+/// job; `None` uses [`record_key`] under `tenancy`. One aggregate's messages, and a command with the
+/// events it causes, then share one partition and keep their order. `content_type` names the format
+/// and kind of `value`, so a host serializer must carry a media type of its own and register it in
+/// every SDK that reads the topic. Fails only as [`record_key`] does.
+pub fn record<M: Message>(
+    msg: &M,
+    tenancy: Tenancy,
+    key: Option<&str>,
+    value: Vec<u8>,
+    content_type: &str,
+) -> Result<KafkaRecord, Error> {
+    let key = match key {
+        Some(key) => key.to_owned(),
+        None => record_key(tenancy, msg)?,
+    };
+    Ok(KafkaRecord { key: key.into_bytes(), value, headers: vec![KafkaHeader::new(CONTENT_TYPE, content_type.as_bytes())] })
 }
 
 /// The value's media type, or `None` when no readable one is set.
@@ -160,10 +170,16 @@ pub fn check_media_types(registered: &[&str]) -> Result<(), Error> {
 }
 
 /// Build the record for a message of either kind with the kernel codec: [`Format::encode`] for the
-/// value and [`Format::media_type`] of its kind for the header. A bad extension key is a `codec`
-/// error, so a producer never publishes a record every consumer would refuse.
-pub fn encode_record<M: Message + Serialize>(format: Format, msg: &M, key: Option<&str>) -> Result<KafkaRecord, Error> {
-    Ok(record(msg, key, format.encode(msg)?, format.media_type(M::KIND)))
+/// value and [`Format::media_type`] of its kind for the header, keyed as [`record`] keys it. A bad
+/// extension key or tenant id, or a missing tenant `tenancy` requires, is a `codec` error, so a
+/// producer never publishes a record every consumer would refuse.
+pub fn encode_record<M: Message + Serialize>(
+    format: Format,
+    msg: &M,
+    tenancy: Tenancy,
+    key: Option<&str>,
+) -> Result<KafkaRecord, Error> {
+    record(msg, tenancy, key, format.encode(msg)?, format.media_type(M::KIND))
 }
 
 /// Decode a fetched record back to a message of kind `M`.

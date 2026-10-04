@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from edax.backend.memory import (
+    MemoryCommandOutbox,
     MemoryEventStore,
     MemoryIdempotencyStore,
     MemoryLedger,
@@ -21,6 +22,7 @@ from edax.backend.memory import (
     MemoryTransactor,
 )
 from edax.testing import (
+    CommandOutboxContract,
     EventStoreContract,
     IdempotencyStoreContract,
     ProjectionStoreContract,
@@ -61,6 +63,17 @@ class TestMemorySagaStore(SagaStoreContract):
     @pytest.fixture
     def transactor(self, db: MemoryTransactor) -> Any:
         return db
+
+
+class TestMemoryCommandOutbox(CommandOutboxContract):
+    @pytest.fixture
+    def command_outbox(self, db: MemoryTransactor) -> Any:
+        return MemoryCommandOutbox(db)
+
+    @pytest.fixture
+    def event_store(self, db: MemoryTransactor) -> Any:
+        # The same transactor, so the outbox writes under the event store's unit of work.
+        return MemoryEventStore(db)
 
 
 class TestMemoryIdempotencyStore(IdempotencyStoreContract):

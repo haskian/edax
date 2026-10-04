@@ -13,16 +13,18 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import SpyProducerClient
+from conftest import SpyProducerClient, build_command
 from edax import Aggregate, CommandBus, Repository, Tenancy, Version, json_codec, tenant_key
+from edax.aggregate import _replace
 from edax.backend.kafka import KafkaProducer
 from edax.backend.memory import (
+    MemoryCommandOutbox,
     MemoryEventStore,
     MemoryIdempotencyStore,
     MemorySagaStore,
     MemoryTransactor,
 )
-from edax.command import idempotent
+from edax.command import command_message, idempotent
 from edax.errors import CodecError
 from edax.saga import SagaRunner
 from edax.testing import event
@@ -229,6 +231,50 @@ async def test_a_bridge_leaves_the_keys_bare() -> None:
     assert globex.balance == 10, "one store, one stream: a bridge separates by store, not by key"
 
 
+@dataclass
+class Ship:
+    order_id: str
+
+    type = "Ship"
+
+
+@pytest.mark.parametrize(
+    "name, mode, loaded_for, named, want",
+    [
+        ("a command naming no tenant takes the aggregate's", Tenancy.POOL, "acme", None, "acme"),
+        ("a command naming the aggregate's tenant is kept", Tenancy.POOL, "acme", "acme", "acme"),
+        ("a bridge stamps it too", Tenancy.BRIDGE, "acme", None, "acme"),
+        ("a silo aggregate with no tenant sends none", Tenancy.SILO, None, None, None),
+        ("a command naming another tenant is refused", Tenancy.POOL, "acme", "globex", CodecError),
+        ("a silo aggregate cannot send one into a tenant", Tenancy.SILO, None, "acme", CodecError),
+    ],
+)
+async def test_a_saved_command_belongs_to_the_aggregates_tenant(
+    name: str, mode: Tenancy, loaded_for: str | None, named: str | None, want: str | type[Exception] | None
+) -> None:
+    """A command saved beside a tenant's events is that tenant's too. Left without one, a pool relay
+    could not key it and a pool bus could not claim it, and the failure would surface only at publish,
+    long after the save committed."""
+    db = MemoryTransactor()
+    store, outbox = MemoryEventStore(db), MemoryCommandOutbox(db)
+    events = json_codec({"Deposited": Deposited})
+    repo = Repository(store, events, AccountCodec(), commands=outbox, tenancy=mode)
+    account = await repo.load("order-1", tenant=loaded_for)
+    account.apply(Deposited(10))
+    ship = command_message(Ship("order-1"), aggregate_id="order-1", tenant=named)
+    if want is CodecError:
+        with pytest.raises(CodecError):
+            await repo.save(account, commands=[ship])
+        assert await outbox.unpublished(10) == [], f"{name}: no command was written"
+        assert await store.unpublished(10) == [], f"{name}: and no event"
+        return
+    stored = await repo.save(account, commands=[ship])
+    rows = await outbox.unpublished(10)
+    assert [row.tenant for row in rows] == [want], name
+    assert [row.tenant for row in stored] == [want], f"{name}: the same tenant as the events"
+    assert rows == [_replace(ship, tenant=want)], f"{name}: every other field as built"
+
+
 # ---- the command side ----------------------------------------------------
 
 
@@ -403,24 +449,61 @@ async def test_a_saga_command_inherits_the_folded_events_tenant() -> None:
 # ---- the broker ----------------------------------------------------------
 
 
+def _shard_key(msg: Any) -> str:
+    """A host key function with a host bug: ``None + str`` for a message with no ``shard``."""
+    shard: str = msg.metadata.get("shard") + "-k"
+    return shard
+
+
+_ACME_EVENT = event("order-1", "Deposited", 1, tenant="acme")
+_ACME_COMMAND = _replace(build_command("Ship", aggregate_id="order-1"), tenant="acme")
+
+
 @pytest.mark.parametrize(
-    "name, mode, key_fn, want_key",
+    "name, mode, key_fn, msg, want",
     [
-        ("a pool keys by the composed key", Tenancy.POOL, None, b"4:acme:order-1"),
-        ("a silo keys by the ordering key", Tenancy.SILO, None, b"order-1"),
-        ("a bridge keys bare: its topic is the tenant's", Tenancy.BRIDGE, None, b"order-1"),
-        ("an explicit key wins outright", Tenancy.POOL, lambda msg: msg.tenant or "", b"acme"),
+        ("a pool keys by the composed key", Tenancy.POOL, None, _ACME_EVENT, b"4:acme:order-1"),
+        (
+            "a pool keys a command by its composed aggregate",
+            Tenancy.POOL,
+            None,
+            _ACME_COMMAND,
+            b"4:acme:order-1",
+        ),
+        ("a silo keys by the ordering key", Tenancy.SILO, None, _ACME_EVENT, b"order-1"),
+        ("a bridge keys bare: its topic is the tenant's", Tenancy.BRIDGE, None, _ACME_EVENT, b"order-1"),
+        ("an explicit key wins outright", Tenancy.POOL, lambda msg: msg.tenant or "", _ACME_EVENT, b"acme"),
+        (
+            "a pool refuses a message with no tenant",
+            Tenancy.POOL,
+            None,
+            event("order-1", "Deposited", 1),
+            CodecError,
+        ),
+        # Host code, not the kernel's boundary: its own error stays transient and redelivers.
+        ("a key function's own error propagates unchanged", Tenancy.POOL, _shard_key, _ACME_EVENT, TypeError),
     ],
 )
 async def test_the_record_key_follows_the_producers_tenancy(
-    name: str, mode: Tenancy, key_fn: Any, want_key: bytes
+    name: str,
+    mode: Tenancy,
+    key_fn: Any,
+    msg: edax.EventMessage | edax.CommandMessage,
+    want: bytes | type[Exception],
 ) -> None:
     """Two tenants' same-named aggregates must not share a key, or they share a partition and a
-    key-ordered consumer serializes them together."""
+    key-ordered consumer serializes them together. The kernel decides the key, pinned by
+    ``kafka_record.json``; this proves the producer hands it the tenancy and the override."""
     client = SpyProducerClient()
     producer = KafkaProducer(client, "events", key=key_fn, tenancy=mode)
-    await producer.publish(event("order-1", "Deposited", 1, tenant="acme"))
-    assert client.sent[0][2] == want_key, name
+    if isinstance(want, bytes):
+        await producer.publish(msg)
+        assert client.sent[0][2] == want, name
+        return
+    with pytest.raises(want) as raised:
+        await producer.publish(msg)
+    assert type(raised.value) is want, f"{name}: {raised.value!r}"
+    assert client.sent == [], f"{name}: nothing was sent"
 
 
 # ---- the wire ------------------------------------------------------------

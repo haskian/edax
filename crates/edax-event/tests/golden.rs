@@ -16,7 +16,7 @@
 
 use edax_core::{ErrorCode, Tenancy};
 use edax_event::testkit::{base_command, base_event, map};
-use edax_event::{CommandMessage, EventMessage, Extensions, Format, Message, Metadata};
+use edax_event::{CommandMessage, EventMessage, Extensions, Format, Kind, Message, Metadata};
 use edax_golden::{hex, write_or_check};
 use serde_json::{json, Value};
 
@@ -309,6 +309,8 @@ fn extensions_cases() -> Vec<Value> {
 /// says the same thing in JSON and MessagePack; a map is a list of pairs so a case can repeat a key.
 enum W {
     Str(&'static str),
+    /// A string built at run time, for a case whose length is the point.
+    Text(String),
     Int(i64),
     Bytes(&'static [u8]),
     Null,
@@ -321,6 +323,7 @@ impl serde::Serialize for W {
         use serde::ser::{SerializeMap, SerializeSeq};
         match self {
             W::Str(v) => s.serialize_str(v),
+            W::Text(v) => s.serialize_str(v),
             W::Int(v) => s.serialize_i64(*v),
             W::Bytes(v) if s.is_human_readable() => {
                 use base64::Engine;
@@ -346,7 +349,8 @@ impl serde::Serialize for W {
     }
 }
 
-/// The base event as wire fields, in the order a case edits them.
+/// The base event as wire fields, in the order a case edits them. It names no tenant, the single-tenant
+/// default.
 fn wire_fields() -> Vec<(&'static str, W)> {
     vec![
         ("id", W::Str("evt-1")),
@@ -364,6 +368,24 @@ fn wire_fields() -> Vec<(&'static str, W)> {
     ]
 }
 
+/// The base command as wire fields: every optional field set, so a case that drops one is a change.
+fn command_wire_fields() -> Vec<(&'static str, W)> {
+    vec![
+        ("id", W::Str("cmd-1")),
+        ("idempotency_key", W::Str("req-1")),
+        ("aggregate_id", W::Str("agg-1")),
+        ("tenant", W::Str("acme")),
+        ("name", W::Str("IssueInvoice")),
+        ("version", W::Int(1)),
+        ("data", W::Bytes(br#"{"total":5000}"#)),
+        ("correlation_id", W::Str("corr-1")),
+        ("causation_id", W::Str("corr-1")),
+        ("issued_at", W::Int(1_700_000_000_000_000_001)),
+        ("extensions", W::Map(vec![("traceparent", W::Str("00-a-b-01"))])),
+        ("metadata", W::Map(vec![("trace", W::Str("abc-123"))])),
+    ]
+}
+
 fn without(field: &str) -> Vec<(&'static str, W)> {
     wire_fields().into_iter().filter(|(k, _)| *k != field).collect()
 }
@@ -373,38 +395,85 @@ fn replacing(field: &str, value: W) -> Vec<(&'static str, W)> {
     wire_fields().into_iter().map(|(k, v)| if k == field { (k, value.take().unwrap()) } else { (k, v) }).collect()
 }
 
-/// The evolution rule: what a reader of each format accepts, ignores and refuses. Each case is
+/// The base event with one field the base leaves out.
+fn with(field: &'static str, value: W) -> Vec<(&'static str, W)> {
+    wire_fields().into_iter().chain([(field, value)]).collect()
+}
+
+fn command_without(field: &str) -> Vec<(&'static str, W)> {
+    command_wire_fields().into_iter().filter(|(k, _)| *k != field).collect()
+}
+
+fn command_replacing(field: &str, value: W) -> Vec<(&'static str, W)> {
+    let mut value = Some(value);
+    command_wire_fields().into_iter().map(|(k, v)| if k == field { (k, value.take().unwrap()) } else { (k, v) }).collect()
+}
+
+/// `bytes` decoded as a message of `kind` in `format`: the message, or the error's code. The code is the
+/// contract; the message is the parser's own text, which a second SDK's parser words differently.
+fn decoded_as(kind: Kind, format: Format, bytes: &[u8]) -> Value {
+    let message = match kind {
+        Kind::Event => format.decode::<EventMessage>(bytes).map(|msg| serde_json::to_value(&msg).unwrap()),
+        Kind::Command => format.decode::<CommandMessage>(bytes).map(|msg| serde_json::to_value(&msg).unwrap()),
+    };
+    match message {
+        Ok(message) => json!({ "message": message }),
+        Err(error) => json!({ "error_code": error.code.as_str() }),
+    }
+}
+
+/// The evolution rule: what a reader of each format and kind accepts, ignores and refuses. Each case is
 /// encoded in both formats from one wire value, so the two formats are held to the same rule.
 fn envelope_decode_cases() -> Vec<Value> {
+    use Kind::{Command, Event};
     let positional = || W::Arr(wire_fields().into_iter().map(|(_, v)| v).collect());
-    let cases: Vec<(&str, W, &[u8])> = vec![
-        ("the_base_message", W::Map(wire_fields()), b""),
+    // The tenant rule counts bytes: 32 two-byte characters are at the limit, 33 are past it.
+    let tenant = |text: &str, times: usize| W::Text(text.repeat(times));
+    let cases: Vec<(&str, Kind, W, &[u8])> = vec![
+        ("the_base_message", Event, W::Map(wire_fields()), b""),
         // A newer writer's field: ignored, so adding a field is forward compatible.
-        ("an_unknown_field_is_ignored", W::Map(wire_fields().into_iter().chain([("priority", W::Str("high"))]).collect()), b""),
-        ("a_missing_sequence_reads_as_none", W::Map(without("sequence")), b""),
-        ("a_null_sequence_reads_as_none", W::Map(replacing("sequence", W::Null)), b""),
-        ("a_missing_occurred_at_reads_as_none", W::Map(without("occurred_at")), b""),
-        ("a_set_occurred_at_reads_back", W::Map(replacing("occurred_at", W::Int(1_600_000_000_000_000_000))), b""),
-        ("a_missing_required_field_is_refused", W::Map(without("recorded_at")), b""),
-        ("a_missing_extensions_map_is_refused", W::Map(without("extensions")), b""),
-        ("a_negative_version_is_refused", W::Map(replacing("version", W::Int(-1))), b""),
-        ("a_bad_extension_key_is_refused", W::Map(replacing("extensions", W::Map(vec![("Traceparent", W::Str("x"))]))), b""),
-        ("a_repeated_field_is_refused", W::Map(wire_fields().into_iter().chain([("id", W::Str("evt-2"))]).collect()), b""),
-        ("a_repeated_metadata_key_keeps_the_last", W::Map(replacing(
+        ("an_unknown_field_is_ignored", Event, W::Map(wire_fields().into_iter().chain([("priority", W::Str("high"))]).collect()), b""),
+        ("a_missing_sequence_reads_as_none", Event, W::Map(without("sequence")), b""),
+        ("a_null_sequence_reads_as_none", Event, W::Map(replacing("sequence", W::Null)), b""),
+        ("a_missing_occurred_at_reads_as_none", Event, W::Map(without("occurred_at")), b""),
+        ("a_set_occurred_at_reads_back", Event, W::Map(replacing("occurred_at", W::Int(1_600_000_000_000_000_000))), b""),
+        ("a_missing_required_field_is_refused", Event, W::Map(without("recorded_at")), b""),
+        ("a_missing_extensions_map_is_refused", Event, W::Map(without("extensions")), b""),
+        ("a_negative_version_is_refused", Event, W::Map(replacing("version", W::Int(-1))), b""),
+        ("a_bad_extension_key_is_refused", Event, W::Map(replacing("extensions", W::Map(vec![("Traceparent", W::Str("x"))]))), b""),
+        // The wire is a trust boundary: a tenant another service minted is held to the key rule
+        // before any key is composed from it.
+        ("a_tenant_reads_back", Event, W::Map(with("tenant", W::Str("acme"))), b""),
+        ("a_null_tenant_reads_as_none", Event, W::Map(with("tenant", W::Null)), b""),
+        ("an_empty_tenant_is_refused", Event, W::Map(with("tenant", W::Str(""))), b""),
+        ("a_tenant_of_64_bytes_reads_back", Event, W::Map(with("tenant", tenant("é", 32))), b""),
+        ("an_over_long_tenant_is_refused", Event, W::Map(with("tenant", tenant("a", 65))), b""),
+        ("a_tenant_of_33_characters_and_66_bytes_is_refused", Event, W::Map(with("tenant", tenant("é", 33))), b""),
+        ("a_repeated_field_is_refused", Event, W::Map(wire_fields().into_iter().chain([("id", W::Str("evt-2"))]).collect()), b""),
+        ("a_repeated_metadata_key_keeps_the_last", Event, W::Map(replacing(
             "metadata",
             W::Map(vec![("trace", W::Str("first")), ("trace", W::Str("last"))]),
         )), b""),
         // The positional form, of the base length and with one element more, is refused either way.
-        ("a_positional_message_is_refused", positional(), b""),
-        ("a_positional_message_with_an_extra_element_is_refused", W::Arr(
+        ("a_positional_message_is_refused", Event, positional(), b""),
+        ("a_positional_message_with_an_extra_element_is_refused", Event, W::Arr(
             wire_fields().into_iter().map(|(_, v)| v).chain([W::Str("extra")]).collect(),
         ), b""),
-        ("trailing_bytes_are_refused", W::Map(wire_fields()), b"\x00"),
-        ("not_a_map_at_all", W::Str("evt-1"), b""),
+        ("trailing_bytes_are_refused", Event, W::Map(wire_fields()), b"\x00"),
+        ("not_a_map_at_all", Event, W::Str("evt-1"), b""),
+        // A command's optional fields read as `None` when missing, so an older or a single-tenant
+        // producer's command still decodes; its required fields and its tenant are held as an event's.
+        ("the_base_command", Command, W::Map(command_wire_fields()), b""),
+        ("a_command_missing_its_tenant_reads_as_none", Command, W::Map(command_without("tenant")), b""),
+        ("a_command_missing_its_idempotency_key_reads_as_none", Command, W::Map(command_without("idempotency_key")), b""),
+        ("a_command_missing_its_aggregate_id_reads_as_none", Command, W::Map(command_without("aggregate_id")), b""),
+        ("a_command_with_an_empty_tenant_is_refused", Command, W::Map(command_replacing("tenant", W::Str(""))), b""),
+        ("a_command_with_an_over_long_tenant_is_refused", Command, W::Map(command_replacing("tenant", tenant("a", 65))), b""),
+        ("a_command_missing_issued_at_is_refused", Command, W::Map(command_without("issued_at")), b""),
     ];
     cases
         .into_iter()
-        .map(|(name, wire, trailing)| {
+        .map(|(name, kind, wire, trailing)| {
             let encode = |format: Format| -> Vec<u8> {
                 let mut bytes = match format {
                     Format::Json => serde_json::to_vec(&wire).unwrap(),
@@ -413,18 +482,12 @@ fn envelope_decode_cases() -> Vec<Value> {
                 bytes.extend_from_slice(trailing);
                 bytes
             };
-            let decoded = |format: Format| -> Value {
-                match format.decode::<EventMessage>(&encode(format)) {
-                    Ok(env) => json!({ "message": serde_json::to_value(&env).unwrap() }),
-                    // The code is the contract; the message is the parser's own text, which a second
-                    // SDK's parser words differently.
-                    Err(error) => json!({ "error_code": error.code.as_str() }),
-                }
-            };
-            let (json, msgpack) = (decoded(Format::Json), decoded(Format::Msgpack));
+            let json = decoded_as(kind, Format::Json, &encode(Format::Json));
+            let msgpack = decoded_as(kind, Format::Msgpack, &encode(Format::Msgpack));
             assert_eq!(json, msgpack, "{name}: the two formats must follow one rule");
             json!({
                 "name": name,
+                "kind": kind.name(),
                 "json_hex": hex(&encode(Format::Json)),
                 "msgpack_hex": hex(&encode(Format::Msgpack)),
                 "want": json,

@@ -438,7 +438,8 @@ Everything else about the request goes beside the payload, on the message.
 |---|---|---|
 | the client's `Idempotency-Key` | `dispatch(cmd, idempotency_key=...)` | the message's `idempotency_key`, which the guard claims. The client sends one key per intent, so a retry repeats it |
 | `traceparent` | `extensions` | edax context a reader acts on; fresh per attempt, so it would change the hash |
-| an application value, such as a tenant or an actor | `metadata` | the application's own; edax never reads it |
+| the tenant | `dispatch(cmd, tenant=...)` | the message's typed `tenant`, which a pooled guard claims inside and a pooled repository keys by |
+| an application value, such as an actor | `metadata` | the application's own; edax never reads it |
 | a server-minted request id | `originate(correlation_id=...)` | it roots the flow; every message the request causes carries it |
 | the causing event's id and correlation, on a saga-emitted command | the command message | the kernel sets both when the saga runner writes the outbox row |
 

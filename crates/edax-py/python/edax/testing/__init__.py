@@ -23,6 +23,9 @@ Subclass a contract, give it a fixture, and the clauses run against your store::
         async def idempotency_store(self):
             return MyLedger(conn)
 
+A command outbox subclasses :class:`CommandOutboxContract` and supplies ``command_outbox`` plus an
+``event_store`` over the same database: commands commit and roll back with the events.
+
 A broker adapter subclasses :class:`BrokerContract` and supplies a ``broker_rig`` (a :class:`BrokerRig`):
 per-key order through a nack, redelivery from the commit after a crash, consumer groups.
 
@@ -42,6 +45,7 @@ from __future__ import annotations
 from .contracts import (
     BrokerContract,
     BrokerRig,
+    CommandOutboxContract,
     EventStoreContract,
     IdempotencyStoreContract,
     ProjectionStoreContract,
@@ -56,6 +60,7 @@ from .faults import LostResponse, Refusing
 __all__ = [
     "BrokerContract",
     "BrokerRig",
+    "CommandOutboxContract",
     "EventStoreContract",
     "IdempotencyStoreContract",
     "LostResponse",

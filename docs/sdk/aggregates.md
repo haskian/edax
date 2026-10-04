@@ -367,7 +367,9 @@ there, not in a command payload, so they never perturb an idempotency hash.
 
 `commands` stages command messages in the repository's command outbox, in the same transaction as
 the events. Build the repository with `commands=` a `CommandOutbox` first; without one, a save with
-commands raises `TypeError`. See [commands](./commands.md#three-routes-for-a-command).
+commands raises `TypeError`. Each command belongs to the aggregate's tenant, as its events do. One
+that names no tenant takes the aggregate's, and one that names another raises `CodecError` before
+anything is written. See [commands](./commands.md#three-routes-for-a-command).
 
 An event's `occurred_at` is its valid time: when the fact happened. `save(occurred_at=...)` sets it
 on every event of the batch, for facts that happened before they are recorded, such as an import. Left
