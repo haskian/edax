@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.4.0](https://github.com/crtomirmajer/edax/compare/66f280b8e56f1b9d15be3432fec22257af45b043..v0.4.0) - 2026-10-04
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) make the tenant a typed field with a kernel key rule (#17) - ([66f280b](https://github.com/crtomirmajer/edax/commit/66f280b8e56f1b9d15be3432fec22257af45b043)) - Črtomir Majer
+
+- - -
+
 ## [v0.3.0](https://github.com/crtomirmajer/edax/compare/d4d14b10d42050b7eaae2699228e46c9852dedf4..v0.3.0) - 2026-10-04
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) split events and commands into flat typed messages (#16) - ([d4d14b1](https://github.com/crtomirmajer/edax/commit/d4d14b10d42050b7eaae2699228e46c9852dedf4)) - Črtomir Majer
