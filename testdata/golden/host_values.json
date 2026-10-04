@@ -1,0 +1,218 @@
+[
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "42",
+    "json": "\"42\"",
+    "kind": "decimal",
+    "name": "decimal_integer"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "9.5",
+    "json": "\"9.5\"",
+    "kind": "decimal",
+    "name": "decimal_fraction"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "9.50",
+    "json": "\"9.5\"",
+    "kind": "decimal",
+    "name": "decimal_trailing_zeros_are_one_value"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "0.1",
+    "json": "\"0.1\"",
+    "kind": "decimal",
+    "name": "decimal_a_tenth_stays_exact"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "007.250",
+    "json": "\"7.25\"",
+    "kind": "decimal",
+    "name": "decimal_leading_zeros_go"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "-12.30",
+    "json": "\"-12.3\"",
+    "kind": "decimal",
+    "name": "decimal_negative"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "-0.0",
+    "json": "\"0\"",
+    "kind": "decimal",
+    "name": "decimal_negative_zero_is_zero"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "0E-10",
+    "json": "\"0\"",
+    "kind": "decimal",
+    "name": "decimal_zero_with_an_exponent"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "1E+2",
+    "json": "\"100\"",
+    "kind": "decimal",
+    "name": "decimal_exponent"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "1.5E-7",
+    "json": "\"0.00000015\"",
+    "kind": "decimal",
+    "name": "decimal_negative_exponent"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "12345678901234567890.123456789",
+    "json": "\"12345678901234567890.123456789\"",
+    "kind": "decimal",
+    "name": "decimal_past_17_digits_stays_exact"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "9007199254740993",
+    "json": "\"9007199254740993\"",
+    "kind": "decimal",
+    "name": "decimal_past_2_pow_53_stays_exact"
+  },
+  {
+    "epoch_micros": null,
+    "error": "codec",
+    "input": "NaN",
+    "json": null,
+    "kind": "decimal",
+    "name": "decimal_refused_nan"
+  },
+  {
+    "epoch_micros": null,
+    "error": "codec",
+    "input": "sNaN",
+    "json": null,
+    "kind": "decimal",
+    "name": "decimal_refused_signalling_nan"
+  },
+  {
+    "epoch_micros": null,
+    "error": "codec",
+    "input": "-Infinity",
+    "json": null,
+    "kind": "decimal",
+    "name": "decimal_refused_infinity"
+  },
+  {
+    "epoch_micros": null,
+    "error": "codec",
+    "input": "1E+1000",
+    "json": null,
+    "kind": "decimal",
+    "name": "decimal_refused_past_the_digit_bound"
+  },
+  {
+    "epoch_micros": 1704067200000000,
+    "error": null,
+    "input": "2024-01-01T00:00:00+00:00",
+    "json": "\"2024-01-01T00:00:00.000000Z\"",
+    "kind": "datetime",
+    "name": "datetime_utc_whole_second_gets_a_zero_fraction"
+  },
+  {
+    "epoch_micros": 1704067200250000,
+    "error": null,
+    "input": "2024-01-01T00:00:00.250000Z",
+    "json": "\"2024-01-01T00:00:00.250000Z\"",
+    "kind": "datetime",
+    "name": "datetime_z_suffix"
+  },
+  {
+    "epoch_micros": 1704067200500000,
+    "error": null,
+    "input": "2024-01-01T00:00:00.500000+00:00",
+    "json": "\"2024-01-01T00:00:00.500000Z\"",
+    "kind": "datetime",
+    "name": "datetime_utc_with_a_fraction"
+  },
+  {
+    "epoch_micros": 1704067200123000,
+    "error": null,
+    "input": "2024-01-01T00:00:00.123+00:00",
+    "json": "\"2024-01-01T00:00:00.123000Z\"",
+    "kind": "datetime",
+    "name": "datetime_milliseconds_widen_to_six_digits"
+  },
+  {
+    "epoch_micros": 1704067200000001,
+    "error": null,
+    "input": "2024-01-01T00:00:00.000001+00:00",
+    "json": "\"2024-01-01T00:00:00.000001Z\"",
+    "kind": "datetime",
+    "name": "datetime_microsecond_precision"
+  },
+  {
+    "epoch_micros": 1704069000000000,
+    "error": null,
+    "input": "2024-01-01T01:30:00+01:00",
+    "json": "\"2024-01-01T00:30:00.000000Z\"",
+    "kind": "datetime",
+    "name": "datetime_positive_offset_converts_to_utc"
+  },
+  {
+    "epoch_micros": 1704078000000000,
+    "error": null,
+    "input": "2023-12-31T22:00:00-05:00",
+    "json": "\"2024-01-01T03:00:00.000000Z\"",
+    "kind": "datetime",
+    "name": "datetime_negative_offset_crosses_midnight"
+  },
+  {
+    "epoch_micros": 1704067200000001,
+    "error": null,
+    "input": "2024-01-01T05:45:00.000001+05:45",
+    "json": "\"2024-01-01T00:00:00.000001Z\"",
+    "kind": "datetime",
+    "name": "datetime_offset_with_minutes"
+  },
+  {
+    "epoch_micros": -30610224000000001,
+    "error": null,
+    "input": "0999-12-31T23:59:59.999999+00:00",
+    "json": "\"0999-12-31T23:59:59.999999Z\"",
+    "kind": "datetime",
+    "name": "datetime_year_below_1000_keeps_four_digits"
+  },
+  {
+    "epoch_micros": null,
+    "error": "codec",
+    "input": "2024-01-01T00:00:00",
+    "json": null,
+    "kind": "datetime",
+    "name": "datetime_refused_naive"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "0999-03-07",
+    "json": "\"0999-03-07\"",
+    "kind": "date",
+    "name": "date_keeps_iso"
+  }
+]

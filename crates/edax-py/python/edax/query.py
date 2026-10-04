@@ -14,7 +14,7 @@ integer wider than 64 bits is a :class:`~edax.errors.CodecError` too.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from . import _edax, _json, errors
 from .filter import Filter
@@ -26,9 +26,11 @@ class _SortPath(TypedDict):
 
 class SortKey(_SortPath, total=False):
     """One ordering key: the dotted ``path`` to sort by, ascending unless ``desc``. A typed dictionary, so a
-    checker catches a misspelt field (``{"dsc": True}``) that the kernel would refuse at run time."""
+    checker catches a misspelt field (``{"dsc": True}``) that the kernel would refuse at run time.
+    ``collation: "decimal"`` orders decimal text by exact value, as a ``Decimal`` encodes."""
 
     desc: bool
+    collation: Literal["decimal"]
 
 
 Document = dict[str, Any]  # a read-model document, as it crosses the JSON boundary
@@ -51,9 +53,13 @@ class Page:
         return cls(rows=page["rows"], next=page["next"])
 
 
-def sort_key(path: str, desc: bool = False) -> SortKey:
-    """One ordering key (ascending unless ``desc``)."""
-    return {"path": path, "desc": desc}
+def sort_key(path: str, desc: bool = False, *, decimal: bool = False) -> SortKey:
+    """One ordering key (ascending unless ``desc``). Set ``decimal`` for a field that holds ``Decimal``
+    values: their text then sorts by exact value (``"9.5"`` before ``"10"``), and other text after it."""
+    key: SortKey = {"path": path, "desc": desc}
+    if decimal:
+        key["collation"] = "decimal"
+    return key
 
 
 def build_spec(

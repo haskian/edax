@@ -896,10 +896,7 @@ where
                     .get_many(
                         &mut tx,
                         &Query {
-                            sort: vec![SortKey {
-                                path: "id".into(),
-                                desc,
-                            }],
+                            sort: vec![SortKey::new("id", desc)],
                             offset,
                             limit,
                             ..Default::default()

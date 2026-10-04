@@ -54,12 +54,11 @@ Every row is a code of the kernel; the second column names the constructor where
 - a codec that cannot marshal or unmarshal an event.
 - a command that will not serialize.
 - a filter operand, a projection document or a saga state the SDK's one JSON encoder cannot encode.
-  Python encodes all of them with msgspec, the encoder the command hash uses. A `datetime` or a
-  `Decimal` that hashes in a command therefore also encodes in a filter. It does not order there:
-  msgspec writes a `Decimal` as a string, so `Decimal("9.5")` sorts after `Decimal("10")`. It writes
-  a `datetime` without a zero fraction, so a whole second sorts after a later half second. Store
-  amounts as integer minor units and timestamps in the fixed-width UTC form
-  [the filter kernel](../kernels/filter.md) names.
+  Python encodes all of them with the encoder the command hash uses, so a value that hashes in a
+  command also encodes in a filter. That encoder writes a `Decimal` as the kernel's canonical decimal
+  text, and an aware `datetime` as the kernel's fixed-width UTC text. Both then compare by value
+  ([the filter kernel](../kernels/filter.md#host-values-every-sdk-writes-alike)). It refuses a naive
+  `datetime`, whose instant is unknown, and a `Decimal` that is `NaN`, infinite or past 1000 digits.
 - an idempotency record that will not encode, or that the strict `decode_record` will not decode. A
   store reads the record holding a key with `decode_prior` instead, which never raises: an unreadable
   record replays as `CachedFailure` with `original_code` `codec`, in both SDKs.

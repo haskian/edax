@@ -339,6 +339,36 @@
     ]
   },
   {
+    "document": {
+      "id": "d1",
+      "p": "12345678901234567890.123456789"
+    },
+    "error": null,
+    "expected_cursor": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiMTIzNDU2Nzg5MDEyMzQ1Njc4OTAuMTIzNDU2Nzg5IiwiZDEiXX0",
+    "expected_effective_sort": [
+      {
+        "collation": "decimal",
+        "desc": false,
+        "path": "p"
+      },
+      {
+        "desc": false,
+        "path": "id"
+      }
+    ],
+    "expected_tuple": [
+      "12345678901234567890.123456789",
+      "d1"
+    ],
+    "name": null,
+    "sort": [
+      {
+        "collation": "decimal",
+        "path": "p"
+      }
+    ]
+  },
+  {
     "document": null,
     "error": "codec: cursor was minted under another sort",
     "expected_cursor": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsxLCJhIl19",

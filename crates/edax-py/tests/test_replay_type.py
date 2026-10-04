@@ -46,6 +46,14 @@ class InvoiceStruct(msgspec.Struct):
 
 
 ISSUED_AT = datetime.datetime(2026, 10, 3, 9, 30, tzinfo=datetime.timezone.utc)
+# The invoice as the SDK's encoder writes it: canonical decimal text, so `50.00` replays as `50`, and the
+# fixed-width UTC timestamp.
+INVOICE_JSON: dict[str, Any] = {
+    "invoice_id": "01a10285-7d7c-71a1-8fb8-3caf0732bb67",
+    "order_id": "order-7",
+    "total": "50",
+    "issued_at": "2026-10-03T09:30:00.000000Z",
+}
 
 
 def command() -> IssueInvoice:
@@ -103,17 +111,12 @@ CASES = [
         "no_annotation_replays_plain_json",
         issue_untyped,
         None,
-        {
-            "invoice_id": "01a10285-7d7c-71a1-8fb8-3caf0732bb67",
-            "order_id": "order-7",
-            "total": "50.00",
-            "issued_at": "2026-10-03T09:30:00Z",
-        },
+        INVOICE_JSON,
         dict,
     ),
     Case("an_object_annotation_replays_plain_json", issue_object, None, {"invoice_id": "inv-7"}, dict),
     Case("an_any_annotation_replays_plain_json", issue_any, None, {"invoice_id": "inv-7"}, dict),
-    Case("an_explicit_any_opts_out", issue, Any, msgspec.to_builtins(invoice()), dict),
+    Case("an_explicit_any_opts_out", issue, Any, INVOICE_JSON, dict),
     Case(
         "an_unresolvable_annotation_replays_plain_json",
         issue_forward_ref,

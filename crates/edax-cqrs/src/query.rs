@@ -22,6 +22,12 @@
 //! both sort as null (last in ascending). Arrays and objects order by type rank only — two of them
 //! compare equal.
 //!
+//! A key under the decimal collation (`{"path": "price", "collation": "decimal"}`) orders decimal
+//! text by exact value, as the collated range filter does (`"9.5"` before `"10"`, `"9.50"` tied with
+//! `"9.5"`). The type order stays, and within the strings, decimal text sorts before every other
+//! string, which keeps code point order among itself. A cursor carries the row's string unchanged,
+//! so it resumes at the exact decimal.
+//!
 //! The cursor is `base64url(canonical_json({"s": <sort fingerprint>, "v": [<sort-key values>]}))`,
 //! unpadded so it survives a URL query string. The canonical form is RFC 8785, whose numbers are
 //! doubles, so a sort value that is an integer outside `-(2^53-1)..=2^53-1` cannot be minted into a
@@ -31,14 +37,15 @@
 //! canonical effective sort, as 16 lowercase hex digits.
 
 use crate::canonical::MAX_SAFE_INTEGER;
-use crate::filter::{self, Filter};
+use crate::filter::{self, Collation, Filter};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
 
-/// One ordering key: a dot-delimited path and a direction (`desc` defaults to ascending).
+/// One ordering key: a dot-delimited path, a direction (`desc` defaults to ascending) and an
+/// optional collation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SortKey {
@@ -47,6 +54,22 @@ pub struct SortKey {
     /// Descending when true, ascending otherwise.
     #[serde(default)]
     pub desc: bool,
+    /// How the values compare; unset sorts plain JSON values. Left out of the wire when unset, so a
+    /// plain key keeps its cursor fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collation: Option<Collation>,
+}
+
+impl SortKey {
+    /// A key over plain JSON values.
+    pub fn new(path: impl Into<String>, desc: bool) -> SortKey {
+        SortKey { path: path.into(), desc, collation: None }
+    }
+
+    /// A key over decimal text, ordered by exact value ([`Collation::Decimal`]).
+    pub fn decimal(path: impl Into<String>, desc: bool) -> SortKey {
+        SortKey { path: path.into(), desc, collation: Some(Collation::Decimal) }
+    }
 }
 
 /// A read query over a set of documents: filter -> keyset(`after`) -> sort -> offset -> limit. All
@@ -125,14 +148,26 @@ fn type_rank(v: &Value) -> u8 {
 }
 
 /// Total order over JSON values — never "incomparable", so sorting is always deterministic.
-fn compare_values(a: &Value, b: &Value) -> Ordering {
+fn compare_values(collation: Option<Collation>, a: &Value, b: &Value) -> Ordering {
     let (ra, rb) = (type_rank(a), type_rank(b));
     if ra != rb {
         return ra.cmp(&rb);
     }
-    // Within a rank the filter kernel's order, so a sort and a range filter rank a number, a string
-    // or a bool pair identically. Same-rank arrays, objects and nulls have no order beyond the rank.
-    filter::value_cmp(a, b).unwrap_or(Ordering::Equal)
+    match (collation, a, b) {
+        // Under the decimal collation two decimal texts order by value, as the collated range filter
+        // orders them. A string that is not decimal text sorts after every decimal text, and among
+        // its own kind by code point, so the order stays total.
+        (Some(Collation::Decimal), Value::String(x), Value::String(y)) => {
+            filter::collated_cmp(collation, a, b).unwrap_or_else(|| {
+                let other_text = |text: &str| !crate::decimal::is_decimal(text);
+                other_text(x).cmp(&other_text(y)).then_with(|| x.cmp(y))
+            })
+        }
+        // Within a rank the filter kernel's order, so a sort and a range filter rank a number, a
+        // string or a bool pair identically. Same-rank arrays, objects and nulls have no order beyond
+        // the rank.
+        _ => filter::value_cmp(a, b).unwrap_or(Ordering::Equal),
+    }
 }
 
 static NULL: Value = Value::Null;
@@ -165,7 +200,7 @@ pub const TIEBREAK_PATH: &str = "id";
 pub fn effective_sort(sort: &[SortKey]) -> Vec<SortKey> {
     let mut keys = sort.to_vec();
     if !keys.is_empty() && keys.last().map(|k| k.path.as_str()) != Some(TIEBREAK_PATH) {
-        keys.push(SortKey { path: TIEBREAK_PATH.to_string(), desc: false });
+        keys.push(SortKey::new(TIEBREAK_PATH, false));
     }
     keys
 }
@@ -173,7 +208,7 @@ pub fn effective_sort(sort: &[SortKey]) -> Vec<SortKey> {
 /// Compare two documents under the given sort keys (missing/null sort last in ascending order).
 fn compare(keys: &[SortKey], a: &Value, b: &Value) -> Ordering {
     keys.iter().fold(Ordering::Equal, |order, key| {
-        order.then_with(|| directed(key, compare_values(at(a, &key.path), at(b, &key.path))))
+        order.then_with(|| directed(key, compare_values(key.collation, at(a, &key.path), at(b, &key.path))))
     })
 }
 
@@ -271,7 +306,7 @@ fn as_minted(value: Value) -> Value {
 /// not "after": that row was the last of the previous page.
 fn after_cursor(keys: &[SortKey], doc: &Value, tuple: &[Value]) -> bool {
     let order = keys.iter().zip(tuple).fold(Ordering::Equal, |order, (key, bound)| {
-        order.then_with(|| directed(key, compare_values(at(doc, &key.path), bound)))
+        order.then_with(|| directed(key, compare_values(key.collation, at(doc, &key.path), bound)))
     });
     order == Ordering::Greater
 }
@@ -350,7 +385,7 @@ mod tests {
     use serde_json::json;
 
     fn keys(spec: &[(&str, bool)]) -> Vec<SortKey> {
-        spec.iter().map(|(p, d)| SortKey { path: p.to_string(), desc: *d }).collect()
+        spec.iter().map(|(p, d)| SortKey::new(*p, *d)).collect()
     }
 
     /// Four rows: distinct `n` plus one row missing `n`, two statuses, unique ids out of sort order.
@@ -377,19 +412,28 @@ mod tests {
         let vals = [json!(1), json!("a"), json!(true), json!([1]), json!({"k": 1}), json!(null)];
         for (i, a) in vals.iter().enumerate() {
             for (j, b) in vals.iter().enumerate() {
-                assert_eq!(compare_values(a, b), i.cmp(&j), "{i} vs {j}");
+                assert_eq!(compare_values(None, a, b), i.cmp(&j), "{i} vs {j}");
             }
         }
-        let within: [(&str, Value, Value, Ordering); 5] = [
-            ("int_and_float_compare_numerically", json!(1), json!(1.0), Ordering::Equal),
+        let decimal = Some(Collation::Decimal);
+        let within: [(&str, Option<Collation>, Value, Value, Ordering); 12] = [
+            ("int_and_float_compare_numerically", None, json!(1), json!(1.0), Ordering::Equal),
             // Above 2^53 an f64 cast would round both to the same value and report Equal.
-            ("integers_order_exactly", json!(9_007_199_254_740_993u64), json!(9_007_199_254_740_992u64), Ordering::Greater),
-            ("bools_order_false_first", json!(false), json!(true), Ordering::Less),
-            ("arrays_order_by_rank_only", json!([1]), json!([2]), Ordering::Equal),
-            ("nulls_tie", json!(null), json!(null), Ordering::Equal),
+            ("integers_order_exactly", None, json!(9_007_199_254_740_993u64), json!(9_007_199_254_740_992u64), Ordering::Greater),
+            ("bools_order_false_first", None, json!(false), json!(true), Ordering::Less),
+            ("arrays_order_by_rank_only", None, json!([1]), json!([2]), Ordering::Equal),
+            ("nulls_tie", None, json!(null), json!(null), Ordering::Equal),
+            ("plain_strings_order_by_code_point", None, json!("9.5"), json!("10"), Ordering::Greater),
+            ("decimals_order_by_value", decimal, json!("9.5"), json!("10"), Ordering::Less),
+            ("decimal_spellings_of_one_value_tie", decimal, json!("9.50"), json!("9.5"), Ordering::Equal),
+            ("decimal_text_before_other_text", decimal, json!("100"), json!("abc"), Ordering::Less),
+            ("other_text_by_code_point", decimal, json!("b"), json!("a"), Ordering::Greater),
+            ("the_type_order_stays_under_the_collation", decimal, json!(1), json!("0"), Ordering::Less),
+            ("numbers_stay_numeric_under_the_collation", decimal, json!(2), json!(10), Ordering::Less),
         ];
-        for (name, a, b, want) in within {
-            assert_eq!(compare_values(&a, &b), want, "{name}");
+        for (name, collation, a, b, want) in within {
+            assert_eq!(compare_values(collation, &a, &b), want, "{name}");
+            assert_eq!(compare_values(collation, &b, &a), want.reverse(), "{name} reversed");
         }
     }
 
@@ -581,7 +625,7 @@ mod tests {
     fn spec_omits_unset_fields_and_round_trips() {
         let full = Query {
             filter: Some(filter::eq("status", json!("open"))),
-            sort: vec![SortKey { path: "name".to_string(), desc: true }],
+            sort: vec![SortKey::new("name", true)],
             offset: 2,
             limit: Some(5),
             after: Some("e30".to_string()),

@@ -130,7 +130,7 @@ mod tests {
         let mut tx = MemoryTx::auto_commit();
 
         let filter = || Some(edax_cqrs::filter::gte("age", json!(36)));
-        let sort = || vec![SortKey { path: "name".into(), desc: false }];
+        let sort = || vec![SortKey::new("name", false)];
 
         let page = store
             .get_many(&mut tx, &Query { filter: filter(), sort: sort(), limit: Some(2), ..Default::default() })
@@ -149,7 +149,7 @@ mod tests {
         // key: the kernel's automatic `id` tiebreak is what keeps the tied rows from being dropped or
         // repeated. `model.rs` pages only by offset on the unique `id`, so it cannot see this.
         let store = seeded_store();
-        let sort = vec![SortKey { path: "age".into(), desc: false }];
+        let sort = vec![SortKey::new("age", false)];
         let page = |after: Option<String>| {
             let q = Query { sort: sort.clone(), limit: Some(2), after, ..Default::default() };
             store.get_many(&mut MemoryTx::auto_commit(), &q).unwrap()
@@ -163,7 +163,7 @@ mod tests {
 
         // The cursor binds the sort it was minted under: replayed under another, it is refused.
         let minted = page(None).next;
-        let other = Query { sort: vec![SortKey { path: "name".into(), desc: false }], after: minted, ..Default::default() };
+        let other = Query { sort: vec![SortKey::new("name", false)], after: minted, ..Default::default() };
         let got = store.get_many(&mut MemoryTx::auto_commit(), &other);
         assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
     }
@@ -185,7 +185,7 @@ mod tests {
 
         // A cursor that is not base64url of a kernel cursor.
         let q = Query {
-            sort: vec![SortKey { path: "age".into(), desc: false }],
+            sort: vec![SortKey::new("age", false)],
             after: Some("!! not base64 !!".into()),
             ..Default::default()
         };

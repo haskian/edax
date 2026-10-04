@@ -563,6 +563,295 @@
   },
   {
     "document": {
+      "t": "2024-01-01T00:00:00.000000Z"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "t",
+        "value": "2024-01-01T00:00:00.500000Z"
+      }
+    },
+    "name": "timestamp_in_the_fixed_width_utc_form_orders_by_instant"
+  },
+  {
+    "document": {
+      "p": "9.5"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "op": "lt",
+        "path": "p",
+        "value": "10"
+      }
+    },
+    "name": "decimal_text_orders_by_code_point_without_the_collation"
+  },
+  {
+    "document": {
+      "p": "9.5"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "lt",
+        "path": "p",
+        "value": "10"
+      }
+    },
+    "name": "decimal_lt_by_value"
+  },
+  {
+    "document": {
+      "p": "10"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gt",
+        "path": "p",
+        "value": "9.5"
+      }
+    },
+    "name": "decimal_gt_by_value"
+  },
+  {
+    "document": {
+      "p": "9.50"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "eq",
+        "path": "p",
+        "value": "9.5"
+      }
+    },
+    "name": "decimal_eq_ignores_trailing_zeros"
+  },
+  {
+    "document": {
+      "p": "100"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "eq",
+        "path": "p",
+        "value": "1E+2"
+      }
+    },
+    "name": "decimal_eq_reads_an_exponent"
+  },
+  {
+    "document": {
+      "p": "9.50"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "ne",
+        "path": "p",
+        "value": "9.5"
+      }
+    },
+    "name": "decimal_ne_on_an_equal_value"
+  },
+  {
+    "document": {
+      "p": "9.5"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gte",
+        "path": "p",
+        "value": "9.50"
+      }
+    },
+    "name": "decimal_gte_at_the_boundary"
+  },
+  {
+    "document": {
+      "p": "0.000"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "lte",
+        "path": "p",
+        "value": "-0"
+      }
+    },
+    "name": "decimal_lte_at_the_boundary"
+  },
+  {
+    "document": {
+      "p": "-10"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "lt",
+        "path": "p",
+        "value": "-9.5"
+      }
+    },
+    "name": "decimal_negatives_order_by_value"
+  },
+  {
+    "document": {
+      "p": "12345678901234567890.10000000001"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gt",
+        "path": "p",
+        "value": "12345678901234567890.1"
+      }
+    },
+    "name": "decimal_past_17_digits_is_exact"
+  },
+  {
+    "document": {
+      "p": "9.50"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "in": {
+        "collation": "decimal",
+        "path": "p",
+        "values": [
+          "1",
+          "9.5"
+        ]
+      }
+    },
+    "name": "decimal_in_by_value"
+  },
+  {
+    "document": {
+      "p": "9.50"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "in": {
+        "collation": "decimal",
+        "path": "p",
+        "values": [
+          "9.51"
+        ]
+      }
+    },
+    "name": "decimal_in_misses"
+  },
+  {
+    "document": {
+      "p": "n/a"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "lt",
+        "path": "p",
+        "value": "10"
+      }
+    },
+    "name": "decimal_against_other_text_is_unordered"
+  },
+  {
+    "document": {
+      "p": "n/a"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "eq",
+        "path": "p",
+        "value": "10"
+      }
+    },
+    "name": "decimal_eq_against_other_text_is_false"
+  },
+  {
+    "document": {
+      "p": "n/a"
+    },
+    "error_code": null,
+    "expected": true,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "ne",
+        "path": "p",
+        "value": "10"
+      }
+    },
+    "name": "decimal_ne_against_other_text_is_true"
+  },
+  {
+    "document": {
+      "p": 5
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gt",
+        "path": "p",
+        "value": "1"
+      }
+    },
+    "name": "decimal_against_a_number_is_unordered"
+  },
+  {
+    "document": {
+      "p": "NaN"
+    },
+    "error_code": null,
+    "expected": false,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "lt",
+        "path": "p",
+        "value": "1"
+      }
+    },
+    "name": "decimal_against_nan_text_is_unordered"
+  },
+  {
+    "document": {
       "sku": "INV-2024-01"
     },
     "error_code": null,
@@ -902,5 +1191,87 @@
       }
     },
     "name": "refused_unknown_node"
+  },
+  {
+    "document": {
+      "p": "11"
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gt",
+        "path": "p",
+        "value": "ten"
+      }
+    },
+    "name": "refused_decimal_comparand_that_is_not_decimal_text"
+  },
+  {
+    "document": {
+      "p": "11"
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "gt",
+        "path": "p",
+        "value": 10
+      }
+    },
+    "name": "refused_decimal_comparand_that_is_a_number"
+  },
+  {
+    "document": {
+      "p": "1"
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "in": {
+        "collation": "decimal",
+        "path": "p",
+        "values": [
+          "1",
+          "Infinity"
+        ]
+      }
+    },
+    "name": "refused_decimal_member_that_is_not_decimal_text"
+  },
+  {
+    "document": {
+      "p": "11"
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "collation": "decimal",
+        "op": "starts_with",
+        "path": "p",
+        "value": "1"
+      }
+    },
+    "name": "refused_starts_with_under_a_collation"
+  },
+  {
+    "document": {
+      "p": "0"
+    },
+    "error_code": "codec",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "collation": "natural",
+        "op": "lt",
+        "path": "p",
+        "value": "1"
+      }
+    },
+    "name": "refused_unknown_collation"
   }
 ]

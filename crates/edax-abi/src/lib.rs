@@ -312,6 +312,22 @@ pub fn canonical_json(payload: &[u8]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&canonical).into_owned())
 }
 
+/// The canonical text of decimal text (`"9.50"` → `"9.5"`, `"1E+2"` → `"100"`): the one string a host
+/// writes an exact decimal as, so equality and the command hash see one value. `NaN`, an infinity,
+/// text that is not a decimal, or one past the digit bound is a `codec:` error. See
+/// [`edax_cqrs::canonical_decimal`].
+pub fn canonical_decimal(text: &str) -> Result<String, String> {
+    edax_cqrs::canonical_decimal(text).map_err(wire)
+}
+
+/// The fixed-width UTC text of an RFC 3339 timestamp (`"2024-01-01T01:30:00+01:00"` →
+/// `"2024-01-01T00:30:00.000000Z"`): the one string a host writes an instant as, so string order is
+/// instant order. Text without an offset, a fraction finer than a microsecond, or a year outside
+/// 0000 to 9999 is a `codec:` error. See [`edax_cqrs::canonical_timestamp`].
+pub fn canonical_timestamp(text: &str) -> Result<String, String> {
+    edax_cqrs::canonical_timestamp(text).map_err(wire)
+}
+
 /// The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
 /// `{"name": name, "payload": payload}`. `payload` is the command value as UTF-8 JSON, in the shape
 /// the handler receives (after upcast). The kernel canonicalizes, so every binding agrees. An integer

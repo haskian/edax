@@ -14,7 +14,7 @@ use edax_cqrs::query::{decode_cursor, effective_sort, encode_cursor, query_json,
 use edax_cqrs::eval_json;
 use edax_core::{ErrorCode, Tenancy};
 use edax_cqrs::{
-    cached_failure, canonical_json, command_hash, decode_prior, decode_record, encode_record, outcome, payload_hash, Outcome,
+    cached_failure, canonical_decimal, canonical_json, canonical_timestamp, command_hash, decode_prior, decode_record, encode_record, outcome, payload_hash, Outcome,
     Record, State,
 };
 use edax_golden::write_or_check;
@@ -388,7 +388,7 @@ fn idempotency_record_cases() -> Vec<Value> {
 }
 
 fn filter_cases() -> Vec<Value> {
-    use edax_cqrs::filter::{and, contains, eq, exists, gt, gte, is_in, lt, lte, ne, not, or, starts_with};
+    use edax_cqrs::filter::{and, contains, decimal, eq, exists, gt, gte, is_in, lt, lte, ne, not, or, starts_with};
     let to = |f: edax_cqrs::Filter| serde_json::to_value(f).unwrap();
     let cases: Vec<(&str, Value, Value)> = vec![
         ("eq_matches", to(eq("status", json!("open"))), json!({"status": "open"})),
@@ -431,6 +431,27 @@ fn filter_cases() -> Vec<Value> {
         // RFC3339 orders as strings only in one fixed-width form: these two read wrong on purpose.
         ("timestamp_without_a_fraction_sorts_after_one_with", to(lt("t", json!("2024-01-01T00:00:00Z"))), json!({"t": "2024-01-01T00:00:00.500000Z"})),
         ("timestamp_with_an_offset_sorts_by_wall_time", to(gt("t", json!("2024-01-01T00:00:00Z"))), json!({"t": "2024-01-01T00:30:00+01:00"})),
+        // The form every SDK writes a host timestamp in (`host_values.json`) orders by instant.
+        ("timestamp_in_the_fixed_width_utc_form_orders_by_instant", to(lt("t", json!("2024-01-01T00:00:00.500000Z"))), json!({"t": "2024-01-01T00:00:00.000000Z"})),
+        // The decimal collation compares decimal text by exact value; code point order does not.
+        ("decimal_text_orders_by_code_point_without_the_collation", to(lt("p", json!("10"))), json!({"p": "9.5"})),
+        ("decimal_lt_by_value", to(decimal::lt("p", "10")), json!({"p": "9.5"})),
+        ("decimal_gt_by_value", to(decimal::gt("p", "9.5")), json!({"p": "10"})),
+        ("decimal_eq_ignores_trailing_zeros", to(decimal::eq("p", "9.5")), json!({"p": "9.50"})),
+        ("decimal_eq_reads_an_exponent", to(decimal::eq("p", "1E+2")), json!({"p": "100"})),
+        ("decimal_ne_on_an_equal_value", to(decimal::ne("p", "9.5")), json!({"p": "9.50"})),
+        ("decimal_gte_at_the_boundary", to(decimal::gte("p", "9.50")), json!({"p": "9.5"})),
+        ("decimal_lte_at_the_boundary", to(decimal::lte("p", "-0")), json!({"p": "0.000"})),
+        ("decimal_negatives_order_by_value", to(decimal::lt("p", "-9.5")), json!({"p": "-10"})),
+        ("decimal_past_17_digits_is_exact", to(decimal::gt("p", "12345678901234567890.1")), json!({"p": "12345678901234567890.10000000001"})),
+        ("decimal_in_by_value", to(decimal::is_in("p", ["1", "9.5"])), json!({"p": "9.50"})),
+        ("decimal_in_misses", to(decimal::is_in("p", ["9.51"])), json!({"p": "9.50"})),
+        // Under the collation a value that is not decimal text compares as a mismatched type does.
+        ("decimal_against_other_text_is_unordered", to(decimal::lt("p", "10")), json!({"p": "n/a"})),
+        ("decimal_eq_against_other_text_is_false", to(decimal::eq("p", "10")), json!({"p": "n/a"})),
+        ("decimal_ne_against_other_text_is_true", to(decimal::ne("p", "10")), json!({"p": "n/a"})),
+        ("decimal_against_a_number_is_unordered", to(decimal::gt("p", "1")), json!({"p": 5})),
+        ("decimal_against_nan_text_is_unordered", to(decimal::lt("p", "1")), json!({"p": "NaN"})),
         ("starts_with_prefix", to(starts_with("sku", json!("INV-"))), json!({"sku": "INV-2024-01"})),
         ("starts_with_other_prefix", to(starts_with("sku", json!("ORD-"))), json!({"sku": "INV-2024-01"})),
         ("starts_with_non_string", to(starts_with("n", json!("5"))), json!({"n": 5})),
@@ -456,6 +477,11 @@ fn filter_cases() -> Vec<Value> {
         ("refused_dotted_empty_segment", to(eq("a..b", json!(1))), json!({"a": {"": {"b": 1}}})),
         ("refused_unknown_field", json!({"compare": {"path": "p", "op": "eq", "vlaue": 1}}), json!({"p": 1})),
         ("refused_unknown_node", json!({"near": {"path": "p"}}), json!({"p": 1})),
+        ("refused_decimal_comparand_that_is_not_decimal_text", to(decimal::gt("p", "ten")), json!({"p": "11"})),
+        ("refused_decimal_comparand_that_is_a_number", json!({"compare": {"path": "p", "op": "gt", "value": 10, "collation": "decimal"}}), json!({"p": "11"})),
+        ("refused_decimal_member_that_is_not_decimal_text", to(decimal::is_in("p", ["1", "Infinity"])), json!({"p": "1"})),
+        ("refused_starts_with_under_a_collation", json!({"compare": {"path": "p", "op": "starts_with", "value": "1", "collation": "decimal"}}), json!({"p": "11"})),
+        ("refused_unknown_collation", json!({"compare": {"path": "p", "op": "lt", "value": "1", "collation": "natural"}}), json!({"p": "0"})),
     ];
     cases
         .into_iter()
@@ -481,6 +507,22 @@ fn query_cases() -> Vec<Value> {
         encode_cursor(&row, &serde_json::from_value::<Vec<SortKey>>(sort).unwrap()).unwrap()
     };
     let by_n = || json!([{"path": "n"}]);
+    let by_p = || json!([{"path": "p", "collation": "decimal"}]);
+    // Prices as decimal text: one tie spelled two ways, a negative, a value past 17 digits, a number,
+    // text that is not decimal, and a row without a price.
+    let decimals = || {
+        json!([
+            {"id": "a", "p": "10"},
+            {"id": "b", "p": "9.50"},
+            {"id": "c", "p": "9.5"},
+            {"id": "d", "p": "-2.25"},
+            {"id": "e", "p": "12345678901234567890.1"},
+            {"id": "f", "p": 3},
+            {"id": "g", "p": "n/a"},
+            {"id": "h"},
+            {"id": "i", "p": "1E+1"},
+        ])
+    };
     let ns = |values: &[i64]| -> Value {
         values.iter().enumerate().map(|(i, n)| json!({"id": format!("r{i}"), "n": n})).collect()
     };
@@ -535,6 +577,19 @@ fn query_cases() -> Vec<Value> {
         ("multi_key_tie_broken_by_the_second", json!({"sort": [{"path": "bal", "desc": true}, {"path": "id"}], "limit": 2}),
             json!([{"id": "a", "bal": 150}, {"id": "b", "bal": 300}, {"id": "c", "bal": 150}])),
         ("no_sort_keeps_input_order_and_mints_no_cursor", json!({"limit": 2}), ns(&[3, 1, 2])),
+        // Decimal text sorts by code point without the collation and by exact value under it, ties
+        // broken by id. Decimal text sorts before other text, and numbers keep their type rank.
+        ("decimal_text_without_the_collation_sorts_by_code_point", json!({"sort": [{"path": "p"}]}), decimals()),
+        ("decimal_sort_by_value", json!({"sort": by_p()}), decimals()),
+        ("decimal_sort_descending", json!({"sort": [{"path": "p", "desc": true, "collation": "decimal"}]}), decimals()),
+        ("decimal_sort_pages_and_mints_next", json!({"sort": by_p(), "limit": 3}), decimals()),
+        // The cursor carries the row's text unchanged, so the walk resumes inside the `9.5` tie.
+        ("decimal_sort_resumes_after_a_cursor", json!({"sort": by_p(), "limit": 2, "after": mint(json!({"id": "b", "p": "9.50"}), by_p())}), decimals()),
+        (
+            "decimal_filter_then_decimal_sort",
+            json!({"filter": {"compare": {"path": "p", "op": "gte", "value": "9.5", "collation": "decimal"}}, "sort": by_p()}),
+            decimals(),
+        ),
         ("offset_past_the_end", json!({"sort": by_n(), "offset": 5}), ns(&[1, 2])),
         // Refused: a cursor under another sort, a cursor without one, and a page whose `next` would
         // be minted from a row without the tiebreak id.
@@ -544,6 +599,8 @@ fn query_cases() -> Vec<Value> {
         ("refused_next_from_a_row_without_an_id", json!({"sort": [{"path": "k"}], "limit": 1}), json!([{"k": 1}, {"k": 1}])),
         ("refused_next_from_a_row_with_an_object_id", json!({"sort": [{"path": "k"}], "limit": 1}), json!([{"id": {"n": 0}, "k": 1}, {"id": {"n": 1}, "k": 1}])),
         ("refused_unknown_field", json!({"sort": by_n(), "limt": 1}), ns(&[1])),
+        // The collation is part of the sort a cursor is bound to.
+        ("refused_cursor_under_another_collation", json!({"sort": [{"path": "p"}], "after": mint(json!({"id": "b", "p": "9.50"}), by_p())}), decimals()),
     ];
     cases
         .into_iter()
@@ -588,6 +645,9 @@ fn cursor_cases() -> Vec<Value> {
         // exact value (`58088200776852270`, `1110828756322661400`): they decode as the doubles.
         (json!([{"path": "n"}]), json!({"id": "f1", "n": 5.808820077685227e16})),
         (json!([{"path": "n"}, {"path": "m", "desc": true}]), json!({"id": "f2", "n": -1.1108287563226614e18, "m": [1e20]})),
+        // A decimal key: the collation is part of the effective sort, and the tuple carries the
+        // row's decimal text exactly, past what a double holds.
+        (json!([{"path": "p", "collation": "decimal"}]), json!({"id": "d1", "p": "12345678901234567890.123456789"})),
     ];
     let minted_rows = minted.into_iter().map(|(sort, doc)| {
         let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
@@ -604,7 +664,7 @@ fn cursor_cases() -> Vec<Value> {
     });
     // Refusals, each with the kernel's own text: a cursor read under a sort it was not minted under,
     // and a row a cursor cannot be minted from.
-    let replayed = encode_cursor(&json!({"id": "a", "n": 1}), &[SortKey { path: "n".into(), desc: false }]).unwrap();
+    let replayed = encode_cursor(&json!({"id": "a", "n": 1}), &[SortKey::new("n", false)]).unwrap();
     let refused: Vec<(&str, Value, Value, Option<&str>)> = vec![
         ("decode_under_another_key", json!([{"path": "s"}]), Value::Null, Some(&replayed)),
         ("decode_under_another_direction", json!([{"path": "n", "desc": true}]), Value::Null, Some(&replayed)),
@@ -654,8 +714,116 @@ fn idempotency_settle_cases() -> Vec<Value> {
         .collect()
 }
 
+/// The JSON text a host value becomes in every SDK, so a document, a filter and a command hash agree
+/// across languages. Each row names the value by its `kind` and its `input` text, and pins the
+/// `json` an SDK's encoder writes for it, or the `error` code it refuses it with.
+///
+/// - `decimal`: the kernel's canonical decimal text as a JSON string.
+/// - `datetime`: the kernel's fixed-width UTC text as a JSON string, so string order is instant
+///   order. The input is RFC 3339 text, and a time without an offset is refused: its instant is
+///   unknown. `epoch_micros` pins the instant, which this generator checks the text against before it
+///   checks that the texts sort as the instants do.
+/// - `date`: ISO `YYYY-MM-DD`, already one width.
+fn host_values_cases() -> Vec<Value> {
+    let decimals: [(&str, &str); 16] = [
+        ("decimal_integer", "42"),
+        ("decimal_fraction", "9.5"),
+        ("decimal_trailing_zeros_are_one_value", "9.50"),
+        ("decimal_a_tenth_stays_exact", "0.1"),
+        ("decimal_leading_zeros_go", "007.250"),
+        ("decimal_negative", "-12.30"),
+        ("decimal_negative_zero_is_zero", "-0.0"),
+        ("decimal_zero_with_an_exponent", "0E-10"),
+        ("decimal_exponent", "1E+2"),
+        ("decimal_negative_exponent", "1.5E-7"),
+        ("decimal_past_17_digits_stays_exact", "12345678901234567890.123456789"),
+        ("decimal_past_2_pow_53_stays_exact", "9007199254740993"),
+        ("decimal_refused_nan", "NaN"),
+        ("decimal_refused_signalling_nan", "sNaN"),
+        ("decimal_refused_infinity", "-Infinity"),
+        ("decimal_refused_past_the_digit_bound", "1E+1000"),
+    ];
+    let decimal_rows = decimals.into_iter().map(|(name, input)| {
+        let result = canonical_decimal(input);
+        assert_eq!(name.contains("_refused_"), result.is_err(), "{name}");
+        json!({
+            "name": name,
+            "kind": "decimal",
+            "input": input,
+            "json": result.as_ref().ok().map(|text| serde_json::to_string(text).unwrap()),
+            "epoch_micros": null,
+            "error": result.as_ref().err().map(|e| e.code.as_str()),
+        })
+    });
+    // (name, input, the instant in microseconds since the epoch); a refused row has none.
+    let datetimes: [(&str, &str, Option<i64>); 10] = [
+        ("datetime_utc_whole_second_gets_a_zero_fraction", "2024-01-01T00:00:00+00:00", Some(1_704_067_200_000_000)),
+        ("datetime_z_suffix", "2024-01-01T00:00:00.250000Z", Some(1_704_067_200_250_000)),
+        ("datetime_utc_with_a_fraction", "2024-01-01T00:00:00.500000+00:00", Some(1_704_067_200_500_000)),
+        ("datetime_milliseconds_widen_to_six_digits", "2024-01-01T00:00:00.123+00:00", Some(1_704_067_200_123_000)),
+        ("datetime_microsecond_precision", "2024-01-01T00:00:00.000001+00:00", Some(1_704_067_200_000_001)),
+        ("datetime_positive_offset_converts_to_utc", "2024-01-01T01:30:00+01:00", Some(1_704_069_000_000_000)),
+        ("datetime_negative_offset_crosses_midnight", "2023-12-31T22:00:00-05:00", Some(1_704_078_000_000_000)),
+        ("datetime_offset_with_minutes", "2024-01-01T05:45:00.000001+05:45", Some(1_704_067_200_000_001)),
+        ("datetime_year_below_1000_keeps_four_digits", "0999-12-31T23:59:59.999999+00:00", Some(-30_610_224_000_000_001)),
+        ("datetime_refused_naive", "2024-01-01T00:00:00", None),
+    ];
+    let mut by_text: Vec<(String, i64)> = Vec::new();
+    let datetime_rows: Vec<Value> = datetimes
+        .into_iter()
+        .map(|(name, input, micros)| {
+            let result = canonical_timestamp(input);
+            assert_eq!(micros.is_none(), result.is_err(), "{name}");
+            if let (Ok(text), Some(micros)) = (&result, micros) {
+                assert_eq!(fixed_width_utc_micros(text), micros, "{name}: the text is not the pinned instant");
+                by_text.push((text.clone(), micros));
+            }
+            json!({
+                "name": name,
+                "kind": "datetime",
+                "input": input,
+                "json": result.as_ref().ok().map(|text| serde_json::to_string(text).unwrap()),
+                "epoch_micros": micros,
+                "error": result.as_ref().err().map(|e| e.code.as_str()),
+            })
+        })
+        .collect();
+    by_text.sort();
+    assert!(by_text.windows(2).all(|pair| pair[0].1 <= pair[1].1), "string order is not instant order: {by_text:?}");
+    let date_row = json!({
+        "name": "date_keeps_iso",
+        "kind": "date",
+        "input": "0999-03-07",
+        "json": "\"0999-03-07\"",
+        "epoch_micros": null,
+        "error": null,
+    });
+    decimal_rows.chain(datetime_rows).chain(std::iter::once(date_row)).collect()
+}
+
+/// Microseconds since the Unix epoch of `YYYY-MM-DDTHH:MM:SS.ffffffZ`, checking its exact shape.
+/// Days from the civil date use Howard Hinnant's algorithm, valid for the proleptic Gregorian years.
+fn fixed_width_utc_micros(text: &str) -> i64 {
+    let bytes = text.as_bytes();
+    assert_eq!(bytes.len(), 27, "{text}: not the fixed width");
+    for (at, separator) in [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':'), (19, b'.'), (26, b'Z')] {
+        assert_eq!(bytes[at], separator, "{text}: byte {at}");
+    }
+    let field = |from: usize, to: usize| -> i64 { text[from..to].parse().unwrap() };
+    let (year, month, day) = (field(0, 4), field(5, 7), field(8, 10));
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let year_of_era = shifted - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let seconds = days * 86_400 + field(11, 13) * 3_600 + field(14, 16) * 60 + field(17, 19);
+    seconds * 1_000_000 + field(20, 26)
+}
+
 #[test]
 fn golden() {
+    write_or_check("host_values.json", host_values_cases());
     write_or_check("filter.json", filter_cases());
     write_or_check("query.json", query_cases());
     write_or_check("cursor.json", cursor_cases());

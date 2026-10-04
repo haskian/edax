@@ -23,6 +23,13 @@
 //!
 //! - [`filter`] — the backend-neutral filter AST and its evaluator, whose match decision must be
 //!   identical in every language.
+//! - [`canonical_decimal`] — the one text an exact decimal travels as, in a document, a filter or a
+//!   command, and the value order the decimal [`Collation`] gives a filter and a sort.
+//! - [`canonical_timestamp`] — the one text an instant travels as: fixed-width UTC, so string order
+//!   is instant order.
+//!
+//! The two host-value forms live here because both halves read them: the command hash sees one value
+//! per decimal and per instant, and the filter and the sort order them.
 //! - [`mod@query`] — sort and pagination semantics over the documents a filter selects, including
 //!   the keyset cursor a page boundary is minted as, bound to the sort it was minted under.
 //!
@@ -34,14 +41,18 @@
 #![warn(missing_docs)]
 
 mod canonical;
+mod decimal;
 pub mod filter;
 pub mod query;
 pub mod record;
+mod timestamp;
 
 pub use canonical::canonical_json;
+pub use decimal::{canonical_decimal, MAX_DECIMAL_DIGITS};
+pub use timestamp::canonical_timestamp;
 use edax_core::Error;
 
-pub use filter::{eval, eval_json, Filter, Operator};
+pub use filter::{eval, eval_json, Collation, Filter, Operator};
 // The whole query surface, so no binding reaches into `query::` and makes a module path an
 // external contract.
 pub use query::{

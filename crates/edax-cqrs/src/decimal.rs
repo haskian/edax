@@ -1,0 +1,202 @@
+//! Decimal text: an exact decimal number carried as a JSON string.
+//!
+//! JSON numbers are doubles to most readers, so an amount with more than 15 significant digits, or
+//! one like `0.1`, does not survive them exactly. A host therefore sends a decimal as a string, and
+//! the kernel owns the two decisions every SDK must make the same way:
+//!
+//! - **The canonical text** ([`canonical_decimal`]), which a host writes into a document, a filter
+//!   or a command, so `9.50` and `9.5` are one value to equality and to the command hash. It is plain
+//!   notation: an optional `-`, the integer digits without leading zeros, and a fraction only when
+//!   it is not zero, without trailing zeros. `9.50` is `9.5`, `1E+2` is `100`, `-0.0` is `0`, `.5` is
+//!   `0.5` and `1.5E-7` is `0.00000015`.
+//! - **The order** of two decimal texts by value, which a filter and a sort apply under the
+//!   [`Collation::Decimal`](crate::filter::Collation) collation. Code point order would put `"10"`
+//!   before `"9.5"`.
+//!
+//! Decimal text is an optional sign, digits with at most one `.` and at least one digit, and an
+//! optional exponent: `e` or `E`, an optional sign, and digits within the 32-bit range. No
+//! whitespace, no `_`, no `NaN` and no `Infinity`. Its plain notation holds at most
+//! [`MAX_DECIMAL_DIGITS`] digits, so a short text such as `1E+999999` cannot expand into a megabyte.
+//! `testdata/golden/host_values.json` pins the form.
+//!
+//! `bigdecimal` does the arithmetic: the parse, the normal form and the exact order. This module adds
+//! what it leaves open. Its parser is looser than this grammar (it reads `1_000`) and panics on an
+//! exponent past `i64`, so the grammar is checked first. The digit bound is checked on the normal
+//! form, which holds the coefficient and the scale, before anything is written out in plain notation.
+
+use bigdecimal::BigDecimal;
+use edax_core::Error;
+use std::cmp::Ordering;
+use std::str::FromStr;
+
+/// The most digits a decimal's plain notation may hold, counting both sides of the point and the
+/// `0` before the point of a value below one.
+pub const MAX_DECIMAL_DIGITS: usize = 1000;
+
+/// Read decimal text into its normal form, or say why it is not decimal text.
+fn parse(text: &str) -> Result<BigDecimal, Error> {
+    check_grammar(text)?;
+    let decimal = BigDecimal::from_str(text).map_err(|e| Error::codec(format_args!("{text:?} is not decimal text: {e}")))?;
+    let decimal = decimal.normalized();
+    if plain_digits(&decimal).is_none_or(|count| count > MAX_DECIMAL_DIGITS) {
+        return Err(Error::codec(format_args!(
+            "{text:?} has more than {MAX_DECIMAL_DIGITS} digits in plain notation"
+        )));
+    }
+    Ok(decimal)
+}
+
+/// How many digits the plain notation of a normalized decimal holds, or `None` past `u64`.
+fn plain_digits(decimal: &BigDecimal) -> Option<usize> {
+    let (_, scale) = decimal.as_bigint_and_exponent();
+    let digits = decimal.digits();
+    let count = match u64::try_from(scale) {
+        // A whole number written with `-scale` zeros after its coefficient.
+        Err(_) => digits.checked_add(scale.unsigned_abs())?,
+        Ok(scale) if digits > scale => digits,
+        // A value below one carries a `0` before the point.
+        Ok(scale) => scale.checked_add(1)?,
+    };
+    usize::try_from(count).ok()
+}
+
+/// Refuse what `BigDecimal::from_str` would read but the grammar does not admit, and an exponent it
+/// could not hold.
+fn check_grammar(text: &str) -> Result<(), Error> {
+    let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if ["nan", "snan", "inf", "infinity"].iter().any(|word| unsigned.eq_ignore_ascii_case(word)) {
+        return Err(Error::codec(format_args!("{text:?} is not a finite decimal")));
+    }
+    let not_decimal = || Error::codec(format_args!("{text:?} is not decimal text"));
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (unsigned, None),
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if integer.len() + fraction.len() == 0 || !digits(integer) || !digits(fraction) {
+        return Err(not_decimal());
+    }
+    if let Some(exponent) = exponent {
+        let magnitude = exponent.strip_prefix(['-', '+']).unwrap_or(exponent);
+        if magnitude.is_empty() || !digits(magnitude) {
+            return Err(not_decimal());
+        }
+        if exponent.parse::<i32>().is_err() {
+            return Err(Error::codec(format_args!("{text:?} has an exponent outside the 32-bit range")));
+        }
+    }
+    Ok(())
+}
+
+/// The canonical text of decimal text (see the module docs), or the `codec` error that says why it is
+/// not decimal text: not finite, not the grammar, or more than [`MAX_DECIMAL_DIGITS`] digits.
+pub fn canonical_decimal(text: &str) -> Result<String, Error> {
+    parse(text).map(|decimal| decimal.to_plain_string())
+}
+
+/// Whether `text` is decimal text the kernel reads.
+pub(crate) fn is_decimal(text: &str) -> bool {
+    parse(text).is_ok()
+}
+
+/// Two decimal texts by value, or `None` when either one is not decimal text.
+pub(crate) fn decimal_cmp(a: &str, b: &str) -> Option<Ordering> {
+    Some(parse(a).ok()?.cmp(&parse(b).ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One case per branch of the parse and the render: sign, special value, exponent, point,
+    /// leading and trailing zeros, zero, the digit bound, and every grammar refusal.
+    #[test]
+    fn canonical_decimal_branches() {
+        let at_bound = format!("1E+{}", MAX_DECIMAL_DIGITS - 1);
+        let at_bound_plain = format!("1{}", "0".repeat(MAX_DECIMAL_DIGITS - 1));
+        let past_bound = format!("1E+{MAX_DECIMAL_DIGITS}");
+        let tiny_at_bound = format!("1E-{}", MAX_DECIMAL_DIGITS - 1);
+        let tiny_at_bound_plain = format!("0.{}1", "0".repeat(MAX_DECIMAL_DIGITS - 2));
+        let tiny_past_bound = format!("1E-{MAX_DECIMAL_DIGITS}");
+        let cases: Vec<(&str, &str, Result<&str, &str>)> = vec![
+            ("an_integer", "42", Ok("42")),
+            ("a_fraction", "9.5", Ok("9.5")),
+            ("trailing_fraction_zeros_go", "9.50", Ok("9.5")),
+            ("a_zero_fraction_goes", "100.000", Ok("100")),
+            ("leading_zeros_go", "007.25", Ok("7.25")),
+            ("a_value_below_one_keeps_its_zero", "0.10", Ok("0.1")),
+            ("a_bare_point_fraction", ".5", Ok("0.5")),
+            ("a_bare_point_integer", "5.", Ok("5")),
+            ("a_plus_sign_goes", "+3", Ok("3")),
+            ("a_negative", "-12.30", Ok("-12.3")),
+            ("negative_zero_is_zero", "-0.0", Ok("0")),
+            ("zero_with_an_exponent", "0E-10", Ok("0")),
+            ("zero_with_a_huge_exponent", "0E+999999999", Ok("0")),
+            ("a_positive_exponent", "1E+2", Ok("100")),
+            ("a_lowercase_exponent", "1.5e3", Ok("1500")),
+            ("a_negative_exponent", "1.5E-7", Ok("0.00000015")),
+            ("an_exponent_inside_the_digits", "12345E-2", Ok("123.45")),
+            ("past_17_digits_stays_exact", "12345678901234567890.123456789", Ok("12345678901234567890.123456789")),
+            ("at_the_digit_bound", &at_bound, Ok(&at_bound_plain)),
+            ("a_fraction_at_the_digit_bound", &tiny_at_bound, Ok(&tiny_at_bound_plain)),
+            ("past_the_digit_bound", &past_bound, Err("more than 1000 digits")),
+            ("a_fraction_past_the_digit_bound", &tiny_past_bound, Err("more than 1000 digits")),
+            ("zero_at_the_widest_exponent", "0E+2147483647", Ok("0")),
+            ("the_widest_exponent_meets_the_digit_bound", "1E-2147483648", Err("more than 1000 digits")),
+            ("an_exponent_past_32_bits", "1E+2147483648", Err("outside the 32-bit range")),
+            // `BigDecimal::from_str` panics on this one: the grammar must refuse it first.
+            ("an_exponent_past_i64", "1E+9223372036854775808", Err("outside the 32-bit range")),
+            ("a_signed_exponent_sign_alone", "1E-", Err("not decimal text")),
+            ("nan", "NaN", Err("not a finite decimal")),
+            ("signalling_nan", "sNaN", Err("not a finite decimal")),
+            ("infinity", "-Infinity", Err("not a finite decimal")),
+            ("inf", "inf", Err("not a finite decimal")),
+            ("empty", "", Err("not decimal text")),
+            ("a_sign_alone", "-", Err("not decimal text")),
+            ("a_point_alone", ".", Err("not decimal text")),
+            ("two_points", "1.2.3", Err("not decimal text")),
+            ("whitespace", " 1", Err("not decimal text")),
+            ("an_underscore", "1_000", Err("not decimal text")),
+            ("an_exponent_without_digits", "1E", Err("not decimal text")),
+            ("an_exponent_with_a_sign_alone", "1E+", Err("not decimal text")),
+            ("an_exponent_without_a_mantissa", "E5", Err("not decimal text")),
+            ("a_fraction_in_the_exponent", "1E1.5", Err("not decimal text")),
+            ("a_word", "ten", Err("not decimal text")),
+            ("non_ascii_digits", "١٢", Err("not decimal text")),
+        ];
+        for (name, text, want) in cases {
+            match (canonical_decimal(text), want) {
+                (Ok(got), Ok(want)) => assert_eq!(got, want, "{name}"),
+                (Err(error), Err(needle)) => {
+                    assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
+                    assert!(error.message.contains(needle), "{name}: {error}");
+                }
+                (got, want) => panic!("{name}: got {got:?}, want {want:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_cmp_orders_by_value() {
+        let cases: [(&str, &str, &str, Option<Ordering>); 13] = [
+            ("more_digits_is_not_larger", "9.5", "10", Some(Ordering::Less)),
+            ("trailing_zeros_are_equal", "9.50", "9.5", Some(Ordering::Equal)),
+            ("spellings_of_one_value", "1E+2", "100.0", Some(Ordering::Equal)),
+            ("an_extended_coefficient_is_larger", "1.5", "1.51", Some(Ordering::Less)),
+            ("same_digits_other_magnitude", "0.15", "1.5", Some(Ordering::Less)),
+            ("negatives_reverse", "-10", "-9.5", Some(Ordering::Less)),
+            ("negative_below_positive", "-1", "0.001", Some(Ordering::Less)),
+            ("positive_above_negative", "1", "-1000", Some(Ordering::Greater)),
+            ("zero_against_a_positive", "0", "0.001", Some(Ordering::Less)),
+            ("zero_against_a_negative", "-0", "-0.001", Some(Ordering::Greater)),
+            ("past_17_digits_stays_exact", "12345678901234567890.1", "12345678901234567890.01", Some(Ordering::Greater)),
+            ("a_left_side_that_is_not_decimal", "abc", "1", None),
+            ("a_right_side_that_is_not_decimal", "1", "NaN", None),
+        ];
+        for (name, a, b, want) in cases {
+            assert_eq!(decimal_cmp(a, b), want, "{name}");
+            assert_eq!(decimal_cmp(b, a), want.map(Ordering::reverse), "{name} reversed");
+        }
+    }
+}

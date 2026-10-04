@@ -147,9 +147,15 @@ encoder. It then hands the kernel the name and the JSON. That is what `command_h
 payload_json)` is for. Both paths land
 on the same bytes because canonicalization removes everything an encoder is free to choose.
 
-Python uses `msgspec.json.encode` rather than `json.dumps` so that `UUID`, `datetime` and `Decimal`
-fields encode deterministically instead of raising `TypeError`, and it does **no** canonicalization
-of its own. The hash is `_edax.command_hash_json(cmd.type, _payload_json(cmd))`.
+Python encodes the command with msgspec rather than `json.dumps`, so that a `UUID` field encodes
+deterministically instead of raising `TypeError`. It does **no** JSON canonicalization of its own.
+The hash is `_edax.command_hash_json(cmd.type, _payload_json(cmd))`.
+
+Canonicalization cannot unify what the host encoder writes as two different strings. So a `Decimal`
+and a `datetime` go through the kernel's own text forms first: `canonical_decimal` and
+`canonical_timestamp`. `Decimal("9.50")` and `Decimal("9.5")` then hash alike, and so do two
+`datetime`s for one instant in two offsets. Every SDK must write these types the same way
+([the host-value table](./filter.md#host-values-every-sdk-writes-alike)).
 
 ### The golden vectors that hold this
 
@@ -380,6 +386,7 @@ A caller therefore never restates the sort to build one.
 | Decision | Rule |
 |---|---|
 | total order | number < string < bool < array < object < null; numbers by value (exact for two integers), strings by code point, bools `false < true` |
+| decimal key | a `SortKey` with `"collation": "decimal"` orders decimal text by exact value; other strings sort after it, by code point; the collation is part of the cursor's fingerprint |
 | tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends there; `TIEBREAK_PATH` names it |
 | cursor | `base64url_nopad(canonical_json({"s": <fingerprint>, "v": [<sort-key values>]}))`; the fingerprint is the `payload_hash` of the canonical effective sort, as 16 hex digits |
 | replay | `decode_cursor` refuses a cursor whose fingerprint is not the query's sort, a forged arity, and any cursor on an unsorted query, each as `codec` |

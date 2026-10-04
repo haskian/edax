@@ -6,10 +6,18 @@ are identical across bindings.
 Two-valued semantics: a path predicate matches only when the path is present, non-null, and the
 comparison holds; a missing or null path makes that leaf false. So ``ne(p, x)`` does not match a
 document missing ``p``, while ``not_(eq(p, x))`` does.
+
+A ``Decimal`` comparand compares by exact value. ``eq``, ``ne``, ``gt``, ``gte``, ``lt``, ``lte`` and ``in_``
+set the kernel's decimal collation for it, so ``gt("price", Decimal("10"))`` reads the document's decimal
+text as a number: ``"9.5"`` is below it, and ``"9.50"`` equals ``Decimal("9.5")``. A document value that is
+not decimal text then compares as a mismatched type does. Every member of a collated ``in_`` must be a
+``Decimal`` or decimal text, else the kernel refuses the filter. ``contains`` and ``starts_with`` compare
+the text.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from . import _edax, _json, errors
@@ -17,8 +25,15 @@ from . import _edax, _json, errors
 Filter = dict[str, Any]  # one filter node in the kernel's canonical form
 
 
+def _collated(node: dict[str, Any], *values: Any) -> Filter:
+    # A Decimal encodes as decimal text, which orders by value only under the decimal collation.
+    if any(isinstance(value, Decimal) for value in values):
+        node["collation"] = "decimal"
+    return node
+
+
 def _compare(path: str, op: str, value: Any) -> Filter:
-    return {"compare": {"path": path, "op": op, "value": value}}
+    return {"compare": _collated({"path": path, "op": op, "value": value}, value)}
 
 
 def eq(path: str, value: Any) -> Filter:
@@ -46,11 +61,11 @@ def lte(path: str, value: Any) -> Filter:
 
 
 def starts_with(path: str, prefix: str) -> Filter:
-    return _compare(path, "starts_with", prefix)
+    return {"compare": {"path": path, "op": "starts_with", "value": prefix}}
 
 
 def in_(path: str, *values: Any) -> Filter:
-    return {"in": {"path": path, "values": list(values)}}
+    return {"in": _collated({"path": path, "values": list(values)}, *values)}
 
 
 def contains(path: str, value: Any) -> Filter:

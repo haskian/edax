@@ -578,6 +578,9 @@ class PlainPlaceOrder:
         self.__dict__.update(fields)
 
 
+PLUS_ONE = datetime.timezone(datetime.timedelta(hours=1))
+
+
 @dataclass
 class PlaceOrderWithScalars:
     """Fields ``json.dumps`` would reject; msgspec encodes them deterministically."""
@@ -635,8 +638,10 @@ class PayloadCase:
         ),
         pytest.param(
             PayloadCase(
-                PlaceOrderWithScalars(uuid.UUID(int=1), datetime.datetime(2026, 1, 2, 3, 4, 5)),
-                {"id": "00000000-0000-0000-0000-000000000001", "at": "2026-01-02T03:04:05"},
+                PlaceOrderWithScalars(
+                    uuid.UUID(int=1), datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=PLUS_ONE)
+                ),
+                {"id": "00000000-0000-0000-0000-000000000001", "at": "2026-01-02T02:04:05.000000Z"},
             ),
             id="uuid_and_datetime_encode_instead_of_raising_typeerror",
         ),
@@ -667,6 +672,12 @@ class PayloadCase:
         pytest.param(
             PayloadCase(ComputedOrder("ord-7f3c"), {"order_id": "ord-7f3c"}),
             id="init_false_field_without_a_value_is_omitted_as_msgspec_omits_it",
+        ),
+        pytest.param(
+            PayloadCase(
+                PlaceOrderWithScalars(uuid.UUID(int=1), datetime.datetime(2026, 1, 2)), None, edax.CodecError
+            ),
+            id="naive_datetime_has_no_instant_and_is_terminal",
         ),
         pytest.param(
             PayloadCase(SlottedPlaceOrder("ord-7f3c"), None, edax.CodecError),

@@ -42,6 +42,21 @@ written against them. Pin a minor in your dependency declaration
 
 ## Upgrade notes
 
+### 0.4 to 0.5
+
+- **Decimal and datetime encoding.** The SDK's one encoder writes a `Decimal` as the kernel's canonical
+  decimal text (`"9.5"` for `Decimal("9.50")`). It writes an aware `datetime` as fixed-width UTC text
+  (`"2024-01-01T00:30:00.000000Z"`). It refuses a naive `datetime`, and a `Decimal` that is `NaN`,
+  infinite or past 1000 digits, as `CodecError`.
+- **Command hashes move.** A command that carries a `Decimal` or a `datetime` hashes differently from
+  0.4. A client retry that crosses the upgrade with such a command runs its handler again. Let the
+  idempotency ledgers expire first if that matters.
+- **Stored documents and saga states.** Documents written by 0.4 keep the old text. Rewrite them, or a
+  filter or a sort compares old and new spellings apart. A cached command result that held a
+  `Decimal` replays its canonical text, so `Decimal("50.00")` comes back as `Decimal("50")`.
+- **Decimal order.** A range filter or a sort orders decimal text by value only under the decimal
+  collation. A `Decimal` comparand sets it, and `sort_key(path, decimal=True)` sets it for a sort.
+
 ### 0.1 to 0.2
 
 0.2 is a minor release, so it may break the surfaces above, and it does.
