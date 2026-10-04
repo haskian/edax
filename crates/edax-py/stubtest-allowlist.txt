@@ -36,6 +36,7 @@ edax\._edax\.SagaRow
 edax\._edax\.SagaWrite
 edax\._edax\.SnapshotResult
 edax\._edax\.SplitError
+edax\._edax\.TenancyRules
 # `edax.aggregate` gives each record's two dictionaries a key-ordered read-only property at import (the
 # native getter iterates in a per-process order); the stub keeps alef's field declaration.
 edax\._edax\.(EventDraft|EventMessage|CommandMessage)\.(extensions|metadata)
