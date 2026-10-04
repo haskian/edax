@@ -18,6 +18,7 @@ import edax
 import pytest
 from conftest import Counter, FakeKafkaClient, Tick, build_message, claimed, counter_repo
 from edax import EventMessage, KeyOrderedDispatcher, Snapshot, _edax, current_tx, transaction
+from edax._owned import ThreadBound
 from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import (
     MemoryBroker,
@@ -562,6 +563,42 @@ def test_a_native_handle_used_from_another_thread_raises_bad_handle(case: Foreig
     thread.join()
     assert len(raised) == 1 and isinstance(raised[0], edax.BadHandle), raised
     assert raised[0].terminal is True, "a wiring mistake is not retried"
+
+
+def test_a_handle_whose_owner_thread_exited_raises_bad_handle_on_a_thread_reusing_its_ident() -> None:
+    """Python recycles a thread ident once its thread exits, while PyO3 checks the Rust thread id, which
+    it never recycles. A guard keyed on the ident let a new thread holding the dead owner's ident through,
+    and the native call panicked. The handle here is a plain object: a native one dropped after its owner
+    exits cannot be dropped on its own thread, which PyO3 reports as an unraisable error."""
+    bound: ThreadBound[object] = ThreadBound.lazy(object, "MemoryTransactor")
+    owner_ident: list[int] = []
+
+    def own() -> None:
+        bound.get()
+        owner_ident.append(threading.get_ident())
+
+    owner = threading.Thread(target=own)
+    owner.start()
+    owner.join()
+    seen: list[tuple[bool, str]] = []
+
+    def use() -> None:
+        try:
+            bound.get()
+            outcome = "served"
+        except edax.BadHandle:
+            outcome = "BadHandle"
+        seen.append((threading.get_ident() == owner_ident[0], outcome))
+
+    for _ in range(50):
+        thread = threading.Thread(target=use)
+        thread.start()
+        thread.join()
+        if seen[-1][0]:
+            break
+    if not seen[-1][0]:
+        pytest.skip("this platform did not recycle the owner's thread ident")
+    assert {outcome for _, outcome in seen} == {"BadHandle"}, seen
 
 
 async def test_a_released_claim_with_nothing_committed_does_not_shadow_or_erase_a_winner() -> None:
