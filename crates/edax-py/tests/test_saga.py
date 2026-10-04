@@ -307,7 +307,9 @@ async def test_a_committed_command_survives_a_crash_and_a_resend_is_deduplicated
     async def fulfill(cmd: Fulfill) -> None:
         handled.append(cmd)
 
-    bus = edax.CommandBus(recording, edax.idempotent(MemoryIdempotencyStore(), scope="fulfilment"))
+    bus = edax.CommandBus(
+        recording, edax.idempotent(MemoryIdempotencyStore(), scope="fulfilment", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("Fulfill", fulfill)
     relay = run.relay(bus, pacing=NO_WAIT)
     store.crash = True
@@ -375,7 +377,9 @@ class ReserveSaga:
 
 
 def at(aggregate_id: str, sequence: int | None, id: str, name: str = "OrderCreated") -> edax.EventMessage:
-    return build_message(aggregate_id, name, sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"})
+    return build_message(
+        aggregate_id, name, sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"}
+    )
 
 
 def failed(id: str) -> edax.EventMessage:
