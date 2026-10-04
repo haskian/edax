@@ -108,22 +108,28 @@ definition; a kernel code with no class fails the import through
 `_check_every_kernel_code_has_a_class()`. Neither direction can silently land on the transient
 default.
 
-`errors.is_terminal(e)` is then one attribute read, with the kernel's default for an exception that
-declares nothing:
+`errors.is_terminal(e)` then mirrors Rust's `command::is_terminal`. It takes the code the failure
+carries and asks the kernel for that code's verdict:
 
 ```python
 UNCLASSIFIED_IS_TERMINAL: bool = _edax.error_verdict("")
 
 
 def is_terminal(e: BaseException) -> bool:
-    return bool(getattr(e, "terminal", UNCLASSIFIED_IS_TERMINAL))
+    code = _carried_code(e)
+    return UNCLASSIFIED_IS_TERMINAL if code is None else _edax.error_code_is_terminal(code)
 ```
 
-`errors.code_of(e)` is the code a terminal failure is cached under: an edax error's own, and
-`rejected` for any other exception that declares itself terminal.
+The carried code is an edax error's own, `rejected` for any other exception that declares
+`terminal = True`, and none otherwise. `retry`, the guard, the dispatcher and the relay all start
+from that one code, so no two of them can disagree. `errors.code_of(e)` is the code a terminal
+failure is cached under.
 
 A host subclass that names no code inherits its parent's code and verdict. It does not enter the
-code table. The parent stays what a native code maps to.
+code table. The parent stays what a native code maps to. A subclass cannot restate `terminal`:
+`class FlakyCodec(edax.CodecError): terminal = False` raises `TypeError` when it is defined. The
+code decides, so a restated verdict would be silently ignored. Subclass `Rejected` for a terminal
+failure, or raise your own exception for a transient one.
 
 ### Why an unknown code defaults to transient
 

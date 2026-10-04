@@ -218,8 +218,8 @@ ceiling survive a restart. Neither in-tree backend reads one from its client, so
 | `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
 | Raised `InProgress` | sleep one backoff step, then nack; the budget is untouched | same |
 
-Terminal versus transient is the kernel's verdict, read through `err.terminal`. See
-[errors.md](./errors.md).
+Terminal versus transient is the kernel's verdict for the code the error carries, read through
+`edax.is_terminal(err)`. See [errors.md](./errors.md).
 `examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
 that passes, and one that reaches `max_attempts`.
 

@@ -50,6 +50,17 @@ def _raise(error: BaseException) -> Callable[[], None]:
     return fail
 
 
+class MalformedOrder(edax.CodecError):
+    """A host subclass of a coded error: it inherits the code, and the verdict with it."""
+
+
+def _claiming(error: edax.EdaxError, terminal: bool) -> edax.EdaxError:
+    """An edax error whose instance attribute contradicts its code's verdict. A class cannot restate it, but an
+    instance can, so every consumer must decide from the code and ignore the attribute."""
+    error.terminal = terminal  # ty: ignore[invalid-attribute-access]
+    return error
+
+
 @dataclass
 class Source:
     name: str
@@ -66,7 +77,17 @@ SOURCES = [
     Source("host_rejection", _raise(edax.Rejected("insufficient funds")), True, "rejected"),
     Source("host_exception_declaring_terminal", _raise(DeclaredTerminal("shipped")), True, "rejected"),
     Source("payload_mismatch", _raise(edax.PayloadMismatch("req-1")), True, "payload_mismatch"),
+    Source("codec_subclass", _raise(MalformedOrder("no line items")), True, "codec"),
+    Source(
+        "codec_error_claiming_transient", _raise(_claiming(edax.CodecError("retry me"), False)), True, "codec"
+    ),
     Source("store_hiccup", _raise(edax.StoreError("connection reset")), False, None),
+    Source(
+        "store_error_claiming_terminal",
+        _raise(_claiming(edax.StoreError("down for good"), True)),
+        False,
+        None,
+    ),
     Source("unclassified_host_error", _raise(ValueError("a host bug")), False, None),
 ]
 
@@ -263,6 +284,20 @@ async def test_a_terminal_failure_is_never_retried_or_redelivered(consumer: str,
     assert edax.is_terminal(failure) is source.terminal, "the source raises what the row says"
     assert edax.errors.code_of(failure) == source.code
     assert await _run(consumer, source) == _want(consumer, source)
+
+
+@pytest.mark.parametrize(
+    ("parent", "restated"),
+    [
+        pytest.param(edax.StoreError, True, id="store_subclass_declaring_terminal"),
+        pytest.param(edax.CodecError, False, id="codec_subclass_declaring_transient"),
+    ],
+)
+def test_a_subclass_cannot_restate_its_codes_verdict(parent: type[edax.EdaxError], restated: bool) -> None:
+    """The verdict is the code's: a subclass that restates it is refused when it is defined, so no consumer
+    can read one verdict while another reads the code's."""
+    with pytest.raises(TypeError, match="restates `terminal`"):
+        type("Restated", (parent,), {"terminal": restated})
 
 
 async def test_a_cancel_is_never_cached() -> None:
