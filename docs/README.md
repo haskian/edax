@@ -81,6 +81,7 @@ flowchart LR
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
 | [Examples](guides/examples.md) | the nineteen runnable examples in `examples/py`, in learning order |
+| [Multi-tenancy](guides/multi-tenancy.md) | silo, pool and bridge mapped onto the seams, and what is not enforced |
 
 ## Three things to know before you build
 

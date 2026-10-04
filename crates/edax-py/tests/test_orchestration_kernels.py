@@ -341,6 +341,7 @@ def test_golden_saga() -> None:
                 cause["id"],
                 cause["correlation_id"],
                 step["issued_at"],
+                cause["tenant"],
             )
             assert message_as_obj(got) == row["want"], row
             continue

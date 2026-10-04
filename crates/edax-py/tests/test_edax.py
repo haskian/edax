@@ -84,6 +84,21 @@ def test_golden_backoff() -> None:
         assert got <= c["ceiling_millis"] <= c["cap_millis"], c
 
 
+def test_golden_tenancy() -> None:
+    """`(mode, key, tenant) -> the key a seam is called with`, and the refusal where the mode wants a
+    tenant and the call has none. Read through the SDK's own wrapper, so a composition that drifted from
+    the kernel's would fail here rather than in a store."""
+    for c in golden("tenancy.json"):
+        mode = edax.Tenancy(c["mode"])
+        assert (mode.requires_tenant, mode.composes_keys) == (c["requires_tenant"], c["composes_keys"]), c
+        if c["error"] is None:
+            assert edax.tenant_key(mode, c["key"], c["tenant"]) == c["expected"], c
+            continue
+        with pytest.raises(edax.errors.CodecError) as caught:
+            edax.tenant_key(mode, c["key"], c["tenant"])
+        assert str(caught.value) == c["error"].removeprefix("codec: "), c
+
+
 def test_golden_envelopes() -> None:
     """Each message encodes to the vector's bytes in both formats, by its kind's serializer, and a decode
     re-encodes to the same bytes."""

@@ -108,6 +108,12 @@ fn record_row<M: Message + Serialize>(name: &str, format: Format, key: Option<&s
     })
 }
 
+/// The base event under a tenant: what a pool publishes, with the tenant as a typed field of the
+/// value and composed into the key the producer passes.
+fn tenanted() -> EventMessage {
+    EventMessage { tenant: Some("acme".to_owned()), ..base_event() }
+}
+
 /// What a producer puts on the wire: the key rule, the `content-type` header, the value bytes.
 fn kafka_record_cases() -> Vec<Value> {
     let bad_extension = |msg: &mut Extensions| {
@@ -119,6 +125,10 @@ fn kafka_record_cases() -> Vec<Value> {
         // The override: a host keying by tenant to co-locate a tenant's aggregates.
         ("event_json_key_override", Format::Json, Some("tenant/acme"), base_event()),
         ("event_msgpack_key_override", Format::Msgpack, Some("tenant/acme"), base_event()),
+        // What a pool producer passes: the ordering key composed with the tenant, the kernel's own
+        // `tenant_key`, so two tenants' same-named aggregates never share a key or a partition.
+        ("event_json_tenanted_keyed_by_the_composed_key", Format::Json, Some("4:acme:agg-1"), tenanted()),
+        ("event_msgpack_tenanted_keyed_by_the_composed_key", Format::Msgpack, Some("4:acme:agg-1"), tenanted()),
         ("event_json_no_sequence_empty_payload", Format::Json, None, unsequenced()),
         ("event_msgpack_no_sequence_empty_payload", Format::Msgpack, None, unsequenced()),
         ("event_json_unicode", Format::Json, None, unicode()),

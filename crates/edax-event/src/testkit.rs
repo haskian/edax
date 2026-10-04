@@ -15,6 +15,7 @@ pub fn base_event() -> EventMessage {
     EventMessage {
         id: "evt-1".to_owned(),
         aggregate_id: "agg-1".to_owned(),
+        tenant: None,
         sequence: Some(7),
         name: "InvoiceIssued".to_owned(),
         version: 1,
@@ -34,6 +35,7 @@ pub fn base_command() -> CommandMessage {
         id: "cmd-1".to_owned(),
         idempotency_key: Some("req-1".to_owned()),
         aggregate_id: Some("agg-1".to_owned()),
+        tenant: None,
         name: "IssueInvoice".to_owned(),
         version: 1,
         data: br#"{"amount":10}"#.to_vec(),

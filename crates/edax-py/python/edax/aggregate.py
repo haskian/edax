@@ -64,6 +64,7 @@ _LINEAGE_FIELDS = ("correlation_id", "causation_id")
 _DRAFT_FIELDS = (
     "id",
     "aggregate_id",
+    "tenant",
     "sequence",
     "name",
     "version",
@@ -77,6 +78,7 @@ _DRAFT_FIELDS = (
 _EVENT_MESSAGE_FIELDS = (
     "id",
     "aggregate_id",
+    "tenant",
     "sequence",
     "name",
     "version",
@@ -92,6 +94,7 @@ _COMMAND_MESSAGE_FIELDS = (
     "id",
     "idempotency_key",
     "aggregate_id",
+    "tenant",
     "name",
     "version",
     "data",
@@ -282,6 +285,11 @@ class Aggregate:
         self.id = id
         self.version = Version(initial)
         self.pending: list[Any] = []
+        #: The tenant this instance belongs to, set by the :class:`~edax.store.Repository` that
+        #: loaded it and stamped onto every event it saves. ``None`` outside a multi-tenant
+        #: deployment. A host never assigns it: the repository fills it from the call that loaded the
+        #: aggregate, which is what keeps a load and the save that follows on one tenant.
+        self.tenant: str | None = None
 
     def transition(self, event: Any) -> None:  # pragma: no cover - overridden
         raise NotImplementedError

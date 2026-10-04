@@ -25,6 +25,7 @@ from .causation import _stamp
 from .errors import BadHandle, ConcurrencyError, _carried_code
 from .observe import Observer, TransactionOutcome, _wrap
 from .pacing import Pacing
+from .tenancy import Tenancy, tenant_key
 
 logger = logging.getLogger("edax.store")
 
@@ -354,7 +355,15 @@ class Repository(Generic[A]):
     does. ``None`` is the no-op observer.
 
     ``commands`` is the :class:`CommandOutbox` that ``save(..., commands=...)`` writes to, over the event
-    store's database. Without one, a save that sends commands raises :class:`TypeError`."""
+    store's database. Without one, a save that sends commands raises :class:`TypeError`.
+
+    ``tenancy`` is how this repository separates tenants, fixed here rather than per call so no two
+    calls of one service can key differently. The default :attr:`~edax.tenancy.Tenancy.SILO` takes no
+    tenant and composes nothing. Under :attr:`~edax.tenancy.Tenancy.POOL` every stream and snapshot
+    key is the aggregate id composed with its tenant, and a ``load`` that names none raises
+    :class:`~edax.errors.CodecError` rather than reading the whole pool. Under
+    :attr:`~edax.tenancy.Tenancy.BRIDGE` a tenant is required and keys stay bare, because this
+    repository's store already holds one tenant. See ``docs/guides/multi-tenancy.md``."""
 
     def __init__(
         self,
@@ -366,10 +375,12 @@ class Repository(Generic[A]):
         observer: Observer | None = None,
         snapshot_every: int = 1,
         commands: CommandOutbox | None = None,
+        tenancy: Tenancy = Tenancy.SILO,
     ) -> None:
         if snapshot_every < 0:
             raise ValueError(f"snapshot_every is a count of versions, at least 0, got {snapshot_every}")
         self._snapshot_every = snapshot_every
+        self._tenancy = tenancy
         self._store = store
         self._events = events
         self._aggregates = aggregates
@@ -389,25 +400,31 @@ class Repository(Generic[A]):
             async with _transaction(self._store, self._observer) as own:
                 yield own
 
-    async def load(self, aggregate_id: str, *, tx: Tx | None = None) -> A:
+    async def load(self, aggregate_id: str, *, tenant: str | None = None, tx: Tx | None = None) -> A:
         """Rehydrate the aggregate: snapshot, then replay the events after it.
+
+        ``tenant`` names whose aggregate this is. The key the store is called with follows from it and
+        the repository's ``tenancy`` (:func:`~edax.tenancy.tenant_key`), and the loaded aggregate
+        carries it, so the save that follows stamps and keys the same tenant.
 
         A snapshot is a cache of the event log, so one this codec cannot use (another aggregate type's
         under the same id, or one whose ``dump`` format ``load`` no longer reads) is ignored and the stream
         replays from version 0. The replayed run is held to the kernel's dense-batch rule, so a store that
         returns a gap or a repeat raises :class:`~edax.errors.CodecError` instead of folding the wrong
         state."""
+        key = tenant_key(self._tenancy, aggregate_id, tenant)
         async with self._enlist(tx) as tx:
-            snap = await self._store.load_snapshot(tx, aggregate_id)
+            snap = await self._store.load_snapshot(tx, key)
             cached = self._from_snapshot(aggregate_id, snap)
             base, agg = cached if cached is not None else (0, self._aggregates.load(aggregate_id, 0, None))
-            stored = await self._store.load(tx, aggregate_id, after=base)
+            stored = await self._store.load(tx, key, after=base)
             check_sequence_batch(base, [msg.sequence for msg in stored])
             for msg in stored:
                 # transition(), not apply(): a replayed event must not be re-queued as pending
                 agg.transition(self._events.unmarshal(msg))
             # Dense from `base`, so the last sequence is the count past it.
             agg.version = Version(base + len(stored))
+            agg.tenant = tenant
             return agg
 
     def _from_snapshot(self, aggregate_id: str, snap: Snapshot | None) -> tuple[int, A] | None:
@@ -466,6 +483,10 @@ class Repository(Generic[A]):
         initial = aggregate.version.initial
         current = aggregate.version.current
         events = [self._events.marshal(e) for e in aggregate.pending]
+        # The tenant is the aggregate's, never this call's, so a save cannot name one the load did
+        # not. A bare aggregate under a mode that requires a tenant fails here, before any write.
+        tenant = aggregate.tenant
+        key = tenant_key(self._tenancy, aggregate.id, tenant)
         # A value the binding cannot convert (a lone surrogate in an id, a non-str metadata value) fails
         # the same way on every retry, so it is the terminal CodecError, not a bare TypeError.
         with errors.mapped():
@@ -476,6 +497,7 @@ class Repository(Generic[A]):
                 EventDraft(
                     id=self._new_id(),
                     aggregate_id=aggregate.id,
+                    tenant=tenant,
                     sequence=initial + i,
                     name=event.name,
                     version=event.version,
@@ -489,13 +511,11 @@ class Repository(Generic[A]):
                 for i, event in enumerate(events, start=1)
             ]
         async with self._enlist(tx) as tx:
-            stored = await self._store.append(tx, aggregate.id, initial, drafts)
+            stored = await self._store.append(tx, key, initial, drafts)
             if commands and self._commands is not None:
                 await self._commands.enqueue(tx, commands)
             if _edax.snapshot_due(self._snapshot_every, initial, current):
-                snapshot = Snapshot(
-                    aggregate.id, self._aggregates.type, current, self._aggregates.dump(aggregate)
-                )
+                snapshot = Snapshot(key, self._aggregates.type, current, self._aggregates.dump(aggregate))
                 await self._store.save_snapshot(tx, snapshot)
         aggregate.pending.clear()
         aggregate.version = Version(current)

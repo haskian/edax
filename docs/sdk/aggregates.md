@@ -333,6 +333,7 @@ Every event of one save carries the same context.
 | extensions | `extensions=` | `extensions` | none |
 | metadata | `metadata=` | `metadata` | none |
 | commands | `commands=` | none | none |
+| tenant | from the aggregate | from the aggregate | the tenant the load named; see [multi-tenancy](../guides/multi-tenancy.md) |
 
 The default lineage is what links a flow with no argument. Every handler runs under `propagate` of
 the message it handles, so a `save` inside it continues the flow. A save no message caused

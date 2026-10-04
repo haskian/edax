@@ -156,7 +156,10 @@ pub fn saga_command_id(correlation_id: &str, version: u64, index: u64) -> String
 ///   keeps it, so the consuming bus deduplicates it, and two sagas that share an instance id and a
 ///   bus never replay or refuse each other's commands. The name's byte length keeps it injective;
 /// - `aggregate_id` is the instance, so one instance's commands keep their order on every transport
-///   and a store can find its rows;
+///   and a store can find its rows. Where one store holds every tenant, that instance id is the host's
+///   own composition (inside the saga's `instance_id`), so nothing here composes a second time;
+/// - `tenant` is the folded event's, so a command inherits the tenancy of the fact that caused it, and
+///   the bus that runs it claims inside that tenant;
 /// - the lineage is the event's child ([`propagate`]): causation is the folded event, correlation is
 ///   the event's flow, not the instance id.
 ///
@@ -169,6 +172,7 @@ pub fn saga_command(
     instance_id: &str,
     version: u64,
     index: u64,
+    tenant: Option<&str>,
     command: Event,
     cause_id: &str,
     cause_correlation_id: &str,
@@ -180,6 +184,7 @@ pub fn saga_command(
         idempotency_key: Some(scoped(saga, &id)),
         id,
         aggregate_id: Some(instance_id.to_owned()),
+        tenant: tenant.map(ToOwned::to_owned),
         name: command.name,
         version: command.version,
         data: command.data,

@@ -357,6 +357,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": "acme",
         "version": 1
       },
       "command": {
@@ -365,22 +366,23 @@
         "version": 2
       },
       "index": 1,
-      "instance_id": "order-7",
+      "instance_id": "4:acme:order-7",
       "issued_at": 1700000000000000001,
       "saga": "shipping",
       "version": 4
     },
     "want": {
-      "aggregate_id": "order-7",
+      "aggregate_id": "4:acme:order-7",
       "causation_id": "evt-1",
       "correlation_id": "corr-1",
       "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
       "extensions": {},
-      "id": "order-7:4:1",
-      "idempotency_key": "8:shipping:order-7:4:1",
+      "id": "4:acme:order-7:4:1",
+      "idempotency_key": "8:shipping:4:acme:order-7:4:1",
       "issued_at": 1700000000000000001,
       "metadata": {},
       "name": "Fulfill",
+      "tenant": "acme",
       "version": 2
     }
   }

@@ -172,7 +172,7 @@ where
             .zip(commands)
             .map(|(index, command)| {
                 let payload = self.commands.marshal(command)?;
-                Ok(saga_command(self.saga.name(), instance_id, version, index, payload, &cause.id, &cause.correlation_id, issued_at))
+                Ok(saga_command(self.saga.name(), instance_id, version, index, cause.tenant.as_deref(), payload, &cause.id, &cause.correlation_id, issued_at))
             })
             .collect()
     }

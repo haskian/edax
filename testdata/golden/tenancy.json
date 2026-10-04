@@ -1,0 +1,650 @@
+[
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "4:acme:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "4:acme:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "4:acme:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "4:acme:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "3:a:b:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "3:a:b:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "3:a:b:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "3:a:b:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "1:a:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "1:a:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "1:a:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "1:a:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "2:é:order-1",
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "2:é:",
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "2:é:a:b",
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": true,
+    "error": null,
+    "expected": "2:é:héllo",
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "order-1",
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "",
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "a:b",
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
+    "error": null,
+    "expected": "héllo",
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "é"
+  }
+]

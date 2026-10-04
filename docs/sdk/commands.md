@@ -160,6 +160,11 @@ Name a service, or a stage within one. The
 [claim key](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims) section says why
 the scope has no default.
 
+Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL` as well. The claim is then that
+scoped key composed with the message's `tenant`. One request id reused by two tenants claims two rows
+instead of replaying one tenant's result to the other. See
+[multi-tenancy](../guides/multi-tenancy.md).
+
 The ledger keeps its own namespace too. `RedisIdempotencyStore(conn, prefix=...)` requires the
 prefix, with no default. Give each service and environment its own prefix.
 

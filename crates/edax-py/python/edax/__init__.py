@@ -15,6 +15,7 @@ from . import (
     router,
     saga,
     store,
+    tenancy,
     upcast,
 )
 from . import (
@@ -104,6 +105,7 @@ from .store import (
     pump,
     transaction,
 )
+from .tenancy import TENANT_MAX, Tenancy, check_tenant, tenant_key
 from .upcast import Upcaster
 
 __all__ = [
@@ -123,6 +125,7 @@ __all__ = [
     "router",
     "saga",
     "store",
+    "tenancy",
     "upcast",
     # kernel functions
     "advance",
@@ -181,6 +184,11 @@ __all__ = [
     "idempotent",
     "idempotent_by_id",
     "retry",
+    # tenancy: the mode a deployment keys by, and the kernel's key rule
+    "TENANT_MAX",
+    "Tenancy",
+    "check_tenant",
+    "tenant_key",
     # retry pacing (the kernel's jittered backoff, the sleep, the draw)
     "Backoff",
     "DEFAULT_BACKOFF",

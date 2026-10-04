@@ -33,6 +33,7 @@ from .errors import (  # re-exported: the command errors are part of this module
 from .observe import ClaimVerdict, Observer, Settlement, _wrap
 from .pacing import Pacing
 from .store import EventCodec, Transactor, Tx, _in_unit_of_work, _transaction
+from .tenancy import Tenancy, tenant_key
 
 __all__ = [
     "AlreadyRegistered",
@@ -122,6 +123,7 @@ def command_message(
     lineage: Lineage | None = None,
     extensions: dict[str, str] | None = None,
     metadata: dict[str, str] | None = None,
+    tenant: str | None = None,
 ) -> CommandMessage:
     """The :class:`~edax.aggregate.CommandMessage` for ``cmd``: what :meth:`CommandBus.dispatch` runs, and
     what you publish to a broker or put in a command outbox.
@@ -137,7 +139,9 @@ def command_message(
     :func:`~edax.causation.current_lineage`, else a new flow. ``issued_at`` is the kernel clock.
 
     ``idempotency_key`` names the request: two messages with one key are one request, and a guard replays
-    the second. ``None`` sends the message unguarded. ``aggregate_id`` orders the message on a broker; the
+    the second. ``None`` sends the message unguarded. ``tenant`` names whose command it is: a guard
+    composes its ledger key from it, and a repository keys the aggregate by it, each under its own
+    tenancy. ``aggregate_id`` orders the message on a broker; the
     message id orders it when there is none. A command that does not encode, a version outside an unsigned
     32-bit integer, or an extension key outside the kernel's rule raises the terminal
     :class:`~edax.errors.CodecError`."""
@@ -156,6 +160,7 @@ def command_message(
             metadata=meta,
             idempotency_key=idempotency_key,
             aggregate_id=aggregate_id,
+            tenant=tenant,
         )
 
 
@@ -220,6 +225,7 @@ class CommandBus:
         *,
         idempotency_key: str | None = None,
         aggregate_id: str | None = None,
+        tenant: str | None = None,
         lineage: Lineage | None = None,
         extensions: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
@@ -236,6 +242,7 @@ class CommandBus:
             lineage=lineage,
             extensions=extensions,
             metadata=metadata,
+            tenant=tenant,
         )
         return await _run(handler, msg, cmd)
 
@@ -507,6 +514,7 @@ def idempotent(
     scope: str,
     result_type: Any = None,
     observer: Observer | None = None,
+    tenancy: Tenancy = Tenancy.SILO,
 ) -> Middleware:
     """Deduplicate dispatches by the ``idempotency_key`` of the :func:`current_command`. A message with no
     key runs unguarded and writes nothing to the ledger. The first dispatch of a key wins the claim and runs
@@ -532,6 +540,12 @@ def idempotent(
     the plain JSON value, as with an ``object`` annotation. A ``result_type`` msgspec cannot convert to raises
     :class:`TypeError` at wiring, as a ``scope`` that is not a ``str`` does.
 
+    ``tenancy`` is how the deployment this guard runs in separates tenants, fixed at wiring as it is on a
+    :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the ledger key is composed
+    with the message's ``tenant`` (:func:`~edax.tenancy.tenant_key`), so one request id reused by two
+    tenants claims two rows rather than replaying one tenant's result to the other. A message that names
+    no tenant then raises :class:`~edax.errors.CodecError` instead of claiming a shared key.
+
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
     :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
@@ -548,7 +562,10 @@ def idempotent(
             msg = current_command()
             if msg is None or msg.idempotency_key is None:
                 return await next_(cmd)
-            key = claim_key(scope, msg.idempotency_key)
+            # Scope first, then tenant: the scope names the guard and the tenant separates the
+            # deployment's tenants inside it. Both compositions are the kernel's, so another binding
+            # sharing this ledger spells the same row.
+            key = tenant_key(tenancy, claim_key(scope, msg.idempotency_key), msg.tenant)
             guard = _Guard(store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
             return await _guarded(guard, lambda: next_(cmd), unit_of_work)
 

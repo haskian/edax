@@ -8,7 +8,7 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
-use edax_core::{Backoff, ErrorCode};
+use edax_core::{tenant_key, Backoff, ErrorCode, Tenancy};
 use edax_golden::write_or_check;
 use serde_json::{json, Value};
 
@@ -111,9 +111,37 @@ fn backoff_cases() -> Vec<Value> {
         .collect()
 }
 
+/// `(mode, tenant, key) -> the key a seam is called with`, and the error when the mode wants a
+/// tenant and the call has none. Only a pool composes, so a binding that composed in a bridge would
+/// read keys no other service writes. The odd tenants pin the injectivity the length prefix buys:
+/// `a:b` + `c` and `a` + `b:c` must not meet.
+fn tenancy_cases() -> Vec<Value> {
+    let keys = ["order-1", "", "a:b", "héllo"];
+    let tenants = [None, Some(""), Some("acme"), Some("a:b"), Some("a"), Some("é")];
+    let mut cases: Vec<Value> = Vec::new();
+    for mode in [Tenancy::Silo, Tenancy::Pool, Tenancy::Bridge] {
+        for tenant in tenants {
+            for key in keys {
+                let outcome = tenant_key(mode, tenant, key);
+                cases.push(json!({
+                    "mode": mode.name(),
+                    "requires_tenant": mode.requires_tenant(),
+                    "composes_keys": mode.composes_keys(),
+                    "tenant": tenant,
+                    "key": key,
+                    "expected": outcome.as_ref().ok(),
+                    "error": outcome.as_ref().err().map(ToString::to_string),
+                }));
+            }
+        }
+    }
+    cases
+}
+
 #[test]
 fn golden() {
     write_or_check("error_taxonomy.json", error_taxonomy_cases());
     write_or_check("error_wire.json", error_wire_cases());
     write_or_check("backoff.json", backoff_cases());
+    write_or_check("tenancy.json", tenancy_cases());
 }

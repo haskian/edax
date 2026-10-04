@@ -12,6 +12,7 @@ class CommandMessage:
     id: str
     idempotency_key: str | None
     aggregate_id: str | None
+    tenant: str | None
     name: str
     version: int
     data: bytes
@@ -33,6 +34,7 @@ class CommandMessage:
         metadata: dict[str, str],
         idempotency_key: str | None = None,
         aggregate_id: str | None = None,
+        tenant: str | None = None,
     ) -> None: ...
 
 class Event:
@@ -44,6 +46,7 @@ class Event:
 class EventDraft:
     id: str
     aggregate_id: str
+    tenant: str | None
     sequence: int | None
     name: str
     version: int
@@ -64,6 +67,7 @@ class EventDraft:
         causation_id: str,
         extensions: dict[str, str],
         metadata: dict[str, str],
+        tenant: str | None = None,
         sequence: int | None = None,
         occurred_at: int | None = None,
     ) -> None: ...
@@ -76,6 +80,7 @@ class EventIdempotency:
 class EventMessage:
     id: str
     aggregate_id: str
+    tenant: str | None
     sequence: int | None
     name: str
     version: int
@@ -98,6 +103,7 @@ class EventMessage:
         recorded_at: int,
         extensions: dict[str, str],
         metadata: dict[str, str],
+        tenant: str | None = None,
         sequence: int | None = None,
         occurred_at: int | None = None,
     ) -> None: ...
@@ -248,6 +254,11 @@ class SplitError:
     terminal: bool
     def __init__(self, code: str, message: str, terminal: bool) -> None: ...
 
+class TenancyRules:
+    requires_tenant: bool
+    composes_keys: bool
+    def __init__(self, requires_tenant: bool, composes_keys: bool) -> None: ...
+
 class MemoryBroker:
     def publish_event(self, message: EventMessage) -> None: ...
     def publish_command(self, message: CommandMessage) -> None: ...
@@ -370,6 +381,7 @@ def cached_failure_message(error: str, error_code: str | None = None) -> str: ..
 def canonical_json(payload: bytes) -> str: ...
 def check_extensions(extensions: dict[str, str]) -> None: ...
 def check_sequence_batch(expected: int, sequences: list[int | None]) -> None: ...
+def check_tenant(tenant: str) -> None: ...
 def claim_key(scope: str, idempotency_key: str) -> str: ...
 def command_hash_json(name: str, payload: bytes) -> int: ...
 def current_timestamp() -> int: ...
@@ -505,11 +517,14 @@ def saga_command(
     cause_id: str,
     cause_correlation_id: str,
     issued_at: int,
+    tenant: str | None = None,
 ) -> CommandMessage: ...
 
 def saga_command_id(instance_id: str, version: int, index: int) -> str: ...
 def saga_write(completes: bool, has_commands: bool, version: int | None = None) -> SagaWrite: ...
 def snapshot_due(every: int, initial: int, current: int) -> bool: ...
 def split_error(wire: str) -> SplitError: ...
+def tenancy_rules(mode: str) -> TenancyRules: ...
+def tenant_key(mode: str, key: str, tenant: str | None = None) -> str: ...
 def unreadable_idempotency_record(payload_hash: int, cause: str) -> IdempotencyRecord: ...
 def upcast_plan(from_version: int, to: int, available: list[int] | None = None) -> list[int]: ...

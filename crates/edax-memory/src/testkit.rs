@@ -12,6 +12,7 @@ pub(crate) const RECORDED_AT: i64 = 1_700_000_000_000_000_000;
 /// One realistic event draft; every case overrides only the field under test.
 pub(crate) fn draft(id: &str, sequence: Option<u64>) -> EventDraft {
     EventDraft {
+        tenant: None,
         id: id.to_owned(),
         aggregate_id: "invoice-7".to_owned(),
         sequence,
@@ -34,6 +35,7 @@ pub(crate) fn event(id: &str, sequence: Option<u64>) -> EventMessage {
 /// One realistic command targeting `aggregate_id`, or none.
 pub(crate) fn command(id: &str, aggregate_id: Option<&str>) -> CommandMessage {
     CommandMessage {
+        tenant: None,
         id: id.to_owned(),
         idempotency_key: Some(format!("req-{id}")),
         aggregate_id: aggregate_id.map(str::to_owned),

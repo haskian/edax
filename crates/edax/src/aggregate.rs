@@ -14,12 +14,18 @@ pub struct Root<E> {
     pub id: String,
     /// The version the aggregate was loaded at; the pending events come after it.
     pub version: u64,
+    /// The tenant this instance belongs to, set by the [`Repository`](crate::Repository) that loaded it
+    /// and stamped onto every event it saves. `None` outside a multi-tenant deployment.
+    ///
+    /// A host never sets it: [`Root::new`] leaves it empty and the repository fills it from the call
+    /// that loaded the aggregate, which is what keeps a load and the save that follows on one tenant.
+    pub tenant: Option<String>,
     pending: Vec<E>,
 }
 
 impl<E> Root<E> {
     pub fn new(id: impl Into<String>, version: u64) -> Self {
-        Self { id: id.into(), version, pending: Vec::new() }
+        Self { id: id.into(), version, tenant: None, pending: Vec::new() }
     }
 
     /// The prospective version: the loaded one plus the events not yet persisted.

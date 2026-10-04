@@ -20,6 +20,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": null,
         "version": 1
       }
     }
@@ -45,6 +46,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": null,
         "version": 1
       }
     }
@@ -70,6 +72,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": null,
+        "tenant": null,
         "version": 1
       }
     }
@@ -95,6 +98,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": null,
+        "tenant": null,
         "version": 1
       }
     }
@@ -120,6 +124,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": null,
         "version": 1
       }
     }
@@ -145,6 +150,7 @@
         "occurred_at": 1600000000000000000,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": null,
         "version": 1
       }
     }
@@ -210,6 +216,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "tenant": null,
         "version": 1
       }
     }
