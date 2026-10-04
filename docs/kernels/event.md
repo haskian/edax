@@ -61,7 +61,7 @@ Every key in a message has one owner.
 |---|---|---|
 | a typed field | edax: a kernel or an SDK decision reads it | its own type, pinned by the codec goldens |
 | `extensions` | edax extensions: trace context, request origin | keys match `[a-z0-9][a-z0-9._-]{0,63}`; values are opaque strings |
-| `metadata` | the application | opaque to edax; tenancy lives here |
+| `metadata` | the application | opaque to edax; the tenant is a typed field, not a key here |
 
 `check_extensions` is the key rule: 1 to 64 bytes of lowercase ASCII letters, digits, `.`, `_` and
 `-`, starting with a letter or a digit. A dot namespaces keys per extension, as in `http.origin_ip`.
@@ -97,8 +97,8 @@ callable clock. None of these times orders anything: order on `sequence`.
 `ordering_key(aggregate_id, id)` is the key that orders a message against others. An event's is its
 aggregate id. A command's is its target aggregate, or its own id when it names none. A command
 without a target then spreads by id, instead of piling onto one empty key. An empty aggregate id
-is still an aggregate id. The Kafka record key, the memory broker's partition and the dispatcher's
-worker all start from it. `testdata/golden/ordering_key.json` pins it.
+is still an aggregate id. The Kafka record key (composed with the tenant under a pool), the memory
+broker's partition and the dispatcher's worker all start from it. `testdata/golden/ordering_key.json` pins it.
 
 `received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
 client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
@@ -129,6 +129,7 @@ use edax_event::{EventMessage, Extensions, Metadata};
 let msg = EventMessage {
     id: "evt-1".into(),
     aggregate_id: "agg-1".into(),
+    tenant: None,
     sequence: Some(7),
     name: "InvoiceIssued".into(),
     version: 1,
@@ -165,15 +166,15 @@ by it. A decode of the wrong kind then fails on the kind, not on whichever field
 
 | | `data` on the wire | Shape | Golden `base` event size |
 |---|---|---|---|
-| `Format::Json` | base64 string | field-named object | 323 bytes |
-| `Format::Msgpack` | native bytes | field-named map | 258 bytes |
+| `Format::Json` | base64 string | field-named object | 337 bytes |
+| `Format::Msgpack` | native bytes | field-named map | 266 bytes |
 
 Determinism rests on two things. Sorted map keys: `Extensions` and `Metadata` are `BTreeMap`, so
 whatever order a host filled them in, the encoding sorts them by UTF-8 bytes. That puts `"Z"` before
 `"a"`, and U+FF71 after U+1F980, although JavaScript, Java and C# sort that pair the other way by
 UTF-16 code units. Field order is fixed. Both formats write a message as a map keyed by field name.
-The golden `msgpack_hex` of the `base` event starts `8c`, a 12-entry map, then `a2 6964`, the key
-`id`. A command starts `8b`, an 11-entry map.
+The golden `msgpack_hex` of the `base` event starts `8d`, a 13-entry map, then `a2 6964`, the key
+`id`. A command starts `8c`, a 12-entry map.
 
 ### Evolution: one rule for both formats and both kinds
 
@@ -183,10 +184,11 @@ both formats follow one rule, pinned by `testdata/golden/envelope_decode.json`:
 | Input | JSON | MessagePack |
 |---|---|---|
 | a field the reader does not know | ignored | ignored |
-| an optional field missing or `null`: `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
+| an optional field missing or `null`: `tenant`, `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
 | any other field missing, the `extensions` map included | `codec` error | `codec` error |
 | a negative `version` | `codec` error | `codec` error |
 | an `extensions` key outside the key rule | `codec` error | `codec` error |
+| a `tenant` outside `check_tenant`: empty, or over `TENANT_MAX` (64) bytes, counted in bytes and not characters | `codec` error | `codec` error |
 | a field repeated | `codec` error | `codec` error |
 | a key repeated inside `extensions` or `metadata` | the last wins | the last wins |
 | the message as a positional array | `codec` error | `codec` error |
@@ -224,12 +226,13 @@ back = events.decode(wire)  # CodecError on bad bytes — terminal, dead-letter 
 ```rust
 use edax_event::Format;
 
-let wire = Format::Msgpack.encode(&msg)?; // refuses a bad extension key
+let wire = Format::Msgpack.encode(&msg)?; // refuses a bad extension key or tenant
 let back: edax_event::EventMessage = Format::Msgpack.decode(&wire)?;
 ```
 
-Encoding fails only on an extension key outside the rule. A message holds nothing else that can fail
-to serialize. Decoding fails on any bytes the rule above refuses. The binding tags both failures
+Encoding fails only on an extension key or a tenant outside its rule. A message holds nothing else
+that can fail to serialize. Decoding fails on any bytes the rule above refuses, a bad tenant included,
+so a tenant another service minted is checked before any key is composed from it. The binding tags both failures
 with the `codec` error code. The host then raises a terminal `CodecError` instead of retrying a
 poison message forever.
 

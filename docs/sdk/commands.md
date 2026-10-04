@@ -110,9 +110,10 @@ result = await bus.dispatch(
     cmd,
     idempotency_key="req-A",  # None (the default): no claim, the handler runs every time
     aggregate_id="acct-1",  # the target, for ordering; optional
+    tenant="acme",  # whose command; a pooled guard claims inside it, and None is refused there
     lineage=None,  # None: the ambient lineage of the message being handled, else a new flow
     extensions={"traceparent": traceparent},  # edax extension keys only
-    metadata={"tenant": "acme"},  # the application's own
+    metadata={"channel": "web"},  # the application's own; edax never reads it
 )
 ```
 
@@ -131,8 +132,9 @@ instead of running twice. The message keeps its lineage, so its handler's events
 ### `command_message`: build one without dispatching
 
 `command_message(cmd, *, codec=None, idempotency_key=None, aggregate_id=None, lineage=None,
-extensions=None, metadata=None)` builds the same `CommandMessage` `dispatch` would, and dispatches
-nothing. Use it to publish a command, or to stage one in the command outbox. A command that does not
+extensions=None, metadata=None, tenant=None)` builds the same `CommandMessage` `dispatch` would, and
+dispatches nothing. Use it to publish a command, or to stage one in the command outbox. A command
+staged by `Repository.save` with no tenant takes the saved aggregate's. A command that does not
 encode, a version outside an unsigned 32-bit integer, or a bad extension key raises the terminal
 `CodecError`.
 
