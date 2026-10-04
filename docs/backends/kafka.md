@@ -48,7 +48,7 @@ classDiagram
 
 ```
 KafkaProducer(client, topic, *, serializer=None, command_serializer=None, key=None, middleware=(),
-              publish_timeout_s=30.0)
+              tenancy=Tenancy.SILO, publish_timeout_s=30.0)
 KafkaConsumer(client, *, serializer=None, serializers=(), middleware=(),
               commit_interval_s=1.0, commit_timeout_s=10.0)
 KafkaDeadLetterSink(client, topic, *, publish_timeout_s=30.0)
