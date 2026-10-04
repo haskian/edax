@@ -211,7 +211,7 @@ async def test_a_save_cannot_name_a_tenant_the_load_did_not() -> None:
     account.apply(Deposited(10))
     with pytest.raises(CodecError):
         await repository(Tenancy.POOL, store).save(account)
-    async with store.transaction() as tx:
+    async with store.begin() as tx:
         assert await store.load(tx, "order-1") == [], "and wrote nothing"
 
 

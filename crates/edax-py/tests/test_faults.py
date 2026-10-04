@@ -56,7 +56,7 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
     raised: BaseException | None = None
     try:
         if case.arm == COMMIT:
-            async with store.transaction() as tx:
+            async with store.begin() as tx:
                 await store.append(tx, "acct-1", 0, [env])
         else:
             # Outside a unit of work, so the statement that loses its reply is the one that commits.
@@ -68,7 +68,7 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
     assert [e.id for e in await store.load(store.transactor.auto_commit(), "acct-1")] == [env.id]
     if case.lost:
         assert store.armed is None, "one shot"
-        async with store.transaction() as tx:  # the retry meets a healthy store
+        async with store.begin() as tx:  # the retry meets a healthy store
             await store.append(tx, "acct-1", 1, [draft("acct-1", 2)])
     else:
         assert store.armed == case.arm, "an unfired fault stays armed"
@@ -94,7 +94,7 @@ def test_arming_a_method_the_store_lacks_is_refused(method: str) -> None:
 
 
 def test_arming_commit_needs_a_store_that_opens_units_of_work() -> None:
-    with pytest.raises(AttributeError, match="no method 'transaction'"):
+    with pytest.raises(AttributeError, match="no method 'begin'"):
         LostResponse(MemoryIdempotencyStore()).arm(COMMIT)
 
 

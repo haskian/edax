@@ -59,15 +59,18 @@ class Transactor(Protocol):
     :class:`~edax.command.IdempotencyStore`) are pure participants, so any number of them commit together.
     What a backend must guarantee:
 
-    - ``transaction()`` returns an async context manager: a clean exit commits, an exception rolls back and
+    - ``begin()`` returns an async context manager: a clean exit commits, an exception rolls back and
       re-raises, and nothing written through the yielded ``tx`` is visible elsewhere before commit.
+    - ``begin()`` is the backend's hook, which :func:`transaction` calls. A host opens every unit of work
+      with :func:`transaction`: a raw ``begin()`` publishes no :func:`current_tx`, so a participant given no
+      tx inside it would commit on its own, and the nesting guard below would not see it.
     - The yielded ``tx`` is one backend handle every participant store accepts, atomic as a set.
     - A participant handed the same ``tx`` reads its own uncommitted writes.
     - The SDK never nests: stores join the ambient :func:`current_tx` of their own transactor rather than
       open a second unit of work, so no savepoints are needed. A second :func:`transaction` on the same
       transactor raises :class:`~edax.errors.BadHandle` rather than opening one; a transactor over another
       database nests, and each store still sees only its own database's tx.
-    - *Identity.* The ambient tx is keyed by transactor. An object whose ``transaction()`` only delegates to
+    - *Identity.* The ambient tx is keyed by transactor. An object whose ``begin()`` only delegates to
       another transactor (an :class:`EventStore` over a shared pool, say) names that transactor as its
       ``transactor`` attribute, so ``transaction(store)`` and ``transaction(store.transactor)`` open the same
       unit of work and every store over the pool finds it.
@@ -76,8 +79,9 @@ class Transactor(Protocol):
     :class:`~edax.backend.memory.MemoryTransactor` implements it, so a test can assert a raise left
     nothing behind."""
 
-    def transaction(self) -> AbstractAsyncContextManager[Tx]:
-        """A unit of work: commit on clean exit, roll back if the body raises."""
+    def begin(self) -> AbstractAsyncContextManager[Tx]:
+        """The backend's unit of work: commit on clean exit, roll back if the body raises. Open it through
+        :func:`transaction`, never directly."""
         ...
 
 
@@ -142,7 +146,7 @@ async def _transaction(transactor: Transactor, observe: Observer) -> AsyncIterat
     started = perf_counter_ns()
     outcome: TransactionOutcome = "rolled_back"
     try:
-        async with transactor.transaction() as tx:
+        async with transactor.begin() as tx:
             token = _ambient.set({**open_now, database: tx})
             try:
                 yield tx
@@ -261,8 +265,8 @@ class EventStore(Protocol):
       :class:`~edax.errors.StoreError`, or :class:`~edax.errors.CodecError` for a marshal failure. Called
       from one asyncio loop; no thread safety required."""
 
-    def transaction(self) -> AbstractAsyncContextManager[Tx]:
-        """A unit of work: commit on clean exit, roll back if the body raises."""
+    def begin(self) -> AbstractAsyncContextManager[Tx]:
+        """The :class:`Transactor` hook: open units of work through :func:`transaction`."""
         ...
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:

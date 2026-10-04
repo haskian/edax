@@ -55,7 +55,7 @@ class LostResponse(_Delegating):
 
     Arm with the method name; the *next* call to it lands and then raises :class:`~edax.errors.StoreError`.
     One shot, so the retry that follows sees a healthy store and meets the state the lost call actually
-    wrote. Arm :data:`COMMIT` to lose the reply of the next unit of work instead: ``transaction()`` commits,
+    wrote. Arm :data:`COMMIT` to lose the reply of the next unit of work instead: ``begin()`` commits,
     then raises. A lost ``save`` of an :class:`~edax.projection.Entity` leaves the caller's ``version`` where
     it was, because the caller never heard the new one.
 
@@ -71,7 +71,7 @@ class LostResponse(_Delegating):
         """Lose the reply of the next call to ``method`` (``None`` disarms). A name the store has no method
         for raises :class:`AttributeError` instead of never firing."""
         if method is not None:
-            self._check("transaction" if method == COMMIT else method)
+            self._check("begin" if method == COMMIT else method)
         self.armed = method
 
     def _trip(self, method: str) -> None:
@@ -81,8 +81,8 @@ class LostResponse(_Delegating):
 
     def __getattr__(self, name: str) -> Any:
         target = getattr(self._inner, name)
-        if name == "transaction":
-            return self._transaction(target)
+        if name == "begin":
+            return self._begin(target)
         if not inspect.iscoroutinefunction(target):
             return target
 
@@ -98,14 +98,14 @@ class LostResponse(_Delegating):
 
         return call
 
-    def _transaction(self, begin: Callable[[], AbstractAsyncContextManager[Any]]) -> Callable[[], Any]:
+    def _begin(self, begin: Callable[[], AbstractAsyncContextManager[Any]]) -> Callable[[], Any]:
         @asynccontextmanager
-        async def transaction() -> AsyncIterator[Any]:
+        async def unit_of_work() -> AsyncIterator[Any]:
             async with begin() as tx:
                 yield tx
             self._trip(COMMIT)  # committed; the response is lost on the way back
 
-        return transaction
+        return unit_of_work
 
 
 class Refusing(_Delegating):
@@ -160,15 +160,15 @@ class BrokenCommit:
         return self._inner
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[Any]:
+    async def begin(self) -> AsyncIterator[Any]:
         arm = self.arm
         if arm == "nothing_landed":
-            async with self._inner.transaction() as tx:
+            async with self._inner.begin() as tx:
                 yield tx
                 # Raised inside the inner block, so the inner transactor rolls back before this
                 # propagates: the caller sees a failed commit over which nothing landed.
                 raise StoreError("commit failed; nothing landed")
-        async with self._inner.transaction() as tx:
+        async with self._inner.begin() as tx:
             yield tx
         if arm == "lost_response":
             raise StoreError("commit landed; the response was lost")

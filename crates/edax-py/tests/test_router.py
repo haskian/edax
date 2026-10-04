@@ -196,7 +196,7 @@ class TxIdempotencyStore:
     staged: dict[str, dict[str, Record | None]] = field(default_factory=dict)  # tx -> key -> record
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[str]:
+    async def begin(self) -> AsyncIterator[str]:
         tx = f"tx-{len(self.staged) + 1}"
         self.staged[tx] = {}
         try:

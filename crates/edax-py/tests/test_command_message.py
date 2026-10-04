@@ -442,7 +442,7 @@ async def test_save_with_commands_needs_an_outbox() -> None:
 
 async def test_an_outbox_over_another_database_is_refused() -> None:
     outbox = MemoryCommandOutbox()
-    async with MemoryTransactor().transaction() as foreign:
+    async with MemoryTransactor().begin() as foreign:
         with pytest.raises(edax.BadHandle):
             await outbox.enqueue(foreign, [command_message(ORDER)])
     assert await outbox.unpublished_count() == 0
