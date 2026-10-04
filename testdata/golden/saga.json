@@ -7,6 +7,7 @@
     },
     "want": {
       "expected": 0,
+      "version": 1,
       "write": "save"
     }
   },
@@ -18,6 +19,7 @@
     },
     "want": {
       "expected": 0,
+      "version": 1,
       "write": "save"
     }
   },
@@ -39,6 +41,7 @@
     },
     "want": {
       "expected": 0,
+      "version": 1,
       "write": "complete"
     }
   },
@@ -51,6 +54,7 @@
     },
     "want": {
       "expected": 3,
+      "version": 4,
       "write": "save"
     }
   },
@@ -63,6 +67,7 @@
     },
     "want": {
       "expected": 3,
+      "version": 4,
       "write": "save"
     }
   },
@@ -75,6 +80,7 @@
     },
     "want": {
       "expected": 3,
+      "version": 4,
       "write": "complete"
     }
   },
@@ -87,6 +93,7 @@
     },
     "want": {
       "expected": 3,
+      "version": 4,
       "write": "complete"
     }
   },
@@ -98,8 +105,7 @@
       "version": 18446744073709551615
     },
     "want": {
-      "expected": 18446744073709551615,
-      "write": "save"
+      "error": "codec: saga instance at version 18446744073709551615 has no next version"
     }
   },
   {
@@ -110,8 +116,7 @@
       "version": 18446744073709551615
     },
     "want": {
-      "expected": 18446744073709551615,
-      "write": "save"
+      "error": "codec: saga instance at version 18446744073709551615 has no next version"
     }
   },
   {
@@ -122,8 +127,7 @@
       "version": 18446744073709551615
     },
     "want": {
-      "expected": 18446744073709551615,
-      "write": "complete"
+      "error": "codec: saga instance at version 18446744073709551615 has no next version"
     }
   },
   {
@@ -134,8 +138,7 @@
       "version": 18446744073709551615
     },
     "want": {
-      "expected": 18446744073709551615,
-      "write": "complete"
+      "error": "codec: saga instance at version 18446744073709551615 has no next version"
     }
   },
   {

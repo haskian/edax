@@ -582,6 +582,12 @@ fn record_command_message(m: edax_event::CommandMessage) -> CommandMessage {
     }
 }
 
+/// The stored message for `draft`: every field as drafted, stamped `recorded_at` on the store's clock.
+/// See [`edax_event::EventDraft::record`].
+pub fn record_event(draft: EventDraft, recorded_at: i64) -> EventMessage {
+    record_event_message(kernel_event_draft(draft).record(recorded_at))
+}
+
 fn resolve(format: &str) -> Result<edax_event::Format, String> {
     edax_event::Format::from_name(format).map_err(wire)
 }
@@ -698,25 +704,27 @@ pub fn retries(max_attempts: u32, sink: bool) -> Retries {
 
 // ---- saga step -------------------------------------------------------------
 
-/// The write a saga step makes: `action` is `"nothing"`, `"save"` or `"complete"`, and `expected` the
-/// version a save or complete is conditional on (`0` otherwise). See [`edax_event::SagaWrite`].
+/// The write a saga step makes: `action` is `"nothing"`, `"save"` or `"complete"`, `expected` the
+/// version a save or complete is conditional on, and `version` the one it commits, which the step's
+/// command ids carry (both `0` for nothing). See [`edax_event::SagaWrite`].
 pub struct SagaWrite {
     pub action: String,
     pub expected: u64,
+    pub version: u64,
 }
 
 /// The write for a step whose fold `completes` the instance or not, with or without commands, over a
 /// running instance loaded at `version` (`None` when nothing was loaded). A completed instance never
 /// gets here: [`saga_admit`] skips it. See [`edax_event::saga_write`].
 // `version` is optional, so it trails: alef moves optional parameters to the end of the signature.
-pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> SagaWrite {
+pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> Result<SagaWrite, String> {
     let loaded = version.map_or(edax_event::Loaded::Absent, |version| edax_event::Loaded::Active { version });
-    let (action, expected) = match edax_event::saga_write(loaded, completes, has_commands) {
-        edax_event::SagaWrite::Nothing => ("nothing", 0),
-        edax_event::SagaWrite::Save { expected } => ("save", expected),
-        edax_event::SagaWrite::Complete { expected } => ("complete", expected),
+    let (action, expected, version) = match edax_event::saga_write(loaded, completes, has_commands).map_err(wire)? {
+        edax_event::SagaWrite::Nothing => ("nothing", 0, 0),
+        edax_event::SagaWrite::Save { expected, version } => ("save", expected, version),
+        edax_event::SagaWrite::Complete { expected, version } => ("complete", expected, version),
     };
-    SagaWrite { action: action.to_owned(), expected }
+    Ok(SagaWrite { action: action.to_owned(), expected, version })
 }
 
 /// Whether an instance that saved the marks `folded` (empty for a new instance), or is `completed`
@@ -1782,13 +1790,14 @@ mod tests {
     #[test]
     fn saga_write_crosses_every_action() {
         let got = |version, completes, cmds| {
-            let write = saga_write(completes, cmds, version);
-            (write.action, write.expected)
+            let write = saga_write(completes, cmds, version).unwrap();
+            (write.action, write.expected, write.version)
         };
-        assert_eq!(got(None, true, false), ("nothing".to_owned(), 0));
-        assert_eq!(got(None, false, false), ("save".to_owned(), 0));
-        assert_eq!(got(Some(3), false, false), ("save".to_owned(), 3));
-        assert_eq!(got(Some(3), true, true), ("complete".to_owned(), 3));
+        assert_eq!(got(None, true, false), ("nothing".to_owned(), 0, 0));
+        assert_eq!(got(None, false, false), ("save".to_owned(), 0, 1));
+        assert_eq!(got(Some(3), false, false), ("save".to_owned(), 3, 4));
+        assert_eq!(got(Some(3), true, true), ("complete".to_owned(), 3, 4));
+        assert!(saga_write(false, true, Some(u64::MAX)).is_err_and(|e| e.starts_with("codec: saga instance at version")));
         assert_eq!(saga_command_id("order-7", 2, 1), "order-7:2:1");
     }
 

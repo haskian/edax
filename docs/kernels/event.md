@@ -340,8 +340,12 @@ loaded instance is absent or running, since `saga_admit` skips a completed one:
 | Loaded, and the fold | Write |
 |---|---|
 | nothing, and the fold keeps no state and sends no command | `Nothing` |
-| anything else, keeping state | `Save { expected }` at the loaded version (`0` when absent) |
-| anything else, completing | `Complete { expected }` at the loaded version |
+| anything else, keeping state | `Save { expected, version }`: `expected` is the loaded version (`0` when absent) |
+| anything else, completing | `Complete { expected, version }`: `expected` is the loaded version |
+
+`version` is the version the write commits, `expected + 1`. The runner stamps the step's command ids
+with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no next version, so
+`saga_write` returns a `codec` error.
 
 The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
 index, command, cause_id, cause_correlation_id, issued_at)` builds each one as a `CommandMessage`, so

@@ -215,6 +215,9 @@ pub trait Message: sealed::Sealed {
     /// The kind this message is.
     const KIND: Kind;
 
+    /// The message's own id: the causation id of what it causes, and the id an outbox marks it sent by.
+    fn id(&self) -> &str;
+
     /// The extension context, which the codec holds to [`check_extensions`].
     fn extensions(&self) -> &Extensions;
 
@@ -224,6 +227,10 @@ pub trait Message: sealed::Sealed {
 
 impl Message for EventMessage {
     const KIND: Kind = Kind::Event;
+
+    fn id(&self) -> &str {
+        &self.id
+    }
 
     fn extensions(&self) -> &Extensions {
         &self.extensions
@@ -237,6 +244,10 @@ impl Message for EventMessage {
 
 impl Message for CommandMessage {
     const KIND: Kind = Kind::Command;
+
+    fn id(&self) -> &str {
+        &self.id
+    }
 
     fn extensions(&self) -> &Extensions {
         &self.extensions

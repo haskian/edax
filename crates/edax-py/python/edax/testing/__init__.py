@@ -34,7 +34,7 @@ and the in-tree ones are interchangeable.
 
 :func:`event` builds a stored event by hand, to publish with no store behind it. :func:`drafted` and
 :func:`recorded` move an event between its two shapes: the draft a repository hands ``append``, and the
-message the store keeps for it.
+message the store keeps for it. :func:`event_of` narrows a delivered message to the event a test published.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from .contracts import (
     SagaStoreContract,
     drafted,
     event,
+    event_of,
     recorded,
 )
 from .faults import LostResponse, Refusing
@@ -63,5 +64,6 @@ __all__ = [
     "SagaStoreContract",
     "drafted",
     "event",
+    "event_of",
     "recorded",
 ]

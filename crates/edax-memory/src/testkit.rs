@@ -4,9 +4,7 @@
 use std::collections::BTreeMap;
 
 use edax_core::Error;
-use edax_event::{CommandMessage, EventDraft, EventMessage};
-
-use crate::tx::OutboxRow;
+use edax_event::{CommandMessage, EventDraft, EventMessage, Message};
 
 /// The clock reading every test append is stamped with.
 pub(crate) const RECORDED_AT: i64 = 1_700_000_000_000_000_000;
@@ -51,8 +49,8 @@ pub(crate) fn command(id: &str, aggregate_id: Option<&str>) -> CommandMessage {
 }
 
 /// The ids of outbox rows of any kind, in order.
-pub(crate) fn ids<R: OutboxRow>(rows: &[R]) -> Vec<String> {
-    rows.iter().map(|row| row.row_id().to_owned()).collect()
+pub(crate) fn ids<R: Message>(rows: &[R]) -> Vec<String> {
+    rows.iter().map(|row| row.id().to_owned()).collect()
 }
 
 /// The wire form of a result, so every exact-message assertion below pins what a binding sees.

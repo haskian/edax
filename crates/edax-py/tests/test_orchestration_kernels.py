@@ -345,9 +345,15 @@ def test_golden_saga() -> None:
             assert message_as_obj(got) == row["want"], row
             continue
         loaded = row["loaded"]
-        write = _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
         want = row["want"]
-        assert (write.action, write.expected) == (want["write"], want.get("expected", 0)), row
+        if "error" in want:
+            with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+                _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
+            assert str(caught.value) == want["error"].removeprefix("codec: "), row
+            continue
+        write = _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
+        got = (write.action, write.expected, write.version)
+        assert got == (want["write"], want.get("expected", 0), want.get("version", 0)), row
 
 
 # =========================================================================

@@ -688,10 +688,13 @@ fn saga_cases() -> Vec<Value> {
         Loaded::Absent => json!({ "state": "absent" }),
         Loaded::Active { version } => json!({ "state": "active", "version": version }),
     };
-    let write_json = |write: edax_event::SagaWrite| match write {
-        edax_event::SagaWrite::Nothing => json!({ "write": "nothing" }),
-        edax_event::SagaWrite::Save { expected } => json!({ "write": "save", "expected": expected }),
-        edax_event::SagaWrite::Complete { expected } => json!({ "write": "complete", "expected": expected }),
+    let write_json = |write: Result<edax_event::SagaWrite, edax_core::Error>| match write {
+        Ok(edax_event::SagaWrite::Nothing) => json!({ "write": "nothing" }),
+        Ok(edax_event::SagaWrite::Save { expected, version }) => json!({ "write": "save", "expected": expected, "version": version }),
+        Ok(edax_event::SagaWrite::Complete { expected, version }) => {
+            json!({ "write": "complete", "expected": expected, "version": version })
+        }
+        Err(e) => json!({ "error": e.to_string() }),
     };
     let mut cases = Vec::new();
     for loaded in [Loaded::Absent, Loaded::Active { version: 3 }, Loaded::Active { version: u64::MAX }] {

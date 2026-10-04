@@ -35,12 +35,12 @@ pub trait Saga {
     /// `correlation_id`: that names the flow, while one flow may drive several instances. The instance
     /// id becomes the `aggregate_id` of every command the instance sends, so its commands keep their
     /// order.
-    fn instance_id(&self, env: &EventMessage) -> Option<String>;
+    fn instance_id(&self, event: &EventMessage) -> Option<String>;
 
-    /// Fold `env` into the instance. `state` is `None` for a new instance. Return
+    /// Fold `event` into the instance. `state` is `None` for a new instance. Return
     /// `(new_state, commands)`; a `new_state` of `None` completes the instance. Pure: the runner may
     /// discard the result when the write loses a race.
-    fn handle(&self, state: Option<Self::State>, env: &EventMessage) -> (Option<Self::State>, Vec<Self::Command>);
+    fn handle(&self, state: Option<Self::State>, event: &EventMessage) -> (Option<Self::State>, Vec<Self::Command>);
 }
 
 /// A stored saga instance: running, with the state a fold starts from, or completed.
@@ -135,22 +135,21 @@ where
     /// advanced the instance first; its error is transient, so the event is redelivered and folds the
     /// winner's state, and nothing this fold decided is ever sent. An event the instance already folded
     /// (redelivered after its step committed) is skipped: no fold, no write, no command.
-    pub fn run(&self, tx: &mut ST::Tx, env: &EventMessage) -> Result<(), HandlerError> {
-        let Some(instance_id) = self.saga.instance_id(env) else { return Ok(()) };
+    pub fn run(&self, tx: &mut ST::Tx, event: &EventMessage) -> Result<(), HandlerError> {
+        let Some(instance_id) = self.saga.instance_id(event) else { return Ok(()) };
         let (loaded, state, folded, completed) = match self.store.load(tx, &instance_id)? {
             None => (Loaded::Absent, None, String::new(), false),
             Some(SagaInstance::Running { state, version, folded }) => (Loaded::Active { version }, Some(state), folded, false),
             Some(SagaInstance::Completed { .. }) => (Loaded::Absent, None, String::new(), true),
         };
         // The kernel skips a tombstone and an event the instance folded already: no fold, no write.
-        let SagaAdmit::Fold { folded } = saga_admit(completed, &folded, env)? else { return Ok(()) };
-        let (new_state, commands) = self.saga.handle(state, env);
-        let write = saga_write(loaded, new_state.is_none(), !commands.is_empty());
-        let expected = match write {
-            SagaWrite::Save { expected } | SagaWrite::Complete { expected } => expected,
+        let SagaAdmit::Fold { folded } = saga_admit(completed, &folded, event)? else { return Ok(()) };
+        let (new_state, commands) = self.saga.handle(state, event);
+        let (expected, version) = match saga_write(loaded, new_state.is_none(), !commands.is_empty())? {
+            SagaWrite::Save { expected, version } | SagaWrite::Complete { expected, version } => (expected, version),
             SagaWrite::Nothing => return Ok(()),
         };
-        let rows = self.rows(&instance_id, expected.saturating_add(1), &commands, env)?;
+        let rows = self.rows(&instance_id, version, &commands, event)?;
         // The kernel answers `Save` exactly when the fold keeps state, and `Complete` when it does not.
         match new_state {
             Some(state) => self.store.save(tx, &instance_id, &state, expected, &folded, &rows)?,
@@ -231,13 +230,13 @@ mod tests {
             "order"
         }
 
-        fn instance_id(&self, env: &EventMessage) -> Option<String> {
-            env.metadata.get("order").cloned()
+        fn instance_id(&self, event: &EventMessage) -> Option<String> {
+            event.metadata.get("order").cloned()
         }
 
-        fn handle(&self, state: Option<String>, env: &EventMessage) -> (Option<String>, Vec<OrderCommand>) {
-            let order_id = env.metadata.get("order").cloned().unwrap_or_default();
-            match (state.as_deref(), env.name.as_str()) {
+        fn handle(&self, state: Option<String>, event: &EventMessage) -> (Option<String>, Vec<OrderCommand>) {
+            let order_id = event.metadata.get("order").cloned().unwrap_or_default();
+            match (state.as_deref(), event.name.as_str()) {
                 (None, "Created") => (Some("open".to_owned()), vec![]),
                 (Some("open"), "Paid") => (None, vec![OrderCommand::Fulfill(Fulfill { order_id })]),
                 (Some("open"), "Cancelled") => (None, vec![OrderCommand::Refund(Refund { order_id })]),
@@ -446,8 +445,8 @@ mod tests {
             Some("order-7".to_owned())
         }
 
-        fn handle(&self, state: Option<u32>, env: &EventMessage) -> (Option<u32>, Vec<OrderCommand>) {
-            (Some(state.unwrap_or(0) + 1), vec![OrderCommand::Fulfill(Fulfill { order_id: env.id.clone() })])
+        fn handle(&self, state: Option<u32>, event: &EventMessage) -> (Option<u32>, Vec<OrderCommand>) {
+            (Some(state.unwrap_or(0) + 1), vec![OrderCommand::Fulfill(Fulfill { order_id: event.id.clone() })])
         }
     }
 

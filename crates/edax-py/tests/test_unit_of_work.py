@@ -332,11 +332,11 @@ async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
-    await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A")))
+    await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A"), Deposit.type))
     with pytest.raises(edax.InProgress):
         await bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A")
 
-    still_held = await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A")))
+    still_held = await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A"), Deposit.type))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -377,7 +377,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
-    await ledger.claim(claimed("req-A"), _payload_hash(cmd))  # the winner, still pending
+    await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type))  # the winner, still pending
 
     ledger.raise_on_claim = True
     with pytest.raises(edax.StoreError):
@@ -385,7 +385,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
 
     assert ledger.releases == [], "a failed claim must not be compensated"
     ledger.raise_on_claim = False
-    still_held = await ledger.claim(claimed("req-A"), _payload_hash(cmd))
+    still_held = await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -465,7 +465,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
 
     if case.shared:
         # The host's rollback is what frees the claim, so the key is clear for a redelivery.
-        assert isinstance(await ledger.claim(claimed("req-A"), _payload_hash(cmd)), Won)
+        assert isinstance(await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type)), Won)
     else:
         # No rollback is coming: the claim stays pending until the store's retention frees it. That
         # is the documented residual cost of a ledger of its own, not a leak.
@@ -549,7 +549,7 @@ class History:
     async def record(self, key: int) -> Any:
         """The key's stored record, read by claiming it. Only ever called after the history is
         over, so taking the claim cannot perturb what it reports."""
-        return await self.ledger.claim(claimed(str(key)), _payload_hash(Deposit(0, str(key))))
+        return await self.ledger.claim(claimed(str(key)), _payload_hash(Deposit(0, str(key)), Deposit.type))
 
 
 @given(ops=st.lists(op, max_size=8), shared=st.booleans())

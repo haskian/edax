@@ -74,7 +74,20 @@ _DRAFT_FIELDS = (
     "extensions",
     "metadata",
 )
-_EVENT_MESSAGE_FIELDS = (*_DRAFT_FIELDS[:-2], "recorded_at", "extensions", "metadata")
+_EVENT_MESSAGE_FIELDS = (
+    "id",
+    "aggregate_id",
+    "sequence",
+    "name",
+    "version",
+    "data",
+    "correlation_id",
+    "causation_id",
+    "occurred_at",
+    "recorded_at",
+    "extensions",
+    "metadata",
+)
 _COMMAND_MESSAGE_FIELDS = (
     "id",
     "idempotency_key",
@@ -176,6 +189,14 @@ def message_kind(msg: object) -> MessageKind:
     if isinstance(msg, CommandMessage):
         return "command"
     raise TypeError(f"expected an EventMessage or a CommandMessage, not {msg!r}")
+
+
+def ordering_key(msg: EventMessage | CommandMessage) -> str:
+    """The key that orders ``msg`` against others: its aggregate, or its own id when it targets none. The
+    Kafka record key and a key-ordered dispatcher's worker start here. Pinned by
+    ``testdata/golden/ordering_key.json``."""
+    with errors.mapped():
+        return _edax.ordering_key(msg.id, msg.aggregate_id)
 
 
 class Serializer(Protocol):

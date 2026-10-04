@@ -101,7 +101,7 @@ Five promises, and each has a failure mode behind it.
 |---|---|---|
 | `publish` returns only after every in-sync replica has the message (`acks="all"`) | the relay marks the outbox row published once `publish` returns; a leader that fails before a follower copied the record takes it along, and the row says it was sent | `await client.send_and_wait(...)`, never fire-and-forget; a client that acks on the leader alone warns |
 | On failure `publish` raises | the relay marks the rows before it and hands that row and the rest back to the next drain | the client's exception propagates unchanged; nothing is swallowed |
-| The message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key) | a broker that orders per key delivers one aggregate's messages in publish order | the kernel's key rule, `_edax.ordering_key(msg.id, msg.aggregate_id)`, unless you gave the adapter `key=`; `_edax.kafka_record` then builds the record under that key |
+| The message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key) | a broker that orders per key delivers one aggregate's messages in publish order | the kernel's key rule, `ordering_key(msg)` over `_edax.ordering_key`, unless you gave the adapter `key=`; `_edax.kafka_record` then builds the record under that key |
 | The partition is Java's murmur2 of the key | a second producer, in another language or on another client library, must put one key on the same partition | `_edax.kafka_partition_for(key, len(await client.partitions_for(topic)))`, passed as `partition=` |
 | Delivery is at-least-once | a crash between publish and `mark_published` republishes the same message; consumers dedup by `msg.id` | inherent to the outbox; see [outbox](../sdk/outbox.md) |
 

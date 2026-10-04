@@ -9,7 +9,7 @@ versioned write, the saga outbox, and the relay sends them once that write has c
 the version race sends nothing: its commands roll back with its state, and the redelivery folds the winner's
 state. A crash after the commit re-sends from the outbox instead of losing the command, so a command is sent
 at least once per committed step, and its consumer deduplicates it by the command's idempotency key,
-which is the row's ``saga_command_id``.
+which is the row's ``saga_command_id`` under the saga's name.
 Completion writes a tombstone: a late or redelivered event finds the instance completed and is ignored, and
 a writer that loaded the instance before it completed conflicts. A running instance remembers what it
 folded, so an event redelivered after its step committed (a lost ack, a crash before the offset commit) is
@@ -177,11 +177,12 @@ class SagaRunner:
             # the outbox. Pinned by `testdata/golden/saga.json`.
             return
         new_state, commands = self._saga.handle(None if instance is None else instance.state, msg)
-        version = None if instance is None else instance.version
-        write = _edax.saga_write(new_state is Completed, bool(commands), version)
+        loaded = None if instance is None else instance.version
+        with errors.mapped():
+            write = _edax.saga_write(new_state is Completed, bool(commands), loaded)
         if write.action == "nothing":
             return
-        rows = self._rows(instance_id, write.expected + 1, commands, msg)
+        rows = self._rows(instance_id, write.version, commands, msg)
         if write.action == "save":
             await self._store.save(instance_id, new_state, write.expected, folded, rows, tx)
         else:
@@ -194,17 +195,11 @@ class SagaRunner:
         each a child of ``cause``. Pinned by ``testdata/golden/saga.json``."""
         issued_at = self._now()
         payloads = [self._commands.marshal(command) for command in commands]
+        saga, cause_id, cause_correlation_id = self._saga.name, cause.id, cause.correlation_id
         with errors.mapped():
             return [
                 _edax.saga_command(
-                    self._saga.name,
-                    instance_id,
-                    version,
-                    index,
-                    payload,
-                    cause.id,
-                    cause.correlation_id,
-                    issued_at,
+                    saga, instance_id, version, index, payload, cause_id, cause_correlation_id, issued_at
                 )
                 for index, payload in enumerate(payloads)
             ]
@@ -224,8 +219,9 @@ class SagaRunner:
     ) -> Relay:
         """A :class:`~edax.store.Relay` over this runner's command outbox that runs each row on ``bus`` with
         :meth:`~edax.command.CommandBus.dispatch_message`, decoded by this runner's codec. Each row's
-        ``idempotency_key`` is its ``saga_command_id``, so an :func:`~edax.command.idempotent` guard on
-        ``bus`` replays a row the relay sends again after a crash instead of running its handler twice. The
+        ``idempotency_key`` is its ``saga_command_id`` under the saga's name, so an
+        :func:`~edax.command.idempotent` guard on ``bus`` replays a row the relay sends again after a crash
+        instead of running its handler twice. The
         handler runs under the ambient lineage :func:`~edax.causation.propagate` of the row, so the events
         it saves stay in the saga's flow. To send the rows to a broker instead, use ``Relay(store,
         producer.publish)`` and run them with ``dispatch_message`` on the consumer. Pass ``on_dead``: a

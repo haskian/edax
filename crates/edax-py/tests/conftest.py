@@ -38,6 +38,7 @@ from edax.backend.memory import (
 )
 from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
 from edax.testing import event as build_message
+from edax.testing import event_of
 from edax.testing.faults import Refusing
 
 GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
@@ -85,12 +86,6 @@ def delivered(delivery: edax.Delivery | None) -> edax.Delivery:
     naming that, not an ``AttributeError`` three lines later."""
     assert delivery is not None, "poll returned None: the broker had nothing to deliver"
     return delivery
-
-
-def event_of(msg: edax.EventMessage | edax.CommandMessage) -> edax.EventMessage:
-    """Narrow a delivered message to the event every broker test here publishes."""
-    assert isinstance(msg, edax.EventMessage), f"{msg.id} is a command where an event was published"
-    return msg
 
 
 def sequence_of(msg: edax.EventMessage | edax.CommandMessage) -> int:

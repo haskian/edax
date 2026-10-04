@@ -26,7 +26,7 @@
 //! Placement is [`crate::partition_for`]: the shell passes the partition it names with the record.
 
 use edax_core::{Error, ErrorCode};
-use edax_event::{kind_mismatch, Format, Kind, Message};
+use edax_event::{Format, Kind, Message};
 use serde::{de::DeserializeOwned, Serialize};
 
 /// Header naming the wire format of the value bytes; the value is a media type (the vocabulary note
@@ -188,6 +188,18 @@ pub fn decode_record<M: Message + DeserializeOwned>(default: Format, value: &[u8
     match Format::from_media_type(media_type)? {
         (format, got) if got == M::KIND => format.decode(value),
         (_, got) => Err(kind_mismatch(M::KIND, got)),
+    }
+}
+
+/// A `codec` error for a message of one kind handed to a decoder of the other.
+fn kind_mismatch(want: Kind, got: Kind) -> Error {
+    Error::codec(format_args!("expected {} message, got {} media type", with_article(want), with_article(got)))
+}
+
+fn with_article(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Event => "an event",
+        Kind::Command => "a command",
     }
 }
 

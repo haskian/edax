@@ -56,17 +56,17 @@ impl EventRouter {
         self.chain.register(name.into(), handler)
     }
 
-    /// Route `env` to the handler for `env.name`. An unregistered name is ignored unless a fallback is set.
-    pub fn dispatch(&self, env: &EventMessage) -> Result<(), HandlerError> {
-        match self.chain.get(&env.name).or(self.on_unhandled.as_ref()) {
-            Some(handler) => handler(env),
+    /// Route `event` to the handler for `event.name`. An unregistered name is ignored unless a fallback is set.
+    pub fn dispatch(&self, event: &EventMessage) -> Result<(), HandlerError> {
+        match self.chain.get(&event.name).or(self.on_unhandled.as_ref()) {
+            Some(handler) => handler(event),
             None => Ok(()),
         }
     }
 }
 
 /// Run a handler at most once per event id, so a broker redelivery does not repeat its side effect. The key and
-/// hash are the kernel's ([`edax_event::event_idempotency`]): `env.id`, and FNV-1a over the raw `env.data`
+/// hash are the kernel's ([`edax_event::event_idempotency`]): `event.id`, and FNV-1a over the raw `event.data`
 /// bytes; the `()` result is stored as `null`. A redelivery of a completed event returns `Ok(())`. A claim
 /// another worker holds gives the transient `in_progress` error, which the dispatcher nacks. A transient
 /// handler failure, or a panic, releases the claim; a terminal one is cached with its code and replays as the
@@ -91,10 +91,10 @@ pub fn idempotent_by_id_in<T: Send + Sync + 'static>(
     Box::new(move |next: EventHandler| {
         let store = Arc::clone(&store);
         let current = Arc::clone(&current);
-        Box::new(move |env: &EventMessage| -> Result<(), HandlerError> {
-            let rule = event_idempotency(env);
-            let mut tx = current(env);
-            guarded(&*store, &mut tx, rule.key, rule.payload_hash, || next(env))
+        Box::new(move |event: &EventMessage| -> Result<(), HandlerError> {
+            let rule = event_idempotency(event);
+            let mut tx = current(event);
+            guarded(&*store, &mut tx, rule.key, rule.payload_hash, || next(event))
         })
     })
 }

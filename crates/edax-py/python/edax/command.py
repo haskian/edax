@@ -33,7 +33,6 @@ from .errors import (  # re-exported: the command errors are part of this module
 from .observe import ClaimVerdict, Observer, Settlement, _wrap
 from .pacing import Pacing
 from .store import EventCodec, Transactor, Tx, _in_unit_of_work, _transaction
-from .upcast import schema_version
 
 __all__ = [
     "AlreadyRegistered",
@@ -171,10 +170,11 @@ def _payload(cmd: Command, codec: EventCodec | None) -> tuple[str, int, bytes]:
                 f"the codec names a {cmd.type!r} command {marshaled.name!r}; a message name must be its type"
             )
         return marshaled.name, marshaled.version, marshaled.data
-    try:
-        version = schema_version(getattr(cmd, "version", 1), f"{cmd.type} version")
-    except (TypeError, ValueError) as e:
-        raise CodecError(str(e)) from e
+    version = getattr(cmd, "version", 1)
+    # Only the type is checked here: the message constructor's own conversion refuses a version outside
+    # an unsigned 32-bit integer, which `errors.mapped` turns into a CodecError.
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise CodecError(f"{cmd.type} version must be an int schema version, got {type(version).__name__}")
     return cmd.type, version, _payload_json(cmd)
 
 
@@ -252,7 +252,9 @@ class CommandBus:
         raises the terminal :class:`~edax.errors.CodecError`."""
         handler = self._handler(msg.name)
         cmd = codec.unmarshal(msg)
-        msg = _replace(msg, idempotency_key=received_key(msg))
+        key = received_key(msg)
+        if key != msg.idempotency_key:
+            msg = _replace(msg, idempotency_key=key)
         return await _run(handler, msg, cmd)
 
     def _handler(self, name: str) -> Handler:
@@ -490,12 +492,12 @@ def _changed(entries: dict[Any, Any]) -> dict[Any, Any]:
     return changes
 
 
-def _payload_hash(cmd: Command, name: str | None = None) -> int:
-    """The kernel's idempotency hash of ``cmd``: the message ``name`` (default ``cmd.type``) and the
-    command's whole value, canonicalized, FNV-1a. Pinned by ``testdata/golden/command_hash.json``."""
+def _payload_hash(cmd: Command, name: str) -> int:
+    """The kernel's idempotency hash of ``cmd``: the message ``name`` and the command's whole value,
+    canonicalized, FNV-1a. Pinned by ``testdata/golden/command_hash.json``."""
     payload = _payload_json(cmd)
     with errors.mapped():  # the kernel's `codec:` refusal of the bytes is terminal
-        return _edax.command_hash_json(cmd.type if name is None else name, payload)
+        return _edax.command_hash_json(name, payload)
 
 
 def idempotent(

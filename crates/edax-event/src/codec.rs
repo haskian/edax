@@ -165,18 +165,6 @@ impl Format {
     }
 }
 
-/// A `codec` error for a message of one kind handed to a decoder of the other.
-pub fn kind_mismatch(want: Kind, got: Kind) -> Error {
-    Error::codec(format_args!("expected {} message, got {} media type", with_article(want), with_article(got)))
-}
-
-fn with_article(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Event => "an event",
-        Kind::Command => "a command",
-    }
-}
-
 fn decode_error(error: impl std::fmt::Display) -> Error {
     Error::codec(format_args!("decode: {error}"))
 }

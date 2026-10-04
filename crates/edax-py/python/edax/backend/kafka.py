@@ -19,7 +19,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from .. import _edax
 from .._owned import ThreadBound
-from ..aggregate import CommandMessage, EventMessage, KernelSerializer, MessageKind, Serializer, message_kind
+from ..aggregate import (
+    CommandMessage,
+    EventMessage,
+    KernelSerializer,
+    MessageKind,
+    Serializer,
+    message_kind,
+    ordering_key,
+)
 from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
 from ..errors import CodecError, mapped
@@ -266,7 +274,7 @@ class KafkaProducer:
         serializer = self._serializer if message_kind(msg) == "event" else self._commands
         value = serializer.encode(msg)
         # The key function's override, else the kernel's ordering key: the one the golden vector pins.
-        key = self._key(msg) if self._key else _edax.ordering_key(msg.id, msg.aggregate_id)
+        key = self._key(msg) if self._key else ordering_key(msg)
         with mapped():
             record = _edax.kafka_record(key, value, serializer.media_type)
         for m in self._middleware:

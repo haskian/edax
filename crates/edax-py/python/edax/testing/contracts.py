@@ -59,7 +59,7 @@ from typing import Any, Literal, Protocol
 import pytest
 
 from .. import _edax
-from ..aggregate import _DRAFT_FIELDS, CommandMessage, Event, EventDraft, EventMessage, _fields_of, _replace
+from ..aggregate import _DRAFT_FIELDS, CommandMessage, Event, EventDraft, EventMessage, _replace
 from ..broker import Consumer
 from ..command import Record, Won, joins_transaction
 from ..dispatcher import Delivery
@@ -150,7 +150,13 @@ def drafted(msg: EventMessage) -> EventDraft:
 def recorded(draft: EventDraft, recorded_at: int) -> EventMessage:
     """The message a store keeps for ``draft``: every field as drafted, recorded at ``recorded_at``
     nanoseconds."""
-    return EventMessage(**_fields_of(draft), recorded_at=recorded_at)
+    return _edax.record_event(draft, recorded_at)
+
+
+def event_of(msg: EventMessage | CommandMessage) -> EventMessage:
+    """Narrow a delivered message to the event that was published, failing the test on a command."""
+    assert isinstance(msg, EventMessage), f"{msg.id} came back as a command; it was published as an event"
+    return msg
 
 
 def message(aggregate_id: str, sequence: int | None, *, name: str = "Deposited") -> EventMessage:
@@ -1529,13 +1535,6 @@ async def _poll(consumer: Consumer, n: int) -> list[Delivery]:
     return out
 
 
-def _event(delivery: Delivery) -> EventMessage:
-    """The event a clause published, narrowed from the delivered message."""
-    msg = delivery.message
-    assert isinstance(msg, EventMessage), f"{msg.id} came back as a command; it was published as an event"
-    return msg
-
-
 async def _quiet(consumer: Consumer) -> None:
     """Assert nothing more is delivered now."""
     try:
@@ -1561,7 +1560,7 @@ class BrokerContract:
         consumer = await broker_rig.consumer("g")
         seen: dict[str, list[int | None]] = {}
         for d in await _poll(consumer, len(msgs)):
-            seen.setdefault(_event(d).aggregate_id, []).append(_event(d).sequence)
+            seen.setdefault(event_of(d.message).aggregate_id, []).append(event_of(d.message).sequence)
             await d.ack()
         assert seen == {"a": [1, 2, 3], "b": [1, 2, 3]}
         await broker_rig.commit("g")
@@ -1607,7 +1606,7 @@ class BrokerContract:
         await first.nack()
         assert not second.live(), "the a-2 copy handed out before the nack is still live"
         again = await _poll(consumer, 2)
-        assert [_event(d).sequence for d in again] == [1, 2], "the key came back out of order"
+        assert [event_of(d.message).sequence for d in again] == [1, 2], "the key came back out of order"
         for d in again:
             assert d.live()
             await d.ack()
@@ -1649,7 +1648,7 @@ class BrokerContract:
         assert broker_rig.drained("projection")
         assert not broker_rig.drained("saga"), "one group's acks settled another's"
         saga = await broker_rig.consumer("saga")
-        assert [_event(d).sequence for d in await _poll(saga, 2)] == [1, 2]
+        assert [event_of(d.message).sequence for d in await _poll(saga, 2)] == [1, 2]
 
     async def test_a_command_is_delivered_whole_and_keyed_by_its_id(self, broker_rig: Any) -> None:
         """A broker carries commands as well as events. A command that names no aggregate is ordered by its

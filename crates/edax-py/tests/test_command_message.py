@@ -20,6 +20,7 @@ from edax import (
     json_codec,
     msgpack_codec,
 )
+from edax.aggregate import _replace
 from edax.backend.memory import (
     MemoryCommandOutbox,
     MemoryEventStore,
@@ -155,7 +156,14 @@ BUILD_CASES = [
         {},
         raises="extension key",
     ),
-    BuildCase("a_version_outside_u32_is_refused", BadVersion("ord-1"), {}, None, {}, raises="version"),
+    BuildCase(
+        "a_version_outside_u32_is_refused",
+        BadVersion("ord-1"),
+        {},
+        None,
+        {},
+        raises="argument could not cross into the kernel",
+    ),
     BuildCase(
         "a_codec_that_names_the_command_otherwise_is_refused",
         ORDER,
@@ -189,9 +197,9 @@ def test_command_message_branches(case: BuildCase) -> None:
             continue
         assert getattr(msg, name) == want, (case.name, name)
     assert msg.id and msg.issued_at > 0, case.name
-    assert edax._edax.command_hash_json(msg.name, msg.data) == edax.command._payload_hash(case.cmd), (
-        "the message data is the bytes the guard hashes"
-    )
+    assert edax._edax.command_hash_json(msg.name, msg.data) == edax.command._payload_hash(
+        case.cmd, case.cmd.type
+    ), "the message data is the bytes the guard hashes"
 
 
 # =========================================================================
@@ -302,18 +310,7 @@ async def test_a_message_the_bus_cannot_run_is_refused(
 
     bus = edax.CommandBus()
     bus.register("order.place", place)
-    good = command_message(ORDER)
-    msg = CommandMessage(
-        id=good.id,
-        name=name,
-        version=2,
-        data=data,
-        correlation_id=good.correlation_id,
-        causation_id=good.causation_id,
-        issued_at=good.issued_at,
-        extensions={},
-        metadata={},
-    )
+    msg = _replace(command_message(ORDER), name=name, version=2, data=data)
     with pytest.raises(raises):
         await bus.dispatch_message(msg, ORDERS)
 

@@ -215,7 +215,10 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
     bus.register("user.create", handler)
     if case.held:
         assert isinstance(
-            await ledger.claim(claimed("req-1"), edax.command._payload_hash(CreateUser("a@b.c"))), edax.Won
+            await ledger.claim(
+                claimed("req-1"), edax.command._payload_hash(CreateUser("a@b.c"), CreateUser.type)
+            ),
+            edax.Won,
         )
 
     for email, raises in zip(case.payloads, case.raises, strict=True):

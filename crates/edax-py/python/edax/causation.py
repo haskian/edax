@@ -21,7 +21,6 @@ __all__ = [
     "current_lineage",
     "originate",
     "propagate",
-    "resolve_lineage",
     "use_lineage",
 ]
 
@@ -51,33 +50,26 @@ def current_lineage() -> Lineage | None:
     return _ambient.get()
 
 
-def resolve_lineage(given: Lineage | None, new_id: Callable[[], str] = _edax.guid) -> Lineage:
-    """The lineage a message produced now gets: ``given`` when there is one, else the ambient
-    :func:`current_lineage`, else a new flow the kernel's ``originate`` roots at ``new_id()``."""
-    if given is not None:
-        return given
-    ambient = _ambient.get()
-    if ambient is not None:
-        return ambient
-    with errors.mapped():
-        return _edax.originate(new_id())
-
-
 def _stamp(
     lineage: Lineage | None,
     extensions: dict[str, str] | None,
     metadata: dict[str, str] | None,
     new_id: Callable[[], str] = _edax.guid,
 ) -> tuple[Lineage, dict[str, str], dict[str, str]]:
-    """What a message produced now carries: :func:`resolve_lineage` of ``lineage``, and its own copies of
-    ``extensions`` and ``metadata`` (``None`` reads as empty). An extension key outside the kernel's rule
-    raises the terminal :class:`~edax.errors.CodecError` before a new flow takes an id."""
+    """What a message produced now carries: ``lineage`` when there is one, else the ambient
+    :func:`current_lineage`, else a new flow the kernel's ``originate`` roots at ``new_id()``; and its own
+    copies of ``extensions`` and ``metadata`` (``None`` reads as empty). An extension key outside the
+    kernel's rule raises the terminal :class:`~edax.errors.CodecError` before a new flow takes an id."""
     ext = dict(extensions or {})
     meta = dict(metadata or {})
     if ext:
         with errors.mapped():
             _edax.check_extensions(ext)
-    return resolve_lineage(lineage, new_id), ext, meta
+    resolved = lineage if lineage is not None else _ambient.get()
+    if resolved is None:
+        with errors.mapped():
+            resolved = _edax.originate(new_id())
+    return resolved, ext, meta
 
 
 @contextmanager

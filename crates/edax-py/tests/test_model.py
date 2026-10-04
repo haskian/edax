@@ -500,7 +500,7 @@ class BusReplay:
 
     async def dispatch(self, op: Dispatch) -> None:
         cmd = make_cmd(op.kind, op.key, op.payload, op.outcome)
-        hash_ = C._payload_hash(cmd)
+        hash_ = C._payload_hash(cmd, cmd.type)
         prior = self.model.get(op.key)
         e = decide(prior, op, hash_)
 
@@ -520,7 +520,7 @@ class BusReplay:
     async def seed_pending(self, op: SeedPending) -> None:
         # An in-flight winner: claim takes the key if free and leaves any existing record alone.
         cmd = make_cmd(0, op.key, op.payload, 0)
-        hash_ = C._payload_hash(cmd)
+        hash_ = C._payload_hash(cmd, cmd.type)
         got = await self.store.claim(claimed(str(op.key)), hash_)
         if isinstance(got, C.Won):
             assert op.key not in self.model
@@ -542,7 +542,8 @@ class BusReplay:
             await self.put_raw(claimed(str(op.key)), '{"payload_hash":')
             self.model[op.key] = (None, Slot.UNREADABLE)
         else:
-            hash_ = C._payload_hash(make_cmd(0, op.key, op.payload, 0))
+            cmd = make_cmd(0, op.key, op.payload, 0)
+            hash_ = C._payload_hash(cmd, cmd.type)
             await self.put_raw(claimed(str(op.key)), f'{{"payload_hash":{hash_},"pending":"settling"}}')
             self.model[op.key] = (hash_, Slot.UNREADABLE)
         self.seeded.pop(op.key, None)  # the seeded claim is gone: its handle settles nothing now

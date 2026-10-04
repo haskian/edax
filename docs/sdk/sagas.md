@@ -231,7 +231,8 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
 makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. A completed instance folds
 nothing. When nothing was loaded and the fold neither keeps state nor sends a command, the write is
-`nothing`. Otherwise it is `save` or `complete` at the loaded version. A versioned write for the
+`nothing`. Otherwise it is `save` or `complete` at the loaded version, and the kernel also names the
+version the write commits, which the command ids carry. A versioned write for the
 `nothing` case would turn a no-op into a write that a concurrent creator of the same instance
 could conflict with.
 

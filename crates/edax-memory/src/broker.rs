@@ -49,8 +49,8 @@ impl Message {
     /// The message's own id, whichever its kind.
     pub fn id(&self) -> &str {
         match self {
-            Message::Event(event) => &event.id,
-            Message::Command(command) => &command.id,
+            Message::Event(event) => event.id(),
+            Message::Command(command) => command.id(),
         }
     }
 }

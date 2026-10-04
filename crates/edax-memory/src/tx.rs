@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error, TokenMint, NO_TOKEN};
-use edax_event::{CommandMessage, EventMessage};
+use edax_event::{CommandMessage, EventMessage, Message};
 use serde_json::{Map, Value};
 
 use crate::event::{MemoryEventStore, Snapshot};
@@ -49,47 +49,31 @@ pub(crate) fn sequence_of(event: &EventMessage) -> u64 {
     event.sequence.unwrap_or(0)
 }
 
-/// A row an outbox holds: what a relay pages through and marks sent by id. One page and one prune for
-/// every outbox (events, saga commands, outbox commands), so the three cannot drift apart.
-pub(crate) trait OutboxRow: Clone {
-    fn row_id(&self) -> &str;
-}
-
-impl OutboxRow for EventMessage {
-    fn row_id(&self) -> &str {
-        &self.id
-    }
-}
-
-impl OutboxRow for CommandMessage {
-    fn row_id(&self) -> &str {
-        &self.id
-    }
-}
-
 /// The first `limit` committed rows, oldest commit first. The outbox holds unpublished rows only, so
-/// this is a bounded prefix scan rather than a filter over an ever-growing log.
-pub(crate) fn page<R: OutboxRow>(rows: &[R], limit: usize) -> Vec<R> {
+/// this is a bounded prefix scan rather than a filter over an ever-growing log. One page, one refusal
+/// and one prune serve every outbox (events, saga commands, outbox commands), so the three cannot
+/// drift apart.
+pub(crate) fn page<R: Message + Clone>(rows: &[R], limit: usize) -> Vec<R> {
     rows.iter().take(limit).cloned().collect()
 }
 
 /// Refuse a `batch` of `what` rows when one's id is already `waiting` (committed, or staged by any open
 /// transaction) or repeats within the batch. A relay marks rows sent by id, so two rows under one id
 /// could not be told apart, and marking one would prune both. Deterministic, so `codec`.
-pub(crate) fn refuse_waiting<'a, R: OutboxRow + 'a>(waiting: impl Iterator<Item = &'a R>, batch: &[R], what: &str) -> Result<(), Error> {
-    let mut ids: HashSet<&str> = waiting.map(OutboxRow::row_id).collect();
+pub(crate) fn refuse_waiting<'a, R: Message + 'a>(waiting: impl Iterator<Item = &'a R>, batch: &[R], what: &str) -> Result<(), Error> {
+    let mut ids: HashSet<&str> = waiting.map(Message::id).collect();
     for row in batch {
-        if !ids.insert(row.row_id()) {
-            return Err(Error::codec(format_args!("{what} {} is already in the outbox", row.row_id())));
+        if !ids.insert(row.id()) {
+            return Err(Error::codec(format_args!("{what} {} is already in the outbox", row.id())));
         }
     }
     Ok(())
 }
 
 /// Drop the rows marked sent, keeping the outbox bounded. Idempotent; an unknown id is a no-op.
-pub(crate) fn prune<R: OutboxRow>(rows: &mut Vec<R>, ids: Vec<String>) {
+pub(crate) fn prune<R: Message>(rows: &mut Vec<R>, ids: Vec<String>) {
     let sent: HashSet<String> = ids.into_iter().collect();
-    rows.retain(|row| !sent.contains(row.row_id()));
+    rows.retain(|row| !sent.contains(row.id()));
 }
 
 /// Everything committed, for every seam. One struct so one lock guards it all: a commit applies a

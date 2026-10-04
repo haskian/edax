@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use edax_core::lock;
 use edax_event::{
-    check_extensions, originate, CommandMessage, EventDraft, EventMessage, Extensions, Failure, Lineage, Metadata, Retries,
+    check_extensions, originate, EventDraft, EventMessage, Extensions, Failure, Lineage, Message, Metadata, Retries,
     Verdict,
 };
 
@@ -190,21 +190,16 @@ pub trait OutboxRow {
     fn id(&self) -> &str;
 }
 
-impl OutboxRow for EventMessage {
+/// Every message kind is a row, by its own id.
+impl<M: Message> OutboxRow for M {
     fn id(&self) -> &str {
-        &self.id
-    }
-}
-
-impl OutboxRow for CommandMessage {
-    fn id(&self) -> &str {
-        &self.id
+        Message::id(self)
     }
 }
 
 /// The read side of a transactional outbox: committed rows not yet published, and the acknowledgement
 /// that prunes them. Generic over the row, so one store can hold the event outbox (`R` =
-/// [`EventMessage`]) and the saga command outbox (`R` = [`CommandMessage`]) side by side.
+/// [`EventMessage`]) and the saga command outbox (`R` = [`CommandMessage`](crate::CommandMessage)) side by side.
 pub trait Outbox<R> {
     /// Committed rows not yet published, oldest commit first, at most `limit`. Running more than one
     /// [`Relay`] over one store needs this call to lease or lock the rows it returns, or two relays
@@ -458,7 +453,7 @@ where
 pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync>;
 
 /// Drains an [`Outbox`] to a publisher: the transactional-outbox publisher, for the event outbox
-/// (`R` = [`EventMessage`], the default) and the saga command outbox (`R` = [`CommandMessage`]) alike.
+/// (`R` = [`EventMessage`], the default) and the saga command outbox (`R` = [`CommandMessage`](crate::CommandMessage)) alike.
 ///
 /// `publish` must return only once the transport has durably accepted the row. Anything that merely
 /// hands it on, such as an in-process queue or a dispatcher's `submit`, makes the outbox

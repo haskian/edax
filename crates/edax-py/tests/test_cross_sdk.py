@@ -63,7 +63,7 @@ def test_one_command_value_has_one_hash_whatever_the_number_spelling(
     """Before numbers were canonical by value, `2` and `2.0` hashed apart, so one command dispatched
     from its constructor and again off a queue read as a payload mismatch: terminal, for a duplicate."""
     assert msgspec.json.encode(left) != msgspec.json.encode(right)
-    assert _payload_hash(left) == _payload_hash(right), branch
+    assert _payload_hash(left, left.type) == _payload_hash(right, right.type), branch
 
 
 def test_a_third_sdks_spelling_hashes_the_same() -> None:

@@ -233,7 +233,8 @@ class SagaRow:
 class SagaWrite:
     action: str
     expected: int
-    def __init__(self, action: str, expected: int) -> None: ...
+    version: int
+    def __init__(self, action: str, expected: int, version: int) -> None: ...
 
 class SnapshotResult:
     type_name: str
@@ -474,6 +475,7 @@ def received_key(
     idempotency_key: str | None = None,
 ) -> str: ...
 
+def record_event(draft: EventDraft, recorded_at: int) -> EventMessage: ...
 def redis_check_claim(claim: bytes) -> None: ...
 def redis_check_config(
     prefix: str,

@@ -258,7 +258,7 @@ def test_golden_command_hash_rejects_the_old_per_sdk_rules() -> None:
     fields = dict(case["command"])
     fields["shipping"] = GoldenShipping(**fields["shipping"])
     with_type_field = GoldenPlaceOrderWithTypeField(**fields)
-    assert C._payload_hash(with_type_field) != case["expected"]
+    assert C._payload_hash(with_type_field, with_type_field.type) != case["expected"]
 
 
 @dataclass
@@ -391,8 +391,8 @@ def test_hash_is_independent_of_how_the_command_was_built(case: ConstructionCase
     # would agree and still be wrong.
     assert _same_command(case.built, case.decoded)
     expected = edax._edax.command_hash_json("order.place", msgspec.json.encode(DEFAULTED_ORDER))
-    assert C._payload_hash(case.built) == expected
-    assert C._payload_hash(case.decoded) == expected
+    assert C._payload_hash(case.built, case.built.type) == expected
+    assert C._payload_hash(case.decoded, case.decoded.type) == expected
 
 
 async def test_bus_idempotency() -> None:
@@ -528,7 +528,7 @@ async def test_pending_claim_raises_in_progress_not_none() -> None:
     # bogus None success — it raises InProgress so the caller retries/redelivers.
     store = MemoryIdempotencyStore()
     cmd = CreateUser("a@b.c")
-    hash_ = C._payload_hash(cmd)
+    hash_ = C._payload_hash(cmd, cmd.type)
     assert isinstance(
         await store.claim(claimed("req-1"), hash_), Won
     )  # simulate the in-flight winner (pending record)

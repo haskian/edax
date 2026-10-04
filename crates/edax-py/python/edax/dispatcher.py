@@ -14,7 +14,7 @@ from typing import Any, cast
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
-from .aggregate import CommandMessage, EventMessage
+from .aggregate import CommandMessage, EventMessage, ordering_key
 from .causation import _leave_every_lineage, caused_by
 from .errors import CodecError, InProgress, _carried_code
 from .observe import DeliveryOutcome, Observer, _wrap, error_type
@@ -220,7 +220,7 @@ class KeyOrderedDispatcher:
 
     def _worker_index(self, msg: EventMessage | CommandMessage) -> int:
         with errors.mapped():
-            return _edax.partition(_edax.ordering_key(msg.id, msg.aggregate_id), len(self._queues))
+            return _edax.partition(ordering_key(msg), len(self._queues))
 
     async def _run(self, queue: asyncio.Queue[_QueueItem]) -> None:
         # A task copies its creator's context, so a dispatcher started inside `transaction` would hand every

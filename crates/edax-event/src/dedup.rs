@@ -19,8 +19,8 @@ pub struct EventIdempotency<'a> {
     pub payload_hash: u64,
 }
 
-/// The key and hash an idempotency guard claims for `env`. One rule for every SDK, so two consumers
+/// The key and hash an idempotency guard claims for `event`. One rule for every SDK, so two consumers
 /// of one stream sharing a ledger bind the same key to the same hash.
-pub fn event_idempotency(env: &EventMessage) -> EventIdempotency<'_> {
-    EventIdempotency { key: &env.id, payload_hash: edax_core::fnv1a64(&env.data) }
+pub fn event_idempotency(event: &EventMessage) -> EventIdempotency<'_> {
+    EventIdempotency { key: &event.id, payload_hash: edax_core::fnv1a64(&event.data) }
 }

@@ -42,7 +42,7 @@ pub mod testkit;
 pub mod upcast;
 
 pub use causation::{originate, propagate, Lineage};
-pub use codec::{kind_mismatch, Format};
+pub use codec::Format;
 pub use dedup::{event_idempotency, EventIdempotency};
 pub use domain::{
     check_extensions, ordering_key, received_key, CommandMessage, Event, EventDraft, EventMessage, Extensions, Kind,

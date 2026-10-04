@@ -470,6 +470,8 @@ class Repository(Generic[A]):
         # the same way on every retry, so it is the terminal CodecError, not a bare TypeError.
         with errors.mapped():
             flow, ext, meta = _stamp(lineage, extensions, metadata, self._new_id)
+            # Each field read off a native object builds a new string, so read the flow once.
+            correlation_id, causation_id = flow.correlation_id, flow.causation_id
             drafts: list[EventDraft] = [
                 EventDraft(
                     id=self._new_id(),
@@ -478,8 +480,8 @@ class Repository(Generic[A]):
                     name=event.name,
                     version=event.version,
                     data=event.data,
-                    correlation_id=flow.correlation_id,
-                    causation_id=flow.causation_id,
+                    correlation_id=correlation_id,
+                    causation_id=causation_id,
                     extensions=ext,
                     metadata=meta,
                     occurred_at=occurred_at,

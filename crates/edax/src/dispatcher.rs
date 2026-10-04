@@ -285,9 +285,9 @@ impl KeyOrderedDispatcher {
 
     /// Submit a bare event, fire-and-forget (no acknowledgement). Routed to its worker by its
     /// ordering key; events for one aggregate keep FIFO order.
-    pub fn submit(&self, env: EventMessage) {
+    pub fn submit(&self, event: EventMessage) {
         // No-op settlers; ZST closures don't allocate, so this stays as cheap as a bare send.
-        self.deliver(Delivery::new(env, || {}, || {}));
+        self.deliver(Delivery::new(event, || {}, || {}));
     }
 
     /// Submit a [`Delivery`]: the worker acks it when the handler returns, nacks it (for the broker
