@@ -66,9 +66,6 @@ fn check_grammar(text: &str) -> Result<(), Error> {
         )));
     }
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if ["nan", "snan", "inf", "infinity"].iter().any(|word| unsigned.eq_ignore_ascii_case(word)) {
-        return Err(Error::codec(format_args!("{text:?} is not a finite decimal")));
-    }
     let not_decimal = || Error::codec(format_args!("{text:?} is not decimal text"));
     let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
         Some((mantissa, exponent)) => (mantissa, Some(exponent)),
@@ -168,10 +165,10 @@ mod tests {
             // `BigDecimal::from_str` panics on this one: the grammar must refuse it first.
             ("an_exponent_past_i64", "1E+9223372036854775808", Err("outside the 32-bit range")),
             ("a_signed_exponent_sign_alone", "1E-", Err("not decimal text")),
-            ("nan", "NaN", Err("not a finite decimal")),
-            ("signalling_nan", "sNaN", Err("not a finite decimal")),
-            ("infinity", "-Infinity", Err("not a finite decimal")),
-            ("inf", "inf", Err("not a finite decimal")),
+            ("nan", "NaN", Err("not decimal text")),
+            ("signalling_nan", "sNaN", Err("not decimal text")),
+            ("infinity", "-Infinity", Err("not decimal text")),
+            ("inf", "inf", Err("not decimal text")),
             ("empty", "", Err("not decimal text")),
             ("a_sign_alone", "-", Err("not decimal text")),
             ("a_point_alone", ".", Err("not decimal text")),
