@@ -12,6 +12,10 @@
 //! `from > to`. `from == to` yields an empty plan (already current). A codec asks on *every*
 //! unmarshal, also for a name with no transforms registered, so a payload from a newer writer is
 //! refused the same way in every SDK instead of decoding silently under an older schema.
+//!
+//! The kernel also owns each name's target version, [`upcast_target`]: one past the name's highest
+//! step, or [`FIRST_VERSION`] for a name with none. Its upcaster is its only version source, so a codec
+//! cannot declare a version its steps do not reach, and bumping one name never moves another's.
 
 use std::collections::BTreeSet;
 
@@ -44,6 +48,32 @@ pub fn upcast_plan(from: u32, to: u32, available: Option<&[u32]>) -> Result<Vec<
         )));
     }
     Ok((from..to).collect())
+}
+
+/// The schema version of every event name that has never changed shape: what it writes with no steps.
+pub const FIRST_VERSION: u32 = 1;
+
+/// The schema version a codec writes for one event name and raises its older payloads to: one past the
+/// name's highest upcast step, or [`FIRST_VERSION`] when `available` is `None` or empty.
+///
+/// The steps are the version's only source, so the target can never sit past the last step. A chain
+/// with a hole (`[1, 3]`) is a `codec` error, because a payload stored at the missing version could
+/// never be raised; a chain that starts above 1 (`[2, 3]`) is not, because its older versions may be
+/// retired. A step at `u32::MAX` is a `codec` error too: its output has no schema version. A codec
+/// asks once per name when it is built, so either mistake fails at startup, not on the first event.
+pub fn upcast_target(available: Option<&[u32]>) -> Result<u32, Error> {
+    let have: BTreeSet<u32> = available.unwrap_or_default().iter().copied().collect();
+    let Some(&last) = have.last() else { return Ok(FIRST_VERSION) };
+    // Pairwise, not `first..last`: a chain `[0, u32::MAX]` must not walk 2^32 versions to find its hole.
+    if let Some((&below, _)) = have.iter().zip(have.iter().skip(1)).find(|(a, b)| a.checked_add(1) != Some(**b)) {
+        let missing = below.saturating_add(1);
+        return Err(Error::codec(format_args!(
+            "upcast steps skip v{missing}: a payload stored at v{missing} could never be raised"
+        )));
+    }
+    last.checked_add(1).ok_or_else(|| {
+        Error::codec(format_args!("upcast step {last} raises past the largest schema version {}", u32::MAX))
+    })
 }
 
 #[cfg(test)]
@@ -90,6 +120,25 @@ mod tests {
         for c in cases {
             let got = upcast_plan(c.from, c.to, c.available).map_err(|e| e.to_string());
             assert_eq!(got, c.want.map_err(str::to_owned), "{}", c.name);
+        }
+    }
+
+    #[test]
+    fn upcast_target_branches() {
+        type Want = Result<u32, &'static str>;
+        let cases: [(&str, Option<&[u32]>, Want); 8] = [
+            ("no upcaster writes the first version", None, Ok(1)),
+            ("an upcaster with no steps writes the first version", Some(&[]), Ok(1)),
+            ("one step raises to v2", Some(&[1]), Ok(2)),
+            ("unsorted, repeated steps are a set", Some(&[2, 1, 2]), Ok(3)),
+            ("a chain may start above 1", Some(&[2, 3]), Ok(4)),
+            ("a hole is refused", Some(&[1, 3]), Err("codec: upcast steps skip v2: a payload stored at v2 could never be raised")),
+            ("a hole across the u32 span is found without walking it", Some(&[0, u32::MAX]), Err("codec: upcast steps skip v1: a payload stored at v1 could never be raised")),
+            ("a step at the ceiling has no target", Some(&[u32::MAX - 1, u32::MAX]), Err("codec: upcast step 4294967295 raises past the largest schema version 4294967295")),
+        ];
+        for (name, available, want) in cases {
+            let got = upcast_target(available).map_err(|e| e.to_string());
+            assert_eq!(got, want.map_err(str::to_owned), "{name}");
         }
     }
 }

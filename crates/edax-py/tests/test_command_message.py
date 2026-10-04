@@ -47,7 +47,10 @@ ORDER_JSON = (
     b'"lines":[{"sku":"sku-1","quantity":2,"price_cents":2100}]}'
 )
 FLOW = Lineage("01a10285-7d7c-71a1-8fb8-3caf0732bb67", "01a10285-7d7c-71a1-8fb8-3caf0732bb68")
-ORDERS = json_codec({"order.place": PlaceOrder}, version=2)
+# PlaceOrder is at v2 with its v1 shape: the identity step is the bump.
+ORDERS = json_codec(
+    {"order.place": PlaceOrder}, upcasters={"order.place": edax.Upcaster().step(1, lambda d: d)}
+)
 
 
 @dataclass
@@ -83,7 +86,7 @@ def _carrier_unknown(data: bytes) -> bytes:
 
 
 SHIPMENTS = json_codec(
-    {"order.ship": Ship}, version=2, upcasters={"order.ship": edax.Upcaster().step(1, _carrier_unknown)}
+    {"order.ship": Ship}, upcasters={"order.ship": edax.Upcaster().step(1, _carrier_unknown)}
 )
 
 

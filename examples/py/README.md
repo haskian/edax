@@ -32,7 +32,7 @@ trap](../../docs/guides/getting-started.md#the-stale-native-module-trap).
 | [`01_command_bus.py`](01_command_bus.py) | send a command to its handler | `CommandBus`, `register`, `dispatch` | [commands](../../docs/sdk/commands.md) |
 | [`02_aggregate.py`](02_aggregate.py) | keep state as events; save and load it | `Aggregate`, `Repository`, `json_codec` | [aggregates](../../docs/sdk/aggregates.md) |
 | [`03_snapshots.py`](03_snapshots.py) | load from a snapshot plus the tail | `Repository(snapshot_every=)` | [aggregates](../../docs/sdk/aggregates.md#snapshots) |
-| [`04_upcasting.py`](04_upcasting.py) | read events an older version stored | `Upcaster`, `json_codec(version=, upcasters=)` | [kernels/event](../../docs/kernels/event.md) |
+| [`04_upcasting.py`](04_upcasting.py) | read events an older version stored | `Upcaster`, `json_codec(upcasters=)` | [kernels/event](../../docs/kernels/event.md) |
 | [`05_idempotent_commands.py`](05_idempotent_commands.py) | apply a command once, even when sent twice | `dispatch(idempotency_key=)`, `idempotent(scope=, unit_of_work=)`, `retry`, `PayloadMismatch` | [commands](../../docs/sdk/commands.md#the-recommended-wiring) |
 | [`06_errors_and_retry.py`](06_errors_and_retry.py) | retry transient errors, not terminal ones | `retry`, `Rejected`, `Pacing`, `is_terminal` | [errors](../../docs/sdk/errors.md) |
 | [`07_outbox_relay.py`](07_outbox_relay.py) | publish saved events through the outbox | `Relay.drain`, `unpublished_count` | [outbox](../../docs/sdk/outbox.md) |

@@ -188,6 +188,14 @@ pub fn upcast_plan(from_version: u32, to: u32, available: Option<Vec<u32>>) -> R
     edax_event::upcast_plan(from_version, to, available.as_deref()).map_err(wire)
 }
 
+/// The schema version a codec writes for one event name: one past the highest of its `available`
+/// steps, or the first version (1) for `None` or none. A hole in the steps, or a step at the `u32`
+/// ceiling, is the kernel's `codec` error. A codec asks once per name when it is built. See
+/// [`edax_event::upcast_target`].
+pub fn upcast_target(available: Option<Vec<u32>>) -> Result<u32, String> {
+    edax_event::upcast_target(available.as_deref()).map_err(wire)
+}
+
 /// The two ids that place a message in its flow. See [`edax_event::Lineage`].
 pub struct Lineage {
     /// Constant across one logical flow.
@@ -1796,6 +1804,17 @@ mod tests {
                 "codec: cannot upcast downward: from 3 > to 1 (the payload comes from a newer writer)"
             );
         }
+    }
+
+    #[test]
+    fn upcast_target_branches() {
+        assert_eq!(upcast_target(None).unwrap(), 1, "no upcaster: the first version");
+        assert_eq!(upcast_target(Some(vec![2, 1])).unwrap(), 3, "one past the highest step");
+        // A wiring mistake fails the same way every time, so it carries the terminal `codec` code.
+        assert_eq!(
+            upcast_target(Some(vec![1, 3])).unwrap_err(),
+            "codec: upcast steps skip v2: a payload stored at v2 could never be raised"
+        );
     }
 
     #[test]

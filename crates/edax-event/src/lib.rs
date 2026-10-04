@@ -10,7 +10,7 @@
 //!   key a received command is claimed under, and the extension key rule
 //! - [`codec`] — selectable, deterministic message serializations ([`codec::Format`]), one media
 //!   type per format and kind, and their evolution rule
-//! - [`upcast`] — versioned-event upcast planning (ordering + gap detection)
+//! - [`upcast`] — versioned-event upcast planning (ordering + gap detection) and each name's target version
 //! - [`causation`] — the [`Lineage`] a message inherits or starts
 //! - [`staleness`] — whether an event is older than the per-aggregate watermark, and the watermark
 //!   after it applies
@@ -53,4 +53,4 @@ pub use retry::{Failure, Retries, Tracked, Verdict};
 pub use saga::{saga_admit, saga_command, saga_command_id, saga_write, Loaded, SagaAdmit, SagaWrite};
 pub use sequence::{check_batch, snapshot_due};
 pub use staleness::{advance, is_stale};
-pub use upcast::upcast_plan;
+pub use upcast::{upcast_plan, upcast_target, FIRST_VERSION};

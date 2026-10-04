@@ -67,8 +67,8 @@ fn events() -> Vec<(&'static str, AccountEvent)> {
 }
 
 fn event_codec_cases() -> Vec<Value> {
-    let json_codec = JsonRegistryCodec::<AccountEvent>::new(1).unwrap();
-    let msgpack_codec = MsgpackRegistryCodec::<AccountEvent>::new(1).unwrap();
+    let json_codec = JsonRegistryCodec::<AccountEvent>::new().unwrap();
+    let msgpack_codec = MsgpackRegistryCodec::<AccountEvent>::new().unwrap();
     events()
         .into_iter()
         .map(|(case, event)| {

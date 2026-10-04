@@ -259,7 +259,7 @@ mod tests {
     type Runner<ST> = SagaRunner<OrderSaga, ST, JsonRegistryCodec<OrderCommand>>;
 
     fn runner<ST: SagaStore<State = String>>(store: ST) -> Runner<ST> {
-        SagaRunner::new(OrderSaga, store, JsonRegistryCodec::new(1).unwrap()).with_clock(|| 1_714_564_800_000_000_000)
+        SagaRunner::new(OrderSaga, store, JsonRegistryCodec::new().unwrap()).with_clock(|| 1_714_564_800_000_000_000)
     }
 
 
@@ -481,7 +481,7 @@ mod tests {
             ),
         ];
         for (name, deliveries, want) in cases {
-            let runner = SagaRunner::new(Echo, MemorySagaStore::<u32>::new(), JsonRegistryCodec::new(1).unwrap());
+            let runner = SagaRunner::new(Echo, MemorySagaStore::<u32>::new(), JsonRegistryCodec::new().unwrap());
             for env in &deliveries {
                 runner.run(&mut MemoryTx::auto_commit(), env).expect(name);
             }

@@ -37,6 +37,7 @@ from ._edax import (
     payload_hash,
     payload_hash_json,
     upcast_plan,
+    upcast_target,
 )
 from .aggregate import (
     Aggregate,
@@ -138,6 +139,7 @@ __all__ = [
     "payload_hash",
     "payload_hash_json",
     "upcast_plan",
+    "upcast_target",
     # causation (edax.causation wrappers over the kernel rules, and the ambient lineage)
     "Lineage",
     "caused_by",

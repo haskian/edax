@@ -36,8 +36,9 @@ fn partition_cases() -> Vec<Value> {
 
 fn upcast_cases() -> Vec<Value> {
     // `available: None` is a name with no transforms registered: every step is the identity, so only
-    // the downgrade rule (a payload from a newer writer) can refuse it.
-    let cases: [(u32, u32, Option<&[u32]>); 17] = [
+    // the downgrade rule (a payload from a newer writer) can refuse it. Every row also pins the version a
+    // codec built with `available` writes, `upcast_target`, so a third SDK derives the same per-name version.
+    let cases: [(u32, u32, Option<&[u32]>); 19] = [
         (1, 1, Some(&[])),          // no-op
         (1, 3, Some(&[1, 2])),      // contiguous
         (1, 3, Some(&[1])),         // gap at 2 (missing middle step) -> error
@@ -55,17 +56,22 @@ fn upcast_cases() -> Vec<Value> {
         (1, 3, None),               // no transforms, older payload: identity, nothing to run
         (5, 1, None),               // no transforms, newer writer: refused, never decoded silently
         (0, u32::MAX, None),        // identity over a 2^32 - 1 span is still an empty plan, not a walk
+        (1, 2, Some(&[1, 3])),      // the plan needs only step 1, but the hole at 2 has no target
+        (u32::MAX, u32::MAX, Some(&[u32::MAX])), // a step at the ceiling raises past every schema version
     ];
     cases
         .into_iter()
         .map(|(from, to, available)| {
             let result = edax_event::upcast_plan(from, to, available);
+            let target = edax_event::upcast_target(available);
             json!({
                 "from": from,
                 "to": to,
                 "available": available,
                 "plan": result.as_ref().ok(),
                 "error": result.as_ref().err().map(ToString::to_string),
+                "target": target.as_ref().ok(),
+                "target_error": target.as_ref().err().map(ToString::to_string),
             })
         })
         .collect()

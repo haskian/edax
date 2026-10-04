@@ -1099,7 +1099,7 @@ mod tests {
         for (i, c) in cases.into_iter().enumerate() {
             let id = format!("ledger-{i}");
             let store = MemoryEventStore::new();
-            let repo = Repository::new(store.clone(), JsonCodec::<Posted>::new("Posted", 1), LedgerCodec)
+            let repo = Repository::new(store.clone(), JsonCodec::<Posted>::new("Posted"), LedgerCodec)
                 .with_ids(next_id);
             let mut ledger = Ledger {
                 root: Root::new(&id, 0),

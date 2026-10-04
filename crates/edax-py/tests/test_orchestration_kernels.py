@@ -367,13 +367,11 @@ class Probe(msgspec.Struct):
 
 
 def test_golden_upcast_through_the_codec() -> None:
-    """Each plan row, replayed as an event at version `from` read by a codec at version `to`: a row whose
-    `available` is null is a name with no upcaster, else an upcaster whose steps each add one to `n`. The
-    codec decodes exactly when the kernel plans, refuses exactly when it refuses, and runs every planned
-    step once."""
+    """Each row's `available` as a codec: null is a name with no upcaster, else an upcaster whose steps
+    each add one to `n`. The codec is refused exactly when `target` is, and writes `target`. A row whose
+    `to` is that target is replayed as an event at version `from`: the codec decodes exactly when the
+    kernel plans, refuses exactly when it refuses, and runs every planned step once."""
     for row in golden("upcast.json"):
-        if row["from"] < -1000 or row["to"] > 1000:
-            continue  # the i32 extremes are pinned on the raw call; a codec version that far is not a codec
         upcasters = None
         if row["available"] is not None:
             upcaster = edax.Upcaster()
@@ -382,7 +380,15 @@ def test_golden_upcast_through_the_codec() -> None:
                     step, lambda d: msgspec.json.encode(Probe(msgspec.json.decode(d, type=Probe).n + 1))
                 )
             upcasters = {"Probe": upcaster}
-        codec = json_codec({"Probe": Probe}, version=row["to"], upcasters=upcasters)
+        if row["target_error"] is not None:
+            with pytest.raises(edax.CodecError) as refused:
+                json_codec({"Probe": Probe}, upcasters=upcasters)
+            assert row["target_error"].removeprefix("codec: ") in str(refused.value), row
+            continue
+        codec = json_codec({"Probe": Probe}, upcasters=upcasters)
+        assert codec.marshal(Probe(0)).version == row["target"], row
+        if row["to"] != row["target"]:
+            continue  # this plan's `to` is no version this name's codec writes
         event = edax.Event("Probe", row["from"], b'{"n":0}')
         if row["error"] is not None:
             with pytest.raises(edax.CodecError) as caught:
@@ -425,7 +431,7 @@ EVENTS: dict[str, type] = {"Deposited": Deposited, "Withdrawn": Withdrawn, "Tagg
 def test_golden_event_codec(fmt: str) -> None:
     """The Rust registry codec's bytes for each event: Python reads them back, and writes the same name
     and the same bytes for the same event, so a stream reads the same from either SDK."""
-    codec = (json_codec if fmt == "json" else msgpack_codec)(EVENTS, version=1)
+    codec = (json_codec if fmt == "json" else msgpack_codec)(EVENTS)
     for row in golden("event_codec.json"):
         wire = row["json"].encode() if fmt == "json" else bytes.fromhex(row["msgpack_hex"])
         event = codec.unmarshal(edax.Event(row["name"], row["version"], wire))
