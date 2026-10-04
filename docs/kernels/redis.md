@@ -28,7 +28,10 @@ the other.
 `check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)` refuses the settings a store
 is built with. It refuses an empty prefix, and a TTL outside 1 to 2^53 - 1 milliseconds: the largest
 integer every SDK language's number type holds exactly. It refuses a deadline that is not positive.
-It refuses a heartbeat over a claim TTL too short to renew `HEARTBEATS_PER_TTL` (3) times. Redis
+It refuses a heartbeat whose `op_timeout_ms` is not under `claim_ttl_ms / HEARTBEATS_PER_TTL` (3).
+The heartbeat waits a third of the TTL between renewals. A renewal that stalls for the whole
+deadline pushes the next one to `2 * claim_ttl_ms / 3 + op_timeout_ms`. That one must land before
+the lease lapses at `claim_ttl_ms`, or a second worker wins a key the first still runs. Redis
 refuses a zero or negative TTL on every write, so a store checks its settings when it is built. Every refusal is a terminal
 `bad_handle` error.
 

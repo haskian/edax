@@ -142,7 +142,7 @@ async def test_a_heartbeat_holds_a_claim_past_its_ttl_and_without_it_the_key_is_
     for heartbeat in (True, False):
         key = f"req-{heartbeat}"
         holder = RedisIdempotencyStore(
-            AsyncRedisClient(direct), prefix, claim_ttl_ms=300, heartbeat=heartbeat
+            AsyncRedisClient(direct), prefix, claim_ttl_ms=300, op_timeout_ms=90, heartbeat=heartbeat
         )
         rival = RedisIdempotencyStore(AsyncRedisClient(direct), prefix, claim_ttl_ms=300)
         won = await holder.claim(key, HASH)

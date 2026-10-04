@@ -82,7 +82,9 @@ class RedisIdempotencyStore:
     ``claim_ttl_ms`` bounds how long a pending claim blocks its key when its worker dies. Without
     ``heartbeat`` it must exceed the longest handler run; with it, the store renews each claim every
     ``claim_ttl_ms / 3`` while it is held. ``op_timeout_ms`` is the deadline on each Redis call, client
-    retries included. A misconfigured store raises terminal :class:`~edax.errors.BadHandle` when built. A
+    retries included; with ``heartbeat`` it must be under ``claim_ttl_ms / 3``, so a renewal that stalls
+    for the whole deadline still leaves the next one time to land. A misconfigured store raises
+    terminal :class:`~edax.errors.BadHandle` when built. A
     client or server failure raises transient :class:`~edax.errors.StoreError`, a deterministic one
     (``WRONGTYPE``, a refused command) terminal. A stored value no reader can decode is the kernel's
     terminal ``codec`` failure, which the guard replays as :class:`~edax.errors.CachedFailure`. See
@@ -223,8 +225,9 @@ class RedisIdempotencyStore:
 
     async def _renew(self, key: str, handle: bytes) -> None:
         """The heartbeat: extend the claim every third of its TTL until it is settled or refused. A
-        transient failure is retried on the next beat, since one missed beat still leaves a third of the
-        lease; a terminal one would fail every beat, so it stops the renewal."""
+        transient failure is retried on the next beat: the kernel keeps ``op_timeout_ms`` under a third
+        of the TTL, so the next beat still lands before the lease lapses. A terminal failure would fail
+        every beat, so it stops the renewal."""
         while True:
             await self._sleep(self._claim_ttl_ms / _HEARTBEATS_PER_TTL / 1000)
             try:

@@ -133,7 +133,11 @@ async def test_golden_redis_fence(ledger: Ledger) -> None:
         ("ttl_past_the_largest_exact_integer", {"ttl_ms": 2**53}, "from 1 to 9007199254740991"),
         ("zero_deadline", {"op_timeout_ms": 0}, "a deadline must be positive"),
         ("float_deadline", {"op_timeout_ms": 1.5}, "op_timeout_ms must be a whole number"),
-        ("heartbeat_on_a_claim_ttl_too_short_to_divide", {"heartbeat": True, "claim_ttl_ms": 2}, "needs 3"),
+        (
+            "heartbeat_whose_deadline_is_a_third_of_the_claim_ttl",
+            {"heartbeat": True, "claim_ttl_ms": 15_000, "op_timeout_ms": 5_000},
+            "op_timeout_ms is under 1/3 of claim_ttl_ms",
+        ),
     ],
 )
 def test_a_misconfigured_store_is_refused_when_built(
@@ -727,7 +731,8 @@ class Beats:
 
 def heartbeat_store(ledger: Ledger, conn: Any | None = None) -> tuple[RedisIdempotencyStore, Beats]:
     beats = Beats()
-    return ledger.store(conn, heartbeat=True, sleep=beats.sleep), beats
+    # The kernel refuses a heartbeat whose deadline is a third of the claim TTL or more.
+    return ledger.store(conn, heartbeat=True, op_timeout_ms=CLAIM_TTL_MS // 4, sleep=beats.sleep), beats
 
 
 async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> None:

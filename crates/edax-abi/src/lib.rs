@@ -2587,7 +2587,7 @@ mod tests {
     #[test]
     fn redis_refusals_cross_with_the_kernels_codes() {
         assert_eq!(redis_ledger_key("idem:", "k"), Ok(b"idem:k".to_vec()));
-        assert_eq!(redis_check_config("idem:", 1, 3, 1, true), Ok(()));
+        assert_eq!(redis_check_config("idem:", 1, 4, 1, true), Ok(()));
         assert_eq!(redis_heartbeats_per_ttl(), 3);
         assert_eq!(redis_forget_reads(), 3);
         for refused in [

@@ -87,14 +87,22 @@ fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
     Ok(())
 }
 
-/// How many times per claim TTL a heartbeat renews a held claim: every third of it, so one missed
-/// beat still leaves a third of the lease.
+/// How many times per claim TTL a heartbeat renews a held claim: it waits a third of the TTL between
+/// renewals. One renewal that stalls for the whole `op_timeout_ms` then leaves the next one only
+/// `claim_ttl_ms / 3 - op_timeout_ms` to land, so [`check_config`] refuses a deadline of a third of
+/// the TTL or more.
 pub const HEARTBEATS_PER_TTL: i64 = 3;
 
 /// Refuse the settings a ledger store is built with, as a `bad_handle` error naming the first one
 /// refused, so a misconfigured store fails when it is built rather than on every dispatch: an empty
 /// `prefix`, a `ttl_ms` or `claim_ttl_ms` Redis would refuse, an `op_timeout_ms` deadline that is not
-/// positive, or a `heartbeat` over a `claim_ttl_ms` too short to renew [`HEARTBEATS_PER_TTL`] times.
+/// positive, or a `heartbeat` whose `op_timeout_ms` is not under `claim_ttl_ms / HEARTBEATS_PER_TTL`.
+///
+/// The heartbeat bound: the last renewal that landed set the lease to `claim_ttl_ms`. The next one
+/// starts a third of it later and may stall for `op_timeout_ms` with no reply. The one after starts
+/// another third later, at `2 * claim_ttl_ms / 3 + op_timeout_ms`, and must land before the lease
+/// lapses at `claim_ttl_ms`. Otherwise one stalled renewal lets a second worker win the key while the
+/// first still runs its handler.
 pub fn check_config(prefix: &str, ttl_ms: i64, claim_ttl_ms: i64, op_timeout_ms: i64, heartbeat: bool) -> Result<(), Error> {
     check_prefix(prefix)?;
     check_ttl("ttl_ms", ttl_ms)?;
@@ -102,9 +110,10 @@ pub fn check_config(prefix: &str, ttl_ms: i64, claim_ttl_ms: i64, op_timeout_ms:
     if op_timeout_ms <= 0 {
         return Err(Error::bad_handle(format_args!("op_timeout_ms is {op_timeout_ms} ms; a deadline must be positive")));
     }
-    if heartbeat && claim_ttl_ms < HEARTBEATS_PER_TTL {
+    // Saturating: a deadline near `i64::MAX` is refused, never wrapped below the TTL.
+    if heartbeat && op_timeout_ms.saturating_mul(HEARTBEATS_PER_TTL) >= claim_ttl_ms {
         return Err(Error::bad_handle(format_args!(
-            "claim_ttl_ms is {claim_ttl_ms} ms; a heartbeat renews every 1/{HEARTBEATS_PER_TTL} of it, so it needs {HEARTBEATS_PER_TTL}"
+            "op_timeout_ms is {op_timeout_ms} ms and claim_ttl_ms is {claim_ttl_ms} ms; a heartbeat renews every 1/{HEARTBEATS_PER_TTL} of the claim TTL, so one renewal stalled for the whole deadline lets the claim lapse unless op_timeout_ms is under 1/{HEARTBEATS_PER_TTL} of claim_ttl_ms"
         )));
     }
     Ok(())
@@ -482,7 +491,8 @@ mod tests {
         };
         let bad = |message: &str| Some((edax_core::ErrorCode::BadHandle, message.to_owned()));
         assert_eq!(refused("x", 1, MAX_TTL_MS, 1, false), None);
-        assert_eq!(refused("x", 86_400_000, 3, 5_000, true), None, "a heartbeat over three milliseconds");
+        assert_eq!(refused("x", 86_400_000, 300_000, 5_000, true), None, "a heartbeat at the defaults");
+        assert_eq!(refused("x", 1, 4, 1, true), None, "a deadline just under a third of the claim TTL");
         assert_eq!(refused("", 1, 1, 1, false), bad("the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\""));
         for ttl in [0, -5, MAX_TTL_MS + 1, i64::MIN] {
             let want = format!("ttl_ms is {ttl} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}");
@@ -490,6 +500,12 @@ mod tests {
         }
         assert_eq!(refused("x", 1, 0, 1, false), bad(&format!("claim_ttl_ms is 0 ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}")));
         assert_eq!(refused("x", 1, 1, 0, false), bad("op_timeout_ms is 0 ms; a deadline must be positive"));
-        assert_eq!(refused("x", 1, 2, 1, true), bad("claim_ttl_ms is 2 ms; a heartbeat renews every 1/3 of it, so it needs 3"));
+        let stalled = |deadline: i64, claim_ttl: i64| {
+            bad(&format!("op_timeout_ms is {deadline} ms and claim_ttl_ms is {claim_ttl} ms; a heartbeat renews every 1/3 of the claim TTL, so one renewal stalled for the whole deadline lets the claim lapse unless op_timeout_ms is under 1/3 of claim_ttl_ms"))
+        };
+        assert_eq!(refused("x", 1, 15_000, 5_000, true), stalled(5_000, 15_000), "a deadline of exactly a third");
+        assert_eq!(refused("x", 1, 2, 1, true), stalled(1, 2), "a claim TTL too short to divide");
+        assert_eq!(refused("x", 1, MAX_TTL_MS, i64::MAX, true), stalled(i64::MAX, MAX_TTL_MS), "saturates");
+        assert_eq!(refused("x", 1, 15_000, 5_000, false), None, "no heartbeat, no bound");
     }
 }
