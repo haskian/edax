@@ -12,7 +12,10 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 
 use edax_core::lock;
-use edax_event::{EventEnvelope, Failure, Metadata, Namespace, Retries, SagaCommand, Verdict};
+use edax_event::{
+    check_extensions, originate, CommandMessage, EventDraft, EventMessage, Extensions, Failure, Lineage, Metadata, Retries,
+    Verdict,
+};
 
 use crate::command::{code_of, retry_with, HandlerError};
 use crate::pacing::Pacing;
@@ -183,17 +186,17 @@ where
 
 /// A row an [`Outbox`] holds: what [`Relay`] marks it published by.
 pub trait OutboxRow {
-    /// The row's unique id: the envelope id, or the saga command id.
+    /// The row's unique id: the message id.
     fn id(&self) -> &str;
 }
 
-impl OutboxRow for EventEnvelope {
+impl OutboxRow for EventMessage {
     fn id(&self) -> &str {
         &self.id
     }
 }
 
-impl OutboxRow for SagaCommand {
+impl OutboxRow for CommandMessage {
     fn id(&self) -> &str {
         &self.id
     }
@@ -201,7 +204,7 @@ impl OutboxRow for SagaCommand {
 
 /// The read side of a transactional outbox: committed rows not yet published, and the acknowledgement
 /// that prunes them. Generic over the row, so one store can hold the event outbox (`R` =
-/// [`EventEnvelope`]) and the saga command outbox (`R` = [`SagaCommand`]) side by side.
+/// [`EventMessage`]) and the saga command outbox (`R` = [`CommandMessage`]) side by side.
 pub trait Outbox<R> {
     /// Committed rows not yet published, oldest commit first, at most `limit`. Running more than one
     /// [`Relay`] over one store needs this call to lease or lock the rows it returns, or two relays
@@ -217,30 +220,29 @@ pub trait Outbox<R> {
 ///
 /// The boundary itself lives on [`Transactor`] (the supertrait): begin a unit of work, thread the
 /// `&mut Tx` through these writes, then commit so they land atomically. The outbox's read side is the
-/// [`Outbox`] supertrait. Envelope ids are unique store-wide: an append carrying an id the store
-/// already holds is refused, or marking one row published would prune the other unpublished.
-pub trait EventStore: Transactor + Outbox<EventEnvelope> {
+/// [`Outbox`] supertrait. Event ids are unique store-wide: an append carrying an id the store already
+/// holds is refused, or marking one row published would prune the other unpublished.
+pub trait EventStore: Transactor + Outbox<EventMessage> {
     /// Events for the aggregate with `sequence > after`, in order (`after` skips a snapshot).
-    fn load(&self, tx: &mut Self::Tx, aggregate_id: &str, after: u64) -> Result<Vec<EventEnvelope>, Error>;
+    fn load(&self, tx: &mut Self::Tx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error>;
 
     fn load_snapshot(&self, tx: &mut Self::Tx, aggregate_id: &str) -> Result<Option<Snapshot>, Error>;
     fn save_snapshot(&self, tx: &mut Self::Tx, snapshot: &Snapshot) -> Result<(), Error>;
 
-    /// Append `events` and enqueue the same envelopes to the outbox, atomically. Return a
-    /// [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error if the stored version differs
-    /// from `expected_version`, and a `codec` error for a batch that is not dense or carries an
-    /// envelope id the store already holds.
+    /// Append `drafts` and enqueue the same events to the outbox, atomically. Return the stored
+    /// events: each draft recorded with the time the store gives it, from its own clock (a database's
+    /// `now()`, say), in unix nanoseconds. Under an open `tx` they are not committed yet.
+    ///
+    /// Return a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error if the stored version
+    /// differs from `expected_version`, and a `codec` error for a batch that is not dense or carries an
+    /// event id the store already holds.
     fn append(
         &self,
         tx: &mut Self::Tx,
         aggregate_id: &str,
         expected_version: u64,
-        events: &[EventEnvelope],
-    ) -> Result<(), Error>;
-}
-
-fn default_now() -> i64 {
-    edax_core::current_timestamp()
+        drafts: Vec<EventDraft>,
+    ) -> Result<Vec<EventMessage>, Error>;
 }
 
 /// Loads aggregates (snapshot then replay the rest) and saves them (append the pending events and, at
@@ -251,7 +253,6 @@ pub struct Repository<S, EC, AC> {
     events: EC,
     aggregates: AC,
     new_id: Box<dyn Fn() -> String + Send + Sync>,
-    now: Box<dyn Fn() -> i64 + Send + Sync>,
     snapshot_every: u64,
 }
 
@@ -262,7 +263,7 @@ where
     EC: EventCodec<Domain = <AC::Aggregate as Aggregate>::Event>,
 {
     pub fn new(store: S, events: EC, aggregates: AC) -> Self {
-        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), now: Box::new(default_now), snapshot_every: 1 }
+        Self { store, events, aggregates, new_id: Box::new(edax_core::guid), snapshot_every: 1 }
     }
 
     /// How often a save writes a snapshot: each time the aggregate's version crosses a multiple of
@@ -274,15 +275,12 @@ where
         self
     }
 
-    /// Override id and clock — useful for deterministic tests. Closures, so a caller can capture a
-    /// seeded counter instead of reaching for a global.
-    pub fn with_clock(
-        mut self,
-        new_id: impl Fn() -> String + Send + Sync + 'static,
-        now: impl Fn() -> i64 + Send + Sync + 'static,
-    ) -> Self {
+    /// Override the id source, for deterministic tests. Each id names one event, or roots the flow of
+    /// a plain [`save`](Self::save). A closure, so a caller can capture a seeded counter instead of
+    /// reaching for a global. The time an event is recorded at is the store's: see
+    /// [`EventStore::append`].
+    pub fn with_ids(mut self, new_id: impl Fn() -> String + Send + Sync + 'static) -> Self {
         self.new_id = Box::new(new_id);
-        self.now = Box::new(now);
         self
     }
 
@@ -299,40 +297,48 @@ where
     }
 
     /// Persist the aggregate's pending events in a unit of work of its own; return the committed
-    /// envelopes (publish eagerly, or leave them to the [`Relay`]). On a clean commit the aggregate
-    /// is reset to its new version; on error it is left untouched, so a retry (worth it for a
-    /// `store` error, not for a terminal `codec` error) re-sends the same pending events.
-    /// Inside a transaction the caller already opened, use [`Repository::save_in`].
-    pub fn save(&self, agg: &mut AC::Aggregate) -> Result<Vec<EventEnvelope>, Error> {
-        self.save_with(agg, Namespace::new(), Metadata::new())
+    /// events (publish them eagerly, or leave them to the [`Relay`]). The batch starts a new flow: one
+    /// fresh [`Lineage`] every event shares. To continue a flow, pass its lineage to
+    /// [`Repository::save_with`]. On a clean commit the aggregate is reset to its new version; on error it
+    /// is left untouched, so a retry (worth it for a `store` error, not for a terminal `codec` error)
+    /// re-sends the same pending events. Inside a transaction the caller already opened, use
+    /// [`Repository::save_in`].
+    pub fn save(&self, agg: &mut AC::Aggregate) -> Result<Vec<EventMessage>, Error> {
+        self.save_with(agg, self.root_lineage(), Extensions::new(), Metadata::new())
     }
 
     /// [`Repository::save`] inside the caller's transaction, so the events, the snapshot and the
     /// outbox rows commit or roll back with whatever else the caller writes under `tx` — a
     /// projection row, an idempotency claim. The aggregate is reset as soon as the store accepts the
     /// writes, before the caller commits: after a rollback it no longer holds the events, so reload
-    /// it rather than save it again.
-    pub fn save_in(&self, tx: &mut S::Tx, agg: &mut AC::Aggregate) -> Result<Vec<EventEnvelope>, Error> {
-        self.save_with_in(tx, agg, Namespace::new(), Metadata::new())
+    /// it rather than save it again. The returned events are not committed until the caller commits.
+    pub fn save_in(&self, tx: &mut S::Tx, agg: &mut AC::Aggregate) -> Result<Vec<EventMessage>, Error> {
+        self.save_with_in(tx, agg, self.root_lineage(), Extensions::new(), Metadata::new())
     }
 
-    /// Like [`Repository::save`], but stamps `namespace` and `metadata` onto every committed envelope, such as
-    /// a trace id from the request context, so it lands on the outbox and stitches command to event to
-    /// consumer. Keep per-delivery and per-request ids here, not in the command payload, so they never change
-    /// an idempotency hash.
+    /// Like [`Repository::save`], with the context every event of the batch carries. `lineage` places the
+    /// events in their flow: [`propagate`](crate::propagate) from the message that caused them, or
+    /// [`originate`] from the ids an inbound request holds. `extensions` carry edax extension context,
+    /// such as a trace parent, under the kernel's key rule; `metadata` is the application's own. Keep
+    /// per-delivery and per-request ids here, not in the command payload, so they never change an
+    /// idempotency hash.
+    ///
+    /// # Errors
+    /// A `codec` error for an extension key outside the rule, before anything is written: the relay
+    /// could never encode the event.
     pub fn save_with(
         &self,
         agg: &mut AC::Aggregate,
-        namespace: Namespace,
+        lineage: Lineage,
+        extensions: Extensions,
         metadata: Metadata,
-    ) -> Result<Vec<EventEnvelope>, Error> {
+    ) -> Result<Vec<EventMessage>, Error> {
         // Stage inside the transaction, reset outside it. This method owns the commit, so it waits for the
         // commit to land before clearing the aggregate: a failed commit leaves the pending events in place and
         // the caller can save again. `save_with_in` cannot, because its caller commits after it returns.
-        let (envelopes, current) =
-            self.store.transaction(|tx| self.stage(tx, agg, namespace, metadata))?;
+        let (events, current) = self.store.transaction(|tx| self.stage(tx, agg, &lineage, &extensions, &metadata))?;
         Self::reset(agg, current);
-        Ok(envelopes)
+        Ok(events)
     }
 
     /// [`Repository::save_with`] inside the caller's transaction; see [`Repository::save_in`].
@@ -340,12 +346,18 @@ where
         &self,
         tx: &mut S::Tx,
         agg: &mut AC::Aggregate,
-        namespace: Namespace,
+        lineage: Lineage,
+        extensions: Extensions,
         metadata: Metadata,
-    ) -> Result<Vec<EventEnvelope>, Error> {
-        let (envelopes, current) = self.stage(tx, agg, namespace, metadata)?;
+    ) -> Result<Vec<EventMessage>, Error> {
+        let (events, current) = self.stage(tx, agg, &lineage, &extensions, &metadata)?;
         Self::reset(agg, current);
-        Ok(envelopes)
+        Ok(events)
+    }
+
+    /// The lineage of a batch no message caused: a new flow, minted from this repository's id source.
+    fn root_lineage(&self) -> Lineage {
+        originate(None, None, &(self.new_id)())
     }
 
     /// Drop the events the store accepted and pin the aggregate to its new version.
@@ -355,16 +367,18 @@ where
         root.version = current;
     }
 
-    /// Marshal the pending events, append them and write the snapshot under `tx`. Returns the
-    /// envelopes and the aggregate's new version; resetting the aggregate is the caller's, because
-    /// only the caller knows whether the commit has landed yet.
+    /// Marshal the pending events, append them and write the snapshot under `tx`. Returns the stored
+    /// events and the aggregate's new version; resetting the aggregate is the caller's, because only
+    /// the caller knows whether the commit has landed yet.
     fn stage(
         &self,
         tx: &mut S::Tx,
         agg: &AC::Aggregate,
-        namespace: Namespace,
-        metadata: Metadata,
-    ) -> Result<(Vec<EventEnvelope>, u64), Error> {
+        lineage: &Lineage,
+        extensions: &Extensions,
+        metadata: &Metadata,
+    ) -> Result<(Vec<EventMessage>, u64), Error> {
+        check_extensions(extensions)?;
         let root = agg.root();
         let initial = root.version;
         let current = root.current();
@@ -372,19 +386,24 @@ where
 
         // Marshal the whole batch before the first write: a payload that cannot be written fails the
         // save outright, so a half-marshaled batch can never reach the store.
-        let envelopes: Vec<EventEnvelope> = root
+        let drafts: Vec<EventDraft> = root
             .pending()
             .iter()
             .enumerate()
             .map(|(i, event)| {
-                Ok(EventEnvelope {
+                let payload = self.events.marshal(event)?;
+                Ok(EventDraft {
                     id: (self.new_id)(),
                     aggregate_id: aggregate_id.clone(),
-                    event: self.events.marshal(event)?,
                     sequence: Some(initial.saturating_add(1).saturating_add(u64::try_from(i).unwrap_or(u64::MAX))),
-                    namespace: namespace.clone(),
+                    name: payload.name,
+                    version: payload.version,
+                    data: payload.data,
+                    correlation_id: lineage.correlation_id.clone(),
+                    causation_id: lineage.causation_id.clone(),
+                    occurred_at: None,
+                    extensions: extensions.clone(),
                     metadata: metadata.clone(),
-                    timestamp: (self.now)(),
                 })
             })
             .collect::<Result<_, Error>>()?;
@@ -398,11 +417,11 @@ where
             None
         };
 
-        self.store.append(tx, &aggregate_id, initial, &envelopes)?;
+        let events = self.store.append(tx, &aggregate_id, initial, drafts)?;
         if let Some(snapshot) = snapshot {
             self.store.save_snapshot(tx, &snapshot)?;
         }
-        Ok((envelopes, current))
+        Ok((events, current))
     }
 
     /// Rebuild from the snapshot and the events after it. A snapshot is a cache of the event log, so
@@ -423,12 +442,13 @@ where
         let events = self.store.load(tx, id, base)?;
         let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
         edax_event::check_batch(base, &sequences)?;
-        for env in &events {
-            // Replay drives state directly — not apply(), which would re-queue these as pending.
-            agg.transition(&self.events.unmarshal(&env.event)?);
-        }
         // Dense from `base`, so the last sequence is the count past it.
-        agg.root_mut().version = base.saturating_add(u64::try_from(events.len()).unwrap_or(u64::MAX));
+        let count = u64::try_from(events.len()).unwrap_or(u64::MAX);
+        for env in events {
+            // Replay drives state directly — not apply(), which would re-queue these as pending.
+            agg.transition(&self.events.unmarshal(&env.into_payload())?);
+        }
+        agg.root_mut().version = base.saturating_add(count);
         Ok(agg)
     }
 }
@@ -438,7 +458,7 @@ where
 pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError> + Send + Sync>;
 
 /// Drains an [`Outbox`] to a publisher: the transactional-outbox publisher, for the event outbox
-/// (`R` = [`EventEnvelope`], the default) and the saga command outbox (`R` = [`SagaCommand`]) alike.
+/// (`R` = [`EventMessage`], the default) and the saga command outbox (`R` = [`CommandMessage`]) alike.
 ///
 /// `publish` must return only once the transport has durably accepted the row. Anything that merely
 /// hands it on, such as an in-process queue or a dispatcher's `submit`, makes the outbox
@@ -458,7 +478,7 @@ pub type RelaySink<R> = Box<dyn Fn(&R, &HandlerError) -> Result<(), HandlerError
 ///
 /// Overlapping drains of one relay take turns, so a timer and a "drain now" never publish one batch
 /// twice. Two relays over one store need [`Outbox::unpublished`] to lease the rows it returns.
-pub struct Relay<S, R = EventEnvelope> {
+pub struct Relay<S, R = EventMessage> {
     store: S,
     /// Taken for a whole drain, so drains take turns.
     draining: Mutex<Draining>,
@@ -599,6 +619,7 @@ mod tests {
     use super::*;
     use crate::{JsonCodec, MemoryEventStore, MemoryTx, Root};
     use crate::ErrorCode;
+    use crate::testkit::{draft, RECORDED_AT};
     use edax_event::Event;
     use serde::{Deserialize, Serialize};
     use std::cell::RefCell;
@@ -678,20 +699,12 @@ mod tests {
     }
 
     fn repo(store: MemoryEventStore) -> Repository<MemoryEventStore, AccountEvents, AccountCodec> {
-        Repository::new(store, AccountEvents, AccountCodec).with_clock(next_id, || 0)
+        Repository::new(store, AccountEvents, AccountCodec).with_ids(next_id)
     }
 
-    /// A `Deposited` envelope as another writer would append it behind the repository's back.
-    fn deposited(aggregate_id: &str, sequence: u64, data: &[u8]) -> EventEnvelope {
-        EventEnvelope {
-            id: format!("{aggregate_id}-{sequence}"),
-            aggregate_id: aggregate_id.into(),
-            event: Event { name: "Deposited".into(), version: 1, data: data.to_vec() },
-            sequence: Some(sequence),
-            namespace: Namespace::new(),
-            metadata: Metadata::new(),
-            timestamp: 0,
-        }
+    /// A `Deposited` draft as another writer would append it behind the repository's back.
+    fn deposited(aggregate_id: &str, sequence: u64, data: &[u8]) -> EventDraft {
+        draft(aggregate_id, "Deposited", sequence, data)
     }
 
     #[test]
@@ -704,6 +717,58 @@ mod tests {
         assert_eq!(envs.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![Some(1), Some(2)]);
         assert!(a.root().pending().is_empty());
         assert_eq!((a.root().version, a.root().pending().len()), (2, 0));
+    }
+
+    #[test]
+    fn save_stamps_one_lineage_and_context_on_every_event() {
+        // A plain save roots a new flow: every event of the batch shares one lineage, and the store records
+        // them at its own clock. A refused context writes nothing. `save_with` carrying the lineage and
+        // context it is handed is the model test's (`tests/model.rs`, `repository_matches_fold`).
+        struct Case {
+            name: &'static str,
+            /// `None` saves plainly; `Some` passes this lineage and context to `save_with`.
+            context: Option<(Lineage, Extensions, Metadata)>,
+            want_err: Option<ErrorCode>,
+        }
+        let cases = [
+            Case { name: "a plain save roots a new flow", context: None, want_err: None },
+            Case {
+                name: "an extension key outside the rule is refused before any write",
+                context: Some((
+                    crate::propagate("cmd-9", "corr-9"),
+                    Extensions::from([("Traceparent".to_owned(), "x".to_owned())]),
+                    Metadata::from([("tenant".to_owned(), "acme".to_owned())]),
+                )),
+                want_err: Some(ErrorCode::Codec),
+            },
+        ];
+        for c in cases {
+            let store = MemoryEventStore::new().with_clock(|| RECORDED_AT);
+            let r = repo(store.clone());
+            let mut a = Account::open("acct-l");
+            a.apply(AccountEvent::Deposited(10));
+            a.apply(AccountEvent::Deposited(5));
+            let got = match c.context {
+                None => r.save(&mut a),
+                Some((lineage, extensions, metadata)) => r.save_with(&mut a, lineage, extensions, metadata),
+            };
+            if let Some(want) = c.want_err {
+                assert_eq!(got.err().map(|e| e.code), Some(want), "{}", c.name);
+                assert!(store.load(&mut MemoryTx::auto_commit(), "acct-l", 0).unwrap().is_empty(), "{}: nothing appended", c.name);
+                assert_eq!(a.root().pending().len(), 2, "{}: the aggregate keeps its events", c.name);
+                continue;
+            }
+            let events = got.unwrap_or_else(|e| panic!("{}: {e}", c.name));
+            assert_eq!(events, store.load(&mut MemoryTx::auto_commit(), "acct-l", 0).unwrap(), "{}: returned what was stored", c.name);
+            let first = &events[0];
+            assert_eq!(first.causation_id, first.correlation_id, "{}: a root causes itself", c.name);
+            assert!(events.iter().all(|e| e.id != first.correlation_id), "{}: the fresh id is no event's id", c.name);
+            for e in &events {
+                assert_eq!((&e.correlation_id, &e.causation_id), (&first.correlation_id, &first.causation_id), "{}: one lineage", c.name);
+                assert_eq!((e.recorded_at, e.occurred_at), (RECORDED_AT, None), "{}: the store's time", c.name);
+                assert!(e.extensions.is_empty() && e.metadata.is_empty(), "{}: no context", c.name);
+            }
+        }
     }
 
     #[test]
@@ -740,7 +805,7 @@ mod tests {
     fn load_pure_replay_no_snapshot() {
         let store = MemoryEventStore::new();
         // Seed events through the public append (no snapshot) so load() must pure-replay.
-        store.append(&mut MemoryTx::auto_commit(), "acct-3", 0, &[deposited("acct-3", 1, b"7"), deposited("acct-3", 2, b"3")]).unwrap();
+        store.append(&mut MemoryTx::auto_commit(), "acct-3", 0, vec![deposited("acct-3", 1, b"7"), deposited("acct-3", 2, b"3")]).unwrap();
         let a = repo(store).load("acct-3").unwrap();
         assert_eq!(a.balance, 10);
         assert_eq!(a.root().version, 2);
@@ -782,7 +847,7 @@ mod tests {
         a.apply(AccountEvent::Deposited(10));
         r.save(&mut a).unwrap(); // snapshot at v1, balance 10
 
-        store.append(&mut MemoryTx::auto_commit(), "acct-7", 1, &[deposited("acct-7", 2, b"5"), deposited("acct-7", 3, b"7")]).unwrap();
+        store.append(&mut MemoryTx::auto_commit(), "acct-7", 1, vec![deposited("acct-7", 2, b"5"), deposited("acct-7", 3, b"7")]).unwrap();
 
         let b = r.load("acct-7").unwrap();
         assert_eq!(b.balance, 22);
@@ -792,7 +857,7 @@ mod tests {
     #[test]
     fn load_surfaces_a_codec_error_from_replay() {
         let store = MemoryEventStore::new();
-        store.append(&mut MemoryTx::auto_commit(), "acct-8", 0, &[deposited("acct-8", 1, b"not a number")]).unwrap();
+        store.append(&mut MemoryTx::auto_commit(), "acct-8", 0, vec![deposited("acct-8", 1, b"not a number")]).unwrap();
         let got = repo(store).load("acct-8");
         assert!(matches!(got, Err(Error { code: ErrorCode::Codec, .. })), "got {:?}", got.err());
     }
@@ -1008,7 +1073,7 @@ mod tests {
             let id = format!("ledger-{i}");
             let store = MemoryEventStore::new();
             let repo = Repository::new(store.clone(), JsonCodec::<Posted>::new("Posted", 1), LedgerCodec)
-                .with_clock(next_id, || 0);
+                .with_ids(next_id);
             let mut ledger = Ledger {
                 root: Root::new(&id, 0),
                 balances: posted("opening", c.opening).entries,
@@ -1022,8 +1087,8 @@ mod tests {
             let snapshot = store.load_snapshot(&mut MemoryTx::auto_commit(), &id).unwrap();
             match c.want {
                 Ok(sequences) => {
-                    let envelopes = got.unwrap_or_else(|e| panic!("{}: want Ok, got {e:?}", c.name));
-                    let committed: Vec<u64> = envelopes.iter().filter_map(|e| e.sequence).collect();
+                    let events = got.unwrap_or_else(|e| panic!("{}: want Ok, got {e:?}", c.name));
+                    let committed: Vec<u64> = events.iter().filter_map(|e| e.sequence).collect();
                     assert_eq!(committed, sequences, "{}", c.name);
                     assert_eq!(appended.len(), sequences.len(), "{}", c.name);
                     assert_eq!(store.unpublished(10).unwrap().len(), sequences.len(), "{}", c.name);
@@ -1049,26 +1114,18 @@ mod tests {
         // Without the drop guard the token stays in the adapter's open map, which holds the
         // stream's keys forever: every later append on it would fail with `Concurrency`.
         let store = MemoryEventStore::new();
-        let deposit = |seq: u64| EventEnvelope {
-            id: format!("panic-{seq}"),
-            aggregate_id: "acct-panic".to_string(),
-            event: Event { name: "Deposited".into(), version: 1, data: b"1".to_vec() },
-            sequence: Some(seq),
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 0,
-        };
+        let deposit = |seq: u64| EventDraft { id: format!("panic-{seq}"), ..deposited("acct-panic", seq, b"1") };
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _: Result<(), Error> = store.transaction(|tx| {
-                store.append(tx, "acct-panic", 0, &[deposit(1)])?;
+                store.append(tx, "acct-panic", 0, vec![deposit(1)])?;
                 panic!("the handler blew up mid-transaction");
             });
         }));
         assert!(unwound.is_err(), "the panic keeps unwinding past transaction");
 
         // Rolled back, so the stream is still at version 0 and the same append lands.
-        let second = store.append(&mut MemoryTx::auto_commit(), "acct-panic", 0, &[deposit(1)]);
+        let second = store.append(&mut MemoryTx::auto_commit(), "acct-panic", 0, vec![deposit(1)]);
         assert!(second.is_ok(), "append after the panic: {:?}", second.err());
         let stored = store.load(&mut MemoryTx::auto_commit(), "acct-panic", 0).unwrap();
         assert_eq!(stored.len(), 1, "only the second append is stored");
@@ -1119,8 +1176,8 @@ mod tests {
         }
     }
 
-    impl Outbox<EventEnvelope> for Hooked {
-        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+    impl Outbox<EventMessage> for Hooked {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventMessage>, Error> {
             if let Some(reads) = &self.reads {
                 let _ = reads.lock().expect("no panics").send(());
             }
@@ -1137,8 +1194,8 @@ mod tests {
     /// A store holding `n` committed events of one account, all waiting in the outbox.
     fn outbox_of(n: u64) -> MemoryEventStore {
         let store = MemoryEventStore::new();
-        let events: Vec<EventEnvelope> = (1..=n).map(|seq| deposited("acct-r", seq, b"1")).collect();
-        store.append(&mut MemoryTx::auto_commit(), "acct-r", 0, &events).unwrap();
+        let drafts: Vec<EventDraft> = (1..=n).map(|seq| deposited("acct-r", seq, b"1")).collect();
+        store.append(&mut MemoryTx::auto_commit(), "acct-r", 0, drafts).unwrap();
         store
     }
 
@@ -1261,7 +1318,7 @@ mod tests {
             let mode = c.sink;
             let mut relay = Relay::new(store.clone()).pacing(pacing).max_attempts(c.max_attempts);
             if !matches!(mode, Sink::None) {
-                relay = relay.on_dead(move |row: &EventEnvelope, _| {
+                relay = relay.on_dead(move |row: &EventMessage, _| {
                     sink.lock().expect("no panics").push(row.id.clone());
                     match mode {
                         Sink::Fails => Err("dead-letter table unavailable".into()),
@@ -1303,8 +1360,8 @@ mod tests {
         marks: Mutex<std::collections::VecDeque<bool>>,
     }
 
-    impl Outbox<EventEnvelope> for Scripted {
-        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+    impl Outbox<EventMessage> for Scripted {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventMessage>, Error> {
             if !self.reads.lock().expect("no panics").pop_front().unwrap_or(true) {
                 return Err(Error::store("database down"));
             }
@@ -1411,7 +1468,7 @@ mod tests {
     #[test]
     fn a_crash_after_the_publish_republishes_and_the_consumer_deduplicates() {
         // Lost acknowledgement: the rows went out but `mark_published` never landed. The next drain
-        // publishes them again (at-least-once); a consumer that deduplicates by envelope id applies
+        // publishes them again (at-least-once); a consumer that deduplicates by event id applies
         // each once.
         let hooked = Hooked::new(outbox_of(2));
         hooked.fail_mark.store(true, Ordering::SeqCst);
@@ -1441,7 +1498,7 @@ mod tests {
     struct Lying {
         inner: MemoryEventStore,
         /// Answered verbatim instead of the stored stream, when set.
-        load: Option<Vec<EventEnvelope>>,
+        load: Option<Vec<EventMessage>>,
     }
 
     impl Transactor for Lying {
@@ -1457,8 +1514,8 @@ mod tests {
         }
     }
 
-    impl Outbox<EventEnvelope> for Lying {
-        fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+    impl Outbox<EventMessage> for Lying {
+        fn unpublished(&self, limit: usize) -> Result<Vec<EventMessage>, Error> {
             self.inner.unpublished(limit)
         }
         fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
@@ -1467,7 +1524,7 @@ mod tests {
     }
 
     impl EventStore for Lying {
-        fn load(&self, tx: &mut MemoryTx, id: &str, after: u64) -> Result<Vec<EventEnvelope>, Error> {
+        fn load(&self, tx: &mut MemoryTx, id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
             match &self.load {
                 Some(answer) => Ok(answer.clone()),
                 None => self.inner.load(tx, id, after),
@@ -1479,8 +1536,8 @@ mod tests {
         fn save_snapshot(&self, tx: &mut MemoryTx, snapshot: &Snapshot) -> Result<(), Error> {
             self.inner.save_snapshot(tx, snapshot)
         }
-        fn append(&self, tx: &mut MemoryTx, id: &str, expected: u64, events: &[EventEnvelope]) -> Result<(), Error> {
-            self.inner.append(tx, id, expected, events)
+        fn append(&self, tx: &mut MemoryTx, id: &str, expected: u64, drafts: Vec<EventDraft>) -> Result<Vec<EventMessage>, Error> {
+            self.inner.append(tx, id, expected, drafts)
         }
     }
 
@@ -1513,38 +1570,39 @@ mod tests {
                 name: "a store that returns a gap fails the load",
                 snapshot: None,
                 load: Some(&[(1, b"1"), (3, b"1")]),
-                want: Err("codec: envelope 1 has sequence 3, expected 2"),
+                want: Err("codec: event 1 has sequence 3, expected 2"),
             },
             Case {
                 name: "a store that repeats an event fails the load",
                 snapshot: None,
                 load: Some(&[(1, b"1"), (1, b"1")]),
-                want: Err("codec: envelope 1 has sequence 1, expected 2"),
+                want: Err("codec: event 1 has sequence 1, expected 2"),
             },
             Case {
                 name: "an unsequenced event fails the load",
                 snapshot: None,
                 load: Some(&[(0, b"1")]),
-                want: Err("codec: envelope 0 has no sequence"),
+                want: Err("codec: event 0 has no sequence"),
             },
         ];
         for c in cases {
             let load = c.load.map(|rows| {
                 rows.iter()
-                    .map(|&(seq, data)| EventEnvelope { sequence: (seq > 0).then_some(seq), ..deposited("acct-s", seq, data) })
+                    .map(|&(seq, data)| EventMessage { sequence: (seq > 0).then_some(seq), ..deposited("acct-s", seq, data).record(RECORDED_AT) })
                     .collect()
             });
             let store = Lying { inner: MemoryEventStore::new(), load };
-            let stream: Vec<EventEnvelope> = (1..=3).map(|seq| deposited("acct-s", seq, b"1")).collect();
-            store.append(&mut MemoryTx::auto_commit(), "acct-s", 0, &stream).unwrap();
+            let stream: Vec<EventDraft> = (1..=3).map(|seq| deposited("acct-s", seq, b"1")).collect();
+            let ids: Vec<String> = stream.iter().map(|e| e.id.clone()).collect();
+            store.append(&mut MemoryTx::auto_commit(), "acct-s", 0, stream).unwrap();
             if let Some((type_name, version, data)) = c.snapshot {
                 let snapshot = Snapshot { aggregate_id: "acct-s".into(), type_name: type_name.into(), version, data: data.to_vec() };
                 store.save_snapshot(&mut MemoryTx::auto_commit(), &snapshot).unwrap();
             }
             // The outbox is untouched by a load: the three appended rows still wait, and marking clears them.
             assert_eq!(Outbox::unpublished(&store, 10).unwrap().len(), 3, "{}", c.name);
-            store.mark_published(&stream.iter().map(|e| e.id.clone()).collect::<Vec<_>>()).unwrap();
-            let repo = Repository::new(store, AccountEvents, AccountCodec).with_clock(next_id, || 0);
+            store.mark_published(&ids).unwrap();
+            let repo = Repository::new(store, AccountEvents, AccountCodec).with_ids(next_id);
             let got = repo.load("acct-s").map(|a| (a.balance, a.root().version)).map_err(|e| e.to_string());
             assert_eq!(got, c.want.map_err(str::to_owned), "{}", c.name);
         }

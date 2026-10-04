@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from edax import Aggregate, Backoff, EventEnvelope, Pacing, Relay, Repository, json_codec
+from edax import Aggregate, Backoff, EventMessage, Pacing, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore
 
 
@@ -44,7 +44,7 @@ class AccountCodec:
         return str(account.balance).encode()
 
 
-def broker_down(envelope: EventEnvelope) -> None:
+def broker_down(event: EventMessage) -> None:
     raise ConnectionError("broker unreachable")
 
 
@@ -69,8 +69,8 @@ async def main() -> None:
     # 3. The broker is back: the drain publishes both rows, oldest first.
     published: list[str] = []
 
-    def publish(envelope: EventEnvelope) -> None:
-        published.append(f"{envelope.event.name} #{envelope.sequence}")
+    def publish(event: EventMessage) -> None:
+        published.append(f"{event.name} #{event.sequence}")
 
     relay = Relay(store, publish)
     sent = await relay.drain()

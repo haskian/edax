@@ -22,7 +22,7 @@ from edax.backend.memory import (
 from edax.backend.redis import CLAIM_SCRIPT, RELEASE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
 from edax.command import Record, Won
 from edax.projection import Entity
-from edax.testing.contracts import envelope
+from edax.testing.contracts import draft
 from edax.testing.faults import COMMIT, BrokenCommit, CommitFault, LostReply, LostResponse, Refusing
 
 # =========================================================================
@@ -52,7 +52,7 @@ class LostCase:
 async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) -> None:
     store = LostResponse(MemoryEventStore())
     store.arm(case.arm)
-    env = envelope("acct-1", 1)
+    env = draft("acct-1", 1)
     raised: BaseException | None = None
     try:
         if case.arm == COMMIT:
@@ -69,7 +69,7 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
     if case.lost:
         assert store.armed is None, "one shot"
         async with store.transaction() as tx:  # the retry meets a healthy store
-            await store.append(tx, "acct-1", 1, [envelope("acct-1", 2)])
+            await store.append(tx, "acct-1", 1, [draft("acct-1", 2)])
     else:
         assert store.armed == case.arm, "an unfired fault stays armed"
 
@@ -155,7 +155,7 @@ async def test_a_broken_commit_fails_the_way_it_is_armed(
     events = MemoryEventStore(db)
     unit = BrokenCommit(db, arm)
     assert unit.transactor is db, "stores over the database find the units of work it opens"
-    env = envelope("acct-1", 1)
+    env = draft("acct-1", 1)
     raised: BaseException | None = None
     try:
         async with edax.transaction(unit):

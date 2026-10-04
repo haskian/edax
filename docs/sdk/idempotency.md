@@ -9,10 +9,10 @@ covers both cases.
 
 | Guard (Rust) | Path | Keys on | Hashes | Python equivalent |
 |---|---|---|---|---|
-| `idempotent(store, key)` | command | `key(&cmd)`, host-chosen; `None` bypasses | the whole command value, canonicalized | `edax.command.idempotent(store, key)` |
-| `idempotent_in(store, key, current)` | command | same, plus a `Fn(&C) -> Tx` handle provider | same | `edax.command.idempotent(store, key, unit_of_work=)` |
-| `idempotent_by_id(store)` | consume | `env.id` | the raw `env.event.data` bytes | `edax.router.idempotent_by_id(store)` |
-| `idempotent_by_id_in(store, current)` | consume | same, plus a `Fn(&EventEnvelope) -> Tx` handle provider | same | `edax.router.idempotent_by_id(store, unit_of_work=)` |
+| `idempotent(store, scope, key)` | command | `claim_key(scope, key(&cmd))`; `None` bypasses | the name and the whole command value, canonicalized | `edax.command.idempotent(store, scope=...)`, keyed by the message's `idempotency_key` |
+| `idempotent_in(store, scope, key, current)` | command | same, plus a `Fn(&C) -> Tx` handle provider | same | `edax.command.idempotent(store, scope=..., unit_of_work=)` |
+| `idempotent_by_id(store)` | consume | `msg.id`, raw | the raw `msg.data` bytes | `edax.router.idempotent_by_id(store)` |
+| `idempotent_by_id_in(store, current)` | consume | same, plus a `Fn(&EventMessage) -> Tx` handle provider | same | `edax.router.idempotent_by_id(store, unit_of_work=)` |
 
 The Rust guards live in `edax::command` and `edax::router`. The Python guards live in `edax.command`
 and `edax.router`.
@@ -23,15 +23,19 @@ Both paths share one orchestration. Python routes both through `_guarded`; Rust 
 `guarded`. The guards differ only in how the key and the hash are derived and in what the caller
 does with the result.
 
-**Command path.** The key is whatever the host's key function returns. The hash covers the whole
-command value. That is every instance field, including the one the key was read from. The kernel
-serializes, canonicalizes and hashes it in `edax_cqrs::command_hash`. Routing metadata is not a
-field. A Python command declares `type: ClassVar[str]`. A Rust command implements `command_type()`.
-The type name stays out of the hash on both sides. Reusing a key with a different command value is a
+**Command path.** The key is the client's intent. In Python it is the `idempotency_key` of the
+command message: given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
+own `id` when it carries none. A Rust host still reads it with a key closure. `None` makes no claim,
+and the handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes
+on one ledger never replay each other's outcome. The hash covers the command name and the whole
+command value, every instance field. The kernel serializes, canonicalizes and hashes it in
+`edax_cqrs::command_hash`. A Python command declares its name as `type: ClassVar[str]`. A Rust
+command implements `command_type()`. Reusing a key with another command, or another name, is a
 `PayloadMismatch`.
 
-**Consume path.** The key is `env.id`. The hash is the kernel's `payload_hash`, Fowler-Noll-Vo 1a
-(FNV-1a) 64, over the raw `env.event.data` bytes. Those bytes are host-serialized, so they are not
+**Consume path.** The key is `msg.id`, the raw event id, with no scope. The hash is the kernel's
+`payload_hash`, Fowler-Noll-Vo 1a (FNV-1a) 64, over the raw `msg.data` bytes. Extensions, metadata
+and time take no part. Those bytes are host-serialized, so they are not
 canonicalized as JSON. Two events sharing an `id` with different bodies raise `PayloadMismatch`: an
 integrity error, not a duplicate.
 
@@ -158,8 +162,8 @@ stateDiagram-v2
     pending --> done: complete with a result
     pending --> failed: complete with a terminal error
     pending --> absent: release - transient failure, cancellation, or a failed complete
-    done --> absent: dedup window ends - record expires
-    failed --> absent: dedup window ends - record expires
+    done --> absent: dedup window ends, or forget
+    failed --> absent: dedup window ends, or forget
     note right of pending
         a loser reads pending as InProgress: transient
     end note
@@ -182,6 +186,12 @@ transaction as the handler's writes. A rollback erases `absent -> pending`. It a
 of `pending -> done` or `pending -> failed` was staged. The key returns to `absent` with no trace.
 That is why `failed` is unreachable there: `_guarded_in_one_commit` never writes it, and a record
 written anyway would roll back with the failure that produced it.
+
+**Forget.** `IdempotencyStore.forget(key)` deletes a settled record, so a re-driven message runs
+its handler again. `edax.command.forget(store, scope, key)` forgets what a command guard of that
+scope stored. Use it when an operator re-drives a dead-lettered message after fixing its cause. The
+kernel's [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records
+it deletes. See [commands](./commands.md#forget-re-driving-a-dead-lettered-command) for the call.
 
 **Expiry.** A record must outlive the longest window in which the same key can be redelivered:
 broker retry plus client retry. Expiry inside that window turns a replay into a re-run.
@@ -227,7 +237,7 @@ pinned by the `decode_error` rows of `idempotency_record.json`.
 The failure keeps the stored `payload_hash` when that one field still reads. Another command that
 reuses the key is then still told `PayloadMismatch`, not that its own command failed. When the hash
 itself does not read, the failure carries the claimant's hash, so the claimant gets the failure.
-Clear the key by hand to run the handler again.
+`forget` the key to run the handler again.
 
 **A loser must never release the winner's key.** Python's `_replay` raises and returns; it writes
 nothing. Rust's `guarded` does the same on the `Claim::Prior` arm. An over-eager compensation there
@@ -349,7 +359,7 @@ both. So `retry` refuses to run while any `transaction` is open, and goes outsid
 
 ```python
 # examples/py/05_idempotent_commands.py: retry outermost, the guard owns the unit of work.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), key=request_id_of, unit_of_work=db))
+bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
 ```
 
 **Store contract clauses for a claim taken inside a transaction**:

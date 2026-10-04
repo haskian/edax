@@ -66,9 +66,9 @@ Two pitfalls follow from plain concatenation:
 - A `{...}` hash tag in the prefix pins every ledger key to one Redis Cluster slot. That slot's
   shard then serves the whole ledger.
 
-Give each service and environment its own prefix. Namespacing the key by command type is a
-separate job and belongs to your key function; see
-[commands.md](../sdk/commands.md#the-key-namespace-is-yours).
+Give each service and environment its own prefix. Within one prefix, the command guard's `scope`
+keeps guards apart: it claims `claim_key(scope, key)`, never the raw key. See
+[commands.md](../sdk/commands.md#scope-names-the-guard).
 
 ## Two TTLs
 
@@ -164,7 +164,7 @@ claim it can never complete or release. One key, one TTL, one atomic write.
 Every write is one script, so the compare and the write are one atomic step. A `GET` followed by a
 `SET` from the client leaves the gap the fence exists to close.
 
-The four bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
+The five bodies are the kernel's, and `testdata/golden/redis_scripts.json` is the source of truth for
 them byte for byte. A client registers each source once and sends `EVALSHA` after, so an SDK that
 reformatted a script would cache a second digest for one fence.
 `testdata/golden/redis_fence.json` pins what each one does, row by row, and `test_redis.py` replays
@@ -175,6 +175,7 @@ those rows against fakeredis and against a live server.
 | claim | the claim value, the claim TTL | the claim, if the key is free | nil when it wrote, else the value the key holds |
 | complete | the handle, the settled value, the record TTL | the settled value, if the key holds the handle or already holds the settled value | `1` when it wrote, `0` otherwise |
 | release | the handle | deletes the key, if it holds the handle | `1` when it deleted, `0` otherwise |
+| forget | the value read | deletes the key, if it still holds that value | `1` when it deleted, `0` otherwise |
 | extend | the handle, the claim TTL | resets the TTL, if the key holds the handle | `1` when it renewed, `0` otherwise |
 
 Every script is idempotent, so a client that sends one again after a lost reply gets the answer the
@@ -203,6 +204,14 @@ first send would have had. Each touches one key, so each is safe on Redis Cluste
   deletes nothing. That is the guard's compensation after a lost `complete` reply: the record of
   committed work survives, and the redelivery replays it instead of re-running the handler.
 - A release after a takeover finds the new holder's claim and deletes nothing.
+
+#### `forget`
+
+- Deletes a settled record, so a re-driven message runs its handler again. An operator calls it
+  for a command taken back from a dead-letter queue.
+- The store reads the key with `RedisConn.get`, then runs the kernel's
+  [read, decide and delete loop](../kernels/redis.md#the-forget-outcome). A key that keeps changing
+  raises transient `StoreError` after a few rounds.
 
 #### Malformed handles
 
@@ -320,14 +329,16 @@ against a paused server.
 
 ## The `RedisConn` seam
 
-The store is written against a one-method Protocol, not against a client:
+The store is written against a two-method Protocol, not against a client:
 
 ```python
 class RedisConn(Protocol):
     async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[ScriptArg]) -> Any: ...
+    async def get(self, key: bytes) -> Any: ...
 ```
 
-`script` is one of the four kernel bodies, which the store passes as given. A connection sends it as
+`get` is a plain `GET` of one key, and only `forget` sends it. Every write is an `eval`. `script` is
+one of the five kernel bodies, which the store passes as given. A connection sends it as
 is, so every connection runs the kernel's bytes and none re-derives the fence. A connection may raise
 an `EdaxError` for a failure it can classify; the store types anything else as transient
 `StoreError`.

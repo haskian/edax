@@ -1,24 +1,33 @@
-//! The Kafka record a published envelope becomes, and the envelope a fetched record decodes back to.
+//! The Kafka record a published message becomes, and the message a fetched record decodes back to.
 //!
-//! Two layers. The primitives — [`record`] and [`content_type`] — own the key rule and the header
-//! set while the caller owns the value bytes, so a host serializer keeps the contract header. The
-//! composed pair — [`encode_record`] and [`decode_record`] — runs the kernel codec end to end, and
-//! is what the golden vectors pin.
+//! A message is one of two kinds, an event or a command, and one generic set of functions serves
+//! both. Two layers. The primitive, [`record`], owns the key rule and the header set while the caller
+//! owns the value bytes, so a host serializer keeps the contract header. The composed functions,
+//! [`encode_record`] / [`decode_record`], run the kernel codec end to end. The golden vectors pin them.
+//!
+//! The key is the message's ordering key unless the host overrides it: an event's aggregate id, a
+//! command's target aggregate or else its own id. One aggregate's messages then share one partition
+//! and keep their order.
 //!
 //! One header, [`CONTENT_TYPE`], because it is the one a consumer reads: [`route`] picks the
-//! serializer by it. No aggregate id (it is the key), no sequence, id or event name (they are in the
-//! value), no metadata copies (trace propagation is the host's own `traceparent`). Add a header only
-//! with a reader for it: every header costs bytes on every record, and a header nobody reads is a
-//! promise nobody keeps. The four `edax-dlq-*` headers ride only on a dead-letter record, and
-//! [`dead_letter_source`] is their reader.
+//! serializer by it, and its media type names both the format and the kind. No aggregate id (it is
+//! the key), no id, name or version (they are in the value), no extension or metadata copies (trace
+//! propagation rides in `extensions`). Add a header only with a reader for it: every header costs
+//! bytes on every record, and a header nobody reads is a promise nobody keeps. The four `edax-dlq-*`
+//! headers ride only on a dead-letter record, and [`dead_letter_source`] is their reader.
 //!
 //! The `content-type` header names the codec and not the transport, so the string itself is
 //! `edax_event::Format::media_type`'s and any transport that carries a type uses the same one.
 //!
+//! A record without a readable `content-type` is an event in the consumer's default format: records
+//! written before the header existed are all events. A command always carries the header, so a
+//! header-less record handed to the command decoder is refused.
+//!
 //! Placement is [`crate::partition_for`]: the shell passes the partition it names with the record.
 
 use edax_core::{Error, ErrorCode};
-use edax_event::{EventEnvelope, Format};
+use edax_event::{kind_mismatch, Format, Kind, Message};
+use serde::{de::DeserializeOwned, Serialize};
 
 /// Header naming the wire format of the value bytes; the value is a media type (the vocabulary note
 /// on [`Format::media_type`] separates the two words). Lower-case, the Kafka convention and the
@@ -52,24 +61,31 @@ impl KafkaHeader {
 /// always has both, and a foreign one without them is poison that dead-letters with them empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KafkaRecord {
-    /// The partitioning key: the aggregate id, or the host's override. UTF-8 bytes.
+    /// The partitioning key: the message's ordering key, or the host's override. UTF-8 bytes.
     pub key: Vec<u8>,
-    /// The encoded envelope.
+    /// The encoded message.
     pub value: Vec<u8>,
     /// The headers: [`record`] writes [`CONTENT_TYPE`] only; a fetched record carries whatever its
     /// producer and the middlewares wrote.
     pub headers: Vec<KafkaHeader>,
 }
 
-/// Build the record for `env` from value bytes the caller already encoded.
+/// Build the record for a message of either kind from value bytes the caller already encoded.
 ///
-/// `key` overrides the partitioning key; `None` uses the aggregate id, which is what keeps one
-/// aggregate's events on one partition and therefore in order. `content_type` names the format of
-/// `value`, so a host serializer must carry a media type of its own and register it in every SDK
-/// that reads the topic.
-pub fn record(env: &EventEnvelope, key: Option<&str>, value: Vec<u8>, content_type: &str) -> KafkaRecord {
+/// `key` overrides the partitioning key; `None` uses [`Message::ordering_key`]: an event's aggregate,
+/// a command's target aggregate or else its own id. One aggregate's messages, and a command with the
+/// events it causes, then share one partition and keep their order. `content_type` names the format
+/// and kind of `value`, so a host serializer must carry a media type of its own and register it in
+/// every SDK that reads the topic.
+pub fn record<M: Message>(msg: &M, key: Option<&str>, value: Vec<u8>, content_type: &str) -> KafkaRecord {
+    keyed_record(key.unwrap_or(msg.ordering_key()), value, content_type)
+}
+
+/// Build the record for value bytes the caller already encoded, under a key the caller already chose:
+/// [`record`] with the key decided. The [`CONTENT_TYPE`] header names the format and kind of `value`.
+pub fn keyed_record(key: &str, value: Vec<u8>, content_type: &str) -> KafkaRecord {
     KafkaRecord {
-        key: key.unwrap_or(&env.aggregate_id).as_bytes().to_vec(),
+        key: key.as_bytes().to_vec(),
         value,
         headers: vec![KafkaHeader::new(CONTENT_TYPE, content_type.as_bytes())],
     }
@@ -94,13 +110,17 @@ pub fn content_type(headers: &[KafkaHeader]) -> Option<&str> {
 /// dead-letter sink. Exhaustive: a shell decides about every arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    /// No readable content type: the shell's default serializer decodes it. A record written
-    /// before this kernel, or by a client that drops headers, still decodes.
+    /// No readable content type, and the shell's default serializer reads events: it decodes the
+    /// record. A record written before this kernel, or by a client that drops headers, still decodes.
     Default,
-    /// The content type is the media type at this index of the registered list.
+    /// No readable content type, and the shell's default serializer reads commands. Poison: a command
+    /// always names its media type, so a header-less record on a command topic is not one.
+    Headerless,
+    /// The content type is the media type at this index of the registered list. The serializer
+    /// registered there decides the kind.
     Registered(usize),
     /// A readable content type nobody registered, the empty string included. Poison: never a
-    /// silent fallback to the default, which is how a wrong envelope reaches a handler.
+    /// silent fallback to the default, which is how a wrong message reaches a handler.
     Unknown(String),
 }
 
@@ -109,10 +129,15 @@ pub enum Route {
 /// [`content_type`] reads the header: the first [`CONTENT_TYPE`] wins, matched case-sensitively,
 /// and a first value that is not UTF-8 reads as absent. The match against `registered` is exact,
 /// so a media type with parameters (`; charset=utf-8`) or an empty value is [`Route::Unknown`]. A
-/// shell builds `registered` once and holds it to [`check_media_types`] first.
-pub fn route(headers: &[KafkaHeader], registered: &[&str]) -> Route {
+/// shell builds `registered` once and holds it to [`check_media_types`] first. A media type names a
+/// format and a kind, so one format registers once per kind it reads. `default` is the kind the
+/// shell's default serializer reads, which decides a header-less record.
+pub fn route(headers: &[KafkaHeader], registered: &[&str], default: Kind) -> Route {
     match content_type(headers) {
-        None => Route::Default,
+        None => match default {
+            Kind::Event => Route::Default,
+            Kind::Command => Route::Headerless,
+        },
         Some(media_type) => match registered.iter().position(|known| *known == media_type) {
             Some(index) => Route::Registered(index),
             None => Route::Unknown(media_type.to_owned()),
@@ -134,24 +159,36 @@ pub fn check_media_types(registered: &[&str]) -> Result<(), Error> {
     }
 }
 
-/// Build the record for `env` with the kernel codec: [`Format::encode`] for the value and
-/// [`Format::media_type`] for the header. Infallible, like both of those.
-pub fn encode_record(format: Format, env: &EventEnvelope, key: Option<&str>) -> KafkaRecord {
-    record(env, key, format.encode(env), format.media_type())
+/// Build the record for a message of either kind with the kernel codec: [`Format::encode`] for the
+/// value and [`Format::media_type`] of its kind for the header. A bad extension key is a `codec`
+/// error, so a producer never publishes a record every consumer would refuse.
+pub fn encode_record<M: Message + Serialize>(format: Format, msg: &M, key: Option<&str>) -> Result<KafkaRecord, Error> {
+    Ok(record(msg, key, format.encode(msg)?, format.media_type(M::KIND)))
 }
 
-/// Decode a fetched record back to its envelope.
+/// Decode a fetched record back to a message of kind `M`.
 ///
-/// The [`content_type`] names the format; a media type this kernel does not mint is a `codec` error
-/// (`unknown format: ...`), never a silent fallback, so a producer rollout the consumer cannot read
-/// becomes one poison message instead of a stream of decode failures. No readable content type
-/// falls back to `default`.
-pub fn decode_record(default: Format, value: &[u8], headers: &[KafkaHeader]) -> Result<EventEnvelope, Error> {
-    let format = match content_type(headers) {
-        None => default,
-        Some(media_type) => Format::from_media_type(media_type)?,
+/// The [`content_type`] names the format and the kind. A media type this kernel does not mint is a
+/// `codec` error (`unknown format: ...`), never a silent fallback, so a producer rollout the consumer
+/// cannot read becomes one poison message instead of a stream of decode failures. A media type of
+/// the other kind is a `codec` error too, refused by its kind before the bytes are read.
+///
+/// The kind decides a record without a readable content type. An event falls back to `default`:
+/// records written before the header existed are all events. A command always carries
+/// [`CONTENT_TYPE`], so it is a `codec` error rather than a guess, and `default` goes unread.
+pub fn decode_record<M: Message + DeserializeOwned>(default: Format, value: &[u8], headers: &[KafkaHeader]) -> Result<M, Error> {
+    let Some(media_type) = content_type(headers) else {
+        return match M::KIND {
+            Kind::Event => default.decode(value),
+            Kind::Command => {
+                Err(Error::codec(format_args!("a {} record has no readable {CONTENT_TYPE} header", M::KIND.name())))
+            }
+        };
     };
-    format.decode(value)
+    match Format::from_media_type(media_type)? {
+        (format, got) if got == M::KIND => format.decode(value),
+        (_, got) => Err(kind_mismatch(M::KIND, got)),
+    }
 }
 
 /// Header naming the topic a dead-lettered record was fetched from.
@@ -213,8 +250,8 @@ pub fn dead_letter_source(headers: &[KafkaHeader]) -> Option<DeadLetterSource> {
 
 /// The identity of a message that did not decode: `"{topic}/{partition}/{offset}"`.
 ///
-/// Topic, partition and offset together are the only identity a poison message has — it has no
-/// envelope and so no id. The offset alone repeats on every partition, so two poison messages would
+/// Topic, partition and offset together are the only identity a poison message has: it did not
+/// decode, so it has no id. The offset alone repeats on every partition, so two poison messages would
 /// share one id and a dead-letter queue keyed on it would keep the first and reject the second.
 pub fn poison_id(topic: &str, partition: i32, offset: i64) -> String {
     format!("{topic}/{partition}/{offset}")

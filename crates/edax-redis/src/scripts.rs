@@ -3,7 +3,7 @@
 //! Every write is one script, so the compare and the write are one atomic step: a `GET` then a
 //! `SET` from the client would leave exactly the gap the fence exists to close. Each script compares
 //! the stored value with the caller's claim handle **exactly** (see [`crate::ledger`]), never a
-//! prefix of a width the caller chose. The bodies are constants, byte for byte, so two SDKs
+//! prefix of a width the caller chose. The forget script compares with the value the caller read. The bodies are constants, byte for byte, so two SDKs
 //! registering a script share one `EVALSHA` digest instead of each caching its own reformatting.
 //! `testdata/golden/redis_scripts.json` pins the bytes and `testdata/golden/redis_fence.json` pins
 //! what each script does, row by row, for a test to replay against a real server.
@@ -55,6 +55,15 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 ";
+
+/// Forget a settled record. `KEYS[1]` is the key; `ARGV[1]` is the value the caller read from it
+/// before [`forget_outcome`](crate::forget_outcome) decided to delete it.
+///
+/// Deletes the key and returns `1` only while it still holds that value. Returns `0` otherwise: the
+/// key is free, or it changed since the read (the record lapsed and a new claim took the key), and
+/// the new value stays. The body is [`RELEASE_SCRIPT`]'s, so both share one `EVALSHA` digest: each
+/// deletes a key only while it holds the exact value the caller names.
+pub const FORGET_SCRIPT: &str = RELEASE_SCRIPT;
 
 /// Extend a claim's lease. `KEYS[1]` is the key; `ARGV[1]` is the claim handle, `ARGV[2]` the claim
 /// TTL in milliseconds.
@@ -140,7 +149,7 @@ mod tests {
     /// Every script takes exactly one key and touches no other, which is what makes it cluster-safe.
     #[test]
     fn every_script_names_only_its_one_key() {
-        for script in [CLAIM_SCRIPT, COMPLETE_SCRIPT, RELEASE_SCRIPT, EXTEND_SCRIPT] {
+        for script in [CLAIM_SCRIPT, COMPLETE_SCRIPT, RELEASE_SCRIPT, FORGET_SCRIPT, EXTEND_SCRIPT] {
             assert!(script.contains("KEYS[1]") && !script.contains("KEYS[2]"), "{script}");
         }
     }

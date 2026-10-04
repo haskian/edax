@@ -31,6 +31,10 @@ suites are the same clauses ``edax``'s own backends are held to, so passing them
 and the in-tree ones are interchangeable.
 
 :mod:`edax.testing.faults` wraps any store to inject a write that landed and lost its response.
+
+:func:`event` builds a stored event by hand, to publish with no store behind it. :func:`drafted` and
+:func:`recorded` move an event between its two shapes: the draft a repository hands ``append``, and the
+message the store keeps for it.
 """
 
 from __future__ import annotations
@@ -42,6 +46,9 @@ from .contracts import (
     IdempotencyStoreContract,
     ProjectionStoreContract,
     SagaStoreContract,
+    drafted,
+    event,
+    recorded,
 )
 from .faults import LostResponse, Refusing
 
@@ -54,4 +61,7 @@ __all__ = [
     "ProjectionStoreContract",
     "Refusing",
     "SagaStoreContract",
+    "drafted",
+    "event",
+    "recorded",
 ]

@@ -215,6 +215,33 @@ pub fn decode_prior<R: DeserializeOwned>(bytes: &[u8], claimant_hash: u64) -> Re
     decode_record(bytes).unwrap_or_else(|cause| Record::unreadable(stored_hash(bytes).unwrap_or(claimant_hash), &cause))
 }
 
+/// Whether the record stored under `key` may be forgotten: deleted so a re-driven message runs its
+/// handler again.
+///
+/// A pending claim is refused with [`unsettled_claim`]: its run may still complete, and its record
+/// would land after the delete. A completed or failed record may go, and so may bytes no reader
+/// decodes, which [`decode_prior`] replays as a cached failure: forgetting them is the way out of a
+/// poisoned key. Every store decides with this one function, pinned by the ledger goldens.
+pub fn forget(key: &str, record: &[u8]) -> Result<(), Error> {
+    // Read as `()`: only the state matters, and `pending` is read before the result.
+    if matches!(decode_prior::<()>(record, 0).state, State::Pending) {
+        return Err(unsettled_claim(key));
+    }
+    Ok(())
+}
+
+/// The `in_progress` refusal of a forget of `key` while a claim on it has not settled: its run may
+/// still complete, and its record would land after the delete. One wording for every store, so a
+/// store that sees the claim before it reads the record refuses as [`forget`] does.
+pub fn unsettled_claim(key: &str) -> Error {
+    Error::new(
+        edax_core::ErrorCode::InProgress,
+        format_args!(
+            "idempotency key {key} is claimed by a run that has not completed: forget it once the claim settles or lapses"
+        ),
+    )
+}
+
 /// The `payload_hash` of bytes that do not decode as a record, if that one field still reads. Through
 /// a `Value`, as the record itself is read, so an array is never read positionally.
 fn stored_hash(bytes: &[u8]) -> Option<u64> {

@@ -113,46 +113,31 @@
     "to": 3
   },
   {
-    "available": [
-      -2,
-      -1,
-      0
-    ],
-    "error": null,
-    "from": -2,
-    "plan": [
-      -2,
-      -1,
-      0
-    ],
-    "to": 1
-  },
-  {
     "available": [],
     "error": null,
-    "from": 2147483647,
+    "from": 4294967295,
     "plan": [],
-    "to": 2147483647
+    "to": 4294967295
   },
   {
     "available": [
-      2147483646
+      4294967294
     ],
     "error": null,
-    "from": 2147483646,
+    "from": 4294967294,
     "plan": [
-      2147483646
+      4294967294
     ],
-    "to": 2147483647
+    "to": 4294967295
   },
   {
     "available": [
-      -2147483648
+      0
     ],
-    "error": "codec: missing upcast step -2147483647 (no transform for v-2147483647 -> v-2147483646)",
-    "from": -2147483648,
+    "error": "codec: missing upcast step 1 (no transform for v1 -> v2)",
+    "from": 0,
     "plan": null,
-    "to": 2147483647
+    "to": 4294967295
   },
   {
     "available": null,
@@ -178,8 +163,8 @@
   {
     "available": null,
     "error": null,
-    "from": -2147483648,
+    "from": 0,
     "plan": [],
-    "to": 2147483647
+    "to": 4294967295
   }
 ]

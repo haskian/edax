@@ -39,15 +39,18 @@ from ._edax import (
 )
 from .aggregate import (
     Aggregate,
+    CommandMessage,
     Event,
-    EventEnvelope,
+    EventDraft,
+    EventMessage,
     KernelSerializer,
+    Lineage,
     Serializer,
     Version,
 )
 
 # The wrappers, not the raw kernel functions: one public name per causation rule.
-from .causation import ensure_ids, originate, propagate
+from .causation import caused_by, current_lineage, originate, propagate, use_lineage
 from .codec import json_codec, msgpack_codec
 from .command import (
     Claimed,
@@ -55,7 +58,12 @@ from .command import (
     IdempotencyStore,
     Record,
     Won,
+    claim_key,
+    command_message,
+    current_command,
+    forget,
     idempotent,
+    received_key,
     retry,
 )
 from .dispatcher import DeadLetterFn, Delivery, DispatcherStats, KeyOrderedDispatcher
@@ -78,9 +86,10 @@ from .pacing import DEFAULT_BACKOFF, Backoff, Pacing
 from .projection import Entity, ProjectionStore
 from .query import Page
 from .router import EventRouter, idempotent_by_id
-from .saga import Completed, Saga, SagaCommand, SagaInstance, SagaRunner, SagaStore
+from .saga import Completed, Saga, SagaInstance, SagaRunner, SagaStore
 from .store import (
     AggregateCodec,
+    CommandOutbox,
     DrainStats,
     EventCodec,
     EventStore,
@@ -126,14 +135,19 @@ __all__ = [
     "payload_hash",
     "payload_hash_json",
     "upcast_plan",
-    # causation (edax.causation wrappers over the kernel rules)
-    "ensure_ids",
+    # causation (edax.causation wrappers over the kernel rules, and the ambient lineage)
+    "Lineage",
+    "caused_by",
+    "current_lineage",
     "originate",
     "propagate",
+    "use_lineage",
     # models and serialization
     "Aggregate",
+    "CommandMessage",
     "Event",
-    "EventEnvelope",
+    "EventDraft",
+    "EventMessage",
     "KernelSerializer",
     "Serializer",
     "Version",
@@ -159,6 +173,11 @@ __all__ = [
     "IdempotencyStore",
     "Record",
     "Won",
+    "claim_key",
+    "received_key",
+    "command_message",
+    "current_command",
+    "forget",
     "idempotent",
     "idempotent_by_id",
     "retry",
@@ -168,6 +187,7 @@ __all__ = [
     "Pacing",
     # storage seam and orchestration
     "AggregateCodec",
+    "CommandOutbox",
     "DrainStats",
     "EventCodec",
     "EventStore",
@@ -197,7 +217,6 @@ __all__ = [
     # sagas
     "Completed",
     "Saga",
-    "SagaCommand",
     "SagaInstance",
     "SagaRunner",
     "SagaStore",

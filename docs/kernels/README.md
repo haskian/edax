@@ -23,8 +23,8 @@ flowchart LR
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
         CORE["edax-core<br/>hash · backoff · clock · guid<br/>error · lock · token"]
-        EV["edax-event<br/>partition · codec · sequence<br/>upcast · causation · dedup<br/>staleness · retry · saga"]
-        CQ["edax-cqrs<br/>canonical_json · payload_hash · command_hash<br/>Record · outcome · filter · query"]
+        EV["edax-event<br/>messages · codec · lineage<br/>ordering key · partition · sequence<br/>upcast · dedup · staleness · retry · saga"]
+        CQ["edax-cqrs<br/>canonical_json · payload_hash · command_hash<br/>claim_key · Record · outcome · forget<br/>filter · query"]
         KAF["edax-kafka<br/>record · headers · media type<br/>offset watermark"]
         RED["edax-redis<br/>ledger value · owner token<br/>fence scripts · reply verdict"]
     end
@@ -44,7 +44,7 @@ flowchart LR
     ABI --> RED
     EV -->|"reuses hash and the error taxonomy"| CORE
     CQ -->|"reuses hash and the error taxonomy"| CORE
-    KAF -->|"reuses the envelope codec"| EV
+    KAF -->|"reuses the message codec"| EV
     KAF --> CORE
     RED -->|"reuses the idempotency record"| CQ
     RED --> CORE
@@ -72,7 +72,7 @@ responsibilities"). That forbids:
 | Duplicated validation — filter null/missing rules, upcast gap detection, concurrency checks | Two evaluators drift on the edge cases, such as a null or missing path |
 | A re-implemented idempotency, dedup or `payload_hash` decision | The SDK *wires* middleware; the kernel *decides*. A second implementation makes a shared ledger disagree with itself |
 | Host-side canonicalization before hashing | Python's `json.dumps(ensure_ascii=True)` does not agree with serde on non-ASCII, so idempotency keys would stop matching across SDKs |
-| Routing or partition placement | `partition_for` (broker) and `partition` (local workers) are the kernels', so two producers cannot split an aggregate across partitions and two consumers cannot disagree about a worker |
+| Routing or partition placement | `ordering_key`, `partition_for` (broker) and `partition` (local workers) are the kernels', so two producers cannot split an aggregate across partitions and two consumers cannot disagree about a worker |
 | Business rules | Those belong to the host application, not to a shared library |
 
 The binding crate does only type conversion, error-to-exception mapping, and idiomatic config and
@@ -115,26 +115,29 @@ assert it, and a byte of drift fails the build.
 | Does this document match this filter? | `edax-cqrs` | `filter.json` | One service returns a row the other hides — a read model that answers differently depending on which replica served it |
 | How long until retry `n`? | `edax-core` | `backoff.json` | Workers retry on different rhythms; a shared broker sees a herd where the schedule was meant to spread it |
 | Is this failure terminal or transient? | `edax-core` | `error_taxonomy.json` | One SDK caches a failure under the idempotency key that the other would release — a durable replay inconsistency in a shared ledger |
-| Which local worker runs this aggregate id? | `edax-event` | `partition.json` | Two dispatchers in one process run one aggregate on two workers, so its events race |
+| Which local worker runs this ordering key? | `edax-event` | `partition.json` | Two dispatchers in one process run one aggregate on two workers, so its events race |
 | Is a failed message retried, after how long, or dead-lettered? | `edax-event` | `retries.json`, `retry_failure.json` | One SDK retries a message the other dead-letters, so the same failure gets a different number of attempts |
 | Does a saga step fold this event, and what does it write? | `edax-event` | `saga.json` | A redelivered event folds twice in one SDK, or two SDKs mint different ids for the same outbox command |
-| What bytes does this envelope serialize to? | `edax-event` | `envelopes.json` | A producer writes bytes a consumer in another language cannot decode, or decodes into a different event |
-| What does a reader accept, ignore and refuse in an envelope? | `edax-event` | `envelope_decode.json` | A newer producer's added field makes every message poison for an older consumer, in one format only |
+| What bytes does this event or command serialize to? | `edax-event` | `envelopes.json` | A producer writes bytes a consumer in another language cannot decode, or decodes into a different message |
+| What does a reader accept, ignore and refuse in a message? | `edax-event` | `envelope_decode.json` | A newer producer's added field makes every message poison for an older consumer, in one format only |
+| Which extension keys may a message carry? | `edax-event` | `extensions.json` | One SDK writes a key another refuses, so every message it produces is poison downstream |
+| Which key orders this message? | `edax-event` | `ordering_key.json` | A command lands on a different partition or worker in each SDK, so it overtakes the events of its aggregate |
 | How is a filtered page ordered, where does the cursor cut, and which sort does it bind? | `edax-cqrs` | `query.json`, `cursor.json` | Page two skips or repeats rows; a cursor generated by one service is rejected or misread by another, or replayed under another sort |
 | Which `v -> v+1` steps raise a stored event, and is there a gap? | `edax-event` | `upcast.json` | One service applies transforms in a different order or silently tolerates a missing step, producing a different payload |
-| How do `causation_id` and `correlation_id` propagate? | `edax-event` | `causation.json` | A trace breaks at the language boundary, so a cross-service failure cannot be attributed |
-| What metadata does a fresh, uncaused event start with? | `edax-event` | `causation_originate.json` | Roots of two traces are generated differently, so correlation cannot be joined |
+| What lineage does a child of a message get? | `edax-event` | `causation.json` | A trace breaks at the language boundary, so a cross-service failure cannot be attributed |
+| What lineage does a message no message caused start with? | `edax-event` | `causation_originate.json` | Roots of two traces are generated differently, so correlation cannot be joined |
 | Is an incoming sequence older than the watermark, and what is the watermark after it applies? | `edax-event` | `staleness.json` | One consumer applies a redelivered event the other skips, or an unsequenced event erases the mark and a stale event lands |
 | What is the stable hash of these bytes? | `edax-cqrs` | `payload_hash.json` | Idempotency keys bind to different hashes, so a duplicate is not recognised as one |
 | What are the canonical bytes of this JSON, and their hash? | `edax-cqrs` | `canonical_payload_hash.json` | The same logical command spelled with different key order or escaping hashes twice, defeating deduplication |
-| *Which* bytes does a command's hash cover? | `edax-cqrs` | `command_hash.json` | One SDK includes a field the other omits, so the same command looks like a payload mismatch |
+| *Which* bytes does a command's hash cover? | `edax-cqrs` | `command_hash.json` | One SDK includes a field or the name the other omits, so the same command looks like a payload mismatch |
+| Which ledger key does a command guard claim? | `edax-cqrs` | `claim_key.json` | Two SDKs claim one intent under two keys, so a shared ledger runs it twice |
 | What does the stored record look like, and what verdict does a losing claimant read from it? | `edax-cqrs` | `idempotency_record.json` | A record written by one SDK is unreadable or read with the wrong outcome by another sharing the ledger; a reused key runs twice in one service and replays in another |
-| What key and header does a published envelope become on a topic? | `edax-kafka` | `kafka_record.json` | A consumer in another language cannot route the value to its serializer |
+| What key and header does a published event or command become on a topic? | `edax-kafka` | `kafka_record.json` | A consumer in another language cannot route the value to its serializer |
 | Which broker partition does a record key land on? | `edax-kafka` | `kafka_partition.json` | A Python and a Rust (or Java) producer put one aggregate on two partitions, so its order breaks silently |
-| Which format does a fetched record name, and what if nobody knows it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong envelope reaches a handler |
+| Which format does a fetched record name, and what if nobody knows it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong message reaches a handler |
 | Which offset may a consumer commit, and which token settles a delivery? | `edax-kafka` | `kafka_offsets.json` | A commit skips an offset still in flight, so a restart never redelivers it |
 | What bytes sit under an idempotency key in Redis? | `edax-redis` | `redis_value.json` | A ledger written by one SDK is unreadable by another sharing it, so both run the same command |
-| Which Lua does a fenced write run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
+| Which Lua does a fenced write or a forget run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
 
 The table shows the main decisions. [Golden vectors](./golden-vectors.md) lists every file.
 
@@ -196,13 +199,13 @@ waiting.
 - [core.md](./core.md) — `edax-core` module by module: `hash`, `backoff`, `clock`, `guid`, `error`,
   `sync`, `token`.
 - [filter.md](./filter.md) — the filter module of `edax-cqrs`, on its own page.
-- [event.md](./event.md) — `edax-event`: partition, codec, upcast, causation, staleness, dedup,
-  sequence, retry, saga, domain.
-- [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, payload and command hashes, the idempotency
-  decision and record, plus the query side — filter, sort and cursors.
-- [kafka.md](./kafka.md) — `edax-kafka`: the record key and headers, the media types, the poison id,
+- [event.md](./event.md) — `edax-event`: the messages, codec, lineage, ordering key, partition,
+  upcast, staleness, dedup, sequence, retry, saga.
+- [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, payload and command hashes, the claim key, the
+  idempotency decision, record and forget, plus the query side — filter, sort and cursors.
+- [kafka.md](./kafka.md) — `edax-kafka`: the record key and header per kind, the media types, the poison id,
   and the token-settled offset watermark.
-- [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the four fence
+- [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the five fenced
   scripts.
 - [golden-vectors.md](./golden-vectors.md) — how the contract is generated, asserted and
   regenerated.

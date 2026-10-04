@@ -121,14 +121,27 @@ fn canonical_json_cases() -> Vec<Value> {
     .collect()
 }
 
+/// The command guard's ledger key: scope and key, injective whatever either holds.
+fn claim_key_cases() -> Vec<Value> {
+    let cases: [(&str, &str); 6] = [
+        ("billing", "req-1"),
+        ("", "req-1"),     // an unscoped guard still gets the prefix and the length
+        ("a:b", "c"),      // a colon in the scope
+        ("a", "b:c"),      // the same text split the other way: a different key
+        ("café", "clé-1"), // the length counts bytes, not characters
+        ("ingress", ""),   // an empty key is still a key
+    ];
+    cases
+        .into_iter()
+        .map(|(scope, key)| json!({ "scope": scope, "idempotency_key": key, "expected": edax_cqrs::claim_key(scope, key) }))
+        .collect()
+}
+
 fn command_hash_cases() -> Vec<Value> {
-    // The hash *input* rule: the whole command value, canonicalized. Each case is a command as its
-    // field map, and both SDK suites rebuild it as their own command type (a serde struct, a
-    // dataclass), dispatch it through their real `idempotent` middleware, and compare the hash the
-    // store received. `type` is routing metadata: it names the handler and is not a field.
-    //
-    // The base fixture carries `request_id`, the field the idempotency key is read from. A hash over
-    // the business body alone would leave it out; the first case pins that it is hashed.
+    // The hash *input* rule: the command's name and its whole value, canonicalized. Each case is a
+    // command as its field map, and both SDK suites rebuild it as their own command type (a serde
+    // struct, a dataclass), dispatch it through their real `idempotent` middleware, and compare the
+    // hash the store received. The idempotency key travels beside the command, so it is no field.
     let base = json!({
         "order_id": "ord-7f3c",
         "customer": "Ada Lovelace",
@@ -139,7 +152,6 @@ fn command_hash_cases() -> Vec<Value> {
         "note": "leave at the door",
         "tags": ["eu", "paid"],
         "shipping": { "city": "NYC", "zip": "10001" },
-        "request_id": "req-7f3c-1",
     });
     let with = |overrides: Value| {
         let mut command = base.clone();
@@ -148,38 +160,45 @@ fn command_hash_cases() -> Vec<Value> {
         }
         command
     };
-    let cases: [(&str, Value); 10] = [
-        ("whole_command_including_the_idempotency_key_field", base.clone()),
+    let cases: [(&str, &str, Value); 11] = [
+        ("the_name_and_the_whole_command", "order.place", base.clone()),
+        // The name is hashed: one key reused for another command with an equal payload is a mismatch.
+        ("another_name_is_another_command", "order.quote", base.clone()),
         // Array order is data, so swapping two tags is a different command.
-        ("array_order_is_data", with(json!({ "tags": ["paid", "eu"] }))),
+        ("array_order_is_data", "order.place", with(json!({ "tags": ["paid", "eu"] }))),
         // Numbers hash by value: a whole-number float is the integer, so `1.0` here and `1` from an
         // encoder that drops the fraction bind to one hash.
-        ("whole_number_float_hashes_as_the_integer", with(json!({ "weight_kg": 1.0 }))),
+        ("whole_number_float_hashes_as_the_integer", "order.place", with(json!({ "weight_kg": 1.0 }))),
         // The same float field as an encoder that drops the fraction writes it: the same hash.
-        ("whole_number_float_given_as_an_int", with(json!({ "weight_kg": 1 }))),
+        ("whole_number_float_given_as_an_int", "order.place", with(json!({ "weight_kg": 1 }))),
         // 2^53, the widest integer a double (and so RFC 8785) keeps exact: it hashes as itself.
-        ("integer_at_2_pow_53_stays_exact", with(json!({ "reference": 9_007_199_254_740_992u64 }))),
+        ("integer_at_2_pow_53_stays_exact", "order.place", with(json!({ "reference": 9_007_199_254_740_992u64 }))),
         // One past it a double rounds, so two ids one apart would hash alike: refused as `codec`, in
         // every SDK, before any handler runs. Above `i64::MAX` too, where a signed reader also fails.
-        ("integer_past_2_pow_53_is_refused", with(json!({ "reference": 9_007_199_254_740_993u64 }))),
-        ("u64_above_i64_max_is_refused", with(json!({ "reference": 9_223_372_036_854_775_809u64 }))),
+        ("integer_past_2_pow_53_is_refused", "order.place", with(json!({ "reference": 9_007_199_254_740_993u64 }))),
+        ("u64_above_i64_max_is_refused", "order.place", with(json!({ "reference": 9_223_372_036_854_775_809u64 }))),
         // An optional field that is unset is serialized as null, not omitted.
-        ("unset_optional_is_null_not_omitted", with(json!({ "note": null }))),
+        ("unset_optional_is_null_not_omitted", "order.place", with(json!({ "note": null }))),
         // Hashed as UTF-8 bytes: an encoder that escapes to \u00e9 would diverge.
-        ("non_ascii_hashes_as_utf8", with(json!({ "customer": "café ☕ 🦀" }))),
-        ("empty_array_and_null_nested_field", with(json!({ "tags": [], "shipping": { "city": "NYC", "zip": null } }))),
+        ("non_ascii_hashes_as_utf8", "order.place", with(json!({ "customer": "café ☕ 🦀" }))),
+        ("empty_array_and_null_nested_field", "order.place", with(json!({ "tags": [], "shipping": { "city": "NYC", "zip": null } }))),
     ];
     let hashes: std::collections::BTreeMap<&str, Result<u64, edax_core::Error>> =
-        cases.iter().map(|(name, command)| (*name, command_hash(command))).collect();
+        cases.iter().map(|(name, command_name, command)| (*name, command_hash(command_name, command))).collect();
     assert_eq!(
         hashes["whole_number_float_hashes_as_the_integer"], hashes["whole_number_float_given_as_an_int"],
         "a whole float and its integer spelling are one command"
     );
     cases
         .into_iter()
-        .map(|(name, command)| match command_hash(&command) {
-            Ok(expected) => json!({ "name": name, "type": "order.place", "command": command, "expected": expected, "error": null }),
-            Err(error) => json!({ "name": name, "type": "order.place", "command": command, "expected": null, "error": error.to_string() }),
+        .map(|(name, command_name, command)| {
+            // The JSON-text entry point must agree with the value one on every case.
+            let text = serde_json::to_vec(&command).expect("a case is JSON");
+            assert_eq!(command_hash(command_name, &command), edax_cqrs::command_hash_json(command_name, &text), "{name}");
+            match command_hash(command_name, &command) {
+                Ok(expected) => json!({ "name": name, "type": command_name, "command": command, "expected": expected, "error": null }),
+                Err(error) => json!({ "name": name, "type": command_name, "command": command, "expected": null, "error": error.to_string() }),
+            }
         })
         .collect()
 }
@@ -607,6 +626,7 @@ fn golden() {
     write_or_check("canonical_payload_hash.json", canonical_payload_hash_cases());
     write_or_check("canonical_json.json", canonical_json_cases());
     write_or_check("command_hash.json", command_hash_cases());
+    write_or_check("claim_key.json", claim_key_cases());
     write_or_check("idempotency_record.json", idempotency_record_cases());
     write_or_check("idempotency_settle.json", idempotency_settle_cases());
 }

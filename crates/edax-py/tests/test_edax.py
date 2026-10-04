@@ -1,14 +1,23 @@
 import asyncio
-import base64
 from typing import Any
 
 import edax
 import pytest
-from conftest import FakeKafkaClient, KafkaMsg, SpyProducerClient, golden, sequence_of
+from conftest import (
+    FakeKafkaClient,
+    KafkaMsg,
+    SpyProducerClient,
+    build_command,
+    build_message,
+    golden,
+    message_as_obj,
+    message_from_obj,
+    sequence_of,
+)
 from edax import _edax, causation
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.broker import UndecodableDelivery
-from edax.causation import CAUSATION_ID, CORRELATION_ID, ensure_ids, originate, propagate
+from edax.causation import caused_by, current_lineage, originate, propagate, use_lineage
 
 
 def test_golden_partition() -> None:
@@ -75,61 +84,43 @@ def test_golden_backoff() -> None:
         assert got <= c["ceiling_millis"] <= c["cap_millis"], c
 
 
-def _envelope_from_obj(o: dict[str, Any]) -> edax.EventEnvelope:
-    ev = o["event"]
-    return edax.EventEnvelope(
-        id=o["id"],
-        aggregate_id=o["aggregate_id"],
-        event=edax.Event(ev["name"], ev["version"], base64.b64decode(ev["data"])),
-        timestamp=o["timestamp"],
-        sequence=o["sequence"],
-        namespace=o["namespace"],
-        metadata=o["metadata"],
-    )
-
-
 def test_golden_envelopes() -> None:
+    """Each message encodes to the vector's bytes in both formats, by its kind's serializer, and a decode
+    re-encodes to the same bytes."""
     for case in golden("envelopes.json"):
-        env = _envelope_from_obj(case["envelope"])
+        msg = message_from_obj(case["message"])
+        assert message_as_obj(msg) == case["message"], case["name"]
         for fmt, want in (("json", case["json_hex"]), ("msgpack", case["msgpack_hex"])):
-            ser = edax.KernelSerializer(fmt)
-            wire = ser.encode(env)
+            ser = edax.KernelSerializer(fmt, case["kind"])
+            wire = ser.encode(msg)
             assert wire.hex() == want, (case["name"], fmt)
-            # decode -> re-encode reproduces the same wire bytes
-            assert ser.encode(ser.decode(wire)).hex() == want, (case["name"], fmt)
+            assert ser.decode(wire) == msg, (case["name"], fmt)
+
+
+def test_a_serializer_refuses_the_other_kind() -> None:
+    """An event serializer handed a command, or a command serializer handed an event, is the terminal
+    ``CodecError``: the same message fails the same way on every retry."""
+    event = build_message("agg-1", "Deposited", 1)
+    command = build_command("Deposit")
+    for kind, msg in (("event", command), ("command", event)):
+        with pytest.raises(edax.CodecError) as refused:
+            edax.KernelSerializer("json", kind).encode(msg)
+        assert refused.value.terminal, kind
 
 
 def test_golden_envelope_decode() -> None:
-    """The envelope evolution rule, one wire value per case in both formats: an unknown field and a
-    missing ``sequence`` read, a positional (array) envelope, a repeated field and trailing bytes are
-    refused. A newer producer's field therefore never turns a message into poison for this reader."""
+    """The message evolution rule, one wire value per case in both formats: an unknown field and a missing
+    optional field read, a positional (array) message, a repeated field and trailing bytes are refused. A
+    newer producer's field therefore never turns a message into poison for this reader."""
     for case in golden("envelope_decode.json"):
         for fmt in ("json", "msgpack"):
             wire = bytes.fromhex(case[f"{fmt}_hex"])
             got: dict[str, Any]
             try:
-                got = {"envelope": _envelope_as_obj(edax.KernelSerializer(fmt).decode(wire))}
+                got = {"message": message_as_obj(edax.KernelSerializer(fmt).decode(wire))}
             except edax.CodecError as e:
                 got = {"error_code": e.code}
             assert got == case["want"], (case["name"], fmt)
-
-
-def _envelope_as_obj(env: edax.EventEnvelope) -> dict[str, Any]:
-    """The golden's envelope shape out of a native envelope, so a case compares one value against the
-    vector's JSON instead of seven fields."""
-    return {
-        "id": env.id,
-        "aggregate_id": env.aggregate_id,
-        "event": {
-            "name": env.event.name,
-            "version": env.event.version,
-            "data": base64.b64encode(bytes(env.event.data)).decode(),
-        },
-        "namespace": dict(env.namespace),
-        "metadata": dict(env.metadata),
-        "timestamp": env.timestamp,
-        "sequence": env.sequence,
-    }
 
 
 def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
@@ -141,13 +132,22 @@ def test_golden_kafka_record() -> None:
     serializer's bytes and media type in the kernel's record. A second SDK writing a different key or
     header set would split the topic in two."""
     for c in golden("kafka_record.json"):
-        env, key = _envelope_from_obj(c["envelope"]), c["key"]
+        msg, key = message_from_obj(c["message"]), c["key"]
         client = SpyProducerClient()
-        serializer = edax.KernelSerializer(c["format"])
         producer = KafkaProducer(
-            client, "t", serializer=serializer, key=None if key is None else lambda _, key=key: key
+            client,
+            "t",
+            serializer=edax.KernelSerializer(c["format"]),
+            command_serializer=edax.KernelSerializer(c["format"], "command"),
+            key=None if key is None else lambda _, key=key: key,
         )
-        asyncio.run(producer.publish(env))
+        if c["error"] is not None:
+            with pytest.raises(edax.CodecError) as refused:
+                asyncio.run(producer.publish(msg))
+            assert f"codec: {refused.value}" == c["error"], c["name"]
+            assert client.sent == [], c["name"]
+            continue
+        asyncio.run(producer.publish(msg))
         [(_, value, sent_key, _, headers)] = client.sent
         assert (sent_key.hex(), value.hex()) == (c["key_hex"], c["value_hex"]), c["name"]
         assert [(k, v.hex()) for k, v in headers] == [(h["key"], h["value_hex"]) for h in c["headers"]], c[
@@ -159,22 +159,28 @@ def test_golden_kafka_decode() -> None:
     """The consumer side, through a real :class:`~edax.backend.kafka.KafkaConsumer` over a fake client, so
     the vector proves the adapter and not a copy of its rule: the kernel routes the record by its first
     ``content-type``, an absent one falls back to the default, and a media type no serializer claims —
-    the empty one included — is poison instead of a guess. Every failure is a terminal ``CodecError``,
-    so the consumer dead-letters the record instead of redelivering it forever."""
+    the empty one included — is poison instead of a guess. A consumer of one kind registers that kind's
+    serializers only, so a record of the other kind is poison too, and a command consumer has no
+    header-less default. Every failure is a terminal ``CodecError``, so the consumer dead-letters the
+    record instead of redelivering it forever."""
     for c in golden("kafka_decode.json"):
-        default = c["default_format"]
+        kind = c["kind"]
+        default = c["default_format"] or "json"
         other = "msgpack" if default == "json" else "json"
         client = FakeKafkaClient()
         headers = [(h["key"], bytes.fromhex(h["value_hex"])) for h in c["headers"]]
-        client.log.append(KafkaMsg("t", 0, 0, b"agg-1", bytes.fromhex(c["value_hex"]), headers))
+        value = bytes.fromhex(c["value_hex"])
+        client.log.append(KafkaMsg("t", 0, 0, b"agg-1", value, headers))
         consumer = KafkaConsumer(
-            client, serializer=edax.KernelSerializer(default), serializers=[edax.KernelSerializer(other)]
+            client,
+            serializer=edax.KernelSerializer(default, kind),
+            serializers=[edax.KernelSerializer(other, kind)],
         )
         delivery = asyncio.run(consumer.poll())
         assert delivery is not None, c["name"]
-        if "envelope" in c["want"]:
+        if "message" in c["want"]:
             assert not isinstance(delivery, UndecodableDelivery), c["name"]
-            assert _envelope_as_obj(delivery.envelope) == c["want"]["envelope"], c["name"]
+            assert message_as_obj(delivery.message) == c["want"]["message"], c["name"]
             continue
         assert isinstance(delivery, UndecodableDelivery), c["name"]
         assert isinstance(delivery.error, edax.CodecError) and delivery.error.terminal, c["name"]
@@ -195,12 +201,14 @@ def test_golden_kafka_route() -> None:
             assert f"already_registered: {refused.value}" == c["want"]["error"], c["name"]
             continue
         _edax.kafka_check_media_types(c["registered"])
-        route = _edax.kafka_route(_headers_from_obj(c["headers"]), c["registered"])
+        route = _edax.kafka_route(_headers_from_obj(c["headers"]), c["registered"], c["default_kind"])
         got: dict[str, Any]
         if route.registered is not None:
             got = {"route": "registered", "index": route.registered}
         elif route.unknown is not None:
             got = {"route": "unknown", "media_type": route.unknown}
+        elif route.headerless:
+            got = {"route": "headerless"}
         else:
             got = {"route": "default"}
         assert got == c["want"], c["name"]
@@ -319,11 +327,15 @@ def _redis_ledger_case(c: dict[str, Any]) -> Any:
         reply = None if c["reply_hex"] is None else bytes.fromhex(c["reply_hex"])
         prior = _edax.redis_claim_outcome(c["claim"].encode(), reply)
         return {"won": True} if prior is None else {"prior": prior}
+    if op == "forget":
+        held = None if c["held_hex"] is None else bytes.fromhex(c["held_hex"])
+        return "delete" if _edax.redis_forget_outcome(c["key"], held) else "nothing"
     raise AssertionError(f"{c['name']}: unknown op {op}")
 
 
 def test_golden_redis_ledger() -> None:
-    """The key, the refused settings and handles, the claim outcome and the reply verdicts: every
+    """The key, the refused settings and handles, the claim outcome, the forget verdict and the reply
+    verdicts: every
     decision a second SDK's Redis store must make the same way, read through the binding."""
     for c in golden("redis_ledger.json"):
         if c["op"] == "reply":
@@ -337,13 +349,14 @@ def test_golden_redis_ledger() -> None:
 
 
 def test_golden_redis_scripts() -> None:
-    """The four Lua bodies, verbatim: EVALSHA hashes the source, so a byte of drift in any one is a
+    """The five Lua bodies, verbatim: EVALSHA hashes the source, so a byte of drift in any one is a
     different script and a lost fence between SDKs."""
     scripts = _edax.redis_scripts()
     bodies = {
         "claim": scripts.claim,
         "complete": scripts.complete,
         "release": scripts.release,
+        "forget": scripts.forget,
         "extend": scripts.extend,
     }
     assert [c["name"] for c in golden("redis_scripts.json")] == list(bodies)
@@ -367,48 +380,46 @@ def test_current_timestamp_strictly_increasing() -> None:
         prev = t
 
 
+def test_golden_causation() -> None:
+    """A child's lineage from its parent's id and correlation, through the SDK wrapper over a real parent
+    message, and through the raw kernel call."""
+    for c in golden("causation.json"):
+        parent = build_message(
+            "agg-1", "Parent", 1, id=c["parent_id"], correlation_id=c["parent_correlation_id"]
+        )
+        want = edax.Lineage(**c["expected"])
+        assert propagate(parent) == want, c
+        assert _edax.propagate(c["parent_id"], c["parent_correlation_id"]) == want, c
+
+
 def test_golden_causation_originate() -> None:
+    """A root's lineage fills only what is missing; ``fresh_id`` stands in for the guid the SDK wrapper
+    mints, so the kernel call is replayed with it."""
     for c in golden("causation_originate.json"):
-        assert originate(c["metadata"], c["fresh_id"]) == c["expected"], c
-
-
-# Stands in for the guid `ensure_ids` mints; no real guid can equal it.
-MINTED = "<minted>"
+        got = _edax.originate(c["fresh_id"], c["correlation_id"], c["causation_id"])
+        assert got == edax.Lineage(**c["expected"]), c
 
 
 @pytest.mark.parametrize(
-    "branch, metadata, want_correlation, want_causation",
+    "branch, correlation_id, causation_id",
     [
-        ("no_metadata", None, MINTED, MINTED),
-        ("empty_metadata", {}, MINTED, MINTED),
-        ("other_keys_only", {"trace": "abc", "tenant": "t1"}, MINTED, MINTED),
-        ("correlation_given", {"correlation_id": "corr-1"}, "corr-1", "corr-1"),
-        ("causation_given", {"causation_id": "evt-0"}, MINTED, "evt-0"),
-        ("both_given", {"correlation_id": "corr-1", "causation_id": "evt-0"}, "corr-1", "evt-0"),
-        ("correlation_and_other_keys", {"correlation_id": "corr-1", "trace": "abc"}, "corr-1", "corr-1"),
+        ("nothing_given", None, None),
+        ("correlation_given", "corr-1", None),
+        ("causation_given", None, "evt-0"),
+        ("both_given", "corr-1", "evt-0"),
     ],
 )
-def test_ensure_ids_fills_missing_and_preserves_given(
-    branch: str,
-    metadata: dict[str, str] | None,
-    want_correlation: str,
-    want_causation: str,
+def test_originate_mints_only_what_is_missing(
+    branch: str, correlation_id: str | None, causation_id: str | None
 ) -> None:
-    given = dict(metadata or {})
-    out = ensure_ids(metadata)
-
-    correlation = out[CORRELATION_ID]
-    if want_correlation == MINTED:
-        assert len(correlation.split("-")) == 5, "a missing correlation id is minted as a guid"
+    """The wrapper mints a guid for a missing correlation and lets the kernel default the causation to the
+    resulting correlation: a root causes itself. A supplied id is never overwritten."""
+    got = originate(correlation_id, causation_id)
+    if correlation_id is None:
+        assert len(got.correlation_id.split("-")) == 5, f"{branch}: a missing correlation is a minted guid"
     else:
-        assert correlation == want_correlation, "a supplied id is never overwritten"
-    # A wanted MINTED causation means it followed the correlation: a root event causes itself.
-    want = correlation if want_causation == MINTED else want_causation
-    assert out[CAUSATION_ID] == want
-
-    extra = {k: v for k, v in given.items() if k not in (CORRELATION_ID, CAUSATION_ID)}
-    assert {k: v for k, v in out.items() if k in extra} == extra, "unrelated keys pass through"
-    assert metadata is None or metadata == given, "the caller's dict is not mutated"
+        assert got.correlation_id == correlation_id, branch
+    assert got.causation_id == (causation_id or got.correlation_id), branch
 
 
 @pytest.mark.parametrize(
@@ -416,7 +427,9 @@ def test_ensure_ids_fills_missing_and_preserves_given(
     [
         ("propagate", causation.propagate),
         ("originate", causation.originate),
-        ("ensure_ids", causation.ensure_ids),
+        ("caused_by", causation.caused_by),
+        ("current_lineage", causation.current_lineage),
+        ("use_lineage", causation.use_lineage),
     ],
 )
 def test_top_level_causation_names_are_the_wrappers(name: str, wrapper: object) -> None:
@@ -429,13 +442,33 @@ def test_top_level_causation_names_are_the_wrappers(name: str, wrapper: object) 
 def test_seeded_root_then_one_propagate_hop_is_a_connected_chain() -> None:
     # The root's correlation id is minted, so it differs from the root's event id — the hop has to
     # link two different ids and still keep one flow.
-    root = ensure_ids({"trace": "abc"})
-    child = propagate(root, "evt-root")
+    root_lineage = originate()
+    root = build_message(
+        "agg-1",
+        "Root",
+        1,
+        id="evt-root",
+        correlation_id=root_lineage.correlation_id,
+        causation_id=root_lineage.causation_id,
+    )
+    child = propagate(root)
 
-    assert root[CAUSATION_ID] == root[CORRELATION_ID], "the root causes itself"
-    assert child[CORRELATION_ID] == root[CORRELATION_ID], "one flow across the hop"
-    assert child[CAUSATION_ID] == "evt-root", "the child points back at the event that caused it"
-    assert set(child) == {CORRELATION_ID, CAUSATION_ID}, "the parent's trace is not carried"
+    assert root_lineage.causation_id == root_lineage.correlation_id, "the root causes itself"
+    assert child.correlation_id == root_lineage.correlation_id, "one flow across the hop"
+    assert child.causation_id == "evt-root", "the child points back at the event that caused it"
+
+
+def test_the_ambient_lineage_is_scoped_to_its_block() -> None:
+    """Outside any block there is none; ``caused_by`` sets the child lineage of its message, a nested
+    ``use_lineage`` shadows it, and each exit restores what was there before."""
+    parent = build_message("agg-1", "Parent", 1, id="evt-1", correlation_id="flow-1")
+    assert current_lineage() is None
+    with caused_by(parent) as outer:
+        assert current_lineage() == outer == edax.Lineage("flow-1", "evt-1")
+        with use_lineage(edax.Lineage("flow-2", "cmd-2")):
+            assert current_lineage() == edax.Lineage("flow-2", "cmd-2")
+        assert current_lineage() == outer
+    assert current_lineage() is None
 
 
 async def test_key_ordered_dispatch() -> None:
@@ -443,25 +476,15 @@ async def test_key_ordered_dispatch() -> None:
     aggregates = ["agg-a", "agg-b", "agg-c", "agg-d", "agg-e", "agg-f"]
     received: dict[str, list[int]] = {a: [] for a in aggregates}
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(msg: edax.EventMessage) -> None:
         await asyncio.sleep(0)  # force interleaving across workers
-        received[env.aggregate_id].append(sequence_of(env))
+        received[msg.aggregate_id].append(sequence_of(msg))
 
     consumer = edax.KeyOrderedDispatcher(workers, handler)
     consumer.start()
     for seq in range(per_agg):
         for agg in aggregates:
-            await consumer.submit(
-                edax.EventEnvelope(
-                    id=f"{agg}-{seq}",
-                    aggregate_id=agg,
-                    event=edax.Event("t", 1, b""),
-                    namespace={},
-                    metadata={},
-                    timestamp=0,
-                    sequence=seq,
-                )
-            )
+            await consumer.submit(build_message(agg, "t", seq, id=f"{agg}-{seq}"))
     await consumer.stop()
 
     for agg in aggregates:
@@ -469,5 +492,5 @@ async def test_key_ordered_dispatch() -> None:
         assert got == sorted(got), f"{agg} out of order: {got}"
         assert len(got) == per_agg
 
-    used = {consumer._worker_index(a) for a in aggregates}
+    used = {consumer._worker_index(build_message(a, "t", 0)) for a in aggregates}
     assert len(used) >= 2, "aggregates should span multiple workers"

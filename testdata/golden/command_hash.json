@@ -6,7 +6,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -19,8 +18,8 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 5704958604844255308,
-    "name": "whole_command_including_the_idempotency_key_field",
+    "expected": 16252640949460052337,
+    "name": "the_name_and_the_whole_command",
     "type": "order.place"
   },
   {
@@ -30,7 +29,29 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
+      "shipping": {
+        "city": "NYC",
+        "zip": "10001"
+      },
+      "tags": [
+        "eu",
+        "paid"
+      ],
+      "total_cents": 4200,
+      "weight_kg": 2.5
+    },
+    "error": null,
+    "expected": 7362287350115006964,
+    "name": "another_name_is_another_command",
+    "type": "order.quote"
+  },
+  {
+    "command": {
+      "currency": "USD",
+      "customer": "Ada Lovelace",
+      "note": "leave at the door",
+      "order_id": "ord-7f3c",
+      "reference": 42,
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -43,7 +64,7 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 10289792630790996900,
+    "expected": 12018490965186276121,
     "name": "array_order_is_data",
     "type": "order.place"
   },
@@ -54,7 +75,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -67,7 +87,7 @@
       "weight_kg": 1.0
     },
     "error": null,
-    "expected": 12082406226159317240,
+    "expected": 922952362456545725,
     "name": "whole_number_float_hashes_as_the_integer",
     "type": "order.place"
   },
@@ -78,7 +98,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -91,7 +110,7 @@
       "weight_kg": 1
     },
     "error": null,
-    "expected": 12082406226159317240,
+    "expected": 922952362456545725,
     "name": "whole_number_float_given_as_an_int",
     "type": "order.place"
   },
@@ -102,7 +121,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 9007199254740992,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -115,7 +133,7 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 10476427186104985315,
+    "expected": 515903038077820924,
     "name": "integer_at_2_pow_53_stays_exact",
     "type": "order.place"
   },
@@ -126,7 +144,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 9007199254740993,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -138,7 +155,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
-    "error": "codec: command payload canonicalization failed: integer at byte 105 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
     "expected": null,
     "name": "integer_past_2_pow_53_is_refused",
     "type": "order.place"
@@ -150,7 +167,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 9223372036854775809,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -162,7 +178,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
-    "error": "codec: command payload canonicalization failed: integer at byte 105 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
     "expected": null,
     "name": "u64_above_i64_max_is_refused",
     "type": "order.place"
@@ -174,7 +190,6 @@
       "note": null,
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -187,7 +202,7 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 2723030285912343926,
+    "expected": 9981927557286055517,
     "name": "unset_optional_is_null_not_omitted",
     "type": "order.place"
   },
@@ -198,7 +213,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -211,7 +225,7 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 18118625569556382165,
+    "expected": 5166834827866921946,
     "name": "non_ascii_hashes_as_utf8",
     "type": "order.place"
   },
@@ -222,7 +236,6 @@
       "note": "leave at the door",
       "order_id": "ord-7f3c",
       "reference": 42,
-      "request_id": "req-7f3c-1",
       "shipping": {
         "city": "NYC",
         "zip": null
@@ -232,7 +245,7 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 7348149613423359681,
+    "expected": 3318828177526668670,
     "name": "empty_array_and_null_nested_field",
     "type": "order.place"
   }

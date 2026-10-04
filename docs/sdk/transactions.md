@@ -19,7 +19,7 @@ classDiagram
         <<seam>>
         +transaction()
         +load(tx, aggregate_id, after)
-        +append(tx, aggregate_id, expected_version, events)
+        +append(tx, aggregate_id, expected_version, drafts) messages
         +load_snapshot(tx, aggregate_id)
         +save_snapshot(tx, snapshot)
     }

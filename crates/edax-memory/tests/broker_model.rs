@@ -1,8 +1,8 @@
 //! The memory broker under random faults: two consumer groups, each with a key-ordered dispatcher
 //! whose handlers start and finish separately, over a log of several partitions, with nacks and
-//! crashes in random order.
+//! crashes in random order. Each key gets events and commands mixed, so both kinds share one order.
 //!
-//! Invariants: a handler processes event `s` of a key only after `s - 1` (per-key order, per
+//! Invariants: a handler processes message `s` of a key only after `s - 1` (per-key order, per
 //! group); once the faults stop, every group processes every message and reports empty — so no
 //! commit ever passed a message that was not processed, or a crash would have skipped it.
 
@@ -13,9 +13,10 @@
     reason = "a model test's panic is the failure report"
 )]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
-use edax_event::{Event, EventEnvelope};
+use edax_event::testkit::{base_command, base_event};
+use edax_event::{CommandMessage, EventMessage};
 use edax_memory::{MemoryBroker, PolledDelivery};
 use proptest::prelude::*;
 
@@ -24,7 +25,8 @@ const KEYS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
 enum Op {
-    Publish(usize),
+    /// Publish the next message of a key: a command when `true`, else an event.
+    Publish(usize, bool),
     Poll(usize),
     Start(usize, usize),
     Finish(usize, usize, bool),
@@ -33,7 +35,7 @@ enum Op {
 
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
-        3 => (0..KEYS).prop_map(Op::Publish),
+        3 => ((0..KEYS), prop::bool::ANY).prop_map(|(k, command)| Op::Publish(k, command)),
         4 => (0..GROUPS.len()).prop_map(Op::Poll),
         4 => ((0..GROUPS.len()), (0..KEYS)).prop_map(|(g, k)| Op::Start(g, k)),
         4 => ((0..GROUPS.len()), (0..KEYS), prop::bool::weighted(0.8)).prop_map(|(g, k, ok)| Op::Finish(g, k, ok)),
@@ -41,16 +43,26 @@ fn op() -> impl Strategy<Value = Op> {
     ]
 }
 
-fn envelope(key: usize, seq: u64) -> EventEnvelope {
-    EventEnvelope {
-        id: format!("k{key}-{seq}"),
-        aggregate_id: format!("k{key}"),
-        event: Event { name: "Tick".to_owned(), version: 1, data: Vec::new() },
-        sequence: Some(seq),
-        namespace: BTreeMap::new(),
-        metadata: BTreeMap::new(),
-        timestamp: 0,
+/// Message `seq` of key `key`, as an event or a command targeting the key's aggregate. The id carries
+/// the per-key position, so the order check reads it whatever the kind.
+fn publish(broker: &MemoryBroker, key: usize, seq: u64, command: bool) {
+    let id = format!("k{key}-{seq}");
+    let aggregate_id = format!("k{key}");
+    if command {
+        broker.publish_command(CommandMessage {
+            idempotency_key: Some(id.clone()),
+            id,
+            aggregate_id: Some(aggregate_id),
+            ..base_command()
+        });
+    } else {
+        broker.publish_event(EventMessage { id, aggregate_id, sequence: Some(seq), ..base_event() });
     }
+}
+
+/// The ordering key and the message id of a delivery, whichever its kind.
+fn key_and_id(d: &PolledDelivery) -> (&str, &str) {
+    (d.message.ordering_key(), d.message.id())
 }
 
 /// One group's consumer: a FIFO per key and at most one running handler per key.
@@ -67,7 +79,7 @@ impl Dispatcher {
     }
 
     fn key(d: &PolledDelivery) -> usize {
-        d.envelope.aggregate_id[1..].parse().unwrap()
+        key_and_id(d).0[1..].parse().unwrap()
     }
 
     fn poll(&mut self, broker: &MemoryBroker) -> bool {
@@ -99,15 +111,11 @@ impl Dispatcher {
             let _ = broker.nack(self.group, d.token);
             return;
         }
-        let seq = d.envelope.sequence.unwrap();
-        let last = self.processed.get(&d.envelope.aggregate_id).copied().unwrap_or(0);
-        assert!(
-            seq <= last + 1,
-            "{}: {} processed {seq} with only {last} before it: per-key order broke",
-            self.group,
-            d.envelope.aggregate_id
-        );
-        self.processed.insert(d.envelope.aggregate_id.clone(), last.max(seq));
+        let (key, id) = key_and_id(&d);
+        let seq: u64 = id.rsplit('-').next().unwrap().parse().unwrap();
+        let last = self.processed.get(key).copied().unwrap_or(0);
+        assert!(seq <= last + 1, "{}: {key} processed {seq} with only {last} before it: per-key order broke", self.group);
+        self.processed.insert(key.to_owned(), last.max(seq));
         let _ = broker.ack(self.group, d.token);
     }
 
@@ -146,9 +154,9 @@ proptest! {
         let mut published: Vec<u64> = vec![0; KEYS];
         for op in ops {
             match op {
-                Op::Publish(key) => {
+                Op::Publish(key, command) => {
                     published[key] += 1;
-                    broker.publish(envelope(key, published[key]));
+                    publish(&broker, key, published[key], command);
                 }
                 Op::Poll(g) => {
                     groups[g].poll(&broker);

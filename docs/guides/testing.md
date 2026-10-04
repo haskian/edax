@@ -85,7 +85,7 @@ The frameworks are `proptest` in Rust (`crates/edax/tests/model.rs`) and Hypothe
 | P2 command bus | routing, the idempotency claim, replay of a completed record, and the `pending` state match the model | `idempotent_bus_matches_model` | `test_idempotent_bus_matches_model` |
 | P3 dispatcher | per-aggregate FIFO under any worker count, and settlement by outcome (Python also covers dead-letter routing) | `dispatcher_keeps_per_aggregate_fifo` | `test_dispatcher_keeps_per_aggregate_fifo` |
 | P4 `Repository` | save then load equals a pure fold of the events | `repository_matches_fold` | `test_repository_matches_fold` |
-| P5 codecs | an envelope round-trips through JSON and MessagePack, and garbage is rejected as a terminal `CodecError` | `codecs_roundtrip`, `codecs_reject_garbage` | `test_kernel_serializer_roundtrip`, `test_kernel_serializer_rejects_garbage` |
+| P5 codecs | an event message round-trips through JSON and MessagePack, and garbage is rejected as a terminal `CodecError` | `codecs_roundtrip`, `codecs_reject_garbage` | `test_kernel_serializer_roundtrip`, `test_kernel_serializer_rejects_garbage` |
 | P6 projection store | optimistic concurrency on `version`, plus sort / offset / limit paging, match the model | `projection_matches_model` | `test_projection_matches_model` |
 
 Rust adds one deterministic race. `concurrent_appends_one_winner` starts eight threads appending to
@@ -215,8 +215,8 @@ before you rely on it:
   gets two more clauses. A claim staged in an open transaction is never won by another. A release with
   nothing committed leaves a concurrent winner's record. These clauses need an async driver, because one
   that blocks the event loop deadlocks any asyncio code.
-- **Its payloads are real.** Envelopes carry a `guid()` id, a `current_timestamp()` and a JSON body, as
-  the SDK writes them. A store with an `id uuid` column then passes or fails for the right reason.
+- **Its payloads are real.** Drafts carry a `guid()` id, a full lineage and a JSON body, as the SDK
+  writes them. The store stamps `recorded_at` itself, and the suite checks it did. A store with an `id uuid` column then passes or fails for the right reason.
 - **The discrimination test is strict.** `test_contract_discriminates.py` is one table, a row per
   mistake. A row counts as caught only when the clause fails with its own verdict: an assertion, a
   `pytest.raises` that did not fire, or a seam's typed error. The race and isolation rows also name the
@@ -238,6 +238,11 @@ The in-tree suites use these and nothing else; `tests/test_faults.py` proves eac
 armed. `MemoryLedger.expire(key)` and `MemoryIdempotencyStore.expire(key)` are the memory side of a TTL
 running out, for takeover tests. `examples/py/15_lease_takeover.py` rehearses that takeover, and
 `examples/py/19_fault_injection.py` drives a handler through `BrokenCommit(db, "lost_response")`.
+
+Three builders make the messages a test needs. `edax.testing.event(aggregate_id, name, sequence)`
+returns an `EventMessage` with realistic defaults: its own id as its lineage, empty maps. `drafted(msg)`
+turns a message back into the `EventDraft` a store receives, and `recorded(draft, at)` stamps a draft as
+a store would.
 
 ## Contract suites a host can reuse
 

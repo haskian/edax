@@ -2,22 +2,22 @@
 
 The Command Query Responsibility Segregation (CQRS) write side. What a command is in each software
 development kit (SDK). How `CommandBus` routes one. How the middleware chain around a handler is
-composed.
+composed. How a command crosses a process boundary, and the three routes it can take.
 
-A command is a value plus a type name. The bus routes on the type name and runs the handler through
-a chain of middleware wrapped around it at registration time. The kernel owns everything that has to
-agree across languages: which bytes are hashed, whether a failure is terminal, and the backoff
-schedule. Dispatch and the chain are local to each SDK.
+A command is a value plus a name. The bus routes on the name and runs the handler through a chain of
+middleware wrapped around it at registration time. The kernel owns everything that has to agree
+across languages: which bytes are hashed, which ledger key is claimed, whether a failure is
+terminal, and the backoff schedule. Dispatch and the chain are local to each SDK.
 
 ```mermaid
 flowchart LR
-    Cmd["command value"] --> Bus["CommandBus: route on the type name"]
+    Cmd["command value"] --> Bus["CommandBus: build the CommandMessage, route on the name"]
     Bus --> Retry["retry"]
-    Retry --> Guard["idempotent: the guard, owns the unit of work"]
+    Retry --> Guard["idempotent(scope): the guard, owns the unit of work"]
     Guard --> Handler["handler"]
     Handler --> Repo["Repository.save"]
     Guard -- "claim, complete, release" --> Ledger["ledger: IdempotencyStore"]
-    Guard -- "payload_hash of the whole command" --> Kernel["kernel: command_hash, backoff, error codes"]
+    Guard -- "command_hash of the name and payload, claim_key of scope and key" --> Kernel["kernel: command_hash, claim_key, backoff, error codes"]
     Retry -- "jittered backoff_millis" --> Kernel
 ```
 
@@ -26,10 +26,10 @@ flowchart LR
 | | Rust SDK | Python SDK |
 |---|---|---|
 | Declaration | `trait Command: Serialize` | `class Command(Protocol)` |
-| Type name | `fn command_type(&self) -> &str` | `type`, a class attribute |
+| Name | `fn command_type(&self) -> &str` | `type`, a class attribute |
 | Payload | whatever `Serialize` writes | the declared instance fields |
-| Hash input | the whole command value | the whole command value |
-| Hashed by | `edax_cqrs::command_hash` | `_edax.payload_hash_json` over `msgspec.json.encode` |
+| Hash input | the name and the whole command value | the name and the whole command value |
+| Hashed by | `edax_cqrs::command_hash(name, value)` | `_edax.command_hash_json(cmd.type, ...)` over `msgspec.json.encode` |
 
 Rust:
 
@@ -47,59 +47,198 @@ command satisfies it with a class attribute:
 class Deposit:
     account_id: str
     amount: int
-    request_id: str  # idempotency key; part of the hashed identity
-    type: ClassVar[str] = "Deposit"  # routing only: a class attribute stays out of the hash
+    type: ClassVar[str] = "Deposit"  # the command name, hashed with the payload
 ```
 
-### Why the type name stays out of the hash
+The idempotency key is not a field. It travels beside the command, on the dispatch and on the
+message: `bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-A")`.
 
-The idempotency hash covers the command *value*, every instance field included, the key field as
-well. There is no `payload()` method to override: a hand-written one was the one place two SDKs
-could disagree about which bytes get hashed. The rule is the
-kernel's and is pinned by `testdata/golden/command_hash.json`, asserted through the real
-`idempotent` middleware from both sides.
+### The name is hashed with the payload
 
-The type name is routing metadata, not a field. In Rust it is a method return; in Python it must be
-a class attribute. Declared as a Python instance field it would enter `vars()` and be hashed. The
-Rust command carrying the same business fields would not hash it. That is one key and two numbers,
-so a genuine duplicate raises `PayloadMismatch`.
+The idempotency hash covers the command name and the command *value*, every instance field
+included. There is no `payload()` method to override: a hand-written one was the one place two SDKs
+could disagree about which bytes get hashed. The rule is the kernel's and is pinned by
+`testdata/golden/command_hash.json`, asserted through the real `idempotent` middleware from both
+sides.
+
+The name enters the hash once, as the name. One idempotency key names one request. So
+`Deposit(account="x", amount=10)` and `Withdraw(account="x", amount=10)` under one key are a
+`PayloadMismatch`, not a replay of the wrong command's result. In Rust the name is a method return;
+in Python it must be a class attribute. Declared as a Python instance field it would enter `vars()`
+and be hashed a second time, inside the payload. The Rust command carrying the same business fields
+would not do that. That is one key and two numbers, so a genuine duplicate raises `PayloadMismatch`.
 
 A dataclass is read through its declared fields, defaults included. A command may be decoded off a
 queue with a defaulted field left implicit. It hashes as the one its constructor builds. The hashed
 form is RFC 8785, whose numbers are doubles, so an `amount: float` built with `2` and the same command
 decoded as `2.0` bind to one key. A double rounds an integer past 2^53, so a command carrying one
 (a 64-bit id, say) is refused as a terminal `CodecError` before any claim: carry such ids as strings.
+A command decoded from the wire hashes after its upcast, as the dispatched one does.
 
 In Rust, register each command type as its own struct on the type-erased `CommandBus`. Never route
 several command types through one enum: serde's external tag (`{"Withdraw":{...}}`) would enter the
 hash. The same command dispatched from Python, or from the plain struct, would then hash differently
 and read as a `PayloadMismatch` on a shared ledger.
 
+## The command message
 
-### The key namespace is yours
+Every Python dispatch builds a `CommandMessage`, the shape a command has on the wire. A handler still
+receives the command value. It reads the message, while it runs, through `current_command()`.
 
-`type` stays out of the hash, so two *different* commands with the same business fields hash
-identically. `Deposit(account="x", amount=10)` and `Withdraw(account="x", amount=10)` are one hash.
-Reuse one idempotency key across them and the second dispatch replays the first one's cached result:
-no `PayloadMismatch`, no execution, and the money never moves.
+| Field | Value |
+|---|---|
+| `id` | a fresh `guid()`: this one message instance; a redelivery keeps it |
+| `idempotency_key` | the client's intent, the same on every retry of one intent; `None` makes no claim |
+| `aggregate_id` | the aggregate the command targets, if any |
+| `name`, `version`, `data` | `cmd.type`; `cmd.version`, else 1; the command's JSON, the bytes the hash reads |
+| `correlation_id`, `causation_id` | `lineage=`, else the ambient lineage, else a new flow |
+| `issued_at` | the issuer's clock, Unix nanoseconds |
+| `extensions`, `metadata` | edax extension context, and the application's own |
 
-The hash must cover the command value alone, or a Rust service and a Python service would disagree
-about the same command. The kernel cannot know which keys belong together. Namespace the key
-yourself, by command type and by service:
+[edax-event](../kernels/event.md#domain--the-messages) lists which decision reads each field.
+
+**Two ids, two jobs.** `id` names one message. `idempotency_key` names one intent. A client that
+retries an HTTP request sends a new message each time, under the same key, so the guard replays the
+first outcome. A broker that redelivers sends the same message again, under the same id. A command
+with no key still has an id. A handler's events take the command as their parent
+([lineage rules](../kernels/event.md#causation--lineage)).
+
+### `dispatch`: in process
 
 ```python
-def key_of(cmd: Deposit) -> str:
-    # The command type scopes the key, so a reused request id cannot cross command types.
-    return f"billing/{cmd.type}/{cmd.request_id}"
-
-
-bus = CommandBus(idempotent(ledger, key=key_of))
+result = await bus.dispatch(
+    cmd,
+    idempotency_key="req-A",  # None (the default): no claim, the handler runs every time
+    aggregate_id="acct-1",  # the target, for ordering; optional
+    lineage=None,  # None: the ambient lineage of the message being handled, else a new flow
+    extensions={"traceparent": traceparent},  # edax extension keys only
+    metadata={"tenant": "acme"},  # the application's own
+)
 ```
 
-The same applies to the ledger. `RedisIdempotencyStore(conn, prefix=...)` requires the prefix, with
-no default, because two services sharing one Redis under one prefix collide on a bare request id.
-The collision surfaces as a terminal `PayloadMismatch`, which dead-letters an event that was never
-wrong. Give each service and environment its own prefix.
+Every argument but the command is keyword-only. An `extensions` key outside the kernel's
+[extension key rule](../kernels/event.md#three-tiers-of-fields) raises `CodecError` before the
+handler runs.
+
+### `dispatch_message`: from the wire
+
+`await bus.dispatch_message(msg, codec)` runs a `CommandMessage` a broker or an outbox delivered.
+`codec` unmarshals `msg` by its name and version, upcasting on the way, as an `EventCodec` does an
+event. The hash covers the value the handler receives, after the upcast. A message with no
+`idempotency_key` gets its own `id` as one, so a broker redelivery of the same message replays
+instead of running twice. The message keeps its lineage, so its handler's events stay in its flow.
+
+### `command_message`: build one without dispatching
+
+`command_message(cmd, *, codec=None, idempotency_key=None, aggregate_id=None, lineage=None,
+extensions=None, metadata=None)` builds the same `CommandMessage` `dispatch` would, and dispatches
+nothing. Use it to publish a command, or to stage one in the command outbox. A command that does not
+encode, a version outside an unsigned 32-bit integer, or a bad extension key raises the terminal
+`CodecError`.
+
+Without `codec`, the message carries the command's JSON and `cmd.version`, or 1. With `codec`, its
+name, version and data are what `codec.marshal(cmd)` returns. Build a message for another process's
+`dispatch_message` with the codec that consumer reads with. A JSON message under a msgpack codec does
+not decode. A version-1 message under a version-2 codec runs the upcaster on data that is already
+current. A codec that names the command other than `cmd.type` raises `CodecError`.
+
+## Scope names the guard
+
+`idempotent(store, scope="billing")` deduplicates by the message's idempotency key. `scope` is
+required. The guard claims the kernel's
+[`claim_key(scope, key)`](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims),
+never the raw key, so two guards on one ledger never meet. An ingress guard that takes client
+requests and a consumer guard that takes commands off a topic may see the same key. Each replays
+only its own outcome.
+
+```python
+ingress = CommandBus(idempotent(ledger, scope="billing.api", unit_of_work=db))
+worker = CommandBus(idempotent(ledger, scope="billing.worker", unit_of_work=db))
+```
+
+Name a service, or a stage within one. The
+[claim key](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims) section says why
+the scope has no default.
+
+The ledger keeps its own namespace too. `RedisIdempotencyStore(conn, prefix=...)` requires the
+prefix, with no default. Give each service and environment its own prefix.
+
+### An HTTP `Idempotency-Key`
+
+The client mints one key per intent and sends it on every retry. The handler passes it through
+unchanged, and the request id roots the flow.
+
+```python
+async def post_deposit(headers: dict[str, str], account_id: str, amount: int) -> int:
+    return await bus.dispatch(
+        Deposit(account_id, amount),
+        idempotency_key=headers.get("Idempotency-Key"),  # absent: no claim
+        aggregate_id=account_id,
+        lineage=originate(correlation_id=headers.get("X-Request-Id")),
+    )
+```
+
+A server-minted value belongs beside the payload, never inside it. A field minted fresh per attempt
+hashes differently each time. The retry then meets the stored record under the same key and raises
+`PayloadMismatch` for a legitimate duplicate.
+
+## Three routes for a command
+
+| Route | How | Atomic with the state change | Delivery |
+|---|---|---|---|
+| in process | `await bus.dispatch(cmd, idempotency_key=...)` | the guard's unit of work holds the claim and the handler's writes | the caller retries; the guard deduplicates |
+| direct publish | `await producer.publish(command_message(cmd, ...))` | no: a dual write | the publish and the state change can each land without the other |
+| command outbox | `await repo.save(agg, commands=[command_message(cmd, ...)])`, drained by a `Relay` | yes: the command commits with the events | at-least-once; the consumer deduplicates by the idempotency key |
+
+**In process** is the default. The caller awaits the result.
+
+**Direct publish** sends a `CommandMessage` to a broker. A handler that saves its events and then
+publishes can crash between the two, and the command is lost. Publishing first and then failing the
+save sends a command for a change that never happened. Use it only where the sender's state needs no
+agreement with the command, such as an API gateway that only forwards.
+
+**The command outbox** is the fix for that dual write. Build the repository with a
+`CommandOutbox` over the event store's database. Then `save(agg, commands=[...])` stages the command
+messages in the same transaction as the events. A `Relay` over the outbox sends them only after the
+commit, and sends them again after a crash. So the consumer must deduplicate: give each command an
+idempotency key that is the same on every send.
+
+```python
+outbox = MemoryCommandOutbox(db)  # over the event store's transactor
+repo = Repository(store, events, accounts, commands=outbox)
+
+ship = command_message(
+    Ship(order.id), codec=command_codec, idempotency_key=f"ship:{order.id}", aggregate_id=order.id
+)
+await repo.save(order, commands=[ship])  # the events and the command commit together
+await Relay(outbox, producer.publish).drain()  # sent only once committed
+```
+
+`CommandOutbox.enqueue(tx, commands)` is the write side, and an `Outbox` of command messages the read
+side. [Backends](../backends/README.md#commandoutbox) lists what it refuses. A save with commands on a repository built without an outbox raises `TypeError`.
+`MemoryCommandOutbox` is the memory outbox. A saga has its own command outbox in the `SagaStore`,
+with the same guarantee; see [sagas](./sagas.md).
+
+On the consuming side, the dispatcher's handler hands each delivered command to
+`bus.dispatch_message(msg, command_codec)`, with the codec the producer built the message with. The
+consumer's guard then claims the message's idempotency key under its own scope.
+
+## Forget: re-driving a dead-lettered command
+
+A command that failed terminally leaves a cached failure under its key. Every redelivery replays it
+as `CachedFailure`, by design. When an operator fixes the cause and re-drives the message from the
+dead-letter queue, the cached failure must go first.
+
+```python
+from edax.command import forget, received_key
+
+await forget(ledger, "billing.worker", received_key(msg))  # the scope and key the guard claimed
+```
+
+`forget(store, scope, key, *, tx=None)` deletes the record the guard stored under
+`claim_key(scope, key)`. The kernel's
+[forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it may
+delete.
 
 ## CommandBus
 
@@ -109,7 +248,9 @@ wrong. Give each service and environment its own prefix.
 | Middleware | per command type: `wrap(handler, vec![mw, ...])` before `register` | bus-wide, passed to the constructor |
 | Register | `register::<C, O>(command_type, handler) -> Result<(), Error>` | `register(command_type, handler) -> None`, or the `@bus.on(command_type)` decorator, as `EventRouter.on` |
 | Duplicate registration | `Err` with code `already_registered` | `raise AlreadyRegistered(command_type)` |
-| Dispatch | `dispatch::<C, O>(&cmd) -> Result<O, HandlerError>` | `await dispatch(cmd) -> Any` |
+| Dispatch | `dispatch::<C, O>(&cmd) -> Result<O, HandlerError>` | `await dispatch(cmd, *, idempotency_key=None, aggregate_id=None, lineage=None, extensions=None, metadata=None) -> Any` |
+| Dispatch a message | none: a Rust host decodes the command itself | `await dispatch_message(msg, codec) -> Any` |
+| The message in flight | none | `current_command()`, the `CommandMessage` being handled |
 | No handler | code `handler_not_found` (also for a handler registered for another `C` or `O`) | `raise HandlerNotFound(cmd.type)` |
 | Handler failed | the handler's `HandlerError`, unchanged | the handler's exception propagates |
 
@@ -173,6 +314,9 @@ for mw in reversed(self._middleware):
 Two consequences. First, `CommandBus(retry(3), idempotent(...))` runs the retry first and the guard
 inside it. Second, the chain is frozen at registration.
 
+A Python middleware receives the command value, as the handler does. It reads the message around it
+with `current_command()`: its idempotency key, its lineage, its extensions.
+
 ### One dispatch, drawn
 
 ```mermaid
@@ -188,8 +332,8 @@ sequenceDiagram
     activate Retry
     Retry->>Guard: next, attempt 1
     activate Guard
-    Guard->>Guard: hash the whole command value, begin a unit of work
-    Guard->>Ledger: claim the key with the payload hash
+    Guard->>Guard: hash the name and the whole value, begin a unit of work
+    Guard->>Ledger: claim claim_key(scope, key) with the hash
     alt claim won
         Ledger-->>Guard: no prior record
         Guard->>Handler: run
@@ -256,10 +400,10 @@ after its writes succeeded.
 
 | Wiring | Verdict |
 |---|---|
-| `CommandBus(retry(n), idempotent(store, key, unit_of_work=db))`, no transaction around the dispatch | **the one to use**: each attempt claims, runs and commits in a unit of work of its own |
+| `CommandBus(retry(n), idempotent(store, scope=..., unit_of_work=db))`, no transaction around the dispatch | **the one to use**: each attempt claims, runs and commits in a unit of work of its own |
 | `retry` inside `idempotent(..., unit_of_work=db)` | refused: the guard's unit of work is open, so `retry` raises `BadHandle` |
 | any `retry` under a transaction the host opened around `dispatch` | refused: the host's unit of work is open, so `retry` raises `BadHandle` |
-| `idempotent(store, key)` with no transaction anywhere | allowed, but each attempt's writes commit on their own: at-least-once, and the handler must tolerate a re-run |
+| `idempotent(store, scope=...)` with no transaction anywhere | allowed, but each attempt's writes commit on their own: at-least-once, and the handler must tolerate a re-run |
 
 Python enforces the first two refusals in one check: `retry` raises terminal `BadHandle` while
 a `transaction` is open. `test_command.py::test_retry_refuses_to_run_inside_an_open_transaction` pins it.
@@ -276,23 +420,17 @@ The wiring `examples/py/05_idempotent_commands.py` runs, with a `submit` entry p
 ```python
 # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
 # attempt rolls back whole. retry refuses to run inside an open transaction.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), key=request_id_of, unit_of_work=db))
+bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
 bus.register("Deposit", deposit)
 
 
 async def submit(request_id: str, account_id: str, amount: int) -> int:
-    return await bus.dispatch(Deposit(account_id, amount, request_id))  # no transaction around it
+    # no transaction around it
+    return await bus.dispatch(Deposit(account_id, amount), idempotency_key=request_id)
 ```
 
-The key function reads the command's own field, as in the same example:
-
-```python
-def request_id_of(cmd: Any) -> str:
-    return cmd.request_id
-```
-
-It takes `Any` because one bus routes several command types while `idempotent` types its key
-function over the `Command` protocol, which declares only `type`.
+The guard reads the key from the message the bus built, so one guard serves every command type. A
+dispatch without a key passes the guard and runs the handler.
 
 **Why each attempt claims again.** With `retry` outside the guard, a failed attempt rolls back its
 claim together with its writes. The next attempt claims again in a fresh unit of work, and starts
@@ -311,8 +449,8 @@ rolled back: the retry starts from committed state.
 ```mermaid
 flowchart TB
     A["submit: CommandBus.dispatch routes on the type name"] --> B["retry: attempt 1"]
-    B --> C["guard: hash the whole command value, begin the unit of work"]
-    C --> D["ledger: claim the key, enlisted in the unit of work"]
+    B --> C["guard: hash the name and the whole value, begin the unit of work"]
+    C --> D["ledger: claim claim_key(scope, key), enlisted in the unit of work"]
     D -- "claim lost" --> R["replay the record, or the verdict error"]
     D -- "claim won" --> F["Repository.load: snapshot plus replay"]
     F --> G["Repository.save"]
@@ -324,8 +462,8 @@ flowchart TB
     J --> L["Relay.drain publishes the committed outbox rows"]
 ```
 
-Read it in order. The guard begins the unit of work, hashes the command and claims `request_id`
-inside it. The handler loads the aggregate and applies the event. It calls `Repository.save`, which
+Read it in order. The guard begins the unit of work, hashes the command and claims the scoped
+idempotency key inside it. The handler loads the aggregate and applies the event. It calls `Repository.save`, which
 appends the events, the snapshot and their outbox rows atomically. The guard writes the terminal
 record and commits, and one commit lands all of it. A raising handler rolls back everything, the
 claim included. On a transient failure `retry` runs the next attempt in a fresh unit of work. It
@@ -343,4 +481,7 @@ times and asserts one deposit event.
 - [Aggregates](./aggregates.md) — `Repository.save`, optimistic concurrency on append.
 - [Outbox](./outbox.md) — the rows `Repository.save` writes and how `Relay` drains them.
 - [Consuming](./consuming.md) — `KeyOrderedDispatcher` and the same guard on the consume path.
-- [Golden vectors](../kernels/golden-vectors.md) — `command_hash.json` and how to regenerate it.
+- [Sagas](./sagas.md) — commands a saga sends through its own outbox.
+- [edax-cqrs](../kernels/cqrs.md) — `command_hash`, `claim_key` and `forget`, decision by decision.
+- [Golden vectors](../kernels/golden-vectors.md) — `command_hash.json`, `claim_key.json` and how to
+  regenerate them.

@@ -14,22 +14,15 @@ import asyncio
 import contextlib
 import json
 
-from edax import Event, EventEnvelope, EventRouter, KeyOrderedDispatcher, partition
+from edax import EventMessage, EventRouter, KeyOrderedDispatcher, partition, testing
 from edax.backend.memory import MemoryBroker
 
 WORKERS = 3
 
 
-def deposited(account_id: str, sequence: int, amount: int) -> EventEnvelope:
-    return EventEnvelope(
-        id=f"{account_id}-{sequence}",
-        aggregate_id=account_id,
-        event=Event("Deposited", 1, json.dumps({"amount": amount}).encode()),
-        namespace={},
-        metadata={},
-        timestamp=0,
-        sequence=sequence,
-    )
+def deposited(account_id: str, sequence: int, amount: int) -> EventMessage:
+    data = json.dumps({"amount": amount}).encode()
+    return testing.event(account_id, "Deposited", sequence, id=f"{account_id}-{sequence}", data=data)
 
 
 async def main() -> None:
@@ -44,11 +37,11 @@ async def main() -> None:
     router = EventRouter()
 
     @router.on("Deposited")
-    async def on_deposited(envelope: EventEnvelope) -> None:
-        assert envelope.sequence is not None
-        seen[envelope.aggregate_id].append(envelope.sequence)
-        worker = partition(envelope.aggregate_id, WORKERS)
-        print(f"  worker {worker}: {envelope.aggregate_id} #{envelope.sequence}")
+    async def on_deposited(event: EventMessage) -> None:
+        assert event.sequence is not None
+        seen[event.aggregate_id].append(event.sequence)
+        worker = partition(event.aggregate_id, WORKERS)
+        print(f"  worker {worker}: {event.aggregate_id} #{event.sequence}")
 
     # 3. Start the workers, then let the broker feed them. Step 9 adds a dead-letter sink.
     dispatcher = KeyOrderedDispatcher(workers=WORKERS, handler=router.dispatch)

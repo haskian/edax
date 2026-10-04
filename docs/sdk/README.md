@@ -57,7 +57,7 @@ classDiagram
         +load(tx, aggregate_id, after)
         +load_snapshot(tx, aggregate_id)
         +save_snapshot(tx, snapshot)
-        +append(tx, aggregate_id, expected, events)
+        +append(tx, aggregate_id, expected, drafts) messages
         +unpublished(limit)
         +mark_published(ids)
     }
@@ -65,6 +65,7 @@ classDiagram
         +claim(key, payload_hash, tx)
         +complete(key, handle, record, tx)
         +release(key, handle, tx)
+        +forget(key, tx)
         +joins_transaction
     }
     class ProjectionStore {
@@ -78,7 +79,7 @@ classDiagram
         +complete(id, version, commands, tx)
     }
     class Producer {
-        +publish(envelope)
+        +publish(message)
     }
     class Consumer {
         +poll()

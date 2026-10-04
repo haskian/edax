@@ -11,8 +11,8 @@ from typing import Any, Literal
 import edax
 import msgspec
 import pytest
-from conftest import Tick, build_envelope, golden
-from edax import _edax, causation, upcast
+from conftest import Tick, build_message, golden
+from edax import _edax, upcast
 from edax import query as Q
 from edax.codec import json_codec, msgpack_codec
 from edax.errors import _BY_CODE, from_wire
@@ -128,9 +128,31 @@ def test_golden_upcast() -> None:
             assert edax.upcast_plan(c["from"], c["to"], c["available"]) == c["plan"], c
 
 
-def test_golden_causation() -> None:
-    for c in golden("causation.json"):
-        assert causation.propagate(c["parent_metadata"], c["parent_event_id"]) == c["expected"]
+@pytest.mark.parametrize(
+    "branch, version, want",
+    [
+        ("negative", -1, ValueError),
+        ("past_u32", 2**32, ValueError),
+        ("not_an_int", "1", TypeError),
+        ("a_bool", True, TypeError),
+    ],
+)
+def test_a_schema_version_outside_u32_is_refused_at_wiring(
+    branch: str, version: Any, want: type[Exception]
+) -> None:
+    """A schema version is an unsigned 32-bit integer on the wire. A version outside it would fail every
+    event it stamps, so the registration refuses it, not the first marshal as a terminal CodecError."""
+    with pytest.raises(want):
+        upcast.Upcaster().step(version, lambda d: d)
+    with pytest.raises(want):
+        edax.json_codec({"Opened": dict}, version=version)
+    with pytest.raises(want):
+        edax.msgpack_codec({"Opened": dict}, version=version)
+
+
+def test_the_u32_bounds_are_accepted() -> None:
+    upcast.Upcaster().step(0, lambda d: d).step(2**32 - 1, lambda d: d)
+    assert edax.json_codec({"Opened": dict}, version=2**32 - 1).marshal({}).version == 2**32 - 1
 
 
 def test_a_second_transform_for_one_step_is_refused() -> None:
@@ -261,7 +283,13 @@ def test_the_import_fails_when_a_kernel_code_has_no_class(monkeypatch: pytest.Mo
 def test_the_import_fails_on_a_wire_format_the_kernel_does_not_know(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(edax.aggregate, "WireFormat", Literal["json", "protobuf"])
     with pytest.raises(edax.CodecError, match="unknown format: protobuf"):
-        edax.aggregate._check_every_wire_format_is_the_kernels()
+        edax.aggregate._check_every_wire_name_is_the_kernels()
+
+
+def test_the_import_fails_on_a_message_kind_the_kernel_does_not_know(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(edax.aggregate, "MessageKind", Literal["event", "query"])
+    with pytest.raises(edax.CodecError, match="unknown message kind: query"):
+        edax.aggregate._check_every_wire_name_is_the_kernels()
 
 
 # The kernel's error taxonomy: one row per code with the verdict every SDK persists on. The Rust
@@ -574,7 +602,7 @@ def _router_case(kind: str, seen: list) -> edax.EventRouter:
         router.register("Deposited", seen.append)
     elif kind == "async":
 
-        async def handle(env: edax.EventEnvelope) -> None:
+        async def handle(env: edax.EventMessage) -> None:
             await asyncio.sleep(0)
             seen.append(env)
 
@@ -595,12 +623,12 @@ def _router_case(kind: str, seen: list) -> edax.EventRouter:
     ],
 )
 def test_router_dispatch_branches(branch: str, kind: str, event_name: str, want_names: list[str]) -> None:
-    seen: list[edax.EventEnvelope] = []
+    seen: list[edax.EventMessage] = []
     router = _router_case(kind, seen)
-    env = build_envelope("acct-1", event_name, 3, data=DEPOSITED_V2, metadata={"trace": "abc"})
+    env = build_message("acct-1", event_name, 3, data=DEPOSITED_V2, metadata={"trace": "abc"})
     asyncio.run(router.dispatch(env))
-    assert [e.event.name for e in seen] == want_names
-    assert all(e.id == env.id for e in seen)  # the handler gets the envelope, not a copy
+    assert [e.name for e in seen] == want_names
+    assert all(e.id == env.id for e in seen)  # the handler gets the message, not a copy
 
 
 def test_register_rejects_a_second_handler_for_one_name() -> None:
@@ -693,9 +721,6 @@ def test_mapped_types_native_failures(
     assert excinfo.value.__cause__ is raised  # the native error stays attached
 
 
-_ENV = _edax.EventEnvelope("evt-1", "agg-1", _edax.Event("Opened", 1, b"{}"), {}, {}, 0, 1)
-
-
 @pytest.mark.parametrize(
     "branch, call",
     [
@@ -707,24 +732,17 @@ _ENV = _edax.EventEnvelope("evt-1", "agg-1", _edax.Event("Opened", 1, b"{}"), {}
         ("i32_overflow_version", lambda: _edax.upcast_plan(1, 2**31, [1])),
         ("negative_backoff_attempt", lambda: _edax.backoff_millis(100, 30_000, -1, 0)),
         ("negative_stored_hash", lambda: _edax.idempotency_outcome(1, -5, False)),
-        (
-            "timestamp_past_i64",
-            lambda: _edax.EventEnvelope("e", "a", _edax.Event("X", 1, b""), {}, {}, 2**63, 1),
-        ),
+        ("recorded_at_past_i64", lambda: build_message("a", "X", None, recorded_at=2**63)),
+        ("negative_u32_version", lambda: build_message("a", "X", None, version=-1)),
         # Types.
         ("str_as_bytes", lambda: _edax.payload_hash("text")),  # ty: ignore[invalid-argument-type]
-        (
-            "non_str_metadata_value",
-            lambda: _edax.event_idempotency(
-                _edax.EventEnvelope("e", "a", _edax.Event("X", 1, b""), {}, {"n": 3}, 0)  # ty: ignore[invalid-argument-type]
-            ),
-        ),
+        ("non_str_metadata_value", lambda: build_message("a", "X", None, metadata={"n": 3})),  # ty: ignore[invalid-argument-type]
         # A lone surrogate is a legal Python `str`.
         ("lone_surrogate_key", lambda: _edax.partition("\ud800", 8)),
         ("lone_surrogate_wire", lambda: _edax.split_error("\ud800")),
         # Kernel refusals of a value's content.
         ("canonical_json_refuses_a_lone_surrogate_escape", lambda: _edax.canonical_json(b'{"s":"\\ud800"}')),
-        ("event_rule_takes_an_envelope", lambda: _edax.event_idempotency(_ENV.id)),  # ty: ignore[invalid-argument-type]
+        ("event_rule_takes_a_message", lambda: _edax.event_idempotency("evt-1")),  # ty: ignore[invalid-argument-type]
     ],
 )
 def test_every_deterministic_boundary_failure_is_terminal(branch: str, call: Callable[[], Any]) -> None:

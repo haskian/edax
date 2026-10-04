@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from edax import (
     CommandBus,
-    Event,
-    EventEnvelope,
+    EventDraft,
     Observer,
     Relay,
     current_timestamp,
@@ -58,12 +57,7 @@ class PrintingObserver(Observer):
 class Deposit:
     account_id: str
     amount: int
-    request_id: str
     type: ClassVar[str] = "Deposit"
-
-
-def request_id_of(cmd: Any) -> str:
-    return cmd.request_id
 
 
 def record_latency(name: str, outcome: str, error_type: str | None, duration_ns: int) -> None:
@@ -77,7 +71,7 @@ async def main() -> None:
 
     # 1. timing() outermost, so it times every dispatch, the replayed ones too.
     ledger = MemoryIdempotencyStore(db)
-    guard = idempotent(ledger, key=request_id_of, unit_of_work=db, observer=observer)
+    guard = idempotent(ledger, db, scope="accounts-api", observer=observer)
     bus = CommandBus(timing(record_latency, lambda cmd: cmd.type), guard)
 
     async def deposit(cmd: Deposit) -> int:
@@ -87,27 +81,30 @@ async def main() -> None:
 
     # 2. A first dispatch, then a repeat of the same request.
     print("dispatch req-1:")
-    await bus.dispatch(Deposit("acct-1", 100, "req-1"))
+    await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-1")
     print("dispatch req-1 again:")
-    await bus.dispatch(Deposit("acct-1", 100, "req-1"))
+    await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-1")
 
     # 3. A unit of work you open yourself reports through `transaction(..., observer=)`.
     print("append an event:")
-    envelope = EventEnvelope(
+    draft = EventDraft(
         id="e1",
         aggregate_id="acct-1",
-        event=Event("Deposited", 1, b"{}"),
-        namespace={},
-        metadata={},
-        timestamp=current_timestamp(),
         sequence=1,
+        name="Deposited",
+        version=1,
+        data=b"{}",
+        correlation_id="e1",
+        causation_id="e1",
+        extensions={},
+        metadata={},
     )
     async with transaction(store, observer=observer) as tx:
-        await store.append(tx, "acct-1", 0, [envelope])
+        await store.append(tx, "acct-1", 0, [draft])
 
     # 4. A relay drain reports what it published. `relay.last` keeps it for a health check.
     print("drain the outbox:")
-    relay = Relay(store, lambda envelope: None, observer=observer)
+    relay = Relay(store, lambda event: None, observer=observer)
     await relay.drain()
     assert relay.last is not None and relay.last.oldest_timestamp is not None
     lag_ms = (current_timestamp() - relay.last.oldest_timestamp) / 1e6

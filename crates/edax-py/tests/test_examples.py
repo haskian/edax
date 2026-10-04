@@ -37,10 +37,10 @@ def test_the_example_suite_is_not_empty() -> None:
 
 @pytest.mark.parametrize("path", EXAMPLES, ids=lambda p: p.stem)
 def test_no_example_command_hashes_its_type(path: Path) -> None:
-    """``type`` routes a command; it must never reach the payload hash.
+    """``type`` is the command's name: the hash takes it once, as the name, never as a field too.
 
-    Declared as a dataclass *instance* field it enters the hash, and a Rust command carrying the same
-    business fields does not hash it. A service sharing a ledger across the two languages then gets
+    Declared as a dataclass *instance* field it enters the payload as well, and a Rust command carrying
+    the same business fields does not. A service sharing a ledger across the two languages then gets
     ``PayloadMismatch`` on every genuine cross-language duplicate. ``docs/sdk/commands.md`` states the
     rule; this pins it for every example.
     """

@@ -3,7 +3,7 @@
 How edax is layered, why the layering exists, and what the build pipeline turns each layer into.
 
 Event-driven services stay consistent only while every service agrees on a small set of decisions,
-bit for bit. Which partition an aggregate routes to. What bytes an envelope serializes to. Whether a
+bit for bit. Which partition an aggregate routes to. What bytes a message serializes to. Whether a
 redelivered command is a duplicate. How a filtered page is ordered. edax puts exactly those
 decisions in pure Rust kernels, wraps them in a software development kit (SDK) per language, and
 pins the result with golden vectors.
@@ -23,8 +23,8 @@ flowchart TB
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>payload hash, idempotency decision<br/>filter, query"]
-        D["edax-event<br/>partition, codec, sequence<br/>upcast, causation, dedup<br/>retry policy, saga step"]
+        C["edax-cqrs<br/>command hash, claim key<br/>idempotency decision<br/>filter, query"]
+        D["edax-event<br/>message shapes, codec, lineage<br/>partition, ordering key, sequence<br/>upcast, dedup, retry policy, saga step"]
         E["edax-core<br/>hashing, backoff<br/>clock, guid, error codes"]
     end
 
@@ -104,11 +104,11 @@ flowchart LR
 | Crate | What |
 |---|---|
 | `edax-core` | hashing, backoff, the error taxonomy, `guid`, `current_timestamp`, a poison-tolerant lock, settlement tokens |
-| `edax-event` | partition, codec, upcast, causation, staleness, dedup, sequence, the retry and dead-letter policy, the saga step, the envelope shape |
-| `edax-cqrs` | canonical JSON, payload hash, command hash, the idempotency record and decision, the filter, sort and cursor rules |
-| `edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, and a partitioned broker log, written once and shared by both SDKs |
+| `edax-event` | the event and command message shapes, the extension key rule, the codec and its media types, lineage (causation), the ordering key, partition, upcast, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
+| `edax-cqrs` | canonical JSON, payload hash, command hash, the claim key, the idempotency record and decision, the forget decision, the filter, sort and cursor rules |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by both SDKs |
 | `edax-kafka` | the Kafka record: the key rule, the `content-type` header, broker placement (Java murmur2), the media types, the poison id, and the token-settled offset watermark |
-| `edax-redis` | the Redis ledger: the stored value layout, the owner token that fences it, and the four Lua scripts that compare the stored claim before they write |
+| `edax-redis` | the Redis ledger: the stored value layout, the owner token that fences it, and the five Lua scripts that compare the stored value before they write |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
@@ -121,7 +121,7 @@ input and output (I/O) shell per SDK.
 
 Read the three crates that way. Both SDKs' in-memory backends are views over `edax-memory`, so the
 staging, the optimistic-concurrency checks and the transaction boundary are one implementation.
-`edax-kafka` owns the record a published envelope becomes and the offset watermark that settles it.
+`edax-kafka` owns the record a published message becomes and the offset watermark that settles it.
 `edax-redis` owns the value stored under an idempotency key and the Lua a fenced write runs. Neither
 crate links a client library, so the I/O stays in the SDK that has one.
 

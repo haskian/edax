@@ -38,7 +38,12 @@ Specification: `edax.store.EventStore`.
 - `append` is a compare-and-set on the version, enforced in the database.
 - On a mismatch it raises `ConcurrencyError` and writes nothing.
 - Event rows and outbox rows commit together in the caller's `tx`.
-- An envelope id is unique store-wide: an `append` carrying an id already stored raises `CodecError`.
+- `append` takes `EventDraft`s and returns the stored `EventMessage`s, in order. It stamps every
+  draft's `recorded_at` with its own clock, a database's `now()`. `load` and `unpublished` return
+  the same value.
+- A stored event keeps every draft field: `occurred_at`, `correlation_id`, `causation_id`,
+  `extensions` and `metadata` included. Give each one a column.
+- An event id is unique store-wide: an `append` carrying an id already stored raises `CodecError`.
 - `load` returns `sequence > after`, ascending and gap-free. The repository checks it and fails the load
   on a gap or a repeat.
 - `load` includes the current transaction's own appends.
@@ -60,6 +65,9 @@ Specification: `edax.command.IdempotencyStore`.
 - `complete` and `release` take the claim's handle and are idempotent.
 - If claims can lapse, both write only while the key still holds that exact claim. A release after
   the claim's own `complete` landed deletes nothing.
+- `forget(key, tx=None)` deletes a settled record, so a re-driven message runs its handler again.
+  The kernel's [`forget`](../kernels/cqrs.md#forget--deleting-a-settled-record) decides from the
+  record. A store whose keys can be taken over deletes only while the key holds the value it read.
 - A `joins_transaction` store never settles a key another open transaction holds: `complete` and
   `release` raise a transient `ConcurrencyError` and write nothing. Clause:
   `test_a_key_another_open_transaction_holds_is_never_settled_over_it`.
@@ -91,10 +99,29 @@ Specification: `edax.saga.SagaStore`.
 - `save` and `complete` write at `version + 1` only if the store is still at `version`.
 - `complete` writes a tombstone; it never deletes the row. A completed instance takes no write at all.
 - The step's commands are written in the same write as the state: the saga outbox. A refused or
-  rolled-back write enqueues none.
+  rolled-back write enqueues none. Each command is a `CommandMessage` whose id is
+  `saga_command_id(instance, version + 1, index)`; key the outbox on it.
 - `unpublished` and `mark_published` are the saga outbox's read side, as for the event outbox.
-- A durable backend enlists in `tx` or in the ambient `current_tx` of its transactor, and purges
-  tombstones by retention.
+
+### `CommandOutbox`
+
+Specification: `edax.store.CommandOutbox`. Optional.
+
+A command outbox holds the commands a unit of work decided, so they commit with its events. Build the
+repository with it, `Repository(..., commands=outbox)`. Then `save(..., commands=[...])` calls
+`enqueue(tx, commands)` under the save's transaction.
+
+- `enqueue` writes the messages under `tx` as unpublished rows keyed by message id. A rollback
+  stages nothing.
+- `tx` is the event store's. An outbox over another database refuses it with the terminal
+  `BadHandle`, because the two writes would not commit together.
+- A command id is unique among the rows waiting. A second row under one id raises `CodecError`,
+  because the relay marks rows by id.
+- `unpublished` and `mark_published` are its read side, run outside any `tx`, as for the event
+  outbox. A `Relay` drains it.
+- `MemoryCommandOutbox` is the memory one.
+- A durable backend enlists in `tx` or in the ambient `current_tx` of its transactor, and
+  `mark_published` prunes the rows it acknowledges.
 
 ### `Relay`
 
@@ -111,7 +138,9 @@ Specification: `edax.broker.Producer`.
   leader alone.
 - `publish` raises on failure, so the relay hands that row back (or dead-letters it).
 - A dispatcher `submit` is not a valid `publish`. It only enqueues.
-- The message key is the aggregate id, which preserves per-aggregate order.
+- `publish` takes an `EventMessage` or a `CommandMessage`.
+- The message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key), which keeps
+  per-aggregate order.
 - Delivery is at-least-once.
 - One relay calls it serially, so it need not be thread-safe.
 
@@ -169,6 +198,7 @@ classDiagram
         +claim()
         +complete()
         +release()
+        +forget()
     }
     class ProjectionStore {
         <<Protocol>>
@@ -258,7 +288,7 @@ followed by a write in Python holds only until two writers interleave.
 The last row is a choice, not a requirement. The polling contract does not lease rows, so run one
 relay per store unless you add leasing; two unleased relays return the same rows and publish them
 twice. The alternative is change data capture: `append` already wrote the outbox row inside the
-transaction, so a write-ahead-log consumer sees it when it commits. Feed those envelopes to
+transaction, so a write-ahead-log consumer sees it when it commits. Feed those event messages to
 `edax.store.pump` and let your change data capture (CDC) client's committed position be the
 acknowledgement.
 
@@ -374,7 +404,7 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 |---|---|---|
 | `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
 | `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and not advancing on a conflict, independence per id, a save with no `tx` joining the ambient transaction, two writers at one version landing exactly one save, a staged row invisible to another transaction, and kernel paging when `supports_kernel_queries` is on |
-| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown correlation reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
+| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown instance reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
 | `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key. With `stores_raw_records` and a `put_raw_record` hook: a record no reader can decode read as the kernel's cached `codec` failure, keeping the stored hash where it reads |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that

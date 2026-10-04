@@ -25,8 +25,9 @@ flowchart LR
 ### caller to `CommandBus`
 
 - Delivery: at-least-once. The caller retries a lost response.
-- Safe because the command carries an idempotency key.
-- The `idempotent` guard claims that key atomically.
+- Safe because the caller sends the same idempotency key on every retry of one intent:
+  `dispatch(cmd, idempotency_key=...)`.
+- The `idempotent` guard claims `claim_key(scope, key)` atomically.
 - The kernel rules on the reuse: proceed, replay, or `PayloadMismatch`.
 - Skip it and a retried submit runs the handler twice, so it deposits twice.
 
@@ -71,11 +72,13 @@ flowchart LR
   Any other failure is handed back after a growing backoff step.
 - A saga's commands ride the same relay from the saga outbox. They are written with the step's
   state and sent only once that write committed. A fold that lost a version race sends nothing.
+- Commands a handler stages with `Repository.save(..., commands=[...])` ride a relay from the
+  command outbox the same way. They commit with the events or not at all.
 
 ### broker to `KeyOrderedDispatcher`
 
 - Delivery: at-least-once, per-key order.
-- The key is `aggregate_id`.
+- The key is the kernel's [ordering key](../kernels/event.md#the-ordering-key).
 - `ack` settles only that message. On an offset broker that is a per-partition watermark below the
   lowest unacked offset.
 - `nack` redelivers. On a log it rewinds the partition and retires the deliveries of it already handed
@@ -89,7 +92,7 @@ flowchart LR
 ### `KeyOrderedDispatcher` to handler
 
 - Delivery: at-least-once, bounded, then dead-letter.
-- The worker is `partition(aggregate_id, workers)`, so one aggregate stays first in, first out
+- The worker is `partition(ordering_key, workers)`, so one aggregate stays first in, first out
   (FIFO) on one worker.
 - Per-key order holds through a nack on a broker that rewinds: the worker skips a delivery that is no
   longer live. On a broker that requeues behind later messages, it holds for successful deliveries
@@ -105,12 +108,12 @@ flowchart LR
 - Safe because `save` is a database-enforced compare-and-set on `entity.version`.
 - Last-writer-wins lets a redelivery overwrite a newer document.
 
-The consume path gets its deduplication from `idempotent_by_id`, which claims `env.id` in the same
+The consume path gets its deduplication from `idempotent_by_id`, which claims `msg.id` in the same
 ledger and reaches the same kernel verdict the command bus does.
 
 The `Relay` hop has a second shape. Change data capture reads the write-ahead log, through logical
 replication or a Debezium outbox router. The outbox row is already written in the same transaction,
-so the consumer sees it when the transaction commits. Feed the decoded envelopes to `pump`
+so the consumer sees it when the transaction commits. Feed the decoded event messages to `pump`
 instead; there is no `mark_published`, because the stream position is the ack, so commit that
 position only after `pump` has passed the row. The guarantee is the same: at-least-once, resumed
 from the last committed position.
@@ -148,7 +151,7 @@ sequenceDiagram
     participant G as guard
     participant H as handler
 
-    R->>B: publish envelope
+    R->>B: publish message
     B-->>R: durable ack
     Note over R,B: a crash here leaves the row unmarked, so the next drain re-publishes
     R->>R: mark_published
@@ -172,11 +175,11 @@ sequenceDiagram
 
 | Duplicate source | What removes it | Where |
 |---|---|---|
-| the caller retries a submit | the guard's atomic claim plus the kernel's verdict on the reused key | `idempotent(store, key=...)` |
+| the caller retries a submit | the guard's atomic claim plus the kernel's verdict on the reused key | `idempotent(store, scope=...)` with `dispatch(cmd, idempotency_key=...)` |
 | `retry` re-runs the handler | the rollback of the failed attempt: its claim and its writes go together, and the next attempt starts from committed state | `retry` outside `idempotent(..., unit_of_work=db)` |
 | two writers race on one aggregate | `append`'s version compare-and-set: the loser gets `ConcurrencyError` and writes nothing | `EventStore.append` |
 | two writers race on one read model | `save`'s version compare-and-set | `ProjectionStore.save` |
-| the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `env.id` | `edax.router.idempotent_by_id` |
+| the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `msg.id` | `edax.router.idempotent_by_id` |
 | the broker redelivers a handled message | the same claim; a `done` record replays and the handler is skipped | the ledger |
 | an out-of-order or stale redelivery | `is_stale(stored, incoming)` on the per-aggregate `sequence`, then `advance(stored, incoming)` for the new watermark | `edax.is_stale` / `edax.advance`, `edax::is_stale` / `edax::advance` |
 
@@ -216,7 +219,7 @@ Two placements keep one aggregate in order, and the kernel owns both.
   topic puts one aggregate on one partition, whether it is a Python service, a Rust one, a Java
   service or Kafka Connect. The broker then keeps its order. Leaving it to the client library would
   not: aiokafka uses murmur2 and librdkafka CRC32.
-- **Local fan-out.** `partition(aggregate_id, w)` is `fnv1a32(aggregate_id) % w`. It is the worker
+- **Local fan-out.** `partition(key, w)` is `fnv1a32(key) % w`, over the message's ordering key. It is the worker
   a consumer's `KeyOrderedDispatcher` runs an aggregate on. Its events run on one worker in FIFO
   order, while other aggregates progress in parallel. `w` is local: the broker already routed the
   aggregate to this one consumer, so no sibling with a different `w` ever sees the same id.
@@ -234,8 +237,9 @@ Two placements keep one aggregate in order, and the kernel owns both.
 **Never order on a wall clock.** `current_timestamp()` is Unix nanoseconds with a process-local
 high-water mark: strictly increasing within one process, and nothing more. It does not span
 restarts or machines. `guid()` is UUIDv7: roughly time-ordered and index-friendly, but with a random
-suffix, so it is not an ordering key. Order on `sequence`, which the store assigns and the compare-and-set
-defends.
+suffix, so it is not an ordering key. A message's `occurred_at`, `recorded_at` and `issued_at` are
+clock readings too, and so is a broker's record timestamp. Report them; never order by them. Order on
+`sequence`, which the store assigns and the compare-and-set defends.
 
 ## Checklist: effectively-once for your database state
 
@@ -278,7 +282,7 @@ theirs.
 
 The mitigations are the ordinary ones, and they are the caller's:
 
-- Give the external call its own idempotency key derived from the command or event id, and let the
+- Give the external call its own idempotency key derived from the command's idempotency key or the event id, and let the
   remote system deduplicate.
 - Move the side effect behind the transactional Outbox, so it is triggered by a committed row
   instead of by a handler that may roll back.
@@ -287,7 +291,7 @@ The mitigations are the ordinary ones, and they are the caller's:
 Also at-least-once by construction, whatever the host does:
 
 - The relay's publish. A crash between the durable ack and `mark_published` republishes the
-  envelope.
+  message.
 - The broker's delivery. A crash after the handler and before the ack redelivers it.
 - Split-ledger mode. A commit that landed and lost its reply releases a claim over work that
   survived, so the redelivery re-runs it. The case

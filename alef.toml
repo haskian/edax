@@ -5,7 +5,7 @@
 # is routed to the throwaway `.alef` dir and not shipped. In this alef version that output dir IS the
 # package dir, so it must NOT point at `python/edax` or alef overwrites the hand-written __init__.py.
 #
-# The `_edax.pyi` type stub is the one piece we DO ship, so checkers see the Event/EventEnvelope
+# The `_edax.pyi` type stub is the one piece we DO ship, so checkers see the message records'
 # fields. It is committed at `crates/edax-py/python/edax/_edax.pyi` next to the compiled `_edax`, with
 # a `py.typed` marker (PEP 561), so checkers need not regenerate it. The shipped copy has alef's
 # `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.

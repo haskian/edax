@@ -10,7 +10,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 from .. import _edax, errors
 from ..command import Claimed, Record, Won, decode_prior, encode_record
@@ -28,15 +28,22 @@ CLAIM_SCRIPT: str = _SCRIPTS.claim
 COMPLETE_SCRIPT: str = _SCRIPTS.complete
 RELEASE_SCRIPT: str = _SCRIPTS.release
 EXTEND_SCRIPT: str = _SCRIPTS.extend
+FORGET_SCRIPT: str = _SCRIPTS.forget
 
 # The script each store operation runs, by the operation's name.
-_Op = Literal["claim", "complete", "release", "extend"]
-_SCRIPT_OF: dict[_Op, str] = {
+_Script = Literal["claim", "complete", "release", "extend", "forget"]
+_SCRIPT_OF: dict[_Script, str] = {
     "claim": CLAIM_SCRIPT,
     "complete": COMPLETE_SCRIPT,
     "release": RELEASE_SCRIPT,
     "extend": EXTEND_SCRIPT,
+    "forget": FORGET_SCRIPT,
 }
+#: What the store sends: a kernel script, or the plain read a forget starts with.
+_Op = Literal[_Script, "get"]
+
+# How many times a forget reads the key again after the key changed under it: the kernel's.
+_FORGET_READS: int = _edax.redis_forget_reads()
 
 # How many times per claim TTL the heartbeat renews a held claim: the kernel's, as its check is.
 _HEARTBEATS_PER_TTL: int = _edax.redis_heartbeats_per_ttl()
@@ -46,16 +53,18 @@ ScriptArg = bytes | int
 
 
 class RedisConn(Protocol):
-    """The one Redis operation the store needs: run a kernel script. ``script`` is one of the four above,
-    sent as given (``EVALSHA`` of it, the source once on ``NOSCRIPT``), never rewritten, so every
-    connection runs the kernel's bytes and none re-derives the fence. The reply is the script's: ``None``,
-    bytes (or ``str`` from a client that decodes replies), or an integer.
+    """The two Redis operations the store needs. ``eval`` runs a kernel script: ``script`` is one of the
+    ones above, sent as given (``EVALSHA`` of it, the source once on ``NOSCRIPT``), never rewritten, so
+    every connection runs the kernel's bytes and none re-derives the fence. The reply is the script's:
+    ``None``, bytes (or ``str`` from a client that decodes replies), or an integer. ``get`` is a plain
+    ``GET`` of one key, which only :meth:`RedisIdempotencyStore.forget` sends.
 
     Raise :class:`~edax.errors.EdaxError` for a failure you can classify (:class:`AsyncRedisClient` asks
     the kernel's ``redis_reply_error`` about a Redis error reply); anything else the store types as transient
     :class:`~edax.errors.StoreError`."""
 
     async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[ScriptArg]) -> Any: ...
+    async def get(self, key: bytes) -> Any: ...
 
 
 class RedisIdempotencyStore:
@@ -121,13 +130,16 @@ class RedisIdempotencyStore:
         with errors.mapped():
             return _edax.redis_ledger_key(self._prefix, key)
 
-    async def _eval(self, op: _Op, key: str, args: Sequence[ScriptArg]) -> Any:
-        """``op``'s script on ``key``'s ledger key, under the store's deadline. A failure the connection
+    async def _eval(self, op: _Script, key: str, args: Sequence[ScriptArg]) -> Any:
+        """``op``'s script on ``key``'s ledger key, under the store's deadline."""
+        return await self._send(op, key, lambda rkey: self._conn.eval(_SCRIPT_OF[op], [rkey], args))
+
+    async def _send(self, op: _Op, key: str, call: Callable[[bytes], Awaitable[Any]]) -> Any:
+        """``call`` on ``key``'s ledger key, under the store's deadline. A failure the connection
         classified keeps its class; any other is the seam contract's transient ``StoreError``. Each names
         the operation and the key."""
         try:
-            call = self._conn.eval(_SCRIPT_OF[op], [self._key(key)], args)
-            return await asyncio.wait_for(call, self._op_timeout_s)
+            return await asyncio.wait_for(call(self._key(key)), self._op_timeout_s)
         except EdaxError as e:
             raise type(e)(f"redis {op} {key!r}: {e}") from e
         except asyncio.TimeoutError as e:
@@ -191,6 +203,24 @@ class RedisIdempotencyStore:
             _edax.redis_check_claim(handle)
         return bool(await self._eval("extend", key, [handle, self._claim_ttl_ms]))
 
+    async def forget(self, key: str, tx: Tx | None = None) -> None:
+        """Delete the settled record ``key`` holds, so the next claim wins and a re-driven command runs
+        again. The store reads the value, and the kernel decides from it: a pending claim raises
+        :class:`~edax.errors.InProgress`, a free key is a no-op, and anything else is deleted, a value no
+        reader can decode included. The delete runs only while the key still holds the value read. When the
+        key changed in between (the record lapsed and a new claim took it), the store reads it again and
+        the kernel decides again. A key that keeps changing raises transient
+        :class:`~edax.errors.StoreError` after a few rounds."""
+        for _ in range(_FORGET_READS):
+            held = _reply_bytes(await self._send("get", key, self._conn.get))
+            with errors.mapped():
+                deletes = _edax.redis_forget_outcome(key, held)
+            if not deletes:
+                return
+            if await self._eval("forget", key, [cast(bytes, held)]):
+                return
+        raise StoreError(f"redis forget {key!r}: the key changed on every one of {_FORGET_READS} reads")
+
     async def _renew(self, key: str, handle: bytes) -> None:
         """The heartbeat: extend the claim every third of its TTL until it is settled or refused. A
         transient failure is retried on the next beat, since one missed beat still leaves a third of the
@@ -236,8 +266,14 @@ class AsyncRedisClient:
         registered = self._scripts.get(script)
         if registered is None:
             registered = self._scripts[script] = self._client.register_script(script)
+        return await self._classified(registered(keys=list(keys), args=list(args)))
+
+    async def get(self, key: bytes) -> Any:
+        return await self._classified(self._client.get(key))
+
+    async def _classified(self, reply: Awaitable[Any]) -> Any:
         try:
-            return await registered(keys=list(keys), args=list(args))
+            return await reply
         except self._replies as e:
             raise errors.from_wire(_edax.redis_reply_error(_reply_text(e))) from e
         except UnicodeDecodeError as e:

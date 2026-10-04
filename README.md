@@ -10,7 +10,7 @@
 cannot drift apart.**
 
 Event-driven services stay consistent only while every service agrees, bit for bit, on a small set
-of decisions. Which partition an aggregate routes to. What bytes an envelope serializes to. Whether
+of decisions. Which partition an aggregate routes to. What bytes a message serializes to. Whether
 a redelivered command is a duplicate. How a filtered page is ordered. Get one of those wrong in one
 service, or in one language, and the bug surfaces months later as a dropped row or a double-charged
 customer. edax puts exactly those decisions in pure Rust **kernels**, and wraps them in an SDK per
@@ -58,11 +58,10 @@ class Deposited:  # a domain event
 
 
 @dataclass
-class Deposit:  # a command
+class Deposit:  # a command: its fields are the payload
     account_id: str
     amount: int
-    request_id: str  # the idempotency key; hashed with the rest
-    type: ClassVar[str] = "Deposit"  # routing only: stays out of the hash
+    type: ClassVar[str] = "Deposit"  # the command name, hashed with the payload
 
 
 class Account(Aggregate):
@@ -102,22 +101,25 @@ async def main() -> None:
     # The guard opens the unit of work: claim, events, snapshot and outbox commit together.
     # retry sits outside it, so a failed attempt rolls back whole before the next one starts.
     ledger = MemoryIdempotencyStore(db)
-    bus = CommandBus(retry(3), idempotent(ledger, key=lambda c: c.request_id, unit_of_work=db))
+    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", unit_of_work=db))
     bus.register("Deposit", deposit)
 
-    async def submit(cmd: Deposit) -> int:
-        return await bus.dispatch(cmd)  # no transaction around it: retry refuses to run inside one
+    async def submit(cmd: Deposit, request_id: str) -> int:
+        # The client's request id is the idempotency key. No transaction around the dispatch:
+        # retry refuses to run inside one.
+        return await bus.dispatch(cmd, idempotency_key=request_id)
 
-    print(await submit(Deposit("acct-1", 100, "req-A")))  # 100
-    print(await submit(Deposit("acct-1", 100, "req-A")))  # 100, replayed, not deposited twice
+    print(await submit(Deposit("acct-1", 100), "req-A"))  # 100
+    print(await submit(Deposit("acct-1", 100), "req-A"))  # 100, replayed, not deposited twice
 
     published: list[str] = []
-    await Relay(store, publish=lambda env: published.append(env.id)).drain()
+    await Relay(store, publish=lambda msg: published.append(msg.id)).drain()
     print(len(published))  # 1, because the replay wrote nothing
 ```
 
 Dispatch `req-A` twice and the second call replays the first outcome. Reuse the key with a
-different body and the guard raises `PayloadMismatch`. The kernel decides between replay and
+different command and the guard raises `PayloadMismatch`. The guard claims the key under its
+`scope`, so another service's guard on the same ledger never replays this outcome. The kernel decides between replay and
 mismatch, so a Rust service that shares the store reaches the same verdict. A retry re-runs a whole
 unit of work, never a handler inside one, so `retry` goes outside a guard given `unit_of_work`.
 
@@ -145,12 +147,12 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | Path | What |
 |---|---|
 | `crates/edax-core` | shared primitives: hashing, backoff, the clock, id generation, the error taxonomy, a poison-tolerant lock, settlement tokens |
-| `crates/edax-event` | event-driven kernel: local fan-out, codec, upcast, causation, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
-| `crates/edax-cqrs` | command-and-query kernel: canonical bytes (RFC 8785), payload and command hash, the idempotency record, outcome and settle, the filter AST and evaluator, sort and cursor rules |
+| `crates/edax-event` | event-driven kernel: the event and command messages, codec and media types, lineage, the ordering key, local fan-out, upcast, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
+| `crates/edax-cqrs` | command-and-query kernel: canonical bytes (RFC 8785), payload and command hash, the claim key, the idempotency record, outcome, settle and forget, the filter AST and evaluator, sort and cursor rules |
 | `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
-| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores behind one transaction boundary, and a partitioned broker log with consumer groups |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
 | `crates/edax-kafka` | Kafka kernel: the record key and header, broker placement, the media-type route, the dead-letter record, the offset watermark |
-| `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its four scripts, and the verdict on a Redis reply |
+| `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its five scripts, and the verdict on a Redis reply |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |

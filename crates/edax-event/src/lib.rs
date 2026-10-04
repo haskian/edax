@@ -6,10 +6,12 @@
 //!
 //! - [`partition`](mod@partition) — local fan-out: the worker a key-ordered dispatcher runs an
 //!   aggregate on. Broker placement is the transport's, so Kafka's lives in `edax-kafka`.
-//! - [`codec`] — selectable, deterministic envelope serializations ([`codec::Format`]) and their
-//!   evolution rule
+//! - [`domain`] — the two messages, [`EventMessage`] and [`CommandMessage`], their ordering key, the
+//!   key a received command is claimed under, and the extension key rule
+//! - [`codec`] — selectable, deterministic message serializations ([`codec::Format`]), one media
+//!   type per format and kind, and their evolution rule
 //! - [`upcast`] — versioned-event upcast planning (ordering + gap detection)
-//! - [`causation`] — causation/correlation id propagation rule
+//! - [`causation`] — the [`Lineage`] a message inherits or starts
 //! - [`staleness`] — whether an event is older than the per-aggregate watermark, and the watermark
 //!   after it applies
 //! - [`dedup`] — the key and hash an event's idempotency guard claims
@@ -17,7 +19,7 @@
 //!   save writes a snapshot
 //! - [`retry`] — when a failed message is handed back, after how long, and when it dies
 //! - [`saga`] — whether a saga step folds an event (a redelivery is skipped), the write it makes
-//!   (save, complete, nothing) and its outbox command's id
+//!   (save, complete, nothing) and the command message its outbox holds
 //!
 //! Shared primitives (hashing, backoff) live in `edax-core`. The read side — the filter AST, its
 //! evaluator, and the sort/cursor/paging rules — is `edax-cqrs`, which owns both halves of the
@@ -35,15 +37,20 @@ pub mod retry;
 pub mod saga;
 pub mod sequence;
 pub mod staleness;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod upcast;
 
-pub use causation::{originate, propagate, CAUSATION_ID, CORRELATION_ID};
-pub use codec::Format;
+pub use causation::{originate, propagate, Lineage};
+pub use codec::{kind_mismatch, Format};
 pub use dedup::{event_idempotency, EventIdempotency};
-pub use domain::{Event, EventEnvelope, Metadata, Namespace};
+pub use domain::{
+    check_extensions, ordering_key, received_key, CommandMessage, Event, EventDraft, EventMessage, Extensions, Kind,
+    Message, Metadata, EXTENSION_KEY_MAX,
+};
 pub use partition::partition;
 pub use retry::{Failure, Retries, Tracked, Verdict};
-pub use saga::{saga_admit, saga_command_id, saga_write, Loaded, SagaAdmit, SagaCommand, SagaWrite};
+pub use saga::{saga_admit, saga_command, saga_command_id, saga_write, Loaded, SagaAdmit, SagaWrite};
 pub use sequence::{check_batch, snapshot_due};
 pub use staleness::{advance, is_stale};
 pub use upcast::upcast_plan;

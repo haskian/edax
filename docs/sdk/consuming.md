@@ -9,9 +9,9 @@ dispatcher then acks, nacks or dead-letters that delivery by what the handler di
 ```mermaid
 flowchart LR
     B[broker] -->|message| C[Consumer backend]
-    C -->|"Delivery: envelope plus ack and nack"| D[KeyOrderedDispatcher]
-    D -->|"worker = partition of the aggregate id"| W[worker]
-    W -->|envelope| R[EventRouter]
+    C -->|"Delivery: message plus ack and nack"| D[KeyOrderedDispatcher]
+    D -->|"worker = partition of the ordering key"| W[worker]
+    W -->|message| R[EventRouter]
     R -->|"middleware chain, then event name"| H[handler]
     H -->|returned| A[ack]
     H -->|raised| N[nack]
@@ -23,13 +23,15 @@ flowchart LR
 | Piece | Source | Owns |
 |---|---|---|
 | `Consumer` | seam, `edax.broker` | poll one message, build a `Delivery`, run the submit loop |
-| `Delivery` | `edax.dispatcher`, `edax::dispatcher` | the envelope plus `attempt` and the two settle handles |
+| `Delivery` | `edax.dispatcher`, `edax::dispatcher` | the message (`Delivery.message`, an event or a command) plus `attempt` and the two settle handles |
 | `KeyOrderedDispatcher` | `edax.dispatcher`, `edax::dispatcher` | worker selection, settlement, the attempt budget, dead-letter routing |
 | `EventRouter` | `edax.router`, `edax::router` | the handler registry by event name and the middleware chain |
 
-`Delivery` composes with the envelope rather than extending it. The ack token is per-delivery
+`Delivery` composes with the message rather than extending it. The ack token is per-delivery
 transport state. It may be a Kafka offset, an Amazon Simple Queue Service (SQS) receipt, or a Rabbit
-delivery tag. It is not part of the event, and most tokens are not stable across redelivery.
+delivery tag. It is not part of the message, and most tokens are not stable across redelivery. The
+broker's other facts ride beside it too: Kafka's offset, partition and record timestamp are on
+`Delivery.origin`, a `KafkaFetched`, never in the message.
 
 There is no `Consumer` trait in the Rust software development kit (SDK). Rust ships the in-memory
 broker (`crates/edax/src/backend/broker.rs`) and expects a host adapter to call
@@ -42,12 +44,13 @@ The broker already routed the message to this process. `workers` is local parall
 worker owns one queue, and the worker for an event is
 
 ```
-worker index = partition(aggregate_id, workers)
+worker index = partition(ordering_key(message), workers)
 ```
 
-`partition` is the kernel's bucket function, `fnv1a32(aggregate_id) % n`. It is pure and stable, so
-the same aggregate id always lands on the same worker for the life of the dispatcher. Both SDKs
-refuse zero workers at construction.
+The [ordering key](../kernels/event.md#the-ordering-key) is the kernel's. `partition` is the
+kernel's bucket function, `fnv1a32(key) % n`. It is pure and stable, so the same aggregate id always
+lands on the same worker for the life of the dispatcher. Both SDKs refuse zero workers at
+construction.
 
 **The ordering guarantee.** All events carrying one aggregate id run on one worker, one at a
 time, in the order they were submitted. Events for different aggregate ids run in parallel, one
@@ -84,7 +87,7 @@ per-key order.
 | Queue | `std::sync::mpsc::sync_channel(depth)` | `asyncio.Queue(maxsize=max_queue)` |
 | Backpressure | a bounded channel; the send blocks when full | `max_queue`, `submit` awaits when full |
 | Configuration | `KeyOrderedDispatcher::builder(workers, handler).max_attempts(n).on_dead(f).pacing(p).build()?`; `build` refuses zero workers and fails when a worker thread cannot spawn | keyword arguments on the constructor, `pacing=` included; `workers` below 1 raises `ValueError` |
-| Handler bound | `Fn(&EventEnvelope) -> Result<(), HandlerError> + Send + Sync` | any callable, sync or async |
+| Handler bound | `Fn(&EventMessage) -> Result<(), HandlerError> + Send + Sync` | any callable, sync or async, taking the message |
 | Crashing handler | `catch_unwind` keeps the worker alive; the panic settles as a nack | any `BaseException` but `KeyboardInterrupt`, `SystemExit` and the worker's own cancel nacks the delivery; the worker continues |
 | Stop | `stop(self)` drops the senders, drains, joins | `await stop(timeout=None)`, idempotent: refuses later `submit`s, drains, and past the deadline cancels the workers and nacks what they held or had queued |
 | Ambient unit of work | Rust has none; the host threads its own handle | the worker clears the ambient map so a handler cannot inherit the transaction of whoever started the dispatcher |
@@ -92,8 +95,13 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-Submitting a bare envelope instead of a `Delivery` runs the handler and settles nothing: the
+Submitting a bare message instead of a `Delivery` runs the handler and settles nothing: the
 fire-and-forget path.
+
+**Lineage.** The Python worker runs each handler under `propagate` of the message it delivers, so a
+`save` inside it continues the flow ([lineage rules](../kernels/event.md#causation--lineage)). The
+worker starts each run with no ambient lineage of its own, so a handler never inherits
+the lineage of whoever started the dispatcher.
 
 **Worker health.** A handler that raises `asyncio.CancelledError` because it awaited a future
 someone else cancelled fails its delivery, not its worker: the delivery is nacked like a transient
@@ -165,7 +173,7 @@ sequenceDiagram
     C->>D: submit Delivery acct-1 Opened
     C->>D: submit Delivery acct-2 Opened
     C->>D: submit Delivery acct-1 Deposited
-    Note over D: worker index is partition of the aggregate id
+    Note over D: worker index is partition of the ordering key
     D->>W0: acct-1 Opened, then acct-1 Deposited, one queue
     D->>W1: acct-2 Opened
     activate W0
@@ -197,7 +205,7 @@ An attempt is one handler run of a delivery, counted as
 attempt = max(Delivery.attempt, in-process counter) + 1
 ```
 
-The in-process counter belongs to the dispatcher and is keyed by envelope id. It resets on restart,
+The in-process counter belongs to the dispatcher and is keyed by message id. It resets on restart,
 so a crash mid-retry grants a fresh `max_attempts`. A broker-supplied `Delivery.attempt` makes the
 ceiling survive a restart. Neither in-tree backend reads one from its client, so both report `0`.
 
@@ -229,7 +237,7 @@ again, after a longer wait. The observer reports `sink_failed`.
 a backoff step counted by the poison id, so one stray record cannot spin the consumer against the
 broker.
 
-Rust hands the sink a `DeadLetter { envelope, attempt, failure }` where `failure` is a
+Rust hands the sink a `DeadLetter { event, attempt, failure }` where `failure` is a
 `HandlerFailure::Error` or `HandlerFailure::Panic` carrying the unwind payload. A panic is
 unclassified, so it counts as transient: a single panic cannot be told apart from a transient
 failure. Python passes `on_dead(delivery, err)` instead.
@@ -247,7 +255,7 @@ nacks.
 The schedule is the kernel's, with full jitter: a random wait in `0 ..= min(100 * 2^step, 30000)`
 milliseconds. Consumers that hit one downed dependency then do not retry in lockstep. The dispatcher's
 `Pacing` (Rust `DispatcherBuilder::pacing`, Python `pacing=`) carries the policy, the sleep and the
-random draw; a test passes one that records instead of sleeping. The step is tracked per envelope
+random draw; a test passes one that records instead of sleeping. The step is tracked per message
 id, separately from the attempt map. Nacking at once instead would make the broker redeliver in a tight loop until the claim's dedup
 window expires. An ordinary transient failure waits the same way, for the same reason. A handler
 failing on a downed dependency would otherwise poll the broker as fast as it redelivers. On a
@@ -259,24 +267,41 @@ per-key ordering forbids skipping ahead. A pool with more workers narrows the ef
 remove it. If one contended key must never hold up the rest, widen the
 pool.
 
-Both attempt maps grow by one entry per failing envelope id and shrink when that id is acked or
+Both attempt maps grow by one entry per failing message id and shrink when that id is acked or
 dead-lettered. The attempt count is kept whatever `max_attempts` says, including `0`, so the backoff
 grows across redeliveries instead of repeating a flat first step. Entries for nacked messages that
 never come back stay until the id is seen again. Bound them with a time to live (TTL) or a least
 recently used (LRU) cache. That matters when a broker-side dead-letter queue steals them under
 sustained failure.
 
+## Commands off a broker
+
+A dispatcher carries commands as well as events. A topic of commands needs a consumer whose default
+serializer decodes commands, and a handler that hands each one to the bus:
+
+```python
+consumer = KafkaConsumer(client, serializer=edax.KernelSerializer("json", "command"))
+dispatcher = edax.KeyOrderedDispatcher(4, lambda msg: bus.dispatch_message(msg, commands))
+```
+
+`commands` is the codec that turns a message back into the command object, `json_codec({"Ship":
+Ship})`. The bus's guard claims the message's idempotency key under its scope, or the message id when
+it carries none, so a redelivery replays instead of running twice. A command that targets an
+aggregate shares its ordering key, so it runs on the worker of that aggregate. See
+[commands](./commands.md#three-routes-for-a-command).
+
 ## EventRouter
 
 The read-side mirror of the `CommandBus`. No kernel is involved in routing: which worker handles an
-event is already decided by `partition`.
+event is already decided by its ordering key. The router runs each handler under `propagate` of the
+event, so an event a handler saves continues the flow.
 
 ```python
 router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
 
 
 @router.on("Deposited")
-async def deposited(env: edax.EventEnvelope) -> None: ...
+async def deposited(msg: edax.EventMessage) -> None: ...
 
 
 dispatcher = edax.KeyOrderedDispatcher(4, router.dispatch)
@@ -304,8 +329,8 @@ Python takes it in the constructor; Rust takes it through the builder `EventRout
 ### idempotent_by_id
 
 The consume-path guard. It runs a handler at most once per event `id`, so a broker redelivery does
-not repeat its side effect. The key is `env.id` and the hash is the kernel's `payload_hash` over the
-raw `event.data` bytes.
+not repeat its side effect. The key is `msg.id`, raw and unscoped, and the hash is the kernel's
+`payload_hash` over the raw `msg.data` bytes.
 
 | Redelivery meets | Result |
 |---|---|

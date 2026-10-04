@@ -14,9 +14,9 @@ from typing import Any
 
 import msgspec
 
-from .aggregate import Event
+from .aggregate import Event, Payload
 from .errors import AlreadyRegistered, CodecError
-from .upcast import Upcaster, upcast
+from .upcast import Upcaster, schema_version, upcast
 
 __all__ = [
     "RegistryEventCodec",
@@ -48,7 +48,7 @@ class RegistryEventCodec:
         upcasters: dict[str, Upcaster] | None = None,
     ) -> None:
         # One version for the whole registry; split registries if one event must bump alone.
-        self._version = version
+        self._version = schema_version(version)
         self._encode = encode
         self._decode = decode
         self._by_name = dict(events)
@@ -78,7 +78,9 @@ class RegistryEventCodec:
         with _as_codec_error(f"encoding {name}"):
             return Event(name, self._version, self._encode(event))
 
-    def unmarshal(self, event: Event) -> Any:
+    def unmarshal(self, event: Payload) -> Any:
+        """The domain object behind ``event``: an :class:`~edax.aggregate.Event`, an
+        :class:`~edax.aggregate.EventMessage` or a :class:`~edax.aggregate.CommandMessage`."""
         type_ = self._by_name.get(event.name)
         if type_ is None:
             raise CodecError(f"no type registered for event {event.name!r}")
@@ -97,7 +99,8 @@ def json_codec(
     events: dict[str, type], *, version: int = 1, upcasters: dict[str, Upcaster] | None = None
 ) -> RegistryEventCodec:
     """An EventCodec that serializes payloads as JSON (via msgspec). ``upcasters`` raise older stored
-    payloads to ``version`` on load (see :class:`~edax.upcast.Upcaster`)."""
+    payloads to ``version`` on load (see :class:`~edax.upcast.Upcaster`). A ``version`` that is not an
+    unsigned 32-bit integer raises :class:`ValueError` here, not on the first event."""
     return RegistryEventCodec(
         events, version, msgspec.json.encode, lambda b, t: msgspec.json.decode(b, type=t), upcasters
     )

@@ -17,6 +17,8 @@ pub mod projection;
 pub mod router;
 pub mod saga;
 pub mod store;
+#[cfg(test)]
+mod testkit;
 
 pub use aggregate::{Aggregate, AggregateCodec, EventCodec, Root};
 pub use backend::{
@@ -40,7 +42,9 @@ pub use router::{idempotent_by_id, idempotent_by_id_in, EventHandler, EventIdemp
 pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, ErrorCode};
 // Kernel decisions a host calls directly, re-exported so a host need not reach past `edax` into
 // `edax_event`. No SDK code path calls `is_stale` or `advance`: the host owns where the watermark lives.
-pub use edax_event::{advance, is_stale, originate, propagate, SagaCommand, CAUSATION_ID, CORRELATION_ID};
+pub use edax_event::{advance, is_stale, originate, propagate};
+// The message shapes the SDK's seams take and return, and the lineage a save is handed.
+pub use edax_event::{CommandMessage, EventDraft, EventMessage, Extensions, Lineage, Metadata};
 pub use saga::{Saga, SagaInstance, SagaRunner, SagaStore};
 pub use store::{retry_transaction, transaction, EventStore, Outbox, OutboxRow, Relay, RelaySink, Repository, Snapshot, Transactor};
 

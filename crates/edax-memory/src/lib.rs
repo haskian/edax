@@ -5,11 +5,11 @@
 //! [`MemoryTransactor`] owns the unit of work: [`begin`](MemoryTransactor::begin) hands out a token,
 //! every store method takes that token, and [`commit`](MemoryTransactor::commit) applies the
 //! transaction's staged writes atomically while [`rollback`](MemoryTransactor::rollback) drops them.
-//! [`MemoryEventStore`], [`MemoryProjectionStore`], [`MemoryIdempotencyStore`] and [`MemorySagaStore`]
-//! are views over one transactor, so a claim, a projection row and a saga instance commit or roll
-//! back with the events they belong to. [`MemoryBroker`] is separate: a broker is not a store
+//! [`MemoryEventStore`], [`MemoryProjectionStore`], [`MemoryIdempotencyStore`], [`MemorySagaStore`]
+//! and [`MemoryCommandOutbox`] are views over one transactor, so a claim, a projection row, a saga
+//! instance and an outbox command commit or roll back with the events they belong to. [`MemoryBroker`] is separate: a broker is not a store
 //! participant. A failure is the kernel's [`edax_core::Error`], carrying one of the codes these
-//! stores emit: `concurrency`, `codec`, `store` and `bad_handle` of the
+//! stores emit: `concurrency`, `codec`, `store`, `in_progress` and `bad_handle` of the
 //! [`ErrorCode`](edax_core::ErrorCode) taxonomy. Its `Display` is the `"<code>: <message>"` wire form
 //! a binding crosses and every SDK maps to its typed errors.
 //!
@@ -23,15 +23,17 @@
 mod broker;
 mod event;
 mod idempotency;
+mod outbox;
 mod projection;
 mod saga;
 mod tx;
 #[cfg(test)]
 mod testkit;
 
-pub use broker::{MemoryBroker, PolledDelivery};
+pub use broker::{MemoryBroker, Message, PolledDelivery};
 pub use event::{MemoryEventStore, Snapshot};
 pub use idempotency::{Claimed, MemoryIdempotencyStore};
+pub use outbox::MemoryCommandOutbox;
 pub use projection::{MemoryProjectionStore, Versioned};
 pub use saga::{MemorySagaStore, SagaRow};
 pub use tx::{Document, MemoryTransactor, NO_TX};

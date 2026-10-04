@@ -2,7 +2,10 @@
 
 An order saga waits for `OrderPlaced`, then for `PaymentReceived`, then sends `ShipOrder` and
 completes. The runner never sends a command itself. It saves the new state and the commands in one
-write. `runner.relay(...)` then sends what was saved, as the event Relay does (step 7).
+write. `runner.relay(bus)` then sends what was saved, as the event Relay does (step 7).
+
+Each saved command carries its saga command id as its idempotency key. A relay that sends a row twice,
+after a crash before the row was marked, is replayed by the bus's `idempotent` guard.
 
 Run:  cd examples/py && uv run python 13_saga.py
 """
@@ -15,15 +18,16 @@ from typing import Any, ClassVar
 
 from edax import (
     CommandBus,
+    CommandMessage,
     Completed,
-    Event,
-    EventEnvelope,
-    SagaCommand,
+    EventMessage,
+    Lineage,
     SagaRunner,
-    ensure_ids,
+    current_lineage,
     idempotent,
     json_codec,
-    propagate,
+    originate,
+    testing,
 )
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore
 
@@ -31,79 +35,87 @@ from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore
 @dataclass
 class ShipOrder:
     order_id: str
-    # The causation chain (step 12). A saga returns commands, not metadata, so it rides as fields.
-    correlation_id: str
-    causation_id: str
     type: ClassVar[str] = "ShipOrder"
 
 
 class OrderSaga:
-    def correlation_id(self, envelope: EventEnvelope) -> str | None:
-        """Which saga instance an event belongs to: one per order."""
-        return envelope.aggregate_id
+    name: ClassVar[str] = "order"
 
-    def handle(self, state: Any, envelope: EventEnvelope) -> tuple[Any, list[ShipOrder]]:
+    def instance_id(self, event: EventMessage) -> str | None:
+        """Which saga instance an event belongs to: one per order."""
+        return event.aggregate_id
+
+    def handle(self, state: Any, event: EventMessage) -> tuple[Any, list[ShipOrder]]:
         """Fold one event into the state. Return the new state and the commands to send."""
-        if envelope.event.name == "OrderPlaced":
+        if event.name == "OrderPlaced":
             return "awaiting payment", []
-        if envelope.event.name == "PaymentReceived":
-            chain = propagate(envelope.metadata, envelope.id)
-            return Completed, [ShipOrder(envelope.aggregate_id, **chain)]
+        if event.name == "PaymentReceived":
+            return Completed, [ShipOrder(event.aggregate_id)]
         return state, []  # any other event changes nothing
 
 
-def order_event(order_id: str, name: str) -> EventEnvelope:
-    return EventEnvelope(
+def order_event(order_id: str, name: str, flow: Lineage) -> EventMessage:
+    return testing.event(
+        order_id,
+        name,
         id=f"{order_id}-{name}",
-        aggregate_id=order_id,
-        event=Event(name, 1, b"{}"),
-        namespace={},
-        metadata=ensure_ids(),
-        timestamp=0,
+        data=b"{}",
+        correlation_id=flow.correlation_id,
+        causation_id=flow.causation_id,
     )
 
 
-def ship_key(cmd: Any) -> str:
-    return f"ship:{cmd.order_id}"
-
-
 async def main() -> None:
-    # 1. The command side: a bus that ships an order, once per order.
+    # 1. The command side: a bus that ships an order, once per order. The handler notes the lineage
+    #    it runs under: whatever it saves continues the order's flow (step 12).
     shipped: list[ShipOrder] = []
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), key=ship_key))
+    lineages: list[Lineage | None] = []
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="shipping"))
 
     async def ship(cmd: ShipOrder) -> None:
         shipped.append(cmd)
+        lineages.append(current_lineage())
 
     bus.register("ShipOrder", ship)
 
     # 2. The saga runner: saga, state store, and a codec for the commands it saves.
     sagas = MemorySagaStore()
-    runner = SagaRunner(OrderSaga(), sagas, json_codec({"ShipOrder": ShipOrder}))
+    commands = json_codec({"ShipOrder": ShipOrder})
+    runner = SagaRunner(OrderSaga(), sagas, commands)
 
-    # 3. Feed it events. In a service, pass `runner.on_event` to an EventRouter instead.
-    placed = order_event("order-1", "OrderPlaced")
-    paid = order_event("order-1", "PaymentReceived")
+    # 3. Feed it events of one order flow. In a service, pass `runner.on_event` to an EventRouter.
+    flow = originate()
+    placed = order_event("order-1", "OrderPlaced", flow)
+    paid = order_event("order-1", "PaymentReceived", flow)
     await runner.on_event(placed)
     instance = await sagas.load("order-1")
     assert instance is not None
     print(f"after OrderPlaced:     state {instance.state!r}")
     await runner.on_event(paid)
     await runner.on_event(paid)  # the broker delivered it twice
-    print(f"after PaymentReceived: commands waiting {len(await sagas.unpublished())}")
+    [row] = await sagas.unpublished()
+    print(f"after PaymentReceived: one command waiting, {row.name} {row.id}, caused by {row.causation_id}")
 
     # 4. Send the saved commands. A command that fails for good goes to `on_dead`.
     dead: list[str] = []
 
-    async def to_dead_letters(row: SagaCommand, error: BaseException) -> None:
+    async def to_dead_letters(row: CommandMessage, error: BaseException) -> None:
         dead.append(row.id)
 
-    sent = await runner.relay(bus.dispatch, on_dead=to_dead_letters).drain()
+    sent = await runner.relay(bus, on_dead=to_dead_letters).drain()
     print(f"relay sent {sent}: shipped {[cmd.order_id for cmd in shipped]}")
-    print(f"ShipOrder was caused by {shipped[0].causation_id}")
+
+    # 5. A relay that crashed before marking the row sends it again: the guard replays it.
+    await bus.dispatch_message(row, commands)
+    print(f"row sent again:        shipped {[cmd.order_id for cmd in shipped]} (replayed)")
 
     assert [cmd.order_id for cmd in shipped] == ["order-1"] and dead == [], (shipped, dead)
-    assert shipped[0].causation_id == paid.id
+    assert (row.correlation_id, row.causation_id, row.aggregate_id) == (
+        flow.correlation_id,
+        paid.id,
+        "order-1",
+    )
+    assert lineages == [Lineage(flow.correlation_id, row.id)], lineages
     print("\nok: one order, one ShipOrder, even with the payment delivered twice")
 
 

@@ -14,7 +14,7 @@
 
 mod support;
 
-use support::Shared;
+use support::{Shared, SCOPE};
 
 use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -108,6 +108,7 @@ impl Rig {
         let ledger = Arc::new(self.db.idempotency_store::<i64>());
         idempotent_in(
             ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
+            SCOPE,
             |cmd: &Deposit| Some(cmd.request_id.clone()),
             move |_: &Deposit| handle.get(),
         )
@@ -260,6 +261,7 @@ fn retry_inside_idempotent_without_a_transaction_is_still_allowed() {
     let ledger = Arc::new(rig.db.idempotency_store::<i64>());
     let guard = idempotent(
         ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
+        SCOPE,
         |cmd: &Deposit| Some(cmd.request_id.clone()),
     );
     let bus = rig.bus(vec![guard, retry(2, Pacing::instant())], 0);

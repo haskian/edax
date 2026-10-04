@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from edax import CachedFailure, CommandBus, IdempotencyStore, Rejected, guid, idempotent
 from edax.backend.memory import MemoryLedger
@@ -34,10 +34,6 @@ class ChargeCard:
     type: ClassVar[str] = "ChargeCard"
 
 
-def payment_id_of(cmd: Any) -> str:
-    return cmd.payment_id
-
-
 async def charge_twice(ledger: IdempotencyStore) -> None:
     runs: list[str] = []
 
@@ -47,19 +43,19 @@ async def charge_twice(ledger: IdempotencyStore) -> None:
             raise CardDeclined(f"card {cmd.card} declined")
         return f"charged {cmd.amount}"
 
-    bus = CommandBus(idempotent(ledger, key=payment_id_of))
+    bus = CommandBus(idempotent(ledger, scope="payments"))
     bus.register("ChargeCard", charge)
 
     # 1. A charge, then the same message again: replayed from the ledger.
-    first = await bus.dispatch(ChargeCard("pay-1", "visa", 40))
-    again = await bus.dispatch(ChargeCard("pay-1", "visa", 40))
+    first = await bus.dispatch(ChargeCard("pay-1", "visa", 40), idempotency_key="pay-1")
+    again = await bus.dispatch(ChargeCard("pay-1", "visa", 40), idempotency_key="pay-1")
     print(f"pay-1: {first}, then again: {again} (replayed)")
 
     # 2. A declined charge is terminal, so the ledger caches the failure.
     raised: list[str] = []
     for attempt in (1, 2):
         try:
-            await bus.dispatch(ChargeCard("pay-2", "blocked", 99))
+            await bus.dispatch(ChargeCard("pay-2", "blocked", 99), idempotency_key="pay-2")
         except (CardDeclined, CachedFailure) as e:
             raised.append(type(e).__name__)
             print(f"pay-2 dispatch {attempt}: {type(e).__name__}: {e}")

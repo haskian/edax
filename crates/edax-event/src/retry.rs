@@ -5,7 +5,7 @@
 //! dead-lettered by one service and retried forever by the other. So the rule is here, sans-IO, in
 //! the [`OffsetTracker`](https://docs.rs/edax-kafka) style: the host runs the handler, the sink, the
 //! wait and the ack or nack; [`Retries`] only says which, and keeps the per-message counts the rule
-//! reads. The same policy drains an outbox: a relay keys it by row id instead of envelope id.
+//! reads. The same policy drains an outbox: a relay keys it by row id instead of message id.
 //!
 //! The rule, pinned by `testdata/golden/retries.json`:
 //!
@@ -78,7 +78,7 @@ pub struct Tracked {
 }
 
 /// The retry and dead-letter policy over the messages one consumer has seen fail. Keyed by message
-/// id (an envelope id, an outbox row id). An entry stays until the id succeeds or dies; one whose
+/// id (a message id, an outbox row id). An entry stays until the id succeeds or dies; one whose
 /// message never comes back (a broker-side dead-letter took it) stays for the life of the value.
 #[derive(Debug, Clone, Default)]
 pub struct Retries {

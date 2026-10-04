@@ -1,0 +1,17 @@
+[
+  {
+    "expected": "req-7",
+    "id": "cmd-1",
+    "idempotency_key": "req-7"
+  },
+  {
+    "expected": "cmd-1",
+    "id": "cmd-1",
+    "idempotency_key": null
+  },
+  {
+    "expected": "",
+    "id": "cmd-1",
+    "idempotency_key": ""
+  }
+]

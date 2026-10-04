@@ -172,7 +172,7 @@ unit of work.
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from edax import Aggregate, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
@@ -185,12 +185,7 @@ from edax.command import CommandBus, idempotent
 class Deposit:  # a command
     account_id: str
     amount: int
-    request_id: str  # the idempotency key; hashed with the rest of the command
-    type: ClassVar[str] = "Deposit"  # routing only: a class attribute stays out of the hash
-
-
-def request_id_of(cmd: Any) -> str:
-    return cmd.request_id
+    type: ClassVar[str] = "Deposit"  # the command name, hashed with the payload
 
 
 async def main() -> None:
@@ -204,20 +199,25 @@ async def main() -> None:
         await repo.save(account)
         return account.balance
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), key=request_id_of))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), scope="accounts"))
     bus.register("Deposit", deposit)
 
-    first = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
-    second = await bus.dispatch(Deposit("acct-1", 100, "req-A"))
+    # "req-A" is the client's idempotency key, such as an HTTP Idempotency-Key header
+    first = await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-A")
+    second = await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-A")
     print(first, second)  # 100 100: the second call replayed, it did not deposit again
 
 
 asyncio.run(main())
 ```
 
-`type` is a `ClassVar`, so it stays out of the hash; the hash covers every instance field, including
-the one the key was read from. Reuse the key with a different body and the guard raises
-`PayloadMismatch`.
+The idempotency key travels beside the command, not inside it. The client sends one key per intent,
+and repeats it on every retry. `dispatch` without a key makes no claim, and the handler runs every
+time. The guard hashes the command name, `type`, with every instance field. Reuse the key with a
+different command and the guard raises `PayloadMismatch`.
+
+`scope` names the guard. The guard claims `claim_key(scope, key)`, so two guards on one ledger never
+replay each other's outcome for the same key. Name a service, or a stage within one.
 
 ### Step 3 — one unit of work per dispatch, and `retry` around it
 
@@ -232,13 +232,13 @@ transactional Outbox, and sees one row: the replay wrote nothing.
 ```python
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from edax import Aggregate, Relay, Repository, json_codec
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryTransactor
 from edax.command import CommandBus, idempotent, retry
 
-# ... Deposited, Account, AccountCodec, Deposit and request_id_of exactly as above ...
+# ... Deposited, Account, AccountCodec and Deposit exactly as above ...
 
 
 async def main() -> None:
@@ -254,17 +254,17 @@ async def main() -> None:
 
     # claim, events, snapshot, outbox: one commit or one rollback per attempt
     ledger = MemoryIdempotencyStore(db)
-    bus = CommandBus(retry(3), idempotent(ledger, key=request_id_of, unit_of_work=db))
+    bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", unit_of_work=db))
     bus.register("Deposit", deposit)
 
-    async def submit(cmd: Deposit) -> int:
-        return await bus.dispatch(cmd)  # no transaction around the dispatch
+    async def submit(cmd: Deposit, request_id: str) -> int:
+        return await bus.dispatch(cmd, idempotency_key=request_id)  # no transaction around it
 
-    first = await submit(Deposit("acct-1", 100, "req-A"))
-    second = await submit(Deposit("acct-1", 100, "req-A"))
+    first = await submit(Deposit("acct-1", 100), "req-A")
+    second = await submit(Deposit("acct-1", 100), "req-A")
 
     published: list[str] = []
-    n = await Relay(store, publish=lambda env: published.append(env.id)).drain()
+    n = await Relay(store, publish=lambda msg: published.append(msg.id)).drain()
     print(first, second, n)  # 100 100 1
 
 

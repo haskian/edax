@@ -11,8 +11,8 @@ it and the time to live (TTL) values it was configured with.
 
 | Module | Owns | Golden vectors |
 |---|---|---|
-| `ledger` | the key, the refused settings, the stored value's layout, the claim handle, the claim outcome | `redis_value.json`, `redis_ledger.json` |
-| `scripts` | the four Lua bodies, and the verdict on a Redis error reply | `redis_scripts.json`, `redis_fence.json`, `redis_ledger.json` |
+| `ledger` | the key, the refused settings, the stored value's layout, the claim handle, the claim outcome, the forget outcome | `redis_value.json`, `redis_ledger.json` |
+| `scripts` | the five Lua bodies, and the verdict on a Redis error reply | `redis_scripts.json`, `redis_fence.json`, `redis_ledger.json` |
 
 ## The key
 
@@ -118,6 +118,24 @@ The second row is why the outcome is a kernel decision. redis-py re-sends a comm
 lost by default. A store that read its own claim as someone else's would report `InProgress` with no
 handler running, until the claim lapsed.
 
+## The forget outcome
+
+A forget deletes a settled record, so a re-driven message runs its handler again. The store reads the
+key, then asks `forget_outcome(key, held)` what to do with the value it read:
+
+| Value read | Outcome |
+|---|---|
+| none, the key is free | `Nothing`: send no script |
+| a pending claim | `in_progress` error naming `key`: its run may still complete, and its record would land after the delete |
+| a completed or failed record | `Delete` |
+| a frame `split_value` refuses, or a record half no reader decodes | `Delete`: `claim_outcome` replays it as a cached failure, so forgetting it is the way out |
+
+On `Delete` the store runs `FORGET_SCRIPT` with the value it read. The script deletes the key only
+while it still holds that exact value. A record that lapsed between the read and the script, and a
+claim that took the key over, both survive. Then the store reads the key again, at most `FORGET_READS`
+times, before it gives up as transient. The record half's verdict is `edax_cqrs::forget`, so the
+memory store and the Redis ledger refuse the same keys with the same text.
+
 ## The scripts
 
 Every write is one script, so the compare and the write are one atomic step. A `GET` followed by a
@@ -128,7 +146,12 @@ Every write is one script, so the compare and the write are one atomic step. A `
 | `CLAIM_SCRIPT` | claim value, claim TTL | writes the claim if the key is free; replies nil, or the value the key holds |
 | `COMPLETE_SCRIPT` | handle, settled value, record TTL | writes the settled value if the key holds the handle or already holds the settled value; replies `1` or `0` |
 | `RELEASE_SCRIPT` | handle | deletes the key if it holds the handle; replies `1` or `0` |
+| `FORGET_SCRIPT` | the value read | deletes the key if it still holds that value; replies `1` or `0` |
 | `EXTEND_SCRIPT` | handle, claim TTL | resets the TTL if the key holds the handle; replies `1` or `0` |
+
+`FORGET_SCRIPT` has `RELEASE_SCRIPT`'s body, so both share one `EVALSHA` digest. Each deletes a key
+only while it holds the exact value the caller names. A release names its claim handle, and a forget
+names the settled value it read.
 
 Every script is idempotent, so a client that re-sends one after a lost reply gets the answer the
 first send would have had. Each touches one key, `KEYS[1]`, so each is safe on Redis Cluster.
@@ -171,9 +194,9 @@ output (I/O):
 | File | Case shape | What it pins |
 |---|---|---|
 | `redis_value.json` | `name`, `op`, the operands, `value` or `want` | `claim`, `settled` and `split`: a pending claim, a hash at both `u64` ends, a cached success and failure, a non-ASCII result, and every `split_value` branch |
-| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `config`, `handle`, `outcome` and `reply`: every refusal and every outcome row above |
-| `redis_scripts.json` | `name`, `body` | the four Lua bodies verbatim, so every SDK's `EVALSHA` digest matches |
-| `redis_fence.json` | `name`, `initial`, `script`, `args`, `want_reply`, `want_value`, `want_ttl_ms` | what each script does to a key, including a lost reply re-sent, a takeover, and malformed handles |
+| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `config`, `handle`, `outcome`, `forget` and `reply`: every refusal and every outcome row above |
+| `redis_scripts.json` | `name`, `body` | the five Lua bodies verbatim, so every SDK's `EVALSHA` digest matches |
+| `redis_fence.json` | `name`, `initial`, `script`, `args`, `want_reply`, `want_value`, `want_ttl_ms` | what each script does to a key, including a lost reply re-sent, a takeover, malformed handles, and a forget after a takeover |
 
 Regenerate with `EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden`, and read the
 diff before committing it. A change to any file is a compatibility event: live ledgers already hold
@@ -188,7 +211,8 @@ values in the old layout, and clients already cache the old digests.
 | a claim value | `new_claim`, `claim_value` (fixed owner, a test hook) | `_edax.redis_new_claim` |
 | a settled value | `settled_value`, `check_claim` | `_edax.redis_settled_value`, `_edax.redis_check_claim` |
 | read one back | `split_value`, `claim_outcome` | `_edax.redis_claim_outcome` |
-| the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_scripts()`, one field each |
+| a forget | `forget_outcome`, `FORGET_READS` | `_edax.redis_forget_outcome`, `_edax.redis_forget_reads` |
+| the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `FORGET_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_scripts()`, one field each |
 | a reply error | `reply_error` | `_edax.redis_reply_error` |
 
 The Rust SDK ships the kernel and no client shell. The Redis ledger lives in the Python SDK:
@@ -201,4 +225,5 @@ The Rust SDK ships the kernel and no client shell. The Redis ledger lives in the
   use, durability, and the failure windows it leaves.
 - [kernels/cqrs.md](./cqrs.md) — the idempotency record whose bytes fill the value's last part.
 - [kernels/golden-vectors.md](./golden-vectors.md) — how the vectors here are generated and asserted.
-- [sdk/idempotency.md](../sdk/idempotency.md) — the guard that claims, completes and releases.
+- [sdk/idempotency.md](../sdk/idempotency.md) — the guard that claims, completes and releases, and
+  `forget` for a re-drive.

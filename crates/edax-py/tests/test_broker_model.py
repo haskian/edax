@@ -17,7 +17,7 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import build_envelope, sequence_of
+from conftest import build_message, event_of, sequence_of
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from test_broker_contract import KafkaRig, MemoryRig
@@ -61,13 +61,13 @@ class Model:
 
     async def publish(self, key: int) -> None:
         self.published[key] += 1
-        await self.rig.publish(build_envelope(f"k{key}", "Tick", self.published[key]))
+        await self.rig.publish(build_message(f"k{key}", "Tick", self.published[key]))
 
     async def poll(self) -> bool:
         delivery = await _try_poll(self.consumer)
         if delivery is None:
             return False
-        self.queues[int(delivery.envelope.aggregate_id[1:])].append(delivery)
+        self.queues[int(event_of(delivery.message).aggregate_id[1:])].append(delivery)
         return True
 
     def start(self, key: int) -> None:
@@ -86,7 +86,7 @@ class Model:
         if not ok:
             await delivery.nack()
             return
-        env, seq = delivery.envelope, sequence_of(delivery.envelope)
+        env, seq = event_of(delivery.message), sequence_of(delivery.message)
         last = self.processed.get(env.aggregate_id, 0)
         assert seq <= last + 1, f"{env.aggregate_id} processed {seq} after only {last}"
         self.processed[env.aggregate_id] = max(last, seq)

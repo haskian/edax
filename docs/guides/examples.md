@@ -79,7 +79,7 @@ flowchart LR
     RL -->|"publish"| BR(["broker<br/>08, 09, 17"])
     BR -->|"poll as Delivery"| D["KeyOrderedDispatcher<br/>08, 09, 17"]
     D -->|"partition by aggregate id"| RT["EventRouter with guard<br/>08, 10, 19"]
-    RT -->|"fold the envelope"| PH["projection handler<br/>10, 19"]
+    RT -->|"fold the event"| PH["projection handler<br/>10, 19"]
     RT -->|"correlate"| SR["SagaRunner<br/>13"]
     PH -->|"save, compare-and-set"| PS[("ProjectionStore rows<br/>10, 11, 18")]
     PS -->|"get_many with a cursor"| Q["paged read<br/>11"]

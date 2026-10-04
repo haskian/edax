@@ -1,6 +1,6 @@
 # The Kafka kernel — `edax-kafka`
 
-The Kafka protocol kernel: the record a published envelope becomes, the route a fetched record
+The Kafka protocol kernel: the record a published message becomes, the route a fetched record
 takes, the record a dead-letter sink publishes, and the offset watermark a consumer commits.
 
 `edax-kafka` is pure and synchronous. It links no Kafka client library. Every software
@@ -14,25 +14,32 @@ consumer commits the same offsets whatever language runs it.
 | `partition` | broker placement: the partition a keyed record lands on | `kafka_partition.json` |
 | `offsets` | the per-partition commit watermark, settled by token, the rewind a nack makes, and what is due | `kafka_offsets.json` |
 
-## `record` — what a published envelope becomes
+## `record` — what a published message becomes
 
 A record has three parts: a key, value bytes, and headers. The kernel owns the key and the headers.
-Who owns the value depends on which of the two layers you call.
+Who owns the value depends on which of the two layers you call. Each layer has one set of functions
+per kind of message.
 
 | Layer | Functions | Value bytes | Used by |
 |---|---|---|---|
-| primitive | `record`, `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
-| composed | `encode_record`, `decode_record` | the kernel codec's, through `Format::encode` | a Rust host, and the golden vectors |
+| primitive | `record`, `keyed_record` (the key already chosen), `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
+| composed | `encode_record` / `decode_record`, generic over the kind | the kernel codec's, through `Format::encode` | a Rust host, and the golden vectors |
+
+The composed encode is fallible: it refuses an `extensions` key outside the kernel's rule as a
+`codec` error. A producer then never publishes a record every consumer would refuse.
 
 Both layers write the same key and the same header, so a host serializer changes the bytes and
 never the contract around them.
 
 ### The key
 
-The key is the aggregate id, or the override the caller passes. It crosses as UTF-8 bytes.
+The key is the message's [ordering key](./event.md#the-ordering-key), or the override the caller
+passes. It crosses as UTF-8 bytes. A command and the events of the aggregate it targets then share a
+partition.
 
 Kafka orders within a partition, and the key chooses the partition through `partition_for` below.
-One aggregate's events therefore stay on one partition and arrive in the order they were published.
+One aggregate's messages therefore stay on one partition and arrive in the order they were
+published.
 Override the key only when your partitioning differs, a tenant id for instance. Per-aggregate order
 then holds only while that key is still a function of the aggregate id.
 
@@ -44,9 +51,10 @@ Every record edax writes carries exactly one header.
 |---|---|---|
 | `content-type` | the media type of the value bytes | pick the serializer that decodes the value |
 
-Everything else is deliberately absent. The aggregate id is the key already. The id, the event name,
-the version and the sequence are in the value, which every reader decodes anyway. No metadata is
-copied, because trace propagation is the host's own `traceparent`. Every header costs bytes on every
+Everything else is deliberately absent. The aggregate id is the key already. The id, the name, the
+version and the sequence are in the value, which every reader decodes anyway. No extension or
+metadata entry is copied, and trace propagation needs no header: `traceparent` rides in the
+message's `extensions`. The kind needs no header either, because the media type names it. Every header costs bytes on every
 record, so a header lands only together with a reader for it. An older producer may still write
 `edax-id`, `edax-event` and `edax-event-version`. Nothing reads them, and the record decodes the
 same, because a reader ignores headers it does not know.
@@ -60,12 +68,10 @@ that wrote `Content-Type` wrote a different header. The ABI exports the name
 (`kafka_content_type_header()`, Python `edax.backend.kafka.CONTENT_TYPE`), so a record middleware
 that rewrites the value rewrites the header by the kernel's name instead of restating it.
 
-### The two media types
+### The four media types
 
-| `Format` | Media type |
-|---|---|
-| `Json` | `application/vnd.edax.envelope+json` |
-| `Msgpack` | `application/vnd.edax.envelope+msgpack` |
+The codec mints one media type per format and kind.
+[edax-event](./event.md#codec--reproducible-message-bytes) lists the four.
 
 Two words that are not synonyms. `content-type` is the *header*; its value is a *media type*
 (RFC 6838, once called a MIME type), optionally followed by parameters such as `; charset=utf-8`.
@@ -79,64 +85,69 @@ What the string means, part by part:
 |---|---|
 | `application/` | the top-level type for opaque, program-consumed data |
 | `vnd.` | the vendor tree (RFC 6838 §3.2): a product-specific format. Subtypes with no prefix are IANA standards such as `application/json`; `x-` is the deprecated unregistered prefix. Registering with IANA is optional in the vendor tree and has not been done |
-| `edax.envelope` | the vendor and the format: an event envelope as `edax-event` encodes it |
+| `edax.event`, `edax.command` | the vendor and the kind: a message of that kind as `edax-event` encodes it |
 | `+json`, `+msgpack` | the structured-syntax suffix (RFC 6839): tooling that never heard of edax still knows how to parse the bytes |
 
-Plain `application/json` is not used. It could not tell an edax envelope from any other JSON on a
+Plain `application/json` is not used. It could not tell an edax message from any other JSON on a
 shared topic, and the consumer's registry needs one exact string per serializer. A custom serializer
 follows the same shape: `application/vnd.<vendor>.<format>+<syntax>`.
 
-`edax_event::Format::media_type` is the one place that mapping lives, so it cannot be read here and
-written differently there. It sits with the codec, not with this kernel, because it names the
-*format* and not the transport. A media type is the same string over Kafka, over HTTP, or in a file.
+`edax_event::Format::media_type(kind)` is the one place that mapping lives, so it cannot be read
+here and written differently there. It sits with the codec, not with this kernel, because it names
+the *format and kind*, not the transport. A media type is the same string over Kafka, over HTTP, or in a file.
 The change that adds a `Format` variant mints its media type in the same edit.
 `Format::from_media_type` refuses a media type edax never mints — a codec error, never a fallback,
-so a record can never decode as the wrong codec.
+so a record can never decode as the wrong codec. The 0.1 media type
+`application/vnd.edax.envelope+json` is one of those now.
 
 ### `route`: which serializer the record names
 
-`route(headers, registered)` answers `Default`, `Registered(index)` or `Unknown(media_type)` against
-the media types the shell registered, in its order. Every shell calls it, so two SDKs send one
-record to the same serializer, or both to the dead-letter sink. `decode_record` is `route` over the
-formats this kernel mints. The ABI flattens it to `KafkaRoute { registered, unknown }`; neither set
-means the default.
+`route(headers, registered, default_kind)` answers `Default`, `Headerless`, `Registered(index)` or
+`Unknown(media_type)` against the media types the shell registered, in its order. `default_kind` is
+the kind the shell's default serializer reads. Every shell calls it, so two SDKs send one record to
+the same serializer, or both to the dead-letter sink. `decode_record` is `route`
+over the formats this kernel mints. A media type names a format
+and a kind, so a shell registers one serializer per kind it reads. The ABI flattens it to
+`KafkaRoute { registered, unknown, headerless }`; none set means the default.
 
 ```mermaid
 flowchart TB
   R["fetched record"] --> C{"a readable content-type header?"}
-  C -->|"no"| D["Default: the shell's default serializer"]
+  C -->|"no, default kind event"| D["Default: the shell's default serializer"]
+  C -->|"no, default kind command"| H["Headerless: poison, dead-letter it"]
   C -->|"yes, first occurrence"| K{"registered, matched whole?"}
   K -->|"yes"| F["Registered: that serializer"]
   K -->|"no, the empty string included"| E["Unknown: poison, dead-letter it"]
 ```
 
-Three rules decide the route.
+Four rules decide the route.
 
 - **The first `content-type` wins.** A record carrying two is ambiguous. Picking the first is the
   rule both sides implement identically. A first value that is not UTF-8 reads as absent, and does
   not reach past itself to a second header.
 - **An unknown media type is refused.** A producer rollout the consumer cannot read becomes one
-  poison message, rather than a stream of envelopes decoded with the wrong codec. An empty value is
+  poison message, rather than a stream of messages decoded with the wrong codec. An empty value is
   a media type too, one nobody registers, and so is a value with parameters.
-- **No readable content type falls back to the default.** A header-less record still decodes,
-  whether written before this kernel or by a client that drops headers.
+- **No readable content type falls back to the default, as an event.** A header-less record still
+  decodes, from an older producer or from a client that drops headers. Every such record
+  is an event. A command always carries the header. So under a command default the route is
+  `Headerless`, which the shell treats as poison, and `decode_record` of a command refuses the record
+  rather than guess.
+- **The kind must match.** A command media type handed to the event decoder is a `codec` error
+  before the bytes are read, and the reverse too. The refusal names the kind, not a missing field.
 
 A registry that names one media type twice is refused (`check_media_types`, an `already_registered`
 error), because it would decode one topic two ways. A shell checks its registry once, when it is
 built.
 
-`testdata/golden/kafka_route.json` pins the rule against a registry in thirteen rows. They cover no
-header, a foreign header only, a kernel and a host media type, an unknown one, and an empty registry.
-They also cover an empty value, an upper-case name, two headers, a non-UTF-8 first value,
-parameters, and two registries that name a media type twice.
-`testdata/golden/kafka_decode.json` pins the composed decode, including a msgpack value under a JSON
-default, an empty value, an upper-case name, a non-UTF-8 first value and a parameterized type.
+`testdata/golden/kafka_route.json` pins the route against a registry and a default kind, and
+`testdata/golden/kafka_decode.json` pins the composed decode for both kinds.
 
 ### `poison_id` — naming a message that did not decode
 
 `poison_id(topic, partition, offset)` returns `"{topic}/{partition}/{offset}"`.
 
-A message that did not decode has no envelope, and therefore no id. Those three coordinates are the
+A message that did not decode has no id: the id is inside the bytes that failed. Those three coordinates are the
 only identity it has. The offset alone repeats on every partition, so two poison messages would
 share one id and a dead-letter queue keyed on it would keep the first and reject the second.
 
@@ -148,7 +159,7 @@ and headers verbatim, and appends four headers: `edax-dlq-topic`, `edax-dlq-part
 then routes and decodes as the original did: the content type, a middleware's key id and a
 `traceparent` all survive. `dead_letter_source(headers)` is the reader. It takes the last set, the
 most recent dead-lettering, and answers nothing when a coordinate is missing or unreadable.
-`testdata/golden/kafka_dead_letter.json` pins both, a record dead-lettered twice included.
+`testdata/golden/kafka_dead_letter.json` pins both.
 
 ## `partition` — broker placement
 
@@ -173,11 +184,9 @@ metadata; `0` is a `codec` error, never a division by zero.
 runs an aggregate on. It must never pick a broker partition, because FNV-1a disagrees with every
 non-edax producer.
 
-`testdata/golden/kafka_partition.json` pins eleven keys at five partition counts. Six keys are
-Kafka's own `UtilsTest.testMurmur2` vectors (`clients/src/test/java/org/apache/kafka/common/utils/
-UtilsTest.java`), carried as the Java `int` they assert, so a port is checked against Java and not
-only against this kernel. The rest pin an empty key, NFC and NFD spellings of one name, and bytes
-above `0x7f`.
+`testdata/golden/kafka_partition.json` pins the rule. Some of its keys are Kafka's own
+`UtilsTest.testMurmur2` vectors, carried as the Java `int` they assert, so a port is checked against
+Java and not only against this kernel.
 
 ## `offsets` — the token-settled commit watermark
 
@@ -258,21 +267,14 @@ watermark until a rebalance or a restart resets the partition.
 
 ## The golden vectors
 
-| File | Case shape | What it pins |
-|---|---|---|
-| `kafka_record.json` | `name`, `format`, `envelope`, `key`, `key_hex`, `value_hex`, `headers` | eight records: both formats, an overridden key against the default, an unsequenced envelope with an empty payload, and unicode |
-| `kafka_partition.json` | `name`, `key_hex`, `java_murmur2`, `partitions`, `expected`, `error` | eleven keys at 1, 3, 12, 100 and 2^31 − 1 partitions, six of them Kafka's own Java vectors, plus `0` partitions refused |
-| `kafka_decode.json` | `name`, `default_format`, `value_hex`, `headers`, `want` | nine decodes: no content type, an overriding one, an unknown one, two content types, header-less bytes in the other format, an empty value, an upper-case name, a non-UTF-8 first value, a parameterized type |
-| `kafka_route.json` | `name`, `headers`, `registered`, `want` | eleven routes against a host's registry, and two registries refused |
-| `kafka_dead_letter.json` | `name`, `record`, coordinates, `error`, `want`; or `name`, `headers`, `want` | five dead-letter records and their source, then seven header sets the reader refuses |
-| `kafka_offsets.json` | `name`, `steps` with an `op` and a `want` each | fourteen scenarios replayed step by step, each ending in the `stats` it left |
+Each section above names the file that pins its rule. [Golden vectors](./golden-vectors.md) lists
+each file's case shape and what it covers.
 
-A step's `op` is one of `book`, `ack`, `nack`, `is_live`, `due`, `committed`, `reset` and `stats`.
+In `kafka_offsets.json`, a step's `op` is one of `book`, `ack`, `nack`, `is_live`, `due`, `committed`, `reset` and `stats`.
 `book` wants a token or an error; `ack` wants `{decision: "settled"}` or `{decision: "stale"}`;
 `nack` wants `{decision: "seek", offset}` or `{decision: "stale"}`; `is_live` wants `{live}`; `due`
 and `stats` want rows. One replay therefore covers both the decisions and the state they left
-behind. The scenarios include the rewind, a re-booking of acked offsets after a seek, an offset gap,
-the `i64` ceiling, a negative offset, and topics in byte order.
+behind.
 
 Regenerate with `EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden`, and read the
 diff before committing it.
@@ -281,11 +283,11 @@ diff before committing it.
 
 | | Rust | Python |
 |---|---|---|
-| record | `edax_kafka::encode_record` / `decode_record` | `_edax.kafka_record`, `_edax.kafka_content_type_header` |
+| record | `edax_kafka::encode_record` / `decode_record`, `keyed_record` | `_edax.kafka_record` under the key the host chose (its `key=` override, else `_edax.ordering_key`), `_edax.kafka_content_type_header` |
 | route | `edax_kafka::route` | `_edax.kafka_route`, which `KafkaConsumer` calls on every record |
 | dead letter | `edax_kafka::dead_letter_record` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, behind `KafkaFetched.dead_letter`; the reader is Rust's alone |
 | placement | `edax_kafka::partition_for` | `_edax.kafka_partition_for`, which `KafkaProducer` passes as `partition=` |
-| media type | `edax_event::Format::media_type` | `_edax.media_type`, behind `KernelSerializer.media_type` |
+| media type | `edax_event::Format::media_type(kind)` | `_edax.media_type(format, kind)`, behind `KernelSerializer.media_type` |
 | poison id | `edax_kafka::poison_id` | `_edax.kafka_poison_id` |
 | offsets | `edax_kafka::OffsetTracker` | `_edax.offset_tracker()` |
 
@@ -297,8 +299,9 @@ decide nothing themselves. Read [backends/kafka.md](../backends/kafka.md) for th
 
 - [backends/kafka.md](../backends/kafka.md) — the adapter: the client calls, the serializer
   registry, record middleware, and what is left to the host.
-- [kernels/event.md](./event.md) — the envelope shape and the codec whose bytes a record carries.
-- [kernels/golden-vectors.md](./golden-vectors.md) — how the six vectors here are generated and
+- [kernels/event.md](./event.md) — the message shapes, the ordering key, and the codec whose bytes a
+  record carries.
+- [kernels/golden-vectors.md](./golden-vectors.md) — how the vectors here are generated and
   asserted.
 - [sdk/consuming.md](../sdk/consuming.md) — `KeyOrderedDispatcher`, the reason acks arrive out of
   order.

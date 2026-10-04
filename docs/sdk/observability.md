@@ -68,7 +68,7 @@ vanish. The SDK closes that coroutine and logs an error naming the hook, and the
 carries on. Hand the value to a task or queue of your own instead.
 
 The four methods that happen inside a handler take `name` first. It is the command type,
-`cmd.type`, on the command bus, and the event name, `env.event.name`, on the consume path. That is
+`cmd.type`, on the command bus, and the event name, `msg.name`, on the consume path. That is
 the closed set the bus and the router register handlers under, so it is safe as a label.
 `transaction`, `drain`, `drain_failed` and `undecodable` have no handler to name.
 
@@ -142,7 +142,7 @@ it. `error_type` is what the handler raised, through `error_type()`, or `None` w
 splits nacks by cause. It also tells a `dead` on a terminal error, such as `codec`, from a `dead` at
 the ceiling, where the label is the transient type that kept failing.
 
-A bare envelope submitted without a `Delivery` fires nothing, because nothing settles it; time that
+A bare message submitted without a `Delivery` fires nothing, because nothing settles it; time that
 path with `timing()`. The settlement's own failure is `settlement_failed`.
 
 #### `settlement_failed(name, event_id, error)`: the ack or the nack raised
@@ -180,9 +180,9 @@ A `Relay` drained one batch to completion: every row published or dead-lettered,
 marked. This fires once per completed drain, an empty batch included.
 
 `published` is the count of rows published, `0` for an empty outbox. The rows handed to `on_dead`
-are `Relay.last.dead_lettered`. `duration_ns` is read to mark. `oldest_timestamp` is the
-`timestamp` of the oldest row in the batch, in Unix nanoseconds from the kernel clock, or `None` for
-an empty batch. Export it as a gauge and compute the lag at query time, your clock minus the value.
+are `Relay.last.dead_lettered`. `duration_ns` is read to mark. `oldest_timestamp` is when the oldest
+row in the batch was written, in Unix nanoseconds: an event's `recorded_at`, a command's `issued_at`.
+It is `None` for an empty batch. Export it as a gauge and compute the lag at query time, your clock minus the value.
 A batch that stays old is a relay that cannot keep up.
 
 A drain that raised fires `drain_failed` instead.
@@ -255,7 +255,7 @@ from edax import (
 observer = OtelObserver()  # yours; see the adapter below
 
 repo = Repository(store, events, aggregates, observer=observer)
-bus = CommandBus(idempotent(ledger, key=request_id_of, observer=observer))
+bus = CommandBus(idempotent(ledger, scope="accounts", observer=observer))
 router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, observer=observer))
 dispatcher = KeyOrderedDispatcher(4, router.dispatch, on_dead=sink, observer=observer)
 relay = Relay(store, producer.publish, observer=observer)
@@ -338,35 +338,43 @@ The health checks a host builds from them:
 `EventStoreContract` subclass so the conformance clause runs. `MemoryEventStore` implements it.
 Without it, `oldest_timestamp` is the lag signal and depth is unavailable.
 
-## Traces via metadata, and where request-scoped values go
+## Traces via extensions, and where request-scoped values go
 
-The envelope carries `metadata: dict[str, str]`. `edax.causation` puts `correlation_id` and
-`causation_id` there, and a W3C `traceparent` fits beside them. A host starts the event span from
-`env.metadata` on the consume path, so the span's parent is the span that saved the event. The
-value rides `Repository.save(metadata=...)`, lands on the outbox row, survives the `Relay` and the
-broker, and comes back on the delivered envelope unchanged.
+Every message carries `extensions: dict[str, str]`, the edax context a reader acts on, beside the
+application's own `metadata`. A W3C `traceparent` belongs in `extensions`. The flow ids do not: they
+are fields of their own, `correlation_id` and `causation_id`. A host starts the event span from
+`msg.extensions` on the consume path, so the span's parent is the span that saved the event. The
+value rides `Repository.save(extensions=...)`, lands on the outbox row, survives the `Relay` and the
+broker inside the message, and comes back on the delivered message unchanged. Kafka needs no
+`traceparent` header for it. A command carries it the same way: `dispatch(cmd, extensions=...)`, or
+`command_message(cmd, extensions=...)` for a command you publish.
 
 ```python
 from opentelemetry import propagate
 
 carrier: dict[str, str] = {}
 propagate.inject(carrier)  # writes `traceparent` from the current span
-await repo.save(account, metadata={**ensure_ids(), **carrier})
+await repo.save(account, extensions=carrier)
 ```
 
-A command field must be the same on every legitimate retry of one intent. The command's instance
-fields are the idempotency hash. A value minted fresh per attempt hashes differently, meets the
-stored record under the same key, and raises `PayloadMismatch` for a legitimate duplicate.
-Everything else about the request goes in `metadata`.
+The W3C header names fit the kernel's [extension key rule](../kernels/event.md#three-tiers-of-fields).
+A key outside it raises `CodecError` before the save writes.
+
+A command field must be the same on every legitimate retry of one intent. The command's name and
+instance fields are the idempotency hash. A value minted fresh per attempt hashes differently, meets
+the stored record under the same key, and raises `PayloadMismatch` for a legitimate duplicate.
+Everything else about the request goes beside the payload, on the message.
 
 | Value | Where it goes | Why |
 |---|---|---|
-| the client's `Idempotency-Key` | a command field | the guard's `key` function is handed the command, not the metadata. The client sends one key per intent, so a retry repeats it |
-| a server-minted correlation id, `traceparent` | `metadata` | fresh per attempt, so it would change the hash |
-| the causing event's id and correlation, on a saga-emitted command | either | stable per redelivery; see [sagas](./sagas.md#carrying-the-chain-across-the-hop) |
+| the client's `Idempotency-Key` | `dispatch(cmd, idempotency_key=...)` | the message's `idempotency_key`, which the guard claims. The client sends one key per intent, so a retry repeats it |
+| `traceparent` | `extensions` | edax context a reader acts on; fresh per attempt, so it would change the hash |
+| an application value, such as a tenant or an actor | `metadata` | the application's own; edax never reads it |
+| a server-minted request id | `originate(correlation_id=...)` | it roots the flow; every message the request causes carries it |
+| the causing event's id and correlation, on a saga-emitted command | the command message | the kernel sets both when the saga runner writes the outbox row |
 
-The command is the business intent; the metadata is the request. The split follows one test: does a
-retry of the same intent produce the same bytes?
+The command is the business intent; the extensions and metadata are the request. The split follows one
+test: does a retry of the same intent produce the same bytes?
 
 The same rule answers the inversion-of-control question. There is no dependency injection hook on
 the `CommandBus`. Middleware is the seam: close over what a handler needs at registration, and read
@@ -377,17 +385,17 @@ the ambient transaction through `current_tx`. See [commands.md](./commands.md).
 The SDK cannot see some signals, because it never runs the code that produces them. The seams for
 them exist, so each is a few lines in your application.
 
-**Event age.** The time from the event's `timestamp` to the moment a handler takes it. That is the
+**Event age.** The time from the event's `recorded_at` to the moment a handler takes it. That is the
 end-to-end latency of the consume path and the staleness of every read model. `timing()` measures
 the handler; this middleware measures the wait before it. The clock is `edax.current_timestamp()`,
-the kernel clock that stamped the envelope.
+the kernel clock the memory store records with; a database store records with its own.
 
 ```python
 def aged(record: Callable[[str, int], None]) -> EventMiddleware:
     def mw(next_: EventHandler) -> EventHandler:
-        async def handler(env: EventEnvelope) -> None:
-            record(env.event.name, edax.current_timestamp() - env.timestamp)  # nanoseconds
-            result = next_(env)
+        async def handler(msg: EventMessage) -> None:
+            record(msg.name, edax.current_timestamp() - msg.recorded_at)  # nanoseconds
+            result = next_(msg)
             if inspect.isawaitable(result):
                 await result
 
@@ -420,7 +428,7 @@ time of writing and are kept in `observe.py` rather than a golden file for that 
 | edax signal | OTel instrument | Attributes |
 |---|---|---|
 | command handler latency (`timing` on the bus) | `INTERNAL` span; a host histogram if wanted | `edax.command.type`, `error.type`; no `messaging.*` |
-| event handler latency (`timing` on the router) | `messaging.process.duration`, and a `process` span from `env.metadata` | `messaging.system`, `messaging.operation.type=process`, `error.type` |
+| event handler latency (`timing` on the router) | `messaging.process.duration`, and a `process` span from `msg.extensions` | `messaging.system`, `messaging.operation.type=process`, `error.type` |
 | `delivery(name, outcome, ..., error_type)` | `messaging.client.consumed.messages` counter, `messaging.process.duration` histogram | `messaging.destination.name=name`, `messaging.operation.type=process`, `edax.outcome`, `error.type` |
 | `delivery(..., attempt, ...)` | histogram, `edax.delivery.attempt`, buckets `1, 2, 3, 5, 10` | `messaging.destination.name`, `edax.outcome` |
 | `settlement_failed(name, ...)` | counter, `edax.settlement.failed` | `messaging.destination.name`, `error.type` |
@@ -553,7 +561,7 @@ import inspect
 from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
-from edax import EventEnvelope
+from edax import EventMessage
 from edax.observe import error_type
 from edax.router import EventHandler
 
@@ -561,14 +569,14 @@ tracer = trace.get_tracer("edax")
 
 
 def traced(next_: EventHandler) -> EventHandler:
-    async def handler(env: EventEnvelope) -> None:
-        parent = propagate.extract(env.metadata)  # the `traceparent` saved with the event
+    async def handler(msg: EventMessage) -> None:
+        parent = propagate.extract(msg.extensions)  # the `traceparent` saved with the event
         attrs = {"messaging.system": "kafka", "messaging.operation.type": "process"}
         with tracer.start_as_current_span(
-            f"process {env.event.name}", context=parent, kind=SpanKind.CONSUMER, attributes=attrs
+            f"process {msg.name}", context=parent, kind=SpanKind.CONSUMER, attributes=attrs
         ) as span:
             try:
-                result = next_(env)  # sync or async, as any EventHandler may be
+                result = next_(msg)  # sync or async, as any EventHandler may be
                 if inspect.isawaitable(result):
                     await result
             except Exception as e:

@@ -9,8 +9,10 @@ description = "Kafka record and offset kernel for the edax seams, shared by ever
 [dependencies]
 edax-core.workspace = true
 edax-event.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+edax-event = { workspace = true, features = ["testkit"] }
 edax-golden.workspace = true
 proptest = "1"
 serde_json = "1"

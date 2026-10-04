@@ -20,20 +20,21 @@
 
 mod support;
 
-use support::Shared;
+use support::{draft, Shared};
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use edax::command::{Claim, State};
 use edax::{
-    idempotent, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
-    EventStore, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher, MemoryEventStore,
-    MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Outbox, Pacing, ProjectionStore, Query, Relay, Repository, Root,
+    idempotent, propagate, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
+    EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher,
+    MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Metadata, Outbox, Pacing, ProjectionStore, Query,
+    Relay, Repository, Root,
 };
-use edax_cqrs::{command_hash, SortKey};
-use edax_event::{Event, EventEnvelope, Metadata, Namespace};
+use edax_cqrs::{claim_key, command_hash, SortKey};
+use edax_event::Event;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use serde::{Deserialize, Serialize};
@@ -46,42 +47,29 @@ fn next_id() -> String {
     format!("e{}", N.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Envelope decoration varied per append, so the model comparison covers the fields a store could
-/// silently drop (namespace, metadata, timestamp) rather than just ids and sequences.
-fn stamp(variant: u8) -> (Namespace, Metadata, i64) {
-    let mut ns = Namespace::new();
+/// Event context varied per append, so the model comparison covers the fields a store could silently
+/// drop (extensions, metadata, the time it records) rather than just ids and sequences.
+fn stamp(variant: u8) -> (Extensions, Metadata, i64) {
+    let mut ext = Extensions::new();
     let mut md = Metadata::new();
     match variant % 3 {
         0 => {}
         1 => {
-            ns.insert("tenant".into(), "t1".into());
-            md.insert("trace".into(), "abc".into());
+            ext.insert("traceparent".into(), "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into());
+            md.insert("tenant".into(), "t1".into());
         }
         _ => {
-            ns.insert("tenant".into(), "t2".into());
-            ns.insert("region".into(), "eu".into());
+            ext.insert("traceparent".into(), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into());
+            ext.insert("http.origin_ip".into(), "203.0.113.7".into());
             // non-ASCII: the field has to survive the store round-trip byte for byte
-            md.insert("trace".into(), "déjà-vu".into());
+            md.insert("tenant".into(), "déjà-vu".into());
         }
     }
-    (ns, md, variant as i64 * 1000)
+    (ext, md, variant as i64 * 1000)
 }
 
 fn agg_id(agg: u8) -> String {
     format!("agg-{agg}")
-}
-
-/// A bare envelope for `aggregate_id` at `sequence`; callers override the fields under test.
-fn envelope(id: String, aggregate_id: String, name: &str, sequence: u64) -> EventEnvelope {
-    EventEnvelope {
-        id,
-        aggregate_id,
-        event: Event { name: name.into(), version: 1, data: Vec::new() },
-        sequence: Some(sequence),
-        namespace: Namespace::new(),
-        metadata: Metadata::new(),
-        timestamp: 0,
-    }
 }
 
 /// A concurrency conflict carrying the expected/stored versions the CAS rejected — the shape P1, P4,
@@ -121,7 +109,7 @@ fn kernel_err(got: Result<u8, HandlerError>) -> Result<Error, TestCaseError> {
 
 #[derive(Debug, Clone)]
 enum StoreOp {
-    /// `gap` skews the last envelope's sequence by one, so the batch is no longer dense from
+    /// `gap` skews the last draft's sequence by one, so the batch is no longer dense from
     /// `expected + 1` — the shape a store must reject whole, and the one a generator that only ever
     /// builds `expected + 1 + i` can never produce.
     Append { agg: u8, delta: i8, n: u8, ns: u8, gap: bool },
@@ -142,20 +130,24 @@ fn store_op() -> impl Strategy<Value = StoreOp> {
 /// has handed to `publish` (with repeats — a failed drain re-publishes its prefix).
 #[derive(Default)]
 struct StoreModel {
-    events: HashMap<u8, Vec<EventEnvelope>>,
-    outbox: Vec<EventEnvelope>,
+    events: HashMap<u8, Vec<EventMessage>>,
+    outbox: Vec<EventMessage>,
     published: Vec<String>,
     failed_drains: usize,
 }
 
 /// P1 over any [`EventStore`]: the generic bound *is* the contract — the append CAS, the per-aggregate
 /// load window, and the outbox FIFO hold for any backend, not just the in-memory one exercised here.
-fn check_event_store<S>(new_store: impl Fn() -> S, history: Vec<StoreOp>) -> Result<(), TestCaseError>
+///
+/// `new_store` builds the store over a clock that reads `clock`, so the model knows the time each
+/// append is recorded at.
+fn check_event_store<S>(new_store: impl FnOnce(Arc<AtomicI64>) -> S, history: Vec<StoreOp>) -> Result<(), TestCaseError>
 where
     S: EventStore + Clone,
     S::Tx: Default,
 {
-    let store = new_store();
+    let clock = Arc::new(AtomicI64::new(0));
+    let store = new_store(Arc::clone(&clock));
     let relay = Relay::new(store.clone()).pacing(Pacing::instant());
     let mut model = StoreModel::default();
     let mut tx = S::Tx::default(); // the auto-commit handle: the model describes committed state
@@ -167,24 +159,25 @@ where
                 // Signed delta off the model's own version, so conflicts and clean appends are
                 // both common (a uniform `expected` would almost always conflict).
                 let expected = (stored as i64 + delta as i64).max(0) as u64;
-                let (namespace, metadata, timestamp) = stamp(ns);
-                let mut envs: Vec<EventEnvelope> = (0..n as u64)
-                    .map(|i| EventEnvelope {
-                        event: Event { name: "Ticked".into(), version: 1, data: vec![agg, i as u8] },
-                        namespace: namespace.clone(),
+                let (extensions, metadata, recorded_at) = stamp(ns);
+                let mut drafts: Vec<EventDraft> = (0..n as u64)
+                    .map(|i| EventDraft {
+                        data: vec![agg, i as u8],
+                        extensions: extensions.clone(),
                         metadata: metadata.clone(),
-                        timestamp,
-                        ..envelope(next_id(), agg_id(agg), "Ticked", expected + 1 + i)
+                        ..draft(next_id(), &agg_id(agg), "Ticked", expected + 1 + i)
                     })
                     .collect();
-                // One envelope out of place is enough: a hole at the end for a multi-event batch, a
+                // One draft out of place is enough: a hole at the end for a multi-event batch, a
                 // wrong start for a single one. An empty batch has nothing to skew.
-                let gapped = gap && !envs.is_empty();
-                if let (true, Some(last)) = (gap, envs.last_mut()) {
+                let gapped = gap && !drafts.is_empty();
+                if let (true, Some(last)) = (gap, drafts.last_mut()) {
                     last.sequence = last.sequence.map(|s| s + 1);
                 }
+                let recorded: Vec<EventMessage> = drafts.iter().cloned().map(|d| d.record(recorded_at)).collect();
 
-                let got = store.append(&mut tx, &agg_id(agg), expected, &envs);
+                clock.store(recorded_at, Ordering::Relaxed);
+                let got = store.append(&mut tx, &agg_id(agg), expected, drafts);
                 if expected != stored {
                     // The stale-writer conflict is decided before the batch is inspected: a stale
                     // caller's sequences are wrong by construction, so reporting the shape would bury
@@ -199,12 +192,13 @@ where
                         "a non-dense batch must be rejected whole and terminally, got {got:?}"
                     );
                 } else {
-                    prop_assert!(got.is_ok(), "clean append rejected: {:?}", got.err());
-                    model.events.get_mut(&agg).unwrap().extend(envs.iter().cloned());
-                    model.outbox.extend(envs);
+                    // The store records each draft at its clock's reading, and returns what it stored.
+                    prop_assert_eq!(got.ok(), Some(recorded.clone()), "clean append rejected or misrecorded");
+                    model.events.get_mut(&agg).unwrap().extend(recorded.iter().cloned());
+                    model.outbox.extend(recorded);
                 }
 
-                // Full envelope equality, not just ids: namespace/metadata/timestamp fidelity.
+                // Full event equality, not just ids: extensions, metadata and recorded_at fidelity.
                 let want = model.events.get(&agg).cloned().unwrap_or_default();
                 prop_assert_eq!(store.load(&mut tx, &agg_id(agg), 0).unwrap(), want.clone());
                 let seqs: Vec<Option<u64>> = want.iter().map(|e| e.sequence).collect();
@@ -213,7 +207,7 @@ where
             }
 
             StoreOp::Load { agg, after } => {
-                let want: Vec<EventEnvelope> = model
+                let want: Vec<EventMessage> = model
                     .events
                     .get(&agg)
                     .map(|es| es.iter().filter(|e| e.sequence.unwrap_or(0) > after).cloned().collect())
@@ -223,10 +217,10 @@ where
 
             StoreOp::Drain { limit, fail_at } => {
                 let limit = limit as usize;
-                let batch: Vec<EventEnvelope> = model.outbox.iter().take(limit).cloned().collect();
+                let batch: Vec<EventMessage> = model.outbox.iter().take(limit).cloned().collect();
 
-                let mut seen: Vec<EventEnvelope> = Vec::new();
-                let got = relay.drain(limit, |env: &EventEnvelope| {
+                let mut seen: Vec<EventMessage> = Vec::new();
+                let got = relay.drain(limit, |env: &EventMessage| {
                     seen.push(env.clone());
                     if fail_at == Some(seen.len() as u8 - 1) {
                         Err(Error::store("publisher unavailable").into())
@@ -261,9 +255,9 @@ where
 
     // Drain what's left with an infallible publisher: every appended event must have been
     // published at least once, in append order, and at most once per failed drain extra.
-    let mut tail: Vec<EventEnvelope> = Vec::new();
+    let mut tail: Vec<EventMessage> = Vec::new();
     relay
-        .drain(1000, |env: &EventEnvelope| {
+        .drain(1000, |env: &EventMessage| {
             tail.push(env.clone());
             Ok(())
         })
@@ -294,7 +288,7 @@ proptest! {
 
     #[test]
     fn store_matches_model(history in prop::collection::vec(store_op(), 1..24)) {
-        check_event_store(MemoryEventStore::new, history)?;
+        check_event_store(|clock| MemoryEventStore::new().with_clock(move || clock.load(Ordering::Relaxed)), history)?;
     }
 }
 
@@ -326,9 +320,19 @@ impl Command for Cmd {
     }
 }
 
-fn cmd_hash(payload: u8) -> u64 {
+/// The scope both command types' guards claim under: one key space, so a key reused across types is
+/// a payload mismatch, the type name being part of the hash.
+const SCOPE: &str = "model";
+
+fn cmd_hash(kind: u8, payload: u8) -> u64 {
     // Hash through the same kernel rule the middleware uses, so the model can never drift from it.
-    command_hash(&Cmd { kind: 0, key: 0, payload, outcome: 0 }).expect("the command hashes")
+    let cmd = Cmd { kind, key: 0, payload, outcome: 0 };
+    command_hash(cmd.command_type(), &cmd).expect("the command hashes")
+}
+
+/// The ledger key the guard claims for model key `key`.
+fn claimed(key: u8) -> String {
+    claim_key(SCOPE, &key.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,7 +377,7 @@ proptest! {
         let mut bus = CommandBus::new();
         for (kind, name) in [(0u8, "A"), (1u8, "B")] {
             let counter = Arc::clone(&calls[kind as usize]);
-            let guard = idempotent(Arc::clone(&store), |c: &Cmd| Some(c.key.to_string()));
+            let guard = idempotent(Arc::clone(&store), SCOPE, |c: &Cmd| Some(c.key.to_string()));
             let handler: edax::Handler<Cmd, u8> = Box::new(move |cmd: &Cmd| {
                 counter.set(counter.get() + 1);
                 match cmd.outcome {
@@ -392,7 +396,7 @@ proptest! {
         for op in history {
             match op {
                 BusOp::Dispatch { kind, key, payload, outcome } => {
-                    let hash = cmd_hash(payload);
+                    let hash = cmd_hash(kind, payload);
                     let before: Vec<usize> = calls.iter().map(|c| c.get()).collect();
                     let got = bus.dispatch::<Cmd, u8>(&Cmd { kind, key, payload, outcome });
 
@@ -429,11 +433,11 @@ proptest! {
                         Some((prior_hash, slot)) => {
                             prop_assert_eq!(calls.iter().map(|c| c.get()).collect::<Vec<_>>(), before);
                             if prior_hash != hash {
-                                prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::PayloadMismatch, key.to_string()));
+                                prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::PayloadMismatch, claimed(key)));
                             } else {
                                 match slot {
                                     Slot::Pending => {
-                                        prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::InProgress, key.to_string()));
+                                        prop_assert_eq!(kernel_err(got)?, Error::new(ErrorCode::InProgress, claimed(key)));
                                     }
                                     Slot::Done(v) => prop_assert_eq!(got.ok(), Some(v)),
                                     // The cached failure replays as `cached_failure`, terminal, with the
@@ -449,17 +453,17 @@ proptest! {
                 }
 
                 BusOp::SeedPending { key, payload } => {
-                    let hash = cmd_hash(payload);
+                    let hash = cmd_hash(0, payload);
                     // Another worker's live claim: whatever the key held lapses, and a fresh claim takes it.
-                    memory.expire(&key.to_string());
-                    let claimed = store.claim(&mut tx, &key.to_string(), hash).unwrap();
-                    prop_assert!(matches!(claimed, Claim::Won(_)), "a lapsed key is free");
+                    memory.expire(&claimed(key));
+                    let won = store.claim(&mut tx, &claimed(key), hash).unwrap();
+                    prop_assert!(matches!(won, Claim::Won(_)), "a lapsed key is free");
                     model.insert(key, (hash, Slot::Pending));
                 }
 
                 BusOp::Release { key } => {
                     // The key is freed whoever holds it, as a claim or record TTL running out frees it.
-                    memory.expire(&key.to_string());
+                    memory.expire(&claimed(key));
                     model.remove(&key);
                 }
             }
@@ -467,7 +471,7 @@ proptest! {
 
         // Every modeled record is readable back through the seam with the same hash and state.
         for (key, (hash, slot)) in &model {
-            match store.claim(&mut tx, &key.to_string(), *hash).unwrap() {
+            match store.claim(&mut tx, &claimed(*key), *hash).unwrap() {
                 Claim::Prior(r) => {
                     prop_assert_eq!(r.payload_hash, *hash);
                     match slot {
@@ -502,9 +506,9 @@ proptest! {
 
         let sink = Arc::clone(&handled);
         // No wall time per nack: `Pacing::instant()` waits out the kernel's schedule in no time.
-        let dispatcher = KeyOrderedDispatcher::builder(workers, move |env: &EventEnvelope| {
+        let dispatcher = KeyOrderedDispatcher::builder(workers, move |env: &EventMessage| {
             sink.lock().unwrap().push((env.aggregate_id.clone(), env.sequence.unwrap()));
-            if env.event.name == "Fail" {
+            if env.name == "Fail" {
                 Err(Error::store("handler failed").into())
             } else {
                 Ok(())
@@ -521,7 +525,7 @@ proptest! {
             let n = seq.entry(*agg).or_insert(0);
             *n += 1;
             let name = if *fail { "Fail" } else { "Tick" };
-            let env = envelope(format!("{}-{}", agg_id(*agg), n), agg_id(*agg), name, *n);
+            let env = draft(format!("{}-{}", agg_id(*agg), n), &agg_id(*agg), name, *n).record(0);
             let id = env.id.clone();
             if *fail { expected_nack.push(id.clone()) } else { expected_ack.push(id.clone()) }
             let (a, na) = (Arc::clone(&acked), Arc::clone(&nacked));
@@ -609,7 +613,7 @@ impl AggregateCodec for CounterCodec {
 type CounterRepo = Repository<MemoryEventStore, JsonCodec<Tick>, CounterCodec>;
 
 fn counter_repo(store: MemoryEventStore) -> CounterRepo {
-    Repository::new(store, JsonCodec::<Tick>::new("Tick", 1), CounterCodec).with_clock(next_id, || 0)
+    Repository::new(store, JsonCodec::<Tick>::new("Tick", 1), CounterCodec).with_ids(next_id)
 }
 
 #[derive(Debug, Clone)]
@@ -650,7 +654,8 @@ proptest! {
                 RepoOp::Apply { agg, ticks, ns, stale } => {
                     let ticks_model = model.entry(agg).or_default();
                     let version = ticks_model.len() as u64;
-                    let (namespace, metadata, _) = stamp(ns);
+                    let (extensions, metadata, _) = stamp(ns);
+                    let lineage = propagate(&format!("cmd-{agg}-{version}"), "corr-1");
                     // A stale save only conflicts if the live save actually bumps the version.
                     let stale = stale && !ticks.is_empty() && version > 0;
 
@@ -666,29 +671,36 @@ proptest! {
                     for t in &ticks {
                         instance.apply(Tick(*t));
                     }
-                    let envs = repo
-                        .save_with(instance, namespace.clone(), metadata.clone())
+                    let saved = repo
+                        .save_with(instance, lineage.clone(), extensions.clone(), metadata.clone())
                         .expect("live save");
+                    // Every event of the batch carries the context it was saved with.
+                    let carries = |e: &EventMessage| {
+                        e.extensions == extensions
+                            && e.metadata == metadata
+                            && e.correlation_id == lineage.correlation_id
+                            && e.causation_id == lineage.causation_id
+                    };
 
                     let want_seqs: Vec<Option<u64>> =
                         (version + 1..=version + ticks.len() as u64).map(Some).collect();
-                    prop_assert_eq!(envs.iter().map(|e| e.sequence).collect::<Vec<_>>(), want_seqs);
-                    prop_assert!(envs.iter().all(|e| e.namespace == namespace && e.metadata == metadata));
+                    prop_assert_eq!(saved.iter().map(|e| e.sequence).collect::<Vec<_>>(), want_seqs);
+                    prop_assert!(saved.iter().all(carries));
                     prop_assert!(instance.root().pending().is_empty());
                     prop_assert_eq!(instance.root().version, version + ticks.len() as u64);
                     prop_assert!(instance.root().pending().is_empty());
                     ticks_model.extend(ticks.iter().copied());
 
-                    // Stamping survives the store, not just the returned envelopes.
+                    // The context survives the store, not just the returned events.
                     let stored = store.load(&mut tx, &agg_id(agg), version).unwrap();
-                    prop_assert!(stored.iter().all(|e| e.namespace == namespace && e.metadata == metadata));
+                    prop_assert_eq!(&stored, &saved);
 
                     if let Some(agg_stale) = stale_agg.as_mut() {
                         for t in &ticks {
                             agg_stale.apply(Tick(*t));
                         }
                         expect_conflict(
-                            repo.save_with(agg_stale, namespace, metadata),
+                            repo.save_with(agg_stale, lineage, extensions, metadata),
                             version,
                             version + ticks.len() as u64,
                         )?;
@@ -709,7 +721,15 @@ proptest! {
                     // store that has no snapshot at all and load again.
                     let fresh = MemoryEventStore::new();
                     let events = store.load(&mut tx, &agg_id(agg), 0).unwrap();
-                    fresh.append(&mut MemoryTx::auto_commit(), &agg_id(agg), 0, &events).unwrap();
+                    // The replay folds only the name, payload and sequence; the rest is the base draft's.
+                    let drafts: Vec<EventDraft> = events
+                        .iter()
+                        .map(|e| {
+                            let sequence = e.sequence.expect("a stream event is sequenced");
+                            EventDraft { data: e.data.clone(), ..draft(&e.id, &e.aggregate_id, &e.name, sequence) }
+                        })
+                        .collect();
+                    fresh.append(&mut MemoryTx::auto_commit(), &agg_id(agg), 0, drafts).unwrap();
                     let replayed = counter_repo(fresh).load(&agg_id(agg)).unwrap();
                     prop_assert_eq!(replayed.n, want);
                     prop_assert_eq!(replayed.root().version, ticks.len() as u64);
@@ -918,13 +938,13 @@ proptest! {
 fn concurrent_appends_one_winner() {
     let store = MemoryEventStore::new(); // Clone shares the Arc, like handing one store to N workers
     for round in 0..3u64 {
-        let results: Vec<Result<(), Error>> = std::thread::scope(|s| {
+        let results: Vec<Result<Vec<EventMessage>, Error>> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8u64)
                 .map(|t| {
                     let st = store.clone();
                     s.spawn(move || {
-                        let env = envelope(format!("r{round}-t{t}"), "a".into(), "Ticked", round + 1);
-                        st.append(&mut MemoryTx::auto_commit(), "a", round, &[env])
+                        let event = draft(format!("r{round}-t{t}"), "a", "Ticked", round + 1);
+                        st.append(&mut MemoryTx::auto_commit(), "a", round, vec![event])
                     })
                 })
                 .collect();

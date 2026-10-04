@@ -1,4 +1,4 @@
-//! Model test of the saga outbox: two workers folding one correlation with stale loads, crashes between
+//! Model test of the saga outbox: two workers folding one instance with stale loads, crashes between
 //! the fold and the commit, a relay that crashes after publishing and before marking, publish failures,
 //! late redeliveries after completion, and redeliveries of events whose step already committed (a lost
 //! ack, a crash replaying everything above the committed offset), replayed in random order. After every
@@ -8,7 +8,7 @@
 //!   whose unit of work rolled back, sends nothing;
 //! - every committed command is sent eventually, and the consumer, deduplicating by command id, applies
 //!   each exactly once (effectively-once over an at-least-once relay);
-//! - nothing commits for a correlation after it completed: a late event never resurrects it;
+//! - nothing commits for an instance after it completed: a late event never resurrects it;
 //! - no event's step commits twice: a redelivered event the instance already folded is skipped.
 //!
 //! Run a longer sweep with `PROPTEST_CASES=2000 cargo test -p edax --test saga_model`.
@@ -20,14 +20,17 @@
     reason = "an integration test's helpers panic as its failure report, like the tests that call them"
 )]
 
+mod support;
+
+use support::{draft, RECORDED_AT};
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use edax::{
-    Error, JsonRegistryCodec, MemorySagaStore, MemoryTx, Outbox, Pacing, Relay, Saga, SagaCommand, SagaInstance, SagaRunner,
-    SagaStore, Transactor,
+    CommandMessage, Error, EventMessage, JsonRegistryCodec, MemorySagaStore, MemoryTx, Outbox, Pacing, Relay,
+    Saga, SagaInstance, SagaRunner, SagaStore, Transactor,
 };
-use edax_event::{Event, EventEnvelope};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use serde::{Deserialize, Serialize};
@@ -51,14 +54,18 @@ impl Saga for CountSaga {
     type State = u32;
     type Command = CountCommand;
 
-    fn correlation_id(&self, _: &EventEnvelope) -> Option<String> {
+    fn name(&self) -> &str {
+        "count"
+    }
+
+    fn instance_id(&self, _: &EventMessage) -> Option<String> {
         Some("flow-1".to_owned())
     }
 
-    fn handle(&self, state: Option<u32>, env: &EventEnvelope) -> (Option<u32>, Vec<CountCommand>) {
+    fn handle(&self, state: Option<u32>, env: &EventMessage) -> (Option<u32>, Vec<CountCommand>) {
         let step = state.unwrap_or(0) + 1;
         let did = CountCommand::Did(Did { step, event: env.id.clone() });
-        match env.event.name.as_str() {
+        match env.name.as_str() {
             "Finish" => (None, vec![did]),
             _ => (Some(step), vec![did]),
         }
@@ -67,16 +74,8 @@ impl Saga for CountSaga {
 
 /// Event `id` of the flow, from an aggregate of its own: two workers may fold two of them at once, as
 /// they may only for events of different aggregates (a dispatcher serializes one aggregate's events).
-fn event(id: usize, name: &str) -> EventEnvelope {
-    EventEnvelope {
-        id: format!("evt-{id}"),
-        aggregate_id: format!("agg-{id}"),
-        event: Event { name: name.to_owned(), version: 1, data: Vec::new() },
-        sequence: Some(1),
-        namespace: Default::default(),
-        metadata: Default::default(),
-        timestamp: 0,
-    }
+fn event(id: usize, name: &str) -> EventMessage {
+    draft(format!("evt-{id}"), &format!("agg-{id}"), name, 1).record(RECORDED_AT)
 }
 
 /// The real store, except that `load` answers what one worker read earlier: a stale reader, so the
@@ -86,8 +85,8 @@ struct StaleRead {
     loaded: Option<SagaInstance<u32>>,
 }
 
-impl Outbox<SagaCommand> for StaleRead {
-    fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
+impl Outbox<CommandMessage> for StaleRead {
+    fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
         self.inner.unpublished(limit)
     }
     fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
@@ -102,10 +101,10 @@ impl SagaStore for StaleRead {
     fn load(&self, _: &mut MemoryTx, _: &str) -> Result<Option<SagaInstance<u32>>, Error> {
         Ok(self.loaded.clone())
     }
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &u32, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error> {
+    fn save(&self, tx: &mut MemoryTx, id: &str, state: &u32, version: u64, folded: &str, commands: &[CommandMessage]) -> Result<u64, Error> {
         self.inner.save(tx, id, state, version, folded, commands)
     }
-    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[CommandMessage]) -> Result<u64, Error> {
         self.inner.complete(tx, id, version, commands)
     }
 }
@@ -116,8 +115,8 @@ struct CrashingMark {
     crash: Cell<bool>,
 }
 
-impl Outbox<SagaCommand> for CrashingMark {
-    fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
+impl Outbox<CommandMessage> for CrashingMark {
+    fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
         self.inner.unpublished(limit)
     }
     fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
@@ -153,12 +152,12 @@ fn op() -> impl Strategy<Value = Op> {
 /// One worker's view: the event it took and what it read, until it writes.
 #[derive(Default)]
 struct Worker {
-    taken: Option<(EventEnvelope, Option<SagaInstance<u32>>)>,
+    taken: Option<(EventMessage, Option<SagaInstance<u32>>)>,
 }
 
 struct World {
     store: MemorySagaStore<u32>,
-    pending: VecDeque<EventEnvelope>,
+    pending: VecDeque<EventMessage>,
     workers: [Worker; 2],
     /// Command ids of the steps that committed.
     committed: BTreeSet<String>,
@@ -170,8 +169,8 @@ struct World {
     after_completion: u32,
     /// The events whose step committed, in commit order.
     landed_events: Vec<String>,
-    /// The envelopes of those events, for the broker to hand over again.
-    landed_envelopes: Vec<EventEnvelope>,
+    /// Those events whole, for the broker to hand over again.
+    redeliverable: Vec<EventMessage>,
     /// The step number each committed command carries: a fold that read stale state and still landed
     /// would repeat one.
     steps: Vec<u32>,
@@ -179,7 +178,7 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let mut pending: VecDeque<EventEnvelope> = ["Step", "Step", "Finish"].iter().enumerate().map(|(i, n)| event(i, n)).collect();
+        let mut pending: VecDeque<EventMessage> = ["Step", "Step", "Finish"].iter().enumerate().map(|(i, n)| event(i, n)).collect();
         // A late event, delivered after `Finish`: it must find the tombstone.
         pending.push_back(event(9, "Step"));
         Self {
@@ -191,7 +190,7 @@ impl World {
             resends_allowed: BTreeMap::new(),
             after_completion: 0,
             landed_events: Vec::new(),
-            landed_envelopes: Vec::new(),
+            redeliverable: Vec::new(),
             steps: Vec::new(),
         }
     }
@@ -234,7 +233,7 @@ impl World {
         }
         if !landed.is_empty() {
             self.landed_events.push(env.id.clone());
-            self.landed_envelopes.push(env.clone());
+            self.redeliverable.push(env.clone());
         }
         for row in self.store.unpublished(1000).unwrap().into_iter().filter(|row| landed.contains(&row.id)) {
             let CountCommand::Did(did) = runner.command(&row).unwrap();
@@ -245,7 +244,7 @@ impl World {
 
     fn drain(&mut self, fail_at: Option<u8>, crash_mark: bool) -> Result<(), TestCaseError> {
         let outbox = CrashingMark { inner: self.store.clone(), crash: Cell::new(crash_mark) };
-        let relay = Relay::<_, SagaCommand>::new(outbox).pacing(Pacing::instant());
+        let relay = Relay::<_, CommandMessage>::new(outbox).pacing(Pacing::instant());
         let mut index = 0u8;
         let mut sent: Vec<String> = Vec::new();
         let _ = relay.drain(10, |row| {
@@ -271,7 +270,7 @@ impl World {
     }
 
     fn redeliver(&mut self, from: usize) {
-        for env in self.landed_envelopes.iter().skip(from).rev() {
+        for env in self.redeliverable.iter().skip(from).rev() {
             self.pending.push_front(env.clone());
         }
     }

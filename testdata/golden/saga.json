@@ -308,32 +308,77 @@
   },
   {
     "command_id": "order-7:1:0",
-    "correlation_id": "order-7",
     "index": 0,
+    "instance_id": "order-7",
     "version": 1
   },
   {
     "command_id": "order-7:2:1",
-    "correlation_id": "order-7",
     "index": 1,
+    "instance_id": "order-7",
     "version": 2
   },
   {
     "command_id": "a:1:2:0",
-    "correlation_id": "a:1",
     "index": 0,
+    "instance_id": "a:1",
     "version": 2
   },
   {
     "command_id": ":1:0",
-    "correlation_id": "",
     "index": 0,
+    "instance_id": "",
     "version": 1
   },
   {
     "command_id": "café:18446744073709551615:18446744073709551615",
-    "correlation_id": "café",
     "index": 18446744073709551615,
+    "instance_id": "café",
     "version": 18446744073709551615
+  },
+  {
+    "saga_command": {
+      "cause": {
+        "aggregate_id": "agg-1",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "3q2+7w==",
+        "extensions": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "name": "InvoiceIssued",
+        "occurred_at": null,
+        "recorded_at": 1700000000000000000,
+        "sequence": 7,
+        "version": 1
+      },
+      "command": {
+        "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "name": "Fulfill",
+        "version": 2
+      },
+      "index": 1,
+      "instance_id": "order-7",
+      "issued_at": 1700000000000000001,
+      "saga": "shipping",
+      "version": 4
+    },
+    "want": {
+      "aggregate_id": "order-7",
+      "causation_id": "evt-1",
+      "correlation_id": "corr-1",
+      "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+      "extensions": {},
+      "id": "order-7:4:1",
+      "idempotency_key": "8:shipping:order-7:4:1",
+      "issued_at": 1700000000000000001,
+      "metadata": {},
+      "name": "Fulfill",
+      "version": 2
+    }
   }
 ]

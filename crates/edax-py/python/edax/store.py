@@ -20,7 +20,8 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
-from .aggregate import Aggregate, Event, EventEnvelope, Version
+from .aggregate import Aggregate, CommandMessage, Event, EventDraft, EventMessage, Lineage, Payload, Version
+from .causation import _stamp
 from .errors import BadHandle, ConcurrencyError, _carried_code
 from .observe import Observer, TransactionOutcome, _wrap
 from .pacing import Pacing
@@ -34,6 +35,7 @@ A = TypeVar("A", bound=Aggregate)
 
 __all__ = [
     "AggregateCodec",
+    "CommandOutbox",
     "ConcurrencyError",  # the seam's conflict error
     "DrainStats",
     "EventCodec",
@@ -182,13 +184,11 @@ class Snapshot:
 
 
 class OutboxRow(Protocol):
-    """A row an :class:`Outbox` holds: an :class:`~edax.aggregate.EventEnvelope`, or a
-    :class:`~edax.saga.SagaCommand`. ``id`` is what it is marked by; ``timestamp`` is when it was written."""
+    """A row an :class:`Outbox` holds: an :class:`~edax.aggregate.EventMessage`, or a
+    :class:`~edax.aggregate.CommandMessage`. ``id`` is what it is marked by."""
 
     @property
     def id(self) -> str: ...
-    @property
-    def timestamp(self) -> int: ...
 
 
 R = TypeVar("R", bound=OutboxRow)
@@ -197,11 +197,24 @@ R = TypeVar("R", bound=OutboxRow)
 class Outbox(Protocol[R]):
     """The read side of a transactional outbox, as :class:`Relay` drains it: committed rows not yet
     published, oldest commit first, and the acknowledgement that prunes them. An :class:`EventStore` is one
-    (its rows are envelopes); a saga store's command outbox is another (see
-    :meth:`~edax.saga.SagaRunner.relay`)."""
+    (its rows are event messages); a saga store's command outbox is another (see
+    :meth:`~edax.saga.SagaRunner.relay`), and so is the read side of a :class:`CommandOutbox`."""
 
     async def unpublished(self, limit: int = 100) -> list[R]: ...
     async def mark_published(self, ids: Sequence[str]) -> None: ...
+
+
+class CommandOutbox(Protocol):
+    """The write side of a command outbox: :meth:`Repository.save` stores the commands a save sends in the
+    same transaction as its events, so both commit or neither does. A :class:`Relay` drains the read side,
+    an :class:`Outbox` of :class:`~edax.aggregate.CommandMessage`, once the transaction has committed.
+
+    ``enqueue`` writes the messages under ``tx`` as unpublished rows keyed by message id. ``tx`` is the
+    event store's: a backend over another database than the event store refuses it with the terminal
+    :class:`~edax.errors.BadHandle`, because the two writes would not commit together.
+    :class:`~edax.backend.memory.MemoryCommandOutbox` is one."""
+
+    async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None: ...
 
 
 class EventStore(Protocol):
@@ -214,12 +227,16 @@ class EventStore(Protocol):
     - *Optimistic concurrency.* ``append`` succeeds only if the stored version equals ``expected_version``,
       else it raises :class:`ConcurrencyError` and writes nothing. Enforce that with a unique constraint or
       a row lock in the database, never a read-then-write in Python.
-    - *Dense batches.* A batch must carry ``expected_version + 1, + 2, ...`` in order, every envelope
+    - *Dense batches.* A batch must carry ``expected_version + 1, + 2, ...`` in order, every draft
       sequenced; anything else raises :class:`~edax.errors.CodecError` and writes nothing. Call
       :func:`check_sequence_batch`, the kernel's rule, rather than restating it.
     - *Atomicity and durability.* Within one ``append`` the event rows, their outbox rows and any snapshot
       saved in the same ``tx`` commit together; a rollback removes all of them and a commit survives a crash.
-    - *Unique ids.* An envelope id is unique store-wide: an ``append`` carrying an id the store already
+    - *Recorded time.* ``append`` stamps every draft with the time the store records it, its own clock
+      (a database's ``now()``), and returns the stored :class:`~edax.aggregate.EventMessage` per draft, in
+      order. ``load`` and ``unpublished`` return the same ``recorded_at``. Under an open ``tx`` the
+      returned messages are not committed yet.
+    - *Unique ids.* An event id is unique store-wide: an ``append`` carrying an id the store already
       holds raises :class:`~edax.errors.CodecError` and writes nothing, or marking one row published would
       prune the other unpublished. A primary key on the id gives it.
     - *Reads.* ``load`` returns every event with ``sequence > after``, ascending, gap-free, including this
@@ -230,7 +247,7 @@ class EventStore(Protocol):
       version when an older one arrives late.
     - *Outbox.* ``unpublished`` returns only committed unmarked rows, oldest commit first, at minimum one
       aggregate's rows in ``sequence`` order. Rows stay until ``mark_published``, so publishing is
-      at-least-once and downstream dedups by ``env.id``; ``mark_published`` is idempotent and durable. Both
+      at-least-once and downstream dedups by ``msg.id``; ``mark_published`` is idempotent and durable. Both
       run outside any ``tx``. Poll them with :class:`Relay`, one per store unless ``unpublished`` leases the
       rows, or feed change data capture to :func:`pump`, where the stream position is the ack.
     - *Backlog (optional).* ``async def unpublished_count(self) -> int`` returns how many committed
@@ -247,7 +264,7 @@ class EventStore(Protocol):
         """A unit of work: commit on clean exit, roll back if the body raises."""
         ...
 
-    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
+    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         """Events with ``sequence > after``, ascending, gap-free, including ``tx``'s own appends."""
         ...
 
@@ -261,26 +278,27 @@ class EventStore(Protocol):
         ...
 
     async def append(
-        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventEnvelope]
-    ) -> None:
-        """Compare-and-set append: if the stored version equals ``expected_version``, write ``events`` and
-        their outbox rows atomically in ``tx``; else raise :class:`ConcurrencyError` and write nothing."""
+        self, tx: Tx, aggregate_id: str, expected_version: int, drafts: Sequence[EventDraft]
+    ) -> list[EventMessage]:
+        """Compare-and-set append: if the stored version equals ``expected_version``, record ``drafts`` and
+        their outbox rows atomically in ``tx`` and return the stored messages, each stamped with the
+        store's ``recorded_at``; else raise :class:`ConcurrencyError` and write nothing."""
         ...
 
-    async def unpublished(self, limit: int = 100) -> list[EventEnvelope]:
+    async def unpublished(self, limit: int = 100) -> list[EventMessage]:
         """Up to ``limit`` committed unmarked outbox rows, oldest first. A host running more than one relay
         must make this lease or lock the rows it returns."""
         ...
 
     async def mark_published(self, ids: Sequence[str]) -> None:
-        """Durably acknowledge outbox rows by envelope id. Idempotent; unknown ids are ignored."""
+        """Durably acknowledge outbox rows by event id. Idempotent; unknown ids are ignored."""
         ...
 
 
 def check_sequence_batch(expected_version: int, sequences: Sequence[int | None]) -> None:
-    """The kernel's dense-batch rule an :meth:`EventStore.append` must enforce: every envelope carries a
+    """The kernel's dense-batch rule an :meth:`EventStore.append` must enforce: every draft carries a
     sequence, and the batch runs ``expected_version + 1, + 2, ...`` in order. A gap, a repeat, a
-    reordering or an unsequenced envelope raises terminal :class:`~edax.errors.CodecError` naming the
+    reordering or an unsequenced draft raises terminal :class:`~edax.errors.CodecError` naming the
     0-based batch index, because the same batch fails the same way on every retry. An empty batch passes.
     Versions and sequences are unsigned 64-bit, so a negative one is a :class:`~edax.errors.CodecError` too,
     and a batch that would run past ``2**64 - 1`` is refused rather than clamped.
@@ -291,10 +309,12 @@ def check_sequence_batch(expected_version: int, sequences: Sequence[int | None])
 
 class EventCodec(Protocol):
     """Bridges a domain event and its marshaled :class:`~edax.aggregate.Event` (name/version/bytes).
+    ``unmarshal`` reads any :class:`~edax.aggregate.Payload`: an ``Event``, a stored
+    :class:`~edax.aggregate.EventMessage`, or a saga's :class:`~edax.aggregate.CommandMessage`.
     Parameters are positional-only, so an implementation may name them after its own event type."""
 
     def marshal(self, event: Any, /) -> Event: ...
-    def unmarshal(self, event: Event, /) -> Any: ...
+    def unmarshal(self, event: Payload, /) -> Any: ...
 
 
 class AggregateCodec(Protocol[A]):
@@ -325,9 +345,16 @@ class Repository(Generic[A]):
     of the save that takes it; a stream that is cheap to replay wants a larger interval. A value below
     ``0`` raises :class:`ValueError`.
 
+    ``new_id`` names each event, and roots the flow of a save no message caused (default: the kernel's
+    time-ordered :func:`~edax.guid`); override it for deterministic tests. The store, not the repository,
+    stamps the time an event is recorded.
+
     ``observer`` receives one :meth:`~edax.observe.Observer.transaction` per unit of work the repository
     opens itself. A call that joined the caller's ``tx`` reports nothing; that caller's :func:`transaction`
-    does. ``None`` is the no-op observer."""
+    does. ``None`` is the no-op observer.
+
+    ``commands`` is the :class:`CommandOutbox` that ``save(..., commands=...)`` writes to, over the event
+    store's database. Without one, a save that sends commands raises :class:`TypeError`."""
 
     def __init__(
         self,
@@ -336,9 +363,9 @@ class Repository(Generic[A]):
         aggregates: AggregateCodec[A],
         *,
         new_id: Callable[[], str] | None = None,
-        now: Callable[[], int] | None = None,
         observer: Observer | None = None,
         snapshot_every: int = 1,
+        commands: CommandOutbox | None = None,
     ) -> None:
         if snapshot_every < 0:
             raise ValueError(f"snapshot_every is a count of versions, at least 0, got {snapshot_every}")
@@ -346,9 +373,9 @@ class Repository(Generic[A]):
         self._store = store
         self._events = events
         self._aggregates = aggregates
-        self._new_id = new_id or _edax.guid  # time-ordered id; override for a deterministic clock
-        self._now = now or _edax.current_timestamp
+        self._new_id = new_id or _edax.guid
         self._observer = _wrap(observer)
+        self._commands = commands
 
     @asynccontextmanager
     async def _enlist(self, tx: Tx | None) -> AsyncIterator[Tx]:
@@ -374,13 +401,13 @@ class Repository(Generic[A]):
             snap = await self._store.load_snapshot(tx, aggregate_id)
             cached = self._from_snapshot(aggregate_id, snap)
             base, agg = cached if cached is not None else (0, self._aggregates.load(aggregate_id, 0, None))
-            envs = await self._store.load(tx, aggregate_id, after=base)
-            check_sequence_batch(base, [env.sequence for env in envs])
-            for env in envs:
+            stored = await self._store.load(tx, aggregate_id, after=base)
+            check_sequence_batch(base, [msg.sequence for msg in stored])
+            for msg in stored:
                 # transition(), not apply(): a replayed event must not be re-queued as pending
-                agg.transition(self._events.unmarshal(env.event))
+                agg.transition(self._events.unmarshal(msg))
             # Dense from `base`, so the last sequence is the count past it.
-            agg.version = Version(base + len(envs))
+            agg.version = Version(base + len(stored))
             return agg
 
     def _from_snapshot(self, aggregate_id: str, snap: Snapshot | None) -> tuple[int, A] | None:
@@ -411,32 +438,58 @@ class Repository(Generic[A]):
         self,
         aggregate: A,
         *,
-        namespace: dict[str, str] | None = None,
+        lineage: Lineage | None = None,
+        extensions: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
+        occurred_at: int | None = None,
+        commands: Sequence[CommandMessage] | None = None,
         tx: Tx | None = None,
-    ) -> list[EventEnvelope]:
+    ) -> list[EventMessage]:
         """Persist the pending events, and a snapshot when the version crosses a multiple of
-        ``snapshot_every``; return the envelopes, for the :class:`Relay` or for an eager publish."""
+        ``snapshot_every``; return the stored messages, for the :class:`Relay` or for an eager publish.
+        Under a ``tx`` the caller commits, they are not committed until it does.
+
+        ``commands`` go to the repository's :class:`CommandOutbox` in the same transaction as the events,
+        so a command is sent only if the events it follows from landed. Build each with
+        :func:`~edax.command.command_message`. A repository built without an outbox raises
+        :class:`TypeError` before anything is written.
+
+        Every event of one save shares one ``lineage``: the one given, else the ambient
+        :func:`~edax.causation.current_lineage` of the message being handled, else a new flow.
+        ``extensions`` carry edax extension context, such as a trace parent, under the kernel's key rule;
+        a key outside it raises :class:`~edax.errors.CodecError` before anything is written. ``metadata`` is
+        the application's own. ``occurred_at`` is the valid time of the batch in unix nanoseconds, when the
+        facts happened earlier than they are recorded (an import, an offline client); ``None`` means they
+        happened when the store records them."""
+        if commands is not None and self._commands is None:
+            raise TypeError("save(commands=...) needs a Repository built with commands=CommandOutbox")
         initial = aggregate.version.initial
         current = aggregate.version.current
         events = [self._events.marshal(e) for e in aggregate.pending]
         # A value the binding cannot convert (a lone surrogate in an id, a non-str metadata value) fails
         # the same way on every retry, so it is the terminal CodecError, not a bare TypeError.
         with errors.mapped():
-            envs: list[EventEnvelope] = [
-                EventEnvelope(
+            flow, ext, meta = _stamp(lineage, extensions, metadata, self._new_id)
+            drafts: list[EventDraft] = [
+                EventDraft(
                     id=self._new_id(),
                     aggregate_id=aggregate.id,
-                    event=event,
-                    timestamp=self._now(),
                     sequence=initial + i,
-                    namespace=namespace or {},
-                    metadata=metadata or {},
+                    name=event.name,
+                    version=event.version,
+                    data=event.data,
+                    correlation_id=flow.correlation_id,
+                    causation_id=flow.causation_id,
+                    extensions=ext,
+                    metadata=meta,
+                    occurred_at=occurred_at,
                 )
                 for i, event in enumerate(events, start=1)
             ]
         async with self._enlist(tx) as tx:
-            await self._store.append(tx, aggregate.id, initial, envs)
+            stored = await self._store.append(tx, aggregate.id, initial, drafts)
+            if commands and self._commands is not None:
+                await self._commands.enqueue(tx, commands)
             if _edax.snapshot_due(self._snapshot_every, initial, current):
                 snapshot = Snapshot(
                     aggregate.id, self._aggregates.type, current, self._aggregates.dump(aggregate)
@@ -444,7 +497,7 @@ class Repository(Generic[A]):
                 await self._store.save_snapshot(tx, snapshot)
         aggregate.pending.clear()
         aggregate.version = Version(current)
-        return envs
+        return stored
 
 
 Publish = Callable[[Any], MaybeAwaitable[None]]
@@ -455,8 +508,9 @@ RelaySink = Callable[[Any, BaseException], MaybeAwaitable[None]]
 
 @dataclass(frozen=True)
 class DrainStats:
-    """What the last completed :meth:`Relay.drain` did. ``oldest_timestamp`` is the ``timestamp`` of
-    the oldest row in the batch, or ``None`` for an empty batch; against the reader's clock it is the
+    """What the last completed :meth:`Relay.drain` did. ``oldest_timestamp`` is when the oldest row in the
+    batch was written, its ``recorded_at`` (an event) or ``issued_at`` (a command), or ``None`` for an
+    empty batch or rows that carry neither; against the reader's clock it is the
     outbox lag a health check reads. ``dead_lettered`` counts the rows the drain handed to ``on_dead``
     instead of publishing them."""
 
@@ -542,7 +596,7 @@ class Relay:
                 self._observer.drain_failed(error)
                 await self._pacing.wait(step)
                 raise error
-            oldest = min((row.timestamp for row in rows), default=None)
+            oldest = min((t for row in rows if (t := _written_at(row)) is not None), default=None)
             self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
             self._observer.drain(self.last.published, self.last.duration_ns, self.last.oldest_timestamp)
             return published + dead
@@ -598,6 +652,15 @@ class Relay:
         return await _dead_letter(logger, policy, row.id, verdict.attempt, lambda: on_dead(row, error))
 
 
+def _written_at(row: object) -> int | None:
+    """When an outbox row was written: an event's ``recorded_at``, a command's ``issued_at``, or ``None``."""
+    if isinstance(row, EventMessage):
+        return row.recorded_at
+    if isinstance(row, CommandMessage):
+        return row.issued_at
+    return None
+
+
 async def _dead_letter(
     log: logging.Logger,
     policy: _edax.Retries,
@@ -619,12 +682,12 @@ async def _dead_letter(
     return None
 
 
-async def pump(source: AsyncIterable[EventEnvelope], publish: Publish) -> int:
-    """Change-data-capture outbox drain: publish every envelope from ``source`` until it ends; return how
+async def pump(source: AsyncIterable[EventMessage], publish: Publish) -> int:
+    """Change-data-capture outbox drain: publish every message from ``source`` until it ends; return how
     many. There is no ``mark_published``: the stream position is the ack, so commit it only after ``pump``
     has passed the row. ``publish`` raising stops the pump; resume from the last committed position."""
     n = 0
-    async for env in source:
-        await maybe_await(publish(env))
+    async for msg in source:
+        await maybe_await(publish(msg))
         n += 1
     return n

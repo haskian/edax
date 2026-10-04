@@ -18,10 +18,11 @@
 
 use std::collections::BTreeMap;
 
-use edax_core::Error;
+use edax_core::{scoped, Error};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Event, EventEnvelope};
+use crate::causation::propagate;
+use crate::domain::{CommandMessage, Event, EventMessage, Extensions, Metadata};
 use crate::staleness::{advance, is_stale};
 
 /// What the store holds for a correlation when the runner loads it.
@@ -110,7 +111,7 @@ pub enum SagaAdmit {
 ///
 /// # Errors
 /// A `codec` error when `folded` is not text this function wrote.
-pub fn saga_admit(completed: bool, folded: &str, env: &EventEnvelope) -> Result<SagaAdmit, Error> {
+pub fn saga_admit(completed: bool, folded: &str, env: &EventMessage) -> Result<SagaAdmit, Error> {
     if completed {
         return Ok(SagaAdmit::Completed);
     }
@@ -138,23 +139,56 @@ pub fn saga_command_id(correlation_id: &str, version: u64, index: u64) -> String
     format!("{correlation_id}:{version}:{index}")
 }
 
-/// One command in a saga's outbox: committed with the step that decided it, sent by a relay after
-/// the commit, marked sent by `id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SagaCommand {
-    /// [`saga_command_id`] of the step that decided it.
-    pub id: String,
-    /// The saga instance that decided it.
-    pub correlation_id: String,
-    /// The command, marshaled by the host's codec: its name, schema version and payload.
-    pub command: Event,
-    /// When the step decided it, in the host clock's nanoseconds: the outbox lag a health check reads.
-    pub timestamp: i64,
+/// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
+/// committed `version`, folding the event `cause_id` of the flow `cause_correlation_id`: the row its
+/// outbox holds and the message its relay sends.
+///
+/// Both SDKs build it here, so one saga run over one store writes the same row from either:
+///
+/// - `id` is [`saga_command_id`]: the outbox row's key, unique within the saga's store;
+/// - `idempotency_key` is that id [`scoped`] by the saga's name, `"{len(saga)}:{saga}:{id}"`: a re-sent row
+///   keeps it, so the consuming bus deduplicates it, and two sagas that share an instance id and a
+///   bus never replay or refuse each other's commands. The name's byte length keeps it injective;
+/// - `aggregate_id` is the instance, so one instance's commands keep their order on every transport
+///   and a store can find its rows;
+/// - the lineage is the event's child ([`propagate`]): causation is the folded event, correlation is
+///   the event's flow, not the instance id.
+///
+/// Pinned by `testdata/golden/saga.json`.
+// The cause is two strings, not the event, because only its id and correlation are read: a host that
+// holds them apart (a binding, say) need not rebuild a whole event to pass them.
+#[allow(clippy::too_many_arguments)]
+pub fn saga_command(
+    saga: &str,
+    instance_id: &str,
+    version: u64,
+    index: u64,
+    command: Event,
+    cause_id: &str,
+    cause_correlation_id: &str,
+    issued_at: i64,
+) -> CommandMessage {
+    let id = saga_command_id(instance_id, version, index);
+    let lineage = propagate(cause_id, cause_correlation_id);
+    CommandMessage {
+        idempotency_key: Some(scoped(saga, &id)),
+        id,
+        aggregate_id: Some(instance_id.to_owned()),
+        name: command.name,
+        version: command.version,
+        data: command.data,
+        correlation_id: lineage.correlation_id,
+        causation_id: lineage.causation_id,
+        issued_at,
+        extensions: Extensions::new(),
+        metadata: Metadata::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::base_event;
 
     #[test]
     fn saga_write_branches() {
@@ -170,16 +204,8 @@ mod tests {
         }
     }
 
-    fn event(aggregate_id: &str, sequence: Option<u64>, id: &str) -> EventEnvelope {
-        EventEnvelope {
-            id: id.to_owned(),
-            aggregate_id: aggregate_id.to_owned(),
-            event: Event { name: "OrderCreated".to_owned(), version: 1, data: br#"{"total":1200}"#.to_vec() },
-            sequence,
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 1_714_564_800_000_000_000,
-        }
+    fn event(aggregate_id: &str, sequence: Option<u64>, id: &str) -> EventMessage {
+        EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() }
     }
 
     #[test]
@@ -188,7 +214,7 @@ mod tests {
         let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
         let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
         let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
-        let cases: [(&str, &str, EventEnvelope, Result<SagaAdmit, String>); 11] = [
+        let cases: [(&str, &str, EventMessage, Result<SagaAdmit, String>); 11] = [
             ("a new instance folds and marks", "", event("order-7", Some(1), "evt-1"), fold(one)),
             ("the last event again is a repeat", one, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::Repeat)),
             ("an older event of the aggregate is a repeat", two, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::Repeat)),

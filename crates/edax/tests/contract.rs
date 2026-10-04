@@ -1,5 +1,5 @@
 //! The Rust twin of Python's `edax.testing.contracts` clauses for the saga store, the saga outbox, the
-//! event store's snapshot and id rules, and the idempotency store's held-key and unreadable-record rules:
+//! event store's append, snapshot and id rules, and the idempotency store's held-key and unreadable-record rules:
 //! generic functions over the seam traits, so a backend an adopter writes runs the same clauses, and
 //! every in-tree backend runs them here. Each clause is one invariant a
 //! backend must hold; the in-memory store is the reference.
@@ -11,27 +11,30 @@
     reason = "a contract clause's panic is its failure report"
 )]
 
-use edax::{
-    Claim, Error, ErrorCode, EventStore, IdempotencyStore, MemoryEventStore, MemoryIdempotencyStore, MemoryLedger, MemorySagaStore, MemoryTx,
-    Outbox, Record, SagaCommand, SagaInstance, SagaStore, Snapshot, State, Transactor,
-};
-use edax_event::{saga_command_id, Event, EventEnvelope};
+mod support;
 
-fn command(id: &str, version: u64, index: u64) -> SagaCommand {
-    SagaCommand {
-        id: saga_command_id(id, version, index),
-        correlation_id: id.to_owned(),
-        command: Event { name: "Fulfill".into(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() },
-        timestamp: 1_714_564_800_000_000_000,
-    }
+use support::draft;
+
+use edax::{
+    Claim, CommandMessage, Error, ErrorCode, EventDraft, EventStore, Extensions, IdempotencyStore, MemoryEventStore,
+    MemoryIdempotencyStore, MemoryLedger, MemorySagaStore, MemoryTx, Metadata, Outbox, Record, SagaInstance, SagaStore, Snapshot, State,
+    Transactor,
+};
+use edax_event::{saga_command, Event};
+
+/// The `index`-th command instance `id` sends at the write that commits `version`, caused by its `Paid`
+/// event: the kernel's row.
+fn command(id: &str, version: u64, index: u64) -> CommandMessage {
+    let payload = Event { name: "Fulfill".into(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() };
+    saga_command("order", id, version, index, payload, &format!("{id}-paid"), "corr-1", 1_714_564_800_000_000_000)
 }
 
 fn is_conflict<T: std::fmt::Debug>(got: Result<T, Error>) -> bool {
     matches!(got, Err(Error { code: ErrorCode::Concurrency, .. }))
 }
 
-fn unsent<S: Outbox<SagaCommand>>(store: &S, id: &str) -> Vec<String> {
-    store.unpublished(1000).unwrap().into_iter().filter(|c| c.correlation_id == id).map(|c| c.id).collect()
+fn unsent<S: Outbox<CommandMessage>>(store: &S, id: &str) -> Vec<String> {
+    store.unpublished(1000).unwrap().into_iter().filter(|c| c.aggregate_id.as_deref() == Some(id)).map(|c| c.id).collect()
 }
 
 /// Every saga store clause, against a fresh store from `new`.
@@ -139,36 +142,40 @@ where
     }
 }
 
-/// The snapshot and id rules of the event store, against a fresh store from `new`.
+/// The append, snapshot and id rules of the event store, against a fresh store from `new`.
 fn event_store_contract<S>(new: impl Fn() -> S)
 where
     S: EventStore,
     S::Tx: Default,
 {
-    let event = |aggregate_id: &str, id: &str, sequence: u64| EventEnvelope {
-        id: id.to_owned(),
-        aggregate_id: aggregate_id.to_owned(),
-        event: Event { name: "Deposited".into(), version: 1, data: br#"{"amount_cents":4200}"#.to_vec() },
-        sequence: Some(sequence),
-        namespace: Default::default(),
-        metadata: Default::default(),
-        timestamp: 0,
+    let deposited = |aggregate_id: &str, id: &str, sequence: u64| EventDraft {
+        data: br#"{"amount_cents":4200}"#.to_vec(),
+        occurred_at: Some(1_714_564_799_000_000_000),
+        extensions: Extensions::from([("traceparent".into(), "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into())]),
+        metadata: Metadata::from([("tenant".into(), "acme".into())]),
+        ..draft(id, aggregate_id, "Deposited", sequence)
     };
     let snapshot = |version: u64, data: &[u8]| Snapshot { aggregate_id: "acct-1".into(), type_name: "Account".into(), version, data: data.to_vec() };
 
-    // A snapshot may lag the stream but never lead it, and never moves back.
+    // An append returns each draft as the store recorded it, every field kept, and a load reads the same.
     let store = new();
-    store.append(&mut S::Tx::default(), "acct-1", 0, &[event("acct-1", "evt-1", 1)]).unwrap();
+    let first = deposited("acct-1", "evt-1", 1);
+    let appended = store.append(&mut S::Tx::default(), "acct-1", 0, vec![first.clone()]).unwrap();
+    let [stored] = appended.as_slice() else { panic!("one draft appends one event: {appended:?}") };
+    assert_eq!(stored, &first.record(stored.recorded_at), "every draft field survives; the store adds only recorded_at");
+    assert_eq!(store.load(&mut S::Tx::default(), "acct-1", 0).unwrap(), appended, "a load reads what the append returned");
+
+    // A snapshot may lag the stream but never lead it, and never moves back.
     let leading = store.save_snapshot(&mut S::Tx::default(), &snapshot(2, b"ahead"));
     assert!(matches!(leading, Err(Error { code: ErrorCode::Codec, .. })), "a leading snapshot is refused: {leading:?}");
-    store.append(&mut S::Tx::default(), "acct-1", 1, &[event("acct-1", "evt-2", 2)]).unwrap();
+    store.append(&mut S::Tx::default(), "acct-1", 1, vec![deposited("acct-1", "evt-2", 2)]).unwrap();
     store.save_snapshot(&mut S::Tx::default(), &snapshot(2, b"newer")).unwrap();
     store.save_snapshot(&mut S::Tx::default(), &snapshot(1, b"older")).unwrap();
     let kept = store.load_snapshot(&mut S::Tx::default(), "acct-1").unwrap().unwrap();
     assert_eq!((kept.version, kept.data), (2, b"newer".to_vec()), "an older snapshot never replaces a newer one");
 
-    // An envelope id is unique store-wide.
-    let duplicate = store.append(&mut S::Tx::default(), "acct-2", 0, &[event("acct-2", "evt-1", 1)]);
+    // An event id is unique store-wide.
+    let duplicate = store.append(&mut S::Tx::default(), "acct-2", 0, vec![deposited("acct-2", "evt-1", 1)]);
     assert!(matches!(duplicate, Err(Error { code: ErrorCode::Codec, .. })), "a taken id is refused: {duplicate:?}");
     assert!(store.load(&mut S::Tx::default(), "acct-2", 0).unwrap().is_empty(), "and writes nothing");
 }
@@ -193,6 +200,6 @@ fn the_memory_stores_meet_the_unreadable_record_clause() {
 }
 
 #[test]
-fn the_memory_event_store_meets_the_snapshot_and_id_clauses() {
+fn the_memory_event_store_meets_the_append_snapshot_and_id_clauses() {
     event_store_contract(MemoryEventStore::new);
 }

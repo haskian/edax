@@ -89,7 +89,7 @@ pub type UpcastStep = Box<dyn Fn(Vec<u8>) -> Result<Vec<u8>, Error> + Send + Syn
 /// them run, and in what order, is the kernel's plan, so every SDK raises a stored payload the same way.
 #[derive(Default)]
 pub struct Upcaster {
-    steps: BTreeMap<i32, UpcastStep>,
+    steps: BTreeMap<u32, UpcastStep>,
 }
 
 impl Upcaster {
@@ -102,7 +102,7 @@ impl Upcaster {
     /// migration nobody chose.
     pub fn step(
         mut self,
-        version: i32,
+        version: u32,
         transform: impl Fn(Vec<u8>) -> Result<Vec<u8>, Error> + Send + Sync + 'static,
     ) -> Result<Self, Error> {
         if self.steps.contains_key(&version) {
@@ -114,7 +114,7 @@ impl Upcaster {
 
     /// Raise `data` from version `from` to `to`, in the kernel's planned order. A missing step, or
     /// `from > to`, is a `codec` error.
-    pub fn to(&self, data: Vec<u8>, from: i32, to: i32) -> Result<Vec<u8>, Error> {
+    pub fn to(&self, data: Vec<u8>, from: u32, to: u32) -> Result<Vec<u8>, Error> {
         raise(Some(self), &data, from, to).map(Cow::into_owned)
     }
 }
@@ -122,8 +122,8 @@ impl Upcaster {
 /// Raise `data` from `from` to `to` through `upcaster`'s steps, or as the identity when the name has no
 /// upcaster. Always asks the kernel, so a payload from a newer writer is refused either way. Borrowed
 /// until a step runs, so the common empty plan copies nothing.
-fn raise<'a>(upcaster: Option<&Upcaster>, data: &'a [u8], from: i32, to: i32) -> Result<Cow<'a, [u8]>, Error> {
-    let available: Option<Vec<i32>> = upcaster.map(|u| u.steps.keys().copied().collect());
+fn raise<'a>(upcaster: Option<&Upcaster>, data: &'a [u8], from: u32, to: u32) -> Result<Cow<'a, [u8]>, Error> {
+    let available: Option<Vec<u32>> = upcaster.map(|u| u.steps.keys().copied().collect());
     let mut data = Cow::Borrowed(data);
     for version in edax_event::upcast_plan(from, to, available.as_deref())? {
         let step = upcaster
@@ -139,13 +139,13 @@ fn raise<'a>(upcaster: Option<&Upcaster>, data: &'a [u8], from: i32, to: i32) ->
 /// [`RegistryCodec`], which names each variant of an enum the way Python's registry names each type.
 pub struct SerdeCodec<T, F> {
     name: String,
-    version: i32,
+    version: u32,
     upcaster: Option<Upcaster>,
     _marker: PhantomData<fn() -> (T, F)>,
 }
 
 impl<T, F> SerdeCodec<T, F> {
-    pub fn new(name: impl Into<String>, version: i32) -> Self {
+    pub fn new(name: impl Into<String>, version: u32) -> Self {
         Self { name: name.into(), version, upcaster: None, _marker: PhantomData }
     }
 
@@ -190,7 +190,7 @@ pub type MsgpackCodec<T> = SerdeCodec<T, Msgpack>;
 /// One version for the whole registry, as in Python: bump it when any payload changes, and give the names
 /// whose shape changed an [`Upcaster`]. An unknown name on unmarshal is a `codec` error.
 pub struct RegistryCodec<T, F> {
-    version: i32,
+    version: u32,
     names: &'static [&'static str],
     upcasters: HashMap<String, Upcaster>,
     _marker: PhantomData<fn() -> (T, F)>,
@@ -198,7 +198,7 @@ pub struct RegistryCodec<T, F> {
 
 impl<T: DeserializeOwned, F> RegistryCodec<T, F> {
     /// A registry writing `version`. A `T` that is not an externally tagged enum is a `codec` error.
-    pub fn new(version: i32) -> Result<Self, Error> {
+    pub fn new(version: u32) -> Result<Self, Error> {
         Ok(Self { version, names: variant_names::<T>()?, upcasters: HashMap::new(), _marker: PhantomData })
     }
 
@@ -531,7 +531,7 @@ mod tests {
             })
             .unwrap();
         let codec = JsonRegistryCodec::<AccountEvent>::new(2).unwrap().upcaster("Deposited", upcaster).unwrap();
-        let event = |name: &str, version: i32, data: &str| Event { name: name.into(), version, data: data.as_bytes().to_vec() };
+        let event = |name: &str, version: u32, data: &str| Event { name: name.into(), version, data: data.as_bytes().to_vec() };
         let cases: [(&str, Event, Result<AccountEvent, &str>); 9] = [
             ("current payload", event("Deposited", 2, r#"{"account_id":"acct-1","amount_cents":4200}"#), Ok(deposited())),
             ("older payload raised by its upcaster", event("Deposited", 1, r#"{"account_id":"acct-1","amount":42}"#), Ok(deposited())),
@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn serde_codec_unmarshal_branches() {
         let codec = JsonCodec::<Deposited>::new("Deposited", 2);
-        let event = |name: &str, version: i32| Event { name: name.into(), version, data: br#"{"account_id":"acct-1","amount_cents":4200}"#.to_vec() };
+        let event = |name: &str, version: u32| Event { name: name.into(), version, data: br#"{"account_id":"acct-1","amount_cents":4200}"#.to_vec() };
         let want = Deposited { account_id: "acct-1".into(), amount_cents: 4200 };
         assert_eq!(codec.unmarshal(&event("Deposited", 2)).unwrap(), want, "current");
         assert_eq!(codec.unmarshal(&event("Deposited", 1)).unwrap(), want, "older, no upcaster: identity");

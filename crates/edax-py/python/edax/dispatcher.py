@@ -1,4 +1,4 @@
-"""Asyncio ordered-parallel consumer: same aggregate id -> same worker (ordered), different ids
+"""Asyncio ordered-parallel consumer: same ordering key -> same worker (ordered), different keys
 run concurrently."""
 
 from __future__ import annotations
@@ -11,10 +11,11 @@ from dataclasses import dataclass, field
 from time import perf_counter_ns
 from typing import Any, cast
 
-from . import _edax
+from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
-from .aggregate import EventEnvelope
+from .aggregate import CommandMessage, EventMessage
+from .causation import _leave_every_lineage, caused_by
 from .errors import CodecError, InProgress, _carried_code
 from .observe import DeliveryOutcome, Observer, _wrap, error_type
 from .pacing import Pacing
@@ -44,7 +45,9 @@ def _worker_cancelled() -> bool:
     return cancelling is None or cancelling() > 0
 
 
-Handler = Callable[[EventEnvelope], MaybeAwaitable[None]]
+# `Any`, not the message union: a handler is written against one kind, `router.dispatch` takes an
+# `EventMessage` only, and a parameter narrower than the union would not be assignable.
+Handler = Callable[[Any], MaybeAwaitable[None]]
 AckFn = Callable[[], MaybeAwaitable[None]]
 LiveFn = Callable[[], bool]
 DeadLetterFn = Callable[["Delivery", BaseException], MaybeAwaitable[None]]
@@ -57,9 +60,10 @@ def _always_live() -> bool:
 
 @dataclass
 class Delivery:
-    """A broker delivery: the event plus the handles that settle it. The transport handle (a Kafka
+    """A broker delivery: the message, an :class:`~edax.aggregate.EventMessage` or a
+    :class:`~edax.aggregate.CommandMessage`, plus the handles that settle it. The transport handle (a Kafka
     offset, an SQS receipt) is per-delivery state, not stable across redelivery, so the adapter captures it
-    in the ``on_ack`` / ``on_nack`` closures instead of on the persisted :class:`EventEnvelope`. A
+    in the ``on_ack`` / ``on_nack`` closures instead of on the message. A
     :class:`KeyOrderedDispatcher` acks on success and nacks if the handler raises.
 
     ``live`` tells whether the transport still counts on this delivery. A log-based transport (Kafka, the
@@ -69,7 +73,7 @@ class Delivery:
     one. ``origin`` is the transport's own record of the message, for a dead-letter sink that republishes
     it (a Kafka consumer sets a :class:`~edax.backend.kafka.KafkaFetched`); ``None`` when there is none."""
 
-    envelope: EventEnvelope
+    message: EventMessage | CommandMessage
     on_ack: AckFn
     on_nack: AckFn
     attempt: int = 0  # the broker's own redelivery count if it keeps one, else 0; see max_attempts
@@ -93,8 +97,8 @@ class _Stop(enum.Enum):
     TOKEN = enum.auto()
 
 
-# What a worker queue carries: a bare envelope, a settleable delivery, or the stop sentinel.
-_QueueItem = EventEnvelope | Delivery | _Stop
+# What a worker queue carries: a bare message, a settleable delivery, or the stop sentinel.
+_QueueItem = EventMessage | CommandMessage | Delivery | _Stop
 
 
 @dataclass(frozen=True)
@@ -121,13 +125,16 @@ class DispatcherStats:
 
 class KeyOrderedDispatcher:
     """Fans one broker partition or key-shared subscription out to a local pool of asyncio workers. Worker
-    is ``partition(aggregate_id, workers)``, so one aggregate's events stay on one worker in FIFO order while
-    different aggregates progress in parallel. ``max_queue`` bounds each worker's queue for backpressure
-    (``submit`` awaits when full); ``0`` makes it unbounded. Per-key order holds through a nack on a
-    transport that rewinds, as a log does: the nack seeks the partition back, the transport retires the
-    deliveries of it already handed out, and a worker skips a delivery that is no longer
-    :attr:`~Delivery.live`, so the redelivered earlier event runs first. On a transport that requeues a
-    nacked delivery behind later ones instead, a key that nacks is reordered against itself.
+    is ``partition(ordering_key(msg), workers)``: the kernel's ordering key is the aggregate id, or a
+    command's own id when it names no aggregate. One aggregate's messages stay on one worker in FIFO order
+    while different aggregates progress in parallel. The handler runs under the ambient lineage
+    :func:`~edax.causation.propagate` of the message, so what it saves continues the flow. ``max_queue``
+    bounds each worker's queue for backpressure (``submit`` awaits when full); ``0`` makes it unbounded.
+    Per-key order holds through a nack on a transport that rewinds, as a log does: the nack seeks the
+    partition back, the transport retires the deliveries of it already handed out, and a worker skips a
+    delivery that is no longer :attr:`~Delivery.live`, so the redelivered earlier event runs first. On a
+    transport that requeues a nacked delivery behind later ones instead, a key that nacks is reordered
+    against itself.
 
     A raising handler nacks unless ``on_dead`` is set. With it, a terminal error dead-letters on the first
     attempt whatever ``max_attempts`` says, and a transient one at the ``max_attempts``-th failed attempt
@@ -141,7 +148,7 @@ class KeyOrderedDispatcher:
 
     ``observer`` receives one :meth:`~edax.observe.Observer.delivery` per settled delivery and a
     :meth:`~edax.observe.Observer.settlement_failed` for an ack or nack that raised; ``None`` is the
-    no-op observer. A bare envelope is fire-and-forget: nothing settles it, so nothing is reported.
+    no-op observer. A bare message is fire-and-forget: nothing settles it, so nothing is reported.
     """
 
     def __init__(
@@ -211,13 +218,16 @@ class KeyOrderedDispatcher:
         """How a nack waits; a :class:`~edax.broker.Consumer` loop waits the same way after a failed poll."""
         return self._pacing
 
-    def _worker_index(self, aggregate_id: str) -> int:
-        return _edax.partition(aggregate_id, len(self._queues))
+    def _worker_index(self, msg: EventMessage | CommandMessage) -> int:
+        with errors.mapped():
+            return _edax.partition(_edax.ordering_key(msg.id, msg.aggregate_id), len(self._queues))
 
     async def _run(self, queue: asyncio.Queue[_QueueItem]) -> None:
         # A task copies its creator's context, so a dispatcher started inside `transaction` would hand every
-        # handler that caller's tx from a second task, which the Transactor contract forbids.
+        # handler that caller's tx from a second task, which the Transactor contract forbids. The same
+        # holds for the caller's lineage: each handler gets its own message's.
         _leave_every_unit_of_work()
+        _leave_every_lineage()
         while True:
             item = await queue.get()
             if item is _Stop.TOKEN:
@@ -229,7 +239,7 @@ class KeyOrderedDispatcher:
                 if isinstance(item, Delivery):
                     await self._settle(item)
                 else:
-                    # Bare envelope: fire-and-forget, so no settlement and no `Observer.delivery` either;
+                    # Bare message: fire-and-forget, so no settlement and no `Observer.delivery` either;
                     # a host wanting numbers for this path times the handler with `observe.timing`.
                     await self._handle(item)
             except asyncio.CancelledError:
@@ -240,7 +250,7 @@ class KeyOrderedDispatcher:
                     await asyncio.shield(self._nack_quietly(item))
                 raise
             except Exception:
-                # Named per arm: a bare envelope is fire-and-forget, so nothing settles it and
+                # Named per arm: a bare message is fire-and-forget, so nothing settles it and
                 # "settling failed" would send an operator to the wrong layer.
                 what = "settling a delivery" if isinstance(item, Delivery) else "a fire-and-forget handler"
                 logger.exception("edax dispatcher: %s failed; worker continues", what)
@@ -248,11 +258,13 @@ class KeyOrderedDispatcher:
                 self._in_flight -= 1
                 queue.task_done()
 
-    async def _handle(self, env: EventEnvelope) -> None:
-        """Run the handler, counted in :attr:`DispatcherStats.handling` while it runs."""
+    async def _handle(self, msg: EventMessage | CommandMessage) -> None:
+        """Run the handler under ``msg``'s lineage, counted in :attr:`DispatcherStats.handling` while it
+        runs."""
         self._handling += 1
         try:
-            await maybe_await(self.handler(env))
+            with caused_by(msg):
+                await maybe_await(self.handler(msg))
         finally:
             self._handling -= 1
 
@@ -260,16 +272,16 @@ class KeyOrderedDispatcher:
         """Run the handler, settle the delivery by its outcome, and report that outcome once. The
         duration is taken before any settlement, so it covers the handler only and a latency histogram
         over it is not polluted by the backoff wait."""
-        attempt = self._retries.get().attempt(delivery.envelope.id, delivery.attempt)
+        attempt = self._retries.get().attempt(delivery.message.id, delivery.attempt)
         if not delivery.live():
             # A rewind or a rebalance retired it before this worker took it: the transport fetches it
             # again behind the earlier event of its key, so running it now would reorder the key.
-            self._observer.delivery(delivery.envelope.event.name, "stale", attempt, 0, None)
+            self._observer.delivery(delivery.message.name, "stale", attempt, 0, None)
             return
         started = perf_counter_ns()
         error: BaseException | None = None
         try:
-            await self._handle(delivery.envelope)
+            await self._handle(delivery.message)
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:
@@ -284,7 +296,7 @@ class KeyOrderedDispatcher:
         if not delivery.live():
             # Retired while the handler ran: its ack or nack would settle nothing, and a dead-letter
             # would be repeated by the redelivered copy. That copy settles it instead.
-            self._observer.delivery(delivery.envelope.event.name, "stale", attempt, duration_ns, cause)
+            self._observer.delivery(delivery.message.name, "stale", attempt, duration_ns, cause)
             return
         # A settlement that raises (the ack, the nack) propagates to the worker's catch-all with the
         # delivery neither acked nor nacked; reported as such so the arm is visible, not silent.
@@ -292,7 +304,7 @@ class KeyOrderedDispatcher:
         try:
             outcome = await self._ack_nack_or_dead(delivery, error, attempt)
         finally:
-            self._observer.delivery(delivery.envelope.event.name, outcome, attempt, duration_ns, cause)
+            self._observer.delivery(delivery.message.name, outcome, attempt, duration_ns, cause)
 
     async def _ack_nack_or_dead(
         self, delivery: Delivery, error: BaseException | None, attempt: int
@@ -300,18 +312,18 @@ class KeyOrderedDispatcher:
         """Settle by the handler's outcome as the kernel's retry policy answers, and return which arm settled
         it: ``ack``, ``nack``, ``dead``, ``in_progress``, ``sink_failed``, or ``unsettled`` for an ack that
         did not land (a raising nack propagates instead)."""
-        env_id = delivery.envelope.id
+        msg_id = delivery.message.id
         policy = self._retries.get()
         if error is None:
             acked = await self._ack_or_log(delivery)
-            policy.succeeded(env_id)
+            policy.succeeded(msg_id)
             return "ack" if acked else "unsettled"
         # The kernel reads the failure's code: `in_progress` is contention, which waits its own step and
         # never counts toward the ceiling, since nacking at once would poll the broker until the claim's
         # TTL. A BaseException that is not an Exception (a cancel from elsewhere, a native panic) carries
         # no code: nothing says it repeats, so it is retried like a transient failure.
         code = _carried_code(error) if isinstance(error, Exception) else None
-        verdict = policy.failed(env_id, delivery.attempt, code)
+        verdict = policy.failed(msg_id, delivery.attempt, code)
         if verdict.dead:
             if not await self._sink(delivery, error, verdict.attempt):
                 return "sink_failed"
@@ -331,7 +343,7 @@ class KeyOrderedDispatcher:
         on_dead = cast("DeadLetterFn", self._on_dead)
         policy = self._retries.get()
         step = await _dead_letter(
-            logger, policy, delivery.envelope.id, attempt, lambda: on_dead(delivery, error)
+            logger, policy, delivery.message.id, attempt, lambda: on_dead(delivery, error)
         )
         if step is None:
             return True
@@ -346,17 +358,17 @@ class KeyOrderedDispatcher:
         :meth:`~edax.observe.Observer.undecodable`. Returns ``dead``, ``nack`` or ``sink_failed``.
 
         A :class:`~edax.broker.Consumer` loop calls this in place of :meth:`submit`; routing the message
-        through :meth:`submit` would hand a handler an envelope with no event in it."""
-        env_id = delivery.envelope.id
-        self._observer.undecodable(env_id, error)
+        through :meth:`submit` would hand a handler a message with no payload it can read."""
+        msg_id = delivery.message.id
+        self._observer.undecodable(msg_id, error)
         # A payload that will not decode fails alike on every delivery: terminal by construction, whatever
         # exception the decoder raised.
-        verdict = self._retries.get().failed(env_id, delivery.attempt, CodecError.code)
+        verdict = self._retries.get().failed(msg_id, delivery.attempt, CodecError.code)
         try:
             if not verdict.dead:
                 logger.error(
                     "edax dispatcher: poison message %s with no on_dead wired; nacking it after a backoff",
-                    env_id,
+                    msg_id,
                 )
                 await self._nack_after_backoff(delivery, verdict.step)
                 return "nack"
@@ -383,7 +395,7 @@ class KeyOrderedDispatcher:
         try:
             await delivery.nack()
         except Exception as e:
-            self._observer.settlement_failed(delivery.envelope.event.name, delivery.envelope.id, e)
+            self._observer.settlement_failed(delivery.message.name, delivery.message.id, e)
             raise
 
     async def _ack_or_log(self, delivery: Delivery) -> bool:
@@ -398,10 +410,10 @@ class KeyOrderedDispatcher:
         try:
             await delivery.ack()
         except Exception as e:
-            self._observer.settlement_failed(delivery.envelope.event.name, delivery.envelope.id, e)
+            self._observer.settlement_failed(delivery.message.name, delivery.message.id, e)
             logger.warning(
                 "edax dispatcher: ack of %s failed after a successful handler; the broker will redeliver it",
-                delivery.envelope.id,
+                delivery.message.id,
                 exc_info=True,
             )
             return False
@@ -413,7 +425,7 @@ class KeyOrderedDispatcher:
         try:
             await delivery.nack()
         except Exception as e:  # noqa: BLE001 - reported to the observer; the shutdown goes on
-            self._observer.settlement_failed(delivery.envelope.event.name, delivery.envelope.id, e)
+            self._observer.settlement_failed(delivery.message.name, delivery.message.id, e)
 
     def _on_worker_done(self, task: asyncio.Task[None]) -> None:
         """Log a worker that ended while the dispatcher was meant to be running. Its keys are
@@ -435,14 +447,14 @@ class KeyOrderedDispatcher:
         for task in self._tasks:
             task.add_done_callback(self._on_worker_done)
 
-    async def submit(self, item: EventEnvelope | Delivery) -> None:
-        """Submit a bare envelope (fire-and-forget) or a :class:`Delivery` (acked/nacked by outcome).
+    async def submit(self, item: EventMessage | CommandMessage | Delivery) -> None:
+        """Submit a bare message (fire-and-forget) or a :class:`Delivery` (acked/nacked by outcome).
         Before :meth:`start` the item waits in its queue. After :meth:`stop` it is refused with
         :class:`RuntimeError`, because no worker would ever take it."""
         if self._stopping:
             raise RuntimeError("dispatcher is stopped: a submitted item would never be handled or settled")
-        env = item.envelope if isinstance(item, Delivery) else item
-        await self._queues[self._worker_index(env.aggregate_id)].put(item)
+        msg = item.message if isinstance(item, Delivery) else item
+        await self._queues[self._worker_index(msg)].put(item)
 
     async def stop(self, timeout: float | None = None) -> None:
         """Refuse further submits, let the workers finish what is queued, and wait up to ``timeout``

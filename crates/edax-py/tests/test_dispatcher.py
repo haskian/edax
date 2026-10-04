@@ -15,7 +15,15 @@ from unittest import mock
 
 import edax
 import pytest
-from conftest import Recording, assert_logged, build_envelope, delivered, recorded_backoff, sequence_of
+from conftest import (
+    Recording,
+    assert_logged,
+    build_command,
+    build_message,
+    delivered,
+    recorded_backoff,
+    sequence_of,
+)
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker
 from hypothesis import given, settings
@@ -43,7 +51,7 @@ async def _drive(broker: MemoryBroker, dispatcher: edax.KeyOrderedDispatcher, po
     for _ in range(polls):
         delivery = delivered(await broker.poll())
         delivery.on_nack = counting(delivery.on_nack)
-        idx = dispatcher._worker_index(delivery.envelope.aggregate_id)
+        idx = dispatcher._worker_index(delivery.message)
         await dispatcher.submit(delivery)
         await dispatcher._queues[idx].join()  # settled (acked/nacked) before we poll again
     return nacks
@@ -51,13 +59,13 @@ async def _drive(broker: MemoryBroker, dispatcher: edax.KeyOrderedDispatcher, po
 
 async def test_transient_dead_letters_after_max_attempts(slept: list[int]) -> None:
     broker, dlq = MemoryBroker(), MemoryBroker()
-    await broker.publish(build_envelope("acct-1", "Boom", 1))
+    await broker.publish(build_message("acct-1", "Boom", 1))
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         raise ValueError("transient")
 
     async def on_dead(d: edax.Delivery, err: BaseException) -> None:
-        await dlq.publish(d.envelope)
+        await dlq.publish(d.message)
 
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, max_attempts=3, on_dead=on_dead)
     dispatcher.start()
@@ -69,7 +77,7 @@ async def test_transient_dead_letters_after_max_attempts(slept: list[int]) -> No
     assert slept == [0, 1], "each nack waits its own step of the schedule"
     assert broker.empty()  # acked (parked in the DLQ), not requeued
     dead = delivered(await dlq.poll())
-    assert dead.envelope.aggregate_id == "acct-1"
+    assert dead.message.aggregate_id == "acct-1"
     await dead.ack()  # settle it: an unacked poll is still outstanding, as on a real broker
     assert dlq.empty()
 
@@ -81,7 +89,7 @@ async def test_on_dead_is_readable_through_the_public_accessor() -> None:
     async def sink(delivery: edax.Delivery, err: BaseException) -> None:
         return None
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         return None
 
     assert edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink).on_dead is sink
@@ -90,13 +98,13 @@ async def test_on_dead_is_readable_through_the_public_accessor() -> None:
 
 async def test_terminal_dead_letters_on_first_failure(slept: list[int]) -> None:
     broker, dlq = MemoryBroker(), MemoryBroker()
-    await broker.publish(build_envelope("acct-1", "Boom", 1))
+    await broker.publish(build_message("acct-1", "Boom", 1))
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         raise edax.CodecError("terminal")  # CodecError.terminal is True
 
     async def on_dead(d: edax.Delivery, err: BaseException) -> None:
-        await dlq.publish(d.envelope)
+        await dlq.publish(d.message)
 
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, max_attempts=3, on_dead=on_dead)
     dispatcher.start()
@@ -111,13 +119,13 @@ async def test_terminal_dead_letters_on_first_failure(slept: list[int]) -> None:
 
 async def test_default_nacks_forever_and_never_dead_letters(slept: list[int]) -> None:
     broker, dlq = MemoryBroker(), MemoryBroker()
-    await broker.publish(build_envelope("acct-1", "Boom", 1))
+    await broker.publish(build_message("acct-1", "Boom", 1))
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         raise ValueError("transient")
 
     async def on_dead(d: edax.Delivery, err: BaseException) -> None:  # never reached: max_attempts=0
-        await dlq.publish(d.envelope)
+        await dlq.publish(d.message)
 
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, max_attempts=0, on_dead=on_dead)
     dispatcher.start()
@@ -141,7 +149,7 @@ async def test_default_nacks_forever_and_never_dead_letters(slept: list[int]) ->
 class SettleCase:
     handler_error: BaseException | None
     sync_handler: bool
-    bare_envelope: bool  # submit the envelope itself, not a Delivery
+    bare_message: bool  # submit the message itself, not a Delivery
     ack_raises: bool
     on_dead_raises: bool
     settled: list[str]  # settlement calls for the first message, in order
@@ -159,7 +167,7 @@ class SettleCase:
     "case",
     [
         pytest.param(SettleCase(None, True, False, False, False, ["ack"], 0), id="sync_handler_is_acked"),
-        pytest.param(SettleCase(None, False, True, False, False, [], 0), id="bare_envelope_is_never_settled"),
+        pytest.param(SettleCase(None, False, True, False, False, [], 0), id="bare_message_is_never_settled"),
         pytest.param(
             SettleCase(None, False, False, True, False, ["ack"], 0, want_log=["after a successful handler"]),
             id="ack_raising_is_logged_as_a_settlement_problem_and_the_worker_continues",
@@ -215,20 +223,20 @@ async def test_worker_settlement_branches(
     settled: dict[str, list[str]] = {}
     dead: list[str] = []
 
-    async def async_handler(env: edax.EventEnvelope) -> None:
+    async def async_handler(env: edax.EventMessage) -> None:
         handled.append(env.id)
         if case.handler_error is not None and env.sequence == 1:  # only the first delivery fails
             raise case.handler_error
 
-    def sync_handler(env: edax.EventEnvelope) -> None:
+    def sync_handler(env: edax.EventMessage) -> None:
         handled.append(env.id)
 
     async def on_dead(d: edax.Delivery, err: BaseException) -> None:
-        dead.append(d.envelope.id)
+        dead.append(d.message.id)
         if case.on_dead_raises:
             raise edax.StoreError("dead-letter sink unavailable")
 
-    def delivery(env: edax.EventEnvelope, ack_raises: bool) -> edax.Delivery:
+    def delivery(env: edax.EventMessage, ack_raises: bool) -> edax.Delivery:
         calls = settled.setdefault(env.id, [])
 
         async def ack() -> None:
@@ -248,14 +256,14 @@ async def test_worker_settlement_branches(
         on_dead=on_dead,
     )
     dispatcher.start()
-    first = build_envelope("acct-1", "Deposited", 1, data=b'{"amount": 10}')
+    first = build_message("acct-1", "Deposited", 1, data=b'{"amount": 10}')
     with caplog.at_level("WARNING", logger="edax.dispatcher"):
-        if case.bare_envelope:
+        if case.bare_message:
             await dispatcher.submit(first)
         else:
             await dispatcher.submit(delivery(first, case.ack_raises))
         # A healthy second delivery on the same key proves the worker survived whatever the first did.
-        second = build_envelope("acct-1", "Deposited", 2, data=b'{"amount": 5}')
+        second = build_message("acct-1", "Deposited", 2, data=b'{"amount": 5}')
         await dispatcher.submit(delivery(second, False))
         await dispatcher.stop()
 
@@ -264,7 +272,7 @@ async def test_worker_settlement_branches(
     assert settled[second.id] == ["ack"]
     assert dead.count(first.id) == case.dead
     assert_logged(caplog, "edax.dispatcher", case.want_log)
-    # Whatever the branch did, the per-envelope bookkeeping below it ran: a raising ack swallowed in
+    # Whatever the branch did, the per-message bookkeeping below it ran: a raising ack swallowed in
     # the worker's catch-all instead would leave both maps holding the id forever.
     # `second` succeeded, so whatever the policy still tracks is `first`'s.
     stats = dispatcher.stats()
@@ -305,7 +313,7 @@ async def test_dispatcher_lifecycle_branches(case: LifecycleCase) -> None:
         with pytest.raises(RuntimeError, match="already started"):
             dispatcher.start()
     for n in (1, 2, 3):
-        await dispatcher.submit(build_envelope("acct-1", "Deposited", n))
+        await dispatcher.submit(build_message("acct-1", "Deposited", n))
     if not case.start_before_submit:
         dispatcher.start()
     for _ in range(case.stops):
@@ -323,7 +331,7 @@ async def test_different_aggregates_progress_on_different_workers() -> None:
     assert edax.partition("acct-1", 2) != edax.partition("acct-2", 2)
     parked, other_done = asyncio.Event(), asyncio.Event()
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         if env.aggregate_id == "acct-1":
             await parked.wait()
         else:
@@ -331,8 +339,8 @@ async def test_different_aggregates_progress_on_different_workers() -> None:
 
     dispatcher = edax.KeyOrderedDispatcher(workers=2, handler=handler)
     dispatcher.start()
-    await dispatcher.submit(build_envelope("acct-1", "Deposited", 1))  # parks its worker
-    await dispatcher.submit(build_envelope("acct-2", "Deposited", 1))
+    await dispatcher.submit(build_message("acct-1", "Deposited", 1))  # parks its worker
+    await dispatcher.submit(build_message("acct-2", "Deposited", 1))
     await asyncio.wait_for(other_done.wait(), 5)  # ran while acct-1 is still parked
     parked.set()
     await asyncio.wait_for(dispatcher.stop(), 5)
@@ -341,14 +349,14 @@ async def test_different_aggregates_progress_on_different_workers() -> None:
 async def test_max_queue_applies_backpressure_to_submit() -> None:
     release = asyncio.Event()
 
-    async def blocking_handler(env: edax.EventEnvelope) -> None:
+    async def blocking_handler(env: edax.EventMessage) -> None:
         await release.wait()
 
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=blocking_handler, max_queue=1)
     dispatcher.start()
-    await dispatcher.submit(build_envelope("acct-1", "Deposited", 1))  # taken by the worker, blocked
-    await dispatcher.submit(build_envelope("acct-1", "Deposited", 2))  # fills the queue
-    third = asyncio.ensure_future(dispatcher.submit(build_envelope("acct-1", "Deposited", 3)))
+    await dispatcher.submit(build_message("acct-1", "Deposited", 1))  # taken by the worker, blocked
+    await dispatcher.submit(build_message("acct-1", "Deposited", 2))  # fills the queue
+    third = asyncio.ensure_future(dispatcher.submit(build_message("acct-1", "Deposited", 3)))
     await asyncio.sleep(0.01)
     assert not third.done()  # submit waits for room rather than growing the queue unbounded
     release.set()
@@ -376,7 +384,7 @@ async def test_max_queue_default_bounds_every_worker_queue(case: QueueCase) -> N
     """A fast broker with a slow handler must not grow memory without limit, so the queue is
     bounded unless the caller asks for unbounded with an explicit ``0``."""
 
-    async def handler(env: edax.EventEnvelope) -> None:  # pragma: no cover - never dispatched
+    async def handler(env: edax.EventMessage) -> None:  # pragma: no cover - never dispatched
         raise AssertionError("no delivery is submitted")
 
     dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=handler, **case.kwargs)
@@ -389,14 +397,14 @@ async def test_max_queue_default_bounds_every_worker_queue(case: QueueCase) -> N
 
 
 class Settlements:
-    """Deliveries whose acks and nacks are recorded per envelope id; a nack can be made to fail."""
+    """Deliveries whose acks and nacks are recorded per message id; a nack can be made to fail."""
 
     def __init__(self, nack_raises: bool = False) -> None:
         self.calls: dict[str, list[str]] = {}
         self.nack_raises = nack_raises
 
     def delivery(self, sequence: int) -> edax.Delivery:
-        env = build_envelope("acct-1", "Deposited", sequence, data=b'{"amount": 10}')
+        env = build_message("acct-1", "Deposited", sequence, data=b'{"amount": 10}')
         calls = self.calls.setdefault(env.id, [])
 
         async def ack() -> None:
@@ -433,7 +441,7 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
     concurrent = 0
     peak = 0
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal concurrent, peak
         concurrent += 1
         peak = max(peak, concurrent)
@@ -461,7 +469,7 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
 
     assert all(task.done() for task in workers), "no worker outlives stop()"
     assert dispatcher.stats().running is False and dispatcher.stats().workers_alive == 0
-    assert settlements.calls == {held.envelope.id: ["nack"], queued.envelope.id: ["nack"]}
+    assert settlements.calls == {held.message.id: ["nack"], queued.message.id: ["nack"]}
     assert observer.settlement_failed.call_count == case.want_settlement_failures
     with pytest.raises(RuntimeError, match="dispatcher is stopped"):
         await dispatcher.submit(settlements.delivery(3))
@@ -479,7 +487,7 @@ async def test_a_dead_worker_is_reported_and_skipped_by_stop(caplog: pytest.LogC
     """A worker that ends while the dispatcher runs strands every key routed to it. ``running``
     must read ``False``, and ``stop()`` must not block on a sentinel the dead worker never takes."""
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         pass
 
     dispatcher = edax.KeyOrderedDispatcher(workers=2, handler=handler, max_queue=1)
@@ -510,7 +518,7 @@ async def test_a_worker_killed_by_a_settlement_reports_its_exception(
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None)
     dispatcher.start()
     with caplog.at_level("ERROR", logger="edax.dispatcher"):
-        await dispatcher.submit(edax.Delivery(build_envelope("acct-1", "Deposited", 1), ack, nack))
+        await dispatcher.submit(edax.Delivery(build_message("acct-1", "Deposited", 1), ack, nack))
         await asyncio.wait_for(asyncio.gather(*dispatcher._tasks, return_exceptions=True), 1)
         await asyncio.sleep(0)
     records = [r for r in caplog.records if r.name == "edax.dispatcher"]
@@ -524,7 +532,7 @@ async def test_keyboard_interrupt_and_system_exit_are_never_swallowed() -> None:
     """The process is being stopped, not the delivery failing: neither is nacked as a failure."""
     for raised in (KeyboardInterrupt(), SystemExit(3)):
 
-        async def handler(env: edax.EventEnvelope, raised: BaseException = raised) -> None:
+        async def handler(env: edax.EventMessage, raised: BaseException = raised) -> None:
             raise raised
 
         settlements = Settlements()
@@ -532,7 +540,7 @@ async def test_keyboard_interrupt_and_system_exit_are_never_swallowed() -> None:
         delivery = settlements.delivery(1)
         with pytest.raises(type(raised)):
             await dispatcher._settle(delivery)
-        assert settlements.calls[delivery.envelope.id] == [], f"{type(raised).__name__} settled nothing"
+        assert settlements.calls[delivery.message.id] == [], f"{type(raised).__name__} settled nothing"
 
 
 # =========================================================================
@@ -550,7 +558,7 @@ async def _settle_everything(workers: int, plan: list[tuple[int, str]], deadline
     peak = 0
     behaviour_of: dict[str, str] = {}
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal peak
         running[env.aggregate_id] = running.get(env.aggregate_id, 0) + 1
         peak = max(peak, running[env.aggregate_id])
@@ -570,7 +578,7 @@ async def _settle_everything(workers: int, plan: list[tuple[int, str]], deadline
     dispatcher = edax.KeyOrderedDispatcher(workers=workers, handler=handler)
     dispatcher.start()
     for n, (aggregate, behaviour) in enumerate(plan, start=1):
-        env = build_envelope(f"acct-{aggregate}", "Deposited", n)
+        env = build_message(f"acct-{aggregate}", "Deposited", n)
         behaviour_of[env.id] = behaviour
         settled = calls.setdefault(env.id, [])
 
@@ -652,7 +660,7 @@ async def test_liveness_branches(case: LiveCase, slept: list[int]) -> None:
     settled: list[str] = []
     sink_calls = 0
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal runs, alive
         runs += 1
         if case.dies == "during":
@@ -669,7 +677,7 @@ async def test_liveness_branches(case: LiveCase, slept: list[int]) -> None:
         workers=1, handler=handler, on_dead=on_dead if case.with_on_dead else None, observer=observer
     )
     dispatcher.start()
-    env = build_envelope("acct-1", "Deposited", 1)
+    env = build_message("acct-1", "Deposited", 1)
     delivery = edax.Delivery(
         env, lambda: settled.append("ack"), lambda: settled.append("nack"), live=lambda: alive
     )
@@ -747,14 +755,14 @@ async def test_settle_poison_branches(case: PoisonCase, slept: list[int]) -> Non
         pytest.param("sink", ["nack"], id="in_the_sink"),
         # The ack already settled it: there is nothing left to hand back.
         pytest.param("ack", ["ack"], id="in_its_ack"),
-        # A bare envelope settles nothing, so a cancel mid-handler nacks nothing either.
+        # A bare message settles nothing, so a cancel mid-handler nacks nothing either.
         pytest.param("fire_and_forget", [], id="in_a_fire_and_forget_handler"),
     ],
 )
 async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: str, want: list[str]) -> None:
     """Stopping the dispatcher while a worker waits out a nack's backoff, or while the sink runs, must not
     strand the delivery: it is nacked at once, then the cancel goes on. A delivery that settled, or a bare
-    envelope, is not nacked."""
+    message, is not nacked."""
     parked = asyncio.Event()
     settled: list[str] = []
 
@@ -762,7 +770,7 @@ async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: 
         parked.set()
         await asyncio.Event().wait()
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         if where == "fire_and_forget":
             await park()
         if where in ("sink", "backoff"):
@@ -776,7 +784,7 @@ async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: 
         workers=1, handler=handler, on_dead=park, pacing=edax.Pacing(sleep=park)
     )
     dispatcher.start()
-    env = build_envelope("acct-1", "Deposited", 1)
+    env = build_message("acct-1", "Deposited", 1)
     await dispatcher.submit(
         env if where == "fire_and_forget" else edax.Delivery(env, ack, lambda: settled.append("nack"))
     )
@@ -836,3 +844,16 @@ def test_a_dispatcher_refuses_fewer_than_one_worker(workers: int) -> None:
     """A count below one is a wiring typo; clamping it to one worker would hide it."""
     with pytest.raises(ValueError, match=f"at least one worker, got {workers}"):
         edax.KeyOrderedDispatcher(workers=workers, handler=lambda env: None)
+
+
+async def test_a_handler_runs_under_the_lineage_of_its_message() -> None:
+    """A command delivered from a broker is handled under its own child lineage, so the events its handler
+    saves name it as their cause. The worker starts with no lineage of its starter's."""
+    seen: list[edax.Lineage | None] = []
+    dispatcher = edax.KeyOrderedDispatcher(1, lambda msg: seen.append(edax.current_lineage()))
+    command = build_command("Deposit", id="cmd-7", correlation_id="flow-7")
+    with edax.use_lineage(edax.Lineage("starter-flow", "starter")):
+        dispatcher.start()
+    await dispatcher.submit(command)
+    await dispatcher.stop()
+    assert seen == [edax.Lineage("flow-7", "cmd-7")]

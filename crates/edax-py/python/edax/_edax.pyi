@@ -1,5 +1,5 @@
 # Committed type stub for the alef-generated `_edax` extension (PEP 561, beside `_edax.abi3.so`
-# + `py.typed`). Gives `edax.Event`/`edax.EventEnvelope` field types; the native classes have none.
+# + `py.typed`). Gives the message records their field types; the native classes have none.
 # Copy of `crates/edax-py/.alef/_edax.pyi` with the alef header stripped so alef cleanup leaves it.
 # Never edit by hand: regenerate with `scripts/regenerate_binding.sh`.
 
@@ -8,35 +8,99 @@ class BackoffPolicy:
     cap_millis: int
     def __init__(self, base_millis: int, cap_millis: int) -> None: ...
 
+class CommandMessage:
+    id: str
+    idempotency_key: str | None
+    aggregate_id: str | None
+    name: str
+    version: int
+    data: bytes
+    correlation_id: str
+    causation_id: str
+    issued_at: int
+    extensions: dict[str, str]
+    metadata: dict[str, str]
+    def __init__(
+        self,
+        id: str,  # noqa: A002
+        name: str,
+        version: int,
+        data: bytes,
+        correlation_id: str,
+        causation_id: str,
+        issued_at: int,
+        extensions: dict[str, str],
+        metadata: dict[str, str],
+        idempotency_key: str | None = None,
+        aggregate_id: str | None = None,
+    ) -> None: ...
+
 class Event:
     name: str
     version: int
     data: bytes
     def __init__(self, name: str, version: int, data: bytes) -> None: ...
 
-class EventEnvelope:
+class EventDraft:
     id: str
     aggregate_id: str
-    event: Event
     sequence: int | None
-    namespace: dict[str, str]
+    name: str
+    version: int
+    data: bytes
+    correlation_id: str
+    causation_id: str
+    occurred_at: int | None
+    extensions: dict[str, str]
     metadata: dict[str, str]
-    timestamp: int
     def __init__(
         self,
         id: str,  # noqa: A002
         aggregate_id: str,
-        event: Event,
-        namespace: dict[str, str],
+        name: str,
+        version: int,
+        data: bytes,
+        correlation_id: str,
+        causation_id: str,
+        extensions: dict[str, str],
         metadata: dict[str, str],
-        timestamp: int,
         sequence: int | None = None,
+        occurred_at: int | None = None,
     ) -> None: ...
 
 class EventIdempotency:
     key: str
     payload_hash: int
     def __init__(self, key: str, payload_hash: int) -> None: ...
+
+class EventMessage:
+    id: str
+    aggregate_id: str
+    sequence: int | None
+    name: str
+    version: int
+    data: bytes
+    correlation_id: str
+    causation_id: str
+    occurred_at: int | None
+    recorded_at: int
+    extensions: dict[str, str]
+    metadata: dict[str, str]
+    def __init__(
+        self,
+        id: str,  # noqa: A002
+        aggregate_id: str,
+        name: str,
+        version: int,
+        data: bytes,
+        correlation_id: str,
+        causation_id: str,
+        recorded_at: int,
+        extensions: dict[str, str],
+        metadata: dict[str, str],
+        sequence: int | None = None,
+        occurred_at: int | None = None,
+    ) -> None: ...
 
 class IdempotencyRecord:
     payload_hash: int
@@ -73,7 +137,18 @@ class KafkaRecord:
 class KafkaRoute:
     registered: int | None
     unknown: str | None
-    def __init__(self, registered: int | None = None, unknown: str | None = None) -> None: ...
+    headerless: bool
+    def __init__(
+        self,
+        headerless: bool,
+        registered: int | None = None,
+        unknown: str | None = None,
+    ) -> None: ...
+
+class Lineage:
+    correlation_id: str
+    causation_id: str
+    def __init__(self, correlation_id: str, causation_id: str) -> None: ...
 
 class MemoryClaim:
     won: bool
@@ -106,13 +181,15 @@ class PollResult:
     token: int
     partition: int
     offset: int
-    envelope: EventEnvelope
+    event: EventMessage | None
+    command: CommandMessage | None
     def __init__(
         self,
         token: int,
         partition: int,
         offset: int,
-        envelope: EventEnvelope,
+        event: EventMessage | None = None,
+        command: CommandMessage | None = None,
     ) -> None: ...
 
 class ProjectionRow:
@@ -125,7 +202,15 @@ class RedisScripts:
     complete: str
     release: str
     extend: str
-    def __init__(self, claim: str, complete: str, release: str, extend: str) -> None: ...
+    forget: str
+    def __init__(
+        self,
+        claim: str,
+        complete: str,
+        release: str,
+        extend: str,
+        forget: str,
+    ) -> None: ...
 
 class RetriesTracked:
     attempts: int
@@ -137,19 +222,6 @@ class RetryVerdict:
     attempt: int
     step: int
     def __init__(self, dead: bool, attempt: int, step: int) -> None: ...
-
-class SagaCommand:
-    id: str
-    correlation_id: str
-    command: Event
-    timestamp: int
-    def __init__(
-        self,
-        id: str,  # noqa: A002
-        correlation_id: str,
-        command: Event,
-        timestamp: int,
-    ) -> None: ...
 
 class SagaRow:
     version: int
@@ -176,7 +248,8 @@ class SplitError:
     def __init__(self, code: str, message: str, terminal: bool) -> None: ...
 
 class MemoryBroker:
-    def publish(self, envelope: EventEnvelope) -> None: ...
+    def publish_event(self, message: EventMessage) -> None: ...
+    def publish_command(self, message: CommandMessage) -> None: ...
     def try_poll(self, group: str) -> PollResult | None: ...
     def ack(self, group: str, token: int) -> bool: ...
     def nack(self, group: str, token: int) -> bool: ...
@@ -188,14 +261,15 @@ class MemoryTransactor:
     def commit(self, tx: int) -> None: ...
     def rollback(self, tx: int) -> bool: ...
     def open_count(self) -> int: ...
-    def load_events(self, tx: int, aggregate_id: str, after: int) -> list[EventEnvelope]: ...
+    def load_events(self, tx: int, aggregate_id: str, after: int) -> list[EventMessage]: ...
     def append_events(
         self,
         tx: int,
         aggregate_id: str,
         expected_version: int,
-        events: list[EventEnvelope],
-    ) -> None: ...
+        drafts: list[EventDraft],
+        recorded_at: int,
+    ) -> list[EventMessage]: ...
     def load_snapshot(self, tx: int, aggregate_id: str) -> SnapshotResult | None: ...
     def save_snapshot(
         self,
@@ -205,12 +279,13 @@ class MemoryTransactor:
         version: int,
         data: bytes,
     ) -> None: ...
-    def unpublished(self, limit: int) -> list[EventEnvelope]: ...
+    def unpublished(self, limit: int) -> list[EventMessage]: ...
     def unpublished_count(self) -> int: ...
     def mark_published(self, ids: list[str]) -> None: ...
     def claim(self, tx: int, key: str, payload_hash: int) -> MemoryClaim: ...
     def complete(self, tx: int, key: str, handle: bytes, record_json: str) -> None: ...
     def release(self, tx: int, key: str, handle: bytes) -> None: ...
+    def forget(self, tx: int, key: str) -> None: ...
     def expire_claim(self, key: str) -> bool: ...
     def get_projection(
         self,
@@ -237,17 +312,21 @@ class MemoryTransactor:
         version: int,
         state_json: str,
         folded: str,
-        commands: list[SagaCommand],
+        commands: list[CommandMessage],
     ) -> int: ...
     def complete_saga(
         self,
         tx: int,
         id: str,  # noqa: A002
         version: int,
-        commands: list[SagaCommand],
+        commands: list[CommandMessage],
     ) -> int: ...
-    def unpublished_saga_commands(self, limit: int) -> list[SagaCommand]: ...
+    def unpublished_saga_commands(self, limit: int) -> list[CommandMessage]: ...
     def mark_saga_commands_published(self, ids: list[str]) -> None: ...
+    def enqueue_commands(self, tx: int, commands: list[CommandMessage]) -> None: ...
+    def unpublished_commands(self, limit: int) -> list[CommandMessage]: ...
+    def unpublished_command_count(self) -> int: ...
+    def mark_commands_published(self, ids: list[str]) -> None: ...
 class OffsetTracker:
     def book(self, topic: str, partition: int, offset: int) -> int: ...
     def is_live(self, token: int) -> bool: ...
@@ -288,24 +367,35 @@ def advance(stored: int | None = None, incoming: int | None = None) -> int | Non
 def backoff_millis(base_millis: int, cap_millis: int, attempt: int, entropy: int) -> int: ...
 def cached_failure_message(error: str, error_code: str | None = None) -> str: ...
 def canonical_json(payload: bytes) -> str: ...
-def causation_id_key() -> str: ...
+def check_extensions(extensions: dict[str, str]) -> None: ...
 def check_sequence_batch(expected: int, sequences: list[int | None]) -> None: ...
-def correlation_id_key() -> str: ...
+def claim_key(scope: str, idempotency_key: str) -> str: ...
+def command_hash_json(name: str, payload: bytes) -> int: ...
 def current_timestamp() -> int: ...
-def decode_cursor(cursor: str, sort: str) -> str: ...
-def decode_envelope(
+def decode_command(
     format: str,  # noqa: A002
     wire: bytes,
-) -> EventEnvelope: ...
+) -> CommandMessage: ...
+
+def decode_cursor(cursor: str, sort: str) -> str: ...
+def decode_event(
+    format: str,  # noqa: A002
+    wire: bytes,
+) -> EventMessage: ...
 
 def decode_idempotency_record(record_json: str) -> IdempotencyRecord: ...
 def decode_prior_idempotency_record(record_json: str, claimant_hash: int) -> IdempotencyRecord: ...
 def default_backoff() -> BackoffPolicy: ...
 def effective_sort(sort: str) -> str: ...
-def encode_cursor(doc: str, sort: str) -> str: ...
-def encode_envelope(
+def encode_command(
     format: str,  # noqa: A002
-    envelope: EventEnvelope,
+    message: CommandMessage,
+) -> bytes: ...
+
+def encode_cursor(doc: str, sort: str) -> str: ...
+def encode_event(
+    format: str,  # noqa: A002
+    message: EventMessage,
 ) -> bytes: ...
 
 def encode_idempotency_record(
@@ -324,7 +414,7 @@ def eval_filter(
     doc: str,
 ) -> bool: ...
 
-def event_idempotency(envelope: EventEnvelope) -> EventIdempotency: ...
+def event_idempotency(message: EventMessage) -> EventIdempotency: ...
 def guid() -> str: ...
 def idempotency_outcome(
     current: int,
@@ -347,28 +437,43 @@ def kafka_dead_letter_record(
 
 def kafka_partition_for(key: bytes, partitions: int) -> int: ...
 def kafka_poison_id(topic: str, partition: int, offset: int) -> str: ...
-def kafka_record(
-    envelope: EventEnvelope,
-    value: bytes,
-    content_type: str,
-    key: str | None = None,
-) -> KafkaRecord: ...
+def kafka_record(key: str, value: bytes, content_type: str) -> KafkaRecord: ...
+def kafka_route(
+    headers: list[KafkaHeader],
+    registered: list[str],
+    default_kind: str,
+) -> KafkaRoute: ...
 
-def kafka_route(headers: list[KafkaHeader], registered: list[str]) -> KafkaRoute: ...
 def media_type(
     format: str,  # noqa: A002
+    kind: str,
 ) -> str: ...
 
 def memory_broker(partitions: int) -> MemoryBroker: ...
 def memory_transactor() -> MemoryTransactor: ...
 def no_tx() -> int: ...
 def offset_tracker() -> OffsetTracker: ...
-def originate(metadata: dict[str, str], fresh_id: str) -> dict[str, str]: ...
+def ordering_key(
+    id: str,  # noqa: A002
+    aggregate_id: str | None = None,
+) -> str: ...
+
+def originate(
+    fresh_id: str,
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+) -> Lineage: ...
+
 def partition(aggregate_id: str, n: int) -> int: ...
 def payload_hash(payload: bytes) -> int: ...
 def payload_hash_json(payload: bytes) -> int: ...
-def propagate(parent_metadata: dict[str, str], parent_event_id: str) -> dict[str, str]: ...
+def propagate(parent_id: str, parent_correlation_id: str) -> Lineage: ...
 def query(query: str, docs: str) -> str: ...
+def received_key(
+    id: str,  # noqa: A002
+    idempotency_key: str | None = None,
+) -> str: ...
+
 def redis_check_claim(claim: bytes) -> None: ...
 def redis_check_config(
     prefix: str,
@@ -379,6 +484,8 @@ def redis_check_config(
 ) -> None: ...
 
 def redis_claim_outcome(claim: bytes, reply: bytes | None = None) -> str | None: ...
+def redis_forget_outcome(key: str, held: bytes | None = None) -> bool: ...
+def redis_forget_reads() -> int: ...
 def redis_heartbeats_per_ttl() -> int: ...
 def redis_ledger_key(prefix: str, key: str) -> bytes: ...
 def redis_new_claim(payload_hash: int) -> bytes: ...
@@ -386,8 +493,19 @@ def redis_reply_error(reply: str) -> str: ...
 def redis_scripts() -> RedisScripts: ...
 def redis_settled_value(claim: bytes, record_json: str) -> bytes: ...
 def retries(max_attempts: int, sink: bool) -> Retries: ...
-def saga_admit(completed: bool, folded: str, envelope: EventEnvelope) -> str | None: ...
-def saga_command_id(correlation_id: str, version: int, index: int) -> str: ...
+def saga_admit(completed: bool, folded: str, message: EventMessage) -> str | None: ...
+def saga_command(
+    saga: str,
+    instance_id: str,
+    version: int,
+    index: int,
+    command: Event,
+    cause_id: str,
+    cause_correlation_id: str,
+    issued_at: int,
+) -> CommandMessage: ...
+
+def saga_command_id(instance_id: str, version: int, index: int) -> str: ...
 def saga_write(completes: bool, has_commands: bool, version: int | None = None) -> SagaWrite: ...
 def snapshot_due(every: int, initial: int, current: int) -> bool: ...
 def split_error(wire: str) -> SplitError: ...
