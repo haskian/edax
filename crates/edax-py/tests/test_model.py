@@ -34,7 +34,8 @@ from conftest import (
     Counter,
     Tick,
     agg_id,
-    build_envelope,
+    build_message,
+    claimed,
     counter_repo,
     expect,
     ledger_key,
@@ -47,6 +48,7 @@ from edax import command as C
 from edax.aggregate import WireFormat
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
+from edax.testing import drafted, recorded
 from edax.testing.faults import LostResponse
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -102,8 +104,8 @@ store_op = st.one_of(
 class OutboxModel:
     """Per-aggregate streams plus a FIFO outbox drained by prefixes. Pure: no store calls."""
 
-    events: dict[int, list[edax.EventEnvelope]] = field(default_factory=dict)
-    outbox: list[edax.EventEnvelope] = field(default_factory=list)
+    events: dict[int, list[edax.EventMessage]] = field(default_factory=dict)
+    outbox: list[edax.EventMessage] = field(default_factory=list)
     published: list[str] = field(default_factory=list)
     failed_drains: int = 0
     next_id: int = 0
@@ -111,29 +113,30 @@ class OutboxModel:
     def version(self, agg: int) -> int:
         return len(self.events.get(agg, []))
 
-    def stream(self, agg: int, after: int = 0) -> list[edax.EventEnvelope]:
+    def stream(self, agg: int, after: int = 0) -> list[edax.EventMessage]:
         return [e for e in self.events.get(agg, []) if (e.sequence or 0) > after]
 
-    def envelopes(self, op: Append, expected: int) -> list[edax.EventEnvelope]:
-        namespace, metadata, timestamp = stamp(op.ns)
-        envs: list[edax.EventEnvelope] = []
+    def drafts(self, op: Append, expected: int) -> list[edax.EventDraft]:
+        extensions, metadata = stamp(op.ns)
+        drafts: list[edax.EventDraft] = []
         for i in range(op.n):
             self.next_id += 1
-            envs.append(
-                build_envelope(
-                    agg_id(op.agg),
-                    "Ticked",
-                    expected + 1 + i,
-                    id=f"e{self.next_id}",
-                    data=bytes([op.agg, i]),
-                    namespace=namespace,
-                    metadata=metadata,
-                    timestamp=timestamp,
+            drafts.append(
+                drafted(
+                    build_message(
+                        agg_id(op.agg),
+                        "Ticked",
+                        expected + 1 + i,
+                        id=f"e{self.next_id}",
+                        data=bytes([op.agg, i]),
+                        extensions=extensions,
+                        metadata=metadata,
+                    )
                 )
             )
-        return envs
+        return drafts
 
-    def appended(self, agg: int, envs: list[edax.EventEnvelope]) -> None:
+    def appended(self, agg: int, envs: list[edax.EventMessage]) -> None:
         self.events.setdefault(agg, []).extend(envs)
         self.outbox.extend(envs)
 
@@ -153,18 +156,20 @@ class Sink:
         self.reset()
 
     def reset(self, fail_at: int | None = None) -> None:
-        self.seen: list[edax.EventEnvelope] = []
+        self.seen: list[edax.EventMessage] = []
         self.fail_at = fail_at
 
-    async def publish(self, env: edax.EventEnvelope) -> None:
+    async def publish(self, env: edax.EventMessage) -> None:
         self.seen.append(env)
         if self.fail_at == len(self.seen) - 1:
             raise edax.StoreError("publisher unavailable")
 
 
 class StoreReplay:
-    def __init__(self, store: Any) -> None:  # a LostResponse over the memory event store
+    def __init__(self, store: Any, clock: list[int]) -> None:  # a LostResponse over the memory event store
         self.store = store
+        #: The store's clock reading, which this replay advances before each append.
+        self.clock = clock
         self.model = OutboxModel()
         self.sink = Sink()
         self.relay = edax.Relay(store, self.sink.publish, pacing=NO_WAIT)
@@ -185,7 +190,9 @@ class StoreReplay:
         # Signed delta off the model's own version, so conflicts and clean appends are both common
         # (a uniform `expected` would almost always conflict).
         expected = max(0, stored + op.delta)
-        envs = self.model.envelopes(op, expected)
+        drafts = self.model.drafts(op, expected)
+        self.clock[0] += 1
+        envs = [recorded(d, self.clock[0]) for d in drafts]
         clean = expected == stored
         if op.lost:
             self.store.arm("append")
@@ -193,7 +200,8 @@ class StoreReplay:
         # Conflict: rejected before anything is written, whatever the arm says.
         exc = (edax.StoreError if op.lost else None) if clean else edax.ConcurrencyError
         with expect(exc):
-            await self.store.append(self.tx, agg_id(op.agg), expected, envs)
+            appended = await self.store.append(self.tx, agg_id(op.agg), expected, drafts)
+            same(appended, envs)
         if clean:
             self.model.appended(op.agg, envs)
         elif op.lost:
@@ -250,7 +258,8 @@ class StoreReplay:
 async def _replay_store(history: list[StoreOp]) -> None:
     # No open unit of work: the model describes committed state, and an outbox drain reads only
     # committed rows, so every op auto-commits (`tx=None` outside any `transaction`).
-    r = StoreReplay(LostResponse(MemoryEventStore()))
+    clock = [0]
+    r = StoreReplay(LostResponse(MemoryEventStore(now=lambda: clock[0])), clock)
     for op in history:
         await r.step(op)
     await r.finish()
@@ -270,8 +279,7 @@ _TYPES = {0: "A", 1: "B", 2: "Z"}  # "Z" is never registered
 
 
 def _bus_key(cmd: Any) -> str:
-    """Idempotency key off the command's class attribute. ``Any`` because ``idempotent`` types its
-    key function over the ``Command`` protocol, which carries only ``type``."""
+    """The idempotency key a dispatch carries, off the command's class attribute."""
     return str(cmd.key)
 
 
@@ -354,7 +362,7 @@ def _idempotency_backend(backend: str) -> tuple[Any, Callable[[], Awaitable[None
 
         async def lapse_memory() -> None:
             for key in range(3):
-                memory.expire(str(key))
+                memory.expire(claimed(str(key)))
 
         async def put_raw_memory(key: str, raw: str) -> None:
             memory.put_raw(key, raw)
@@ -466,7 +474,7 @@ class BusReplay:
         self.model: dict[int, Record] = {}
         # The handle of each pending claim a SeedPending took, so a Release can name it.
         self.seeded: dict[int, bytes] = {}
-        self.bus = C.CommandBus(C.idempotent(store, _bus_key))
+        self.bus = C.CommandBus(C.idempotent(store, scope="test"))
         self.bus.register("A", self.handler)
         self.bus.register("B", self.handler)
 
@@ -492,7 +500,7 @@ class BusReplay:
 
     async def dispatch(self, op: Dispatch) -> None:
         cmd = make_cmd(op.kind, op.key, op.payload, op.outcome)
-        hash_ = C._payload_hash(cmd)
+        hash_ = C._payload_hash(cmd, cmd.type)
         prior = self.model.get(op.key)
         e = decide(prior, op, hash_)
 
@@ -502,7 +510,7 @@ class BusReplay:
         if e.arm:
             self.store.arm(e.arm)
         with expect(e.raises, e.match):
-            assert await self.bus.dispatch(cmd) == e.value
+            assert await self.bus.dispatch(cmd, idempotency_key=_bus_key(cmd)) == e.value
         assert self.calls == want_calls
         if e.slot is None:
             self.model.pop(op.key, None)
@@ -512,30 +520,31 @@ class BusReplay:
     async def seed_pending(self, op: SeedPending) -> None:
         # An in-flight winner: claim takes the key if free and leaves any existing record alone.
         cmd = make_cmd(0, op.key, op.payload, 0)
-        hash_ = C._payload_hash(cmd)
-        claimed = await self.store.claim(str(op.key), hash_)
-        if isinstance(claimed, C.Won):
+        hash_ = C._payload_hash(cmd, cmd.type)
+        got = await self.store.claim(claimed(str(op.key)), hash_)
+        if isinstance(got, C.Won):
             assert op.key not in self.model
             self.model[op.key] = (hash_, Slot.PENDING)
-            self.seeded[op.key] = claimed.handle
+            self.seeded[op.key] = got.handle
         else:
             stored = self.model[op.key][0]
-            assert claimed.payload_hash == (hash_ if stored is None else stored)
+            assert got.payload_hash == (hash_ if stored is None else stored)
 
     async def release(self, op: Release) -> None:
         handle = self.seeded.pop(op.key, None)
         if handle is None:
             return  # no claim of the test's own to release: a guard only ever releases its own
-        await self.store.release(str(op.key), handle)
+        await self.store.release(claimed(str(op.key)), handle)
         self.model.pop(op.key, None)
 
     async def corrupt(self, op: Corrupt) -> None:
         if op.payload is None:
-            await self.put_raw(str(op.key), '{"payload_hash":')
+            await self.put_raw(claimed(str(op.key)), '{"payload_hash":')
             self.model[op.key] = (None, Slot.UNREADABLE)
         else:
-            hash_ = C._payload_hash(make_cmd(0, op.key, op.payload, 0))
-            await self.put_raw(str(op.key), f'{{"payload_hash":{hash_},"pending":"settling"}}')
+            cmd = make_cmd(0, op.key, op.payload, 0)
+            hash_ = C._payload_hash(cmd, cmd.type)
+            await self.put_raw(claimed(str(op.key)), f'{{"payload_hash":{hash_},"pending":"settling"}}')
             self.model[op.key] = (hash_, Slot.UNREADABLE)
         self.seeded.pop(op.key, None)  # the seeded claim is gone: its handle settles nothing now
 
@@ -548,7 +557,7 @@ class BusReplay:
         # Every modeled record is readable back through the seam with the same hash and state.
         for key, (stored, slot) in self.model.items():
             hash_ = 0 if stored is None else stored
-            record = await self.store.claim(str(key), hash_)
+            record = await self.store.claim(claimed(str(key)), hash_)
             assert not isinstance(record, C.Won), f"key {key} should still hold a record"
             assert record.payload_hash == hash_
             if slot is Slot.UNREADABLE:
@@ -594,16 +603,16 @@ async def _replay_dispatcher(workers: int, max_attempts: int, with_dead: bool, s
     nacked: list[str] = []
     dead: list[str] = []
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         await asyncio.sleep(0)  # yield, so workers actually interleave
         handled.append((env.aggregate_id, sequence_of(env)))
-        if env.event.name == "Transient":
+        if env.name == "Transient":
             raise ValueError("transient")
-        if env.event.name == "Terminal":
+        if env.name == "Terminal":
             raise edax.CodecError("terminal")
 
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        dead.append(delivery.envelope.id)
+        dead.append(delivery.message.id)
 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=workers,
@@ -620,7 +629,7 @@ async def _replay_dispatcher(workers: int, max_attempts: int, with_dead: bool, s
     for op in submits:
         n = seq[op.agg] = seq.get(op.agg, 0) + 1
         name = ("Tick", "Transient", "Terminal")[op.fail]
-        env = build_envelope(agg_id(op.agg), name, n, id=f"{agg_id(op.agg)}-{n}")
+        env = build_message(agg_id(op.agg), name, n, id=f"{agg_id(op.agg)}-{n}")
         if op.fail == 0:
             want_ack.append(env.id)
         else:
@@ -746,9 +755,9 @@ class RepoReplay:
     async def apply(self, op: Apply) -> None:
         ticks = self.model.ticks.setdefault(op.agg, [])
         version = len(ticks)
-        namespace, metadata, _ = stamp(op.ns)
+        extensions, metadata = stamp(op.ns)
         if op.lost and op.ticks:
-            await self._lost_save(op, namespace, metadata)
+            await self._lost_save(op, extensions, metadata)
             return
 
         # A stale save only conflicts if the live save actually bumps the version. Loaded *before*
@@ -758,23 +767,23 @@ class RepoReplay:
 
         instance = await self.instance(op.agg)
         instance.apply(*[Tick(t) for t in op.ticks])
-        envs = await self.repo.save(instance, namespace=namespace, metadata=metadata)
+        envs = await self.repo.save(instance, extensions=extensions, metadata=metadata)
         assert [e.sequence for e in envs] == list(range(version + 1, version + len(op.ticks) + 1))
-        assert all(dict(e.namespace) == namespace and dict(e.metadata) == metadata for e in envs)
+        assert all(dict(e.extensions) == extensions and dict(e.metadata) == metadata for e in envs)
         assert instance.pending == []
         assert instance.version.initial == version + len(op.ticks)
         assert instance.version.updates == 0
         ticks.extend(op.ticks)
 
-        # Stamping survives the store, not just the returned envelopes.
+        # Stamping survives the store, not just the returned messages.
         stored = await self.store.load(self.tx, agg_id(op.agg), version)
-        assert all(dict(e.namespace) == namespace and dict(e.metadata) == metadata for e in stored)
+        assert all(dict(e.extensions) == extensions and dict(e.metadata) == metadata for e in stored)
 
         if stale_agg is not None:
-            await self._stale_save(stale_agg, op, namespace, metadata)
+            await self._stale_save(stale_agg, op, extensions, metadata)
         self.model.snapped[op.agg] = version + len(op.ticks)
 
-    async def _lost_save(self, op: Apply, namespace: dict[str, str], metadata: dict[str, str]) -> None:
+    async def _lost_save(self, op: Apply, extensions: dict[str, str], metadata: dict[str, str]) -> None:
         # save appends and snapshots in one unit of work, and the response of its commit is lost:
         # events and snapshot both land, the caller sees a StoreError, and the instance is left
         # untouched for it to retry. (A response lost *inside* the unit of work would roll it back
@@ -783,7 +792,7 @@ class RepoReplay:
         instance.apply(*[Tick(t) for t in op.ticks])
         self.store.arm("commit")
         with expect(edax.StoreError):
-            await self.repo.save(instance, namespace=namespace, metadata=metadata)
+            await self.repo.save(instance, extensions=extensions, metadata=metadata)
         assert len(instance.pending) == len(op.ticks)
         assert instance.version.updates == len(op.ticks)
         self.model.ticks[op.agg].extend(op.ticks)
@@ -791,18 +800,18 @@ class RepoReplay:
 
         # Blind retry with the same instance: the events landed, so OCC conflicts.
         with expect(edax.ConcurrencyError):
-            await self.repo.save(instance, namespace=namespace, metadata=metadata)
+            await self.repo.save(instance, extensions=extensions, metadata=metadata)
         assert len(instance.pending) == len(op.ticks)  # still untouched
 
         # Reload heals: replay past the stale (or absent) snapshot reaches the state.
         await self.reload(Reload(op.agg))
 
     async def _stale_save(
-        self, stale_agg: Counter, op: Apply, namespace: dict[str, str], metadata: dict[str, str]
+        self, stale_agg: Counter, op: Apply, extensions: dict[str, str], metadata: dict[str, str]
     ) -> None:
         stale_agg.apply(*[Tick(t) for t in op.ticks])
         with expect(edax.ConcurrencyError):
-            await self.repo.save(stale_agg, namespace=namespace, metadata=metadata)
+            await self.repo.save(stale_agg, extensions=extensions, metadata=metadata)
         # The failed save leaves the aggregate untouched so the caller can retry.
         assert len(stale_agg.pending) == len(op.ticks)
         assert stale_agg.version.updates == len(op.ticks)
@@ -818,7 +827,7 @@ class RepoReplay:
         fresh = MemoryEventStore()
         events = await self.store.load(self.tx, agg_id(op.agg), 0)
         async with fresh.transaction() as ftx:
-            await fresh.append(ftx, agg_id(op.agg), 0, events)
+            await fresh.append(ftx, agg_id(op.agg), 0, [drafted(e) for e in events])
             replayed = await counter_repo(fresh, self.ids).load(agg_id(op.agg), tx=ftx)
         assert replayed.n == want
         assert replayed.version.initial == version
@@ -851,11 +860,14 @@ def test_repository_matches_fold(history: list[RepoOp]) -> None:
 
 
 # =========================================================================
-# P5 — kernel envelope serializer round-trip (the binding boundary)
+# P5 — kernel message serializer round-trip (the binding boundary)
 # =========================================================================
 
 text = st.text(max_size=24)
 str_map = st.dictionaries(text, text, max_size=3)
+#: Extension keys under the kernel's rule, so every generated message is one a producer may send.
+extension_map = st.dictionaries(st.from_regex(r"[a-z0-9][a-z0-9._-]{0,63}", fullmatch=True), text, max_size=3)
+i64 = st.integers(-(2**63), 2**63 - 1)
 
 
 @MODEL
@@ -864,12 +876,14 @@ str_map = st.dictionaries(text, text, max_size=3)
     id_=text,
     aggregate_id=text,
     name=text,
-    version=st.integers(-(2**31), 2**31 - 1),
+    version=st.integers(0, 2**32 - 1),
     data=st.binary(max_size=64),
-    namespace=str_map,
+    lineage=st.tuples(text, text),
+    extensions=extension_map,
     metadata=str_map,
-    timestamp=st.integers(-(2**63), 2**63 - 1),
-    sequence=st.none() | st.integers(0, 2**63 - 1),
+    recorded_at=i64,
+    occurred_at=st.none() | i64,
+    sequence=st.none() | st.integers(0, 2**64 - 1),
 )
 def test_kernel_serializer_roundtrip(
     fmt: WireFormat,
@@ -878,24 +892,76 @@ def test_kernel_serializer_roundtrip(
     name: str,
     version: int,
     data: bytes,
-    namespace: dict[str, str],
+    lineage: tuple[str, str],
+    extensions: dict[str, str],
     metadata: dict[str, str],
-    timestamp: int,
+    recorded_at: int,
+    occurred_at: int | None,
     sequence: int | None,
 ) -> None:
     """Pins the binding boundary in both formats, including non-ASCII text and arbitrary bytes — the
     ``café`` class of bug, where a host-side encoding choice diverges from the kernel's."""
-    env = edax.EventEnvelope(
+    msg = edax.EventMessage(
         id=id_,
         aggregate_id=aggregate_id,
-        event=edax.Event(name, version, data),
-        namespace=namespace,
-        metadata=metadata,
-        timestamp=timestamp,
         sequence=sequence,
+        name=name,
+        version=version,
+        data=data,
+        correlation_id=lineage[0],
+        causation_id=lineage[1],
+        occurred_at=occurred_at,
+        recorded_at=recorded_at,
+        extensions=extensions,
+        metadata=metadata,
     )
     codec = edax.KernelSerializer(fmt)
-    assert codec.decode(codec.encode(env)) == env
+    assert codec.decode(codec.encode(msg)) == msg
+
+
+@MODEL
+@given(
+    fmt=st.sampled_from(["json", "msgpack"]),
+    id_=text,
+    idempotency_key=st.none() | text,
+    aggregate_id=st.none() | text,
+    name=text,
+    version=st.integers(0, 2**32 - 1),
+    data=st.binary(max_size=64),
+    lineage=st.tuples(text, text),
+    extensions=extension_map,
+    metadata=str_map,
+    issued_at=i64,
+)
+def test_kernel_command_serializer_roundtrip(
+    fmt: WireFormat,
+    id_: str,
+    idempotency_key: str | None,
+    aggregate_id: str | None,
+    name: str,
+    version: int,
+    data: bytes,
+    lineage: tuple[str, str],
+    extensions: dict[str, str],
+    metadata: dict[str, str],
+    issued_at: int,
+) -> None:
+    """The command form of the boundary, its two optional fields included."""
+    msg = edax.CommandMessage(
+        id=id_,
+        idempotency_key=idempotency_key,
+        aggregate_id=aggregate_id,
+        name=name,
+        version=version,
+        data=data,
+        correlation_id=lineage[0],
+        causation_id=lineage[1],
+        issued_at=issued_at,
+        extensions=extensions,
+        metadata=metadata,
+    )
+    codec = edax.KernelSerializer(fmt, "command")
+    assert codec.decode(codec.encode(msg)) == msg
 
 
 @given(fmt=st.sampled_from(["json", "msgpack"]), wire=st.binary(min_size=1, max_size=32))

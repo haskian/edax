@@ -49,7 +49,7 @@ fn command_hash_vector_holds() {
     // kernel reads the literal, not a `Value` that may already have rounded it.
     for case in golden("command_hash.json") {
         let name = case["name"].as_str().unwrap();
-        match command_hash(&case["command"]) {
+        match command_hash(case["type"].as_str().unwrap(), &case["command"]) {
             Ok(hash) => assert_eq!(Some(hash), case["expected"].as_u64(), "{name}"),
             Err(error) => assert_eq!(Some(error.to_string().as_str()), case["error"].as_str(), "{name}"),
         }

@@ -134,8 +134,8 @@ sequenceDiagram
     R->>AC: load id, N, data
     AC-->>R: aggregate rebuilt at version N
     R->>S: load tx, aggregate_id, after equals N
-    S-->>R: envelopes with sequence greater than N
-    loop each envelope, in sequence order
+    S-->>R: event messages with sequence greater than N
+    loop each event message, in sequence order
         R->>EC: unmarshal event
         EC-->>R: domain event
         R->>R: transition, never apply
@@ -148,7 +148,7 @@ sequenceDiagram
 No snapshot means a pure replay from version 0. The rehydrated version is the snapshot's plus the
 events folded after it, so a snapshot that lags the stream is still correct. The loaded tail must be
 dense, and `Repository` checks it with the kernel's `check_sequence_batch`. A gap, a repeat or an
-unsequenced envelope fails the load with `CodecError` instead of folding the wrong state.
+unsequenced event fails the load with `CodecError` instead of folding the wrong state.
 
 A snapshot may lag the stream and must never lead it. Leading it would make the replay double-count
 the events the snapshot already contains.
@@ -175,16 +175,20 @@ sequenceDiagram
         EC-->>R: Event name, version, bytes
     end
     Note over R,EC: the whole batch marshals before the store is touched,<br/>so a half-marshaled batch can never reach it
-    R->>S: append tx, id, expected_version equals initial, envelopes
+    Note over R: one lineage for the batch: lineage=, else the ambient one, else a new flow
+    R->>S: append tx, id, expected_version equals initial, drafts
     alt stored version equals expected_version
-        S-->>R: ok, event rows plus outbox rows staged
+        S-->>R: the stored messages, recorded_at stamped; event rows plus outbox rows staged
+        opt commands were passed
+            R->>S: enqueue the command messages in the command outbox, same tx
+        end
         opt the version crosses a multiple of snapshot_every
             R->>AC: dump aggregate
             AC-->>R: snapshot bytes
             R->>S: save_snapshot tx
         end
         R->>R: clear pending, version equals current
-        R-->>C: the committed envelopes
+        R-->>C: the stored event messages
     else stored version differs
         S-->>R: ConcurrencyError
         Note over R,S: nothing appended, no snapshot written,<br/>the aggregate keeps its pending events
@@ -193,8 +197,8 @@ sequenceDiagram
     deactivate R
 ```
 
-Sequence numbers are assigned by `Repository`, never renumbered by a store: the envelopes carry
-`expected_version + 1 .. + n`. The snapshot is written at `current`, the version after the batch.
+Sequence numbers are assigned by `Repository`, never renumbered by a store: the drafts carry
+`expected_version + 1 .. + n`. The store stamps `recorded_at`, and returns the stored messages. The snapshot is written at `current`, the version after the batch.
 
 The whole batch marshals first, so a codec failure on the third of three events fails the save
 outright and appends nothing. `Repository::save_with` marshals first for that reason, and
@@ -204,7 +208,8 @@ An empty save still calls `append`. Nothing is written, but the compare-and-set 
 stale caller that applied no events is told it is stale. Its snapshot write is short-circuited
 rather than rolling the stored snapshot backwards.
 
-`save` returns the committed envelopes. Publish them eagerly if you want, or leave them to the
+`save` returns the stored event messages. Under a transaction the caller commits, they are not
+committed until it does. Publish them eagerly if you want, or leave them to the
 [`Relay`](./outbox.md).
 
 After the store accepts the writes, the aggregate is reset. `pending` is cleared and the version
@@ -313,14 +318,41 @@ happens when the codec's `load` refuses its `data`, as after a `dump` format cha
 The one wiring snippet lives in [step 3 of getting
 started](../guides/getting-started.md#step-3--one-unit-of-work-per-dispatch-and-retry-around-it).
 
-`Repository` also takes `new_id=` and `now=` to pin envelope ids and timestamps for a deterministic
-test. Without them it uses the kernel's guid and clock. Rust's equivalent is `Repository::new(store,
-events, aggregates).with_clock(new_id, now)`.
+`Repository` also takes `new_id=` to pin event ids for a deterministic test. Without it, it uses the
+kernel's `guid`. The store owns the clock: `MemoryEventStore(db, now=...)` pins `recorded_at`. Rust
+matches both: `Repository::new(store, events, aggregates).with_ids(new_id)` pins the ids, and
+`MemoryEventStore::new().with_clock(now)` pins the time.
 
-`save_with` and `save_with_in` in Rust stamp every committed envelope with a namespace and metadata.
-`save(..., namespace=, metadata=)` does the same in Python. Put a trace id there, threaded from the
-request context. It lands on the outbox row and links command to event to consumer. Keep
-per-delivery ids there, not in the command payload, so they never perturb an idempotency hash.
+## What a save stamps on its events
+
+Every event of one save carries the same context.
+
+| Argument | Python `save(...)` | Rust `save_with` / `save_with_in` | Default |
+|---|---|---|---|
+| lineage | `lineage=` | `lineage` | the ambient lineage of the message being handled, else a new flow |
+| extensions | `extensions=` | `extensions` | none |
+| metadata | `metadata=` | `metadata` | none |
+| commands | `commands=` | none | none |
+
+The default lineage is what links a flow with no argument. Every handler runs under `propagate` of
+the message it handles, so a `save` inside it continues the flow. A save no message caused
+`originate`s a new flow. Pass `lineage=originate(correlation_id=request_id)` to root it in an inbound
+request instead. The Rust SDK passes the `Lineage` explicitly. See
+[edax-event](../kernels/event.md#causation--lineage).
+
+`extensions` carry edax extension context, such as a `traceparent`. A key outside the kernel's
+[extension key rule](../kernels/event.md#three-tiers-of-fields) raises `CodecError` before anything
+is written. `metadata` is the
+application's own. Both land on the outbox row and travel with the event. Keep per-delivery values
+there, not in a command payload, so they never perturb an idempotency hash.
+
+`commands` stages command messages in the repository's command outbox, in the same transaction as
+the events. Build the repository with `commands=` a `CommandOutbox` first; without one, a save with
+commands raises `TypeError`. See [commands](./commands.md#three-routes-for-a-command).
+
+An event's `occurred_at` is its valid time: when the fact happened. `save(occurred_at=...)` sets it
+on every event of the batch, for facts that happened before they are recorded, such as an import. Left
+out, it is `None`: the event happened when the store recorded it, at `recorded_at`.
 
 ## See also
 

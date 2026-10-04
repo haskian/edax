@@ -1,0 +1,32 @@
+[
+  {
+    "expected": "edax:cmd:7:billing:req-1",
+    "idempotency_key": "req-1",
+    "scope": "billing"
+  },
+  {
+    "expected": "edax:cmd:0::req-1",
+    "idempotency_key": "req-1",
+    "scope": ""
+  },
+  {
+    "expected": "edax:cmd:3:a:b:c",
+    "idempotency_key": "c",
+    "scope": "a:b"
+  },
+  {
+    "expected": "edax:cmd:1:a:b:c",
+    "idempotency_key": "b:c",
+    "scope": "a"
+  },
+  {
+    "expected": "edax:cmd:5:café:clé-1",
+    "idempotency_key": "clé-1",
+    "scope": "café"
+  },
+  {
+    "expected": "edax:cmd:7:ingress:",
+    "idempotency_key": "",
+    "scope": "ingress"
+  }
+]

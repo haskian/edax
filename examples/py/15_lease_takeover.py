@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from edax import CommandBus, InProgress, StoreError, idempotent
+from edax import CommandBus, InProgress, StoreError, claim_key, idempotent
 from edax.backend.memory import MemoryLedger
 
 
@@ -28,13 +28,9 @@ class ChargeCard:
     type: ClassVar[str] = "ChargeCard"
 
 
-def payment_id_of(cmd: Any) -> str:
-    return cmd.payment_id
-
-
 async def main() -> None:
     ledger = MemoryLedger()  # its own database, like Redis: joins no transaction
-    bus = CommandBus(idempotent(ledger, key=payment_id_of))
+    bus = CommandBus(idempotent(ledger, scope="payments"))
     runs: list[int] = []
     worker_a_may_finish = asyncio.Event()
 
@@ -49,21 +45,21 @@ async def main() -> None:
     command = ChargeCard("pay-1", 40)
 
     # 1. Worker A claims pay-1 and starts charging.
-    worker_a = asyncio.create_task(bus.dispatch(command))
+    worker_a = asyncio.create_task(bus.dispatch(command, idempotency_key="pay-1"))
     while not runs:
         await asyncio.sleep(0)
     print("worker A: claimed pay-1, still charging")
 
     # 2. Worker B gets the same message while A holds the claim.
     try:
-        await bus.dispatch(command)
+        await bus.dispatch(command, idempotency_key="pay-1")
         raise AssertionError("expected InProgress")
     except InProgress:
         print("worker B: InProgress, A holds the claim")
 
     # 3. A's claim runs out, as a Redis claim TTL would. B takes over and finishes.
-    ledger.expire("pay-1")
-    result_b = await bus.dispatch(command)
+    ledger.expire(claim_key("payments", "pay-1"))
+    result_b = await bus.dispatch(command, idempotency_key="pay-1")
     print(f"worker B: took over -> {result_b}")
 
     # 4. A finally finishes. The fence refuses its late result.
@@ -75,7 +71,7 @@ async def main() -> None:
         print("worker A: its late completion was refused (StoreError)")
 
     # 5. A later redelivery replays B's outcome.
-    replay = await bus.dispatch(command)
+    replay = await bus.dispatch(command, idempotency_key="pay-1")
     print(f"redelivery: {replay}")
 
     assert (result_b, replay, runs) == ("charged by run 2", "charged by run 2", [1, 2])

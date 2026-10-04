@@ -18,7 +18,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import TTL_MS, fresh_prefix, ledger_key
+from conftest import TTL_MS, claimed, fresh_prefix, ledger_key
 from edax import _edax
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
@@ -88,12 +88,12 @@ async def test_a_terminal_failure_is_cached_and_replayed_on_redelivery(rig: Rig)
         runs += 1
         raise InsufficientFunds("balance 100, debit 500")
 
-    bus = CommandBus(idempotent(rig.store, lambda c: c.request_id, unit_of_work=MemoryTransactor()))
+    bus = CommandBus(idempotent(rig.store, unit_of_work=MemoryTransactor(), scope="test"))
     bus.register("Debit", handler)
     with pytest.raises(InsufficientFunds):
-        await bus.dispatch(debit())
+        await bus.dispatch(debit(), idempotency_key="req-1")
     with pytest.raises(edax.CachedFailure, match="balance 100, debit 500") as replay:
-        await bus.dispatch(debit())
+        await bus.dispatch(debit(), idempotency_key="req-1")
     assert replay.value.original_code == "rejected"
     assert runs == 1, rig.name
 
@@ -109,11 +109,11 @@ async def test_a_terminal_failure_on_the_joining_store_is_not_cached() -> None:
         runs += 1
         raise InsufficientFunds("balance 100, debit 500")
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), lambda c: c.request_id, unit_of_work=db))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), unit_of_work=db, scope="test"))
     bus.register("Debit", handler)
     for _ in range(2):
         with pytest.raises(InsufficientFunds):
-            await bus.dispatch(debit())
+            await bus.dispatch(debit(), idempotency_key="req-1")
     assert runs == 2
 
 
@@ -136,22 +136,22 @@ async def test_a_claim_lapsed_mid_handler_is_taken_over_and_its_stale_owner_sett
             await a_may_finish.wait()
         return {"debited_by": worker}
 
-    bus = CommandBus(idempotent(rig.store, lambda c: c.request_id))
+    bus = CommandBus(idempotent(rig.store, scope="test"))
     bus.register("Debit", handler)
 
     async def worker_a() -> Any:
         try:
-            return await bus.dispatch(debit())
+            return await bus.dispatch(debit(), idempotency_key="req-1")
         finally:
             a_finished.set()
 
     async def worker_b() -> Any:
         await a_running.wait()
-        await rig.lapse("req-1")  # A's claim TTL runs out mid-handler
+        await rig.lapse(claimed("req-1"))  # A's claim TTL runs out mid-handler
         if finish_order == "stale_owner_first":
             a_may_finish.set()
             await a_finished.wait()  # A settles over a key nobody holds now
-        result = await bus.dispatch(debit())
+        result = await bus.dispatch(debit(), idempotency_key="req-1")
         a_may_finish.set()  # stale_owner_last: A finishes only after B settled
         return result
 
@@ -159,7 +159,7 @@ async def test_a_claim_lapsed_mid_handler_is_taken_over_and_its_stale_owner_sett
     assert isinstance(a_result, edax.StoreError), f"{rig.name}: the stale owner's complete was fenced"
     assert b_result == {"debited_by": "B"}, f"{rig.name}: the worker that took the key over settled it"
     assert ran == ["A", "B"], rig.name
-    replay = await rig.store.claim("req-1", 0)
+    replay = await rig.store.claim(claimed("req-1"), 0)
     assert not isinstance(replay, Won) and replay.result == {"debited_by": "B"}, (
         f"{rig.name}: B's outcome alone"
     )
@@ -178,12 +178,12 @@ async def test_a_lost_complete_reply_keeps_the_record_and_the_redelivery_replays
         runs += 1
         return {"balance": 600}
 
-    bus = CommandBus(idempotent(store, lambda c: c.request_id))
+    bus = CommandBus(idempotent(store, scope="test"))
     bus.register("Debit", handler)
     store.arm("complete")
     with pytest.raises(edax.StoreError):
-        await bus.dispatch(debit())
-    assert await bus.dispatch(debit()) == {"balance": 600}
+        await bus.dispatch(debit(), idempotency_key="req-1")
+    assert await bus.dispatch(debit(), idempotency_key="req-1") == {"balance": 600}
     assert runs == 1, rig.name
 
 

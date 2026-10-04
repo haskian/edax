@@ -1,13 +1,15 @@
 //! Dev/test in-memory broker, single process, not durable. A thin wrapper over the shared
 //! `edax_memory::MemoryBroker` state machine (a partitioned log, consumer groups, settlement through
 //! the Kafka kernel's offset tracker). The machine's poll is non-blocking, so this module adds a
-//! `Condvar` and [`MemoryBroker::poll`] can block up to a timeout.
+//! `Condvar` and [`MemoryBroker::poll`] can block up to a timeout. The machine carries commands too;
+//! this wrapper publishes events only, because the SDK's dispatcher consumes events only.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use edax_core::lock;
-use edax_event::EventEnvelope;
+use edax_event::EventMessage;
+use edax_memory::Message;
 
 use crate::dispatcher::Delivery;
 use crate::Error;
@@ -82,9 +84,9 @@ impl MemoryBroker {
         Self { inner: Arc::clone(&self.inner), group: Arc::from(name) }
     }
 
-    /// Append an envelope to its key's partition.
-    pub fn publish(&self, env: EventEnvelope) {
-        self.inner.machine.publish(env);
+    /// Append `event` to the partition of its ordering key, its aggregate.
+    pub fn publish(&self, event: EventMessage) {
+        self.inner.machine.publish_event(event);
         self.inner.announce();
     }
 
@@ -118,10 +120,18 @@ impl MemoryBroker {
         };
         drop(guard);
 
+        // Only `publish` writes to the log, and it writes events, so a command here means another
+        // writer shares the machine: a wiring mistake, refused rather than silently skipped.
+        let event = match polled.message {
+            Message::Event(event) => event,
+            Message::Command(_) => {
+                return Err(Error::bad_handle("the memory broker delivered a command, which a Delivery cannot carry"));
+            }
+        };
         let token = polled.token;
         let (ack, nack, live) = (self.clone(), self.clone(), self.clone());
         let delivery = Delivery::new(
-            polled.envelope,
+            event,
             move || {
                 // The settle result is not needed: `Delivery` is consumed on settle, so it cannot
                 // settle twice, and a stale one settles nothing by the machine's own rule.
@@ -153,21 +163,13 @@ impl MemoryBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edax_event::Event;
+    use crate::testkit::event;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use crate::{advance, is_stale, KeyOrderedDispatcher, Pacing};
 
-    fn envelope(aggregate_id: &str, sequence: u64) -> EventEnvelope {
-        EventEnvelope {
-            id: format!("{aggregate_id}-{sequence}"),
-            aggregate_id: aggregate_id.to_string(),
-            event: Event { name: "Tick".to_string(), version: 1, data: Vec::new() },
-            sequence: Some(sequence),
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 0,
-        }
+    fn tick(aggregate_id: &str, sequence: u64) -> EventMessage {
+        event(aggregate_id, "Tick", sequence)
     }
 
     const WAIT: Duration = Duration::from_millis(20);
@@ -196,14 +198,14 @@ mod tests {
         struct Case {
             name: &'static str,
             steps: &'static [Step],
-            /// Envelope ids that `Poll` produced, in order; `""` for a timed-out poll.
+            /// Event ids that `Poll` produced, in order; `""` for a timed-out poll.
             want_polled: &'static [&'static str],
             want_live: &'static [bool],
             want_empty: bool,
         }
         let cases = [
             Case { name: "a new broker is empty and a poll times out", steps: &[Poll], want_polled: &[""], want_live: &[], want_empty: true },
-            Case { name: "a published envelope makes it non-empty", steps: &[Publish("a", 1)], want_polled: &[], want_live: &[], want_empty: false },
+            Case { name: "a published event makes it non-empty", steps: &[Publish("a", 1)], want_polled: &[], want_live: &[], want_empty: false },
             Case {
                 name: "a polled delivery is unsettled, so still non-empty",
                 steps: &[Publish("a", 1), Poll, Live(0)],
@@ -269,10 +271,10 @@ mod tests {
             let mut live: Vec<bool> = Vec::new();
             for step in c.steps {
                 match step {
-                    Publish(agg, seq) => broker.publish(envelope(agg, *seq)),
+                    Publish(agg, seq) => broker.publish(tick(agg, *seq)),
                     Poll => match poll(&broker, WAIT) {
                         Some(d) => {
-                            polled.push(d.envelope.id.clone());
+                            polled.push(d.event.id.clone());
                             held.push(Some(d));
                         }
                         None => polled.push(String::new()),
@@ -294,10 +296,10 @@ mod tests {
     fn a_group_reads_every_message_on_its_own() {
         let projection = MemoryBroker::with_partitions(2).expect("two partitions");
         let saga = projection.group("saga");
-        projection.publish(envelope("a", 1));
+        projection.publish(tick("a", 1));
         let first = poll(&projection, WAIT).expect("the projection gets it");
         let second = poll(&saga, WAIT).expect("the saga gets it too");
-        assert_eq!((first.envelope.id.as_str(), second.envelope.id.as_str()), ("a-1", "a-1"));
+        assert_eq!((first.event.id.as_str(), second.event.id.as_str()), ("a-1", "a-1"));
         first.ack();
         assert!(projection.empty(), "the projection settled its copy");
         assert!(!saga.empty(), "the saga's copy is its own");
@@ -312,10 +314,10 @@ mod tests {
         // while the test polls the original. The poll blocks until the publish lands.
         let broker = MemoryBroker::new();
         let sink = broker.clone();
-        let publisher = std::thread::spawn(move || sink.publish(envelope("a", 1)));
+        let publisher = std::thread::spawn(move || sink.publish(tick("a", 1)));
         let delivery = poll(&broker, Duration::from_secs(2)).expect("the publish woke the poll");
         publisher.join().expect("publisher thread");
-        assert_eq!(delivery.envelope.id, "a-1");
+        assert_eq!(delivery.event.id, "a-1");
         assert_eq!(delivery.attempt, 0, "this broker keeps no redelivery count");
         delivery.ack();
         assert!(broker.empty(), "the clone and the original share one log");
@@ -325,7 +327,7 @@ mod tests {
     fn a_blocked_poll_wakes_on_nack_and_on_crash() {
         for wake in ["nack", "crash"] {
             let broker = MemoryBroker::new();
-            broker.publish(envelope("a", 1));
+            broker.publish(tick("a", 1));
             let first = poll(&broker, WAIT).expect("queued");
 
             let consumer = broker.clone();
@@ -337,7 +339,7 @@ mod tests {
                 broker.crash();
             }
             let again = poller.join().expect("poller thread").expect("poll").expect("the rewind woke the poll");
-            assert_eq!(again.envelope.id, "a-1", "{wake}");
+            assert_eq!(again.event.id, "a-1", "{wake}");
             again.ack();
             assert!(broker.empty(), "{wake}");
         }
@@ -351,11 +353,11 @@ mod tests {
         let sink = broker.clone();
         let publisher = std::thread::spawn(move || {
             std::thread::sleep(WAIT); // let the poller park before the publish lands
-            sink.publish(envelope("a", 1));
+            sink.publish(tick("a", 1));
         });
         let delivery = poll(&broker, Duration::MAX).expect("the publish woke the unbounded wait");
         publisher.join().expect("publisher thread");
-        assert_eq!(delivery.envelope.id, "a-1");
+        assert_eq!(delivery.event.id, "a-1");
         delivery.ack();
         assert!(broker.empty());
     }
@@ -366,7 +368,7 @@ mod tests {
         let started = Instant::now();
         assert!(poll(&broker, Duration::ZERO).is_none());
         assert!(started.elapsed() < Duration::from_millis(50), "returned at once");
-        broker.publish(envelope("a", 1));
+        broker.publish(tick("a", 1));
         assert!(poll(&broker, Duration::ZERO).is_some(), "a queued message is taken without waiting");
     }
 
@@ -379,7 +381,7 @@ mod tests {
         let applied: Arc<Mutex<Vec<u64>>> = Arc::default();
         let failed_once = Arc::new(AtomicBool::new(false));
         let (st, ap, f) = (Arc::clone(&stored), Arc::clone(&applied), Arc::clone(&failed_once));
-        let dispatcher = KeyOrderedDispatcher::builder(1, move |env: &EventEnvelope| {
+        let dispatcher = KeyOrderedDispatcher::builder(1, move |env: &EventMessage| {
             if env.sequence == Some(1) && !f.swap(true, Ordering::SeqCst) {
                 return Err(crate::Error::store("projection db blip").into());
             }
@@ -394,8 +396,8 @@ mod tests {
         .build()
         .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();
-        broker.publish(envelope("acct-1", 1));
-        broker.publish(envelope("acct-1", 2));
+        broker.publish(tick("acct-1", 1));
+        broker.publish(tick("acct-1", 2));
         while let Some(d) = poll(&broker, Duration::from_millis(200)) {
             dispatcher.deliver(d);
         }
@@ -412,7 +414,7 @@ mod tests {
         let sink_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&sink_calls);
         let dispatcher =
-            KeyOrderedDispatcher::builder(1, |_: &EventEnvelope| Err(crate::Error::codec("poison").into()))
+            KeyOrderedDispatcher::builder(1, |_: &EventMessage| Err(crate::Error::codec("poison").into()))
                 .on_dead(move |_| match calls.fetch_add(1, Ordering::SeqCst) {
                     0 => Err(crate::Error::store("dlq down").into()),
                     _ => Ok(()),
@@ -421,7 +423,7 @@ mod tests {
                 .build()
                 .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();
-        broker.publish(envelope("acct-1", 1));
+        broker.publish(tick("acct-1", 1));
         while let Some(d) = poll(&broker, Duration::from_millis(200)) {
             dispatcher.deliver(d);
         }

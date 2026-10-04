@@ -13,16 +13,18 @@
 
 mod support;
 
-use support::Shared;
+use support::{Shared, SCOPE};
 
 use std::sync::Arc;
 
 use edax::{
-    idempotent_in, Aggregate, AggregateCodec, Command, CommandBus, Entity, Error, ErrorCode, EventCodec, EventStore, HandlerError,
-    IdempotencyStore, MemoryEventStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
+    idempotent_in, Aggregate, AggregateCodec, Command, CommandBus, Entity, Error, ErrorCode, EventCodec, EventDraft, EventMessage,
+    EventStore, HandlerError, IdempotencyStore, MemoryEventStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
     Outbox, ProjectionStore, Repository, Root, SagaStore, Transactor,
 };
+use edax_cqrs::claim_key;
 use edax_event::Event;
+
 use serde::Serialize;
 use serde_json::json;
 
@@ -122,7 +124,7 @@ type MemoryIdempotencyStore = edax::MemoryIdempotencyStore<i64>;
 fn rig() -> Rig {
     let db = MemoryTransactor::new();
     let events = db.event_store();
-    let repo = Arc::new(Repository::new(events.clone(), AccountEvents, AccountCodec).with_clock(next_id, || 0));
+    let repo = Arc::new(Repository::new(events.clone(), AccountEvents, AccountCodec).with_ids(next_id));
     let claims: Arc<MemoryIdempotencyStore> = Arc::new(db.idempotency_store());
     let current = Arc::new(Shared::new(MemoryTx::auto_commit()));
     let calls = Arc::new(Shared::default());
@@ -130,6 +132,7 @@ fn rig() -> Rig {
     let provider = Arc::clone(&current);
     let guard = idempotent_in(
         Arc::clone(&claims) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
+        SCOPE,
         |c: &Deposit| Some(c.request_id.clone()),
         move |_: &Deposit| provider.get(),
     );
@@ -179,7 +182,7 @@ impl Rig {
             // A losing claim proves the key is taken; a winning one must be undone, or the probe
             // itself would take the key.
             let probe = self.db.begin().expect("a probe transaction");
-            let taken = !matches!(self.claims.claim(&mut { probe }, "req-A", 0), Ok(edax::Claim::Won(_)));
+            let taken = !matches!(self.claims.claim(&mut { probe }, &claim_key(SCOPE, "req-A"), 0), Ok(edax::Claim::Won(_)));
             self.db.rollback(probe);
             taken
         };
@@ -302,7 +305,7 @@ impl Transactor for CommitFails {
 }
 
 impl EventStore for CommitFails {
-    fn load(&self, tx: &mut MemoryTx, aggregate_id: &str, after: u64) -> Result<Vec<edax_event::EventEnvelope>, Error> {
+    fn load(&self, tx: &mut MemoryTx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
         self.0.load(tx, aggregate_id, after)
     }
 
@@ -319,14 +322,14 @@ impl EventStore for CommitFails {
         tx: &mut MemoryTx,
         aggregate_id: &str,
         expected_version: u64,
-        events: &[edax_event::EventEnvelope],
-    ) -> Result<(), Error> {
-        self.0.append(tx, aggregate_id, expected_version, events)
+        drafts: Vec<EventDraft>,
+    ) -> Result<Vec<EventMessage>, Error> {
+        self.0.append(tx, aggregate_id, expected_version, drafts)
     }
 }
 
-impl Outbox<edax_event::EventEnvelope> for CommitFails {
-    fn unpublished(&self, limit: usize) -> Result<Vec<edax_event::EventEnvelope>, Error> {
+impl Outbox<EventMessage> for CommitFails {
+    fn unpublished(&self, limit: usize) -> Result<Vec<EventMessage>, Error> {
         self.0.unpublished(limit)
     }
 
@@ -343,7 +346,7 @@ impl Outbox<edax_event::EventEnvelope> for CommitFails {
 fn a_failed_commit_leaves_the_aggregate_holding_its_pending_events() {
     let db = MemoryTransactor::new();
     let inner = db.event_store(); // a second view on the same database, for reading back
-    let repo = Repository::new(CommitFails(inner.clone()), AccountEvents, AccountCodec).with_clock(next_id, || 0);
+    let repo = Repository::new(CommitFails(inner.clone()), AccountEvents, AccountCodec).with_ids(next_id);
     let mut account = Account { root: Root::new("acct-commit-fails", 0), balance: 0 };
     account.apply(Deposited(10));
     account.apply(Deposited(5));
@@ -423,7 +426,7 @@ fn a_unit_of_work_opened_inside_a_host_body_on_the_same_database_is_refused() {
     let rig = rig();
     let other = MemoryTransactor::new();
     let other_events = other.event_store();
-    let other_repo = Repository::new(other_events.clone(), AccountEvents, AccountCodec).with_clock(next_id, || 0);
+    let other_repo = Repository::new(other_events.clone(), AccountEvents, AccountCodec).with_ids(next_id);
     let out: Result<(), Error> = rig.db.transaction(|_| {
         let mut account = other_repo.load("acct-9")?;
         account.apply(Deposited(5));

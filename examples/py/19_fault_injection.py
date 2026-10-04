@@ -16,20 +16,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from edax import Entity, Event, EventEnvelope, EventRouter, StoreError, idempotent_by_id
+from edax import Entity, EventMessage, EventRouter, StoreError, idempotent_by_id, testing
 from edax.backend.memory import MemoryLedger, MemoryProjectionStore, MemoryTransactor
 from edax.testing.faults import BrokenCommit
 
 
-def deposited(event_id: str, amount: int) -> EventEnvelope:
-    return EventEnvelope(
-        id=event_id,
-        aggregate_id="acct-1",
-        event=Event("Deposited", 1, json.dumps({"amount": amount}).encode()),
-        namespace={},
-        metadata={},
-        timestamp=0,
-    )
+def deposited(event_id: str, amount: int) -> EventMessage:
+    return testing.event("acct-1", "Deposited", id=event_id, data=json.dumps({"amount": amount}).encode())
 
 
 async def main() -> None:
@@ -42,16 +35,16 @@ async def main() -> None:
 
     # 2. An idempotent handler: it skips a deposit it has already applied.
     @router.on("Deposited")
-    async def add_deposit(envelope: EventEnvelope) -> None:
-        runs.append(envelope.id)
-        row = await balances.get(envelope.aggregate_id)
+    async def add_deposit(event: EventMessage) -> None:
+        runs.append(event.id)
+        row = await balances.get(event.aggregate_id)
         if row is None:
-            row = Entity(envelope.aggregate_id, 0, {"balance": 0, "applied": []})
-        if envelope.id in row.document["applied"]:
-            print(f"  {envelope.id} already applied: nothing to do")
+            row = Entity(event.aggregate_id, 0, {"balance": 0, "applied": []})
+        if event.id in row.document["applied"]:
+            print(f"  {event.id} already applied: nothing to do")
             return
-        row.document["balance"] += json.loads(envelope.event.data)["amount"]
-        row.document["applied"].append(envelope.id)
+        row.document["balance"] += json.loads(event.data)["amount"]
+        row.document["applied"].append(event.id)
         await balances.save(row)
 
     # 3. The first delivery: the deposit lands, but the caller sees an error.

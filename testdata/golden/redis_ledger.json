@@ -265,6 +265,69 @@
     }
   },
   {
+    "held_hex": null,
+    "key": "order-7",
+    "name": "a_free_key_sends_nothing",
+    "op": "forget",
+    "want": {
+      "ok": "nothing"
+    }
+  },
+  {
+    "held_hex": "3130313930623563386531663337633462396132643565366637613862396330647b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a6e756c6c2c226572726f72223a6e756c6c2c226572726f725f636f6465223a6e756c6c2c2270656e64696e67223a747275657d",
+    "key": "order-7",
+    "name": "a_pending_claim_is_refused",
+    "op": "forget",
+    "want": {
+      "error": "in_progress: idempotency key order-7 is claimed by a run that has not completed: forget it once the claim settles or lapses"
+    }
+  },
+  {
+    "held_hex": "3130303030303030303030303030303030303030303030303030303030303030307b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a6e756c6c2c226572726f72223a6e756c6c2c226572726f725f636f6465223a6e756c6c2c2270656e64696e67223a747275657d",
+    "key": "order-7",
+    "name": "another_owners_pending_claim_is_refused",
+    "op": "forget",
+    "want": {
+      "error": "in_progress: idempotency key order-7 is claimed by a run that has not completed: forget it once the claim settles or lapses"
+    }
+  },
+  {
+    "held_hex": "3130313930623563386531663337633462396132643565366637613862396330647b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a7b226163636f756e745f6964223a22616363742d31222c2262616c616e63655f63656e7473223a343230307d2c226572726f72223a6e756c6c2c226572726f725f636f6465223a6e756c6c2c2270656e64696e67223a66616c73657d",
+    "key": "order-7",
+    "name": "a_cached_success_is_deleted",
+    "op": "forget",
+    "want": {
+      "ok": "delete"
+    }
+  },
+  {
+    "held_hex": "3130313930623563386531663337633462396132643565366637613862396330647b227061796c6f61645f68617368223a31313235383538303030363034373737303830312c22726573756c74223a6e756c6c2c226572726f72223a22696e73756666696369656e742066756e6473222c226572726f725f636f6465223a2272656a6563746564222c2270656e64696e67223a66616c73657d",
+    "key": "order-7",
+    "name": "a_cached_failure_is_deleted",
+    "op": "forget",
+    "want": {
+      "ok": "delete"
+    }
+  },
+  {
+    "held_hex": "3130313930623563386531663337633462396132643565366637613862396330647b6e6f74206a736f6e",
+    "key": "order-7",
+    "name": "an_unreadable_record_half_is_deleted",
+    "op": "forget",
+    "want": {
+      "ok": "delete"
+    }
+  },
+  {
+    "held_hex": "7b6e6f742061206c65646765722076616c7565",
+    "key": "order-7",
+    "name": "an_unreadable_frame_is_deleted",
+    "op": "forget",
+    "want": {
+      "ok": "delete"
+    }
+  },
+  {
     "error": "codec: redis replied WRONGTYPE Operation against a key holding the wrong kind of value",
     "name": "wrong_type",
     "op": "reply",

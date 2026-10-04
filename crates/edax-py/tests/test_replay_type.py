@@ -127,10 +127,10 @@ CASES = [
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 async def test_a_replay_is_the_type_the_handler_declares(case: Case) -> None:
     ledger = MemoryIdempotencyStore()
-    bus = CommandBus(idempotent(ledger, lambda c: c.request_id, result_type=case.result_type))
+    bus = CommandBus(idempotent(ledger, result_type=case.result_type, scope="test"))
     bus.register("IssueInvoice", case.handler)
-    first = await bus.dispatch(command())
-    replay = await bus.dispatch(command())
+    first = await bus.dispatch(command(), idempotency_key="req-7")
+    replay = await bus.dispatch(command(), idempotency_key="req-7")
     assert type(replay) is case.want_type, case.name
     assert replay == case.want, case.name
     if case.want_type is not dict:
@@ -151,7 +151,7 @@ async def issue_opaque(cmd: IssueInvoice) -> Opaque:
     ids=["an_inferred_type_msgspec_cannot_convert", "an_explicit_type_msgspec_cannot_convert"],
 )
 def test_a_type_with_no_conversion_is_refused_at_wiring(handler: Any, result_type: Any) -> None:
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), lambda c: c.request_id, result_type=result_type))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(), result_type=result_type, scope="test"))
     with pytest.raises(TypeError, match="cannot be replayed as"):
         bus.register("IssueInvoice", handler)
 
@@ -162,21 +162,21 @@ async def test_a_cached_result_that_does_not_convert_replays_as_a_cached_codec_f
     as ``CachedFailure`` on every redelivery, so the handler never runs and a dispatcher dead-letters it.
     The observer hears ``failed``, the verdict the replay carries."""
     ledger = MemoryIdempotencyStore()
-    writer = CommandBus(idempotent(ledger, lambda c: c.request_id, result_type=Any))
+    writer = CommandBus(idempotent(ledger, result_type=Any, scope="test"))
 
     async def old_shape(cmd: IssueInvoice) -> dict[str, str]:
         return {"invoice": "inv-7"}
 
     writer.register("IssueInvoice", old_shape)
-    await writer.dispatch(command())
+    await writer.dispatch(command(), idempotency_key="req-7")
     observer = Recording()
-    reader = CommandBus(idempotent(ledger, lambda c: c.request_id, observer=observer))
+    reader = CommandBus(idempotent(ledger, observer=observer, scope="test"))
     reader.register("IssueInvoice", issue)
     for attempt in ("first delivery", "redelivery"):
         with pytest.raises(
             edax.CachedFailure, match="codec: unreadable idempotency record: cached result"
         ) as caught:
-            await reader.dispatch(command())
+            await reader.dispatch(command(), idempotency_key="req-7")
         assert caught.value.terminal is True and caught.value.original_code == "codec", attempt
         assert "does not convert to" in str(caught.value), attempt
     assert observer.claims == [("IssueInvoice", "failed")] * 2
@@ -214,12 +214,14 @@ async def test_a_redelivery_after_a_crash_replays_the_declared_type(
 
     def process() -> CommandBus:
         store, unit = ledger_factory()
-        bus = CommandBus(idempotent(store, lambda c: c.request_id, unit_of_work=unit))
+        bus = CommandBus(idempotent(store, unit_of_work=unit, scope="test"))
         bus.register("IssueInvoice", handler)
         return bus
 
-    first = await process().dispatch(command())
-    redelivered = await process().dispatch(command())  # the first process crashed after settling
+    first = await process().dispatch(command(), idempotency_key="req-7")
+    redelivered = await process().dispatch(
+        command(), idempotency_key="req-7"
+    )  # the first process crashed after settling
     assert isinstance(redelivered, Invoice) and redelivered == first == invoice()
     assert redelivered.issued_at == ISSUED_AT and redelivered.total == Decimal("50.00")
     assert runs == 1

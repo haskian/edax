@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import RefusingLedger
+from conftest import RefusingLedger, build_message, claimed
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
 from edax.command import Claimed, CommandBus, Record, Won, _payload_hash, idempotent, joins_transaction
 from edax.projection import Entity
@@ -40,10 +40,6 @@ class Deposit:
     amount: int
     request_id: str
     type = "Deposit"
-
-
-def key_of(cmd: Any) -> str:
-    return cmd.request_id
 
 
 class Rig:
@@ -71,11 +67,11 @@ class Rig:
                 raise self._raises
             return int(entity.document["balance"])
 
-        self.bus = CommandBus(idempotent(self.ledger, key=key_of, unit_of_work=self.unit))
+        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
         self.bus.register("Deposit", handler)
 
     async def dispatch(self) -> Any:
-        return await self.bus.dispatch(Deposit(100, "req-A"))
+        return await self.bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A")
 
     async def balance(self) -> int:
         entity = await self.projections.get(DOC)
@@ -206,7 +202,7 @@ class Broker:
         self.nacked: list[bytes] = []
         self._fail_first = fail_first
 
-        async def handler(env: edax.EventEnvelope) -> None:
+        async def handler(env: edax.EventMessage) -> None:
             self.runs += 1
             entity = await self.projections.get(DOC)
             if entity is None:
@@ -225,23 +221,16 @@ class Broker:
         self.dispatcher.start()
 
     async def _dead(self, delivery: edax.Delivery, err: BaseException) -> None:
-        # The hook sees the envelope; the transport handle lives in the settle closures.
-        self.dead.append(delivery.envelope.id)
+        # The hook sees the message; the transport handle lives in the settle closures.
+        self.dead.append(delivery.message.id)
 
     async def deliver(self, mid: bytes = b"msg-1") -> None:
-        env = edax.EventEnvelope(
-            id="evt-1",
-            aggregate_id=DOC,
-            event=edax.Event("Deposited", 1, b"100"),
-            namespace={},
-            metadata={},
-            timestamp=0,
-        )
+        env = build_message(DOC, "Deposited", None, id="evt-1", data=b"100")
         await self.dispatcher.submit(
             edax.Delivery(env, lambda: self.acked.append(mid), lambda: self.nacked.append(mid))
         )
         # Drain this worker's queue: the delivery is settled (acked or nacked) before we look.
-        await self.dispatcher._queues[self.dispatcher._worker_index(DOC)].join()
+        await self.dispatcher._queues[self.dispatcher._worker_index(env)].join()
 
     async def balance(self) -> int:
         entity = await self.projections.get(DOC)
@@ -339,15 +328,15 @@ async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     delete the *winner's* live claim. Only the caller that won the claim may settle it."""
     ledger = MemoryLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
-    await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
+    await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A"), Deposit.type))
     with pytest.raises(edax.InProgress):
-        await bus.dispatch(Deposit(100, "req-A"))
+        await bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A")
 
-    still_held = await ledger.claim("req-A", _payload_hash(Deposit(100, "req-A")))
+    still_held = await ledger.claim(claimed("req-A"), _payload_hash(Deposit(100, "req-A"), Deposit.type))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -373,6 +362,9 @@ class ClaimRaisesLedger:
         self.releases.append(key)
         await self._inner.release(key, handle, tx=tx)
 
+    async def forget(self, key: str, tx: Any | None = None) -> None:
+        await self._inner.forget(key, tx=tx)
+
 
 async def test_a_claim_that_raises_is_not_compensated() -> None:
     """The rule stated at ``edax/command.py`` above ``store.claim``: a claim that *raises* is never
@@ -381,19 +373,19 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     case deletes the winner's live claim. Retention settles the first case instead."""
     ledger = ClaimRaisesLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
-    await ledger.claim("req-A", _payload_hash(cmd))  # the winner, still pending
+    await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type))  # the winner, still pending
 
     ledger.raise_on_claim = True
     with pytest.raises(edax.StoreError):
-        await bus.dispatch(cmd)
+        await bus.dispatch(cmd, idempotency_key=cmd.request_id)
 
     assert ledger.releases == [], "a failed claim must not be compensated"
     ledger.raise_on_claim = False
-    still_held = await ledger.claim("req-A", _payload_hash(cmd))
+    still_held = await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type))
     assert not isinstance(still_held, Won) and still_held.pending, "the winner's claim survived the loser"
 
 
@@ -455,16 +447,16 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
         runs += 1
         raise case.handler_error
 
-    bus = CommandBus(idempotent(ledger, key=key_of))
+    bus = CommandBus(idempotent(ledger, scope="test"))
     bus.register("Deposit", handler)
     cmd = Deposit(100, "req-A")
 
     with pytest.raises(type(case.handler_error)) as caught:
         if case.shared:
             async with edax.transaction(db):
-                await bus.dispatch(cmd)
+                await bus.dispatch(cmd, idempotency_key=cmd.request_id)
         else:
-            await bus.dispatch(cmd)
+            await bus.dispatch(cmd, idempotency_key=cmd.request_id)
 
     assert caught.value is case.handler_error, "the handler's own exception, not a copy of it"
     assert edax.is_terminal(caught.value) is edax.is_terminal(case.handler_error), "verdict survived"
@@ -473,12 +465,12 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
 
     if case.shared:
         # The host's rollback is what frees the claim, so the key is clear for a redelivery.
-        assert isinstance(await ledger.claim("req-A", _payload_hash(cmd)), Won)
+        assert isinstance(await ledger.claim(claimed("req-A"), _payload_hash(cmd, cmd.type)), Won)
     else:
         # No rollback is coming: the claim stays pending until the store's retention frees it. That
         # is the documented residual cost of a ledger of its own, not a leak.
         with pytest.raises(edax.InProgress):
-            await bus.dispatch(cmd)
+            await bus.dispatch(cmd, idempotency_key=cmd.request_id)
         assert runs == 1, "the pending claim blocked the redelivery"
 
 
@@ -540,7 +532,7 @@ class History:
                 raise edax.CodecError("terminal")
             return int(entity.document["applied"])
 
-        self.bus = CommandBus(idempotent(self.ledger, key=key_of, unit_of_work=self.unit))
+        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
         self.bus.register("Deposit", handler)
 
     async def run(self, ops: list[Op]) -> None:
@@ -548,7 +540,7 @@ class History:
             self.unit.arm = (None, "nothing_landed", "lost_response")[o.commit]
             # Every outcome is modelled by the assertions below, not by what the dispatch raised.
             with contextlib.suppress(Exception):
-                await self.bus.dispatch(Deposit(o.outcome, str(o.key)))
+                await self.bus.dispatch(Deposit(o.outcome, str(o.key)), idempotency_key=str(o.key))
 
     async def applied(self, key: int) -> int:
         entity = await self.projections.get(f"acct-{key}")
@@ -557,7 +549,7 @@ class History:
     async def record(self, key: int) -> Any:
         """The key's stored record, read by claiming it. Only ever called after the history is
         over, so taking the claim cannot perturb what it reports."""
-        return await self.ledger.claim(str(key), _payload_hash(Deposit(0, str(key))))
+        return await self.ledger.claim(claimed(str(key)), _payload_hash(Deposit(0, str(key)), Deposit.type))
 
 
 @given(ops=st.lists(op, max_size=8), shared=st.booleans())
@@ -616,19 +608,13 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
         if handler_fails:
             raise RuntimeError("projection store unavailable")
 
-    env = edax.EventEnvelope(
-        id="evt-1",
-        aggregate_id=DOC,
-        event=edax.Event("Deposited", 1, b'{"amount":100}'),
-        namespace={},
-        metadata={},
-        timestamp=1_714_564_800_000_000_000,
-        sequence=1,
+    env = build_message(
+        DOC, "Deposited", 1, id="evt-1", data=b'{"amount":100}', recorded_at=1_714_564_800_000_000_000
     )
     if guard == "idempotent":
-        bus = CommandBus(idempotent(ledger, key=key_of, unit_of_work=db))
+        bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
         bus.register("Deposit", handler)
-        dispatched, key = bus.dispatch(Deposit(100, "req-A")), "req-A"
+        dispatched, key = bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A"), claimed("req-A")
     else:
         router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db))
         router.register("Deposited", handler)

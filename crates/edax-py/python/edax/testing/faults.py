@@ -195,3 +195,7 @@ class LostReply:
                 return await self._inner.eval(script, keys, args)
             raise ConnectionError("connection reset by peer while reading the reply")
         return reply
+
+    async def get(self, key: bytes) -> Any:
+        """A read loses nothing, so it passes through."""
+        return await self._inner.get(key)

@@ -204,6 +204,41 @@ pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<ClaimOutcome,
     }
 }
 
+/// How many times a forget reads a key that changed under it before it gives up as transient. Each
+/// round is one read and one [`FORGET_SCRIPT`](crate::FORGET_SCRIPT), and the key changes only when a
+/// record lapses and a new claim takes it, so a few rounds suffice.
+pub const FORGET_READS: u32 = 3;
+
+/// What forgetting a key does, from the value it holds. `#[must_use]` and exhaustive: every variant
+/// needs a decision.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgetOutcome {
+    /// The key is free: nothing to forget, send nothing.
+    Nothing,
+    /// Run [`FORGET_SCRIPT`](crate::FORGET_SCRIPT) with the value read as `ARGV[1]`. It deletes the key
+    /// only if the key still holds that value, so a claim that took a lapsed key over in between survives.
+    Delete,
+}
+
+/// Whether a forget deletes `key`, which held `held` when it was read (`None`: the key was free).
+///
+/// The record decides, in the kernel's reading order. A pending claim is refused as `in_progress`:
+/// its run may still complete, and its record would land after the delete. A completed or failed
+/// record is deleted, so a re-driven message runs its handler again. So is a value no claimant can
+/// settle, a frame [`split_value`] refuses or a record half no reader decodes, because
+/// [`claim_outcome`] replays it as a cached failure: forgetting it is the way out of a poisoned key.
+pub fn forget_outcome(key: &str, held: Option<&[u8]>) -> Result<ForgetOutcome, Error> {
+    let Some(held) = held else {
+        return Ok(ForgetOutcome::Nothing);
+    };
+    // A frame no claimant can split is no claim: it may go, like a record no reader decodes.
+    if let Ok((_, record)) = split_value(held) {
+        edax_cqrs::forget(key, record.as_bytes())?;
+    }
+    Ok(ForgetOutcome::Delete)
+}
+
 fn frame(owner: &str, record: &[u8]) -> Vec<u8> {
     [&[LAYOUT_VERSION][..], owner.as_bytes(), record].concat()
 }

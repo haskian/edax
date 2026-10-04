@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -17,12 +18,13 @@ import fakeredis
 import pytest
 import redis.asyncio
 import redis.exceptions
-from conftest import TTL_MS, Charge, fresh_prefix, golden, ledger_key
+from conftest import TTL_MS, Charge, claimed, fresh_prefix, golden, ledger_key
 from edax import _edax
 from edax.backend.redis import (
     CLAIM_SCRIPT,
     COMPLETE_SCRIPT,
     EXTEND_SCRIPT,
+    FORGET_SCRIPT,
     RELEASE_SCRIPT,
     AsyncRedisClient,
     RedisIdempotencyStore,
@@ -43,6 +45,7 @@ SCRIPTS = {
     "complete": COMPLETE_SCRIPT,
     "release": RELEASE_SCRIPT,
     "extend": EXTEND_SCRIPT,
+    "forget": FORGET_SCRIPT,
 }
 
 
@@ -224,10 +227,11 @@ async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
     and leaves the value alone; the guard replays it as ``CachedFailure`` on every redelivery, so the
     handler never runs and the dispatcher dead-letters it. The failure keeps the stored hash where it
     reads, else the claimant's."""
-    await ledger.client.set(ledger.rkey("k1"), stored, px=TTL_MS)
+    key = claimed("k1")  # the ledger key the guard below claims
+    await ledger.client.set(ledger.rkey(key), stored, px=TTL_MS)
     failed = Record(want_hash, error=f"unreadable idempotency record: {cause}", error_code="codec")
-    assert await ledger.store().claim("k1", 42) == failed, branch
-    assert await ledger.held("k1") == stored, f"{branch}: the claim wrote nothing"
+    assert await ledger.store().claim(key, 42) == failed, branch
+    assert await ledger.held(key) == stored, f"{branch}: the claim wrote nothing"
 
     runs = 0
 
@@ -235,18 +239,81 @@ async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
         nonlocal runs
         runs += 1
 
-    bus = CommandBus(idempotent(ledger.store(), lambda c: c.request_id))
+    bus = CommandBus(idempotent(ledger.store(), scope="test"))
     bus.register("Charge", handler)
     # `Charge("k1")` hashes to neither 42 nor HASH: a stored hash that reads makes it a reused key.
     replay = edax.PayloadMismatch if want_hash == HASH else edax.CachedFailure
     for attempt in ("first delivery", "redelivery"):
         with pytest.raises(replay) as caught:
-            await bus.dispatch(Charge("k1"))
+            await bus.dispatch(Charge("k1"), idempotency_key="k1")
         error = caught.value
         assert error.terminal, f"{branch}: {attempt}"
         if isinstance(error, edax.CachedFailure):
             assert error.original_code == "codec", f"{branch}: {attempt}"
     assert runs == 0, f"{branch}: the handler never ran"
+
+
+class ChangedBeforeTheDelete:
+    """A connection over which the key changes between the forget's read and its delete, once per value in
+    ``values``, as when the record lapses and another worker claims the key in that gap."""
+
+    def __init__(self, inner: AsyncRedisClient, client: Any, rkey: bytes, values: list[bytes]) -> None:
+        self._inner, self._client, self._rkey = inner, client, rkey
+        self._values = list(values)
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        if self._values and script == FORGET_SCRIPT:
+            await self._client.set(self._rkey, self._values.pop(0), px=TTL_MS)
+        return await self._inner.eval(script, keys, args)
+
+    async def get(self, key: bytes) -> Any:
+        return await self._inner.get(key)
+
+
+@pytest.mark.parametrize(
+    "branch, changed_to, raises, match, want_held",
+    [
+        ("a_new_settled_record_is_read_again_and_deleted", "settled", None, None, None),
+        ("a_new_claim_is_read_again_and_refused", "claim", edax.InProgress, None, "claim"),
+        (
+            "a_key_that_keeps_changing_raises_store_error",
+            "settled_on_every_read",
+            edax.StoreError,
+            "changed on every one of 3 reads",
+            "last",
+        ),
+    ],
+)
+async def test_a_forget_whose_key_changed_reads_it_again(
+    ledger: Ledger,
+    branch: str,
+    changed_to: str,
+    raises: type[Exception] | None,
+    match: str | None,
+    want_held: str | None,
+) -> None:
+    """The delete runs only while the key holds the value the forget read. A key that changed in between
+    is read again, and the kernel decides on the new value. A key that changes before every delete wins
+    no round, so the forget gives up with a transient error and leaves the key as it found it."""
+    s = ledger.store()
+    won = await s.claim("k", HASH)
+    assert isinstance(won, Won)
+    await s.complete("k", won.handle, RECORD)
+    claim = _edax.redis_new_claim(HASH)
+    values = {
+        "settled": [settled(_edax.redis_new_claim(HASH))],
+        "claim": [claim],
+        # A fresh handle per value, so no read ever matches the value the next delete meets.
+        "settled_on_every_read": [settled(_edax.redis_new_claim(HASH)) for _ in range(3)],
+    }[changed_to]
+    store = ledger.store(ChangedBeforeTheDelete(ledger.conn(), ledger.client, ledger.rkey("k"), values))
+    if raises is None:
+        await store.forget("k")
+    else:
+        with pytest.raises(raises, match=match):
+            await store.forget("k")
+    want = {None: None, "claim": claim, "last": values[-1]}[want_held]
+    assert await ledger.held("k") == want, branch
 
 
 async def test_complete_branches(ledger: Ledger) -> None:
@@ -384,7 +451,7 @@ async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
         runs.append("A" if not runs else "B")
         me = runs[-1]
         if me == "A":
-            await ledger.lapse(cmd.request_id)  # A's claim runs out mid-handler
+            await ledger.lapse(claimed(cmd.request_id))  # A's claim runs out mid-handler
             a_lapsed.set()
             await (b_started if first_to_finish == "stale" else b_finished).wait()
         else:
@@ -393,12 +460,12 @@ async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
                 await a_finished.wait()
         return f"charged by {me}"
 
-    bus = CommandBus(idempotent(store, key=lambda c: c.request_id))
+    bus = CommandBus(idempotent(store, scope="test"))
     bus.register(Charge.type, handler)
 
-    first = asyncio.create_task(bus.dispatch(Charge("req-1")))
+    first = asyncio.create_task(bus.dispatch(Charge("req-1"), idempotency_key="req-1"))
     await a_lapsed.wait()
-    second = asyncio.create_task(bus.dispatch(Charge("req-1")))
+    second = asyncio.create_task(bus.dispatch(Charge("req-1"), idempotency_key="req-1"))
     if first_to_finish == "stale":
         with pytest.raises(edax.StoreError, match="taken over"):
             await first
@@ -411,7 +478,9 @@ async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
             await first
 
     assert runs == ["A", "B"]
-    assert await bus.dispatch(Charge("req-1")) == "charged by B", "the redelivery replays B's outcome"
+    assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged by B", (
+        "the redelivery replays B's outcome"
+    )
     assert runs == ["A", "B"], "and runs no handler"
 
 
@@ -450,9 +519,9 @@ async def test_a_claim_whose_reply_was_lost_and_resent_is_won(ledger: Ledger) ->
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
     bus.register(Charge.type, handler)
-    assert await bus.dispatch(Charge("req-1")) == "charged"
+    assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
     assert runs == ["req-1"] and not conn.armed
 
 
@@ -481,14 +550,16 @@ async def test_a_complete_whose_reply_was_lost_keeps_the_record(ledger: Ledger, 
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
     bus.register(Charge.type, handler)
     if resend:
-        assert await bus.dispatch(Charge("req-1")) == "charged"
+        assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
     else:
-        with pytest.raises(edax.StoreError, match="redis complete 'req-1'"):
-            await bus.dispatch(Charge("req-1"))
-    assert await bus.dispatch(Charge("req-1")) == "charged", "the redelivery replays the record"
+        with pytest.raises(edax.StoreError, match=re.escape(f"redis complete {claimed('req-1')!r}")):
+            await bus.dispatch(Charge("req-1"), idempotency_key="req-1")
+    assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged", (
+        "the redelivery replays the record"
+    )
     assert runs == ["req-1"], "the handler ran once"
 
 
@@ -504,18 +575,21 @@ async def test_a_release_whose_reply_was_lost_still_frees_the_key(ledger: Ledger
             raise RuntimeError("downstream timed out")
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), key=lambda c: c.request_id))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
     bus.register(Charge.type, handler)
     with pytest.raises(RuntimeError, match="downstream timed out"):
-        await bus.dispatch(Charge("req-1"))
-    assert await ledger.held("req-1") is None
-    assert await bus.dispatch(Charge("req-1")) == "charged"
+        await bus.dispatch(Charge("req-1"), idempotency_key="req-1")
+    assert await ledger.held(claimed("req-1")) is None
+    assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
 
 
 class _Silent:
     """A connection that never answers: a server that hangs, or a network that drops every packet."""
 
     async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        await asyncio.Event().wait()
+
+    async def get(self, key: bytes) -> Any:
         await asyncio.Event().wait()
 
 

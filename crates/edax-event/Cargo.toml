@@ -14,7 +14,13 @@ rmp-serde = "1"
 serde_bytes = "0.11"
 base64 = "0.22"
 
+[features]
+# The shared test fixtures in `testkit`, for another crate's tests.
+testkit = []
+
 [dev-dependencies]
+# Itself with `testkit`, so its own integration tests reach the fixtures too.
+edax-event = { workspace = true, features = ["testkit"] }
 edax-golden.workspace = true
 proptest = "1"
 

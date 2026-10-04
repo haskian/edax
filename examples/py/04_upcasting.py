@@ -12,7 +12,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
-from edax import Aggregate, Event, EventEnvelope, Repository, Upcaster, json_codec, transaction
+from edax import Aggregate, EventDraft, Repository, Upcaster, json_codec, transaction
 from edax.backend.memory import MemoryEventStore
 
 
@@ -53,18 +53,21 @@ async def main() -> None:
     store = MemoryEventStore()
 
     # 1. The old service stored a version 1 event: no currency in the payload.
-    old = EventEnvelope(
+    draft = EventDraft(
         id="e1",
         aggregate_id="acct-1",
-        event=Event("Deposited", 1, b'{"amount": 100}'),
-        namespace={},
-        metadata={},
-        timestamp=0,
         sequence=1,
+        name="Deposited",
+        version=1,
+        data=b'{"amount": 100}',
+        correlation_id="e1",
+        causation_id="e1",
+        extensions={},
+        metadata={},
     )
     async with transaction(store) as tx:
-        await store.append(tx, "acct-1", 0, [old])
-    print(f"stored by v1: {old.event.name} v{old.event.version} {old.event.data.decode()}")
+        [old] = await store.append(tx, "acct-1", 0, [draft])
+    print(f"stored by v1: {old.name} v{old.version} {old.data.decode()}")
 
     # 2. Today's codec writes version 2 and knows how to raise version 1 to it.
     upcasters = {"Deposited": Upcaster().step(1, add_currency)}
@@ -79,10 +82,10 @@ async def main() -> None:
     account.apply(Deposited(50, "USD"))
     saved = await repo.save(account)
     new = saved[0]
-    print(f"stored by v2: {new.event.name} v{new.event.version} {new.event.data.decode()}")
+    print(f"stored by v2: {new.name} v{new.version} {new.data.decode()}")
 
     assert account.balances == {"EUR": 100, "USD": 50}, account.balances
-    assert (old.event.version, new.event.version) == (1, 2)
+    assert (old.version, new.version) == (1, 2)
     print("\nok: the version 1 event was read as version 2; the stored bytes never changed")
 
 

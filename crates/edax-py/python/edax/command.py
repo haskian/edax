@@ -5,6 +5,7 @@ The kernel owns the cross-language decisions: payload hashing, the idempotency v
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import logging
 import typing
@@ -17,6 +18,8 @@ from typing import Any, Protocol, TypeVar, cast
 import msgspec
 
 from . import _edax, _json, errors
+from .aggregate import CommandMessage, Lineage, _replace
+from .causation import _stamp, caused_by
 from .errors import (  # re-exported: the command errors are part of this module's API
     AlreadyRegistered,
     BadHandle,
@@ -29,7 +32,7 @@ from .errors import (  # re-exported: the command errors are part of this module
 )
 from .observe import ClaimVerdict, Observer, Settlement, _wrap
 from .pacing import Pacing
-from .store import Transactor, Tx, _in_unit_of_work, _transaction
+from .store import EventCodec, Transactor, Tx, _in_unit_of_work, _transaction
 
 __all__ = [
     "AlreadyRegistered",
@@ -47,9 +50,13 @@ __all__ = [
     "PayloadMismatch",
     "Record",
     "Won",
+    "claim_key",
+    "command_message",
+    "current_command",
     "decode_prior",
     "decode_record",
     "encode_record",
+    "forget",
     "idempotent",
     "joins_transaction",
     "retry",
@@ -62,9 +69,11 @@ logger = logging.getLogger("edax.command")
 class Command(Protocol):
     """A command: its instance fields are the payload, ``type`` names the handler.
 
-    The kernel hashes the whole command value, the idempotency key field included, from the field values
-    only, so a command decoded off a queue hashes as the one its constructor builds. Declare ``type`` as a
-    class attribute so it stays out of the hash, as a Rust command's ``command_type()`` does."""
+    ``type`` becomes the message's ``name``, and the kernel hashes that name with the command's whole
+    value, so a command decoded off a queue hashes as the one its constructor builds. Declare ``type`` as a
+    class attribute: the hash takes it once as the name, not again as a field, as a Rust command's
+    ``command_type()`` is. A ``version`` attribute, when the command has one, is the schema version its
+    message carries; without one the version is 1."""
 
     # A read-only property, not `type: str`: a plain Protocol attribute demands a settable instance one,
     # which `type: ClassVar[str] = "user.create"` does not satisfy. A property accepts all three shapes.
@@ -92,10 +101,91 @@ def _is_async(handler: Handler) -> bool:
     return call is not None and inspect.iscoroutinefunction(call)
 
 
+# The message the bus is dispatching right now. Each dispatch sets a new value and resets it on exit, so a
+# nested dispatch sees its own message and the outer one gets its own back.
+_current: contextvars.ContextVar[CommandMessage | None] = contextvars.ContextVar("edax_command", default=None)
+
+
+def current_command() -> CommandMessage | None:
+    """The :class:`~edax.aggregate.CommandMessage` the bus is dispatching, for the handler's whole run, or
+    ``None`` outside a dispatch. Middleware reads it too: :func:`idempotent` claims its
+    ``idempotency_key``."""
+    return _current.get()
+
+
+def command_message(
+    cmd: Command,
+    *,
+    codec: EventCodec | None = None,
+    idempotency_key: str | None = None,
+    aggregate_id: str | None = None,
+    lineage: Lineage | None = None,
+    extensions: dict[str, str] | None = None,
+    metadata: dict[str, str] | None = None,
+) -> CommandMessage:
+    """The :class:`~edax.aggregate.CommandMessage` for ``cmd``: what :meth:`CommandBus.dispatch` runs, and
+    what you publish to a broker or put in a command outbox.
+
+    With ``codec``, ``name``, ``version`` and ``data`` are what ``codec.marshal(cmd)`` returns, and a name
+    other than ``cmd.type`` raises :class:`~edax.errors.CodecError`. Without one, ``name`` is ``cmd.type``,
+    ``version`` is ``cmd.version`` or 1, and ``data`` is the command's JSON. Build a message that another
+    process runs with :meth:`CommandBus.dispatch_message` with the codec that consumer reads it with.
+    Otherwise the two disagree on the version and the encoding: the consumer upcasts data that is already
+    current, or cannot read it at all.
+
+    ``id`` is a fresh :func:`~edax.guid`. ``lineage`` defaults to the ambient
+    :func:`~edax.causation.current_lineage`, else a new flow. ``issued_at`` is the kernel clock.
+
+    ``idempotency_key`` names the request: two messages with one key are one request, and a guard replays
+    the second. ``None`` sends the message unguarded. ``aggregate_id`` orders the message on a broker; the
+    message id orders it when there is none. A command that does not encode, a version outside an unsigned
+    32-bit integer, or an extension key outside the kernel's rule raises the terminal
+    :class:`~edax.errors.CodecError`."""
+    name, version, data = _payload(cmd, codec)
+    with errors.mapped():
+        flow, ext, meta = _stamp(lineage, extensions, metadata)
+        return CommandMessage(
+            id=_edax.guid(),
+            name=name,
+            version=version,
+            data=data,
+            correlation_id=flow.correlation_id,
+            causation_id=flow.causation_id,
+            issued_at=_edax.current_timestamp(),
+            extensions=ext,
+            metadata=meta,
+            idempotency_key=idempotency_key,
+            aggregate_id=aggregate_id,
+        )
+
+
+def _payload(cmd: Command, codec: EventCodec | None) -> tuple[str, int, bytes]:
+    """The ``name``, ``version`` and ``data`` of ``cmd``'s message: the codec's, else the JSON default."""
+    if codec is not None:
+        marshaled = codec.marshal(cmd)
+        if marshaled.name != cmd.type:
+            # dispatch() finds the handler by cmd.type and dispatch_message() by the message name, so the
+            # two would run one command through different handlers.
+            raise CodecError(
+                f"the codec names a {cmd.type!r} command {marshaled.name!r}; a message name must be its type"
+            )
+        return marshaled.name, marshaled.version, marshaled.data
+    version = getattr(cmd, "version", 1)
+    # Only the type is checked here: the message constructor's own conversion refuses a version outside
+    # an unsigned 32-bit integer, which `errors.mapped` turns into a CodecError.
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise CodecError(f"{cmd.type} version must be an int schema version, got {type(version).__name__}")
+    return cmd.type, version, _payload_json(cmd)
+
+
 class CommandBus:
     """Dispatches commands to handlers by command type, through a middleware chain wrapped around each
     handler at register time; the first middleware is the outermost. A handler must be a coroutine
-    function, and :meth:`register` raises :class:`TypeError` otherwise."""
+    function, and :meth:`register` raises :class:`TypeError` otherwise.
+
+    Every dispatch runs one :class:`~edax.aggregate.CommandMessage`. The handler takes the command
+    object, and reads the message with :func:`current_command`. It runs under the ambient lineage
+    :func:`~edax.causation.propagate` of the message, so the events it saves are the command's children."""
 
     def __init__(self, *middleware: Middleware) -> None:
         self._handlers: dict[str, Handler] = {}
@@ -124,11 +214,64 @@ class CommandBus:
 
         return deco
 
-    async def dispatch(self, cmd: Command) -> Any:
-        handler = self._handlers.get(cmd.type)
+    async def dispatch(
+        self,
+        cmd: Command,
+        *,
+        idempotency_key: str | None = None,
+        aggregate_id: str | None = None,
+        lineage: Lineage | None = None,
+        extensions: dict[str, str] | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> Any:
+        """Run ``cmd`` through its handler and return the handler's result. The message is
+        :func:`command_message` of ``cmd`` and the keyword arguments, which take the same meaning there.
+        Pass ``idempotency_key`` for a request a client may send twice; :func:`idempotent` claims it. An
+        unregistered ``cmd.type`` raises :class:`~edax.errors.HandlerNotFound`."""
+        handler = self._handler(cmd.type)
+        msg = command_message(
+            cmd,
+            idempotency_key=idempotency_key,
+            aggregate_id=aggregate_id,
+            lineage=lineage,
+            extensions=extensions,
+            metadata=metadata,
+        )
+        return await _run(handler, msg, cmd)
+
+    async def dispatch_message(self, msg: CommandMessage, codec: EventCodec) -> Any:
+        """Run a received :class:`~edax.aggregate.CommandMessage`: off a broker, or from a command outbox.
+        ``codec`` turns the message back into the command object by ``name`` and ``version``, as
+        ``json_codec({"Ship": Ship})`` does, and the handler registered under ``msg.name`` runs it. The
+        message keeps its id and lineage.
+
+        A message with no ``idempotency_key`` is claimed under its ``id``, the kernel's ``received_key``. A
+        broker delivers at least once, so the same message can arrive twice, and both copies carry one id;
+        a guard then replays the second instead of running the handler again. An unregistered
+        ``msg.name`` raises :class:`~edax.errors.HandlerNotFound`, and a message the codec cannot read
+        raises the terminal :class:`~edax.errors.CodecError`."""
+        handler = self._handler(msg.name)
+        cmd = codec.unmarshal(msg)
+        key = received_key(msg)
+        if key != msg.idempotency_key:
+            msg = _replace(msg, idempotency_key=key)
+        return await _run(handler, msg, cmd)
+
+    def _handler(self, name: str) -> Handler:
+        handler = self._handlers.get(name)
         if handler is None:
-            raise HandlerNotFound(cmd.type)
-        return await handler(cmd)
+            raise HandlerNotFound(name)
+        return handler
+
+
+async def _run(handler: Handler, msg: CommandMessage, cmd: Any) -> Any:
+    """Run ``handler`` on ``cmd`` with ``msg`` as the current command and the lineage of its children."""
+    token = _current.set(msg)
+    try:
+        with caused_by(msg):
+            return await handler(cmd)
+    finally:
+        _current.reset(token)
 
 
 def retry(attempts: int, *, pacing: Pacing | None = None) -> Middleware:
@@ -140,8 +283,8 @@ def retry(attempts: int, *, pacing: Pacing | None = None) -> Middleware:
     transaction reads the first attempt's staged writes and applies them again, and the commit lands
     both. So ``retry`` refuses to run while any :func:`~edax.store.transaction` is open, with terminal
     :class:`~edax.errors.BadHandle`. Wire it outside a guard that owns the transaction,
-    ``CommandBus(retry(n), idempotent(store, key, unit_of_work=db))``, and open no transaction around
-    the dispatch. See ``docs/sdk/commands.md``.
+    ``CommandBus(retry(n), idempotent(store, db, scope="api"))``, and open no transaction around the
+    dispatch. See ``docs/sdk/commands.md``.
 
     ``attempts`` below 1 raises :class:`ValueError`: no attempt at all is not a retry policy."""
     if attempts < 1:
@@ -211,8 +354,8 @@ class IdempotencyStore(Protocol):
       one caller gets :class:`Won`, every other gets the existing :class:`Record`. Never a read then a write.
     - *Pending state.* The inserted record carries ``pending=True`` and the given ``payload_hash``, and must
       come back faithfully; the guard reads it to tell an in-flight claim from a completed ``None`` result.
-    - *Enlistment.* Given ``tx``, or with :func:`~edax.store.current_tx` of its own transactor set, all three
-      operations join that transaction, so a rollback removes the claim: effectively-once. Otherwise
+    - *Enlistment.* Given ``tx``, or with :func:`~edax.store.current_tx` of its own transactor set, every
+      operation joins that transaction, so a rollback removes the claim: effectively-once. Otherwise
       standalone: at-least-once.
     - *Declaration.* ``joins_transaction: ClassVar[bool]`` names which of the two you are; absent is
       ``False``. ``True`` obliges you to raise terminal :class:`~edax.errors.BadHandle` for a handle from
@@ -222,6 +365,11 @@ class IdempotencyStore(Protocol):
       :class:`~edax.errors.StoreError`; it must never read a stale snapshot and report a win, which runs the
       handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
       cannot block returns the holder's record as pending, reported as :class:`~edax.errors.InProgress`.
+    - *Forget.* ``forget`` deletes a completed or failed record, so a command taken back from a dead-letter
+      queue runs its handler again. It reads the record with the kernel: a pending claim raises
+      :class:`~edax.errors.InProgress` and stays, because its run may still complete. An absent key is a
+      no-op. It enlists as ``claim`` does, and deletes only the record it read, never a claim that took the
+      key over since.
     - *Complete / release.* Both take the :attr:`Won.handle` the claim returned. ``complete`` overwrites the
       key with the terminal record, ``release`` deletes it. Both are idempotent; releasing an absent key is a
       no-op. A backend whose claims can lapse must fence both on the handle: write only while the key still
@@ -255,6 +403,33 @@ class IdempotencyStore(Protocol):
         """Delete ``key`` while it holds the claim ``handle`` names, so a transient failure can retry.
         Idempotent."""
         ...
+
+    async def forget(self, key: str, tx: Tx | None = None) -> None:
+        """Delete the settled record ``key`` holds, so the next claim wins. The *Forget* clause above says
+        what happens to a pending claim and to an absent key."""
+        ...
+
+
+def claim_key(scope: str, idempotency_key: str) -> str:
+    """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``. Two
+    scopes never share a ledger key. Pinned by ``testdata/golden/claim_key.json``."""
+    with errors.mapped():
+        return _edax.claim_key(scope, idempotency_key)
+
+
+def received_key(msg: CommandMessage) -> str:
+    """The key a guard claims for a command received from a broker or an outbox: its ``idempotency_key``,
+    or its ``id`` when it has none, so a redelivery of one message is caught. An empty key is a key. The
+    rule is the kernel's, pinned by ``testdata/golden/command_received_key.json``."""
+    return _edax.received_key(msg.id, msg.idempotency_key)
+
+
+async def forget(store: IdempotencyStore, scope: str, idempotency_key: str, *, tx: Tx | None = None) -> None:
+    """Delete the record the :func:`idempotent` guard named ``scope`` keeps for ``idempotency_key``, so the
+    next dispatch of that key runs its handler again. Use it to re-drive a dead-lettered command whose
+    failure was cached. The *Forget* clause of :class:`IdempotencyStore` says what happens to a claim still
+    in flight and to a key with no record."""
+    await store.forget(claim_key(scope, idempotency_key), tx)
 
 
 def _payload_json(cmd: Command) -> bytes:
@@ -317,37 +492,37 @@ def _changed(entries: dict[Any, Any]) -> dict[Any, Any]:
     return changes
 
 
-def _payload_hash(cmd: Command) -> int:
-    """The kernel's idempotency hash of ``cmd``: whole value, canonicalized, FNV-1a."""
+def _payload_hash(cmd: Command, name: str) -> int:
+    """The kernel's idempotency hash of ``cmd``: the message ``name`` and the command's whole value,
+    canonicalized, FNV-1a. Pinned by ``testdata/golden/command_hash.json``."""
     payload = _payload_json(cmd)
     with errors.mapped():  # the kernel's `codec:` refusal of the bytes is terminal
-        return _edax.payload_hash_json(payload)
+        return _edax.command_hash_json(name, payload)
 
 
-# `key` takes `Any`, not `Command`, for the same reason `Handler` does: a key function is written against one
-# concrete command and reads a field `Command` does not declare, so no realistic one would be assignable.
 def idempotent(
     store: IdempotencyStore,
-    key: Callable[[Any], str | None],
     unit_of_work: Transactor | None = None,
     *,
+    scope: str,
     result_type: Any = None,
     observer: Observer | None = None,
 ) -> Middleware:
-    """Deduplicate dispatches by idempotency key. ``key`` returns the key for a command, or ``None`` to
-    bypass. The kernel binds the payload hash to the key, so reuse with a different payload raises
-    :class:`~edax.errors.PayloadMismatch`. The first dispatch of a key wins the claim and runs the handler; a
-    later or concurrent one loses and acts on the prior record: it replays a cached result, raises
-    :class:`~edax.errors.CachedFailure` for a cached terminal error, or raises
+    """Deduplicate dispatches by the ``idempotency_key`` of the :func:`current_command`. A message with no
+    key runs unguarded and writes nothing to the ledger. The first dispatch of a key wins the claim and runs
+    the handler; a later or concurrent one loses and acts on the prior record: it replays a cached result,
+    raises :class:`~edax.errors.CachedFailure` for a cached terminal error, or raises
     :class:`~edax.errors.InProgress` while the winner is in flight. A transient handler failure releases the
     claim so a retry can re-run. ``unit_of_work`` hands the guard the transaction, which is what lets a
-    failed commit release the claim (see :func:`_guarded`). Place :func:`retry` outside a guard that
-    owns the transaction: each attempt then re-claims in a fresh unit of work.
+    failed commit release the claim (see :func:`_guarded`). Place :func:`retry` outside a guard that owns
+    the transaction: each attempt then re-claims in a fresh unit of work.
 
-    ``key`` owns its own namespace. The command *type* is deliberately outside the payload hash, so two
-    different commands carrying the same business fields hash identically and one reused key replays the
-    wrong command's cached result. Scope the key by command type, and by service where a ledger is shared.
-    See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
+    ``scope`` names this guard, usually the service or the stage it guards: ``"api"`` at ingress,
+    ``"billing-worker"`` on a consumer. The ledger key is the kernel's ``claim_key(scope, idempotency_key)``,
+    so two guards that share a ledger never replay each other's outcome for one key. The kernel hashes the
+    message name with the value the handler receives, so one key reused by another command, or with another
+    payload, raises :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same
+    scope and key. See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
 
     A cached success crosses the store as JSON, so a replay hands back the handler's declared return type,
     not the plain JSON value: ``result_type``, else the return annotation of the handler this guard wraps
@@ -355,21 +530,26 @@ def idempotent(
     an unreadable record: the terminal :class:`~edax.errors.CachedFailure` of code ``codec``, as in the
     Rust SDK, whose typed store reads it so. With neither, or with ``result_type=Any``, a replay is
     the plain JSON value, as with an ``object`` annotation. A ``result_type`` msgspec cannot convert to raises
-    :class:`TypeError` at wiring.
+    :class:`TypeError` at wiring, as a ``scope`` that is not a ``str`` does.
 
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
     :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
+    if not isinstance(scope, str):
+        raise TypeError(
+            f"idempotent(scope=...) names the guard and must be a str, got {type(scope).__name__}"
+        )
     observe = _wrap(observer)
 
     def mw(next_: Handler) -> Handler:
         replay_as = _replay_type(result_type, next_)
 
         async def handler(cmd: Command) -> Any:
-            k = key(cmd)
-            if k is None:
+            msg = current_command()
+            if msg is None or msg.idempotency_key is None:
                 return await next_(cmd)
-            guard = _Guard(store, cmd.type, k, _payload_hash(cmd), observe, replay_as)
+            key = claim_key(scope, msg.idempotency_key)
+            guard = _Guard(store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
             return await _guarded(guard, lambda: next_(cmd), unit_of_work)
 
         return handler

@@ -1,0 +1,22 @@
+[
+  {
+    "aggregate_id": "order-7",
+    "expected": "order-7",
+    "id": "cmd-1"
+  },
+  {
+    "aggregate_id": null,
+    "expected": "cmd-1",
+    "id": "cmd-1"
+  },
+  {
+    "aggregate_id": "",
+    "expected": "",
+    "id": "cmd-1"
+  },
+  {
+    "aggregate_id": "café",
+    "expected": "café",
+    "id": "évt"
+  }
+]

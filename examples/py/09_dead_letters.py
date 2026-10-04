@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
-from edax import Backoff, Delivery, Event, EventEnvelope, KeyOrderedDispatcher, Pacing, Rejected
+from edax import Backoff, Delivery, EventMessage, KeyOrderedDispatcher, Pacing, Rejected, testing
 from edax.backend.memory import MemoryBroker
 
 
@@ -23,28 +23,16 @@ class AccountClosed(Rejected):
     """Terminal: the account stays closed however often the event comes back."""
 
 
-def event(account_id: str, name: str) -> EventEnvelope:
-    return EventEnvelope(
-        id=f"{account_id}-{name}",
-        aggregate_id=account_id,
-        event=Event(name, 1, b"{}"),
-        namespace={},
-        metadata={},
-        timestamp=0,
-        sequence=1,
-    )
-
-
 async def main() -> None:
     # 1. Four events: one fine, one rejected, one that fails twice, one that always fails.
     broker = MemoryBroker()
     for account_id in ("alice", "bob", "carol", "dave"):
-        await broker.publish(event(account_id, "Deposited"))
+        await broker.publish(testing.event(account_id, "Deposited", 1, data=b"{}"))
 
     attempts: dict[str, int] = {}
 
-    async def handle(envelope: EventEnvelope) -> None:
-        account_id = envelope.aggregate_id
+    async def handle(msg: EventMessage) -> None:
+        account_id = msg.aggregate_id
         attempts[account_id] = attempts.get(account_id, 0) + 1
         print(f"  {account_id} attempt {attempts[account_id]}")
         if account_id == "bob":
@@ -58,7 +46,7 @@ async def main() -> None:
     dead: list[str] = []
 
     async def to_dead_letters(delivery: Delivery, error: BaseException) -> None:
-        dead.append(f"{delivery.envelope.aggregate_id}: {type(error).__name__}")
+        dead.append(f"{delivery.message.aggregate_id}: {type(error).__name__}")
 
     # 3. One worker keeps the story in order. Short waits so the example runs fast.
     dispatcher = KeyOrderedDispatcher(

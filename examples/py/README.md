@@ -33,15 +33,15 @@ trap](../../docs/guides/getting-started.md#the-stale-native-module-trap).
 | [`02_aggregate.py`](02_aggregate.py) | keep state as events; save and load it | `Aggregate`, `Repository`, `json_codec` | [aggregates](../../docs/sdk/aggregates.md) |
 | [`03_snapshots.py`](03_snapshots.py) | load from a snapshot plus the tail | `Repository(snapshot_every=)` | [aggregates](../../docs/sdk/aggregates.md#snapshots) |
 | [`04_upcasting.py`](04_upcasting.py) | read events an older version stored | `Upcaster`, `json_codec(version=, upcasters=)` | [kernels/event](../../docs/kernels/event.md) |
-| [`05_idempotent_commands.py`](05_idempotent_commands.py) | apply a command once, even when sent twice | `idempotent(..., unit_of_work=)`, `retry`, `PayloadMismatch` | [commands](../../docs/sdk/commands.md#the-recommended-wiring) |
+| [`05_idempotent_commands.py`](05_idempotent_commands.py) | apply a command once, even when sent twice | `dispatch(idempotency_key=)`, `idempotent(scope=, unit_of_work=)`, `retry`, `PayloadMismatch` | [commands](../../docs/sdk/commands.md#the-recommended-wiring) |
 | [`06_errors_and_retry.py`](06_errors_and_retry.py) | retry transient errors, not terminal ones | `retry`, `Rejected`, `Pacing`, `is_terminal` | [errors](../../docs/sdk/errors.md) |
 | [`07_outbox_relay.py`](07_outbox_relay.py) | publish saved events through the outbox | `Relay.drain`, `unpublished_count` | [outbox](../../docs/sdk/outbox.md) |
 | [`08_consume_events.py`](08_consume_events.py) | consume in order per key, in parallel across keys | `KeyOrderedDispatcher`, `EventRouter`, `MemoryBroker.run` | [consuming](../../docs/sdk/consuming.md) |
 | [`09_dead_letters.py`](09_dead_letters.py) | dead-letter what keeps failing | `on_dead`, `max_attempts`, `Rejected` | [consuming](../../docs/sdk/consuming.md#retry-and-dead-letter) |
 | [`10_idempotent_events.py`](10_idempotent_events.py) | update a read model once per event | `idempotent_by_id(..., unit_of_work=)`, `ProjectionStore` | [idempotency](../../docs/sdk/idempotency.md) |
 | [`11_projection_query.py`](11_projection_query.py) | filter, sort and page a read model | `get_many`, `edax.filter`, `sort_key`, `Page.next` | [projections](../../docs/sdk/projections.md) |
-| [`12_causation.py`](12_causation.py) | link events into one traceable flow | `ensure_ids`, `propagate`, `save(metadata=)` | [kernels/event](../../docs/kernels/event.md) |
-| [`13_saga.py`](13_saga.py) | turn events into commands, through a saga outbox | `SagaRunner`, `Completed`, `runner.relay(on_dead=)` | [sagas](../../docs/sdk/sagas.md) |
+| [`12_causation.py`](12_causation.py) | link events into one traceable flow | `originate`, `propagate`, `caused_by`, `save(lineage=)` | [kernels/event](../../docs/kernels/event.md#causation--lineage) |
+| [`13_saga.py`](13_saga.py) | turn events into commands, through a saga outbox | `SagaRunner`, `Completed`, `runner.relay(bus, on_dead=)` | [sagas](../../docs/sdk/sagas.md) |
 | [`14_observability.py`](14_observability.py) | see claims, transactions, drains and latency | `Observer`, `timing`, `Relay.last` | [observability](../../docs/sdk/observability.md) |
 | [`15_lease_takeover.py`](15_lease_takeover.py) | rehearse a Redis claim expiring mid-handler | `MemoryLedger`, `expire`, `InProgress` | [backends/memory](../../docs/backends/memory.md#test-on-the-ordering-you-deploy-memoryledger) |
 | [`16_redis_ledger.py`](16_redis_ledger.py) | keep the idempotency ledger in Redis | `RedisIdempotencyStore`, `CachedFailure` | [backends/redis](../../docs/backends/redis.md) |

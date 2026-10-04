@@ -9,210 +9,228 @@ Python service and a Rust service cannot drift.
 
 | Module | Owns | Golden vector |
 |---|---|---|
-| `domain` | the envelope shape every binding shares | `envelopes.json` |
-| `partition` | which local worker runs an aggregate id (never broker placement) | `partition.json` |
-| `codec` | the reproducible wire bytes for an envelope, and how they evolve | `envelopes.json`, `envelope_decode.json` |
+| `domain` | the event and command message shapes, the extension key rule, the ordering key, a received command's key | `envelopes.json`, `extensions.json`, `ordering_key.json`, `command_received_key.json` |
+| `partition` | which local worker runs an ordering key (never broker placement) | `partition.json` |
+| `codec` | the reproducible wire bytes for both kinds of message, their media types, and how they evolve | `envelopes.json`, `envelope_decode.json` |
 | `upcast` | which `v -> v+1` steps run, in which order | `upcast.json` |
-| `causation` | `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
+| `causation` | the lineage of a message: `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `dedup` | the key and hash an event's idempotency guard claims | `event_idempotency.json` |
 | `sequence` | the dense-batch rule an append must satisfy, and a replay checks; when a save writes a snapshot | `sequence_batch.json`, `snapshot_due.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json` |
-| `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing) and its outbox command id | `saga.json` |
+| `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing) and the command messages it sends | `saga.json` |
 
 Host code reaches the kernel through an SDK. The SDKs reach it through the flat application binary
 interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
 
-## `domain` — the envelope
+## `domain` — the messages
 
-Four types, all in `crates/edax-event/src/domain.rs`. `Namespace` and `Metadata` are both
-`BTreeMap<String, String>`, not `HashMap`: sorted key order is what makes the encoded bytes
-reproducible. `timestamp` is injected rather than read from a clock so a golden vector can be
-reproduced.
+Two messages cross a process boundary: `EventMessage` and `CommandMessage`, both in
+`crates/edax-event/src/domain.rs`. Both are flat: identity, payload, lineage, time, then two string
+maps. Nothing nests. A `Kind` enum names the two, `Event` and `Command`. It is exhaustive on purpose,
+so a new kind is a compile error in every SDK rather than a silent default.
 
-```mermaid
-erDiagram
-  EventEnvelope ||--|| Event : "carries one"
-  EventEnvelope {
-    String id "unique event id; the guard claims this"
-    String aggregate_id "routing and ordering key"
-    Option_u64 sequence "per-aggregate ordinal; None if unsequenced"
-    Namespace namespace "BTreeMap tenancy and routing keys"
-    Metadata metadata "BTreeMap free-form context"
-    i64 timestamp "Unix nanoseconds, injected"
-  }
-  Event {
-    String name "schema identity"
-    i32 version "schema version; upcast raises it"
-    Vec_u8 data "host-serialized payload, opaque"
-  }
-```
+| Field | `EventMessage` | `CommandMessage` | Read by |
+|---|---|---|---|
+| `id` | `String`, the event's unique id | `String`, this message instance | the event guard; the causation of a child; the retry policy's attempt count |
+| `idempotency_key` | — | `Option<String>`, the client's intent; `None` makes no claim | the command guard, through `claim_key` |
+| `aggregate_id` | `String` | `Option<String>`, the target, if any | the ordering key |
+| `sequence` | `Option<u64>`, the per-aggregate ordinal | — | `is_stale`, `advance`, `check_batch` |
+| `name` | `String` | `String` | routing, `upcast_plan`, the command hash |
+| `version` | `u32`, the payload schema version | `u32` | `upcast_plan` |
+| `data` | `Vec<u8>`, the host-serialized payload | `Vec<u8>` | nothing: opaque, base64 in JSON, native bytes in MessagePack |
+| `correlation_id` | `String` | `String` | lineage |
+| `causation_id` | `String` | `String` | lineage |
+| `occurred_at` | `Option<i64>`, valid time | — | nothing: the host's |
+| `recorded_at` | `i64`, transaction time | — | relay lag |
+| `issued_at` | — | `i64`, the issuer's clock | relay lag |
+| `extensions` | `Extensions` | `Extensions` | edax extensions, such as trace context |
+| `metadata` | `Metadata` | `Metadata` | nothing: the application's |
 
-Which fields are the kernel's business:
+Two more shapes sit beside the messages. `Event` is a codec's output: `name`, `version` and `data`.
+An aggregate holds its pending events in that shape. `EventDraft` is an event as a repository hands
+it to the store: every field of an `EventMessage` but `recorded_at`. The store stamps that field, and
+`EventDraft::record(recorded_at)` makes the message.
 
-| Field | Kernel reads it for | Kernel's opinion of the value |
+### Three tiers of fields
+
+Every key in a message has one owner.
+
+| Tier | Owner | Rule |
 |---|---|---|
-| `aggregate_id` | `partition` | none — any bytes route, hashed as UTF-8 with no Unicode normalization |
-| `sequence` | `is_stale`, `advance`, `check_batch` | a `u64` ordinal; `None` means "nothing to order against" |
-| `event.version` | `upcast_plan` | must be `<=` the target version |
-| `event.data` | nothing | opaque bytes; base64 in JSON, native bytes in MessagePack |
-| `metadata` | `originate`, `propagate` | only the two chain keys; the rest is carried untouched |
-| `id`, `namespace`, `timestamp` | nothing | encoded verbatim |
+| a typed field | edax: a kernel or an SDK decision reads it | its own type, pinned by the codec goldens |
+| `extensions` | edax extensions: trace context, request origin | keys match `[a-z0-9][a-z0-9._-]{0,63}`; values are opaque strings |
+| `metadata` | the application | opaque to edax; tenancy lives here |
 
-In Python the same shape is a native class, not a parallel dataclass. `edax.EventEnvelope` is the alias
-callers construct with. The type stub `_edax.pyi` lists the field types.
+`check_extensions` is the key rule: 1 to 64 bytes of lowercase ASCII letters, digits, `.`, `_` and
+`-`, starting with a letter or a digit. A dot namespaces keys per extension, as in `http.origin_ip`.
+Lowercase keeps a key safe as a header name on every transport. The codec checks on encode and on
+decode, so a producer never mints a message every consumer would refuse.
+`testdata/golden/extensions.json` pins the rule.
+
+`Extensions` and `Metadata` are both `BTreeMap<String, String>`, not `HashMap`. Sorted key order is
+what makes the encoded bytes reproducible.
+
+Broker facts never enter a message. The offset, the partition and the broker's own time ride on the
+delivery, beside the message. `KafkaFetched` in Python carries them, `timestamp` and
+`timestamp_type` included.
+
+### Time
+
+A message carries at most two clock readings, each with one meaning.
+
+| Time | Field | Who sets it | Meaning |
+|---|---|---|---|
+| valid time | `occurred_at` on an event | the host | when the fact happened; `None` means when it was recorded |
+| transaction time | `recorded_at` on an event | the store, at append | when the store recorded the fact, on the store's clock |
+| issue time | `issued_at` on a command | the issuer | when the command was built |
+| broker time | none: on the delivery | the broker or the producer client | Kafka's `CreateTime` or `LogAppendTime`, in milliseconds |
+| processing time | none | — | when a handler takes the message; never stored |
+
+Every stored time is Unix nanoseconds in an `i64`. A database store stamps `recorded_at` with its
+own `now()`. The memory store takes the reading as an argument, because a binding cannot hand it a
+callable clock. None of these times orders anything: order on `sequence`.
+
+### The ordering key
+
+`ordering_key(aggregate_id, id)` is the key that orders a message against others. An event's is its
+aggregate id. A command's is its target aggregate, or its own id when it names none. A command
+without a target then spreads by id, instead of piling onto one empty key. An empty aggregate id
+is still an aggregate id. The Kafka record key, the memory broker's partition and the dispatcher's
+worker all start from it. `testdata/golden/ordering_key.json` pins it.
+
+`received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
+client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
+same message, and both copies carry one id, so the id still deduplicates a redelivery. An empty key
+is still a key. `testdata/golden/command_received_key.json` pins it.
 
 ```python
 import edax
 
-env = edax.EventEnvelope(
-    id="acct-1-deposit-1",
+msg = edax.EventMessage(
+    id="evt-1",
     aggregate_id="acct-1",
-    event=edax.Event("Deposited", 1, b"4200"),
-    namespace={},
+    name="Deposited",
+    version=1,
+    data=b"4200",
+    correlation_id="corr-1",
+    causation_id="cmd-1",
+    recorded_at=1_700_000_000_000_000_000,
+    extensions={"traceparent": "00-abc-def-01"},
     metadata={},
-    timestamp=0,
+    sequence=1,
 )
 ```
 
 ```rust
-use edax_event::{Event, EventEnvelope, Metadata, Namespace};
+use edax_event::{EventMessage, Extensions, Metadata};
 
-let env = EventEnvelope {
+let msg = EventMessage {
     id: "evt-1".into(),
     aggregate_id: "agg-1".into(),
-    event: Event { name: "InvoiceIssued".into(), version: 1, data: vec![0xde, 0xad, 0xbe, 0xef] },
     sequence: Some(7),
-    namespace: Namespace::new(),
+    name: "InvoiceIssued".into(),
+    version: 1,
+    data: vec![0xde, 0xad, 0xbe, 0xef],
+    correlation_id: "corr-1".into(),
+    causation_id: "cmd-1".into(),
+    occurred_at: None,
+    recorded_at: 1_700_000_000_000_000_000,
+    extensions: Extensions::new(),
     metadata: Metadata::new(),
-    timestamp: 1_700_000_000_000_000_000,
 };
 ```
 
-The constructor order differs: the Python class takes `sequence` last with a default, because the
-binding generator moves optional parameters to the end.
+In Python each shape is a native class, not a parallel dataclass. It compares, hashes and pickles by
+value, and its maps iterate in key order, the wire's. The type stub `_edax.pyi` lists the field
+types. The constructor order differs from Rust: the binding generator moves optional parameters,
+such as `sequence` and `occurred_at`, to the end.
 
-## `partition` — local fan-out
+## `codec` — reproducible message bytes
 
-| | Rule | Resize behaviour |
+`Format` has two variants, `Json` and `Msgpack`. `Format::from_name` resolves `"json"` and
+`"msgpack"`, and errors otherwise. A media type names a format and a kind together:
+
+| | `Kind::Event` | `Kind::Command` |
 |---|---|---|
-| `partition(id, w)` | `fnv1a32(id) % max(w, 1)` | growing `w` remaps almost every id |
+| `Format::Json` | `application/vnd.edax.event+json` | `application/vnd.edax.command+json` |
+| `Format::Msgpack` | `application/vnd.edax.event+msgpack` | `application/vnd.edax.command+msgpack` |
 
-`partition` picks which of a consumer's `w` workers runs an aggregate's events. It is local fan-out
-and nothing else. The string's UTF-8 bytes are hashed with no Unicode normalization, so the NFC and
-NFD spellings of `café` are two ids. `w = 0` clamps to 1 rather than dividing by zero, so every id
-maps to 0 — the first case in the golden file. `testdata/golden/partition.json` pins `w` at 0, 1, 7,
-256, 1024 and `u32::MAX` for eight ids, the NFC/NFD pair included.
+`Format::media_type(kind)` gives the string, and `Format::from_media_type` resolves it back to the
+pair. Anything else is a `codec` error, never a fallback. The bytes do not say which kind they hold;
+the media type does. A transport that carries one, such as the Kafka `content-type` header, decodes
+by it. A decode of the wrong kind then fails on the kind, not on whichever field is missing. See
+[kafka.md](./kafka.md) for the vocabulary.
 
-It is **not** broker placement. Which Kafka partition a record lands on must agree with every
-producer on the topic, including Java services and Kafka Connect. So it is Java's murmur2
-partitioner, `edax_kafka::partition_for`, which every edax Kafka shell passes explicitly. See
-[kernels/kafka.md](./kafka.md).
-
-### Who calls it
-
-A consumer's worker count `w` is local. Two consumers with different pool sizes would disagree about
-the same id. That is harmless here only because the broker has already routed the aggregate to one
-consumer, so the choice never leaves the process. `KeyOrderedDispatcher` is the one caller.
-
-```mermaid
-flowchart LR
-  B["broker partition"] --> D["KeyOrderedDispatcher"]
-  D -->|"partition(aggregate_id, workers)"| W0["worker 0"]
-  D -->|"partition(aggregate_id, workers)"| W1["worker 1"]
-  D -->|"partition(aggregate_id, workers)"| W2["worker 2"]
-  W0 -->|"FIFO per aggregate id"| H["handler"]
-  W1 --> H
-  W2 --> H
-```
-
-One aggregate's events land on one worker in first in, first out (FIFO) order; different aggregates
-run in parallel. Both `KeyOrderedDispatcher` implementations pick the worker this way.
-
-```python
-import edax
-
-worker = edax.partition("acct-1", 8)  # 0..7
-```
-
-```rust
-let worker = edax_event::partition("acct-1", 8);
-```
-
-## `codec` — reproducible envelope bytes
-
-`Format` has two variants, `Json` and `Msgpack`. `Format::from_name` resolves `"json"` / `"msgpack"`
-and errors otherwise. `Format::media_type` names each variant's media type,
-`application/vnd.edax.envelope+json` or `application/vnd.edax.envelope+msgpack`, and
-`Format::from_media_type` resolves it back. Transports that carry a content type, such as the Kafka
-`content-type` header, use the pair. See [kafka.md](./kafka.md) for the vocabulary.
-
-| | `data` on the wire | Shape | Golden `evt-1` size |
+| | `data` on the wire | Shape | Golden `base` event size |
 |---|---|---|---|
-| `Format::Json` | base64 string | field-named object | 206 bytes |
-| `Format::Msgpack` | native bytes | field-named map | 151 bytes |
+| `Format::Json` | base64 string | field-named object | 323 bytes |
+| `Format::Msgpack` | native bytes | field-named map | 258 bytes |
 
-Determinism rests on two things. Sorted map keys: `Namespace` and `Metadata` are `BTreeMap`, so
+Determinism rests on two things. Sorted map keys: `Extensions` and `Metadata` are `BTreeMap`, so
 whatever order a host filled them in, the encoding sorts them by UTF-8 bytes. That puts `"Z"` before
 `"a"`, and U+FF71 after U+1F980, although JavaScript, Java and C# sort that pair the other way by
-UTF-16 code units. Field order is fixed. Both formats write the envelope and its nested `event` as a
-map keyed by field name. The golden `msgpack_hex` for `evt-1` starts `87`, a 7-entry map, then
-`a2 6964`, the key `id`.
+UTF-16 code units. Field order is fixed. Both formats write a message as a map keyed by field name.
+The golden `msgpack_hex` of the `base` event starts `8c`, a 12-entry map, then `a2 6964`, the key
+`id`. A command starts `8b`, an 11-entry map.
 
-### Evolution: one rule for both formats
+### Evolution: one rule for both formats and both kinds
 
 A field added by a newer writer must not turn every message into poison for an older reader. So
 both formats follow one rule, pinned by `testdata/golden/envelope_decode.json`:
 
 | Input | JSON | MessagePack |
 |---|---|---|
-| a field the reader does not know, top level or in `event` | ignored | ignored |
-| `sequence` missing or `null` | `None` | `None` |
-| any other field missing | `codec` error | `codec` error |
+| a field the reader does not know | ignored | ignored |
+| an optional field missing or `null`: `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
+| any other field missing, the `extensions` map included | `codec` error | `codec` error |
+| a negative `version` | `codec` error | `codec` error |
+| an `extensions` key outside the key rule | `codec` error | `codec` error |
 | a field repeated | `codec` error | `codec` error |
-| a key repeated inside `namespace` or `metadata` | the last wins | the last wins |
-| the envelope or `event` as a positional array | `codec` error | `codec` error |
-| bytes after the envelope | `codec` error (whitespace is not bytes) | `codec` error |
+| a key repeated inside `extensions` or `metadata` | the last wins | the last wins |
+| the message as a positional array | `codec` error | `codec` error |
+| bytes after the message | `codec` error (whitespace is not bytes) | `codec` error |
 
-The map form costs bytes against the old positional array, and buys forward compatibility in both
-formats. Each decode row is written once as a wire value and encoded in both formats, so the two
-cannot follow different rules. The vector pins only the error code for a refusal: the message is the
-parser's own text, which a second SDK's parser words differently.
+A writer writes every optional field as an explicit `null`. The map form costs bytes against a
+positional array, and buys forward compatibility in both formats. Each decode row is written once as
+a wire value and encoded in both formats, so the two cannot follow different rules. The vector pins
+only the error code for a refusal: the message is the parser's own text, which a second SDK's parser
+words differently.
 
 Reproducible bytes matter because two services in different languages hash, compare and store the
-same logical envelope. Suppose Python sorted `metadata` by insertion and Rust by key. One event
+same logical message. Suppose Python sorted `metadata` by insertion and Rust by key. One event
 would then produce two byte strings. Any comparison over the encoded form would disagree.
-`testdata/golden/envelopes.json` pins sixteen envelopes as `json_hex` and `msgpack_hex`. They cover
-the key order traps above and escaping: `"`, `\`, U+001F as `\u001f`, DEL and U+2028 raw. They
-cover non-ASCII written raw in both formats, `i64` and `i32` extremes, and a negative timestamp. And
-they cover the MessagePack width boundaries: fixint/uint8/uint16/uint32/uint64, bin8/bin16 and
-fixstr/str8. Both test suites re-encode them and compare hex. A host may serialize its own envelopes in a format the kernel does not know.
-Routing and ordering still work: `partition` and `is_stale` read fields, not encoded bytes.
+`testdata/golden/envelopes.json` pins the bytes of both kinds in both formats, the key order traps
+above included. Both test suites re-encode them and compare hex.
 
-The ABI's `encode_envelope(format, envelope)` takes the native envelope the host already holds, as
-`kafka_record` does, and `decode_envelope` returns one. `KernelSerializer` is the thin Python
-wrapper over the pair. The native envelope is the Python SDK's model. It compares, hashes and
-pickles by value. Its `namespace` and `metadata` iterate in key order, the wire's. Its constructor
-is `EventEnvelope(id, aggregate_id, event, namespace, metadata, timestamp, sequence=None)`.
+A host may serialize its own messages in a format the kernel does not know. Routing and ordering
+still work: `partition`, `ordering_key` and `is_stale` read fields, not encoded bytes.
+
+The ABI's `encode_event(format, msg)` and `encode_command(format, msg)` take the native message the
+host already holds. `decode_event` and `decode_command` return one. `media_type(format, kind)` names
+the pair. `KernelSerializer(fmt, kind)` is the thin Python wrapper over them, one kind per
+serializer.
 
 ```python
 import edax
 
-ser = edax.KernelSerializer("msgpack")  # or "json", the default
-wire = ser.encode(env)
-back = ser.decode(wire)  # CodecError on bad bytes — terminal, dead-letter it
+events = edax.KernelSerializer("msgpack")  # kind "event", the default
+commands = edax.KernelSerializer("json", "command")
+wire = events.encode(msg)
+back = events.decode(wire)  # CodecError on bad bytes — terminal, dead-letter it
 ```
 
 ```rust
 use edax_event::Format;
 
-let wire = Format::Msgpack.encode(&env);
-let back = Format::Msgpack.decode(&wire)?;
+let wire = Format::Msgpack.encode(&msg)?; // refuses a bad extension key
+let back: edax_event::EventMessage = Format::Msgpack.decode(&wire)?;
 ```
 
-`Format::encode` is infallible; the envelope holds only strings, ints, byte vectors and string-keyed
-maps. Decoding is fallible. The binding tags the failure with the `codec` error code. The host then
-raises a terminal `CodecError` instead of retrying a poison message forever.
+Encoding fails only on an extension key outside the rule. A message holds nothing else that can fail
+to serialize. Decoding fails on any bytes the rule above refuses. The binding tags both failures
+with the `codec` error code. The host then raises a terminal `CodecError` instead of retrying a
+poison message forever.
 
 ## `upcast` — planning a version chain
 
@@ -252,11 +270,9 @@ stateDiagram-v2
 
 `testdata/golden/upcast.json` carries a gap on the first step: `from: 1`, `to: 3`, `available: [2]`.
 Its expected message names step 1, not step 2. The plan fails on the earliest hole, not the nearest
-one. The vector also pins that `available` is a set: unsorted and repeated entries plan the same.
-It pins negative versions, an empty `available` with `from < to`, the `i32` extremes, and the
-identity rows (`available: null`): current, older, and a newer writer, refused. A span of 2^32
-versions fails at its second step without walking the span, and an identity span is an empty plan.
-Every error row carries the kernel's exact message, and both SDK suites compare it.
+one. The vector also pins that `available` is a set: unsorted and repeated entries plan the same. A
+span of 2^32 versions fails at its second step without walking the span, and an identity span is an
+empty plan. Every error row carries the kernel's exact message, and both SDK suites compare it.
 
 ```python
 from edax.upcast import Upcaster
@@ -278,6 +294,8 @@ Both SDKs wire this into their event codecs. Python's `RegistryEventCodec.unmars
 steps or `None`, and no host-side version comparison. Both failures are deterministic, so they are
 `codec` errors and the dispatcher dead-letters on the first attempt instead of nacking forever.
 `Upcaster.step` (both SDKs) refuses a second transform for one version as `already_registered`.
+A schema version is a `u32`. In Python, a negative or oversized version is refused at wiring:
+`Upcaster.step` and a codec's `version` raise `ValueError`, before any message is stamped.
 
 ## `retry` — when a failed message dies
 
@@ -306,7 +324,7 @@ code and for none.
 
 ## `saga` — the write a saga step makes
 
-`saga_admit(completed, folded, env)` answers whether a runner folds `env` at all. A completed
+`saga_admit(completed, folded, msg)` answers whether a runner folds `msg` at all. A completed
 instance (a tombstone) folds nothing: `Completed`, so a late or redelivered event cannot start a
 finished workflow again. `folded` is the text the instance's last write saved, empty for a new
 instance. It holds one mark per source aggregate: the highest sequence and the last event id folded
@@ -322,82 +340,109 @@ loaded instance is absent or running, since `saga_admit` skips a completed one:
 | Loaded, and the fold | Write |
 |---|---|
 | nothing, and the fold keeps no state and sends no command | `Nothing` |
-| anything else, keeping state | `Save { expected }` at the loaded version (`0` when absent) |
-| anything else, completing | `Complete { expected }` at the loaded version |
+| anything else, keeping state | `Save { expected, version }`: `expected` is the loaded version (`0` when absent) |
+| anything else, completing | `Complete { expected, version }`: `expected` is the loaded version |
 
-The commands go in the same write, to the saga outbox, each with `saga_command_id(correlation_id, version, index)` =
-`"{correlation_id}:{version}:{index}"`, unique per committed transition. `SagaCommand` is the outbox
-row: that id, the correlation, the command marshaled as an `Event`, a timestamp. See
-[sagas](../sdk/sagas.md). Pinned by `saga.json`.
+`version` is the version the write commits, `expected + 1`. The runner stamps the step's command ids
+with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no next version, so
+`saga_write` returns a `codec` error.
 
-## `causation` — linking a chain
+The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
+index, command, cause_id, cause_correlation_id, issued_at)` builds each one as a `CommandMessage`, so
+both SDKs write the same row. `saga` is the saga's name. `cause_id` and `cause_correlation_id` are the
+folded event's `id` and `correlation_id`:
 
-Two well-known metadata keys, `CORRELATION_ID` (`"correlation_id"`) and `CAUSATION_ID`
-(`"causation_id"`), carry the chain. They live in `metadata`, so the envelope wire format is
-untouched — nothing about `codec` changes to get tracing.
+| Field | Value | Why |
+|---|---|---|
+| `id` | `saga_command_id(instance_id, version, index)` = `"{instance_id}:{version}:{index}"` | unique per committed transition; a re-sent row keeps it |
+| `idempotency_key` | `scoped(saga, id)` = `"{len(saga)}:{saga}:{id}"`, with `len` in UTF-8 bytes | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
+| `aggregate_id` | the instance id | one instance's commands keep their order on every transport, and a store can find its rows |
+| `correlation_id` | the folded event's | the command stays in the event's flow, not the instance's |
+| `causation_id` | the folded event's id | the event caused the command |
+| `name`, `version`, `data` | the saga's command, marshaled by the runner's codec | — |
+| `issued_at` | the runner's clock | relay lag |
 
-| Function | Input | `correlation_id` | `causation_id` |
+See [sagas](../sdk/sagas.md). Pinned by `saga.json`.
+
+## `causation` — lineage
+
+Every message carries two typed ids, its `Lineage`:
+
+- `correlation_id` — constant for every message in one logical flow, such as a request or a saga
+  run.
+- `causation_id` — the id of the single message that directly caused this one.
+
+| Function | For | `correlation_id` | `causation_id` |
 |---|---|---|---|
-| `originate(metadata, fresh_id)` | a root event's own metadata plus one generated id | the given one, else `fresh_id` | the given one, else the resulting `correlation_id` |
-| `propagate(parent_metadata, parent_event_id)` | the parent's metadata and its event id | the parent's, else `parent_event_id` | always `parent_event_id` |
+| `propagate(parent_id, parent_correlation_id)` | a child of a message | the parent's | the parent's id |
+| `originate(correlation_id, causation_id, fresh_id)` | a message no message caused | the given one, else `fresh_id` | the given one, else the resulting `correlation_id` |
 
-Both return only the two keys for the host to merge; no other metadata is carried.
-`correlation_id` alone decides whether a metadata is already on a chain. A lone `causation_id` does
-not suppress a fresh correlation id. That is the `{causation_id: evt-0}` case in
-`testdata/golden/causation_originate.json`, whose expected `correlation_id` is `fresh-1`. A key is
-present when it is set, whatever its value: an empty `correlation_id` is a chain, and an empty
-`causation_id` is kept. Both vectors pin the empty-string cases, so a host that tests truthiness
-fails them. The ABI exports the two key names (`correlation_id_key()`, `causation_id_key()`), so no
-SDK restates the strings.
+`originate` fills only what is missing, and never overwrites a supplied id. That serves an inbound
+request that already carries a correlation id. `correlation_id` alone decides whether the caller is
+already on a flow. A lone `causation_id` does not suppress a fresh correlation id. That is the
+`causation_given_correlation_is_fresh` case in `testdata/golden/causation_originate.json`, whose
+expected `correlation_id` is `fresh-1`. An empty string is a supplied id, whatever its truthiness in
+a host language. Both vectors pin the empty-string cases, so a host that tests truthiness fails
+them.
 
 `fresh_id` is a parameter rather than a generated value because generation is non-deterministic.
 Keeping it out leaves the function pure, so one golden vector pins the rule.
 
+Four rules place each message in the graph:
+
+- **One save, one lineage.** Every event one save writes shares one lineage. The cause of all of
+  them is the same message, never the event saved beside it.
+- **A command is a node.** A command has its own id and lineage. Its handler runs under
+  `propagate` of the command, so the events it saves are the command's children.
+- **A handled event is a parent.** The router, the dispatcher and the saga runner run a handler
+  under `propagate` of the event, so whatever it saves continues the flow.
+- **A saga command is the folded event's child.** Its causation is the event's id, and its
+  correlation is the event's, not the instance id.
+
 ```mermaid
 sequenceDiagram
-  participant C1 as command (root)
-  participant E as event evt-7
-  participant C2 as second command
-  C1->>C1: originate({}, fresh_id="corr-1")
-  Note over C1: correlation_id = corr-1<br/>causation_id = corr-1 (a root has no causing event)
-  C1->>E: emits evt-7 with the parent's metadata
-  E->>E: propagate(parent_metadata, parent_event_id="evt-7")
-  Note over E: correlation_id = corr-1 — COPIED<br/>causation_id = evt-7 — REPLACED by the parent's event id
-  E->>C2: causes the next command
-  C2->>C2: propagate(evt-7 metadata, parent_event_id="evt-7")
-  Note over C2: correlation_id stays corr-1 across every hop<br/>causation_id always points one step back
+  participant R as request
+  participant C as command cmd-1
+  participant E as events evt-7, evt-8
+  participant S as saga command
+  R->>C: dispatch: originate(correlation_id="req-9")
+  Note over C: correlation_id = req-9<br/>causation_id = req-9 (a root causes itself)
+  C->>E: the handler saves two events
+  Note over E: both: correlation_id = req-9<br/>causation_id = cmd-1 — one save, one lineage
+  E->>S: a saga folds evt-7 and sends a command
+  Note over S: correlation_id = req-9 — COPIED<br/>causation_id = evt-7 — the parent's id
 ```
 
-The rule that `causation_id` becomes the parent's **event id**, not the parent's `causation_id`, is
-what keeps the chain a graph rather than a flat list. `testdata/golden/causation.json` fixes it: a
-parent with `{correlation_id: corr-1, causation_id: evt-1}` and id `evt-2` yields `{correlation_id:
-corr-1, causation_id: evt-2}`.
+The rule that `causation_id` becomes the parent's **id**, not the parent's `causation_id`, keeps
+the flow a graph rather than a flat list. `testdata/golden/causation.json` fixes it: a parent `evt-2`
+in flow `corr-1` yields `{correlation_id: corr-1, causation_id: evt-2}`.
 
-A root's `causation_id` is the only one that names no event. `fresh_id` is minted before any
-envelope exists, so `originate` points it at the chain the root opens rather than claiming an id
-that was never an event's. That makes `causation_id == correlation_id` **not** a root marker: the
-first case of `causation.json`, `propagate({}, "evt-root")`, gives a first *child* the same equality
-with a real event id. A walker stops when a `causation_id` matches no stored event, never on the
-equality.
+A root's `causation_id` is the only one that names no message. `fresh_id` is minted before any
+message exists. So `originate` points the root at the flow it opens, rather than claiming an id that
+was never a message's. That makes `causation_id == correlation_id` **not** a root marker: the
+`evt-root` case of `causation.json` gives a first *child* the same equality with a real message id.
+A walker stops when a `causation_id` matches no stored message, never on the equality.
 
 ```python
-from edax.causation import ensure_ids, propagate
+from edax.causation import originate, propagate, use_lineage
 
-root = ensure_ids()  # generates a guid, stamps both keys
-child = propagate(root, "evt-7")  # merge into the child event's metadata
+root = originate(correlation_id=request_id)  # the inbound request roots the flow
+child = propagate(msg)  # Lineage(correlation_id=msg.correlation_id, causation_id=msg.id)
+with use_lineage(root):
+    await repo.save(account)  # every event of this save carries `root`
 ```
 
 ```rust
-use edax::{guid, originate, propagate};   // re-exported from edax-event
+use edax::{guid, originate, propagate}; // re-exported from edax-event
 
-let root = originate(&Metadata::new(), &guid());
-let child = propagate(&root, "evt-7");
+let root = originate(Some(request_id), None, &guid());
+let child = propagate(&msg.id, &msg.correlation_id);
 ```
 
-`ensure_ids` is the Python convenience that generates the id and merges for the host. It generates
-even when both keys are present: one wasted universally unique identifier (UUID) is cheaper than
-splitting the rule across two calls. A Rust host calls `originate` with `guid()` itself; both
-functions are re-exported at the SDK root.
+The Python SDK keeps the lineage ambient, in a `contextvars` variable, so a `save` inside a handler
+needs no argument. `current_lineage()` reads it, `use_lineage(lineage)` sets it for a block, and
+`caused_by(msg)` is `use_lineage(propagate(msg))`. `originate` mints the fresh id itself with
+`guid()`. The Rust SDK passes a `Lineage` explicitly.
 
 ## `staleness` — the ordered consumer's watermark
 
@@ -415,19 +460,18 @@ watermark. Two kernel functions own the whole rule:
 | `Some(5)` | `Some(5)` | **false** | `Some(5)` | the comparison is `incoming < stored` |
 | `Some(5)` | `Some(4)` | true | `Some(5)` | a stale redelivery or an out-of-order older event; the mark never moves back |
 
-`advance` exists because the obvious update, `watermark = env.sequence`, is wrong twice. An
+`advance` exists because the obvious update, `watermark = msg.sequence`, is wrong twice. An
 unsequenced event erases the mark, so the next stale redelivery applies. And a stale event that
 slipped through moves the mark backwards. Over the stream `[1, 2, 5, None, 3]` that update applied
 all five and ended at 3; the kernel's fold applies `[1, 2, 5, None]` and ends at 5.
-`testdata/golden/staleness.json` pins every pair, both `u64` ceiling cases, and three folds: that
-stream, a redelivery after a seek back, and out-of-order copies.
+`testdata/golden/staleness.json` pins every pair and the fold of that stream.
 
 The equal case needs care. `is_stale` answers "is this event older?", and an exact redelivery is
 not older. `is_stale(5, 5)` is false, so the event applies again. That makes it the wrong tool on
 its own for a replayed batch. A replay with the ordinal check as its only dedup skips every stale
 event, but applies each key's newest event twice, because its sequence equals the stored one. Put
 `idempotent_by_id` in front of the handler when the effect is not itself idempotent. The key that
-guard claims is the kernel's too: `event_idempotency(envelope)` in `dedup`.
+guard claims is the kernel's too: `event_idempotency(msg)` in `dedup`.
 
 The ordering also assumes the consumer itself does not reorder. Say a nack seeks back while later
 copies of the same aggregate are already queued, and a worker runs them. The older event then
@@ -446,17 +490,17 @@ It then applies the event and stores the advanced mark, or skips the event.
 import edax
 from edax import Entity
 
-entity = await projections.get(env.aggregate_id) or Entity(env.aggregate_id, 0, {"last_sequence": None})
+entity = await projections.get(msg.aggregate_id) or Entity(msg.aggregate_id, 0, {"last_sequence": None})
 stored = entity.document["last_sequence"]
-if not edax.is_stale(stored, env.sequence):
-    apply_to(entity.document, env)
-    entity.document["last_sequence"] = edax.advance(stored, env.sequence)
+if not edax.is_stale(stored, msg.sequence):
+    apply_to(entity.document, msg)
+    entity.document["last_sequence"] = edax.advance(stored, msg.sequence)
     await projections.save(entity)  # compare-and-set on version
 ```
 
 ```rust
-if !edax::is_stale(stored_sequence, envelope.sequence) {
-    // apply, then persist edax::advance(stored_sequence, envelope.sequence) in the same transaction
+if !edax::is_stale(stored_sequence, msg.sequence) {
+    // apply, then persist edax::advance(stored_sequence, msg.sequence) in the same transaction
 }
 ```
 
@@ -466,11 +510,11 @@ commits leaves the mark ahead of the state it claims to describe.
 ## `sequence` — the dense-batch rule
 
 `check_batch(expected, sequences)` is the rule every event store applies before an append writes.
-The batch must run `expected + 1, expected + 2, ...` in order, every envelope sequenced. A gap, a
-repeat, a reordering or an unsequenced envelope is a `codec` error naming the 0-based batch index.
+The batch must run `expected + 1, expected + 2, ...` in order, every draft sequenced. A gap, a
+repeat, a reordering or an unsequenced draft is a `codec` error naming the 0-based batch index.
 Versions and sequences are one `u64` space end to end, so the comparison is exact past `i64::MAX`.
 A batch that would run past `u64::MAX` is refused rather than clamped, since a clamp would let two
-envelopes share the ceiling. A negative version from a host is refused at the boundary as a `codec`
+events share the ceiling. A negative version from a host is refused at the boundary as a `codec`
 error. `testdata/golden/sequence_batch.json` pins every branch, the ceiling cases included.
 
 `snapshot_due(every, initial, current)` answers whether a save from version `initial` to `current`

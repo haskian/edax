@@ -2,11 +2,12 @@
 
 `crates/edax-cqrs` owns the decisions on both sides of the separation it is named for, wherever they
 must agree across languages and processes. On the command side: which bytes a command's idempotency
-hash covers, what the stored record looks like, what a claimant does with a record it did not write.
+hash covers, and which ledger key a guard claims. Also what the stored record looks like, what a
+claimant does with a record it did not write, and when a record may be forgotten.
 
 The command bus itself is host-local ergonomics: handler registration, typed dispatch and the
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
-(SDKs), not here. The command side is six decisions and one stored shape.
+(SDKs), not here. The command side is eight decisions and one stored shape.
 
 The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
@@ -16,11 +17,13 @@ and the two travel together because the query evaluates the filter.
 |---|---|
 | `canonical_json` | the one byte form of a JSON value, whatever encoder produced it |
 | `payload_hash` | the stable 64-bit hash of bytes, Fowler-Noll-Vo 1a (FNV-1a) |
-| `command_hash` | *which* bytes a command's hash covers |
+| `command_hash` | *which* bytes a command's hash covers: its name and its whole payload |
+| `claim_key` | the ledger key a command guard claims, scoped by the guard |
 | `Record` / `State` | the stored record's wire shape and reading order |
 | `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
 | `settle` | whether a winner caches its failure or releases the claim |
+| `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 
 ---
 
@@ -97,20 +100,26 @@ value past 2^53 cannot be minted into a cursor either.
 ## `payload_hash` and `command_hash` — which bytes are covered
 
 `payload_hash` is FNV-1a over bytes, delegated to `edax_core::fnv1a64`. It is the cheap half. The
-half that carries the contract is `command_hash`, which fixes the *input rule*: the **whole command
-value**, serialized as one JSON object, then canonicalized, then hashed.
+half that carries the contract is `command_hash(name, value)`, which fixes the *input rule*. It
+takes the **command name and the whole command value** as one JSON object, `{"name": name,
+"payload": value}`, then canonicalizes and hashes it.
 
 That rule is the kernel's on purpose. No SDK and no user picks the bytes. A hand-written
 `payload()` per command would let two SDKs disagree without notice.
 
-Two consequences follow from "the whole value":
+Three consequences follow from that rule:
 
-- **The idempotency-key field is hashed too.** Reusing a key with a different command is a mismatch
-  even when only that field moved. The golden base fixture carries `request_id`, the field the key
-  is read from, so the vector cannot pass for a body-only rule.
-- **The type name is excluded, because it is routing.** A command's type is `command_type()` in Rust
-  and a class attribute in Python. It is not an instance field, so it stays out of the hash on both
-  sides.
+- **The name is hashed beside the payload.** One idempotency key names one request. The same key
+  reused for another command name is a mismatch, not a second request, even when the two payloads
+  are equal. The golden pair `the_name_and_the_whole_command` and `another_name_is_another_command`
+  differ by the name alone. A command's name is `command_type()` in Rust and the `type` class
+  attribute in Python. It is not an instance field, so it enters the hash once, as the name.
+- **The idempotency key is not in the payload.** It travels on the message, as `idempotency_key`,
+  beside the payload. A command that also carries the key as a field hashes that field like any
+  other.
+- **The hash covers the value the handler receives.** A command decoded from the wire hashes after
+  its upcast, as a dispatched one does. Two SDKs on one ledger then agree whatever version the
+  producer wrote.
 
 What the value *contains* — the field names and which fields exist — is the host's wire shape, as it
 is for events. Two services sharing a ledger declare the command with the same fields.
@@ -122,34 +131,53 @@ flowchart TB
   RC["Rust command: a Serialize value"] -->|"serde_json::to_vec"| RJ["JSON bytes"]
   PC["Python command: dataclass, Struct or plain object"] -->|"msgspec.json.encode"| PJ["JSON bytes"]
   RJ --> K["kernel: canonical_json"]
-  PJ -->|"ABI payload_hash_json"| K
-  K -->|"sorted keys, no whitespace, raw UTF-8"| CB["canonical bytes"]
+  PJ -->|"ABI command_hash_json(name, payload_json)"| K
+  K -->|"wrapped as name and payload; sorted keys, no whitespace, raw UTF-8"| CB["canonical bytes"]
   CB -->|"payload_hash, FNV-1a"| H["one 64-bit hash"]
   H -->|"bound to the idempotency key"| L["ledger"]
 ```
 
 A host that cannot hand the kernel a Rust value serializes the command with its own standard
-encoder. It then hands the kernel the JSON. That is what `payload_hash_json` is for. Both paths land
+encoder. It then hands the kernel the name and the JSON. That is what `command_hash_json(name,
+payload_json)` is for. Both paths land
 on the same bytes because canonicalization removes everything an encoder is free to choose.
 
 Python uses `msgspec.json.encode` rather than `json.dumps` so that `UUID`, `datetime` and `Decimal`
 fields encode deterministically instead of raising `TypeError`, and it does **no** canonicalization
-of its own. The hash is `_edax.payload_hash_json` over `_payload_json(cmd)`.
+of its own. The hash is `_edax.command_hash_json(cmd.type, _payload_json(cmd))`.
 
 ### The golden vectors that hold this
 
 | Vector | Pins |
 |---|---|
-| `testdata/golden/payload_hash.json` | raw FNV-1a over six inputs, including `café ☕ 🦀` — agreement on multibyte UTF-8 |
-| `testdata/golden/canonical_payload_hash.json` | canonicalize-then-hash: key order, non-ASCII, `1` versus `1.0`, nested sorting, `{}` |
-| `testdata/golden/command_hash.json` | the input rule end to end: ten commands, eight mapped to hashes and two refused past 2^53 |
+| `testdata/golden/payload_hash.json` | raw FNV-1a, agreement on multibyte UTF-8 |
+| `testdata/golden/canonical_payload_hash.json` | canonicalize-then-hash |
+| `testdata/golden/command_hash.json` | the input rule end to end |
+| `testdata/golden/claim_key.json` | the claim key |
 
 `command_hash.json` is asserted *through the SDK layer*, not against the kernel function. The Rust
 suite rebuilds each case as a `PlaceOrder`, dispatches it through the real `idempotent` middleware,
 and compares the hash the ledger received. The Python suite does the same for three command shapes —
-dataclass, `msgspec.Struct`, plain object. Both suites also assert that the two conventions the
-vector replaced cannot reach it: a body-only payload, and a Python command carrying `type` as an
-instance field.
+dataclass, `msgspec.Struct`, plain object. Both suites also assert that two conventions the vector
+replaced cannot reach it. One is a hash of the payload alone, without the name. The other is a
+Python command carrying `type` as an instance field.
+
+## `claim_key` — which ledger key a command guard claims
+
+`claim_key(scope, idempotency_key)` is `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
+`len(scope)` counts UTF-8 bytes, so `café` is 5.
+
+| Part | Why |
+|---|---|
+| `scope` | names the guard: a service, or a stage within one. An ingress guard and a consumer guard that share one ledger never replay each other's outcome for the same key |
+| `len(scope)` | makes the key injective: scope `a:b` with key `c` and scope `a` with key `b:c` are two keys |
+| `edax:cmd:` | keeps command claims apart from event claims |
+
+An event guard keeps the raw event id as its key, so no live ledger is re-keyed. An event id is a
+`guid()` by default, which never starts `edax:cmd:`. `testdata/golden/claim_key.json` pins the key.
+
+The scope is required in both SDKs. A default would put two services on one ledger under one scope,
+and the second would replay the first one's outcome.
 
 ---
 
@@ -236,8 +264,8 @@ stateDiagram-v2
   pending --> done: handler returned, complete writes the result
   pending --> failed: handler failed terminally, complete caches the error
   pending --> [*]: handler failed transiently or panicked, guard releases the claim
-  done --> [*]: dedup window expires
-  failed --> [*]: dedup window expires
+  done --> [*]: dedup window expires, or forget
+  failed --> [*]: dedup window expires, or forget
 
   note right of pending
     a losing claimant reads in_progress: transient
@@ -293,12 +321,8 @@ flowchart TB
 | `done` | matches | `succeeded` | the cached result is returned | — |
 
 The mapping is one `match` in Rust and one `if` chain in Python. Neither re-derives the verdict;
-both call the kernel and translate. `testdata/golden/idempotency_record.json` covers every state and
-the three mismatch-beats-state cases. It also covers the two older-writer shapes, the absent-`result`
-shape, a coded failure, an empty message and an unknown `error_code`. One row is a host rejection
-written the way the Rust SDK's guard writes it, and fourteen are unreadable. Each case carries
-`stored`, `current`, `payload_hash`, `state`, `outcome` and `encoded`, plus `error`, `error_code` and
-`replay` for a failure, and `decode_error` for an unreadable one. A binding must read with
+both call the kernel and translate. `testdata/golden/idempotency_record.json` pins every state and
+verdict. A binding must read with
 `decode_prior` to the same fields, re-emit the same bytes, reach the same verdict and raise the same
 replay.
 
@@ -308,6 +332,27 @@ It releases the claim for anything else: a transient code, or no code (a host's 
 a cancellation). Both guards ask it (`edax_cqrs::settle`; Python `errors.code_of` through
 `idempotency_settle`), so two SDKs guarding one ledger cache the same failures.
 `testdata/golden/idempotency_settle.json` pins one row per code and the uncoded failure.
+
+---
+
+## `forget` — deleting a settled record
+
+`forget(key, record)` answers whether a store may delete the record `key` holds, so a re-driven
+message runs its handler again. An operator re-drives a command from a dead-letter queue this way.
+
+| Record | `forget` | Why |
+|---|---|---|
+| `pending` | `in_progress` error, `unsettled_claim(key)` | the run may still complete, and its record would land after the delete |
+| `done` or `failed` | delete | the outcome is settled |
+| bytes no reader decodes | delete | `decode_prior` replays them as a cached failure, so forgetting them is the way out of a poisoned key |
+| no record | nothing to do | the key is already free |
+
+Forget is not release. A release is the claimant settling its own claim, by its handle. A forget acts
+on an outcome nobody owns any more, so it carries no handle. Every store decides with this one
+function. The memory store asks it inside a transaction. The Redis ledger asks it through
+`forget_outcome`, then deletes only while the key still holds the value it read. See
+[redis.md](./redis.md). `redis_ledger.json` pins the Redis decision, and `redis_fence.json` the
+script.
 
 ---
 

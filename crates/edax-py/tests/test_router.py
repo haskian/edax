@@ -13,7 +13,7 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import build_envelope, delivered
+from conftest import build_message, delivered
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker, MemoryIdempotencyStore
 from edax.command import Claimed, Record, Won
@@ -25,10 +25,10 @@ DEPOSITED = (
 )
 
 
-def deposited(data: bytes = DEPOSITED) -> edax.EventEnvelope:
-    """One committed event; every case redelivers this exact envelope (or one sharing its id)."""
-    return build_envelope(
-        "acct-1", "Deposited", 3, data=data, metadata={"trace": "abc"}, timestamp=1_714_564_800
+def deposited(data: bytes = DEPOSITED) -> edax.EventMessage:
+    """One committed event; every case redelivers this exact message (or one sharing its id)."""
+    return build_message(
+        "acct-1", "Deposited", 3, data=data, metadata={"trace": "abc"}, recorded_at=1_714_564_800_000_000_000
     )
 
 
@@ -36,7 +36,7 @@ def tracing(name: str, trace: list[str]) -> EventMiddleware:
     """A middleware that records entering and leaving, so nesting order is observable."""
 
     def mw(next_: EventHandler) -> EventHandler:
-        async def handler(env: edax.EventEnvelope) -> None:
+        async def handler(env: edax.EventMessage) -> None:
             trace.append(f">{name}")
             await maybe_await(next_(env))
             trace.append(f"<{name}")
@@ -62,7 +62,7 @@ def tracing(name: str, trace: list[str]) -> EventMiddleware:
 async def test_router_chain_branches(branch: str, event_name: str, fallback: bool, want: list[str]) -> None:
     trace: list[str] = []
 
-    async def on_unhandled(env: edax.EventEnvelope) -> None:
+    async def on_unhandled(env: edax.EventMessage) -> None:
         trace.append("fallback")
 
     router = edax.EventRouter(
@@ -70,11 +70,11 @@ async def test_router_chain_branches(branch: str, event_name: str, fallback: boo
     )
 
     @router.on("Deposited")
-    def handler(env: edax.EventEnvelope) -> None:  # sync handler: the chain still awaits it
+    def handler(env: edax.EventMessage) -> None:  # sync handler: the chain still awaits it
         trace.append("handler")
 
     assert router.on("Other")(handler) is handler  # the decorator hands back the bare function
-    await router.dispatch(build_envelope("acct-1", event_name, 3, data=DEPOSITED))
+    await router.dispatch(build_message("acct-1", event_name, 3, data=DEPOSITED))
     assert trace == want
 
 
@@ -154,14 +154,14 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
     store = CountingStore()
     calls = 0
 
-    def run(env: edax.EventEnvelope) -> None:
+    def run(env: edax.EventMessage) -> None:
         nonlocal calls
         error = case.errors[calls]
         calls += 1
         if error is not None:
             raise error
 
-    async def async_handler(env: edax.EventEnvelope) -> None:
+    async def async_handler(env: edax.EventMessage) -> None:
         run(env)
 
     # A sync handler raises while the middleware is *building* the awaitable, so the guard has to
@@ -229,6 +229,9 @@ class TxIdempotencyStore:
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         self._view(tx)[key] = None
 
+    async def forget(self, key: str, tx: Tx | None = None) -> None:
+        self._view(tx)[key] = None
+
 
 @pytest.mark.parametrize(
     "branch, body_raises, calls_after_redelivery",
@@ -243,7 +246,7 @@ async def test_claim_enlists_in_the_ambient_tx(
     store = TxIdempotencyStore()
     calls = 0
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal calls
         calls += 1
 
@@ -285,7 +288,7 @@ async def test_redelivery_through_the_dispatcher_is_skipped_and_acked() -> None:
     calls = 0
     settled: list[str] = []
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal calls
         calls += 1
 
@@ -308,3 +311,28 @@ async def test_redelivery_through_the_dispatcher_is_skipped_and_acked() -> None:
     assert calls == 1
     assert settled == ["ack", "ack"]  # the duplicate is acked, so the broker drops it
     assert broker.empty()
+
+
+async def test_a_handler_runs_under_the_lineage_of_its_event() -> None:
+    """What a handler saves continues the flow of the event it handles: the ambient lineage is the event's
+    child, inside the middleware too, and nothing of it outlives the dispatch."""
+    seen: list[edax.Lineage | None] = []
+
+    def mw(next_: EventHandler) -> EventHandler:
+        async def handler(msg: edax.EventMessage) -> None:
+            seen.append(edax.current_lineage())
+            await maybe_await(next_(msg))
+
+        return handler
+
+    router = edax.EventRouter(mw)
+
+    async def on_deposited(msg: edax.EventMessage) -> None:
+        seen.append(edax.current_lineage())
+
+    router.register("Deposited", on_deposited)
+    event = deposited()
+    await router.dispatch(event)
+    child = edax.Lineage(event.correlation_id, event.id)
+    assert seen == [child, child]
+    assert edax.current_lineage() is None

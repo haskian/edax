@@ -1,0 +1,57 @@
+[
+  {
+    "error_code": null,
+    "key": "traceparent",
+    "valid": true
+  },
+  {
+    "error_code": null,
+    "key": "http.origin_ip",
+    "valid": true
+  },
+  {
+    "error_code": null,
+    "key": "x-amzn-trace-id",
+    "valid": true
+  },
+  {
+    "error_code": null,
+    "key": "0day",
+    "valid": true
+  },
+  {
+    "error_code": null,
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "valid": true
+  },
+  {
+    "error_code": "codec",
+    "key": "",
+    "valid": false
+  },
+  {
+    "error_code": "codec",
+    "key": "Traceparent",
+    "valid": false
+  },
+  {
+    "error_code": "codec",
+    "key": ".hidden",
+    "valid": false
+  },
+  {
+    "error_code": "codec",
+    "key": "has space",
+    "valid": false
+  },
+  {
+    "error_code": "codec",
+    "key": "ünïcode",
+    "valid": false
+  },
+  {
+    "error_code": "codec",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "valid": false
+  }
+]

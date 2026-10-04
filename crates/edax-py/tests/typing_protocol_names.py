@@ -11,9 +11,9 @@ the `/` markers on the Protocols this does not type-check.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from edax.aggregate import Aggregate, Event, EventEnvelope
+from edax.aggregate import Aggregate, CommandMessage, Event, EventMessage, Payload, Serializer
 from edax.saga import Completed, Saga
 from edax.store import AggregateCodec, EventCodec
 
@@ -48,18 +48,33 @@ class DepositCodec:
     def marshal(self, deposited: Any) -> Event:
         return Event("Deposited", 1, b"{}")
 
-    def unmarshal(self, stored: Event) -> Any:
+    def unmarshal(self, stored: Payload) -> Any:
         return stored
 
 
 class OrderSaga:
     """A `Saga` naming its parameters after the workflow rather than `env` / `state`."""
 
-    def correlation_id(self, message: EventEnvelope) -> str | None:
+    name: str = "order"
+
+    def instance_id(self, message: EventMessage) -> str | None:
         return message.aggregate_id
 
-    def handle(self, order: Any, message: EventEnvelope) -> tuple[Any, list[Any]]:
+    def handle(self, order: Any, message: EventMessage) -> tuple[Any, list[Any]]:
         return Completed, []
+
+
+class TickSerializer:
+    """A `Serializer` naming its parameters after its own wire format rather than `msg` / `wire`."""
+
+    media_type = "application/x-tick"
+    kind: Literal["event"] = "event"
+
+    def encode(self, tick: EventMessage | CommandMessage) -> bytes:
+        return tick.id.encode()
+
+    def decode(self, raw: bytes) -> EventMessage:
+        raise NotImplementedError
 
 
 # Assigned against the Protocol rather than passed to a constructor: the subject is the seams'
@@ -68,3 +83,4 @@ class OrderSaga:
 aggregate_codec: AggregateCodec[Account] = AccountCodec()
 event_codec: EventCodec = DepositCodec()
 saga: Saga = OrderSaga()
+serializer: Serializer = TickSerializer()

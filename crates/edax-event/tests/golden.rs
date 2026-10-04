@@ -15,7 +15,8 @@
 )]
 
 use edax_core::ErrorCode;
-use edax_event::{Event, EventEnvelope, Format, Metadata, Namespace};
+use edax_event::testkit::{base_command, base_event, map};
+use edax_event::{CommandMessage, EventMessage, Extensions, Format, Message, Metadata};
 use edax_golden::{hex, write_or_check};
 use serde_json::{json, Value};
 
@@ -36,7 +37,7 @@ fn partition_cases() -> Vec<Value> {
 fn upcast_cases() -> Vec<Value> {
     // `available: None` is a name with no transforms registered: every step is the identity, so only
     // the downgrade rule (a payload from a newer writer) can refuse it.
-    let cases: [(i32, i32, Option<&[i32]>); 18] = [
+    let cases: [(u32, u32, Option<&[u32]>); 17] = [
         (1, 1, Some(&[])),          // no-op
         (1, 3, Some(&[1, 2])),      // contiguous
         (1, 3, Some(&[1])),         // gap at 2 (missing middle step) -> error
@@ -47,14 +48,13 @@ fn upcast_cases() -> Vec<Value> {
         (1, 3, Some(&[])),          // nothing available but a plan is needed -> error names the first step
         (1, 4, Some(&[3, 1, 2])),   // `available` is a set: its order is not the plan's
         (1, 3, Some(&[2, 1, 2, 1])), // duplicates in `available` collapse
-        (-2, 1, Some(&[-2, -1, 0])), // negative versions are versions like any other
-        (i32::MAX, i32::MAX, Some(&[])), // the i32 ceiling, no-op
-        (i32::MAX - 1, i32::MAX, Some(&[i32::MAX - 1])), // the last step names v(MAX-1) -> v(MAX)
-        (i32::MIN, i32::MAX, Some(&[i32::MIN])), // a span of 2^32 fails at its second step, without walking it
+        (u32::MAX, u32::MAX, Some(&[])), // the u32 ceiling, no-op
+        (u32::MAX - 1, u32::MAX, Some(&[u32::MAX - 1])), // the last step names v(MAX-1) -> v(MAX)
+        (0, u32::MAX, Some(&[0])), // a span of 2^32 - 1 fails at its second step, without walking it
         (1, 1, None),               // no transforms, current: nothing to run
         (1, 3, None),               // no transforms, older payload: identity, nothing to run
         (5, 1, None),               // no transforms, newer writer: refused, never decoded silently
-        (i32::MIN, i32::MAX, None), // identity over a 2^32 span is still an empty plan, not a walk
+        (0, u32::MAX, None),        // identity over a 2^32 - 1 span is still an empty plan, not a walk
     ];
     cases
         .into_iter()
@@ -72,109 +72,84 @@ fn upcast_cases() -> Vec<Value> {
 }
 
 fn causation_cases() -> Vec<Value> {
-    use edax_event::Metadata;
-    let mk = |pairs: &[(&str, &str)]| -> Metadata {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    };
-    let cases: Vec<(Metadata, &str)> = vec![
-        (mk(&[]), "evt-root"),                                  // root seeds its own chain
-        (mk(&[("correlation_id", "corr-1")]), "evt-2"),        // inherit existing correlation
-        (mk(&[("correlation_id", "corr-1"), ("causation_id", "evt-1")]), "evt-2"),
-        (mk(&[("causation_id", "evt-1")]), "evt-2"),           // causation but no correlation -> correlation seeds from parent id
-        (mk(&[("trace", "t-9")]), "evt-3"),                     // unrelated metadata ignored
-        // An empty id is an id: present means on a chain, whatever its truthiness in a host language.
-        (mk(&[("correlation_id", "")]), "evt-4"),
-        (mk(&[]), ""), // an empty parent event id still seeds the chain with itself
+    let cases: [(&str, &str); 4] = [
+        ("evt-2", "corr-1"),     // the child inherits the flow and points at its parent
+        ("evt-root", "evt-root"), // a parent that roots its own flow
+        ("cmd-1", ""),           // an empty correlation is a correlation: carried as it is
+        ("", "corr-1"),          // an empty parent id is still the parent's id
     ];
     cases
         .into_iter()
-        .map(|(parent, parent_id)| {
+        .map(|(parent_id, parent_correlation_id)| {
             json!({
-                "parent_metadata": parent,
-                "parent_event_id": parent_id,
-                "expected": edax_event::propagate(&parent, parent_id),
+                "parent_id": parent_id,
+                "parent_correlation_id": parent_correlation_id,
+                "expected": edax_event::propagate(parent_id, parent_correlation_id),
             })
         })
         .collect()
 }
 
 fn originate_cases() -> Vec<Value> {
-    use edax_event::Metadata;
-    let mk = |pairs: &[(&str, &str)]| -> Metadata {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-    };
     // One `fresh_id` throughout, so every case shows whether the kernel reached for it or not.
-    let cases: Vec<Metadata> = vec![
-        mk(&[]),                                                        // nothing given -> both minted
-        mk(&[("correlation_id", "corr-1")]),                            // causation follows the given correlation, not fresh_id
-        mk(&[("causation_id", "evt-0")]),                               // a lone causation is not a chain -> fresh correlation
-        mk(&[("correlation_id", "corr-1"), ("causation_id", "evt-0")]), // both given -> fresh_id unused
-        mk(&[("trace", "t-9")]),                                        // unrelated metadata is neither a chain nor carried out
-        mk(&[("correlation_id", "corr-1"), ("trace", "t-9")]),          // unrelated metadata dropped even beside a kept key
-        mk(&[("correlation_id", "")]),                                  // an empty correlation is present: fresh_id unused for it
-        mk(&[("causation_id", "")]),                                    // an empty causation is kept, not defaulted
+    let cases: [(Option<&str>, Option<&str>); 6] = [
+        (None, None),                       // nothing given -> both from fresh_id
+        (Some("corr-1"), None),             // causation follows the given correlation, not fresh_id
+        (None, Some("evt-0")),              // a lone causation is not a chain -> fresh correlation
+        (Some("corr-1"), Some("evt-0")),    // both given -> fresh_id unused
+        (Some(""), None),                   // an empty correlation is given: fresh_id unused for it
+        (None, Some("")),                   // an empty causation is kept, not defaulted
     ];
     cases
         .into_iter()
-        .map(|metadata| {
+        .map(|(correlation_id, causation_id)| {
             json!({
-                "metadata": metadata,
+                "correlation_id": correlation_id,
+                "causation_id": causation_id,
                 "fresh_id": "fresh-1",
-                "expected": edax_event::originate(&metadata, "fresh-1"),
+                "expected": edax_event::originate(correlation_id, causation_id, "fresh-1"),
             })
         })
         .collect()
 }
 
-fn map(pairs: &[(&str, &str)]) -> Namespace {
-    pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
-}
-
-/// The first envelope every vector shares; each case overrides only the fields it is about.
-fn base_envelope() -> EventEnvelope {
-    EventEnvelope {
-        id: "evt-1".into(),
-        aggregate_id: "agg-1".into(),
-        event: Event { name: "InvoiceIssued".into(), version: 1, data: vec![0xde, 0xad, 0xbe, 0xef] },
-        sequence: Some(7),
-        namespace: map(&[("tenant", "acme")]),
-        metadata: map(&[("trace", "abc-123")]),
-        timestamp: 1_700_000_000_000_000_000,
-    }
-}
-
 fn envelope_cases() -> Vec<Value> {
-    let with = |edit: &dyn Fn(&mut EventEnvelope)| {
-        let mut env = base_envelope();
+    let with = |edit: &dyn Fn(&mut EventMessage)| {
+        let mut env = base_event();
         edit(&mut env);
         env
     };
-    let envelopes: Vec<(&str, EventEnvelope)> = vec![
-        ("base", base_envelope()),
+    let events: Vec<(&str, EventMessage)> = vec![
+        ("base", base_event()),
         (
             "unsequenced_empty_payload_empty_maps",
-            EventEnvelope {
+            EventMessage {
                 id: "evt-2".into(),
                 aggregate_id: "agg-2".into(),
-                event: Event { name: "OrderPlaced".into(), version: 2, data: Vec::new() },
                 sequence: None,
-                namespace: Namespace::new(),
+                name: "OrderPlaced".into(),
+                version: 2,
+                data: Vec::new(),
+                correlation_id: "evt-2".into(),
+                causation_id: "evt-2".into(),
+                occurred_at: None,
+                recorded_at: 0,
+                extensions: Extensions::new(),
                 metadata: Metadata::new(),
-                timestamp: 0,
             },
         ),
+        ("occurred_before_recorded", with(&|e| e.occurred_at = Some(1_699_999_999_000_000_000))),
         ("two_keys_per_map", with(&|e| {
-            e.namespace = map(&[("region", "eu"), ("tenant", "acme")]);
+            e.extensions = map(&[("http.origin_ip", "203.0.113.45"), ("traceparent", "00-a-b-01")]);
             e.metadata = map(&[("actor", "sys"), ("trace", "z")]);
         })),
         // Non-ASCII text is written raw in both formats (serde_json does not \u-escape it), and the
         // 2^53+1 sequence is past every float-typed reader.
         ("non_ascii_and_a_sequence_past_2_53", with(&|e| {
             e.aggregate_id = "café-7".into();
-            e.event.name = "Paiement effectué".into();
-            e.event.data = "🦀".as_bytes().to_vec();
+            e.name = "Paiement effectué".into();
+            e.data = "🦀".as_bytes().to_vec();
             e.sequence = Some(9_007_199_254_740_993);
-            e.namespace = map(&[("région", "eu")]);
             e.metadata = map(&[("acteur", "système")]);
         })),
         // Map keys sort by UTF-8 bytes: "Z" < "a", "" first, and U+FF71 after U+1F980 by bytes
@@ -187,41 +162,131 @@ fn envelope_cases() -> Vec<Value> {
             e.metadata = map(&[("quote", "a\"b"), ("backslash", "a\\b"), ("unit_separator", "\u{1f}"), ("del", "\u{7f}"), ("line_separator", "\u{2028}")]);
         })),
         ("integer_extremes", with(&|e| {
-            e.timestamp = i64::MIN;
-            e.event.version = i32::MIN;
+            e.recorded_at = i64::MIN;
+            e.occurred_at = Some(i64::MIN);
+            e.version = 0;
             e.sequence = Some(u64::MAX);
         })),
         ("integer_ceilings", with(&|e| {
-            e.timestamp = i64::MAX;
-            e.event.version = i32::MAX;
+            e.recorded_at = i64::MAX;
+            e.occurred_at = Some(i64::MAX);
+            e.version = u32::MAX;
             e.sequence = Some(0);
         })),
-        ("negative_timestamp_before_the_epoch", with(&|e| e.timestamp = -1_000_000_000)),
+        ("negative_time_before_the_epoch", with(&|e| e.recorded_at = -1_000_000_000)),
         // MessagePack picks the narrowest integer form; each pair straddles one width boundary.
-        ("msgpack_fixint_to_uint8", with(&|e| { e.sequence = Some(127); e.timestamp = 128; })),
-        ("msgpack_uint8_to_uint16", with(&|e| { e.sequence = Some(255); e.timestamp = 256; })),
-        ("msgpack_uint16_to_uint32", with(&|e| { e.sequence = Some(65_535); e.timestamp = 65_536; })),
-        ("msgpack_uint32_to_uint64", with(&|e| { e.sequence = Some(4_294_967_295); e.timestamp = 4_294_967_296; })),
-        ("msgpack_negative_fixint_to_int8", with(&|e| { e.event.version = -32; e.timestamp = -33; })),
+        ("msgpack_fixint_to_uint8", with(&|e| { e.sequence = Some(127); e.recorded_at = 128; })),
+        ("msgpack_uint8_to_uint16", with(&|e| { e.sequence = Some(255); e.recorded_at = 256; })),
+        ("msgpack_uint16_to_uint32", with(&|e| { e.sequence = Some(65_535); e.recorded_at = 65_536; })),
+        ("msgpack_uint32_to_uint64", with(&|e| { e.sequence = Some(4_294_967_295); e.recorded_at = 4_294_967_296; })),
+        ("msgpack_negative_fixint_to_int8", with(&|e| { e.recorded_at = -32; e.occurred_at = Some(-33); })),
         // bin8 holds up to 255 bytes, bin16 from 256; fixstr up to 31 bytes, str8 from 32.
         ("msgpack_bin8_ceiling_and_fixstr_ceiling", with(&|e| {
-            e.event.data = vec![0xab; 255];
+            e.data = vec![0xab; 255];
             e.id = "e".repeat(31);
         })),
         ("msgpack_bin16_floor_and_str8_floor", with(&|e| {
-            e.event.data = vec![0xab; 256];
+            e.data = vec![0xab; 256];
             e.id = "e".repeat(32);
         })),
     ];
-    envelopes
+    let with_command = |edit: &dyn Fn(&mut CommandMessage)| {
+        let mut cmd = base_command();
+        edit(&mut cmd);
+        cmd
+    };
+    let commands: Vec<(&str, CommandMessage)> = vec![
+        ("command_base", base_command()),
+        ("command_without_key_or_target", with_command(&|c| {
+            c.idempotency_key = None;
+            c.aggregate_id = None;
+            c.metadata = Metadata::new();
+        })),
+        ("command_from_a_saga", edax_event::saga_command(
+            "shipping",
+            "order-7",
+            4,
+            1,
+            edax_event::Event { name: "Fulfill".into(), version: 2, data: b"{}".to_vec() },
+            &base_event().id,
+            &base_event().correlation_id,
+            1_700_000_000_000_000_001,
+        )),
+        ("command_non_ascii_and_extensions", with_command(&|c| {
+            c.name = "Payer la facture".into();
+            c.idempotency_key = Some("clé-1".into());
+            c.extensions = map(&[("http.user_agent", "curl/8"), ("traceparent", "00-a-b-01")]);
+        })),
+    ];
+    let events = events.iter().map(|(name, env)| envelope_row(name, env));
+    let commands = commands.iter().map(|(name, cmd)| envelope_row(name, cmd));
+    events.chain(commands).collect()
+}
+
+/// One message of either kind in both formats.
+fn envelope_row<M: Message + serde::Serialize>(name: &str, msg: &M) -> Value {
+    json!({
+        "name": name,
+        "kind": M::KIND.name(),
+        "message": serde_json::to_value(msg).unwrap(),
+        "json_hex": hex(&Format::Json.encode(msg).unwrap()),
+        "msgpack_hex": hex(&Format::Msgpack.encode(msg).unwrap()),
+    })
+}
+
+/// The ordering key of each kind of message: the target aggregate, else the message's own id.
+fn ordering_key_cases() -> Vec<Value> {
+    let cases: [(Option<&str>, &str); 4] = [
+        (Some("order-7"), "cmd-1"), // a target orders the message
+        (None, "cmd-1"),            // no target: the id spreads it
+        (Some(""), "cmd-1"),        // an empty target is a target
+        (Some("café"), "évt"),      // bytes, never normalized
+    ];
+    cases
         .into_iter()
-        .map(|(name, env)| {
-            json!({
-                "name": name,
-                "envelope": serde_json::to_value(&env).unwrap(),
-                "json_hex": hex(&Format::Json.encode(&env)),
-                "msgpack_hex": hex(&Format::Msgpack.encode(&env)),
-            })
+        .map(|(aggregate_id, id)| {
+            json!({ "aggregate_id": aggregate_id, "id": id, "expected": edax_event::ordering_key(aggregate_id, id) })
+        })
+        .collect()
+}
+
+/// The key a received command is claimed under: the client's key, else the message's own id.
+fn received_key_cases() -> Vec<Value> {
+    let cases: [(Option<&str>, &str); 3] = [
+        (Some("req-7"), "cmd-1"), // the client's key wins
+        (None, "cmd-1"),          // no key: the id deduplicates a redelivery
+        (Some(""), "cmd-1"),      // an empty key is a key
+    ];
+    cases
+        .into_iter()
+        .map(|(idempotency_key, id)| {
+            json!({ "idempotency_key": idempotency_key, "id": id, "expected": edax_event::received_key(idempotency_key, id) })
+        })
+        .collect()
+}
+
+/// The extension key rule, one row per branch of `check_extensions`.
+fn extensions_cases() -> Vec<Value> {
+    let long_ok = "a".repeat(edax_event::EXTENSION_KEY_MAX);
+    let too_long = "a".repeat(edax_event::EXTENSION_KEY_MAX + 1);
+    let keys: Vec<&str> = vec![
+        "traceparent",
+        "http.origin_ip",
+        "x-amzn-trace-id",
+        "0day",
+        &long_ok,
+        "",
+        "Traceparent",
+        ".hidden",
+        "has space",
+        "ünïcode",
+        &too_long,
+    ];
+    keys.into_iter()
+        .map(|key| {
+            let extensions = Extensions::from([(key.to_owned(), "v".to_owned())]);
+            let result = edax_event::check_extensions(&extensions);
+            json!({ "key": key, "valid": result.is_ok(), "error_code": result.err().map(|e| e.code.as_str()) })
         })
         .collect()
 }
@@ -267,19 +332,21 @@ impl serde::Serialize for W {
     }
 }
 
-/// The base envelope as wire fields, in the order a case edits them.
+/// The base event as wire fields, in the order a case edits them.
 fn wire_fields() -> Vec<(&'static str, W)> {
     vec![
         ("id", W::Str("evt-1")),
         ("aggregate_id", W::Str("agg-1")),
-        (
-            "event",
-            W::Map(vec![("name", W::Str("InvoiceIssued")), ("version", W::Int(1)), ("data", W::Bytes(&[0xde, 0xad, 0xbe, 0xef]))]),
-        ),
         ("sequence", W::Int(7)),
-        ("namespace", W::Map(vec![("tenant", W::Str("acme"))])),
+        ("name", W::Str("InvoiceIssued")),
+        ("version", W::Int(1)),
+        ("data", W::Bytes(&[0xde, 0xad, 0xbe, 0xef])),
+        ("correlation_id", W::Str("corr-1")),
+        ("causation_id", W::Str("cmd-1")),
+        ("occurred_at", W::Null),
+        ("recorded_at", W::Int(1_700_000_000_000_000_000)),
+        ("extensions", W::Map(vec![("traceparent", W::Str("00-a-b-01"))])),
         ("metadata", W::Map(vec![("trace", W::Str("abc-123"))])),
-        ("timestamp", W::Int(1_700_000_000_000_000_000)),
     ]
 }
 
@@ -297,30 +364,27 @@ fn replacing(field: &str, value: W) -> Vec<(&'static str, W)> {
 fn envelope_decode_cases() -> Vec<Value> {
     let positional = || W::Arr(wire_fields().into_iter().map(|(_, v)| v).collect());
     let cases: Vec<(&str, W, &[u8])> = vec![
-        ("the_base_envelope", W::Map(wire_fields()), b""),
+        ("the_base_message", W::Map(wire_fields()), b""),
         // A newer writer's field: ignored, so adding a field is forward compatible.
         ("an_unknown_field_is_ignored", W::Map(wire_fields().into_iter().chain([("priority", W::Str("high"))]).collect()), b""),
-        ("an_unknown_field_in_the_event_is_ignored", W::Map(replacing(
-            "event",
-            W::Map(vec![("name", W::Str("InvoiceIssued")), ("version", W::Int(1)), ("data", W::Bytes(&[0xde, 0xad, 0xbe, 0xef])), ("schema", W::Str("v1"))]),
-        )), b""),
         ("a_missing_sequence_reads_as_none", W::Map(without("sequence")), b""),
         ("a_null_sequence_reads_as_none", W::Map(replacing("sequence", W::Null)), b""),
-        ("a_missing_required_field_is_refused", W::Map(without("timestamp")), b""),
+        ("a_missing_occurred_at_reads_as_none", W::Map(without("occurred_at")), b""),
+        ("a_set_occurred_at_reads_back", W::Map(replacing("occurred_at", W::Int(1_600_000_000_000_000_000))), b""),
+        ("a_missing_required_field_is_refused", W::Map(without("recorded_at")), b""),
+        ("a_missing_extensions_map_is_refused", W::Map(without("extensions")), b""),
+        ("a_negative_version_is_refused", W::Map(replacing("version", W::Int(-1))), b""),
+        ("a_bad_extension_key_is_refused", W::Map(replacing("extensions", W::Map(vec![("Traceparent", W::Str("x"))]))), b""),
         ("a_repeated_field_is_refused", W::Map(wire_fields().into_iter().chain([("id", W::Str("evt-2"))]).collect()), b""),
         ("a_repeated_metadata_key_keeps_the_last", W::Map(replacing(
             "metadata",
             W::Map(vec![("trace", W::Str("first")), ("trace", W::Str("last"))]),
         )), b""),
-        // The positional form, of the old length and with one element more, is refused either way.
-        ("a_positional_envelope_is_refused", positional(), b""),
-        ("a_positional_envelope_with_an_extra_element_is_refused", W::Arr(
+        // The positional form, of the base length and with one element more, is refused either way.
+        ("a_positional_message_is_refused", positional(), b""),
+        ("a_positional_message_with_an_extra_element_is_refused", W::Arr(
             wire_fields().into_iter().map(|(_, v)| v).chain([W::Str("extra")]).collect(),
         ), b""),
-        ("a_positional_event_is_refused", W::Map(replacing(
-            "event",
-            W::Arr(vec![W::Str("InvoiceIssued"), W::Int(1), W::Bytes(&[0xde, 0xad, 0xbe, 0xef])]),
-        )), b""),
         ("trailing_bytes_are_refused", W::Map(wire_fields()), b"\x00"),
         ("not_a_map_at_all", W::Str("evt-1"), b""),
     ];
@@ -336,8 +400,8 @@ fn envelope_decode_cases() -> Vec<Value> {
                 bytes
             };
             let decoded = |format: Format| -> Value {
-                match format.decode(&encode(format)) {
-                    Ok(env) => json!({ "envelope": serde_json::to_value(&env).unwrap() }),
+                match format.decode::<EventMessage>(&encode(format)) {
+                    Ok(env) => json!({ "message": serde_json::to_value(&env).unwrap() }),
                     // The code is the contract; the message is the parser's own text, which a second
                     // SDK's parser words differently.
                     Err(error) => json!({ "error_code": error.code.as_str() }),
@@ -437,24 +501,25 @@ fn snapshot_due_cases() -> Vec<Value> {
         .collect()
 }
 
-/// The event guard's input rule: the envelope id is the key, the raw `event.data` bytes are hashed.
-/// The envelope's other fields take no part, so two deliveries of one event differing only in
-/// metadata or timestamp claim the same key with the same hash.
+/// The event guard's input rule: the message id is the key, the raw `data` bytes are hashed. The
+/// message's other fields take no part, so two deliveries of one event differing only in metadata,
+/// extensions or time claim the same key with the same hash.
 fn event_idempotency_cases() -> Vec<Value> {
-    let base = edax_event::EventEnvelope {
+    let base = EventMessage {
         id: "acct-1-3".to_owned(),
         aggregate_id: "acct-1".to_owned(),
-        event: edax_event::Event {
-            name: "Deposited".to_owned(),
-            version: 1,
-            data: br#"{"account_id":"acct-1","amount_cents":4200,"currency":"USD"}"#.to_vec(),
-        },
         sequence: Some(3),
-        namespace: Default::default(),
+        name: "Deposited".to_owned(),
+        version: 1,
+        data: br#"{"account_id":"acct-1","amount_cents":4200,"currency":"USD"}"#.to_vec(),
+        correlation_id: "corr-1".to_owned(),
+        causation_id: "cmd-1".to_owned(),
+        occurred_at: None,
+        recorded_at: 1_714_564_800_000_000_000,
+        extensions: Extensions::new(),
         metadata: [("trace".to_owned(), "abc".to_owned())].into_iter().collect(),
-        timestamp: 1_714_564_800_000_000_000,
     };
-    let with = |edit: fn(&mut edax_event::EventEnvelope)| {
+    let with = |edit: fn(&mut EventMessage)| {
         let mut env = base.clone();
         edit(&mut env);
         env
@@ -462,13 +527,14 @@ fn event_idempotency_cases() -> Vec<Value> {
     let cases = [
         ("deposit", base.clone()),
         // Same bytes reordered: raw, not canonical, so a different hash under the same key.
-        ("raw_bytes_not_canonical", with(|e| e.event.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
-        ("metadata_and_timestamp_take_no_part", with(|e| {
+        ("raw_bytes_not_canonical", with(|e| e.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
+        ("metadata_and_time_take_no_part", with(|e| {
             e.metadata.insert("retry".to_owned(), "2".to_owned());
-            e.timestamp += 1;
+            e.extensions.insert("traceparent".to_owned(), "00-a-b-01".to_owned());
+            e.recorded_at += 1;
         })),
-        ("empty_body", with(|e| e.event.data = Vec::new())),
-        ("non_utf8_body", with(|e| e.event.data = vec![0xde, 0xad, 0xbe, 0xef])),
+        ("empty_body", with(|e| e.data = Vec::new())),
+        ("non_utf8_body", with(|e| e.data = vec![0xde, 0xad, 0xbe, 0xef])),
     ];
     cases
         .into_iter()
@@ -477,9 +543,10 @@ fn event_idempotency_cases() -> Vec<Value> {
             json!({
                 "name": name,
                 "id": env.id,
-                "data_hex": hex(&env.event.data),
+                "data_hex": hex(&env.data),
                 "metadata": env.metadata,
-                "timestamp": env.timestamp,
+                "extensions": env.extensions,
+                "recorded_at": env.recorded_at,
                 "key": rule.key,
                 "payload_hash": rule.payload_hash,
             })
@@ -613,18 +680,21 @@ fn retries_cases() -> Vec<Value> {
         .collect()
 }
 
-/// The saga step's write for every loaded state and fold, whether a step folds an event, and the outbox
-/// command id.
+/// The saga step's write for every loaded state and fold, whether a step folds an event, the outbox
+/// command id and the command message itself.
 fn saga_cases() -> Vec<Value> {
     use edax_event::Loaded;
     let loaded_json = |loaded: Loaded| match loaded {
         Loaded::Absent => json!({ "state": "absent" }),
         Loaded::Active { version } => json!({ "state": "active", "version": version }),
     };
-    let write_json = |write: edax_event::SagaWrite| match write {
-        edax_event::SagaWrite::Nothing => json!({ "write": "nothing" }),
-        edax_event::SagaWrite::Save { expected } => json!({ "write": "save", "expected": expected }),
-        edax_event::SagaWrite::Complete { expected } => json!({ "write": "complete", "expected": expected }),
+    let write_json = |write: Result<edax_event::SagaWrite, edax_core::Error>| match write {
+        Ok(edax_event::SagaWrite::Nothing) => json!({ "write": "nothing" }),
+        Ok(edax_event::SagaWrite::Save { expected, version }) => json!({ "write": "save", "expected": expected, "version": version }),
+        Ok(edax_event::SagaWrite::Complete { expected, version }) => {
+            json!({ "write": "complete", "expected": expected, "version": version })
+        }
+        Err(e) => json!({ "error": e.to_string() }),
     };
     let mut cases = Vec::new();
     for loaded in [Loaded::Absent, Loaded::Active { version: 3 }, Loaded::Active { version: u64::MAX }] {
@@ -657,7 +727,7 @@ fn saga_cases() -> Vec<Value> {
         (false, "[1]", "order-7", Some(1), "evt-1"),
     ];
     for (completed, folded, aggregate_id, sequence, id) in admits {
-        let env = EventEnvelope { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_envelope() };
+        let env = EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() };
         let want = match edax_event::saga_admit(completed, folded, &env) {
             Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
             Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
@@ -666,12 +736,26 @@ fn saga_cases() -> Vec<Value> {
         };
         cases.push(json!({ "admit": { "completed": completed, "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
     }
-    for (correlation_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
+    for (instance_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
         cases.push(json!({
-            "correlation_id": correlation_id, "version": version, "index": index,
-            "command_id": edax_event::saga_command_id(correlation_id, version, index),
+            "instance_id": instance_id, "version": version, "index": index,
+            "command_id": edax_event::saga_command_id(instance_id, version, index),
         }));
     }
+    // The command message a step's outbox holds: keyed and ordered by the instance, the folded event's
+    // child in lineage.
+    let cause = base_event();
+    let payload = edax_event::Event { name: "Fulfill".into(), version: 2, data: br#"{"order":"order-7"}"#.to_vec() };
+    let command = edax_event::saga_command("shipping", "order-7", 4, 1, payload.clone(), &cause.id, &cause.correlation_id, 1_700_000_000_000_000_001);
+    cases.push(json!({
+        "saga_command": {
+            "saga": "shipping",
+            "instance_id": "order-7", "version": 4, "index": 1, "issued_at": 1_700_000_000_000_000_001_i64,
+            "command": serde_json::to_value(&payload).unwrap(),
+            "cause": serde_json::to_value(&cause).unwrap(),
+        },
+        "want": serde_json::to_value(&command).unwrap(),
+    }));
     cases
 }
 
@@ -690,4 +774,7 @@ fn golden() {
     write_or_check("retries.json", retries_cases());
     write_or_check("retry_failure.json", retry_failure_cases());
     write_or_check("saga.json", saga_cases());
+    write_or_check("ordering_key.json", ordering_key_cases());
+    write_or_check("command_received_key.json", received_key_cases());
+    write_or_check("extensions.json", extensions_cases());
 }

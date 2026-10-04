@@ -27,6 +27,7 @@ classDiagram
     }
     class edax_kafka {
         <<kernel>>
+        +ordering_key()
         +kafka_record()
         +kafka_partition_for()
         +kafka_route()
@@ -46,7 +47,7 @@ classDiagram
 ## Constructing them
 
 ```
-KafkaProducer(client, topic, *, serializer=None, key=None, middleware=())
+KafkaProducer(client, topic, *, serializer=None, command_serializer=None, key=None, middleware=())
 KafkaConsumer(client, *, serializer=None, serializers=(), middleware=(),
               commit_interval_s=1.0, commit_timeout_s=10.0)
 KafkaDeadLetterSink(client, topic)
@@ -55,8 +56,11 @@ consumer.rebalance_listener(drain_timeout_s=30.0)
 
 `client` is an already-started `AIOKafkaProducer` or an already-started, already-subscribed
 `AIOKafkaConsumer`, or any client with the same calls: the `ProducerClient` and `ConsumerClient`
-protocols in `edax.backend.kafka` list them. `serializer` defaults to
-`edax.KernelSerializer("json")` on both sides. On the consumer it is also the default for a record that carries no `content-type` header.
+protocols in `edax.backend.kafka` list them. A serializer encodes one kind of message. On the
+producer, `serializer` encodes events and `command_serializer` commands. They default to
+`edax.KernelSerializer("json")` and `edax.KernelSerializer("json", "command")`, and a serializer of the
+other kind raises `ValueError` at wiring. On the consumer, `serializer` defaults to the JSON event
+serializer. It is also the default for a record that carries no `content-type` header.
 Everything after the `*` is keyword-only, so adding an argument later cannot shift a positional one.
 
 Building an adapter checks the client's settings that lose data. A consumer that auto-commits, or
@@ -97,15 +101,15 @@ Five promises, and each has a failure mode behind it.
 |---|---|---|
 | `publish` returns only after every in-sync replica has the message (`acks="all"`) | the relay marks the outbox row published once `publish` returns; a leader that fails before a follower copied the record takes it along, and the row says it was sent | `await client.send_and_wait(...)`, never fire-and-forget; a client that acks on the leader alone warns |
 | On failure `publish` raises | the relay marks the rows before it and hands that row and the rest back to the next drain | the client's exception propagates unchanged; nothing is swallowed |
-| The message key is the aggregate id | a broker that orders per key delivers one aggregate's events in `sequence` order | the kernel's key rule, applied inside `_edax.kafka_record`; the adapter passes `None` unless you gave it `key=` |
+| The message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key) | a broker that orders per key delivers one aggregate's messages in publish order | the kernel's key rule, `ordering_key(msg)` over `_edax.ordering_key`, unless you gave the adapter `key=`; `_edax.kafka_record` then builds the record under that key |
 | The partition is Java's murmur2 of the key | a second producer, in another language or on another client library, must put one key on the same partition | `_edax.kafka_partition_for(key, len(await client.partitions_for(topic)))`, passed as `partition=` |
-| Delivery is at-least-once | a crash between publish and `mark_published` republishes the same envelope; consumers dedup by `env.id` | inherent to the outbox; see [outbox](../sdk/outbox.md) |
+| Delivery is at-least-once | a crash between publish and `mark_published` republishes the same message; consumers dedup by `msg.id` | inherent to the outbox; see [outbox](../sdk/outbox.md) |
 
 `publish` is called serially by one relay, so it need not be thread-safe or reentrant.
 
 The key is what preserves order. Kafka orders within a partition, and the key chooses the
-partition, so one aggregate's events stay in one partition and arrive in the order they were
-published. Override it with `key=` if your partitioning differs, a tenant id for instance.
+partition, so one aggregate's messages stay in one partition and arrive in the order they were
+published. A command that targets an aggregate shares its partition with that aggregate's events. Override it with `key=` if your partitioning differs, a tenant id for instance.
 Per-aggregate order then holds only if that key is still a function of the aggregate id. With no
 `key=` the adapter passes no override at all, so the default is the kernel's own rule and
 `testdata/golden/kafka_record.json` is what pins it.
@@ -128,25 +132,18 @@ and unclean leader election off, or `acks="all"` waits for one replica only.
 
 ## Headers
 
-Every record the adapter publishes carries one header, whatever serializer wrote the value. The
-kernel writes it; the adapter only hands it to the client.
-
-| Header | Value | A reader uses it to |
-|---|---|---|
-| `content-type` | the media type of the value bytes, for example `application/vnd.edax.envelope+json` | pick the serializer that decodes the value |
-
-The set is closed: a header lands only with a reader for it. The aggregate id is the key already,
-the id, event name and version are inside the value, and trace context is the host's own
-`traceparent`. Add a header of your own with record middleware, below. The name is exported as
-`edax.backend.kafka.CONTENT_TYPE`, read from the kernel. `testdata/golden/kafka_record.json` pins
-the header, so a consumer in another language reads the same name and the same bytes.
+Every record the adapter publishes carries one header, `content-type`, whatever serializer wrote
+the value. The kernel writes it; the adapter only hands it to the client. The kernel's
+[one header](../kernels/kafka.md#the-one-header) section says why no other header lands. Add a header
+of your own with record middleware, below. The name is exported as
+`edax.backend.kafka.CONTENT_TYPE`, read from the kernel.
 
 ## The `Consumer` contract
 
 | Promise | What it means |
 |---|---|
 | `poll` returns the next `Delivery`, or `None` at end of stream | `Delivery.attempt` is the broker's own redelivery count if it keeps one, else `0` |
-| Per-key order | messages for one `aggregate_id` arrive in publish order. Across keys, any order. |
+| Per-key order | messages for one ordering key arrive in publish order. Across keys, any order. |
 | `ack` means exactly this message | the dispatcher acks out of order, so an offset broker must track a per-partition watermark |
 | `nack` rewinds the partition | the nacked message and every later one of its partition come back, in order, acked or not. The deliveries already handed out are retired (`Delivery.live` is `False`), so the dispatcher skips them and a key never runs ahead of itself |
 | every delivery is settled at most once, by ack or nack | `ack` and `nack` may be called from any worker task on the same loop, concurrently across keys; a retired delivery is not settled at all |
@@ -166,31 +163,41 @@ resets on restart.
 
 ## Custom serializers
 
-A `Serializer` names the media type it writes, as `media_type`. The producer puts that media type
-in the `content-type` header; the consumer reads the header back and routes the record to the
-serializer registered under it.
+A `Serializer` names the media type it writes, as `media_type`, and the kind it encodes, as `kind`.
+The producer puts that media type in the `content-type` header; the consumer reads the header back
+and routes the record to the serializer registered under it. A media type names a format and a kind,
+so register one serializer per kind the topic carries.
 
 ```python
 import edax
 from edax.backend.kafka import KafkaConsumer
 
-consumer = KafkaConsumer(client, serializer=edax.KernelSerializer("json"), serializers=[ProtoSerializer()])
+consumer = KafkaConsumer(
+    client,
+    serializer=edax.KernelSerializer("json"),
+    serializers=[edax.KernelSerializer("json", "command"), ProtoSerializer()],
+)
 ```
 
 `serializer` is the default and claims its own media type like any other. `serializers` are the
-extra ones. Three rules follow, and each one has a failure behind it.
+extra ones. Four rules follow, and each one has a failure behind it.
 
 - **Register the same media type in every SDK that reads the topic.** A custom format is a
   cross-language agreement, and the media type is its name. Only the name is shared; the code that
   encodes it stays per SDK.
 - **A media type no serializer claims is poison.** The consumer raises `CodecError` and the delivery
   dead-letters. It never falls back to the default, because decoding msgpack bytes as the host's own
-  format is how a wrong envelope reaches a handler instead of the dead-letter sink. An empty
+  format is how a wrong message reaches a handler instead of the dead-letter sink. An empty
   `content-type` is a media type nobody claims, and a null one crosses as empty, so both are poison.
-- **A record with no `content-type` header uses the default.** Anything published before this
-  kernel, or by a client that drops headers, still decodes.
+- **A record with no `content-type` header uses the default, as an event.** Under a command default
+  it is poison instead; the kernel's [`route`](../kernels/kafka.md#route-which-serializer-the-record-names)
+  says why. A command consumer passes `serializer=edax.KernelSerializer("json", "command")`.
+- **The delivery carries what the serializer decoded.** It is an `EventMessage` or a
+  `CommandMessage`. A command consumer's handler passes it on with
+  `bus.dispatch_message(msg, codec)`; see [commands](../sdk/commands.md).
 
-The rule is the kernel's `route`, so every SDK sends one record to the same serializer.
+The rule is the kernel's `route`, given the headers, the registered media types and the default
+serializer's kind. So every SDK sends one record to the same serializer.
 `testdata/golden/kafka_route.json` pins it.
 
 ## Record middleware
@@ -203,14 +210,14 @@ bytes to bytes.
 from edax.backend.kafka import KafkaHeader, KafkaRecord
 
 
-class Traceparent:
-    """Stamps one trace context on every published record."""
+class SourceService:
+    """Stamps the publishing service on every record, for tools that read headers only."""
 
-    def __init__(self, traceparent: str) -> None:
-        self._value: bytes = traceparent.encode()
+    def __init__(self, service: str) -> None:
+        self._value: bytes = service.encode()
 
     def on_publish(self, record: KafkaRecord) -> KafkaRecord:
-        headers = [*record.headers, KafkaHeader("traceparent", self._value)]
+        headers = [*record.headers, KafkaHeader("source-service", self._value)]
         return KafkaRecord(record.key, record.value, headers)
 
     def on_poll(self, record: KafkaRecord) -> KafkaRecord:
@@ -230,11 +237,15 @@ poll marks the message poison, so it dead-letters. Any other exception is transi
 back to the record and raises, and the loop waits one backoff step and polls again. Hooks are
 synchronous, so a hook cannot await a key-management call.
 
+Trace context needs no middleware. A `traceparent` rides in the message's `extensions`, inside the
+value, so it survives every hop and every SDK. See
+[observability](../sdk/observability.md#traces-via-extensions-and-where-request-scoped-values-go).
+
 ## The offset-broker subtlety
 
 On an offset broker an ack is a per-partition watermark, never "commit the current position".
 
-`KeyOrderedDispatcher` routes by `partition(aggregate_id, workers)`, so several workers handle one
+`KeyOrderedDispatcher` routes by `partition(ordering_key, workers)`, so several workers handle one
 partition's messages concurrently. Worker A may finish offset 7 before worker B finishes 5. A bare
 `client.commit()` commits the current fetch position, which is past 7 and therefore past 5, which is
 still running. The broker now believes 5 was handled. Restart the consumer and 5 is never
@@ -324,15 +335,15 @@ sequenceDiagram
     Note over S: committed together, the transactional Outbox
     R->>S: unpublished, up to the batch limit
     S-->>R: committed rows, oldest first
-    R->>P: publish each envelope
-    P->>K: send_and_wait, key is the aggregate id
+    R->>P: publish each message
+    P->>K: send_and_wait, key is the ordering key
     K-->>P: durable ack
     R->>S: mark_published, after the whole batch
     Note over R,S: a crash before this republishes, at-least-once
     C->>K: getone
     K-->>C: message on a partition, at an offset
     C->>D: submit a Delivery
-    D->>E: worker is partition of the aggregate id
+    D->>E: worker is partition of the ordering key
     alt the handler returns
         D->>C: ack
         C->>K: the committer commits the per-partition watermark
@@ -354,7 +365,7 @@ It needs seven things from the client library:
 |---|---|
 | `await client.partitions_for(topic)` | the topic's partition count, for the kernel's placement; aiokafka answers from cached metadata |
 | `await client.send_and_wait(topic, value=, key=, partition=, headers=)` | `publish`, with the broker's ack awaited; `headers` is a list of `(name, bytes)` pairs |
-| `await client.getone()` | `poll`; the message must expose `topic`, `partition`, `offset`, `value`, `key` and `headers` |
+| `await client.getone()` | `poll`; the message must expose `topic`, `partition`, `offset`, `value`, `key` and `headers`, and may expose `timestamp` and `timestamp_type` |
 | `await client.commit({tp: offset, ...})` | committing every due watermark in one call, under the commit deadline |
 | `client.seek(tp, offset)` | redelivery on `nack`; synchronous |
 | `aiokafka.TopicPartition` | the bookkeeping key, imported lazily so the base package pulls no broker library |
@@ -389,8 +400,8 @@ It leaves the rest to the host:
   its first booking.
 - **Topics and partitions.** Naming, partition count and retention are yours. Partition count bounds
   real parallelism; `workers` on the dispatcher is local parallelism only.
-- **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.KernelSerializer()` is the
-  kernel's envelope format, `"json"` or `"msgpack"`. The value bytes are the serializer's. The key, the partition, the
+- **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.KernelSerializer(fmt, kind)` is
+  the kernel's message format, `"json"` or `"msgpack"`, for `"event"` or `"command"`. The value bytes are the serializer's. The key, the partition, the
   header and the media type in `content-type` stay the kernel's, so a custom format keeps the same
   record shape. Two serializers claiming one media type are refused with `AlreadyRegistered`: one
   topic would otherwise decode two ways.
@@ -400,7 +411,10 @@ It leaves the rest to the host:
   verbatim, plus `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and `edax-dlq-error`. A
   republish to the source topic after the fix then routes and decodes as the original did. The record
   rides on `Delivery.origin` as a `KafkaFetched`, so a sink of your own calls
-  `delivery.origin.dead_letter(error)` for it. The kernel's `dead_letter_record` builds it, and its
+  `delivery.origin.dead_letter(error)` for it. `KafkaFetched` also carries the broker facts a
+  message never holds: `timestamp`, in Unix milliseconds, and `timestamp_type`, `0` for the
+  producer's `CreateTime` and `1` for the broker's `LogAppendTime`. Both are `None` when the client
+  reports none. The kernel's `dead_letter_record` builds it, and its
   `dead_letter_source` reads the coordinates back. A payload that will not decode reaches the
   sink with the stand-in id `topic/partition/offset`. A sink that raises nacks the message after one
   backoff step, so the redelivery gives it another try. If the sink then sees one offset twice, the

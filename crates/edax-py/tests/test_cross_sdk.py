@@ -1,6 +1,7 @@
 """What two SDKs sharing a ledger must agree on, checked from the Python side against the bytes the Rust
 kernel and the Rust SDK wrote into ``testdata/golden``: the canonical form a command hash is taken over,
-the event guard's key rule, the jittered backoff schedule, and a failed record's code."""
+the event guard's key rule, a command's claim key, the ordering key, the extension key rule, the jittered
+backoff schedule, and a failed record's code."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import build_envelope, golden
+from conftest import build_command, build_message, golden
 from edax import _edax
 from edax._async import maybe_await
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger
@@ -62,7 +63,7 @@ def test_one_command_value_has_one_hash_whatever_the_number_spelling(
     """Before numbers were canonical by value, `2` and `2.0` hashed apart, so one command dispatched
     from its constructor and again off a queue read as a payload mismatch: terminal, for a duplicate."""
     assert msgspec.json.encode(left) != msgspec.json.encode(right)
-    assert _payload_hash(left) == _payload_hash(right), branch
+    assert _payload_hash(left, left.type) == _payload_hash(right, right.type), branch
 
 
 def test_a_third_sdks_spelling_hashes_the_same() -> None:
@@ -83,7 +84,7 @@ def test_a_python_int_matches_the_rust_float_for_the_golden_command() -> None:
     ]
     command = dict(case["command"], weight_kg=1)
     assert isinstance(command["weight_kg"], int)
-    assert edax.payload_hash_json(msgspec.json.encode(command)) == case["expected"]
+    assert _edax.command_hash_json(case["type"], msgspec.json.encode(command)) == case["expected"]
 
 
 # ---- the event guard's key rule ---------------------------------------------
@@ -91,17 +92,67 @@ def test_a_python_int_matches_the_rust_float_for_the_golden_command() -> None:
 
 @pytest.mark.parametrize("case", golden("event_idempotency.json"), ids=lambda c: c["name"])
 def test_the_event_guard_claims_the_kernels_key_and_hash(case: dict[str, Any]) -> None:
-    env = build_envelope(
+    env = build_message(
         "acct-1",
         "Deposited",
         3,
         id=case["id"],
         data=bytes.fromhex(case["data_hex"]),
+        extensions=case["extensions"],
         metadata=case["metadata"],
-        timestamp=case["timestamp"],
+        recorded_at=case["recorded_at"],
     )
     rule = _edax.event_idempotency(env)
     assert (rule.key, rule.payload_hash) == (case["key"], case["payload_hash"])
+
+
+# ---- the command claim key, the ordering key, the extension key rule ------------------------
+
+
+@pytest.mark.parametrize(
+    "case", golden("claim_key.json"), ids=lambda c: f"{c['scope']}|{c['idempotency_key']}"
+)
+def test_a_command_claims_the_kernels_scoped_key(case: dict[str, Any]) -> None:
+    """The ledger key a guarded command claims: the scope's length keeps a scope holding the separator
+    from colliding with another scope and key."""
+    assert edax.claim_key(case["scope"], case["idempotency_key"]) == case["expected"]
+
+
+@pytest.mark.parametrize("case", golden("ordering_key.json"), ids=lambda c: f"{c['id']}|{c['aggregate_id']}")
+def test_a_message_orders_by_the_kernels_key(case: dict[str, Any]) -> None:
+    """The aggregate id when the message names one, an empty one included, else the message's own id. The
+    dispatcher picks its worker by it, so a Python and a Rust consumer serialize the same messages."""
+    assert _edax.ordering_key(case["id"], case["aggregate_id"]) == case["expected"]
+    command = build_command("Deposit", id=case["id"], aggregate_id=case["aggregate_id"])
+    dispatcher = edax.KeyOrderedDispatcher(64, lambda msg: None)
+    assert dispatcher._worker_index(command) == edax.partition(case["expected"], 64)
+
+
+@pytest.mark.parametrize(
+    "case", golden("command_received_key.json"), ids=lambda c: f"{c['id']}|{c['idempotency_key']}"
+)
+def test_a_received_command_claims_the_kernels_key(case: dict[str, Any]) -> None:
+    """The client's key when the message carries one, an empty one included, else the message's own id.
+    A broker redelivers the same message, so the id still deduplicates a command sent with no key."""
+    msg = build_command("Deposit", id=case["id"], idempotency_key=case["idempotency_key"])
+    assert edax.received_key(msg) == case["expected"]
+
+
+@pytest.mark.parametrize("case", golden("extensions.json"), ids=lambda c: c["key"] or "empty")
+def test_an_extension_key_follows_the_kernels_rule(case: dict[str, Any]) -> None:
+    """Checked before a save writes anything, and again when a message encodes, so no SDK mints a message
+    another SDK refuses to read."""
+    extensions = {case["key"]: "v"}
+    message = build_message("acct-1", "Deposited", 1, extensions=extensions)
+    if case["valid"]:
+        assert _edax.check_extensions(extensions) is None
+        assert edax.KernelSerializer("json").encode(message)
+        return
+    with pytest.raises(edax.CodecError) as refused, edax.errors.mapped():
+        _edax.check_extensions(extensions)
+    assert refused.value.code == case["error_code"]
+    with pytest.raises(edax.CodecError):
+        edax.KernelSerializer("msgpack").encode(message)
 
 
 # ---- the backoff schedule ----------------------------------------------------
@@ -186,7 +237,7 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     await ledger.complete("evt-1", won.handle, edax.command.decode_record(rust.stored))
     runs = 0
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal runs
         runs += 1
 
@@ -200,7 +251,7 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
     dispatcher.start()
     # The event guard hashes the raw body: `cmd-a` is the body the Rust row's hash was taken over.
-    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
+    env = build_message("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     settled: list[str] = []
     await dispatcher.submit(edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack")))
     await dispatcher._queues[0].join()
@@ -220,11 +271,11 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
     rust = _rust_rejection()
     ledger = MemoryIdempotencyStore()
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         raise edax.Rejected("insufficient funds: balance 300, withdrawal 500")
 
     guarded = edax.idempotent_by_id(ledger)(handler)
-    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
+    env = build_message("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     with pytest.raises(edax.Rejected):
         await maybe_await(guarded(env))
     prior = await ledger.claim("evt-1", rust.payload_hash)
@@ -242,7 +293,7 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
     ledger.put_raw("evt-1", case["stored"])
     runs = 0
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal runs
         runs += 1
 
@@ -255,7 +306,7 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
 
     dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
     dispatcher.start()
-    env = build_envelope("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
+    env = build_message("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     settled: list[str] = []
     await dispatcher.submit(edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack")))
     await dispatcher._queues[0].join()

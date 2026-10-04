@@ -2,10 +2,11 @@
 edax[kafka]``), so edax imports no broker package. The ``edax-kafka`` kernel owns the record: its key, its
 ``content-type`` header, the route a fetched record takes by it, the partition it lands on, the offset
 watermark that settles it and the dead-letter record. This module makes the client calls around it. The
-aggregate id is the message key, and the producer places it on Java's murmur2 partition explicitly, so every
-producer on the topic, in any language, keeps one aggregate on one partition and in order; the
-:class:`~edax.dispatcher.KeyOrderedDispatcher` pool then keeps those events serialized on one worker, and a
-nack rewinds the partition without reordering it. See ``docs/backends/kafka.md``."""
+kernel's ordering key (the aggregate id, else a command's own id) is the message key, and the producer
+places it on Java's murmur2 partition explicitly, so every producer on the topic, in any language, keeps one
+aggregate on one partition and in order; the :class:`~edax.dispatcher.KeyOrderedDispatcher` pool then keeps
+those messages serialized on one worker, and a nack rewinds the partition without reordering it. See
+``docs/backends/kafka.md``."""
 
 from __future__ import annotations
 
@@ -18,7 +19,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from .. import _edax
 from .._owned import ThreadBound
-from ..aggregate import EventEnvelope, KernelSerializer, Serializer
+from ..aggregate import (
+    CommandMessage,
+    EventMessage,
+    KernelSerializer,
+    MessageKind,
+    Serializer,
+    message_kind,
+    ordering_key,
+)
 from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
 from ..errors import CodecError, mapped
@@ -156,7 +165,11 @@ class KafkaFetched:
     """A record as :class:`KafkaConsumer` fetched it, and where it sat. It is the record before any
     middleware, so a republish runs through the middleware again. Carried as
     :attr:`~edax.dispatcher.Delivery.origin`, for a dead-letter sink. A null key, value or header value is
-    empty bytes here, the kernel's rule."""
+    empty bytes here, the kernel's rule.
+
+    ``timestamp`` is the record's broker timestamp in Unix milliseconds, as the client reports it, and
+    ``timestamp_type`` says whose clock it is: ``0`` the producer's (``CreateTime``), ``1`` the broker's
+    (``LogAppendTime``). Both are ``None`` when the client reports none."""
 
     topic: str
     partition: int
@@ -164,6 +177,8 @@ class KafkaFetched:
     key: bytes
     value: bytes
     headers: tuple[tuple[str, bytes], ...]
+    timestamp: int | None = None
+    timestamp_type: int | None = None
 
     def record(self) -> KafkaRecord:
         """The fetched record as the kernel's struct."""
@@ -193,7 +208,7 @@ class KafkaDeadLetterSink:
     async def __call__(self, delivery: Delivery, error: BaseException) -> None:
         fetched = delivery.origin
         if not isinstance(fetched, KafkaFetched):
-            raise TypeError(f"delivery {delivery.envelope.id} carries no Kafka record to dead-letter")
+            raise TypeError(f"delivery {delivery.message.id} carries no Kafka record to dead-letter")
         await _send(self._client, self._topic, fetched.dead_letter(error))
 
 
@@ -202,20 +217,29 @@ class RecordMiddleware(Protocol):
 
     :meth:`on_publish` runs in order, after the kernel has built the record and before the send.
     :meth:`on_poll` runs in reverse, after the fetch and before the content-type lookup, so a pair of
-    middlewares wraps the record like an onion. Use one to add a ``traceparent`` or tenant header, or
-    to compress or encrypt the value. Rewrite ``content-type`` on the way out and restore it on the way
-    in, so the consumer still routes to the serializer that wrote the bytes. A
-    :class:`~edax.errors.CodecError` raised on poll marks the message poison; any other exception
+    middlewares wraps the record like an onion. Use one to compress or encrypt the value. Trace context
+    needs none: it rides in the message's ``extensions``, inside the value. Rewrite ``content-type`` on the
+    way out and restore it on the way in, so the consumer still routes to the serializer that wrote the
+    bytes. A :class:`~edax.errors.CodecError` raised on poll marks the message poison; any other exception
     propagates as transient, so the message redelivers."""
 
     def on_publish(self, record: KafkaRecord) -> KafkaRecord: ...
     def on_poll(self, record: KafkaRecord) -> KafkaRecord: ...
 
 
+def _check_kind(serializer: Serializer, kind: MessageKind, role: str) -> Serializer:
+    """``serializer``, if it encodes ``kind``; a :class:`ValueError` at wiring otherwise."""
+    if serializer.kind != kind:
+        raise ValueError(f"{role} must be a {kind} serializer, got one of kind {serializer.kind!r}")
+    return serializer
+
+
 class KafkaProducer:
-    """Publishes envelopes to a Kafka topic through a caller-owned, started ``AIOKafkaProducer``.
-    The serializer supplies the value bytes and the media type that names them; the kernel builds the
-    record around both, so the key rule and the header set stay the same in every SDK.
+    """Publishes events and commands to a Kafka topic through a caller-owned, started ``AIOKafkaProducer``.
+    ``serializer`` encodes an :class:`~edax.aggregate.EventMessage` and ``command_serializer`` a
+    :class:`~edax.aggregate.CommandMessage` (default: the kernel's JSON of each kind). A serializer supplies
+    the value bytes and the media type that names them; the kernel builds the record around both, so the
+    key rule and the header set stay the same in every SDK.
 
     The partition is the kernel's too: Java's default partitioner over the record's final key (after the
     middleware) and the topic's partition count from the client's metadata, passed as ``partition=``. The
@@ -232,25 +256,27 @@ class KafkaProducer:
         topic: str,
         *,
         serializer: Serializer | None = None,
+        command_serializer: Serializer | None = None,
         key: KeyFn | None = None,
         middleware: Sequence[RecordMiddleware] = (),
     ) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
-        self._serializer: Serializer = serializer or KernelSerializer("json")
+        self._serializer = _check_kind(serializer or KernelSerializer("json"), "event", "serializer")
+        self._commands = _check_kind(
+            command_serializer or KernelSerializer("json", "command"), "command", "command_serializer"
+        )
         self._key = key
         self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
 
-    async def publish(self, env: EventEnvelope) -> None:
-        # No key function means no override: the kernel applies its own default rule (the aggregate
-        # id), which is the one the golden vector pins. Computing it here would fork that rule.
-        record = _edax.kafka_record(
-            env,
-            self._serializer.encode(env),
-            self._serializer.media_type,
-            self._key(env) if self._key else None,
-        )
+    async def publish(self, msg: EventMessage | CommandMessage) -> None:
+        serializer = self._serializer if message_kind(msg) == "event" else self._commands
+        value = serializer.encode(msg)
+        # The key function's override, else the kernel's ordering key: the one the golden vector pins.
+        key = self._key(msg) if self._key else ordering_key(msg)
+        with mapped():
+            record = _edax.kafka_record(key, value, serializer.media_type)
         for m in self._middleware:
             record = m.on_publish(record)
         await _send(self._client, self._topic, record)
@@ -259,9 +285,14 @@ class KafkaProducer:
 class KafkaConsumer(_ConsumerLoop):
     """Consumes a Kafka topic through a caller-owned, subscribed ``AIOKafkaConsumer``.
 
-    ``serializer`` is the default: it decodes a record that carries no ``content-type`` header and claims
-    its own media type in the registry, which ``serializers`` extends with one entry per media type; the
-    kernel routes each record by its header. ``middleware`` rewrites each record on the way in, in reverse
+    ``serializer`` is the default (the kernel's JSON events unless given): it claims its own media type in
+    the registry, and an event serializer also decodes a record that carries no ``content-type`` header.
+    ``serializers`` extends the registry with one entry per media type, of either kind. The kernel routes
+    each record by its header, and the delivery carries what the chosen serializer decoded, an
+    :class:`~edax.aggregate.EventMessage` or a :class:`~edax.aggregate.CommandMessage`. A record of a media
+    type nobody registered is poison. So is a header-less record when the default decodes commands: a
+    command always names its kind, so a command consumer takes ``serializer=KernelSerializer("json",
+    "command")``. ``middleware`` rewrites each record on the way in, in reverse
     order. See ``docs/backends/kafka.md``.
 
     The client must not auto-commit and must have a group, or this raises :class:`ValueError`. :meth:`run`
@@ -291,7 +322,8 @@ class KafkaConsumer(_ConsumerLoop):
         _check_consumer(client)
         self._client = client
         # The default decodes a record that carries no `content-type` header at all, and claims its
-        # own media type in the registry like every other serializer.
+        # own media type in the registry like every other serializer. A header-less record is read as
+        # an event only: a command always names its kind.
         self._default: Serializer = serializer or KernelSerializer("json")
         self._serializers: list[Serializer] = [self._default, *serializers]
         self._media_types: list[str] = [s.media_type for s in self._serializers]
@@ -434,6 +466,8 @@ class KafkaConsumer(_ConsumerLoop):
             msg.key or b"",
             msg.value or b"",
             tuple((k, v or b"") for k, v in (msg.headers or ())),
+            getattr(msg, "timestamp", None),
+            getattr(msg, "timestamp_type", None),
         )
 
         def live() -> bool:
@@ -481,19 +515,23 @@ class KafkaConsumer(_ConsumerLoop):
         else:
             value, headers = fetched.value, [KafkaHeader(k, v) for k, v in fetched.headers]
 
-        route = _edax.kafka_route(headers, self._media_types)
+        route = _edax.kafka_route(headers, self._media_types, self._default.kind)
         if route.registered is not None:
             serializer = self._serializers[route.registered]
         elif route.unknown is not None:
             # Never fall back to the default: decoding msgpack bytes as the host's own format is how a
-            # wrong envelope reaches a handler instead of the dead-letter sink.
+            # wrong message reaches a handler instead of the dead-letter sink.
             return poison(CodecError(f"no serializer for content type {route.unknown!r}"))
+        elif route.headerless:
+            return poison(
+                CodecError("the record has no readable content-type header, and a command always names one")
+            )
         else:
             serializer = self._default
         try:
-            env = serializer.decode(value)
+            decoded = serializer.decode(value)
         except Exception as e:  # noqa: BLE001 - every failure of a pure decode is terminal
             # A third-party serializer raises its own error types, and a decode that fails once fails
             # the same way on every redelivery, so the record is poison whatever it raised.
             return poison(e)
-        return Delivery(env, ack, nack, live=live, origin=fetched)
+        return Delivery(decoded, ack, nack, live=live, origin=fetched)

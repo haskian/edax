@@ -7,7 +7,7 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use edax_core::ErrorCode;
-use edax_cqrs::{cached_failure, command_hash, outcome, Outcome};
+use edax_cqrs::{cached_failure, claim_key, command_hash, outcome, Outcome};
 use serde::Serialize;
 
 use crate::chain::wrap_outermost_first;
@@ -19,12 +19,12 @@ pub use edax_cqrs::{Record, State};
 /// Implemented by every command. [`Command::command_type`] is a stable identifier used to route a
 /// command to its handler.
 ///
-/// The idempotency hash comes from the command *value*: serde serializes it, then the kernel
-/// canonicalizes and hashes the bytes ([`edax_cqrs::command_hash`]), as pinned by
-/// `testdata/golden/command_hash.json`. A command cannot supply the bytes, so `Serialize` declares
-/// the hashed shape. The type name is routing metadata, not a field, so it stays out of the hash:
-/// register each command type on the [`CommandBus`] as itself, never through an enum, whose serde
-/// tag would enter the hash and split one command into two hashes across SDKs.
+/// The idempotency hash covers the type name and the command *value*: serde serializes the value, then
+/// the kernel wraps it with the name, canonicalizes and hashes the bytes ([`edax_cqrs::command_hash`]),
+/// as pinned by `testdata/golden/command_hash.json`. A command cannot supply the bytes, so `Serialize`
+/// declares the hashed shape. The name is hashed beside the value, never inside it: register each
+/// command type on the [`CommandBus`] as itself, never through an enum, whose serde tag would enter the
+/// value and split one command into two hashes across SDKs.
 pub trait Command: Serialize {
     fn command_type(&self) -> &str;
 }
@@ -369,23 +369,29 @@ where
     }
 }
 
-/// Deduplicate dispatches by idempotency key. `key` returns the key for a command, or `None` to bypass. The
-/// kernel hashes the whole serialized command ([`edax_cqrs::command_hash`]) and binds that hash to the key,
-/// so reusing the key with a different command errors. See `docs/sdk/idempotency.md`.
+/// Deduplicate dispatches by idempotency key. `key` returns the key for a command, or `None` to bypass the
+/// guard. The guard claims the kernel's [`claim_key`] for `scope` and that key, so two guards with different
+/// scopes on one store (an ingress and a consumer, say) never replay each other's outcome. The guard binds
+/// the command's idempotency hash (see [`Command`]) to the claim, so reusing the key with a different
+/// command errors. See `docs/sdk/idempotency.md`.
 ///
 /// The first dispatch of a key wins the claim and runs the handler; a later one replays the prior record or
 /// gets the transient [`ErrorCode::InProgress`] error while the winner runs. Verdicts surface as an
 /// [`Error`] in the [`HandlerError`]. A terminal handler error is cached with its code; a transient one or a
 /// panic releases the claim. The default handle gives at-least-once with dedup; [`idempotent_in`] commits
 /// it with the events.
-pub fn idempotent<C, O, S>(store: S, key: impl Fn(&C) -> Option<String> + Send + Sync + 'static) -> Middleware<C, O>
+pub fn idempotent<C, O, S>(
+    store: S,
+    scope: impl Into<String>,
+    key: impl Fn(&C) -> Option<String> + Send + Sync + 'static,
+) -> Middleware<C, O>
 where
     C: Command + 'static,
     O: Clone + 'static,
     S: IdempotencyStore<O> + Send + Sync + 'static,
     S::Tx: Default + 'static,
 {
-    idempotent_in(store, key, |_| S::Tx::default())
+    idempotent_in(store, scope, key, |_| S::Tx::default())
 }
 
 /// [`idempotent`] over the host's transaction. `current` is called once per guarded dispatch, with the
@@ -397,6 +403,7 @@ where
 /// with [`retry_transaction`](crate::retry_transaction).
 pub fn idempotent_in<C, O, S>(
     store: S,
+    scope: impl Into<String>,
     key: impl Fn(&C) -> Option<String> + Send + Sync + 'static,
     current: impl Fn(&C) -> S::Tx + Send + Sync + 'static,
 ) -> Middleware<C, O>
@@ -406,21 +413,23 @@ where
     S: IdempotencyStore<O> + Send + Sync + 'static,
     S::Tx: 'static,
 {
-    // The middleware closure runs once per registered handler; share `store`, `key` and `current` through
-    // reference counts so each produced handler owns a cheap clone.
+    // The middleware closure runs once per registered handler; share `store`, `scope`, `key` and `current`
+    // through reference counts so each produced handler owns a cheap clone.
     let store = Arc::new(store);
+    let scope: Arc<str> = Arc::from(scope.into());
     let key = Arc::new(key);
     let current = Arc::new(current);
     Box::new(move |next: Handler<C, O>| {
         let store = Arc::clone(&store);
+        let scope = Arc::clone(&scope);
         let key = Arc::clone(&key);
         let current = Arc::clone(&current);
         Box::new(move |cmd: &C| -> Result<O, HandlerError> {
             let Some(k) = key(cmd) else { return next(cmd) };
             // A command the kernel cannot hash is the kernel's terminal `codec` error; the message names the step.
-            let hash = command_hash(cmd)?;
+            let hash = command_hash(cmd.command_type(), cmd)?;
             let mut tx = current(cmd);
-            guarded(&*store, &mut tx, &k, hash, || next(cmd))
+            guarded(&*store, &mut tx, &claim_key(&scope, &k), hash, || next(cmd))
         })
     })
 }
@@ -428,7 +437,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryIdempotencyStore, MemoryTx};
+    use crate::{EventMessage, MemoryIdempotencyStore, MemoryTx};
     use edax_cqrs::{canonical_json, payload_hash};
     use serde::Deserialize;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -437,6 +446,14 @@ mod tests {
 
     // The in-memory idempotency store is shipped, not re-rolled for tests.
     type MemStore = MemoryIdempotencyStore<i64>;
+
+    /// The scope every command guard here claims under.
+    const SCOPE: &str = "payments";
+
+    /// The ledger key a guard scoped [`SCOPE`] claims for idempotency key `key`.
+    fn claimed(key: &str) -> String {
+        claim_key(SCOPE, key)
+    }
 
     /// A call counter the handlers and test stores share. Atomic, because the command path is
     /// `Send + Sync`.
@@ -484,8 +501,8 @@ mod tests {
         bus
     }
 
-    /// A command whose fields are exactly the event body used on the consume path, so both
-    /// idempotency guards hash the same bytes and read the same record.
+    /// A command whose fields are the event body used on the consume path. The two guards hash it
+    /// differently (the command's hash covers its name too), and each reaches one verdict per record.
     #[derive(Serialize)]
     struct Deposit {
         account_id: &'static str,
@@ -503,15 +520,13 @@ mod tests {
         Deposit { account_id: "acct-1", amount_cents: 4200, currency: "USD" }
     }
 
-    /// The `Deposit` fields, canonical already (keys sorted, no whitespace), so canonicalizing it is
-    /// the identity — which lets the command path and the raw-bytes consume path share one hash.
+    /// The `Deposit` fields as the consume path's event body.
     const DEPOSIT_BODY: &[u8] = br#"{"account_id":"acct-1","amount_cents":4200,"currency":"USD"}"#;
 
     /// The golden command, as the idiomatic Rust type. Fields are declared in an order that is
     /// neither the vector's nor alphabetical: the hash must not depend on declaration order.
     #[derive(Serialize, Deserialize)]
     struct PlaceOrder {
-        request_id: String,
         weight_kg: f64,
         total_cents: i64,
         tags: Vec<String>,
@@ -529,16 +544,26 @@ mod tests {
         city: String,
     }
 
-    impl Command for PlaceOrder {
+    /// The golden command under the type name a vector row gives it. The name routes and is hashed
+    /// beside the value, never inside it, so it is skipped from the value's own shape.
+    #[derive(Serialize)]
+    #[serde(transparent)]
+    struct Typed {
+        #[serde(skip)]
+        name: String,
+        order: PlaceOrder,
+    }
+
+    impl Command for Typed {
         fn command_type(&self) -> &str {
-            "order.place"
+            &self.name
         }
     }
 
     /// `testdata/golden/command_hash.json` asserted through the SDK layer: every case is rebuilt as
-    /// a `PlaceOrder`, dispatched through the real `idempotent` middleware, and the hash the store
-    /// received must be the vector's. The Python suite does the same from a dataclass, so this is
-    /// the proof that both SDKs bind one key to one number for one command.
+    /// a `PlaceOrder` under its row's type name, dispatched through the real `idempotent` middleware,
+    /// and the hash the store received must be the vector's. The Python suite does the same from a
+    /// dataclass, so this is the proof that both SDKs bind one key to one number for one command.
     #[test]
     fn command_hash_golden_holds_through_the_middleware() {
         let cases = edax_golden::read("command_hash.json");
@@ -546,23 +571,21 @@ mod tests {
 
         for case in &cases {
             let name = case["name"].as_str().expect("case has a name");
-            // `type` routes; it is not a field of the command and takes no part in the hash.
-            let cmd: PlaceOrder = match case["type"].as_str() {
-                Some("order.place") => serde_json::from_value(case["command"].clone()).expect(name),
-                other => panic!("{name}: no Rust command type for {other:?}"),
-            };
+            let command_type = case["type"].as_str().expect("case has a type");
+            let cmd = Typed { name: command_type.to_owned(), order: serde_json::from_value(case["command"].clone()).expect(name) };
 
             let store: Arc<dyn IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(MemoryIdempotencyStore::<()>::new());
             let mut bus = CommandBus::new();
-            let guard = idempotent(Arc::clone(&store), |c: &PlaceOrder| Some(c.request_id.clone()));
+            let key = name.to_owned();
+            let guard = idempotent(Arc::clone(&store), SCOPE, move |_: &Typed| Some(key.clone()));
             let runs = Arc::new(AtomicUsize::new(0));
             let counted = Arc::clone(&runs);
-            let handler = move |_: &PlaceOrder| {
+            let handler = move |_: &Typed| {
                 counted.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             };
-            bus.register("order.place", wrap(Box::new(handler), vec![guard])).unwrap();
-            let dispatched = bus.dispatch::<PlaceOrder, ()>(&cmd);
+            bus.register(command_type, wrap(Box::new(handler), vec![guard])).unwrap();
+            let dispatched = bus.dispatch::<Typed, ()>(&cmd);
 
             // A refusal row: the guard fails as the kernel's terminal `codec` error, before any claim
             // or handler run, and leaves the key free. The row pins the code and the rule; the byte
@@ -574,7 +597,7 @@ mod tests {
                 assert!(refused.to_string().ends_with(rule), "{name}: {refused}");
                 assert!(is_terminal(&*refused), "{name}: a refusal is terminal");
                 assert_eq!(runs.load(Ordering::SeqCst), 0, "{name}: the handler never ran");
-                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), &cmd.request_id, 0).unwrap(), Claim::Won(_)), "{name}: no claim was left");
+                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), &claimed(name), 0).unwrap(), Claim::Won(_)), "{name}: no claim was left");
                 continue;
             }
             dispatched.expect(name);
@@ -582,19 +605,17 @@ mod tests {
 
             // The hash the middleware bound to the key is what a Python service would compare its
             // own against; a claim with any hash returns the winner's record.
-            let stored = match store.claim(&mut MemoryTx::auto_commit(), &cmd.request_id, 0).unwrap() {
+            let stored = match store.claim(&mut MemoryTx::auto_commit(), &claimed(name), 0).unwrap() {
                 Claim::Prior(record) => record.payload_hash,
                 Claim::Won(_) => panic!("{name}: the dispatch left no record"),
             };
             assert_eq!(stored, expected, "{name}");
         }
 
-        // A hash over the business body alone, without the key field, must not match the vector:
-        // the key field is part of the command.
-        let mut body_only = cases[0]["command"].clone();
-        body_only.as_object_mut().expect("command is an object").remove("request_id");
-        let old_rule = payload_hash(&canonical_json(&serde_json::to_vec(&body_only).unwrap()).unwrap());
-        assert_ne!(old_rule, cases[0]["expected"].as_u64().unwrap(), "body-only bytes reached the vector");
+        // A hash over the value alone, without the name, must not match the vector: the name is part
+        // of the hash.
+        let value_only = payload_hash(&canonical_json(&serde_json::to_vec(&cases[0]["command"]).unwrap()).unwrap());
+        assert_ne!(value_only, cases[0]["expected"].as_u64().unwrap(), "the value alone reached the vector");
     }
 
     /// One bus routes two command types, each registered as its own struct with its own result
@@ -622,22 +643,22 @@ mod tests {
         let receipts: Arc<dyn IdempotencyStore<String, Tx = MemoryTx> + Send + Sync> = Arc::new(ledger.idempotency_store::<String>());
         let balances: Arc<dyn IdempotencyStore<u32, Tx = MemoryTx> + Send + Sync> = Arc::new(ledger.idempotency_store::<u32>());
         let mut bus = CommandBus::new();
-        let withdraw_guard = idempotent(Arc::clone(&receipts), |_: &Withdraw| Some("w-1".to_owned()));
+        let withdraw_guard = idempotent(Arc::clone(&receipts), SCOPE, |_: &Withdraw| Some("w-1".to_owned()));
         let withdraw: Handler<Withdraw, String> = Box::new(|w: &Withdraw| Ok(format!("receipt for {}", w.amount_cents)));
         bus.register("Withdraw", wrap(withdraw, vec![withdraw_guard])).unwrap();
-        let deposit_guard = idempotent(Arc::clone(&balances), |_: &Deposit| Some("d-1".to_owned()));
+        let deposit_guard = idempotent(Arc::clone(&balances), SCOPE, |_: &Deposit| Some("d-1".to_owned()));
         bus.register("Deposit", wrap(Box::new(|d: &Deposit| Ok(d.amount_cents)), vec![deposit_guard])).unwrap();
 
         let cmd = Withdraw { account: "a", amount_cents: 500 };
         assert_eq!(bus.dispatch::<_, String>(&cmd).unwrap(), "receipt for 500");
         assert_eq!(bus.dispatch::<_, u32>(&deposit()).unwrap(), 4200, "a second command type and result type");
 
-        let stored = match receipts.claim(&mut MemoryTx::auto_commit(), "w-1", 0).unwrap() {
+        let stored = match receipts.claim(&mut MemoryTx::auto_commit(), &claimed("w-1"), 0).unwrap() {
             Claim::Prior(record) => record.payload_hash,
             Claim::Won(_) => panic!("the dispatch left no record"),
         };
-        assert_eq!(stored, command_hash(&cmd).unwrap(), "the struct's own hash");
-        let tagged = command_hash(&BankCommand::Withdraw { account: "a", amount_cents: 500 }).unwrap();
+        assert_eq!(stored, command_hash("Withdraw", &cmd).unwrap(), "the struct's own hash");
+        let tagged = command_hash("Withdraw", &BankCommand::Withdraw { account: "a", amount_cents: 500 }).unwrap();
         assert_ne!(stored, tagged, "the enum's tag would have changed the hash");
     }
 
@@ -692,32 +713,31 @@ mod tests {
 
     /// The two idempotency guards must cache and release on **one** rule. Each lost-claim verdict is
     /// driven through both — `idempotent` on the command path, `idempotent_by_id` on the consume
-    /// path — against the same seeded record, and both must report the same error with the same
-    /// terminal/transient classification.
+    /// path — against the same kind of seeded record, and both must report the same verdict with the
+    /// same terminal/transient classification. Each path claims its own key and hashes its own way.
     #[test]
     fn both_idempotency_guards_report_one_verdict_per_outcome() {
-        use edax_event::{Event, EventEnvelope};
-
         const KEY: &str = "acct-1-3";
 
         struct Case {
             name: &'static str,
-            /// The record the winner left behind under `KEY`.
+            /// The record the winner left behind under the claimed key.
             prior: fn(u64) -> Record<()>,
-            want: Error,
+            /// The error a claimant of the given key gets.
+            want: fn(&str) -> Error,
             want_terminal: bool,
         }
         let cases = [
             Case {
                 name: "in_flight_claim",
                 prior: Record::pending,
-                want: Error::new(ErrorCode::InProgress, KEY),
+                want: |key| Error::new(ErrorCode::InProgress, key),
                 want_terminal: false,
             },
             Case {
                 name: "cached_terminal_failure",
                 prior: |h| Record::failed(h, ErrorCode::Codec, "unknown field `amount`"),
-                want: Error::new(ErrorCode::CachedFailure, "codec: unknown field `amount`"),
+                want: |_| Error::new(ErrorCode::CachedFailure, "codec: unknown field `amount`"),
                 want_terminal: true,
             },
             Case {
@@ -725,51 +745,43 @@ mod tests {
                 // is exactly what a second, different command (or event body) would produce.
                 name: "key_reused_with_another_payload",
                 prior: |h| Record::done(h ^ 1, ()),
-                want: Error::new(ErrorCode::PayloadMismatch, KEY),
+                want: |key| Error::new(ErrorCode::PayloadMismatch, key),
                 want_terminal: true,
             },
         ];
 
-        // Settle `KEY` with `prior` the way a winner would: claim it, then complete with the handle.
-        fn seed(store: &dyn IdempotencyStore<(), Tx = MemoryTx>, prior: Record<()>) {
-            let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), KEY, prior.payload_hash) else {
+        // Settle `key` with `prior` the way a winner would: claim it, then complete with the handle.
+        fn seed(store: &dyn IdempotencyStore<(), Tx = MemoryTx>, key: &str, prior: Record<()>) {
+            let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), key, prior.payload_hash) else {
                 panic!("a fresh store's key is free")
             };
-            store.complete(&mut MemoryTx::auto_commit(), KEY, &handle, prior).unwrap();
+            store.complete(&mut MemoryTx::auto_commit(), key, &handle, prior).unwrap();
         }
 
-        // Hash the way each path does: the command value is serialized and canonicalized, the event
-        // body is hashed raw. The body is already canonical, so both land on one hash and one record.
-        let hash = command_hash(&deposit()).unwrap();
-        assert_eq!(hash, payload_hash(DEPOSIT_BODY), "the fixture body must already be canonical");
+        let command_key = claimed(KEY);
+        let command_hash = command_hash("Deposit", &deposit()).unwrap();
+        let event_hash = payload_hash(DEPOSIT_BODY);
 
         for c in cases {
             // --- command path ---
             let command_store: Arc<dyn IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(MemoryIdempotencyStore::<()>::new());
-            seed(&*command_store, (c.prior)(hash));
+            seed(&*command_store, &command_key, (c.prior)(command_hash));
             let mut bus = CommandBus::new();
-            let guard = idempotent(Arc::clone(&command_store), |_: &Deposit| Some(KEY.to_string()));
+            let guard = idempotent(Arc::clone(&command_store), SCOPE, |_: &Deposit| Some(KEY.to_string()));
             bus.register("Deposit", wrap(Box::new(|_: &Deposit| Ok(())), vec![guard])).unwrap();
             let command_err = bus.dispatch::<Deposit, ()>(&deposit()).expect_err(c.name);
 
             // --- consume path ---
             let event_store: crate::EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::<()>::new());
-            seed(&*event_store, (c.prior)(hash));
+            seed(&*event_store, KEY, (c.prior)(event_hash));
             let mut router = crate::EventRouter::new().with(crate::idempotent_by_id(Arc::clone(&event_store)));
-            router.register("Deposited", Box::new(|_: &EventEnvelope| Ok(()))).unwrap();
-            let env = EventEnvelope {
-                id: KEY.to_string(),
-                aggregate_id: "acct-1".into(),
-                event: Event { name: "Deposited".into(), version: 1, data: DEPOSIT_BODY.to_vec() },
-                sequence: Some(3),
-                namespace: Default::default(),
-                metadata: Default::default(),
-                timestamp: 1_714_564_800,
-            };
+            router.register("Deposited", Box::new(|_: &EventMessage| Ok(()))).unwrap();
+            let mut env = crate::testkit::event("acct-1", "Deposited", 3);
+            env.data = DEPOSIT_BODY.to_vec();
             let event_err = router.dispatch(&env).expect_err(c.name);
 
-            assert_eq!(command_err.downcast_ref::<Error>(), Some(&c.want), "{}: command path", c.name);
-            assert_eq!(event_err.downcast_ref::<Error>(), Some(&c.want), "{}: consume path", c.name);
+            assert_eq!(command_err.downcast_ref::<Error>(), Some(&(c.want)(&command_key)), "{}: command path", c.name);
+            assert_eq!(event_err.downcast_ref::<Error>(), Some(&(c.want)(KEY)), "{}: consume path", c.name);
             assert_eq!(is_terminal(&*command_err), c.want_terminal, "{}: command class", c.name);
             assert_eq!(is_terminal(&*event_err), c.want_terminal, "{}: consume class", c.name);
         }
@@ -915,7 +927,7 @@ mod tests {
             let store = Arc::new(FaultStore::default());
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
-            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, c.key);
+            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, c.key);
             let handler: Handler<NotJson, i64> = Box::new(move |_: &NotJson| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(1)
@@ -989,7 +1001,7 @@ mod tests {
             Case {
                 name: "claim held by a concurrent dispatch reports in progress",
                 errors: &[],
-                want: [Some(Error::new(ErrorCode::InProgress, "k1")), Some(Error::new(ErrorCode::InProgress, "k1"))],
+                want: [Some(Error::new(ErrorCode::InProgress, claimed("k1"))), Some(Error::new(ErrorCode::InProgress, claimed("k1")))],
                 held: true,
                 redispatched: 10,
                 want_calls: 0,
@@ -1033,7 +1045,7 @@ mod tests {
             Case {
                 name: "same key with a different payload fails with PayloadMismatch",
                 errors: &[None],
-                want: [None, Some(Error::new(ErrorCode::PayloadMismatch, "k1"))],
+                want: [None, Some(Error::new(ErrorCode::PayloadMismatch, claimed("k1")))],
                 held: false,
                 redispatched: 99,
                 want_calls: 1,
@@ -1047,7 +1059,7 @@ mod tests {
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
             let errors = c.errors;
-            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, |c: &Pay| {
+            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, |c: &Pay| {
                 Some(c.id.clone())
             });
             let bus = pay_bus(
@@ -1062,8 +1074,8 @@ mod tests {
                 }),
             );
             if c.held {
-                let hash = command_hash(&pay("k1", 10)).unwrap();
-                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), "k1", hash), Ok(Claim::Won(_))), "{}", c.name);
+                let hash = command_hash("Pay", &pay("k1", 10)).unwrap();
+                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), &claimed("k1"), hash), Ok(Claim::Won(_))), "{}", c.name);
                 store.claims.set(0);
             }
 
@@ -1082,7 +1094,7 @@ mod tests {
             assert_eq!(store.claims.get(), c.want_claims, "{}: claims", c.name);
             assert_eq!(store.releases.get(), c.want_releases, "{}: releases", c.name);
             if let Some(code) = c.want_cached_code {
-                match store.inner.claim(&mut MemoryTx::auto_commit(), "k1", 0).unwrap() {
+                match store.inner.claim(&mut MemoryTx::auto_commit(), &claimed("k1"), 0).unwrap() {
                     Claim::Prior(Record { state: State::Failed { code: cached, .. }, .. }) => {
                         assert_eq!(cached, Some(code), "{}: the cached code", c.name)
                     }
@@ -1106,7 +1118,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone()))],
+            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone()))],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 if calls_h.get() == 1 {
@@ -1149,7 +1161,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
+            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
             Box::new(move |_c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Err(Error::codec("bad payload").into())
@@ -1174,11 +1186,11 @@ mod tests {
         // A torn write holds the key. The guard replays the kernel's codec failure, terminal, so retry
         // stops at once, every redelivery replays it again, and the handler never runs for the key.
         let store = Arc::new(MemStore::default());
-        store.put_raw("k1", br#"{"payload_hash":7,"result":{"#).unwrap();
+        store.put_raw(&claimed("k1"), br#"{"payload_hash":7,"result":{"#).unwrap();
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
+            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(c.amount)
@@ -1251,7 +1263,7 @@ mod tests {
         // one claim; swapped, each retry would take and release its own, which the claim count shows.
         let (pacing, slept) = Pacing::recording();
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), |c: &Pay| Some(c.id.clone())), retry(2, pacing)],
+            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(2, pacing)],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 if calls_h.get() == 1 {
@@ -1289,7 +1301,7 @@ mod tests {
 
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(store, |c: &Pay| Some(c.id.clone()))],
+            vec![idempotent(store, SCOPE, |c: &Pay| Some(c.id.clone()))],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(c.amount)
@@ -1331,7 +1343,7 @@ mod tests {
             };
             let raised_h = raised.clone();
             let bus = pay_bus(
-                vec![idempotent(store, |c: &Pay| Some(c.id.clone()))],
+                vec![idempotent(store, SCOPE, |c: &Pay| Some(c.id.clone()))],
                 Box::new(move |_c: &Pay| {
                     calls_h.set(calls_h.get() + 1);
                     Err(Box::new(raised_h.clone()) as HandlerError)

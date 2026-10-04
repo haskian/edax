@@ -13,6 +13,7 @@ crate's whole dependency set is `uuid`
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
 | `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not on the ABI; only its callers are |
+| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first | yes | indirectly, via `claim_key.json` / `saga.json` | not on the ABI; only its callers are |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
@@ -104,8 +105,8 @@ makes them a safe index key. Across processes they are ordered only by their mil
 no golden vector, only structural guarantees a test asserts: the `8-4-4-4-12` hyphenated form,
 version 7, the RFC4122 variant, and in-process ordering over 50_000 mints.
 
-`current_timestamp` returns Unix time in nanoseconds as an `i64`, the envelope's timestamp type, so
-no caller narrows. Each call yields a value strictly greater than every prior call in this process,
+`current_timestamp` returns Unix time in nanoseconds as an `i64`, the type of every time a message
+carries, so no caller narrows. Each call yields a value strictly greater than every prior call in this process,
 across threads too. That holds even if the wall clock stalls inside a nanosecond. It also holds if
 the clock steps backwards under Network Time Protocol (NTP) slew, a leap second, or suspend. It does
 that with a process-local `AtomicI64` high-water mark and a compare-exchange loop, taking
@@ -124,12 +125,12 @@ and the outbox break at the language boundary. One implementation of "what a fre
 like" beats one per SDK. Both SDKs take them as overridable defaults, so nothing is locked in:
 
 ```python
-self._new_id = new_id or _edax.guid  # time-ordered id; override for a deterministic clock
-self._now = now or _edax.current_timestamp
+self._new_id = new_id or _edax.guid  # Repository: a time-ordered event id
+self._now = now or _edax.current_timestamp  # MemoryEventStore: the clock it records with
 ```
-<sup>`Repository.__init__`</sup>
 
-Rust does the same through `Repository::with_clock`, for deterministic tests.
+Rust does the same through `Repository::with_clock`, for deterministic tests. There the repository
+reads the clock and hands the reading to `EventStore::append` as `recorded_at`.
 
 Two limits. The high-water mark is per process — it spans neither a restart nor a second machine, so
 it is not a cross-service ordering primitive. And `i64` nanoseconds run out in the year 2262, where

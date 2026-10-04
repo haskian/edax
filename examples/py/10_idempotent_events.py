@@ -14,19 +14,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from edax import Entity, Event, EventEnvelope, EventRouter, idempotent_by_id
+from edax import Entity, EventMessage, EventRouter, idempotent_by_id, testing
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
 
 
-def deposited(event_id: str, amount: int) -> EventEnvelope:
-    return EventEnvelope(
-        id=event_id,  # the key the guard claims: stable across redeliveries
-        aggregate_id="acct-1",
-        event=Event("Deposited", 1, json.dumps({"amount": amount}).encode()),
-        namespace={},
-        metadata={},
-        timestamp=0,
-    )
+def deposited(event_id: str, amount: int) -> EventMessage:
+    # `id` is the key the guard claims: stable across redeliveries.
+    return testing.event("acct-1", "Deposited", id=event_id, data=json.dumps({"amount": amount}).encode())
 
 
 async def main() -> None:
@@ -39,15 +33,15 @@ async def main() -> None:
 
     # 2. The handler adds each deposit to the account's balance document.
     @router.on("Deposited")
-    async def add_deposit(envelope: EventEnvelope) -> None:
+    async def add_deposit(event: EventMessage) -> None:
         nonlocal audit_log_down
-        runs.append(envelope.id)
-        row = await balances.get(envelope.aggregate_id)
+        runs.append(event.id)
+        row = await balances.get(event.aggregate_id)
         if row is None:
-            row = Entity(envelope.aggregate_id, 0, {"balance": 0})
-        row.document["balance"] += json.loads(envelope.event.data)["amount"]
+            row = Entity(event.aggregate_id, 0, {"balance": 0})
+        row.document["balance"] += json.loads(event.data)["amount"]
         await balances.save(row)  # joins the guard's transaction
-        if envelope.id == "e2" and audit_log_down:
+        if event.id == "e2" and audit_log_down:
             audit_log_down = False
             raise ConnectionError("audit log unreachable")  # rolls back the save and the claim
 

@@ -38,12 +38,13 @@ classDiagram
 |---|---|---|
 | `MemoryTransactor` | `Transactor` | the transaction boundary; `transaction()` yields a `MemoryTx` |
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
-| `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works |
-| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |
+| `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works; `append` stamps `recorded_at` from `now=` (default: the kernel clock) |
+| `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `forget(key)` deletes a settled record, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |
 | `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False`, the ordering a Redis ledger has |
 | `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
-| `MemorySagaStore` | `SagaStore` | per-correlation state with optimistic concurrency, a tombstone on completion, and the saga outbox |
-| `MemoryBroker` | `Producer` and `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log that behaves like a Kafka topic |
+| `MemorySagaStore` | `SagaStore` | per-instance state with optimistic concurrency, a tombstone on completion, and the saga outbox of `CommandMessage`s |
+| `MemoryCommandOutbox` | command outbox | the commands a unit of work decided, staged under its transaction and drained by a `Relay` |
+| `MemoryBroker` | `Producer` and `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log of events and commands that behaves like a Kafka topic |
 
 Only the waiting is Python's. The maps, the version checks, the outbox, the atomic claim, the
 transaction journal and the broker's settlement accounting live in the native `edax-memory` crate.
@@ -53,7 +54,7 @@ terminal `BadHandle`, rather than the binding's own panic.
 
 The Rust reference model ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
 `MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryLedger` (`Tx = ()`), `MemoryProjectionStore`,
-`MemorySagaStore` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token, and the
+`MemorySagaStore`, `MemoryCommandOutbox` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token, and the
 no-transaction handle is `MemoryTx::auto_commit()`, which is also its `Default`.
 
 ## The transaction is real
@@ -174,7 +175,7 @@ guard's release must not delete it.
 from edax.backend.memory import MemoryLedger
 
 ledger = MemoryLedger()  # a database of its own; ignores tx; joins_transaction = False
-bus = CommandBus(idempotent(ledger, key=lambda c: c.request_id, unit_of_work=db))
+bus = CommandBus(idempotent(ledger, scope="accounts", unit_of_work=db))
 ```
 
 **Claims are fenced, as Redis fences them.** `claim` returns a handle naming that claim. `complete` writes
@@ -196,12 +197,19 @@ committed state, unchecked: a torn write, another layout, a field of the wrong t
 them as the kernel does, a cached `codec` failure, so a test can rehearse a corrupted ledger row. A key an
 open unit of work holds is refused with `ConcurrencyError`. Rust has the same hook on both memory stores.
 
+**`forget(key)` is the re-drive.** It deletes a settled record, so the next claim of the key wins and
+the handler runs again. The kernel's
+[forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it
+deletes. Under an open transaction the delete is staged, and holds the key
+until the transaction ends. A key another open transaction
+holds reads as pending, as it does for a claimant.
+
 ## Isolation by exclusion, and `masked_pending`
 
 A durable store parks a second writer on a row lock. An in-memory store driven from one event loop
 cannot park anyone without deadlocking the loop, so it reports the conflict instead. One open
-transaction may stage an aggregate's stream, a projection id, an idempotency key or a correlation
-id. That key is held until the transaction ends. A second writer gets `ConcurrencyError` at once.
+transaction may stage an aggregate's stream, a projection id, an idempotency key or a saga
+instance id. That key is held until the transaction ends. A second writer gets `ConcurrencyError` at once.
 
 For the ledger, that exclusion replaces the row lock. A claim on a held key does not block and does
 not win: it loses, and reads back the holder's record re-masked as pending. The function is
@@ -259,7 +267,10 @@ here first and not in production.
   the beginning and settles on its own. A projection and a saga on one broker each get their own
   group, as they would on Kafka, instead of competing for each message.
 - **Order holds per key, not across keys,** once there is more than one partition. A key lands on
-  Kafka's partition for it.
+  Kafka's partition for it. The key is the kernel's
+  [ordering key](../kernels/event.md#the-ordering-key), so a command lands beside the events of the aggregate it targets.
+- **A delivery carries either kind.** `publish` takes an `EventMessage` or a `CommandMessage`, and
+  `Delivery.message` hands back what was published.
 
 A group commits on every ack that moves its watermark, because a commit costs nothing here.
 `empty()` is true only when the group has committed past every message: nothing queued, nothing in
@@ -279,7 +290,7 @@ This is a development and test backend.
 | An abandoned token is a permanent conflict | a token neither committed nor rolled back is not a held key you can wait out. Its keys conflict for the process lifetime. Every SDK's scoped unit of work guarantees a commit or a rollback runs. |
 | thread-bound native objects | build and use one transactor's stores on one thread; any other thread gets `BadHandle`. |
 
-`MemoryBroker` has matching limits. `publish` returns once the envelope is in the log, not once it is
+`MemoryBroker` has matching limits. `publish` returns once the message is in the log, not once it is
 durable. Nothing is ever deleted from the log, which suits a test and not a long-running process. A
 group has one consumer: there is no partition assignment between several members of one group.
 

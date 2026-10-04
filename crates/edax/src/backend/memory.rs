@@ -7,9 +7,10 @@
 //! the SDK's own. For production, bring stores backed by a real database.
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use edax_cqrs::{decode_prior, encode_record};
-use edax_event::EventEnvelope;
+use edax_event::{CommandMessage, EventDraft, EventMessage};
 use edax_memory::{Claimed, SagaRow, NO_TX};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -18,7 +19,6 @@ use serde_json::Value;
 use crate::command::{Claim, ClaimHandle, IdempotencyStore, Record};
 use crate::saga::{SagaInstance, SagaStore};
 use crate::store::Outbox;
-use edax_event::SagaCommand;
 use crate::{Entity, Error, EventStore, Page, ProjectionStore, Query, Snapshot, Transactor};
 
 /// The in-memory backend's transaction handle: the token of a transaction [`MemoryTransactor::begin`]
@@ -64,7 +64,7 @@ impl MemoryTransactor {
 
     /// The event store over this database.
     pub fn event_store(&self) -> MemoryEventStore {
-        MemoryEventStore { inner: self.inner.event_store() }
+        MemoryEventStore { inner: self.inner.event_store(), now: default_clock() }
     }
 
     /// The projection store over this database.
@@ -120,14 +120,39 @@ impl Transactor for MemoryTransactor {
 /// to, so `store.transaction(|tx| ...)` opens the database's unit of work. `new()` builds a store
 /// over a database of its own; [`MemoryTransactor::event_store`] builds one that shares a database
 /// with the other stores.
-#[derive(Clone, Default)]
+///
+/// It records each appended event at its own clock, the kernel's
+/// [`current_timestamp`](edax_core::current_timestamp), unless [`with_clock`](Self::with_clock)
+/// replaces it. A clone shares the clock.
+#[derive(Clone)]
 pub struct MemoryEventStore {
     inner: edax_memory::MemoryEventStore,
+    now: Clock,
+}
+
+/// A clock reading in unix nanoseconds. An `Arc`, so a clone of the store shares it.
+type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+fn default_clock() -> Clock {
+    Arc::new(edax_core::current_timestamp)
+}
+
+impl Default for MemoryEventStore {
+    fn default() -> Self {
+        Self { inner: edax_memory::MemoryEventStore::default(), now: default_clock() }
+    }
 }
 
 impl MemoryEventStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record appended events at `now` instead of the kernel's clock, for deterministic tests. A
+    /// closure, so a caller can capture a seeded reading instead of reaching for a global.
+    pub fn with_clock(mut self, now: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
+        self.now = Arc::new(now);
+        self
     }
 
     /// The transactor this store enlists with.
@@ -162,8 +187,8 @@ impl Transactor for MemoryEventStore {
     }
 }
 
-impl Outbox<EventEnvelope> for MemoryEventStore {
-    fn unpublished(&self, limit: usize) -> Result<Vec<EventEnvelope>, Error> {
+impl Outbox<EventMessage> for MemoryEventStore {
+    fn unpublished(&self, limit: usize) -> Result<Vec<EventMessage>, Error> {
         Ok(self.inner.unpublished(limit))
     }
 
@@ -174,7 +199,7 @@ impl Outbox<EventEnvelope> for MemoryEventStore {
 }
 
 impl EventStore for MemoryEventStore {
-    fn load(&self, tx: &mut MemoryTx, aggregate_id: &str, after: u64) -> Result<Vec<EventEnvelope>, Error> {
+    fn load(&self, tx: &mut MemoryTx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
         self.inner.load(tx.0, aggregate_id, after)
     }
 
@@ -199,8 +224,9 @@ impl EventStore for MemoryEventStore {
             
     }
 
-    fn append(&self, tx: &mut MemoryTx, aggregate_id: &str, expected: u64, events: &[EventEnvelope]) -> Result<(), Error> {
-        self.inner.append(tx.0, aggregate_id, expected, events.to_vec())
+    /// Stamps `recorded_at` from the store's clock: see [`with_clock`](MemoryEventStore::with_clock).
+    fn append(&self, tx: &mut MemoryTx, aggregate_id: &str, expected: u64, drafts: Vec<EventDraft>) -> Result<Vec<EventMessage>, Error> {
+        self.inner.append(tx.0, aggregate_id, expected, drafts, (self.now)())
     }
 }
 
@@ -460,8 +486,8 @@ impl<S> MemorySagaStore<S> {
     }
 }
 
-impl<S> Outbox<SagaCommand> for MemorySagaStore<S> {
-    fn unpublished(&self, limit: usize) -> Result<Vec<SagaCommand>, Error> {
+impl<S> Outbox<CommandMessage> for MemorySagaStore<S> {
+    fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
         Ok(self.inner.unpublished(limit))
     }
 
@@ -487,12 +513,12 @@ impl<S: Serialize + DeserializeOwned> SagaStore for MemorySagaStore<S> {
         }))
     }
 
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &S, version: u64, folded: &str, commands: &[SagaCommand]) -> Result<u64, Error> {
+    fn save(&self, tx: &mut MemoryTx, id: &str, state: &S, version: u64, folded: &str, commands: &[CommandMessage]) -> Result<u64, Error> {
         let state = serde_json::to_value(state).map_err(Error::codec)?;
         self.inner.save(tx.0, id, version, state, folded.to_owned(), commands.to_vec())
     }
 
-    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[SagaCommand]) -> Result<u64, Error> {
+    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[CommandMessage]) -> Result<u64, Error> {
         self.inner.complete(tx.0, id, version, commands.to_vec())
     }
 }
@@ -500,22 +526,10 @@ impl<S: Serialize + DeserializeOwned> SagaStore for MemorySagaStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edax_event::Event;
+    use crate::testkit::draft;
     use crate::ErrorCode;
     use serde::Deserialize;
     use serde_json::json;
-
-    fn env(aggregate_id: &str, sequence: u64) -> EventEnvelope {
-        EventEnvelope {
-            id: format!("{aggregate_id}-{sequence}"),
-            aggregate_id: aggregate_id.to_string(),
-            event: Event { name: "E".into(), version: 1, data: Vec::new() },
-            sequence: Some(sequence),
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 0,
-        }
-    }
 
     /// `Claim` has no `PartialEq`; a record does, and `Won` is the absence of one. The claim is
     /// unwrapped here: these cases are about what the store *stores*, and a claim that fails to
@@ -679,7 +693,7 @@ mod tests {
         let events = db.event_store();
         assert_eq!((db.open_count(), events.unpublished_count()), (0, 0));
         let mut tx = db.begin().unwrap();
-        events.append(&mut tx, "a", 0, &[env("a", 1)]).unwrap();
+        events.append(&mut tx, "a", 0, vec![draft("a", "E", 1, &[])]).unwrap();
         assert_eq!((db.open_count(), events.unpublished_count()), (1, 0), "staged: open, nothing waiting");
         db.commit(tx).unwrap();
         assert_eq!((db.open_count(), events.unpublished_count()), (0, 1), "committed: closed, one waiting");
@@ -706,7 +720,7 @@ mod tests {
         // One unit of work over the event store's Transactor; the same `tx` drives both writes.
         events
             .transaction(|tx| {
-                events.append(tx, "a", 0, &[env("a", 1)])?;
+                events.append(tx, "a", 0, vec![draft("a", "E", 1, &[])])?;
                 // Read-your-writes inside the unit of work: the append is visible before commit.
                 assert_eq!(events.load(tx, "a", 0)?.len(), 1, "own write visible in the tx");
                 let mut e = Entity { id: "a".into(), version: 0, document: json!({"id": "a", "n": 1}) };
@@ -727,7 +741,7 @@ mod tests {
         // A body that returns Err rolls back (no panic, error propagates), and its writes vanish.
         // Free-fn form is equivalent.
         let out = crate::transaction(&events, |tx| {
-            events.append(tx, "a", 1, &[env("a", 2)])?;
+            events.append(tx, "a", 1, vec![draft("a", "E", 2, &[])])?;
             Err::<(), _>(Error::store("boom"))
         });
         assert!(matches!(out, Err(Error { code: ErrorCode::Store, .. })));

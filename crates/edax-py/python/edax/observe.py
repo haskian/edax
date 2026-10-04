@@ -167,7 +167,7 @@ class Observer:
         key. Fires once per losing dispatch, from :func:`~edax.command.idempotent` and
         :func:`~edax.router.idempotent_by_id`, before the caller gets the cached result or the error.
 
-        ``name`` is the command type (``cmd.type``) or the event name (``env.event.name``) the guarded
+        ``name`` is the command type (``cmd.type``) or the event name (``msg.name``) the guarded
         handler serves, so every claim signal breaks down per handler. ``verdict`` is the kernel's
         judgement of the prior record, one of :data:`CLAIM_VERDICTS`. Read
         ``succeeded`` as the duplicate-request rate, ``in_progress`` as contention between workers,
@@ -199,8 +199,8 @@ class Observer:
         delivery and settled it. Fires exactly once per :class:`~edax.dispatcher.Delivery`, after the
         ack, the nack or the dead-letter, even if that settlement raised.
 
-        ``name`` is the event name of the delivered envelope, ``env.event.name``, so every delivery
-        signal breaks down per event handler.
+        ``name`` is the name of the delivered message, ``msg.name``, so every delivery signal breaks down
+        per handler.
         ``outcome`` is one of :data:`DELIVERY_OUTCOMES`: which settlement arm ran. ``attempt`` is the
         attempt this delivery was, from ``1``, so a nack at the ceiling is told from a first nack;
         bucket it in a histogram, do not label by it. ``duration_ns`` is the handler alone, never the
@@ -208,7 +208,7 @@ class Observer:
         ``error_type`` is :func:`error_type` of what the handler raised, ``None`` when it returned. It
         splits nacks by cause and tells a ``dead`` on a terminal error from a ``dead`` at the ceiling.
 
-        Not fired for a bare envelope submitted without a delivery: nothing settles it. Not the
+        Not fired for a bare message submitted without a delivery: nothing settles it. Not the
         settlement's own failure: that is :meth:`settlement_failed`."""
 
     def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
@@ -242,8 +242,9 @@ class Observer:
         ``published`` is the count of rows published, ``0`` for an empty outbox; the rows moved to
         ``on_dead`` are :attr:`~edax.store.DrainStats.dead_lettered` on :attr:`~edax.store.Relay.last`.
         ``duration_ns`` is read to mark.
-        ``oldest_timestamp`` is the ``timestamp`` of the oldest row in the batch, Unix nanoseconds from
-        the kernel clock unless the envelopes were stamped by another; ``None`` for an empty batch.
+        ``oldest_timestamp`` is when the oldest row in the batch was written, its ``recorded_at`` (an event)
+        or ``issued_at`` (a command), Unix nanoseconds from the clock of the store or saga runner that
+        stamped it; ``None`` for an empty batch.
         Export it as a gauge and compute the lag at query time, reader's clock minus the value: a
         batch that stays old is a relay that cannot keep up.
 
@@ -341,7 +342,7 @@ def timing(record: TimingRecorder, name: Callable[[Any], str]) -> Callable[[_Wra
     duration_ns)`` when the handler raises, which it then re-raises. ``record`` is guarded like an
     observer call. Structurally a :data:`~edax.command.Middleware` and an
     :data:`~edax.router.EventMiddleware`; only ``name`` differs: ``lambda c: c.type`` for commands,
-    ``lambda env: env.event.name`` for events. This is the one place command latency is measured.
+    ``lambda msg: msg.name`` for events. This is the one place command latency is measured.
     A host tracer wraps the same seam to start the span the handler's own calls nest under."""
 
     def mw(next_: _Wrapped) -> _Timed:

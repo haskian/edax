@@ -1,4 +1,4 @@
-//! The idempotency store view: claim, complete and release for one key.
+//! The idempotency store view: claim, complete and release for one key, and forget for a settled one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -13,8 +13,9 @@ use crate::tx::{held_by_other, store_view, Committed, Held, MemoryState, MemoryT
 /// record atomically (insert-if-absent) and hands back either the handle that settles it or any prior
 /// record, so the caller decides replay / payload-mismatch / still-in-progress;
 /// [`complete`](Self::complete) overwrites the claim with the terminal outcome;
-/// [`release`](Self::release) drops it so a transient failure can retry. Under an open token all three
-/// are staged and land or vanish with the transaction, so a claim rolled back with its events releases
+/// [`release`](Self::release) drops it so a transient failure can retry; [`forget`](Self::forget)
+/// deletes a settled record so a re-driven message runs again. Under an open token all four are
+/// staged and land or vanish with the transaction, so a claim rolled back with its events releases
 /// the key.
 ///
 /// Both settling writes are fenced on the claim's handle, as Redis fences on the exact claim value: they
@@ -175,6 +176,34 @@ impl MemoryIdempotencyStore {
         })
     }
 
+    /// Delete the settled record `key` holds under `tx`, so the next claim wins and a re-driven
+    /// message (one taken back from a dead-letter queue, say) runs its handler again. The record
+    /// decides, read by the kernel: a pending claim is refused as `in_progress`, because its run may
+    /// still complete; a completed or failed record is deleted, and so are bytes no reader can decode;
+    /// an absent key is a no-op. A key another open transaction holds reads as pending, as it does for
+    /// a claimant. `Err` also if `tx` names no open transaction.
+    ///
+    /// Not a [`release`](Self::release): a release is the claimant settling its own claim by handle,
+    /// while a forget acts on an outcome that nobody owns any more, so it takes no handle. Over a
+    /// committed record it stages a delete, which holds the key until this transaction ends.
+    pub fn forget(&self, tx: i64, key: &str) -> Result<(), Error> {
+        lock(&self.state).write(tx, |committed, others, own| {
+            if claim_held_by_other(committed, others, key).is_some() {
+                return Err(edax_cqrs::unsettled_claim(key));
+            }
+            let Some(held) = view(committed, own, key) else {
+                return Ok(());
+            };
+            edax_cqrs::forget(key, &held.record)?;
+            if committed.claims.contains_key(key) {
+                own.claims.insert(key.to_owned(), None);
+            } else {
+                own.claims.remove(key);
+            }
+            Ok(())
+        })
+    }
+
     /// Lapse whatever `key` holds in committed state, as a lease or a retention TTL running out would:
     /// the next claim wins, and the old claim's handle settles nothing. A test hook, so memory can
     /// rehearse the takeover a store with expiring claims (Redis) produces. A write staged by an open
@@ -187,6 +216,7 @@ impl MemoryIdempotencyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::wire;
     use crate::tx::NO_TX;
     use serde_json::json;
 
@@ -255,5 +285,83 @@ mod tests {
                 assert_eq!(prior, &pending, "every loser sees the winner's pending record");
             }
         }
+    }
+
+    #[test]
+    fn forget_branches() {
+        const HASH: u64 = 11_234_062_831_410_934_249;
+        const DONE: &[u8] = br#"{"payload_hash":11234062831410934249,"result":{"invoice_id":"invoice-7"},"error":null,"error_code":null,"pending":false}"#;
+        const FAILED: &[u8] = br#"{"payload_hash":11234062831410934249,"result":null,"error":"insufficient funds","error_code":"rejected","pending":false}"#;
+        #[derive(Clone, Copy)]
+        enum Seed {
+            /// Nothing was ever claimed.
+            Absent,
+            /// A committed claim, still pending.
+            Pending,
+            /// A committed claim settled with this record.
+            Settled(&'static [u8]),
+            /// A pending claim another open transaction staged.
+            HeldByAnother,
+        }
+        let in_progress = Err("in_progress: idempotency key req-A is claimed by a run that has not completed: forget it once the claim settles or lapses".to_owned());
+        let cases: [(&str, Seed, Result<(), String>, bool); 6] = [
+            ("absent_is_a_no_op", Seed::Absent, Ok(()), false),
+            ("a_pending_claim_is_refused", Seed::Pending, in_progress.clone(), true),
+            ("a_completed_record_is_deleted", Seed::Settled(DONE), Ok(()), false),
+            ("a_failed_record_is_deleted", Seed::Settled(FAILED), Ok(()), false),
+            // A cached codec failure in the kernel's reading: the re-drive a poisoned key needs.
+            ("an_unreadable_record_is_deleted", Seed::Settled(b"{not json"), Ok(()), false),
+            ("a_key_another_transaction_holds_is_refused", Seed::HeldByAnother, in_progress, true),
+        ];
+        for (name, seed, want, held_after) in cases {
+            let store = MemoryIdempotencyStore::new();
+            let holder = store.transactor().begin();
+            match seed {
+                Seed::Absent => {}
+                Seed::Pending => assert!(matches!(store.claim(NO_TX, "req-A", HASH), Ok(Claimed::Won(_))), "{name}"),
+                Seed::Settled(record) => {
+                    let Ok(Claimed::Won(handle)) = store.claim(NO_TX, "req-A", HASH) else { panic!("{name}: a free key") };
+                    store.complete(NO_TX, "req-A", &handle, record).unwrap();
+                }
+                Seed::HeldByAnother => assert!(matches!(store.claim(holder, "req-A", HASH), Ok(Claimed::Won(_))), "{name}"),
+            }
+            assert_eq!(wire(store.forget(NO_TX, "req-A")), want, "{name}");
+            assert!(store.transactor().rollback(holder));
+            let held = matches!(store.claim(NO_TX, "req-A", HASH), Ok(Claimed::Prior(_)));
+            // A held-by-another key is free once its holder rolled back; anything else kept its record.
+            let want_held = held_after && !matches!(seed, Seed::HeldByAnother);
+            assert_eq!(held, want_held, "{name}: the key still holds a record");
+        }
+    }
+
+    #[test]
+    fn forget_is_staged_with_the_transaction() {
+        // A rolled-back forget keeps the record; a committed one deletes it. A forget of a record this
+        // transaction settled itself, with nothing committed, leaves nothing behind.
+        const DONE: &[u8] = br#"{"payload_hash":7,"result":42,"error":null,"error_code":null,"pending":false}"#;
+        let store = MemoryIdempotencyStore::new();
+        let Ok(Claimed::Won(handle)) = store.claim(NO_TX, "req-A", 7) else { panic!("a free key") };
+        store.complete(NO_TX, "req-A", &handle, DONE).unwrap();
+        for commit in [false, true] {
+            let tx = store.transactor().begin();
+            store.forget(tx, "req-A").unwrap();
+            assert!(matches!(store.claim(tx, "req-A", 7), Ok(Claimed::Won(_))), "commit {commit}: the transaction sees the delete");
+            if commit {
+                store.transactor().commit(tx).unwrap();
+            } else {
+                assert!(store.transactor().rollback(tx));
+                assert_eq!(store.claim(NO_TX, "req-A", 7), Ok(Claimed::Prior(DONE.to_vec())), "a rollback keeps the record");
+            }
+        }
+        // The committed transaction forgot the record and then won a fresh claim on the key.
+        assert!(matches!(store.claim(NO_TX, "req-A", 7), Ok(Claimed::Prior(_))));
+
+        let fresh = MemoryIdempotencyStore::new();
+        let tx = fresh.transactor().begin();
+        let Ok(Claimed::Won(handle)) = fresh.claim(tx, "req-B", 7) else { panic!("a free key") };
+        fresh.complete(tx, "req-B", &handle, DONE).unwrap();
+        fresh.forget(tx, "req-B").unwrap();
+        fresh.transactor().commit(tx).unwrap();
+        assert!(matches!(fresh.claim(NO_TX, "req-B", 7), Ok(Claimed::Won(_))), "nothing was left behind");
     }
 }

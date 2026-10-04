@@ -10,55 +10,63 @@ events and commands.
 
 ```mermaid
 flowchart LR
-    D[KeyOrderedDispatcher] -->|envelope| R[EventRouter]
+    D[KeyOrderedDispatcher] -->|EventMessage| R[EventRouter]
     R -->|"SagaRunner.on_event"| RU[SagaRunner]
-    RU -->|"correlation_id of the envelope"| S[Saga]
+    RU -->|"instance_id of the event"| S[Saga]
     RU -->|"load the SagaInstance"| ST[SagaStore]
     S -->|"handle: new state plus commands"| RU
     RU -->|"save state and commands in one write, or complete"| ST
     ST -->|"committed commands, the saga outbox"| RL[Relay]
-    RL -->|"dispatch each command"| CB[CommandBus]
+    RL -->|"dispatch_message each command"| CB[CommandBus]
 ```
 
 ## The pieces
 
 | Piece | Source | What it is |
 |---|---|---|
-| `Saga` | seam, `edax.saga`, `edax::saga` | the decision half: `correlation_id` then `handle` |
+| `Saga` | seam, `edax.saga`, `edax::saga` | the decision half: a `name`, then `instance_id` and `handle` |
 | `SagaInstance` | `edax.saga`, `edax::saga` | one stored instance: its `state` and `version`, or a completed tombstone |
-| `SagaStore` | seam, `edax.saga`, `edax::saga` | instance state keyed by correlation id, with optimistic concurrency, plus the saga outbox |
-| `SagaCommand` | `edax.saga`, `edax::SagaCommand` | one outbox row: the kernel's command id, the correlation, the marshaled command, a timestamp |
+| `SagaStore` | seam, `edax.saga`, `edax::saga` | instance state keyed by instance id, with optimistic concurrency, plus the saga outbox |
+| `CommandMessage` | `edax`, `edax::CommandMessage` | one outbox row: the command message the kernel's `saga_command` built |
 | `SagaRunner` | `edax.saga`, `edax::saga` | the wiring: load, fold, persist state and commands in one write |
 | `Relay` | `edax.store`, `edax::Relay` | sends the committed commands, the same relay that drains the event outbox |
 | `Completed` | `edax.saga` | the Python sentinel a `handle` returns to finish the instance |
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
 to a `KeyOrderedDispatcher`. It takes a command codec, `json_codec({"Fulfill": Fulfill})`, to put the
-commands in the outbox. `runner.relay(bus.dispatch, on_dead=sink)` sends them (`examples/py/13_saga.py`).
-Pass `on_dead`: without a sink, a command that fails terminally is handed back on every drain, and
-the rows behind it wait. In Rust, the codec is a `RegistryCodec` over the command enum, and
-`Relay::<_, SagaCommand>::new(store).on_dead(sink)` with `runner.command(row)` sends them.
+commands in the outbox. `runner.relay(bus, on_dead=sink)` sends them through
+`bus.dispatch_message` (`examples/py/13_saga.py`). Pass `on_dead`: without a sink, a command that
+fails terminally is handed back on every drain, and the rows behind it wait. In Rust, the codec is a
+`RegistryCodec` over the command enum, and `Relay::<_, CommandMessage>::new(store).on_dead(sink)`
+with `runner.command(row)` sends them.
 
-### The correlation rule
+### The name
 
-`correlation_id(env)` answers one question: which running instance does this event belong to?
+A saga declares a `name`, such as `name: ClassVar[str] = "order"`. Keep it stable across deploys. It
+scopes the idempotency key of every command the saga sends. Two sagas may share an instance id and a
+bus, and their commands still never meet under one key.
+
+### The instance rule
+
+`instance_id(msg)` answers one question: which running instance does this event belong to?
 
 - A string names the instance. The runner loads it, or starts at `None` state and version `0` if
   there is none. A completed instance takes no event: the runner returns before it folds.
 - `None` ignores the event. The runner returns before it touches the store, so an unrelated event
   costs nothing and writes nothing.
 
-The correlation id is the saga's own key, not the aggregate id: one instance spans several
+The instance id is the saga's own key, not the aggregate id: one instance spans several
 aggregates. It is often derived from the aggregate id, as in `examples/py/13_saga.py`, and that
-choice has a concurrency consequence, below.
+choice has a concurrency consequence, below. Every command the instance sends carries it as
+`aggregate_id`, so one instance's commands keep their order on every transport.
 
-It is also not the `correlation_id` in the envelope's metadata. That one names a logical flow and
-travels with the events; this one names a stored saga instance. They share a word and nothing else,
-and no code reads one to produce the other. The next section covers the chain in metadata.
+It is also not the event's `correlation_id`. That one names a logical flow and travels with every
+message; this one names a stored saga instance. One flow may drive several instances, and no code
+reads one to produce the other. The next section covers the flow.
 
 ### handle
 
-`handle(state, env)` returns `(new_state, commands)`. `state` is `None` for a new instance.
+`handle(state, msg)` returns `(new_state, commands)`. `state` is `None` for a new instance.
 
 | To do this | Python returns | Rust returns |
 |---|---|---|
@@ -73,53 +81,20 @@ return would be indistinguishable from completion. The `none_state_is_saved_not_
 survives `copy`, `deepcopy` and `pickle`. A saga's state may travel through a snapshot. `new_state
 is Completed` must still hold afterwards.
 
-### Carrying the chain across the hop
+### The lineage across the hop
 
-A saga is where a causation chain would otherwise break. `handle` returns commands, not metadata, so
-the `correlation_id` and `causation_id` on `env` reach the emitted command only if you put them
-there. Either of two ways works.
+A saga is where a flow would otherwise break: `handle` returns command objects, not messages. The
+kernel closes the gap. `saga_command` builds each outbox row as a `CommandMessage` that is a child of
+the folded event. [edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists each
+field and why. Two inputs come from the runner. The idempotency key scopes the id under the saga's
+`name`. `issued_at` is the runner's clock, `now=` (default: the kernel clock).
 
-**As command fields.** The default: explicit, and it survives a queue.
+The command stays a pure business intent: it needs no lineage fields.
 
-```python
-@dataclass
-class Fulfill:
-    order_id: str
-    correlation_id: str  # the flow this intent belongs to
-    causation_id: str  # the id of the event that caused it
-    type: ClassVar[str] = "Fulfill"
-
-
-def handle(self, state: Any, env: edax.EventEnvelope) -> tuple[Any, list]:
-    chain = propagate(env.metadata, env.id)  # returns exactly the two keys
-    return Completed, [Fulfill(env.aggregate_id, **chain)]
-```
-
-The handler then stamps what it was handed onto the events it writes:
-`await repo.save(order, metadata={"correlation_id": c.correlation_id, "causation_id": c.causation_id})`.
-
-This does not break idempotency. A command field must be the same on every legitimate retry of one
-intent, the rule in
-[observability](./observability.md#traces-via-metadata-and-where-request-scoped-values-go). The
-causing event meets it. A redelivery hands the saga the same envelope, same `id` and same metadata,
-from the outbox and from the broker alike. The hash is unchanged, so the retry replays
-instead of raising `PayloadMismatch`.
-
-The hazard is identity, not hashing. Chain ids in fields widen what the command is. Say two
-different events can legitimately cause one intent. They now build two different commands. A key
-that ignores the cause makes the second one a `PayloadMismatch` under the first one's record. So key
-on the cause too, or keep the cause out of the command. `examples/py/13_saga.py` keys on
-`order_id` alone, because one event type causes `ShipOrder`.
-
-**Or through a middleware seam.** Keep the command a pure business intent and carry `env` beside it.
-An event middleware wraps `SagaRunner.on_event` and puts the envelope where the command handler can
-read it. Python has the `contextvar` precedent of `current_tx`. Rust can use a thread-local, because
-the bus dispatch runs synchronously on the worker thread. The handler then calls `propagate` itself.
-With the saga outbox the command runs later, in the relay, so this seam carries the chain only if the
-command row does: prefer the command fields.
-
-Nothing stamps the chain for you at either end. `Repository.save` copies the metadata you pass and
-never calls `originate`, so a root event with no `ensure_ids()` has no chain at all.
+The relay hands each row to `bus.dispatch_message(row, codec)`. The row keeps its id and lineage, so
+the events its handler saves continue the flow ([lineage rules](../kernels/event.md#causation--lineage)).
+The chain reads request, event, saga command, event, and nothing in it was stamped by hand. `testdata/golden/saga.json` pins the row, so both SDKs write
+the same one.
 
 ### SagaStore
 
@@ -132,9 +107,10 @@ never calls `originate`, so a root event with no `ensure_ids()` has no chain at 
 | `tx` | with `tx` given, or `current_tx` of the store's transactor set, a durable backend enlists the write in that unit of work |
 
 A completed instance takes no write at all. Each command carries the id
-`saga_command_id(id, version + 1, index)`, which is `"{correlation_id}:{version}:{index}"`. It is
-unique per committed transition. A durable store can key the outbox row on it, and a consumer can
-deduplicate on it. The in-memory backend refuses a command whose id is not that one, as `codec`. A
+`saga_command_id(id, version + 1, index)`, which is `"{instance_id}:{version}:{index}"`. It is
+unique per committed transition. A durable store can key the outbox row on it. The command's
+idempotency key is that id under the saga's name, so a consumer deduplicates on it. The in-memory
+backend refuses a command whose id is not that one, as `codec`. A
 durable store purges tombstones by retention, longer than any redelivery window. `SagaStoreContract` in
 `edax.testing` (and `crates/edax/tests/contract.rs` in Rust) holds a backend to every clause.
 
@@ -160,9 +136,9 @@ sent. The error is transient, so the event is redelivered and folds the fresh st
 writer's state and commands survive untouched.
 
 **When can that happen?** The `KeyOrderedDispatcher` serializes events that share an aggregate id. A
-saga whose `correlation_id` is the aggregate id therefore has no concurrent writer. Its version
-check never fires. The version exists for a cross-aggregate correlation, where two different
-aggregate ids map to one correlation id and therefore to two different workers. `Paid` from the
+saga whose `instance_id` is the aggregate id therefore has no concurrent writer. Its version check
+never fires. The version exists for a cross-aggregate instance, where two different aggregate ids
+map to one instance id and therefore to two different workers. `Paid` from the
 payment aggregate and `Cancelled` from the order aggregate can fold one order at once.
 `test_saga.py::test_the_fold_that_loses_the_version_race_sends_nothing` pins it: the cancel commits a
 `Refund` first, the payment's write conflicts, and its `Fulfill` never goes out. So does
@@ -181,12 +157,12 @@ saga: the decision and the messages it produces are stored in one transaction.
 | the write lands, then the response is lost | advanced | the redelivery finds the event in the instance's `folded` marks (or the tombstone) and skips it |
 | the step commits, then the ack is lost, or a crash replays every event above the committed offset | advanced | each redelivered event the instance folded is skipped: its command was committed once and is sent once |
 | crash after the commit, before the relay sends | advanced | the command waits in the outbox; the next drain sends it |
-| crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by command id |
+| crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by the idempotency key, the command id under the saga's name |
 | a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it |
 
 So a command is sent at least once per committed step, and never for a step that did not commit.
-Key the command's idempotency guard on something stable across re-sends: the command's own identity,
-or the row id. `test_saga.py::test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else`
+The row's `idempotency_key` is stable across re-sends, so an `idempotent` guard on the bus replays a
+re-sent row instead of running its handler twice. `test_saga.py::test_the_saga_outbox_sends_each_committed_command_once_and_nothing_else`
 (hypothesis) and `crates/edax/tests/saga_model.rs` (proptest) check it over random histories of two
 workers with stale reads, crashed commits, failed publishes, lost marks and redeliveries of committed
 events.
@@ -195,9 +171,9 @@ events.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> ignored : correlation_id returned None
+    [*] --> ignored : instance_id returned None
     ignored --> [*]
-    [*] --> open : first correlated event, state was None, version 0
+    [*] --> open : first event of the instance, state was None, version 0
     open --> open : an event folds into state, saved with its commands at version plus one
     open --> conflicted : a racing writer advanced the version first
     conflicted --> open : the write rolled back with its commands; the event is redelivered
@@ -210,8 +186,8 @@ stateDiagram-v2
 
 `examples/py/13_saga.py` runs an order saga. `OrderPlaced` opens an instance, and `PaymentReceived`
 emits `ShipOrder` and completes it. The example hands `PaymentReceived` over twice. It calls
-`runner.on_event` directly, so there is no broker settlement: the redelivery is the same envelope
-handed over again.
+`runner.on_event` directly, so there is no broker settlement: the redelivery is the same event
+message handed over again.
 
 ```mermaid
 sequenceDiagram
@@ -235,7 +211,7 @@ sequenceDiagram
     Note over RU: no fold, no write, no command
     RL->>ST: unpublished
     ST-->>RL: order-1:2:0
-    RL->>CB: dispatch ShipOrder order-1
+    RL->>CB: dispatch_message ShipOrder order-1, key order-1:2:0
     RL->>ST: mark order-1:2:0 published
 ```
 
@@ -247,16 +223,17 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 | | Rust | Python |
 |---|---|---|
 | Completion | `handle` returns `None` for the state | `handle` returns the `Completed` sentinel |
-| Transaction | `run(tx, env)` takes the handle explicitly | `on_event(env, tx=None)` falls back to `current_tx` |
+| Transaction | `run(tx, msg)` takes the handle explicitly | `on_event(msg, tx=None)` falls back to `current_tx` |
 | Commands | `SagaRunner::new(saga, store, codec)`, the codec a `RegistryCodec` over the command enum | `SagaRunner(saga, store, codec)`, the codec a `json_codec` over the command types |
-| Sending | `Relay::<_, SagaCommand>::new(store)` and `runner.command(row)` | `runner.relay(dispatch)` |
+| Sending | `Relay::<_, CommandMessage>::new(store)` and `runner.command(row)` | `runner.relay(bus)`, through `bus.dispatch_message` |
 | State type | `Saga::State` and `SagaStore::State`, statically typed | `Any`, serialized as JSON by the in-memory backend |
 
 Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
 makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. A completed instance folds
 nothing. When nothing was loaded and the fold neither keeps state nor sends a command, the write is
-`nothing`. Otherwise it is `save` or `complete` at the loaded version. A versioned write for the
-`nothing` case would turn a no-op into a write that a concurrent creator of the same correlation
+`nothing`. Otherwise it is `save` or `complete` at the loaded version, and the kernel also names the
+version the write commits, which the command ids carry. A versioned write for the
+`nothing` case would turn a no-op into a write that a concurrent creator of the same instance
 could conflict with.
 
 An explicit `tx` wins over the ambient one in Python, pinned by the `explicit_tx_wins_over_ambient`
@@ -273,7 +250,7 @@ persist.
 | Detecting that a step failed | the host: the saga observes the failure event and folds it |
 | Deciding what undoes a step | the host: `handle` returns the compensating command like any other |
 | Delivering the compensating command | the SDK: the saga outbox and the `Relay`, then the `CommandBus`, with `idempotent` to absorb re-sends |
-| Not repeating a compensation | the SDK: the guard on the bus, keyed by the host |
+| Not repeating a compensation | the SDK: the guard on the bus, keyed by the row's idempotency key |
 | Keeping the workflow's own state | the SDK: `SagaStore`, with optimistic concurrency on the version and a tombstone on completion |
 
 So a compensating action in edax is an ordinary command, emitted by an ordinary `handle` branch, in

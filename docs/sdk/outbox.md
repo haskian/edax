@@ -15,7 +15,7 @@ flowchart LR
     A -->|"outbox rows, same commit"| DB
     DB -->|"unpublished"| RL["Relay.drain: polling"]
     DB -->|"write-ahead log"| CDC["change data capture"]
-    CDC -->|"decoded envelopes"| PM["pump"]
+    CDC -->|"decoded event messages"| PM["pump"]
     RL -->|"publish"| B["Producer, a broker"]
     PM -->|"publish"| B
     RL -->|"mark_published"| DB
@@ -33,10 +33,18 @@ The outbox avoids it. There is only one commit, because the to-publish row is a 
 written by the same store, in the same transaction, as the state it announces.
 
 `Outbox` (a Python `Protocol`, a Rust trait) is only the read side a `Relay` drains: `unpublished`
-and `mark_published`. There is no outbox you write to on its own. An `EventStore` is an `Outbox` of
-envelopes, written by `append`; a saga store is an `Outbox` of `SagaCommand`s, written by the step's
-`save` or `complete`. So no backend can split the state write and the to-publish write across two
-systems by accident.
+and `mark_published`. A row needs only an `id` to be marked by. Every outbox is written in the same
+transaction as the state it announces:
+
+| Outbox | Rows | Written by |
+|---|---|---|
+| an `EventStore` | `EventMessage`s | `append` |
+| a `SagaStore` | `CommandMessage`s | the saga step's `save` or `complete` |
+| a `CommandOutbox`, optional | `CommandMessage`s | `Repository.save(..., commands=[...])`, through `enqueue` under the save's `tx` |
+
+So no backend can split the state write and the to-publish write across two systems by accident. A
+command outbox enforces it; see [its refusals](../backends/README.md#commandoutbox). See [commands](./commands.md#three-routes-for-a-command) for when to send a command
+through one.
 
 The remaining gap is the publish itself, which is still a separate step and therefore still
 at-least-once. That gap is bounded and recoverable: the row is durable, so a redelivery is a
@@ -48,23 +56,26 @@ duplicate, never a loss.
 erDiagram
     AGGREGATE_STREAM ||--o{ EVENT_ROW : "ordered by sequence"
     AGGREGATE_STREAM ||--o| SNAPSHOT_ROW : "at most one, may lag never lead"
-    EVENT_ROW ||--|| OUTBOX_ROW : "same envelope, same commit"
+    EVENT_ROW ||--|| OUTBOX_ROW : "same message, same commit"
 
     EVENT_ROW {
-        string id PK "envelope id"
+        string id PK "event id"
         string aggregate_id FK
         int sequence "unique per aggregate_id"
-        string event_name
-        int event_version
-        bytes event_data "host-serialized payload"
-        map namespace
+        string name
+        int version
+        bytes data "host-serialized payload"
+        string correlation_id
+        string causation_id
+        int occurred_at "nullable, unix nanoseconds"
+        int recorded_at "the store's clock at append"
+        map extensions
         map metadata
-        int timestamp "unix nanoseconds"
     }
     OUTBOX_ROW {
-        string id PK "the same envelope id"
+        string id PK "the same event id"
         string aggregate_id "the broker message key"
-        bytes envelope "the wire form"
+        bytes message "the wire form"
         int published_at "null until mark_published"
     }
     SNAPSHOT_ROW {
@@ -75,12 +86,13 @@ erDiagram
     }
 ```
 
-`EVENT_ROW` and `SNAPSHOT_ROW` mirror `EventEnvelope` and `Snapshot`. The outbox row's primary key
-is the same envelope id as the event row's; that shared id is what a consumer deduplicates on
+`EVENT_ROW` and `SNAPSHOT_ROW` mirror `EventMessage` and `Snapshot`. The store stamps
+`recorded_at` with its own clock when it appends, and `load` and `unpublished` return that value. The
+outbox row's primary key is the same event id as the event row's; that shared id is what a consumer deduplicates on
 after a redelivery. The id is unique store-wide: an `append` carrying an id the store already holds
 is refused with `CodecError` and writes nothing. Without that, two rows share an id, and marking the
 first published prunes the second before it was ever sent. The primary key gives it on SQL; the
-in-memory store checks it (`EventStoreContract.test_an_envelope_id_already_stored_is_refused`).
+in-memory store checks it (`EventStoreContract.test_an_event_id_already_stored_is_refused`).
 
 A snapshot may lag the stream but never lead it (`test_a_snapshot_leading_the_stream_is_refused`,
 `test_the_latest_snapshot_wins`). [Aggregates](./aggregates.md#snapshots) covers the rule and how
@@ -102,7 +114,7 @@ stateDiagram-v2
     Staged --> [*]: rollback drops both, nothing was ever visible
     Staged --> Unpub: commit lands both together, durably
     Unpub --> Unpub: publish raised, or the mark_published response was lost, so drained again
-    Unpub --> Pub: mark_published with this envelope id
+    Unpub --> Pub: mark_published with this row id
     Pub --> Pub: mark_published again changes nothing
     Pub --> [*]: pruned, or retained by the backend
 ```
@@ -128,7 +140,7 @@ None of the three may touch the rows still waiting to publish.
 The relay's own acknowledgement can be lost. The relay publishes a batch, calls `mark_published`,
 and the response never arrives. It has no way to tell "the mark landed" from "the
 mark did not land". So it re-drains, publishes the same rows again, and marks them again. Both
-repeats must be harmless: the second publish is caught downstream by the dedup on `env.id`, the
+repeats must be harmless: the second publish is caught downstream by the dedup on `msg.id`, the
 second mark is caught by idempotence here.
 
 ## Relay.drain — polling
@@ -185,8 +197,8 @@ task = asyncio.create_task(relay.run(idle_s=1.0, stop=stop))  # set `stop` (or c
 until `stop`. After a failed drain it goes again: that drain already waited its own backoff step and
 reported to the observer. So one bad row never ends the relay. Rust's `Relay::drain(batch, publish)`
 takes the publish closure per call instead of at construction. `publish` there is synchronous, so
-wrap it in your async runtime for a network transport. Both relays drain any `Outbox`: the event store's, and a saga store's command
-outbox (see [sagas.md](./sagas.md)).
+wrap it in your async runtime for a network transport. Both relays drain any `Outbox`: the event
+store's, a command outbox, and a saga store's command outbox (see [sagas.md](./sagas.md)).
 
 **What `drain` needs from the store**
 
@@ -204,7 +216,7 @@ outbox (see [sagas.md](./sagas.md)).
 |---|---|
 | `publish` returns only after a durable broker ack | returning early lets the row be marked before the message exists: a lost event |
 | `publish` raises on failure, never swallows | the relay hands the row back and retries it |
-| the message key is `aggregate_id` | a broker that orders per key delivers one aggregate's events in `sequence` order |
+| the message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key) | a broker that orders per key delivers one aggregate's messages in order |
 
 Read the `Producer` seam in `edax.broker`. The relay calls `publish` serially, so an adapter need
 not be thread-safe or reentrant.
@@ -247,7 +259,7 @@ Overlapping drains of one relay take turns: the Python `Relay` holds an `asyncio
 `Relay` a `Mutex`, so a timer and a "drain now" cannot double-publish. That lock is per relay, not per
 store. It does not help across processes.
 
-**A dispatcher `submit` is not a valid `publish`.** It only enqueues the envelope. A crash
+**A dispatcher `submit` is not a valid `publish`.** It only enqueues the message. A crash
 between the enqueue and the handler loses the event, which turns the outbox into at-most-once.
 `publish` must return only after the transport durably accepted the event.
 
@@ -265,10 +277,10 @@ sequenceDiagram
     participant P as Producer, a broker
 
     C->>W: stream changes from the last committed position
-    loop each decoded envelope
+    loop each decoded message
         W-->>C: an outbox row, at its commit point
-        C->>PU: yield the envelope through the async source
-        PU->>P: publish envelope
+        C->>PU: yield the message through the async source
+        PU->>P: publish message
         alt published
             P-->>PU: ok
             PU-->>C: the pump advances
@@ -284,20 +296,20 @@ sequenceDiagram
 ```python
 async def wal() -> AsyncIterator[Any]:
     for i in (1, 2, 3):
-        yield build_envelope("acct", "Tick", i, id=f"e{i}")
+        yield build_message("acct", "Tick", i, id=f"e{i}")
 
 
 published: list[str] = []
-assert await pump(wal(), lambda env: published.append(env.id)) == 3
+assert await pump(wal(), lambda msg: published.append(msg.id)) == 3
 assert published == ["e1", "e2", "e3"]
 ```
 
-`test_store.py` pins that. `pump` publishes every envelope from the source until the source ends,
+`test_store.py` pins that. `pump` publishes every message from the source until the source ends,
 and returns how many.
 
 **What `pump` needs from the store**: almost nothing. `unpublished` and `mark_published` may be
 no-ops, and row retention is yours to manage. What it needs instead is a `source`: an async iterable
-of `EventEnvelope`, decoded from the log with your `Serializer`.
+of `EventMessage`, decoded from the log with your `Serializer`.
 
 **What `pump` needs from the `Producer`**: the same three guarantees `Relay` needs. `publish` may be
 sync or async in both cases.
@@ -315,7 +327,7 @@ no count.
 | trigger | your polling loop | the database's write-ahead log |
 | latency | one poll interval | the commit itself |
 | needs from the store | `unpublished` plus `mark_published` | neither |
-| acknowledgement | `mark_published` by envelope id | the CDC stream position |
+| acknowledgement | `mark_published` by row id | the CDC stream position |
 | concurrency | one relay per store, unless `unpublished` leases rows | whatever your CDC client supports |
 | row retention | handled by `mark_published` | yours |
 
@@ -344,7 +356,7 @@ the same dashboard as consumer lag.
 
 ## At-least-once publication
 
-The same envelope can reach the broker more than once. Three windows produce it:
+The same message can reach the broker more than once. Three windows produce it:
 
 | Window | What happens |
 |---|---|
@@ -358,7 +370,8 @@ both modes.
 
 What catches the duplicate is downstream, never the relay:
 
-- consumers deduplicate by `env.id`, or drop a stale `sequence` with `is_stale`.
+- consumers deduplicate by `msg.id`, or drop a stale `sequence` with `is_stale`. A command consumer
+  deduplicates by the idempotency key.
 - the idempotency guard claims the event id before the handler runs; see
   [idempotency](./idempotency.md).
 - [delivery guarantees](../guides/delivery-guarantees.md) states what that adds up to, end to end.
@@ -395,7 +408,7 @@ row.
 
 - [Aggregates](./aggregates.md) — `Repository.save`, which is what calls `append`.
 - [Transactions](./transactions.md) — the unit of work the event rows and outbox rows share.
-- [Idempotency](./idempotency.md) — the guard that catches the redelivered envelope.
+- [Idempotency](./idempotency.md) — the guard that catches the redelivered message.
 - [Delivery guarantees](../guides/delivery-guarantees.md) — the end-to-end matrix.
 - [Consuming](./consuming.md) — `KeyOrderedDispatcher`, the other end of a published event.
 - [Kafka backend](../backends/kafka.md) — a real `Producer` behind `Relay`.

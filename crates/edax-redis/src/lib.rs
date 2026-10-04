@@ -11,8 +11,10 @@
 //! - [`settled_value`] / [`check_claim`] — the value that settles a claim, and the handle check.
 //! - [`split_value`] — a stored value read back apart into its owner and its record.
 //! - [`claim_outcome`] — whether a claim's reply means won or a prior record.
-//! - [`CLAIM_SCRIPT`] / [`COMPLETE_SCRIPT`] / [`RELEASE_SCRIPT`] / [`EXTEND_SCRIPT`] — the Lua, byte
-//!   for byte, each comparing the stored value with the caller's handle exactly.
+//! - [`forget_outcome`] — whether a forget deletes the value it read, or refuses a pending claim.
+//! - [`CLAIM_SCRIPT`] / [`COMPLETE_SCRIPT`] / [`RELEASE_SCRIPT`] / [`FORGET_SCRIPT`] /
+//!   [`EXTEND_SCRIPT`] — the Lua, byte for byte, each comparing the stored value with the caller's
+//!   handle, or the value it read, exactly.
 //! - [`reply_error`] — the verdict on a Redis error reply.
 //!
 //! `testdata/golden/redis_value.json`, `redis_ledger.json`, `redis_scripts.json` and
@@ -25,7 +27,8 @@ pub mod ledger;
 pub mod scripts;
 
 pub use ledger::{
-    check_claim, check_config, claim_outcome, claim_value, ledger_key, new_claim, new_owner, settled_value,
-    split_value, ClaimOutcome, HEARTBEATS_PER_TTL, LAYOUT_VERSION, MAX_TTL_MS, OWNER_LEN,
+    check_claim, check_config, claim_outcome, claim_value, forget_outcome, ledger_key, new_claim, new_owner,
+    settled_value, split_value, ClaimOutcome, ForgetOutcome, FORGET_READS, HEARTBEATS_PER_TTL, LAYOUT_VERSION,
+    MAX_TTL_MS, OWNER_LEN,
 };
-pub use scripts::{reply_error, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, RELEASE_SCRIPT};
+pub use scripts::{reply_error, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, FORGET_SCRIPT, RELEASE_SCRIPT};

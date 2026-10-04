@@ -1,6 +1,6 @@
 """In-memory backends for every seam: dev and tests, single process, not durable.
 
-:class:`MemoryTransactor` is the transaction boundary: one native database holding every seam, whose four
+:class:`MemoryTransactor` is the transaction boundary: one native database holding every seam, whose
 stores are Python views over it. A store built with no transactor gets a database of its own; stores built
 over one transactor share it, so their writes under one ``tx`` commit or roll back together. The maps, the
 concurrency checks, the outbox, the atomic claim, the journal and the broker's settlement accounting live in
@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from .. import _edax, _json, errors
 from .._owned import ThreadBound
-from ..aggregate import EventEnvelope
+from ..aggregate import CommandMessage, EventDraft, EventMessage, message_kind
 from ..broker import _ConsumerLoop
 from ..command import Claimed, Record, Won, decode_prior, encode_record
 from ..dispatcher import Delivery
@@ -27,11 +27,12 @@ from ..errors import BadHandle, ConcurrencyError
 from ..filter import Filter
 from ..projection import Entity
 from ..query import Page, SortKey, build_spec
-from ..saga import SagaCommand, SagaInstance
+from ..saga import SagaInstance
 from ..store import Snapshot, Tx, current_tx
 
 __all__ = [
     "MemoryBroker",
+    "MemoryCommandOutbox",
     "MemoryEventStore",
     "MemoryIdempotencyStore",
     "MemoryLedger",
@@ -117,7 +118,7 @@ class MemoryTransactor:
 
 
 class _StoreView:
-    """What the four store views share: the database they enlist with, given or of their own."""
+    """What the store views share: the database they enlist with, given or of their own."""
 
     def __init__(self, transactor: MemoryTransactor | None = None) -> None:
         self._transactor = transactor if transactor is not None else MemoryTransactor()
@@ -137,16 +138,25 @@ class _StoreView:
 
 
 class MemoryEventStore(_StoreView):
-    """:class:`~edax.store.EventStore` over the native store: events + snapshots + outbox. Events
-    cross as the native :class:`~edax.aggregate.EventEnvelope` in both directions. An
-    ``EventStore`` is a :class:`~edax.store.Transactor`: ``transaction()`` is the
-    :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the database's unit of
-    work. The outbox is read by the relay outside any transaction and holds committed rows only."""
+    """:class:`~edax.store.EventStore` over the native store: events + snapshots + outbox. Drafts go in as
+    the native :class:`~edax.aggregate.EventDraft` and come back as :class:`~edax.aggregate.EventMessage`.
+    ``now`` is the store's clock: ``append`` stamps every draft's ``recorded_at`` with one reading of it
+    (default: the kernel clock, Unix nanoseconds). An ``EventStore`` is a :class:`~edax.store.Transactor`:
+    ``transaction()`` is the :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the
+    database's unit of work. The outbox is read by the relay outside any transaction and holds committed
+    rows only."""
+
+    def __init__(
+        self, transactor: MemoryTransactor | None = None, *, now: Callable[[], int] | None = None
+    ) -> None:
+        super().__init__(transactor)
+        # The native store cannot call back into Python, so the view reads the clock and hands it in.
+        self._now = now or _edax.current_timestamp
 
     def transaction(self) -> AbstractAsyncContextManager[MemoryTx]:
         return self._transactor.transaction()
 
-    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
+    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         with errors.mapped():
             return self._db().load_events(self._token(tx), aggregate_id, after)
 
@@ -166,12 +176,15 @@ class MemoryEventStore(_StoreView):
             )
 
     async def append(
-        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventEnvelope]
-    ) -> None:
+        self, tx: Tx, aggregate_id: str, expected_version: int, drafts: Sequence[EventDraft]
+    ) -> list[EventMessage]:
+        recorded_at = self._now()
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            self._db().append_events(self._token(tx), aggregate_id, expected_version, list(events))
+            return self._db().append_events(
+                self._token(tx), aggregate_id, expected_version, list(drafts), recorded_at
+            )
 
-    async def unpublished(self, limit: int = 100) -> list[EventEnvelope]:
+    async def unpublished(self, limit: int = 100) -> list[EventMessage]:
         with errors.mapped():  # a negative limit cannot cross the unsigned boundary: CodecError
             return self._db().unpublished(limit)
 
@@ -213,6 +226,12 @@ class MemoryIdempotencyStore(_StoreView):
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         with errors.mapped():
             self._db().release(self._token(tx), key, handle)
+
+    async def forget(self, key: str, tx: Tx | None = None) -> None:
+        # The native store reads the record with the kernel: a pending claim, or a key another open unit
+        # of work holds, is `in_progress:`, raised as InProgress.
+        with errors.mapped():
+            self._db().forget(self._token(tx), key)
 
     def expire(self, key: str) -> bool:
         """Lapse whatever ``key`` holds in committed state, as a claim or record TTL running out would: the
@@ -292,7 +311,7 @@ class MemorySagaStore(_StoreView):
     ``complete`` raises :class:`~edax.errors.ConcurrencyError`, a completed instance takes no write, the
     step's commands commit with its state) is the one every SDK runs. State crosses as JSON, so it must be
     JSON-serializable and comes back as a copy, never the object that was saved; commands cross as the
-    native :data:`~edax.saga.SagaCommand`. A write under ``tx`` (or the ambient
+    native :class:`~edax.aggregate.CommandMessage`. A write under ``tx`` (or the ambient
     :func:`~edax.store.current_tx`) is staged until the transactor commits. Not durable."""
 
     async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None:
@@ -308,7 +327,7 @@ class MemorySagaStore(_StoreView):
         state: Any,
         version: int,
         folded: str,
-        commands: Sequence[SagaCommand],
+        commands: Sequence[CommandMessage],
         tx: Tx | None = None,
     ) -> int:
         with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
@@ -317,18 +336,42 @@ class MemorySagaStore(_StoreView):
             )
 
     async def complete(
-        self, id: str, version: int, commands: Sequence[SagaCommand], tx: Tx | None = None
+        self, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None
     ) -> int:
         with errors.mapped():
             return self._db().complete_saga(self._token(tx), id, version, list(commands))
 
-    async def unpublished(self, limit: int = 100) -> list[SagaCommand]:
+    async def unpublished(self, limit: int = 100) -> list[CommandMessage]:
         with errors.mapped():
             return self._db().unpublished_saga_commands(limit)
 
     async def mark_published(self, ids: Sequence[str]) -> None:
         with errors.mapped():
             self._db().mark_saga_commands_published(list(ids))
+
+
+class MemoryCommandOutbox(_StoreView):
+    """A command outbox over the native store: the :class:`~edax.store.CommandOutbox` a
+    :class:`~edax.store.Repository` writes, and the :class:`~edax.store.Outbox` a
+    :class:`~edax.store.Relay` drains. Build it over the event store's transactor, so ``enqueue`` under the
+    save's ``tx`` commits or rolls back with the events. ``unpublished`` returns committed rows only, oldest
+    first. A ``tx`` of another transactor raises :class:`~edax.errors.BadHandle`. Not durable."""
+
+    async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
+        with errors.mapped():
+            self._db().enqueue_commands(self._token(tx), list(commands))
+
+    async def unpublished(self, limit: int = 100) -> list[CommandMessage]:
+        with errors.mapped():  # a negative limit cannot cross the unsigned boundary: CodecError
+            return self._db().unpublished_commands(limit)
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        with errors.mapped():
+            self._db().mark_commands_published(list(ids))
+
+    async def unpublished_count(self) -> int:
+        """How many committed unmarked command rows are waiting, counted without paging them."""
+        return self._db().unpublished_command_count()
 
 
 class _Log:
@@ -348,7 +391,8 @@ class _Log:
 class MemoryBroker(_ConsumerLoop):
     """Both :class:`~edax.broker.Producer` and :class:`~edax.broker.Consumer` over the native log, so
     ``Relay(store, broker.publish)`` and ``broker.run(dispatcher)`` talk without a broker. ``publish``
-    returns once the envelope is in the log. Nothing survives the process, and nothing is ever deleted.
+    takes an event or a command and returns once it is in the log, keyed by the kernel's ordering key.
+    Nothing survives the process, and nothing is ever deleted.
 
     It behaves like a Kafka topic, so a handler that only survives a queue fails here first:
 
@@ -382,8 +426,13 @@ class MemoryBroker(_ConsumerLoop):
         view._attach(self._log, name)
         return view
 
-    async def publish(self, env: EventEnvelope) -> None:
-        self._log.native.get().publish(env)
+    async def publish(self, msg: EventMessage | CommandMessage) -> None:
+        native = self._log.native.get()
+        # `message_kind` refuses a non-message with TypeError, so each cast names the type it checked.
+        if message_kind(msg) == "event":
+            native.publish_event(cast(EventMessage, msg))
+        else:
+            native.publish_command(cast(CommandMessage, msg))
         self._log.wake()
 
     async def poll(self) -> Delivery | None:
@@ -394,10 +443,14 @@ class MemoryBroker(_ConsumerLoop):
             with errors.mapped():
                 polled = self._log.native.get().try_poll(self._group)
             if polled is not None:
-                return self._delivery(polled.token, polled.envelope)
+                # The native poll fills exactly one of the two.
+                msg: EventMessage | CommandMessage | None = polled.event or polled.command
+                if msg is None:
+                    raise BadHandle(f"memory broker poll {polled.token} carried no message")
+                return self._delivery(polled.token, msg)
             await self._queued.wait()
 
-    def _delivery(self, token: int, env: EventEnvelope) -> Delivery:
+    def _delivery(self, token: int, msg: EventMessage | CommandMessage) -> Delivery:
         native, group = self._log.native, self._group
 
         # The machine refuses a second settlement of a token, and one a rewind or a crash retired, and
@@ -415,7 +468,7 @@ class MemoryBroker(_ConsumerLoop):
         def live() -> bool:
             return native.get().is_live(group, token)
 
-        return Delivery(env, ack, nack, live=live)
+        return Delivery(msg, ack, nack, live=live)
 
     def crash(self) -> None:
         """Simulate the death of this group's consumer, or a rebalance: every delivery it holds is retired,

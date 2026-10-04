@@ -14,101 +14,129 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
-use edax_event::{Event, EventEnvelope, Format, Metadata, Namespace};
+use edax_event::testkit::{base_command, base_event, map};
+use edax_event::{CommandMessage, EventMessage, Extensions, Format, Kind, Message, Metadata};
 use edax_golden::{hex, write_or_check};
 use edax_kafka::{
-    check_media_types, content_type, dead_letter_record, dead_letter_source, decode_record, encode_record, partition_for, record, route,
-    AckDecision, KafkaHeader, KafkaRecord, NackDecision, OffsetTracker, Route, CONTENT_TYPE,
+    check_media_types, content_type, dead_letter_record, dead_letter_source, decode_record, encode_record,
+    partition_for, record, route, AckDecision, KafkaHeader, KafkaRecord, NackDecision, OffsetTracker, Route,
+    CONTENT_TYPE,
 };
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
-fn map(pairs: &[(&str, &str)]) -> Namespace {
-    pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+fn event_with(edit: impl Fn(&mut EventMessage)) -> EventMessage {
+    let mut msg = base_event();
+    edit(&mut msg);
+    msg
 }
 
-/// The base envelope, the one `envelopes.json` pins first; a case overrides only what it is about.
-fn base() -> EventEnvelope {
-    EventEnvelope {
-        id: "evt-1".to_owned(),
-        aggregate_id: "agg-1".to_owned(),
-        event: Event { name: "InvoiceIssued".to_owned(), version: 1, data: vec![0xde, 0xad, 0xbe, 0xef] },
-        sequence: Some(7),
-        namespace: map(&[("tenant", "acme")]),
-        metadata: map(&[("trace", "abc-123")]),
-        timestamp: 1_700_000_000_000_000_000,
-    }
+fn command_with(edit: impl Fn(&mut CommandMessage)) -> CommandMessage {
+    let mut msg = base_command();
+    edit(&mut msg);
+    msg
 }
 
 /// No sequence, an empty payload and empty maps: the header set must be identical anyway.
-fn unsequenced() -> EventEnvelope {
-    EventEnvelope {
-        id: "evt-2".to_owned(),
-        aggregate_id: "agg-2".to_owned(),
-        event: Event { name: "OrderPlaced".to_owned(), version: 2, data: Vec::new() },
-        sequence: None,
-        namespace: Namespace::new(),
-        metadata: Metadata::new(),
-        timestamp: 0,
-    }
+fn unsequenced() -> EventMessage {
+    event_with(|e| {
+        e.id = "evt-2".to_owned();
+        e.aggregate_id = "agg-2".to_owned();
+        e.sequence = None;
+        e.name = "OrderPlaced".to_owned();
+        e.version = 2;
+        e.data = Vec::new();
+        e.occurred_at = Some(1_699_999_999_000_000_000);
+        e.recorded_at = 0;
+        e.extensions = Extensions::new();
+        e.metadata = Metadata::new();
+    })
 }
 
-/// Non-ASCII in the key, the event name and the maps: the key and the value carry it as raw UTF-8
-/// bytes, which a host that latin-1s them would fail here.
-fn unicode() -> EventEnvelope {
-    EventEnvelope {
-        id: "evt-4".to_owned(),
-        aggregate_id: "café-7".to_owned(),
-        event: Event { name: "Paiement effectué".to_owned(), version: 3, data: "🦀".as_bytes().to_vec() },
-        sequence: Some(9_007_199_254_740_993),
-        namespace: map(&[("région", "eu")]),
-        metadata: map(&[("acteur", "système")]),
-        timestamp: 1_700_000_000_000_000_000,
-    }
+/// Non-ASCII in the key, the name and the maps: the key and the value carry it as raw UTF-8 bytes,
+/// which a host that latin-1s them would fail here.
+fn unicode() -> EventMessage {
+    event_with(|e| {
+        e.id = "evt-4".to_owned();
+        e.aggregate_id = "café-7".to_owned();
+        e.sequence = Some(9_007_199_254_740_993);
+        e.name = "Paiement effectué".to_owned();
+        e.version = 3;
+        e.data = "🦀".as_bytes().to_vec();
+        e.metadata = map(&[("acteur", "système")]);
+    })
+}
+
+/// A command with no target aggregate: its key falls back to its own id.
+fn untargeted() -> CommandMessage {
+    command_with(|c| {
+        c.id = "cmd-2".to_owned();
+        c.idempotency_key = None;
+        c.aggregate_id = None;
+        c.metadata = Metadata::new();
+    })
 }
 
 fn headers_json(headers: &[KafkaHeader]) -> Value {
     headers.iter().map(|h| json!({ "key": h.key, "value_hex": hex(&h.value) })).collect()
 }
 
-fn envelope_json(env: &EventEnvelope) -> Value {
-    serde_json::to_value(env).unwrap()
+/// One message of either kind encoded as a record, as a row: the record on success, the error
+/// otherwise.
+fn record_row<M: Message + Serialize>(name: &str, format: Format, key: Option<&str>, msg: &M) -> Value {
+    let rec = encode_record(format, msg, key);
+    if let Ok(rec) = &rec {
+        // The primitive path with the kernel's own bytes must build the identical record, or a host
+        // serializer would get a different key or a different header set.
+        let value = format.encode(msg).unwrap();
+        assert_eq!(*rec, record(msg, key, value, content_type(&rec.headers).unwrap()), "{name}");
+    }
+    let (key_hex, value_hex, headers, error) = match rec {
+        Ok(rec) => (Some(hex(&rec.key)), Some(hex(&rec.value)), headers_json(&rec.headers), None),
+        Err(error) => (None, None, Value::Null, Some(error.to_string())),
+    };
+    json!({
+        "name": name,
+        "kind": M::KIND.name(),
+        "format": format.name(),
+        "key": key,
+        "message": serde_json::to_value(msg).unwrap(),
+        "key_hex": key_hex,
+        "value_hex": value_hex,
+        "headers": headers,
+        "error": error,
+    })
 }
 
 /// What a producer puts on the wire: the key rule, the `content-type` header, the value bytes.
 fn kafka_record_cases() -> Vec<Value> {
-    let cases: Vec<(&str, Format, Option<&str>, EventEnvelope)> = vec![
-        ("json_keyed_by_aggregate_id", Format::Json, None, base()),
-        ("msgpack_keyed_by_aggregate_id", Format::Msgpack, None, base()),
+    let bad_extension = |msg: &mut Extensions| {
+        msg.insert("Traceparent".to_owned(), "00-a-b-01".to_owned());
+    };
+    let events: Vec<(&str, Format, Option<&str>, EventMessage)> = vec![
+        ("event_json_keyed_by_aggregate_id", Format::Json, None, base_event()),
+        ("event_msgpack_keyed_by_aggregate_id", Format::Msgpack, None, base_event()),
         // The override: a host keying by tenant to co-locate a tenant's aggregates.
-        ("json_key_override", Format::Json, Some("tenant/acme"), base()),
-        ("msgpack_key_override", Format::Msgpack, Some("tenant/acme"), base()),
-        ("json_no_sequence_empty_payload", Format::Json, None, unsequenced()),
-        ("msgpack_no_sequence_empty_payload", Format::Msgpack, None, unsequenced()),
-        ("json_unicode", Format::Json, None, unicode()),
-        ("msgpack_unicode", Format::Msgpack, None, unicode()),
+        ("event_json_key_override", Format::Json, Some("tenant/acme"), base_event()),
+        ("event_msgpack_key_override", Format::Msgpack, Some("tenant/acme"), base_event()),
+        ("event_json_no_sequence_empty_payload", Format::Json, None, unsequenced()),
+        ("event_msgpack_no_sequence_empty_payload", Format::Msgpack, None, unsequenced()),
+        ("event_json_unicode", Format::Json, None, unicode()),
+        ("event_msgpack_unicode", Format::Msgpack, None, unicode()),
+        // A producer never mints what every consumer would refuse.
+        ("event_bad_extension_key_is_refused", Format::Json, None, event_with(|e| bad_extension(&mut e.extensions))),
     ];
-    cases
-        .into_iter()
-        .map(|(name, format, key, env)| {
-            let rec = encode_record(format, &env, key);
-            // The primitive path with the kernel's own bytes must build the identical record, or a
-            // host serializer would get a different key or a different header set.
-            assert_eq!(
-                rec,
-                record(&env, key, format.encode(&env), content_type(&rec.headers).unwrap()),
-                "{name}"
-            );
-            json!({
-                "name": name,
-                "format": format.name(),
-                "key": key,
-                "envelope": envelope_json(&env),
-                "key_hex": hex(&rec.key),
-                "value_hex": hex(&rec.value),
-                "headers": headers_json(&rec.headers),
-            })
-        })
-        .collect()
+    let commands: Vec<(&str, Format, Option<&str>, CommandMessage)> = vec![
+        ("command_json_keyed_by_aggregate_id", Format::Json, None, base_command()),
+        ("command_msgpack_keyed_by_aggregate_id", Format::Msgpack, None, base_command()),
+        ("command_json_without_aggregate_keyed_by_id", Format::Json, None, untargeted()),
+        ("command_msgpack_without_aggregate_keyed_by_id", Format::Msgpack, None, untargeted()),
+        ("command_json_key_override", Format::Json, Some("tenant/acme"), untargeted()),
+        ("command_bad_extension_key_is_refused", Format::Json, None, command_with(|c| bad_extension(&mut c.extensions))),
+    ];
+    let events = events.iter().map(|(name, format, key, msg)| record_row(name, *format, *key, msg));
+    let commands = commands.iter().map(|(name, format, key, msg)| record_row(name, *format, *key, msg));
+    events.chain(commands).collect()
 }
 
 /// Broker placement: Java's default partitioner, which every shell passes as `partition=`. The first
@@ -162,118 +190,145 @@ fn kafka_partition_cases() -> Vec<Value> {
     cases
 }
 
-/// What a consumer makes of a fetched record: which format the headers select, and how a record it
-/// cannot read fails.
+/// What a consumer makes of a fetched record: which format and kind the headers select, and how a
+/// record it cannot read fails.
 fn kafka_decode_cases() -> Vec<Value> {
-    let json_record = encode_record(Format::Json, &base(), None);
-    let msgpack_record = encode_record(Format::Msgpack, &base(), None);
+    let json_event = encode_record(Format::Json, &base_event(), None).unwrap();
+    let msgpack_event = encode_record(Format::Msgpack, &base_event(), None).unwrap();
+    let json_command = encode_record(Format::Json, &base_command(), None).unwrap();
+    let msgpack_command = encode_record(Format::Msgpack, &base_command(), None).unwrap();
+    let event_json = Format::Json.media_type(Kind::Event);
+    let event_msgpack = Format::Msgpack.media_type(Kind::Event);
+    let command_json = Format::Json.media_type(Kind::Command);
+    let header = |media_type: &str| KafkaHeader::new(CONTENT_TYPE, media_type.as_bytes());
     let without_content_type = |rec: &KafkaRecord| -> Vec<KafkaHeader> {
         rec.headers.iter().filter(|h| h.key != CONTENT_TYPE).cloned().collect()
     };
-    let cases: Vec<(&str, Format, Vec<u8>, Vec<KafkaHeader>)> = vec![
+    let events: Vec<(&str, Vec<u8>, Vec<KafkaHeader>)> = vec![
         (
             // Anything written before this kernel, or by a client that drops headers.
             "no_content_type_falls_back_to_the_default",
-            Format::Json,
-            json_record.value.clone(),
-            without_content_type(&json_record),
+            json_event.value.clone(),
+            without_content_type(&json_event),
         ),
-        (
-            "content_type_overrides_the_default",
-            Format::Json,
-            msgpack_record.value.clone(),
-            msgpack_record.headers.clone(),
-        ),
+        ("content_type_overrides_the_default", msgpack_event.value.clone(), msgpack_event.headers.clone()),
         (
             "an_unknown_content_type_is_refused",
-            Format::Json,
-            json_record.value.clone(),
-            [
-                vec![KafkaHeader::new(CONTENT_TYPE, b"application/x-protobuf")],
-                without_content_type(&json_record),
-            ]
-            .concat(),
+            json_event.value.clone(),
+            [vec![header("application/x-protobuf")], without_content_type(&json_event)].concat(),
         ),
         (
             // Ambiguous by construction: both sides must pick the first, not the last.
             "the_first_content_type_wins",
-            Format::Json,
-            msgpack_record.value.clone(),
-            [
-                msgpack_record.headers.clone(),
-                vec![KafkaHeader::new(CONTENT_TYPE, b"application/vnd.edax.envelope+json")],
-            ]
-            .concat(),
+            msgpack_event.value.clone(),
+            [msgpack_event.headers.clone(), vec![header(event_json)]].concat(),
         ),
         (
             // The fallback is not a guess: bytes that are not the default format still fail.
             "header_less_bytes_in_another_format_do_not_decode",
-            Format::Json,
-            msgpack_record.value.clone(),
+            msgpack_event.value.clone(),
             Vec::new(),
         ),
         (
             // Present and readable, so it names a format: the empty one, which nobody mints. A null
             // header value crosses as empty bytes, so this row is the null rule too.
             "an_empty_content_type_is_refused",
-            Format::Json,
-            json_record.value.clone(),
-            vec![KafkaHeader::new(CONTENT_TYPE, b"")],
+            json_event.value.clone(),
+            vec![header("")],
         ),
         (
             // A client that upper-cased the name wrote a different header, so the default decodes.
             "an_upper_case_header_name_is_not_the_content_type",
-            Format::Json,
-            json_record.value.clone(),
-            vec![KafkaHeader::new("Content-Type", Format::Msgpack.media_type().as_bytes())],
+            json_event.value.clone(),
+            vec![KafkaHeader::new("Content-Type", event_msgpack.as_bytes())],
         ),
         (
             // Reads as absent, and does not reach past itself to the second header.
             "a_non_utf8_first_content_type_reads_as_absent",
-            Format::Json,
-            json_record.value.clone(),
-            vec![
-                KafkaHeader::new(CONTENT_TYPE, &[0xff, 0xfe]),
-                KafkaHeader::new(CONTENT_TYPE, Format::Msgpack.media_type().as_bytes()),
-            ],
+            json_event.value.clone(),
+            vec![KafkaHeader::new(CONTENT_TYPE, &[0xff, 0xfe]), header(event_msgpack)],
         ),
         (
             // Parameters are not stripped: the match is exact, so this is no kernel format.
             "a_parameterized_media_type_is_refused",
-            Format::Json,
-            json_record.value.clone(),
-            vec![KafkaHeader::new(CONTENT_TYPE, format!("{}; charset=utf-8", Format::Json.media_type()).as_bytes())],
+            json_event.value.clone(),
+            vec![header(&format!("{event_json}; charset=utf-8"))],
+        ),
+        (
+            // The 0.1 media type, minted before kinds: no longer a kernel format.
+            "the_envelope_media_type_is_refused",
+            json_event.value.clone(),
+            vec![header("application/vnd.edax.envelope+json")],
+        ),
+        ("a_command_record_is_refused_by_kind", json_command.value.clone(), json_command.headers.clone()),
+        (
+            // The header decides the kind, so the bytes are never read: event bytes do not help.
+            "event_bytes_under_a_command_media_type_are_refused_by_kind",
+            json_event.value.clone(),
+            vec![header(command_json)],
         ),
     ];
-    cases
-        .into_iter()
-        .map(|(name, default, value, headers)| {
-            let want = match decode_record(default, &value, &headers) {
-                Ok(env) => json!({ "envelope": envelope_json(&env) }),
-                Err(error) => json!({ "error": error.to_string() }),
-            };
-            json!({
-                "name": name,
-                "default_format": default.name(),
-                "value_hex": hex(&value),
-                "headers": headers_json(&headers),
-                "want": want,
-            })
-        })
-        .collect()
+    let commands: Vec<(&str, Vec<u8>, Vec<KafkaHeader>)> = vec![
+        ("a_json_command_decodes_by_its_content_type", json_command.value.clone(), json_command.headers.clone()),
+        ("a_msgpack_command_decodes_by_its_content_type", msgpack_command.value.clone(), msgpack_command.headers.clone()),
+        // No default for a command: it always carries the header, so a record without one is not a
+        // command record.
+        ("a_header_less_command_is_refused", json_command.value.clone(), Vec::new()),
+        ("an_event_record_is_refused_by_kind", json_event.value.clone(), json_event.headers.clone()),
+        (
+            "command_bytes_under_an_event_media_type_are_refused_by_kind",
+            json_command.value.clone(),
+            vec![header(event_json)],
+        ),
+    ];
+    let events = events.iter().map(|(name, value, headers)| decode_row::<EventMessage>(name, value, headers));
+    let commands = commands.iter().map(|(name, value, headers)| decode_row::<CommandMessage>(name, value, headers));
+    events.chain(commands).collect()
+}
+
+/// One fetched record decoded as kind `M`, as a row. Only an event reads the JSON default: a
+/// header-less command is refused whatever the default, so its row names none.
+fn decode_row<M: Message + Serialize + DeserializeOwned>(name: &str, value: &[u8], headers: &[KafkaHeader]) -> Value {
+    let default = (M::KIND == Kind::Event).then_some(Format::Json);
+    let want = match decode_record::<M>(Format::Json, value, headers) {
+        Ok(msg) => json!({ "message": serde_json::to_value(&msg).unwrap() }),
+        Err(error) => json!({ "error": error.to_string() }),
+    };
+    json!({
+        "name": name,
+        "kind": M::KIND.name(),
+        "default_format": default.map(|format| format.name()),
+        "value_hex": hex(value),
+        "headers": headers_json(headers),
+        "want": want,
+    })
 }
 
 /// The routing rule every shell runs: which registered serializer a fetched record's headers pick,
 /// the default, or none (poison). The registry is the shell's, so each row carries its own, and a
 /// registry that names a media type twice is refused before any record routes against it.
 fn kafka_route_cases() -> Vec<Value> {
-    let json = Format::Json.media_type();
-    let msgpack = Format::Msgpack.media_type();
+    let json = Format::Json.media_type(Kind::Event);
+    let msgpack = Format::Msgpack.media_type(Kind::Event);
+    let command_json = Format::Json.media_type(Kind::Command);
     let header = KafkaHeader::new;
     let cases: Vec<(&str, Vec<KafkaHeader>, Vec<&str>)> = vec![
         ("no_headers_routes_to_the_default", Vec::new(), vec![json, msgpack]),
+        // A command always names its media type, so a header-less record under a command default is poison.
+        ("no_headers_under_a_command_default_is_headerless", Vec::new(), vec![command_json]),
         ("a_foreign_header_only_routes_to_the_default", vec![header("traceparent", b"00-0af7651916cd43dd-01")], vec![json]),
         ("a_registered_media_type_names_its_index", vec![header(CONTENT_TYPE, msgpack.as_bytes())], vec![json, msgpack]),
+        // One format is two media types, one per kind, and each routes to its own serializer.
+        (
+            "a_command_media_type_names_its_own_index",
+            vec![header(CONTENT_TYPE, command_json.as_bytes())],
+            vec![json, command_json],
+        ),
+        (
+            "a_command_media_type_nobody_registered_is_unknown",
+            vec![header(CONTENT_TYPE, command_json.as_bytes())],
+            vec![json, msgpack],
+        ),
         ("a_host_media_type_is_as_good_as_a_kernel_one", vec![header(CONTENT_TYPE, b"application/x-test-id")], vec![json, "application/x-test-id"]),
         ("an_unregistered_media_type_is_unknown", vec![header(CONTENT_TYPE, b"application/x-protobuf")], vec![json, msgpack]),
         ("nothing_registered_makes_every_media_type_unknown", vec![header(CONTENT_TYPE, json.as_bytes())], Vec::new()),
@@ -292,7 +347,7 @@ fn kafka_route_cases() -> Vec<Value> {
         ),
         (
             "parameters_are_not_stripped",
-            vec![header(CONTENT_TYPE, b"application/vnd.edax.envelope+json; charset=utf-8")],
+            vec![header(CONTENT_TYPE, format!("{json}; charset=utf-8").as_bytes())],
             vec![json, msgpack],
         ),
         ("a_media_type_registered_twice_is_refused", Vec::new(), vec![json, "application/x-test-id", json]),
@@ -305,18 +360,26 @@ fn kafka_route_cases() -> Vec<Value> {
                 let want = json!({ "error": refused.to_string() });
                 return json!({ "name": name, "headers": headers_json(&headers), "registered": registered, "want": want });
             }
-            let want = match route(&headers, &registered) {
+            let default = if name.contains("command_default") { Kind::Command } else { Kind::Event };
+            let want = match route(&headers, &registered, default) {
                 Route::Default => json!({ "route": "default" }),
+                Route::Headerless => json!({ "route": "headerless" }),
                 Route::Registered(index) => json!({ "route": "registered", "index": index }),
                 Route::Unknown(media_type) => json!({ "route": "unknown", "media_type": media_type }),
             };
             // `content_type` is what `route` reads; pinning it here keeps the two from drifting.
             assert_eq!(
                 content_type(&headers).is_none(),
-                matches!(want["route"].as_str(), Some("default")),
+                matches!(want["route"].as_str(), Some("default" | "headerless")),
                 "{name}"
             );
-            json!({ "name": name, "headers": headers_json(&headers), "registered": registered, "want": want })
+            json!({
+                "name": name,
+                "headers": headers_json(&headers),
+                "registered": registered,
+                "default_kind": default.name(),
+                "want": want,
+            })
         })
         .collect()
 }
@@ -325,9 +388,9 @@ fn kafka_route_cases() -> Vec<Value> {
 fn kafka_dead_letter_cases() -> Vec<Value> {
     let fetched = KafkaRecord {
         key: b"agg-1".to_vec(),
-        value: Format::Json.encode(&base()),
+        value: Format::Json.encode(&base_event()).unwrap(),
         headers: vec![
-            KafkaHeader::new(CONTENT_TYPE, Format::Json.media_type().as_bytes()),
+            KafkaHeader::new(CONTENT_TYPE, Format::Json.media_type(Kind::Event).as_bytes()),
             KafkaHeader::new("traceparent", b"00-0af7651916cd43dd-01"),
             KafkaHeader::new("x-binary", &[0xff, 0x00]),
         ],
@@ -337,7 +400,7 @@ fn kafka_dead_letter_cases() -> Vec<Value> {
     let cases: Vec<(&str, KafkaRecord, &str, i32, i64, &str)> = vec![
         ("keeps_key_value_and_headers_verbatim", fetched.clone(), "orders", 3, 42, "codec: bad payload"),
         // A keyless tombstone from a foreign producer: both cross as empty bytes, and stay empty.
-        ("a_keyless_tombstone_stays_empty", keyless, "orders", 0, 0, "codec: no envelope"),
+        ("a_keyless_tombstone_stays_empty", keyless, "orders", 0, 0, "codec: no message"),
         ("non_ascii_topic_and_error", fetched.clone(), "commandes-é", 0, 7, "rejected: montant négatif"),
         ("extreme_coordinates", fetched, "t", i32::MAX, i64::MAX, ""),
         // Republished and dead-lettered again: two sets of headers, and the reader takes the last.

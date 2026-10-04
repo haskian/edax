@@ -5,15 +5,17 @@ the bytes the Rust registry codec writes."""
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import edax
 import msgspec
 import pytest
-from conftest import build_envelope, golden, recording_pacing
+from conftest import build_message, golden, message_as_obj, recording_pacing
 from edax import _edax
 from edax.backend.memory import MemoryEventStore
 from edax.codec import json_codec, msgpack_codec
+from edax.testing import drafted
 
 # =========================================================================
 # retries.json: the consumer's retry and dead-letter policy
@@ -114,7 +116,7 @@ async def test_the_dispatcher_settles_as_the_golden_policy_answers(scenario: dic
         if len(sink_calls) == 1:
             raise edax.StoreError("dead-letter table unavailable")
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         raise edax.StoreError("projection unavailable")
 
     dispatcher = edax.KeyOrderedDispatcher(
@@ -122,7 +124,7 @@ async def test_the_dispatcher_settles_as_the_golden_policy_answers(scenario: dic
     )
     dispatcher.start()
     settled: list[str] = []
-    env = build_envelope("acct-1", "Deposited", 1, id="evt-1")
+    env = build_message("acct-1", "Deposited", 1, id="evt-1")
     for _ in range(3):
         await dispatcher.submit(
             edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack"))
@@ -146,7 +148,7 @@ async def _outbox_of(n: int) -> MemoryEventStore:
         None,
         "acct-r",
         0,
-        [build_envelope("acct-r", "Deposited", seq, id=f"acct-r-{seq}") for seq in range(1, n + 1)],
+        [drafted(build_message("acct-r", "Deposited", seq, id=f"acct-r-{seq}")) for seq in range(1, n + 1)],
     )
     return store
 
@@ -253,12 +255,12 @@ async def test_relay_drain_branches(
     pacing, waits = recording_pacing()
     dead: list[str] = []
 
-    async def on_dead(row: edax.EventEnvelope, error: BaseException) -> None:
+    async def on_dead(row: edax.EventMessage, error: BaseException) -> None:
         dead.append(row.id)
         if sink == "raises":
             raise edax.StoreError("dead-letter table unavailable")
 
-    async def publish(row: edax.EventEnvelope) -> None:
+    async def publish(row: edax.EventMessage) -> None:
         failure = rows[(row.sequence or 1) - 1]
         if failure is not None:
             raise failure
@@ -311,7 +313,7 @@ def test_golden_saga() -> None:
     for row in golden("saga.json"):
         if "admit" in row:
             admit, want = row["admit"], row["want"]
-            env = build_envelope(admit["aggregate_id"], "OrderCreated", admit["sequence"], id=admit["id"])
+            env = build_message(admit["aggregate_id"], "OrderCreated", admit["sequence"], id=admit["id"])
             if "error" in want:
                 with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
                     _edax.saga_admit(admit["completed"], admit["folded"], env)
@@ -322,14 +324,36 @@ def test_golden_saga() -> None:
             continue
         if "command_id" in row:
             assert (
-                _edax.saga_command_id(row["correlation_id"], row["version"], row["index"])
-                == row["command_id"]
+                _edax.saga_command_id(row["instance_id"], row["version"], row["index"]) == row["command_id"]
             ), row
             continue
+        if "saga_command" in row:
+            step = row["saga_command"]
+            cause = step["cause"]
+            command = step["command"]
+            payload = edax.Event(command["name"], command["version"], base64.b64decode(command["data"]))
+            got = _edax.saga_command(
+                step["saga"],
+                step["instance_id"],
+                step["version"],
+                step["index"],
+                payload,
+                cause["id"],
+                cause["correlation_id"],
+                step["issued_at"],
+            )
+            assert message_as_obj(got) == row["want"], row
+            continue
         loaded = row["loaded"]
-        write = _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
         want = row["want"]
-        assert (write.action, write.expected) == (want["write"], want.get("expected", 0)), row
+        if "error" in want:
+            with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+                _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
+            assert str(caught.value) == want["error"].removeprefix("codec: "), row
+            continue
+        write = _edax.saga_write(row["completes"], row["has_commands"], loaded.get("version"))
+        got = (write.action, write.expected, write.version)
+        assert got == (want["write"], want.get("expected", 0), want.get("version", 0)), row
 
 
 # =========================================================================

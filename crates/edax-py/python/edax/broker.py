@@ -1,8 +1,10 @@
-"""The broker seam (``Producer`` / ``Consumer``). A producer publishes an encoded envelope to a topic; wire it
-to a :class:`~edax.store.Relay` to drain the transactional outbox. A consumer turns each message into a
-:class:`~edax.dispatcher.Delivery` and submits it to a :class:`~edax.dispatcher.KeyOrderedDispatcher`. The
-aggregate id is the message key, so a broker that preserves per-key order delivers an aggregate's events in
-order and the dispatcher pool keeps them serialized on one worker. See ``docs/backends/README.md``."""
+"""The broker seam (``Producer`` / ``Consumer``). A producer publishes an encoded message, an event or a
+command, to a topic; wire it to a :class:`~edax.store.Relay` to drain a transactional outbox. A consumer
+turns each record into a :class:`~edax.dispatcher.Delivery` and submits it to a
+:class:`~edax.dispatcher.KeyOrderedDispatcher`. The kernel's ordering key (the aggregate id, or a command's
+own id when it names no aggregate) is the message key, so a broker that preserves per-key order delivers an
+aggregate's messages in order and the dispatcher pool keeps them serialized on one worker. See
+``docs/backends/README.md``."""
 
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from .aggregate import Event, EventEnvelope
+from .aggregate import CommandMessage, EventMessage
 from .dispatcher import AckFn, Delivery, KeyOrderedDispatcher, LiveFn, _always_live
 from .errors import is_terminal
 
@@ -26,15 +28,16 @@ __all__ = [
 
 logger = logging.getLogger("edax.broker")
 
-KeyFn = Callable[[EventEnvelope], str]
+KeyFn = Callable[[EventMessage | CommandMessage], str]
 
-#: Event name on the stand-in envelope of an undecodable message, so a dead-letter sink can tell a poison
+#: Event name on the stand-in message of an undecodable record, so a dead-letter sink can tell a poison
 #: message from a real event and still see the original bytes.
 UNDECODABLE = "edax.undecodable"
 
 
 class Producer(Protocol):
-    """Publishes an envelope to the broker (encode + send). What an adapter must guarantee:
+    """Publishes a message, an event or a command, to the broker (encode + send). What an adapter must
+    guarantee:
 
     * ``publish`` returns only after every in-sync replica has the message (Kafka ``acks=all``), not the
       leader alone. Returning early lets the relay mark the outbox row published before the message is
@@ -42,15 +45,15 @@ class Producer(Protocol):
       it was sent.
     * On failure ``publish`` raises: the relay marks the rows before it and hands that row and the rest back.
       Never swallow errors.
-    * The message key is ``aggregate_id``, or a function of it, so a per-key-ordered broker delivers one
-      aggregate's events in ``sequence`` order.
-    * Delivery is at-least-once: a crash between publish and ``mark_published`` publishes the envelope
-      again, so consumers dedup by ``env.id`` (:func:`~edax.router.idempotent_by_id`), or drop a stale
+    * The message key is the kernel's ``ordering_key`` (the aggregate id, else a command's id), or a
+      function of it, so a per-key-ordered broker delivers one aggregate's events in ``sequence`` order.
+    * Delivery is at-least-once: a crash between publish and ``mark_published`` publishes the message
+      again, so consumers dedup by ``msg.id`` (:func:`~edax.router.idempotent_by_id`), or drop a stale
       ``sequence`` with :func:`~edax.is_stale`.
     * ``publish`` is called serially by one relay; it need not be thread-safe or reentrant.
     """
 
-    async def publish(self, env: EventEnvelope) -> None: ...
+    async def publish(self, msg: EventMessage | CommandMessage) -> None: ...
 
 
 class Consumer(Protocol):
@@ -61,7 +64,7 @@ class Consumer(Protocol):
       stream. ``Delivery.attempt`` is the broker's own redelivery count if it keeps one, else ``0``.
     * A payload that will not decode returns an :class:`UndecodableDelivery` and does not raise, or the
       loop dies on an unsettleable message and the same bytes redeliver forever.
-    * Per-key order: messages for one ``aggregate_id`` arrive as published. Across keys, any order.
+    * Per-key order: messages for one ordering key arrive as published. Across keys, any order.
     * Ack means exactly this message. The dispatcher acks out of order, so an offset-based broker must track
       a per-partition watermark and commit only below the lowest unacked offset. A bare "commit current
       position" acknowledges messages still in flight and loses them on restart.
@@ -82,7 +85,7 @@ class Consumer(Protocol):
 class UndecodableDelivery(Delivery):
     """A polled message whose payload would not decode: a poison message. Terminal by construction, so
     :meth:`_ConsumerLoop.run` dead-letters it instead of submitting it. No handler may see it:
-    :attr:`envelope` is only a stand-in carrying the raw payload under :data:`UNDECODABLE`."""
+    :attr:`message` is only a stand-in event carrying the raw payload under the name :data:`UNDECODABLE`."""
 
     def __init__(
         self,
@@ -96,16 +99,20 @@ class UndecodableDelivery(Delivery):
         origin: Any = None,
     ) -> None:
         # `message_id` is the only identifier an undecodable payload has, so it becomes the stand-in id.
-        envelope = EventEnvelope(
+        # Every other field is unknown: it lives inside the payload that would not decode.
+        stand_in = EventMessage(
             id=message_id,
-            aggregate_id="",  # unknown: the key lives inside the payload that would not decode
-            event=Event(UNDECODABLE, 0, payload),
-            namespace={},
+            aggregate_id="",
+            name=UNDECODABLE,
+            version=0,
+            data=payload,
+            correlation_id="",
+            causation_id="",
+            recorded_at=0,
+            extensions={},
             metadata={},
-            timestamp=0,
-            sequence=None,
         )
-        super().__init__(envelope, on_ack, on_nack, live=live, origin=origin)
+        super().__init__(stand_in, on_ack, on_nack, live=live, origin=origin)
         self.error = error
 
 
@@ -148,7 +155,7 @@ class _ConsumerLoop:
                     # transport's to bring back on a rebalance or a restart.
                     logger.exception(
                         "edax consumer: settling poison message %s failed; the loop continues",
-                        delivery.envelope.id,
+                        delivery.message.id,
                     )
                 continue
             try:

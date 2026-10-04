@@ -18,8 +18,9 @@ use std::sync::{Arc, Mutex};
 
 use edax_core::ErrorCode;
 
-// The kernel's nested envelope is referred to fully-qualified (`edax_event::EventEnvelope`); the names
-// `Event` / `EventEnvelope` below are this crate's own binding-facing records, shaped to mirror it.
+// The kernel's messages are referred to fully-qualified (`edax_event::EventMessage`); the names
+// `Event`, `EventDraft`, `EventMessage`, `CommandMessage` and `Lineage` below are this crate's own
+// binding-facing records, shaped to mirror them.
 
 // ---- routing / sequencing ------------------------------------------------
 
@@ -42,7 +43,7 @@ pub fn advance(stored: Option<u64>, incoming: Option<u64>) -> Option<u64> {
     edax_event::advance(stored, incoming)
 }
 
-/// Check an append batch against the dense-sequence rule: every envelope carries a sequence and the
+/// Check an append batch against the dense-sequence rule: every event carries a sequence and the
 /// batch runs `expected + 1, expected + 2, ...` in order. `Err` names the 0-based batch index and is a
 /// `codec:` (terminal) error. An empty batch passes: it is a version check only.
 pub fn check_sequence_batch(expected: u64, sequences: Vec<Option<u64>>) -> Result<(), String> {
@@ -183,50 +184,73 @@ pub fn effective_sort(sort: &str) -> Result<String, String> {
 /// A gap in the steps, or a downward plan (a payload from a newer writer), is the kernel's `codec`
 /// error: the event cannot be unmarshaled to the target version, and no extra attempt changes that.
 /// A codec asks on every unmarshal. See [`edax_event::upcast_plan`].
-pub fn upcast_plan(from_version: i32, to: i32, available: Option<Vec<i32>>) -> Result<Vec<i32>, String> {
+pub fn upcast_plan(from_version: u32, to: u32, available: Option<Vec<u32>>) -> Result<Vec<u32>, String> {
     edax_event::upcast_plan(from_version, to, available.as_deref()).map_err(wire)
 }
 
-/// Causation/correlation metadata for a child event given its parent's metadata and event id.
-pub fn propagate(parent_metadata: HashMap<String, String>, parent_event_id: &str) -> HashMap<String, String> {
-    let parent: BTreeMap<String, String> = parent_metadata.into_iter().collect();
-    edax_event::propagate(&parent, parent_event_id).into_iter().collect()
+/// The two ids that place a message in its flow. See [`edax_event::Lineage`].
+pub struct Lineage {
+    /// Constant across one logical flow.
+    pub correlation_id: String,
+    /// The id of the message that directly caused this one; a root's own correlation id.
+    pub causation_id: String,
 }
 
-/// The metadata key whose value is constant across one logical flow, `"correlation_id"`. A call
-/// because the generator binds functions, not constants. See [`edax_event::CORRELATION_ID`].
-pub fn correlation_id_key() -> String {
-    edax_event::CORRELATION_ID.to_owned()
+fn record_lineage(lineage: edax_event::Lineage) -> Lineage {
+    Lineage { correlation_id: lineage.correlation_id, causation_id: lineage.causation_id }
 }
 
-/// The metadata key whose value is the id of the event that directly caused this one,
-/// `"causation_id"`. See [`edax_event::CAUSATION_ID`].
-pub fn causation_id_key() -> String {
-    edax_event::CAUSATION_ID.to_owned()
+/// The lineage of a child of the message `parent_id`: its causation is the parent's id, and it
+/// inherits `parent_correlation_id`. See [`edax_event::propagate`].
+pub fn propagate(parent_id: &str, parent_correlation_id: &str) -> Lineage {
+    record_lineage(edax_event::propagate(parent_id, parent_correlation_id))
 }
 
-/// Causation/correlation metadata for an originating (root) event, given its metadata and one
-/// freshly minted id.
+/// The lineage of a message with no parent message, given the ids the caller already holds and one
+/// freshly minted id. Fills only what is missing: `correlation_id` defaults to `fresh_id`, and
+/// `causation_id` to the resulting correlation id. An empty string is a supplied id.
 ///
-/// The host mints `fresh_id` (with [`guid`]) because minting is non-deterministic; the kernel keeps
-/// only the decision of which key gets defaulted to what, so a golden vector pins it. Returns just
-/// the two chain keys for the host to merge.
-pub fn originate(metadata: HashMap<String, String>, fresh_id: &str) -> HashMap<String, String> {
-    let given: BTreeMap<String, String> = metadata.into_iter().collect();
-    edax_event::originate(&given, fresh_id).into_iter().collect()
+/// The host mints `fresh_id` (with [`guid`]) because minting is non-deterministic. The kernel keeps
+/// the defaulting rule, so a golden vector pins it. See [`edax_event::originate`].
+// The two ids are optional, so they trail: alef moves optional parameters to the end of the signature.
+pub fn originate(fresh_id: &str, correlation_id: Option<String>, causation_id: Option<String>) -> Lineage {
+    record_lineage(edax_event::originate(correlation_id.as_deref(), causation_id.as_deref(), fresh_id))
+}
+
+/// The ordering key of a message: `aggregate_id`, or the message's own `id` when it targets no
+/// aggregate. An event always has an aggregate, so its key is its aggregate. See
+/// [`edax_event::ordering_key`].
+// `aggregate_id` is optional, so it trails `id`: alef moves optional parameters to the end.
+pub fn ordering_key(id: &str, aggregate_id: Option<String>) -> String {
+    edax_event::ordering_key(aggregate_id.as_deref(), id).to_owned()
+}
+
+/// The key a guard claims for a received command: its `idempotency_key`, or its own `id` when it
+/// carries none, so a redelivery of the same message still deduplicates. See
+/// [`edax_event::received_key`].
+// `idempotency_key` is optional, so it trails `id`: alef moves optional parameters to the end.
+pub fn received_key(id: &str, idempotency_key: Option<String>) -> String {
+    edax_event::received_key(idempotency_key.as_deref(), id).to_owned()
+}
+
+/// Refuse an extension key that breaks the rule, as a `codec:` error naming it. A key is 1 to 64
+/// bytes of `[a-z0-9._-]` and starts with `[a-z0-9]`. See [`edax_event::check_extensions`].
+pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), String> {
+    edax_event::check_extensions(&ordered(extensions)).map_err(wire)
 }
 
 // ---- idempotency ---------------------------------------------------------
 
-/// Stable 64-bit hash of arbitrary bytes (FNV-1a). For commands, prefer [`payload_hash_json`], which
-/// canonicalizes first so every binding agrees.
+/// Stable 64-bit hash of arbitrary bytes (FNV-1a). A command's guard hashes with
+/// [`command_hash_json`] instead, which binds the name and canonicalizes first.
 pub fn payload_hash(payload: &[u8]) -> u64 {
     edax_cqrs::payload_hash(payload)
 }
 
-/// Canonicalize a UTF-8 JSON command payload (RFC 8785) and hash it. Canonicalization lives in the
-/// kernel, so a reused idempotency key binds to the same hash in every binding — don't canonicalize
-/// on the host side. An integer literal past 2^53 is a `codec` error.
+/// Canonicalize a UTF-8 JSON payload (RFC 8785) and hash it. Canonicalization lives in the kernel,
+/// so every binding gets the same hash; don't canonicalize on the host side. A command's guard uses
+/// [`command_hash_json`], which also binds the command name. An integer literal past 2^53 is a
+/// `codec` error.
 pub fn payload_hash_json(payload: &[u8]) -> Result<u64, String> {
     let canonical = edax_cqrs::canonical_json(payload).map_err(wire)?;
     Ok(edax_cqrs::payload_hash(&canonical))
@@ -240,20 +264,35 @@ pub fn canonical_json(payload: &[u8]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&canonical).into_owned())
 }
 
+/// The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
+/// `{"name": name, "payload": payload}`. `payload` is the command value as UTF-8 JSON, in the shape
+/// the handler receives (after upcast). The kernel canonicalizes, so every binding agrees. An integer
+/// literal past 2^53 is a `codec` error. See [`edax_cqrs::command_hash_json`].
+pub fn command_hash_json(name: &str, payload: &[u8]) -> Result<u64, String> {
+    edax_cqrs::command_hash_json(name, payload).map_err(wire)
+}
+
+/// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
+/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`. Two guards with different scopes
+/// never share a key. See [`edax_cqrs::claim_key`].
+pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
+    edax_cqrs::claim_key(scope, idempotency_key)
+}
+
 /// What an event's idempotency guard claims: the key and the payload hash. See
 /// [`edax_event::event_idempotency`].
 pub struct EventIdempotency {
-    /// The envelope id.
+    /// The event id.
     pub key: String,
-    /// FNV-1a over the raw `event.data` bytes.
+    /// FNV-1a over the raw `data` bytes.
     pub payload_hash: u64,
 }
 
-/// The key and hash an event's idempotency guard claims for `envelope`: the kernel's rule, pinned by
+/// The key and hash an event's idempotency guard claims for `message`: the kernel's rule, pinned by
 /// `testdata/golden/event_idempotency.json`, so two SDKs consuming one stream bind alike.
-pub fn event_idempotency(envelope: EventEnvelope) -> EventIdempotency {
-    let env = envelope_from_record(envelope);
-    let rule = edax_event::event_idempotency(&env);
+pub fn event_idempotency(message: EventMessage) -> EventIdempotency {
+    let msg = kernel_event_message(message);
+    let rule = edax_event::event_idempotency(&msg);
     EventIdempotency { key: rule.key.to_owned(), payload_hash: rule.payload_hash }
 }
 
@@ -353,90 +392,238 @@ pub fn idempotency_outcome(current: u64, payload_hash: u64, pending: bool, error
     edax_cqrs::outcome(&prior, current).as_str().to_owned()
 }
 
-// ---- envelope codec ------------------------------------------------------
+// ---- messages and their codec ----------------------------------------------
 
-/// A marshaled domain event: a name, a version, and the caller-serialized payload `data`. The nested
-/// half of [`EventEnvelope`], mirroring the kernel's `edax_event::Event`.
+/// A marshaled payload: a name, a schema version, and the host-serialized `data`. What a host codec
+/// produces from a domain value; a saga hands its commands over in this shape. See
+/// [`edax_event::Event`].
 pub struct Event {
     pub name: String,
-    pub version: i32,
+    pub version: u32,
     pub data: Vec<u8>,
 }
 
-/// The binding's event record — the same nested shape as the kernel's `edax_event::EventEnvelope`
-/// (`event` is a nested [`Event`]). It is the currency for an envelope across the boundary: returned by
-/// [`decode_envelope`] and accepted/returned by the in-memory event store, so events cross as a
-/// structured object (bytes stay bytes, dictionaries stay dictionaries) with no JSON or wire encoding.
-/// `envelope_from_record` / `record_from_envelope` map it to and from the kernel envelope (only the
-/// dictionaries change container: a host `HashMap` becomes the kernel's order-deterministic `BTreeMap`).
-pub struct EventEnvelope {
+/// An event as a repository hands it to the store: every field of [`EventMessage`] but
+/// `recorded_at`, which the store assigns. See [`edax_event::EventDraft`].
+pub struct EventDraft {
+    /// Globally unique event id.
     pub id: String,
+    /// The aggregate this event belongs to.
     pub aggregate_id: String,
-    pub event: Event,
+    /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
-    pub namespace: HashMap<String, String>,
+    /// The event type name.
+    pub name: String,
+    /// The payload schema version.
+    pub version: u32,
+    /// The host-serialized payload.
+    pub data: Vec<u8>,
+    /// Constant across one logical flow.
+    pub correlation_id: String,
+    /// The id of the message that directly caused this one.
+    pub causation_id: String,
+    /// When the fact happened, if the host knows it apart from when it was recorded.
+    pub occurred_at: Option<i64>,
+    /// Extension context, under the key rule of [`check_extensions`].
+    pub extensions: HashMap<String, String>,
+    /// Application context, opaque to edax.
     pub metadata: HashMap<String, String>,
-    pub timestamp: i64,
 }
 
-/// Binding event -> the kernel's.
+/// An event as stored, published and consumed. It crosses as a structured object: bytes stay
+/// bytes, dictionaries stay dictionaries, with no JSON or wire encoding in between. See
+/// [`edax_event::EventMessage`].
+pub struct EventMessage {
+    /// Globally unique event id: the causation id of anything this event causes.
+    pub id: String,
+    /// The aggregate this event belongs to: its ordering key.
+    pub aggregate_id: String,
+    /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
+    pub sequence: Option<u64>,
+    /// The event type name a consumer routes and unmarshals by.
+    pub name: String,
+    /// The payload schema version.
+    pub version: u32,
+    /// The host-serialized payload.
+    pub data: Vec<u8>,
+    /// Constant across one logical flow.
+    pub correlation_id: String,
+    /// The id of the message that directly caused this one; a root's own correlation id.
+    pub causation_id: String,
+    /// When the fact happened, set by the host. `None` means it happened when recorded.
+    pub occurred_at: Option<i64>,
+    /// Unix nanoseconds on the store's clock when the store appended the event.
+    pub recorded_at: i64,
+    /// Extension context, under the key rule of [`check_extensions`].
+    pub extensions: HashMap<String, String>,
+    /// Application context, opaque to edax.
+    pub metadata: HashMap<String, String>,
+}
+
+/// A command as dispatched, queued and consumed. See [`edax_event::CommandMessage`].
+pub struct CommandMessage {
+    /// This message instance. A redelivery of the same message keeps it.
+    pub id: String,
+    /// The client's intent: the key an idempotency guard claims. `None`: no claim is made.
+    pub idempotency_key: Option<String>,
+    /// The aggregate the command targets, if any: its ordering key.
+    pub aggregate_id: Option<String>,
+    /// The command type name a handler is registered under.
+    pub name: String,
+    /// The payload schema version.
+    pub version: u32,
+    /// The host-serialized payload.
+    pub data: Vec<u8>,
+    /// Constant across one logical flow.
+    pub correlation_id: String,
+    /// The id of the message that directly caused this one; a root's own correlation id.
+    pub causation_id: String,
+    /// Unix nanoseconds on the issuer's clock when the command was built.
+    pub issued_at: i64,
+    /// Extension context, under the key rule of [`check_extensions`].
+    pub extensions: HashMap<String, String>,
+    /// Application context, opaque to edax.
+    pub metadata: HashMap<String, String>,
+}
+
+/// A host dictionary as the kernel's key-ordered map, so encoded bytes are deterministic.
+fn ordered(map: HashMap<String, String>) -> BTreeMap<String, String> {
+    map.into_iter().collect()
+}
+
+/// The kernel's key-ordered map as a host dictionary.
+fn unordered(map: BTreeMap<String, String>) -> HashMap<String, String> {
+    map.into_iter().collect()
+}
+
 fn kernel_event(e: Event) -> edax_event::Event {
     edax_event::Event { name: e.name, version: e.version, data: e.data }
 }
 
-/// The kernel's event -> a binding event.
-fn record_event(e: edax_event::Event) -> Event {
-    Event { name: e.name, version: e.version, data: e.data }
-}
-
-/// Binding record -> the kernel's nested envelope (HashMap -> the kernel's ordered BTreeMap).
-fn envelope_from_record(r: EventEnvelope) -> edax_event::EventEnvelope {
-    edax_event::EventEnvelope {
-        id: r.id,
-        aggregate_id: r.aggregate_id,
-        event: kernel_event(r.event),
-        sequence: r.sequence,
-        namespace: r.namespace.into_iter().collect(),
-        metadata: r.metadata.into_iter().collect(),
-        timestamp: r.timestamp,
+fn kernel_event_draft(d: EventDraft) -> edax_event::EventDraft {
+    edax_event::EventDraft {
+        id: d.id,
+        aggregate_id: d.aggregate_id,
+        sequence: d.sequence,
+        name: d.name,
+        version: d.version,
+        data: d.data,
+        correlation_id: d.correlation_id,
+        causation_id: d.causation_id,
+        occurred_at: d.occurred_at,
+        extensions: ordered(d.extensions),
+        metadata: ordered(d.metadata),
     }
 }
 
-/// The kernel's nested envelope -> a binding record.
-fn record_from_envelope(env: edax_event::EventEnvelope) -> EventEnvelope {
-    EventEnvelope {
-        id: env.id,
-        aggregate_id: env.aggregate_id,
-        event: record_event(env.event),
-        sequence: env.sequence,
-        namespace: env.namespace.into_iter().collect(),
-        metadata: env.metadata.into_iter().collect(),
-        timestamp: env.timestamp,
+fn kernel_event_message(m: EventMessage) -> edax_event::EventMessage {
+    edax_event::EventMessage {
+        id: m.id,
+        aggregate_id: m.aggregate_id,
+        sequence: m.sequence,
+        name: m.name,
+        version: m.version,
+        data: m.data,
+        correlation_id: m.correlation_id,
+        causation_id: m.causation_id,
+        occurred_at: m.occurred_at,
+        recorded_at: m.recorded_at,
+        extensions: ordered(m.extensions),
+        metadata: ordered(m.metadata),
     }
+}
+
+fn record_event_message(m: edax_event::EventMessage) -> EventMessage {
+    EventMessage {
+        id: m.id,
+        aggregate_id: m.aggregate_id,
+        sequence: m.sequence,
+        name: m.name,
+        version: m.version,
+        data: m.data,
+        correlation_id: m.correlation_id,
+        causation_id: m.causation_id,
+        occurred_at: m.occurred_at,
+        recorded_at: m.recorded_at,
+        extensions: unordered(m.extensions),
+        metadata: unordered(m.metadata),
+    }
+}
+
+fn kernel_command_message(m: CommandMessage) -> edax_event::CommandMessage {
+    edax_event::CommandMessage {
+        id: m.id,
+        idempotency_key: m.idempotency_key,
+        aggregate_id: m.aggregate_id,
+        name: m.name,
+        version: m.version,
+        data: m.data,
+        correlation_id: m.correlation_id,
+        causation_id: m.causation_id,
+        issued_at: m.issued_at,
+        extensions: ordered(m.extensions),
+        metadata: ordered(m.metadata),
+    }
+}
+
+fn record_command_message(m: edax_event::CommandMessage) -> CommandMessage {
+    CommandMessage {
+        id: m.id,
+        idempotency_key: m.idempotency_key,
+        aggregate_id: m.aggregate_id,
+        name: m.name,
+        version: m.version,
+        data: m.data,
+        correlation_id: m.correlation_id,
+        causation_id: m.causation_id,
+        issued_at: m.issued_at,
+        extensions: unordered(m.extensions),
+        metadata: unordered(m.metadata),
+    }
+}
+
+/// The stored message for `draft`: every field as drafted, stamped `recorded_at` on the store's clock.
+/// See [`edax_event::EventDraft::record`].
+pub fn record_event(draft: EventDraft, recorded_at: i64) -> EventMessage {
+    record_event_message(kernel_event_draft(draft).record(recorded_at))
 }
 
 fn resolve(format: &str) -> Result<edax_event::Format, String> {
     edax_event::Format::from_name(format).map_err(wire)
 }
 
-/// An envelope -> wire bytes in `format` (`"json"` or `"msgpack"`). Takes the binding's own
-/// [`EventEnvelope`], as [`kafka_record`] does, so a host hands over the object it already holds.
-pub fn encode_envelope(format: &str, envelope: EventEnvelope) -> Result<Vec<u8>, String> {
-    Ok(resolve(format)?.encode(&envelope_from_record(envelope)))
+/// An event -> wire bytes in `format` (`"json"` or `"msgpack"`). A bad extension key is a `codec:`
+/// error, so a producer never mints a message every consumer would refuse.
+pub fn encode_event(format: &str, message: EventMessage) -> Result<Vec<u8>, String> {
+    resolve(format)?.encode(&kernel_event_message(message)).map_err(wire)
 }
 
-/// Wire bytes in `format` -> a decoded [`EventEnvelope`] record (nested `event`).
-pub fn decode_envelope(format: &str, wire: &[u8]) -> Result<EventEnvelope, String> {
-    let env = resolve(format)?.decode(wire).map_err(self::wire)?;
-    Ok(record_from_envelope(env))
+/// Wire bytes in `format` -> an event. Bytes that are not an event in that format are a `codec:`
+/// error.
+pub fn decode_event(format: &str, wire: &[u8]) -> Result<EventMessage, String> {
+    let message = resolve(format)?.decode::<edax_event::EventMessage>(wire).map_err(self::wire)?;
+    Ok(record_event_message(message))
 }
 
-/// The media type naming `format` (`"json"` or `"msgpack"`) on the wire: the string a transport that
-/// carries a type — a Kafka `content-type` header, an HTTP request — puts there. It names the codec
-/// and not the transport, so it lives here and not with the Kafka record. See
-/// [`edax_event::Format::media_type`].
-pub fn media_type(format: &str) -> Result<String, String> {
-    Ok(resolve(format)?.media_type().to_owned())
+/// A command -> wire bytes in `format`, as [`encode_event`] does an event.
+pub fn encode_command(format: &str, message: CommandMessage) -> Result<Vec<u8>, String> {
+    resolve(format)?.encode(&kernel_command_message(message)).map_err(wire)
+}
+
+/// Wire bytes in `format` -> a command, as [`decode_event`] does an event.
+pub fn decode_command(format: &str, wire: &[u8]) -> Result<CommandMessage, String> {
+    let message = resolve(format)?.decode::<edax_event::CommandMessage>(wire).map_err(self::wire)?;
+    Ok(record_command_message(message))
+}
+
+/// The media type that names `format` (`"json"` or `"msgpack"`) and `kind` (`"event"` or
+/// `"command"`) on the wire, `application/vnd.edax.<kind>+<format>`: the string a transport that
+/// carries a type puts there, such as a Kafka `content-type` header. It names the codec and not the
+/// transport, so it lives here and not with the Kafka record. An unknown format or kind is a `codec:`
+/// error. See [`edax_event::Format::media_type`].
+pub fn media_type(format: &str, kind: &str) -> Result<String, String> {
+    let kind = edax_event::Kind::from_name(kind).map_err(wire)?;
+    Ok(resolve(format)?.media_type(kind).to_owned())
 }
 
 // ---- consumer retry policy ------------------------------------------------
@@ -517,70 +704,74 @@ pub fn retries(max_attempts: u32, sink: bool) -> Retries {
 
 // ---- saga step -------------------------------------------------------------
 
-/// The write a saga step makes: `action` is `"nothing"`, `"save"` or `"complete"`, and `expected` the
-/// version a save or complete is conditional on (`0` otherwise). See [`edax_event::SagaWrite`].
+/// The write a saga step makes: `action` is `"nothing"`, `"save"` or `"complete"`, `expected` the
+/// version a save or complete is conditional on, and `version` the one it commits, which the step's
+/// command ids carry (both `0` for nothing). See [`edax_event::SagaWrite`].
 pub struct SagaWrite {
     pub action: String,
     pub expected: u64,
+    pub version: u64,
 }
 
 /// The write for a step whose fold `completes` the instance or not, with or without commands, over a
 /// running instance loaded at `version` (`None` when nothing was loaded). A completed instance never
 /// gets here: [`saga_admit`] skips it. See [`edax_event::saga_write`].
 // `version` is optional, so it trails: alef moves optional parameters to the end of the signature.
-pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> SagaWrite {
+pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> Result<SagaWrite, String> {
     let loaded = version.map_or(edax_event::Loaded::Absent, |version| edax_event::Loaded::Active { version });
-    let (action, expected) = match edax_event::saga_write(loaded, completes, has_commands) {
-        edax_event::SagaWrite::Nothing => ("nothing", 0),
-        edax_event::SagaWrite::Save { expected } => ("save", expected),
-        edax_event::SagaWrite::Complete { expected } => ("complete", expected),
+    let (action, expected, version) = match edax_event::saga_write(loaded, completes, has_commands).map_err(wire)? {
+        edax_event::SagaWrite::Nothing => ("nothing", 0, 0),
+        edax_event::SagaWrite::Save { expected, version } => ("save", expected, version),
+        edax_event::SagaWrite::Complete { expected, version } => ("complete", expected, version),
     };
-    SagaWrite { action: action.to_owned(), expected }
+    Ok(SagaWrite { action: action.to_owned(), expected, version })
 }
 
 /// Whether an instance that saved the marks `folded` (empty for a new instance), or is `completed`
-/// (a tombstone), folds `envelope`: `None` when it does not (a tombstone, or a redelivery of an event
+/// (a tombstone), folds `message`: `None` when it does not (a tombstone, or a redelivery of an event
 /// it folded: skip it, write nothing), else the marks to save with the step. Marks this function did
 /// not write are a `codec:` error. See [`edax_event::saga_admit`].
-pub fn saga_admit(completed: bool, folded: &str, envelope: EventEnvelope) -> Result<Option<String>, String> {
-    let env = envelope_from_record(envelope);
-    Ok(match edax_event::saga_admit(completed, folded, &env).map_err(wire)? {
+pub fn saga_admit(completed: bool, folded: &str, message: EventMessage) -> Result<Option<String>, String> {
+    let msg = kernel_event_message(message);
+    Ok(match edax_event::saga_admit(completed, folded, &msg).map_err(wire)? {
         edax_event::SagaAdmit::Completed | edax_event::SagaAdmit::Repeat => None,
         edax_event::SagaAdmit::Fold { folded } => Some(folded),
     })
 }
 
-/// The id of the `index`-th command a saga step committed at `version`. See
-/// [`edax_event::saga_command_id`].
-pub fn saga_command_id(correlation_id: &str, version: u64, index: u64) -> String {
-    edax_event::saga_command_id(correlation_id, version, index)
+/// The id of the `index`-th command a saga step committed at `version`:
+/// `"{instance_id}:{version}:{index}"`. See [`edax_event::saga_command_id`].
+pub fn saga_command_id(instance_id: &str, version: u64, index: u64) -> String {
+    edax_event::saga_command_id(instance_id, version, index)
 }
 
-/// One command in a saga's outbox, crossing structurally like [`EventEnvelope`]: the command is the
-/// host codec's nested [`Event`]. See [`edax_event::SagaCommand`].
-pub struct SagaCommand {
-    pub id: String,
-    pub correlation_id: String,
-    pub command: Event,
-    pub timestamp: i64,
-}
-
-fn saga_command_from_record(r: SagaCommand) -> edax_event::SagaCommand {
-    edax_event::SagaCommand {
-        id: r.id,
-        correlation_id: r.correlation_id,
-        command: kernel_event(r.command),
-        timestamp: r.timestamp,
-    }
-}
-
-fn record_from_saga_command(c: edax_event::SagaCommand) -> SagaCommand {
-    SagaCommand {
-        id: c.id,
-        correlation_id: c.correlation_id,
-        command: record_event(c.command),
-        timestamp: c.timestamp,
-    }
+/// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
+/// committed `version`, folding the event `cause_id` of the flow `cause_correlation_id`: the row its
+/// outbox holds and the message its relay sends. `command` is the host codec's output. Its `id` is
+/// [`saga_command_id`], its `idempotency_key` that id under the saga's name, its aggregate the
+/// instance, and its lineage the folded event's child. Pinned by `testdata/golden/saga.json`. See
+/// [`edax_event::saga_command`].
+#[allow(clippy::too_many_arguments)] // the kernel's own parameter list, one for one
+pub fn saga_command(
+    saga: &str,
+    instance_id: &str,
+    version: u64,
+    index: u64,
+    command: Event,
+    cause_id: &str,
+    cause_correlation_id: &str,
+    issued_at: i64,
+) -> CommandMessage {
+    record_command_message(edax_event::saga_command(
+        saga,
+        instance_id,
+        version,
+        index,
+        kernel_event(command),
+        cause_id,
+        cause_correlation_id,
+        issued_at,
+    ))
 }
 
 // ---- in-memory stores behind one transaction boundary ---------------------
@@ -658,7 +849,8 @@ pub fn no_tx() -> i64 {
 /// one object because the host's four store classes are views over one database, and one object is
 /// the shape the binding can share between them.
 ///
-/// Events cross as structured [`EventEnvelope`] records (no JSON or wire encoding at the boundary);
+/// Events cross as structured [`EventMessage`] records and saga commands as [`CommandMessage`] records
+/// (no JSON or wire encoding at the boundary);
 /// snapshots cross as their raw `data` bytes; idempotency records, documents, saga state and query
 /// specs cross as JSON text. `edax-memory` is typed (`u64` versions, JSON values, the kernel's query);
 /// the text is this boundary's shape, so the parsing happens here.
@@ -698,23 +890,29 @@ impl MemoryTransactor {
     // -- event store --
 
     /// Events for `aggregate_id` whose sequence is greater than `after`, as `tx` sees them.
-    pub fn load_events(&self, tx: i64, aggregate_id: &str, after: u64) -> Result<Vec<EventEnvelope>, String> {
+    pub fn load_events(&self, tx: i64, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, String> {
         let events = self.inner.event_store().load(tx, aggregate_id, after).map_err(wire)?;
-        Ok(events.into_iter().map(record_from_envelope).collect())
+        Ok(events.into_iter().map(record_event_message).collect())
     }
 
-    /// Append `events` under `tx` and enqueue the same onto the outbox; the stream's last sequence as
-    /// `tx` sees it must equal `expected_version`, and the batch must carry sequences
-    /// `expected_version + 1, + 2, ...`.
+    /// Append `drafts` under `tx`, each stamped with `recorded_at`, and enqueue the same onto the
+    /// outbox. Returns the stored events. The stream's last sequence as `tx` sees it must equal
+    /// `expected_version`, and the batch must carry sequences `expected_version + 1, + 2, ...`.
+    ///
+    /// `recorded_at` comes from the host because a clock cannot cross the boundary: the host's store
+    /// view reads its own injectable clock. Under an open `tx`, the returned events are not committed.
     pub fn append_events(
         &self,
         tx: i64,
         aggregate_id: &str,
         expected_version: u64,
-        events: Vec<EventEnvelope>,
-    ) -> Result<(), String> {
-        let envs = events.into_iter().map(envelope_from_record).collect();
-        self.inner.event_store().append(tx, aggregate_id, expected_version, envs).map_err(wire)
+        drafts: Vec<EventDraft>,
+        recorded_at: i64,
+    ) -> Result<Vec<EventMessage>, String> {
+        let drafts = drafts.into_iter().map(kernel_event_draft).collect();
+        let events =
+            self.inner.event_store().append(tx, aggregate_id, expected_version, drafts, recorded_at).map_err(wire)?;
+        Ok(events.into_iter().map(record_event_message).collect())
     }
 
     /// The snapshot for `aggregate_id` as `tx` sees it, or `None`.
@@ -737,8 +935,8 @@ impl MemoryTransactor {
 
     /// Committed outbox events not yet published, capped at `limit`. The relay reads outside any
     /// transaction, so there is no token.
-    pub fn unpublished(&self, limit: u64) -> Vec<EventEnvelope> {
-        self.inner.event_store().unpublished(limit_of(limit)).into_iter().map(record_from_envelope).collect()
+    pub fn unpublished(&self, limit: u64) -> Vec<EventMessage> {
+        self.inner.event_store().unpublished(limit_of(limit)).into_iter().map(record_event_message).collect()
     }
 
     /// How many committed outbox rows are waiting, without paging them.
@@ -746,7 +944,7 @@ impl MemoryTransactor {
         u64::try_from(self.inner.event_store().unpublished_count()).unwrap_or(u64::MAX)
     }
 
-    /// Mark outbox rows published by envelope id.
+    /// Mark outbox rows published by event id.
     pub fn mark_published(&self, ids: Vec<String>) {
         self.inner.event_store().mark_published(ids);
     }
@@ -778,6 +976,14 @@ impl MemoryTransactor {
     /// retried). A key that no longer holds that claim is left alone.
     pub fn release(&self, tx: i64, key: &str, handle: Vec<u8>) -> Result<(), String> {
         self.inner.idempotency_store().release(tx, key, &handle).map_err(wire)
+    }
+
+    /// Delete the settled record `key` holds under `tx`, so the next claim wins and a re-driven message
+    /// runs its handler again. A pending claim is refused with an `in_progress:` error, because its
+    /// run may still complete. A completed or failed record is deleted, and so is a record no reader
+    /// decodes. An absent key is a no-op. The decision is the kernel's ([`edax_cqrs::forget`]).
+    pub fn forget(&self, tx: i64, key: &str) -> Result<(), String> {
+        self.inner.idempotency_store().forget(tx, key).map_err(wire)
     }
 
     /// Lapse whatever `key` holds in committed state, as a lease or a retention TTL running out would:
@@ -838,29 +1044,53 @@ impl MemoryTransactor {
         version: u64,
         state_json: &str,
         folded: &str,
-        commands: Vec<SagaCommand>,
+        commands: Vec<CommandMessage>,
     ) -> Result<u64, String> {
         let state: serde_json::Value = parse_json("saga state", state_json)?;
-        let commands = commands.into_iter().map(saga_command_from_record).collect();
+        let commands = commands.into_iter().map(kernel_command_message).collect();
         self.inner.saga_store().save(tx, id, version, state, folded.to_owned(), commands).map_err(wire)
     }
 
     /// Complete the instance under `tx`: write its tombstone and the step's `commands` at
     /// `version + 1` under the same rules as [`save_saga`](Self::save_saga).
-    pub fn complete_saga(&self, tx: i64, id: &str, version: u64, commands: Vec<SagaCommand>) -> Result<u64, String> {
-        let commands = commands.into_iter().map(saga_command_from_record).collect();
+    pub fn complete_saga(&self, tx: i64, id: &str, version: u64, commands: Vec<CommandMessage>) -> Result<u64, String> {
+        let commands = commands.into_iter().map(kernel_command_message).collect();
         self.inner.saga_store().complete(tx, id, version, commands).map_err(wire)
     }
 
     /// Committed saga outbox commands not yet sent, oldest commit first, capped at `limit`. The
     /// relay reads outside any transaction, so there is no token.
-    pub fn unpublished_saga_commands(&self, limit: u64) -> Vec<SagaCommand> {
-        self.inner.saga_store().unpublished(limit_of(limit)).into_iter().map(record_from_saga_command).collect()
+    pub fn unpublished_saga_commands(&self, limit: u64) -> Vec<CommandMessage> {
+        self.inner.saga_store().unpublished(limit_of(limit)).into_iter().map(record_command_message).collect()
     }
 
     /// Mark saga outbox commands sent by id. Idempotent; an unknown id is a no-op.
     pub fn mark_saga_commands_published(&self, ids: Vec<String>) {
         self.inner.saga_store().mark_published(ids);
+    }
+
+    // -- command outbox --
+
+    /// Stage `commands` in the command outbox under `tx`, to commit with the transaction's events. An
+    /// id already waiting, or repeated in the batch, is a `codec:` error and stages nothing.
+    pub fn enqueue_commands(&self, tx: i64, commands: Vec<CommandMessage>) -> Result<(), String> {
+        let commands = commands.into_iter().map(kernel_command_message).collect();
+        self.inner.command_outbox().enqueue(tx, commands).map_err(wire)
+    }
+
+    /// Committed outbox commands not yet sent, oldest commit first, capped at `limit`.
+    pub fn unpublished_commands(&self, limit: u64) -> Vec<CommandMessage> {
+        self.inner.command_outbox().unpublished(limit_of(limit)).into_iter().map(record_command_message).collect()
+    }
+
+    /// How many committed outbox commands wait, without paging them.
+    pub fn unpublished_command_count(&self) -> u64 {
+        u64::try_from(self.inner.command_outbox().unpublished_count()).unwrap_or(u64::MAX)
+    }
+
+    /// Mark outbox commands sent by id. Idempotent; an unknown id is a no-op.
+    pub fn mark_commands_published(&self, ids: Vec<String>) {
+        self.inner.command_outbox().mark_published(ids);
     }
 }
 
@@ -879,7 +1109,10 @@ pub struct PollResult {
     pub partition: i32,
     /// Its offset in that partition.
     pub offset: i64,
-    pub envelope: EventEnvelope,
+    /// The event delivered, or `None` when the message is a command.
+    pub event: Option<EventMessage>,
+    /// The command delivered, or `None` when the message is an event.
+    pub command: Option<CommandMessage>,
 }
 
 /// In-memory broker for development and tests: a partitioned log read by consumer groups, settled
@@ -896,20 +1129,28 @@ pub struct MemoryBroker {
 // Synchronous, like the stores: the host's `empty()` is a synchronous predicate, and the peek is
 // non-blocking by contract, so there is nothing for the host to await.
 impl MemoryBroker {
-    /// Append `envelope` to its key's partition; every group reads it.
-    pub fn publish(&self, envelope: EventEnvelope) {
-        self.inner.publish(envelope_from_record(envelope));
+    /// Append `message` to the partition of its ordering key, its aggregate. Every group reads it.
+    pub fn publish_event(&self, message: EventMessage) {
+        self.inner.publish_event(kernel_event_message(message));
+    }
+
+    /// Append `message` to the partition of its ordering key: its target aggregate, or its own id when
+    /// it has none. Every group reads it.
+    pub fn publish_command(&self, message: CommandMessage) {
+        self.inner.publish_command(kernel_command_message(message));
     }
 
     /// Fetch the next message for `group` as an unsettled delivery, or `None` at once when the group
     /// has fetched everything. A group's first poll starts at the beginning.
     pub fn try_poll(&self, group: &str) -> Result<Option<PollResult>, String> {
         let polled = self.inner.try_poll(group).map_err(wire)?;
-        Ok(polled.map(|d| PollResult {
-            token: d.token,
-            partition: d.partition,
-            offset: d.offset,
-            envelope: record_from_envelope(d.envelope),
+        Ok(polled.map(|d| {
+            // Flattened into two optional fields: the shape every binding can cross.
+            let (event, command) = match d.message {
+                edax_memory::Message::Event(event) => (Some(record_event_message(event)), None),
+                edax_memory::Message::Command(command) => (None, Some(record_command_message(command))),
+            };
+            PollResult { token: d.token, partition: d.partition, offset: d.offset, event, command }
         }))
     }
 
@@ -963,9 +1204,9 @@ pub struct KafkaHeader {
 /// One Kafka record, minus the client's own coordinates (topic, partition, offset), which stay with
 /// the host's IO shell. See [`edax_kafka::KafkaRecord`].
 pub struct KafkaRecord {
-    /// The partitioning key: the aggregate id, or the host's override. UTF-8 bytes.
+    /// The partitioning key: the message's ordering key, or the host's override. UTF-8 bytes.
     pub key: Vec<u8>,
-    /// The encoded envelope.
+    /// The encoded message.
     pub value: Vec<u8>,
     /// The contract headers, in the order the kernel writes them.
     pub headers: Vec<KafkaHeader>,
@@ -992,44 +1233,45 @@ fn record_from_kafka_record(record: edax_kafka::KafkaRecord) -> KafkaRecord {
     }
 }
 
-/// Build the record for `envelope` from value bytes the host already encoded; `content_type` names
-/// the format of `value` and `key` overrides the partitioning key. See [`edax_kafka::record()`].
-// `key` is optional, so it trails `content_type` — alef moves optional parameters to the end of the
-// generated signature, and the surface order must match for the generated call to line up.
-pub fn kafka_record(
-    envelope: EventEnvelope,
-    value: Vec<u8>,
-    content_type: &str,
-    key: Option<String>,
-) -> KafkaRecord {
-    let env = envelope_from_record(envelope);
-    record_from_kafka_record(edax_kafka::record(&env, key.as_deref(), value, content_type))
+/// Build the record for value bytes the host already encoded, under `key`. `content_type` names the
+/// format and kind of `value`. The key is the host's choice made: its override, or the message's
+/// [`ordering_key`]. See [`edax_kafka::keyed_record`].
+pub fn kafka_record(key: &str, value: Vec<u8>, content_type: &str) -> KafkaRecord {
+    record_from_kafka_record(edax_kafka::keyed_record(key, value, content_type))
 }
 
-/// Where a fetched record goes by its `content-type`: flattened from [`edax_kafka::Route`]. Neither
-/// field set means the default serializer; `registered` names the index of the media type in the
-/// list the host passed; `unknown` carries a readable media type nobody registered, the empty one
-/// included, which is poison.
+/// Where a fetched record goes by its `content-type`: flattened from [`edax_kafka::Route`]. No field
+/// set means the default serializer; `registered` names the index of the media type in the list the
+/// host passed; `unknown` carries a readable media type nobody registered, the empty one included;
+/// `headerless` is a record with no readable content type under a command default. The last two are
+/// poison.
 pub struct KafkaRoute {
     /// The index of the matching media type in the host's registered list.
     pub registered: Option<u32>,
     /// The unregistered media type the record names.
     pub unknown: Option<String>,
+    /// No readable content type, and the default serializer reads commands.
+    pub headerless: bool,
 }
 
 /// Route a fetched record by `headers` against the media types the host registered, in its order.
-/// A null header value must cross as empty bytes, which routes as unknown. See [`edax_kafka::route`].
-pub fn kafka_route(headers: Vec<KafkaHeader>, registered: Vec<String>) -> KafkaRoute {
+/// `default_kind` is the kind its default serializer reads (`"event"` or `"command"`); anything else
+/// is a `codec:` error. A null header value must cross as empty bytes, which routes as unknown. See
+/// [`edax_kafka::route`].
+pub fn kafka_route(headers: Vec<KafkaHeader>, registered: Vec<String>, default_kind: &str) -> Result<KafkaRoute, String> {
+    let default = edax_event::Kind::from_name(default_kind).map_err(wire)?;
     let headers = kernel_headers(headers);
     let registered: Vec<&str> = registered.iter().map(String::as_str).collect();
-    match edax_kafka::route(&headers, &registered) {
-        edax_kafka::Route::Default => KafkaRoute { registered: None, unknown: None },
+    let none = KafkaRoute { registered: None, unknown: None, headerless: false };
+    Ok(match edax_kafka::route(&headers, &registered, default) {
+        edax_kafka::Route::Default => none,
+        edax_kafka::Route::Headerless => KafkaRoute { headerless: true, ..none },
         edax_kafka::Route::Registered(index) => {
             // An index into a list the host passed across the binding fits a `u32` by construction.
-            KafkaRoute { registered: Some(u32::try_from(index).unwrap_or(u32::MAX)), unknown: None }
+            KafkaRoute { registered: Some(u32::try_from(index).unwrap_or(u32::MAX)), ..none }
         }
-        edax_kafka::Route::Unknown(media_type) => KafkaRoute { registered: None, unknown: Some(media_type) },
-    }
+        edax_kafka::Route::Unknown(media_type) => KafkaRoute { unknown: Some(media_type), ..none },
+    })
 }
 
 /// Refuse a serializer registry that names one media type twice, as an `already_registered:` error.
@@ -1237,6 +1479,12 @@ pub fn redis_heartbeats_per_ttl() -> i64 {
     edax_redis::HEARTBEATS_PER_TTL
 }
 
+/// How many times a forget reads a key that changed under it before it gives up as transient. A call
+/// because the generator binds functions, not constants. See [`edax_redis::FORGET_READS`].
+pub fn redis_forget_reads() -> u32 {
+    edax_redis::FORGET_READS
+}
+
 /// What the claim script's `reply` to the caller's `claim` means: `None` when this caller holds the
 /// claim (the key was free, or the reply is the caller's own claim, re-sent after a lost reply), else
 /// the record JSON that holds the key, for [`decode_prior_idempotency_record`]. A value no layout reads
@@ -1255,22 +1503,34 @@ pub fn redis_reply_error(reply: &str) -> String {
     wire(edax_redis::reply_error(reply))
 }
 
-/// The four kernel scripts, byte for byte, so every SDK's `EVALSHA` names one digest. A struct
-/// rather than four calls, like [`SplitError`]. See [`edax_redis::CLAIM_SCRIPT`] and its siblings.
+/// Whether forgetting `key`, which held `held` when it was read, deletes it: `true` means run the
+/// forget script with `held` as its argument, `false` means the key was free and nothing is sent. A
+/// pending claim is refused as `in_progress:`, naming `key`. See [`edax_redis::forget_outcome`].
+pub fn redis_forget_outcome(key: &str, held: Option<Vec<u8>>) -> Result<bool, String> {
+    Ok(match edax_redis::forget_outcome(key, held.as_deref()).map_err(wire)? {
+        edax_redis::ForgetOutcome::Nothing => false,
+        edax_redis::ForgetOutcome::Delete => true,
+    })
+}
+
+/// The five kernel scripts, byte for byte, so every SDK's `EVALSHA` names one digest. A struct
+/// rather than five calls, like [`SplitError`]. See [`edax_redis::CLAIM_SCRIPT`] and its siblings.
 pub struct RedisScripts {
     pub claim: String,
     pub complete: String,
     pub release: String,
     pub extend: String,
+    pub forget: String,
 }
 
-/// The four kernel scripts. See [`RedisScripts`].
+/// The five kernel scripts. See [`RedisScripts`].
 pub fn redis_scripts() -> RedisScripts {
     RedisScripts {
         claim: edax_redis::CLAIM_SCRIPT.to_owned(),
         complete: edax_redis::COMPLETE_SCRIPT.to_owned(),
         release: edax_redis::RELEASE_SCRIPT.to_owned(),
         extend: edax_redis::EXTEND_SCRIPT.to_owned(),
+        forget: edax_redis::FORGET_SCRIPT.to_owned(),
     }
 }
 
@@ -1279,33 +1539,65 @@ mod tests {
     use super::*;
     use serde_json::{json, Value};
 
-    /// One realistic envelope record; every case overrides only the field under test.
-    fn envelope(id: &str, sequence: Option<u64>) -> EventEnvelope {
-        EventEnvelope {
+    /// The store's clock reading every fixture is recorded at.
+    const RECORDED_AT: i64 = 1_700_000_000_000_000_000;
+
+    /// One realistic event draft; every case overrides only the field under test.
+    fn draft(id: &str, sequence: Option<u64>) -> EventDraft {
+        EventDraft {
             id: id.to_owned(),
             aggregate_id: "invoice-7".to_owned(),
-            event: Event {
-                name: "InvoiceIssued".to_owned(),
-                version: 1,
-                data: br#"{"invoice_id":"invoice-7","total":5000,"currency":"EUR"}"#.to_vec(),
-            },
             sequence,
-            namespace: HashMap::from([("tenant".to_owned(), "acme".to_owned())]),
-            metadata: HashMap::from([
-                ("correlation_id".to_owned(), "corr-1".to_owned()),
-                ("causation_id".to_owned(), "evt-0".to_owned()),
-            ]),
-            timestamp: 1_700_000_000_000_000_000,
+            name: "InvoiceIssued".to_owned(),
+            version: 1,
+            data: br#"{"invoice_id":"invoice-7","total":5000,"currency":"EUR"}"#.to_vec(),
+            correlation_id: "corr-1".to_owned(),
+            causation_id: "cmd-0".to_owned(),
+            occurred_at: Some(1_699_999_999_000_000_000),
+            extensions: HashMap::from([("traceparent".to_owned(), "00-4bf92f3577b34da6-00f067aa0ba902b7-01".to_owned())]),
+            metadata: HashMap::from([("tenant".to_owned(), "acme".to_owned())]),
         }
     }
 
-    /// Field-by-field envelope equality. The record is a binding type with no `PartialEq` (alef owns
-    /// the derives on the generated twin), and a whole-record assert is what proves nothing is dropped
-    /// at the boundary.
-    fn assert_same_envelope(got: &EventEnvelope, want: &EventEnvelope, case: &str) {
-        assert_eq!((&got.id, &got.aggregate_id, got.sequence, got.timestamp), (&want.id, &want.aggregate_id, want.sequence, want.timestamp), "{case}");
-        assert_eq!((&got.event.name, got.event.version, &got.event.data), (&want.event.name, want.event.version, &want.event.data), "{case}");
-        assert_eq!((&got.namespace, &got.metadata), (&want.namespace, &want.metadata), "{case}");
+    /// The draft above as the store records it at [`RECORDED_AT`].
+    fn event_message(id: &str, sequence: Option<u64>) -> EventMessage {
+        record_event_message(kernel_event_draft(draft(id, sequence)).record(RECORDED_AT))
+    }
+
+    /// One realistic command message; every case overrides only the field under test.
+    fn command_message(aggregate_id: Option<&str>) -> CommandMessage {
+        CommandMessage {
+            id: "cmd-1".to_owned(),
+            idempotency_key: Some("req-42".to_owned()),
+            aggregate_id: aggregate_id.map(str::to_owned),
+            name: "IssueInvoice".to_owned(),
+            version: 2,
+            data: br#"{"invoice_id":"invoice-7","total":5000}"#.to_vec(),
+            correlation_id: "corr-1".to_owned(),
+            causation_id: "corr-1".to_owned(),
+            issued_at: 1_700_000_000_000_000_001,
+            extensions: HashMap::from([("http.origin_ip".to_owned(), "203.0.113.7".to_owned())]),
+            metadata: HashMap::from([("tenant".to_owned(), "acme".to_owned())]),
+        }
+    }
+
+    /// Field-by-field event equality. The record is a binding type with no `PartialEq` (alef owns the
+    /// derives on the generated twin), and a whole-record assert is what proves nothing is dropped at
+    /// the boundary.
+    fn assert_same_event(got: &EventMessage, want: &EventMessage, case: &str) {
+        assert_eq!((&got.id, &got.aggregate_id, got.sequence), (&want.id, &want.aggregate_id, want.sequence), "{case}");
+        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.correlation_id, &got.causation_id), (&want.correlation_id, &want.causation_id), "{case}");
+        assert_eq!((got.occurred_at, got.recorded_at), (want.occurred_at, want.recorded_at), "{case}");
+        assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
+    }
+
+    /// Field-by-field command equality, for the reason [`assert_same_event`] gives.
+    fn assert_same_command(got: &CommandMessage, want: &CommandMessage, case: &str) {
+        assert_eq!((&got.id, &got.idempotency_key, &got.aggregate_id), (&want.id, &want.idempotency_key, &want.aggregate_id), "{case}");
+        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.correlation_id, &got.causation_id, got.issued_at), (&want.correlation_id, &want.causation_id, want.issued_at), "{case}");
+        assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
     }
 
     // ---- routing / sequencing ----------------------------------------------
@@ -1314,7 +1606,6 @@ mod tests {
     fn routing_and_sequencing_forward_their_arguments_in_order() {
         // A transposed argument is the one way a forwarding surface can drift from its kernel, so
         // every case is asymmetric: swapping the two arguments changes the answer.
-        assert_eq!(partition("invoice-7", 256), edax_event::partition("invoice-7", 256));
         assert!(partition("invoice-7", 8) < 8);
         assert_eq!(partition("invoice-7", 0), 0, "n is clamped to at least one partition");
 
@@ -1327,7 +1618,6 @@ mod tests {
         assert_eq!(advance(Some(5), Some(4)), Some(5), "a stale sequence never lowers the mark");
         assert_eq!(advance(Some(5), None), Some(5), "an unsequenced event never erases the mark");
         assert_eq!(advance(None, Some(4)), Some(4));
-        assert_eq!((correlation_id_key(), causation_id_key()), ("correlation_id".to_owned(), "causation_id".to_owned()));
 
         // `(base, cap, attempt, entropy)` in that order: each swap changes the answer.
         let policy = default_backoff();
@@ -1390,51 +1680,24 @@ mod tests {
     }
 
     #[test]
-    fn propagate_maps_metadata_both_ways() {
-        // Parent with a chain: the child inherits the correlation id and points causation at the parent.
-        let parent = HashMap::from([
-            ("correlation_id".to_owned(), "corr-1".to_owned()),
-            ("tenant".to_owned(), "acme".to_owned()),
-        ]);
-        let child = propagate(parent, "evt-1");
-        assert_eq!(
-            child,
-            HashMap::from([
-                ("correlation_id".to_owned(), "corr-1".to_owned()),
-                ("causation_id".to_owned(), "evt-1".to_owned()),
-            ]),
-            "only the two chain keys cross back, unrelated parent metadata is dropped"
-        );
+    fn lineage_crosses_in_argument_order() {
+        // (parent_id, parent_correlation_id): a swap would point causation at the flow.
+        let child = propagate("evt-1", "corr-1");
+        assert_eq!((child.correlation_id.as_str(), child.causation_id.as_str()), ("corr-1", "evt-1"));
 
-        // Root event: its own id seeds the chain.
-        let root = propagate(HashMap::new(), "evt-root");
-        assert_eq!(root["correlation_id"], "evt-root");
-        assert_eq!(root["causation_id"], "evt-root");
+        // (fresh_id, correlation_id, causation_id): with both ids given, a swap of the two shows. The
+        // kernel's golden pins every branch.
+        let root = originate("fresh-1", Some("corr-1".to_owned()), Some("evt-0".to_owned()));
+        assert_eq!((root.correlation_id.as_str(), root.causation_id.as_str()), ("corr-1", "evt-0"));
     }
 
     #[test]
-    fn originate_maps_metadata_both_ways() {
-        // Nothing given: the host's fresh id seeds both keys, and unrelated metadata is dropped.
-        let seeded = originate(HashMap::from([("tenant".to_owned(), "acme".to_owned())]), "fresh-1");
-        assert_eq!(
-            seeded,
-            HashMap::from([
-                ("correlation_id".to_owned(), "fresh-1".to_owned()),
-                ("causation_id".to_owned(), "fresh-1".to_owned()),
-            ]),
-            "only the two chain keys cross back"
-        );
-
-        // Supplied ids survive the round trip, so the fresh id goes unused.
-        let given = originate(
-            HashMap::from([
-                ("correlation_id".to_owned(), "corr-1".to_owned()),
-                ("causation_id".to_owned(), "evt-0".to_owned()),
-            ]),
-            "fresh-1",
-        );
-        assert_eq!(given["correlation_id"], "corr-1");
-        assert_eq!(given["causation_id"], "evt-0");
+    fn extension_keys_follow_the_kernels_rule() {
+        let check = |key: &str| check_extensions(HashMap::from([(key.to_owned(), "v".to_owned())]));
+        assert_eq!(check("http.origin_ip"), Ok(()));
+        assert_eq!(check_extensions(HashMap::new()), Ok(()));
+        let refused = check("Traceparent").unwrap_err();
+        assert!(refused.starts_with("codec: extension key \"Traceparent\""), "{refused}");
     }
 
     // ---- filter / query ----------------------------------------------------
@@ -1469,8 +1732,8 @@ mod tests {
     #[test]
     fn upcast_plan_branches() {
         assert_eq!(upcast_plan(1, 3, Some(vec![1, 2, 9])).unwrap(), vec![1, 2], "extra steps are ignored");
-        assert_eq!(upcast_plan(3, 3, Some(vec![])).unwrap(), Vec::<i32>::new(), "already current");
-        assert_eq!(upcast_plan(1, 3, None).unwrap(), Vec::<i32>::new(), "no transforms: identity");
+        assert_eq!(upcast_plan(3, 3, Some(vec![])).unwrap(), Vec::<u32>::new(), "already current");
+        assert_eq!(upcast_plan(1, 3, None).unwrap(), Vec::<u32>::new(), "no transforms: identity");
         // Both failures are deterministic, so both must carry the terminal `codec` code.
         assert_eq!(
             upcast_plan(1, 3, Some(vec![1])).unwrap_err(),
@@ -1508,7 +1771,7 @@ mod tests {
 
     #[test]
     fn saga_admit_crosses_the_marks_as_text() {
-        let env = |id: &str| envelope(id, Some(1));
+        let env = |id: &str| event_message(id, Some(1));
         let folded = saga_admit(false, "", env("evt-1")).unwrap().expect("a new instance folds");
         assert_eq!(saga_admit(false, &folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
         assert_eq!(saga_admit(true, &folded, env("evt-2")).unwrap(), None, "a tombstone folds nothing");
@@ -1527,35 +1790,50 @@ mod tests {
     #[test]
     fn saga_write_crosses_every_action() {
         let got = |version, completes, cmds| {
-            let write = saga_write(completes, cmds, version);
-            (write.action, write.expected)
+            let write = saga_write(completes, cmds, version).unwrap();
+            (write.action, write.expected, write.version)
         };
-        assert_eq!(got(None, true, false), ("nothing".to_owned(), 0));
-        assert_eq!(got(None, false, false), ("save".to_owned(), 0));
-        assert_eq!(got(Some(3), false, false), ("save".to_owned(), 3));
-        assert_eq!(got(Some(3), true, true), ("complete".to_owned(), 3));
+        assert_eq!(got(None, true, false), ("nothing".to_owned(), 0, 0));
+        assert_eq!(got(None, false, false), ("save".to_owned(), 0, 1));
+        assert_eq!(got(Some(3), false, false), ("save".to_owned(), 3, 4));
+        assert_eq!(got(Some(3), true, true), ("complete".to_owned(), 3, 4));
+        assert!(saga_write(false, true, Some(u64::MAX)).is_err_and(|e| e.starts_with("codec: saga instance at version")));
         assert_eq!(saga_command_id("order-7", 2, 1), "order-7:2:1");
+    }
+
+    #[test]
+    fn saga_command_crosses_the_outbox_row() {
+        let command = Event { name: "Fulfill".to_owned(), version: 3, data: br#"{"order_id":"order-7"}"#.to_vec() };
+        let cause = event_message("evt-1", Some(1));
+        let row = saga_command("shipping", "order-7", 2, 1, command, &cause.id, &cause.correlation_id, 7);
+        let want = CommandMessage {
+            id: "order-7:2:1".to_owned(),
+            idempotency_key: Some("8:shipping:order-7:2:1".to_owned()),
+            aggregate_id: Some("order-7".to_owned()),
+            name: "Fulfill".to_owned(),
+            version: 3,
+            data: br#"{"order_id":"order-7"}"#.to_vec(),
+            correlation_id: "corr-1".to_owned(),
+            causation_id: "evt-1".to_owned(),
+            issued_at: 7,
+            extensions: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        assert_same_command(&row, &want, "the cause's child, keyed and ordered by the instance");
     }
 
     // ---- idempotency -------------------------------------------------------
 
     #[test]
-    fn payload_hash_binds_the_canonical_form() {
-        assert_eq!(payload_hash(b"user.create"), edax_core::fnv1a64(b"user.create"));
-
-        // Key order, whitespace and number spelling do not change the hash. Canonicalization is the
-        // kernel's, so every binding agrees — golden/canonical_json.json pins the bytes.
-        let a = payload_hash_json(br#"{"email":"ada@example.com","age":36}"#).unwrap();
-        let b = payload_hash_json(br#"{ "age": 36.0, "email": "ada@example.com" }"#).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(canonical_json(br#"{ "n": 2.0, "a": "\u00e9" }"#).as_deref(), Ok(r#"{"a":"é","n":2}"#));
-        assert_eq!(payload_hash_json(canonical_json(b"[2.0]").unwrap().as_bytes()), payload_hash_json(b"[2]"));
-        assert!(a > (1u64 << 53), "hashes exceed float precision, so they must cross as integers");
-
-        // The event guard's key and hash: the envelope id, and the raw bytes of the body.
-        let rule = event_idempotency(envelope("evt-1", Some(1)));
+    fn idempotency_inputs_cross_in_argument_order() {
+        // The event guard's key and hash cross as two fields: the event id, and the hash of the body.
+        let rule = event_idempotency(event_message("evt-1", Some(1)));
         assert_eq!(rule.key, "evt-1");
-        assert_eq!(rule.payload_hash, payload_hash(&envelope("evt-1", Some(1)).event.data));
+        assert_eq!(rule.payload_hash, payload_hash(&event_message("evt-1", Some(1)).data));
+
+        // (name, payload): the name reaches the hash, so another name over one payload is another hash.
+        let payload = br#"{"invoice_id":"invoice-7","total":5000}"#;
+        assert_ne!(command_hash_json("IssueInvoice", payload), command_hash_json("VoidInvoice", payload));
     }
 
     // ---- idempotency record ------------------------------------------------
@@ -1739,19 +2017,26 @@ mod tests {
         }
     }
 
-    // ---- envelope codec ----------------------------------------------------
+    // ---- message codec -----------------------------------------------------
 
     #[test]
-    fn envelope_round_trips_through_every_format() {
+    fn messages_round_trip_through_every_format() {
         for format in ["json", "msgpack"] {
-            for record in [envelope("evt-1", Some(7)), envelope("evt-1", None)] {
-                let sequence = record.sequence;
-                let wire = encode_envelope(format, envelope("evt-1", sequence)).unwrap();
-                let back = decode_envelope(format, &wire).unwrap();
-                assert_same_envelope(&back, &record, &format!("{format} sequence={sequence:?}"));
+            for sequence in [Some(7), None] {
+                let wire = encode_event(format, event_message("evt-1", sequence)).unwrap();
+                let back = decode_event(format, &wire).unwrap();
+                assert_same_event(&back, &event_message("evt-1", sequence), &format!("{format} sequence={sequence:?}"));
             }
-            // The name the host selects by resolves to the media type a transport puts on the wire.
-            assert_eq!(media_type(format).as_deref(), Ok(format!("application/vnd.edax.envelope+{format}").as_str()));
+            for aggregate_id in [Some("invoice-7"), None] {
+                let wire = encode_command(format, command_message(aggregate_id)).unwrap();
+                let back = decode_command(format, &wire).unwrap();
+                assert_same_command(&back, &command_message(aggregate_id), &format!("{format} aggregate={aggregate_id:?}"));
+            }
+            // (format, kind) in that order.
+            for kind in ["event", "command"] {
+                let minted = media_type(format, kind).unwrap();
+                assert_eq!(minted, format!("application/vnd.edax.{kind}+{format}"));
+            }
         }
     }
 
@@ -1762,7 +2047,7 @@ mod tests {
         // Every deterministic marshaling failure must name its cause *and* carry the taxonomy code, or
         // the host falls back to a transient store error and retries a failure that always repeats.
         let valid_doc = r#"{"id":"user-1","age":36}"#;
-        let cases: [(&str, Result<(), String>, &str); 17] = [
+        let cases: [(&str, Result<(), String>, &str); 22] = [
             ("filter_is_not_json", eval_filter("{not json}", valid_doc).map(|_| ()), "key must be a string at line 1 column 2"),
             ("filter_is_not_a_filter", eval_filter(r#"{"nope":1}"#, valid_doc).map(|_| ()), "unknown variant"),
             ("document_is_not_json", eval_filter(r#"{"exists":{"path":"id","exists":true}}"#, "nope").map(|_| ()), "expected ident"),
@@ -1770,7 +2055,26 @@ mod tests {
             ("cursor_is_not_base64", query(r#"{"sort":[{"path":"age"}],"after":"!!!"}"#, "[]").map(|_| ()), "not base64url"),
             ("cursor_document_is_not_json", encode_cursor("nope", "[]").map(|_| ()), "expected ident"),
             ("command_payload_is_not_json", payload_hash_json(b"{not json}").map(|_| ()), "key must be a string at line 1 column 2"),
-            ("wire_bytes_are_not_the_format", decode_envelope("json", b"not an envelope").map(|_| ()), "decode"),
+            ("wire_bytes_are_not_the_format", decode_event("json", b"not an event").map(|_| ()), "decode"),
+            ("command_bytes_are_not_the_format", decode_command("msgpack", b"not a command").map(|_| ()), "decode"),
+            (
+                "command_name_payload_is_not_json",
+                command_hash_json("IssueInvoice", b"{not json}").map(|_| ()),
+                "not one JSON value",
+            ),
+            (
+                // A producer never mints a message every consumer would refuse.
+                "event_extension_key_is_refused",
+                encode_event("json", EventMessage { extensions: HashMap::from([("X-Trace".to_owned(), String::new())]), ..event_message("evt-1", Some(1)) })
+                    .map(|_| ()),
+                "extension key \"X-Trace\"",
+            ),
+            (
+                "command_extension_key_is_refused",
+                encode_command("msgpack", CommandMessage { extensions: HashMap::from([(String::new(), String::new())]), ..command_message(None) })
+                    .map(|_| ()),
+                "extension key \"\"",
+            ),
             (
                 "cached_result_is_not_json",
                 encode_idempotency_record(HASH, false, "{not json}", None, None).map(|_| ()),
@@ -1782,7 +2086,7 @@ mod tests {
                 "unknown error code: timeout",
             ),
             // A batch refusal and an unknown code carry the code too, or a host reads them as transient.
-            ("sequence_batch_has_a_gap", check_sequence_batch(1, vec![Some(2), Some(4)]), "envelope 1 has sequence 4, expected 3"),
+            ("sequence_batch_has_a_gap", check_sequence_batch(1, vec![Some(2), Some(4)]), "event 1 has sequence 4, expected 3"),
             ("error_code_is_unknown", error_code_is_terminal("timeout").map(|_| ()), "unknown error code: timeout"),
             (
                 "record_is_not_a_json_object",
@@ -1805,9 +2109,10 @@ mod tests {
                 // A format name no kernel knows repeats identically on every retry, so it carries
                 // the terminal code rather than a transient one the host would retry.
                 "media_type_format_is_not_a_format",
-                media_type("protobuf").map(|_| ()),
+                media_type("protobuf", "event").map(|_| ()),
                 "unknown format: protobuf",
             ),
+            ("media_type_kind_is_not_a_kind", media_type("json", "query").map(|_| ()), "unknown message kind: query"),
             (
                 // A Redis kernel failure reaches the host under the same terminal code.
                 "redis_claim_handle_is_not_a_claim",
@@ -1823,8 +2128,10 @@ mod tests {
 
         // An unknown format is rejected on both directions of the codec, and names the format.
         for message in [
-            encode_envelope("protobuf", envelope("evt-1", Some(1))).unwrap_err(),
-            decode_envelope("protobuf", b"{}").map(|_| ()).unwrap_err(),
+            encode_event("protobuf", event_message("evt-1", Some(1))).unwrap_err(),
+            decode_event("protobuf", b"{}").map(|_| ()).unwrap_err(),
+            encode_command("protobuf", command_message(None)).unwrap_err(),
+            decode_command("protobuf", b"{}").map(|_| ()).unwrap_err(),
         ] {
             assert_eq!(message, "codec: unknown format: protobuf");
         }
@@ -1833,21 +2140,25 @@ mod tests {
     // ---- in-memory stores --------------------------------------------------
 
     #[test]
-    fn event_store_crosses_envelopes_structurally() {
+    fn event_store_crosses_events_structurally() {
         let store = memory_transactor();
-        store.append_events(NO_TX, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).unwrap();
+        // The store stamps the host's clock reading on every draft and hands back what it stored.
+        let stored = store.append_events(NO_TX, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_same_event(&stored[0], &event_message("evt-1", Some(1)), "appended event");
+        assert!(store.append_events(NO_TX, "invoice-7", 1, vec![], RECORDED_AT).unwrap().is_empty(), "a version check");
 
         // Every field survives the boundary — no JSON or wire encoding in between.
         let page = store.load_events(NO_TX, "invoice-7", 0).unwrap();
         assert_eq!(page.len(), 1);
-        assert_same_envelope(&page[0], &envelope("evt-1", Some(1)), "loaded envelope");
+        assert_same_event(&page[0], &event_message("evt-1", Some(1)), "loaded event");
         assert!(store.load_events(NO_TX, "invoice-404", 0).unwrap().is_empty());
 
         // The adapter's own error code is forwarded untouched, not re-tagged as a codec failure.
-        let conflict = store.append_events(NO_TX, "invoice-7", 0, vec![envelope("evt-2", Some(2))]).unwrap_err();
+        let conflict = store.append_events(NO_TX, "invoice-7", 0, vec![draft("evt-2", Some(2))], RECORDED_AT).map(|_| ()).unwrap_err();
         assert_eq!(conflict, "concurrency: expected 0, stored 1");
-        let unsequenced = store.append_events(NO_TX, "invoice-7", 1, vec![envelope("evt-2", None)]).unwrap_err();
-        assert_eq!(unsequenced, "codec: envelope 0 has no sequence");
+        let unsequenced = store.append_events(NO_TX, "invoice-7", 1, vec![draft("evt-2", None)], RECORDED_AT).map(|_| ()).unwrap_err();
+        assert_eq!(unsequenced, "codec: event 0 has no sequence");
 
         // Outbox: append enqueued the event; marking it published drains it.
         assert_eq!((store.unpublished(10).len(), store.unpublished_count()), (1, 1));
@@ -1895,6 +2206,22 @@ mod tests {
         assert!(again.won, "an expired key is claimable again");
         store.release(NO_TX, "cmd-key-1", again.handle).unwrap();
         assert!(store.claim(NO_TX, "cmd-key-1", hash).unwrap().won, "a released key is claimable again");
+    }
+
+    #[test]
+    fn forget_crosses_the_kernels_decision() {
+        let store = memory_transactor();
+        let done = r#"{"payload_hash":7,"result":null,"error":null,"pending":false}"#;
+
+        // A pending claim may still complete, so it is refused with the kernel's code.
+        let claim = store.claim(NO_TX, "req-A", 7).unwrap();
+        let refused = store.forget(NO_TX, "req-A").unwrap_err();
+        assert!(refused.starts_with("in_progress: "), "{refused}");
+
+        // A settled record goes, so the next claim wins and a re-driven message runs again.
+        store.complete(NO_TX, "req-A", claim.handle, done).unwrap();
+        assert_eq!(store.forget(NO_TX, "req-A"), Ok(()));
+        assert!(store.claim(NO_TX, "req-A", 7).unwrap().won, "a forgotten key is claimable again");
     }
 
     #[test]
@@ -1951,20 +2278,17 @@ mod tests {
         assert_eq!(stale_complete, "concurrency: expected 0, stored 1");
 
         // The commands cross structurally with the tombstone and come back from the outbox.
-        let fulfill = SagaCommand {
-            id: saga_command_id("order-1", 2, 0),
-            correlation_id: "order-1".to_owned(),
-            command: Event { name: "Fulfill".to_owned(), version: 1, data: br#"{"order_id":"order-1"}"#.to_vec() },
-            timestamp: 7,
+        let fulfill = || {
+            let command = Event { name: "Fulfill".to_owned(), version: 1, data: br#"{"order_id":"order-1"}"#.to_vec() };
+            let cause = event_message("evt-1", Some(1));
+            saga_command("shipping", "order-1", 2, 0, command, &cause.id, &cause.correlation_id, 7)
         };
-        assert_eq!(store.complete_saga(NO_TX, "order-1", 1, vec![fulfill]).unwrap(), 2);
+        assert_eq!(store.complete_saga(NO_TX, "order-1", 1, vec![fulfill()]).unwrap(), 2);
         let done = store.load_saga(NO_TX, "order-1").unwrap().expect("a tombstone");
         assert_eq!((done.version, done.completed, done.state_json.as_str(), done.folded.as_str()), (2, true, "null", ""));
         let unsent = store.unpublished_saga_commands(10);
         assert_eq!(unsent.len(), 1);
-        let row = &unsent[0];
-        assert_eq!((row.id.as_str(), row.correlation_id.as_str(), row.timestamp), ("order-1:2:0", "order-1", 7));
-        assert_eq!((row.command.name.as_str(), row.command.version, row.command.data.as_slice()), ("Fulfill", 1, &br#"{"order_id":"order-1"}"#[..]));
+        assert_same_command(&unsent[0], &fulfill(), "the outbox row");
         store.mark_saga_commands_published(vec!["order-1:2:0".to_owned()]);
         assert!(store.unpublished_saga_commands(10).is_empty());
         let resurrect = store.save_saga(NO_TX, "order-1", 0, r#"{"status":"open"}"#, "", vec![]).unwrap_err();
@@ -1990,7 +2314,7 @@ mod tests {
             let store = memory_transactor();
             let tx = store.begin();
             assert_ne!(tx, NO_TX, "{}", c.name);
-            store.append_events(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).unwrap();
+            store.append_events(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
             store.save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec()).unwrap();
             store.save_projection(tx, "user-1", 0, r#"{"age":36}"#).unwrap();
             assert!(store.claim(tx, "req-A", 7).unwrap().won, "{}", c.name);
@@ -2035,13 +2359,14 @@ mod tests {
         // An empty poll is `None`, never an error.
         assert!(broker.try_poll("g").unwrap().is_none());
 
-        broker.publish(envelope("evt-1", Some(1)));
-        broker.publish(envelope("evt-1", Some(1))); // at-least-once: the same envelope republished
+        broker.publish_event(event_message("evt-1", Some(1)));
+        broker.publish_event(event_message("evt-1", Some(1))); // at-least-once: the same event republished
         assert!(!broker.is_empty("g"));
 
         let first = broker.try_poll("g").unwrap().expect("published");
         assert_eq!((first.partition, first.offset), (0, 0), "the coordinates cross");
-        assert_same_envelope(&first.envelope, &envelope("evt-1", Some(1)), "polled envelope");
+        assert_same_event(first.event.as_ref().expect("an event"), &event_message("evt-1", Some(1)), "polled event");
+        assert!(first.command.is_none(), "an event delivery carries no command");
         let second = broker.try_poll("g").unwrap().expect("published twice");
         assert_eq!(second.offset, 1);
         assert_ne!(first.token, second.token, "one id in flight twice is two deliveries");
@@ -2068,6 +2393,12 @@ mod tests {
         assert!(broker.ack("g", last.token));
         assert!(broker.is_empty("g"));
         assert!(!broker.is_empty("h"));
+
+        // A command crosses the same log, in the other field.
+        broker.publish_command(command_message(Some("invoice-7")));
+        let command = broker.try_poll("g").unwrap().expect("a command");
+        assert!(command.event.is_none(), "a command delivery carries no event");
+        assert_same_command(command.command.as_ref().expect("a command"), &command_message(Some("invoice-7")), "polled command");
     }
 
     // ---- kafka -------------------------------------------------------------
@@ -2078,13 +2409,13 @@ mod tests {
         headers.iter().map(|header| KafkaHeader { key: header.key.clone(), value: header.value.clone() }).collect()
     }
 
-    /// What the boundary adds to the record kernel: the envelope and the record cross as structs,
-    /// so every field survives both conversions. The key rule and the header set are the kernel's,
-    /// pinned by `testdata/golden/kafka_record.json`.
+    /// What the boundary adds to the record kernel: the record crosses as a struct, so every field
+    /// survives the conversion. The header set is the kernel's, pinned by
+    /// `testdata/golden/kafka_record.json`.
     #[test]
     fn kafka_record_crosses_the_record_structurally() {
-        let record = kafka_record(envelope("evt-1", Some(7)), b"<invoice/>".to_vec(), "application/xml", None);
-        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the kernel's key rule, on the host's record");
+        let record = kafka_record("invoice-7", b"<invoice/>".to_vec(), "application/xml");
+        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the host's key, untouched");
         assert_eq!(record.value.as_slice(), b"<invoice/>".as_slice(), "the host's own bytes, untouched");
         let headers: Vec<(&str, &[u8])> =
             record.headers.iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
@@ -2094,22 +2425,19 @@ mod tests {
             "a host serializer keeps the one contract header, under the kernel's name"
         );
 
-        // `key` trails the required parameters because alef moves an optional one to the end; a
-        // surface that listed it earlier would bind the host's override to the wrong argument.
-        let key = Some("eu-west/invoice-7".to_owned());
-        let overridden = kafka_record(envelope("evt-1", Some(7)), Vec::new(), "application/xml", key);
-        assert_eq!(overridden.key, b"eu-west/invoice-7");
-
         // The route crosses flattened: the default, an index into the host's list, or the unknown
         // media type — the empty one kept apart from no header at all.
         let route = |headers: Vec<KafkaHeader>| {
-            let route = kafka_route(headers, vec!["application/json".to_owned(), "application/xml".to_owned()]);
+            let route = kafka_route(headers, vec!["application/json".to_owned(), "application/xml".to_owned()], "event").unwrap();
             (route.registered, route.unknown)
         };
         assert_eq!(route(copy_headers(&record.headers)), (Some(1), None));
         assert_eq!(route(Vec::new()), (None, None), "no headers at all: the default");
         let empty = vec![KafkaHeader { key: kafka_content_type_header(), value: Vec::new() }];
         assert_eq!(route(empty), (None, Some(String::new())), "an empty value is unknown, not the default");
+        let headerless = kafka_route(Vec::new(), Vec::new(), "command").unwrap();
+        assert!(headerless.headerless, "no header under a command default is poison");
+        assert!(kafka_route(Vec::new(), Vec::new(), "query").is_err(), "an unknown kind is refused");
 
         // A dead letter keeps the record and appends its source.
         let dead = kafka_dead_letter_record(
@@ -2127,11 +2455,10 @@ mod tests {
             [("edax-dlq-topic", &b"orders"[..]), ("edax-dlq-partition", b"3"), ("edax-dlq-offset", b"42"), ("edax-dlq-error", b"codec: bad")]
         );
 
-        // Topic, partition and offset together are the identity of a message that has no envelope.
+        // Topic, partition and offset together are the identity of a message that did not decode.
         assert_eq!(kafka_poison_id("orders", 3, 42), "orders/3/42");
 
         // Placement: `(key, partitions)` in that order, Java's rule, and no partitions is refused.
-        assert_eq!(kafka_partition_for(b"21", 12), edax_kafka::partition_for(b"21", 12).map_err(wire));
         assert_eq!(kafka_partition_for(b"21", 1), Ok(0));
         assert_eq!(kafka_partition_for(b"21", 0), Err("codec: a topic has at least one partition, got 0".to_owned()));
     }
@@ -2210,6 +2537,7 @@ mod tests {
         assert_eq!(redis_ledger_key("idem:", "k"), Ok(b"idem:k".to_vec()));
         assert_eq!(redis_check_config("idem:", 1, 3, 1, true), Ok(()));
         assert_eq!(redis_heartbeats_per_ttl(), 3);
+        assert_eq!(redis_forget_reads(), 3);
         for refused in [
             redis_ledger_key("", "k").map(|_| ()),
             redis_check_config("", 1, 1, 1, false),

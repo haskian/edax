@@ -1,15 +1,15 @@
-//! The saga store view: per-correlation state with optimistic concurrency, a tombstone on
-//! completion, and the saga outbox the step's commands commit to.
+//! The saga store view: per-instance state with optimistic concurrency, a tombstone on completion,
+//! and the saga outbox the step's commands commit to.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error, ErrorCode};
-use edax_event::{saga_command_id, SagaCommand};
+use edax_event::{saga_command_id, CommandMessage};
 use serde_json::Value;
 
 use crate::projection::Versioned;
-use crate::tx::{held_by_other, store_view, Committed, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{held_by_other, page, prune, refuse_waiting, store_view, Committed, MemoryState, MemoryTransactor, WriteSet};
 
 /// A stored saga instance: running with its state, or completed. A completed instance is a
 /// tombstone that keeps its version, so a stale writer still conflicts and a late event finds it
@@ -28,7 +28,7 @@ pub enum SagaRow {
     Completed,
 }
 
-/// In-memory saga instance store for development and tests: per-correlation state with optimistic
+/// In-memory saga instance store for development and tests: per-instance state with optimistic
 /// concurrency on the version, and the saga outbox. State is any JSON
 /// value (a saga that keeps `null` is legitimate). The rule is written once here, so every SDK's
 /// saga runner is held to the same one:
@@ -38,8 +38,9 @@ pub enum SagaRow {
 /// - `complete` writes a tombstone at the next version instead of removing the row, so the version
 ///   never goes back to 0 and a stale writer that loaded the old instance cannot re-create it (ABA);
 /// - the commands a step decided are staged with its state in the same write, so they commit or
-///   roll back together, and each must carry the kernel's [`saga_command_id`] for that write, or the
-///   write is a `codec` error and stages nothing;
+///   roll back together. Each is the kernel's `saga_command` row: its id is the kernel's
+///   [`saga_command_id`] for that write and its `aggregate_id` is the instance, or the write is a
+///   `codec` error and stages nothing;
 /// - [`unpublished`](Self::unpublished) shows committed commands only, oldest commit first, until
 ///   [`mark_published`](Self::mark_published) prunes them.
 ///
@@ -67,22 +68,29 @@ fn saga_row<'a>(committed: &'a Committed, own: Option<&'a WriteSet>, id: &str) -
 }
 
 /// Refuse a command batch that does not belong to the write at `next`: every id must be the kernel's
-/// for its index, and no id may already wait in the outbox. Both are deterministic, so `codec`.
-fn check_commands(committed: &Committed, own: &WriteSet, id: &str, version: u64, commands: &[SagaCommand]) -> Result<(), Error> {
-    let mut waiting: HashSet<&str> = committed.saga_commands.iter().chain(&own.saga_commands).map(|c| c.id.as_str()).collect();
+/// for its index, every command must target the instance `id`, and no id may already wait in the
+/// outbox. All three are deterministic, so `codec`. The instance is the command's `aggregate_id`,
+/// so a command without one belongs to no instance and is refused.
+fn check_commands(
+    committed: &Committed,
+    others: &HashMap<i64, WriteSet>,
+    own: &WriteSet,
+    id: &str,
+    version: u64,
+    commands: &[CommandMessage],
+) -> Result<(), Error> {
     for (index, command) in (0u64..).zip(commands) {
         let want = saga_command_id(id, version, index);
-        if command.id != want || command.correlation_id != id {
+        let instance = command.aggregate_id.as_deref();
+        if command.id != want || instance != Some(id) {
             return Err(Error::codec(format_args!(
-                "saga command {index} of {id} at version {version} is {:?} for {:?}, expected {want:?}",
-                command.id, command.correlation_id
+                "saga command {index} of {id} at version {version} is {:?} for instance {instance:?}, expected {want:?}",
+                command.id
             )));
         }
-        if !waiting.insert(command.id.as_str()) {
-            return Err(Error::codec(format_args!("saga command {} is already in the outbox", command.id)));
-        }
     }
-    Ok(())
+    let staged = own.saga_commands.iter().chain(others.values().flat_map(|set| &set.saga_commands));
+    refuse_waiting(committed.saga_commands.iter().chain(staged), commands, "saga command")
 }
 
 impl MemorySagaStore {
@@ -99,17 +107,17 @@ impl MemorySagaStore {
     /// A version mismatch, a completed instance, or an id another open transaction has written and not
     /// yet committed is a conflict error; a command that does not belong to this write is a codec error.
     /// A refused write stages nothing.
-    pub fn save(&self, tx: i64, id: &str, version: u64, state: Value, folded: String, commands: Vec<SagaCommand>) -> Result<u64, Error> {
+    pub fn save(&self, tx: i64, id: &str, version: u64, state: Value, folded: String, commands: Vec<CommandMessage>) -> Result<u64, Error> {
         self.write(tx, id, version, SagaRow::Active { state, folded }, commands)
     }
 
     /// Complete the instance: write its tombstone and the step's `commands` at `version + 1` under
     /// the same rules as [`save`](Self::save); returns the tombstone's version.
-    pub fn complete(&self, tx: i64, id: &str, version: u64, commands: Vec<SagaCommand>) -> Result<u64, Error> {
+    pub fn complete(&self, tx: i64, id: &str, version: u64, commands: Vec<CommandMessage>) -> Result<u64, Error> {
         self.write(tx, id, version, SagaRow::Completed, commands)
     }
 
-    fn write(&self, tx: i64, id: &str, version: u64, row: SagaRow, commands: Vec<SagaCommand>) -> Result<u64, Error> {
+    fn write(&self, tx: i64, id: &str, version: u64, row: SagaRow, commands: Vec<CommandMessage>) -> Result<u64, Error> {
         lock(&self.state).write(tx, |committed, others, own| {
             refuse_held_saga(committed, others, id, version)?;
             let stored = match saga_row(committed, Some(own), id) {
@@ -126,7 +134,7 @@ impl MemorySagaStore {
                 return Err(Error::concurrency(version, stored));
             }
             let next = version.checked_add(1).ok_or_else(|| Error::codec(format_args!("saga {id} is at the last version")))?;
-            check_commands(committed, own, id, next, &commands)?;
+            check_commands(committed, others, own, id, next, &commands)?;
             own.sagas.insert(id.to_owned(), (next, row));
             own.saga_commands.extend(commands);
             Ok(next)
@@ -135,37 +143,34 @@ impl MemorySagaStore {
 
     /// Committed outbox commands not yet sent, oldest commit first, capped at `limit`. The relay
     /// reads outside any transaction, so there is no token: a staged command is not one to send.
-    pub fn unpublished(&self, limit: usize) -> Vec<SagaCommand> {
-        lock(&self.state).committed.saga_commands.iter().take(limit).cloned().collect()
+    pub fn unpublished(&self, limit: usize) -> Vec<CommandMessage> {
+        page(&lock(&self.state).committed.saga_commands, limit)
     }
 
     /// Mark outbox commands sent by id, pruning them. Idempotent; an unknown id is a no-op.
     pub fn mark_published(&self, ids: Vec<String>) {
-        let set: HashSet<String> = ids.into_iter().collect();
-        lock(&self.state).committed.saga_commands.retain(|c| !set.contains(&c.id));
+        prune(&mut lock(&self.state).committed.saga_commands, ids);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::wire;
+    use crate::testkit::{event, wire};
     use crate::tx::NO_TX;
-    use edax_event::Event;
+    use edax_event::{saga_command, Event};
     use serde_json::json;
 
     fn open() -> Value {
         json!({"status": "awaiting_payment", "total": 1200})
     }
 
-    /// The `index`-th command a write of `id` at `version` sends: a real `Fulfill` payload.
-    fn command(id: &str, version: u64, index: u64) -> SagaCommand {
-        SagaCommand {
-            id: saga_command_id(id, version, index),
-            correlation_id: id.to_owned(),
-            command: Event { name: "Fulfill".to_owned(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() },
-            timestamp: 1_714_564_800_000_000_000,
-        }
+    /// The `index`-th command a write of instance `id` at `version` sends, as the kernel builds it: a
+    /// real `Fulfill` payload caused by the invoice event the step folded.
+    fn command(id: &str, version: u64, index: u64) -> CommandMessage {
+        let payload = Event { name: "Fulfill".to_owned(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() };
+        let cause = event("evt-1", Some(1));
+        saga_command("shipping", id, version, index, payload, &cause.id, &cause.correlation_id, 1_714_564_800_000_000_000)
     }
 
     /// A saga store holding one open instance at version 1.
@@ -205,7 +210,7 @@ mod tests {
             id: &'static str,
             version: u64,
             write: Write,
-            commands: fn() -> Vec<SagaCommand>,
+            commands: fn() -> Vec<CommandMessage>,
             want: Result<u64, &'static str>,
             want_row: Option<(u64, &'static str)>,
             want_unsent: &'static [&'static str],
@@ -299,21 +304,28 @@ mod tests {
             Case {
                 name: "a command id of another version is a codec error",
                 commands: || vec![command("order-1", 1, 0)],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:1:0" for "order-1", expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:1:0" for instance Some("order-1"), expected "order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
             Case {
-                name: "a command of another correlation is a codec error",
-                commands: || vec![SagaCommand { correlation_id: "order-2".to_owned(), ..command("order-1", 2, 0) }],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:0" for "order-2", expected "order-1:2:0""#),
+                name: "a command of another instance is a codec error",
+                commands: || vec![CommandMessage { aggregate_id: Some("order-2".to_owned()), ..command("order-1", 2, 0) }],
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:0" for instance Some("order-2"), expected "order-1:2:0""#),
+                want_row: Some((1, "awaiting_payment")),
+                ..base
+            },
+            Case {
+                name: "a command without an instance is a codec error",
+                commands: || vec![CommandMessage { aggregate_id: None, ..command("order-1", 2, 0) }],
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:0" for instance None, expected "order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
             Case {
                 name: "commands out of index order are a codec error",
                 commands: || vec![command("order-1", 2, 1), command("order-1", 2, 0)],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:1" for "order-1", expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:1" for instance Some("order-1"), expected "order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
@@ -342,7 +354,7 @@ mod tests {
         let duplicate = vec![command("order-1", 2, 0), command("order-1", 2, 0)];
         assert_eq!(
             wire(store.save(tx, "order-1", 1, open(), String::new(), duplicate)),
-            Err(r#"codec: saga command 1 of order-1 at version 2 is "order-1:2:0" for "order-1", expected "order-1:2:1""#.to_owned())
+            Err(r#"codec: saga command 1 of order-1 at version 2 is "order-1:2:0" for instance Some("order-1"), expected "order-1:2:1""#.to_owned())
         );
         store.transactor().rollback(tx);
         let mut state = lock(&store.state);

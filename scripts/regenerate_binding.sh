@@ -14,7 +14,7 @@ shipped=crates/edax-py/python/edax/_edax.pyi
 {
   cat <<'HEADER'
 # Committed type stub for the alef-generated `_edax` extension (PEP 561, beside `_edax.abi3.so`
-# + `py.typed`). Gives `edax.Event`/`edax.EventEnvelope` field types; the native classes have none.
+# + `py.typed`). Gives the message records their field types; the native classes have none.
 # Copy of `crates/edax-py/.alef/_edax.pyi` with the alef header stripped so alef cleanup leaves it.
 # Never edit by hand: regenerate with `scripts/regenerate_binding.sh`.
 

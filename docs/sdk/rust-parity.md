@@ -13,13 +13,14 @@ only when a shared decision needs a second implementation to pin it, never to ma
 |---|---|---|
 | aggregate | `Aggregate`, `Root` | `Aggregate`, `Version` |
 | event codec | `RegistryCodec<T, PayloadFormat>`, `SerdeCodec<T, PayloadFormat>`, `Upcaster` | `json_codec()`, `msgpack_codec()`, `Upcaster` |
-| repository | `Repository` (`load` / `save`, `load_in` / `save_in`) | `Repository` (`tx=None` joins the ambient unit of work) |
+| repository | `Repository` (`load` / `save`, `load_in` / `save_in`, `save_with` for a lineage) | `Repository` (`tx=None` joins the ambient unit of work; `save(commands=...)` stages a command outbox) |
 | outbox drain | `Relay::drain` over any `Outbox<R>` | `Relay.drain` and `Relay.run`, plus `pump` |
-| command bus | `CommandBus` (`register::<C, O>`, `wrap`), `retry`, `idempotent`, `idempotent_in`, `Terminal` | `CommandBus`, `retry`, `idempotent`, `Rejected` |
+| command bus | `CommandBus` (`register::<C, O>`, `wrap`), `retry`, `idempotent`, `idempotent_in`, `Terminal` | `CommandBus` (`dispatch`, `dispatch_message`), `command_message`, `current_command`, `retry`, `idempotent`, `forget`, `Rejected` |
 | consume path | `KeyOrderedDispatcher`, `Delivery::with_live`, `EventRouter`, `idempotent_by_id` | `KeyOrderedDispatcher`, `Delivery.live`, `EventRouter`, `idempotent_by_id` |
 | saga | `Saga`, `SagaRunner`, `SagaStore` with its outbox | the same, plus `SagaRunner.relay` |
 | transaction | `Transactor` (with `identity`), `transaction`, `retry_transaction` | `Transactor`, `transaction`, `current_tx` |
-| in-memory backends | `MemoryTransactor` and its four stores, `MemoryLedger`, `MemoryBroker` (`with_partitions`, `group`, `crash`) | the same, plus the Redis and Kafka adapters |
+| messages | `EventMessage`, `EventDraft`, `CommandMessage`, `Lineage` from `edax-event` | the same native classes |
+| in-memory backends | `MemoryTransactor` and its stores, `MemoryLedger`, `MemoryBroker` (`with_partitions`, `group`, `crash`) | the same, plus `MemoryCommandOutbox` and the Redis and Kafka adapters |
 
 The decisions behind every row are the kernels': `edax-core`, `edax-event`, `edax-cqrs`, `edax-memory` and
 `edax-kafka`. So the two columns cannot disagree on a hash, a verdict, a fence, a commit watermark or a wire
@@ -29,8 +30,12 @@ byte. The in-memory stores are one implementation (`edax-memory`) behind both.
 
 - **No ambient transaction.** Rust has no `current_tx`. A handler is a synchronous closure on its caller's
   thread. So a participant takes the handle explicitly (`&mut Tx`). A guard gets it from a provider closure
-  the host passes (`idempotent_in(store, key, current)`). The closure takes the command or the envelope, so
-  each worker can return its own handle.
+  the host passes (`idempotent_in(store, scope, key, current)`). The closure takes the command or the event
+  message, so each worker can return its own handle.
+- **No ambient message.** Rust has no `current_command` and no ambient lineage. A command is a plain value:
+  the guard reads its key through a closure, `idempotent(store, scope, key)`, and a save takes its
+  `Lineage` explicitly through `save_with`. The scope, the claim key and the hash are the kernel's, so
+  both SDKs claim the same key with the same hash.
 - **A nested unit of work is refused, not joined.** `transaction` keeps the databases open on its thread,
   keyed by `Transactor::identity`. A second unit of work on one of them is refused with the terminal
   `bad_handle` before it begins. `Repository::save` inside a host's body is such a unit of work. It can

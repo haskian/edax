@@ -69,8 +69,8 @@ async def main() -> None:
 
     # 4. Save appends the pending events to the stream.
     saved = await repo.save(account)
-    for envelope in saved:
-        print(f"  stored #{envelope.sequence} {envelope.event.name} {envelope.event.data.decode()}")
+    for event in saved:
+        print(f"  stored #{event.sequence} {event.name} {event.data.decode()}")
 
     # 5. Load again: the repository replays the stream into a fresh Account.
     loaded = await repo.load("acct-1")

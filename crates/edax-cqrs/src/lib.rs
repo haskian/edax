@@ -11,8 +11,9 @@
 //!   serializes identically regardless of how the host produced it, or which `serde_json` features a
 //!   build turned on. An integer literal past 2^53, which that form would round, is refused.
 //! - [`payload_hash`] — a stable hash of bytes, for idempotency-key payload binding.
-//! - [`command_hash`] — *which* bytes a command's idempotency hash covers: the whole command value,
-//!   serialized, canonicalized, hashed. The input rule is the kernel's, not the host's.
+//! - [`command_hash`] — *which* bytes a command's idempotency hash covers: its name and the whole
+//!   command value, serialized, canonicalized, hashed. The input rule is the kernel's, not the host's.
+//! - [`claim_key`] — the ledger key a command's idempotency guard claims, scoped by the guard.
 //! - [`Record`] / [`outcome`] — the stored idempotency record's wire shape, its reading order, and
 //!   the verdict a losing claimant reaches from it (in flight, cached failure, cached success).
 //!
@@ -45,7 +46,10 @@ pub use query::{
     decode_cursor, decode_cursor_json, effective_sort, effective_sort_json, encode_cursor, encode_cursor_json, query,
     query_json, query_spec, Page, Query, SortKey, TIEBREAK_PATH,
 };
-pub use record::{cached_failure, cached_failure_of, decode_prior, decode_record, encode_record, encode_record_fields, outcome, settle, Outcome, Record, Settle, State};
+pub use record::{
+    cached_failure, cached_failure_of, decode_prior, decode_record, encode_record, encode_record_fields, forget, outcome, settle,
+    unsettled_claim, Outcome, Record, Settle, State,
+};
 
 /// Stable 64-bit hash of bytes (FNV-1a). Identical across every binding. For commands, hash the
 /// output of [`canonical_json`] so two services agree on whether a reused idempotency key carries
@@ -54,38 +58,68 @@ pub fn payload_hash(bytes: &[u8]) -> u64 {
     edax_core::fnv1a64(bytes)
 }
 
-/// The idempotency hash of a command: the **whole command value** serialized as one JSON object,
-/// then [`canonical_json`], then [`payload_hash`].
+/// The idempotency hash of a command: its **name and the whole command value** serialized as one JSON
+/// object `{"name": name, "payload": value}`, then [`canonical_json`], then [`payload_hash`].
 ///
 /// This is the input rule, and it is the kernel's so that no SDK (and no user) picks the bytes. A
 /// host that cannot hand the kernel a Rust value serializes the command with its own standard
-/// encoder (Python: `msgspec.json.encode`) and hands the kernel the JSON — that is what the ABI's
-/// `payload_hash_json` is. Both paths land on the same bytes because canonicalization removes
+/// encoder (Python: `msgspec.json.encode`) and hands the kernel the JSON — that is what
+/// [`command_hash_json`] is. Both paths land on the same bytes because canonicalization removes
 /// everything an encoder is free to choose: key order, whitespace, string escaping, and how a number
 /// is spelled (`2` and `2.0` are one number). A command holding an integer past 2^53 is refused, since
 /// the canonical form's doubles would round it onto its neighbour.
 ///
 /// What the value *contains* is its wire shape — the field names and which fields exist — and
 /// that belongs to the host, as it does for events: two services that share an idempotency store
-/// declare the command with the same fields. Two consequences follow from "the whole value":
-///
-/// - The field the idempotency key was read from is hashed too. Reusing a key with a different
-///   command is a mismatch even when only that field moved.
-/// - Routing metadata is not a field. A command's type name is `command_type()` in Rust and a
-///   class attribute in Python, so it stays out of the hash on both sides alike.
+/// declare the command with the same fields. The name is hashed beside it because one idempotency
+/// key names one request: the same key reused for a different command is a mismatch, not a second
+/// request, even when the two payloads are equal. The hash covers the value the handler receives, so
+/// a command decoded from the wire hashes after its upcast, as a dispatched one does.
 ///
 /// `testdata/golden/command_hash.json` maps commands to hashes; both SDK suites dispatch each one
 /// through their own `idempotent` middleware and compare the stored hash.
 ///
 /// Both failures are `codec`: the same command fails the same way every time.
-pub fn command_hash<C: serde::Serialize + ?Sized>(command: &C) -> Result<u64, Error> {
+pub fn command_hash<C: serde::Serialize + ?Sized>(name: &str, command: &C) -> Result<u64, Error> {
     // Serialization then canonicalization report separately: a value serde cannot encode is a
     // different defect from JSON the kernel cannot read, and the message says which.
     let json =
         serde_json::to_vec(command).map_err(|e| Error::codec(format_args!("command payload is not JSON-encodable: {e}")))?;
-    let canonical = canonical_json(&json)
+    command_hash_json(name, &json)
+}
+
+/// [`command_hash`] for a host that holds the command as JSON text: `payload_json` is the command
+/// value as its own encoder wrote it. It must be exactly one JSON value: the kernel checks that before
+/// it wraps the text with the name, so a fragment such as `1,"name":"x"` cannot overwrite the name.
+pub fn command_hash_json(name: &str, payload_json: &[u8]) -> Result<u64, Error> {
+    serde_json::from_slice::<serde::de::IgnoredAny>(payload_json)
+        .map_err(|e| Error::codec(format_args!("command payload is not one JSON value: {e}")))?;
+    let name = serde_json::to_vec(name).map_err(|e| Error::codec(format_args!("command name: {e}")))?;
+    let mut json = Vec::with_capacity(payload_json.len() + name.len() + 24);
+    json.extend_from_slice(b"{\"name\":");
+    json.extend_from_slice(&name);
+    json.extend_from_slice(b",\"payload\":");
+    json.extend_from_slice(payload_json);
+    json.push(b'}');
+    hash_canonical(&json)
+}
+
+fn hash_canonical(json: &[u8]) -> Result<u64, Error> {
+    let canonical = canonical_json(json)
         .map_err(|e| Error::codec(format_args!("command payload canonicalization failed: {}", e.message)))?;
     Ok(payload_hash(&canonical))
+}
+
+/// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
+/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
+///
+/// The scope names the guard (a service, or a stage within one), so an ingress guard and a consumer
+/// guard sharing one ledger never replay each other's outcome for the same key. The scope's byte
+/// length makes the key injective: no scope and key pair spells another's. The `edax:cmd:` prefix
+/// keeps command claims apart from event claims, whose key is the event id (a guid by default).
+/// Pinned by `testdata/golden/claim_key.json`.
+pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
+    format!("edax:cmd:{}", edax_core::scoped(scope, idempotency_key))
 }
 
 #[cfg(test)]
@@ -119,26 +153,43 @@ mod tests {
     }
 
     #[test]
-    fn command_hash_is_the_whole_value_canonicalized() {
+    fn command_hash_is_the_name_and_the_whole_value_canonicalized() {
         #[derive(serde::Serialize)]
         struct PlaceOrder {
             // Declared out of alphabetical order: canonicalization, not declaration order, decides.
             total_cents: i64,
             order_id: &'static str,
-            request_id: &'static str,
         }
-        let cmd = PlaceOrder { total_cents: 4200, order_id: "ord-7f3c", request_id: "req-1" };
-        let expected = payload_hash(br#"{"order_id":"ord-7f3c","request_id":"req-1","total_cents":4200}"#);
-        assert_eq!(command_hash(&cmd), Ok(expected));
+        let cmd = PlaceOrder { total_cents: 4200, order_id: "ord-7f3c" };
+        let expected = payload_hash(br#"{"name":"order.place","payload":{"order_id":"ord-7f3c","total_cents":4200}}"#);
+        assert_eq!(command_hash("order.place", &cmd), Ok(expected));
 
-        // The idempotency-key field is part of the value, so it is part of the hash.
-        let body_only = payload_hash(br#"{"order_id":"ord-7f3c","total_cents":4200}"#);
-        assert_ne!(command_hash(&cmd), Ok(body_only));
+        // The name is part of the hash: one key reused for another command is a mismatch.
+        assert_ne!(command_hash("order.cancel", &cmd), Ok(expected));
 
-        // A serde_json::Value with the same fields is the same command: the golden generator builds
-        // its cases this way, the SDKs from typed structs, and both must agree.
-        let value = serde_json::json!({ "request_id": "req-1", "total_cents": 4200, "order_id": "ord-7f3c" });
-        assert_eq!(command_hash(&value), Ok(expected));
+        // A host holding JSON text hashes alike, whatever its encoder's spelling.
+        let roomy = br#"{ "total_cents": 4200.0, "order_id": "ord-7f3c" }"#;
+        assert_eq!(command_hash_json("order.place", roomy), Ok(expected));
+
+        // A serde_json::Value with the same fields is the same command.
+        let value = serde_json::json!({ "total_cents": 4200, "order_id": "ord-7f3c" });
+        assert_eq!(command_hash("order.place", &value), Ok(expected));
+    }
+
+    #[test]
+    fn command_hash_json_refuses_text_that_is_not_one_json_value() {
+        let cases: [(&str, &[u8]); 5] = [
+            ("not_json", b"not json"),
+            ("empty", b""),
+            ("two_values", b"{} {}"),
+            ("a_list_without_brackets", b"1, 2"),
+            // Spliced into the wrapper, this would overwrite the name with the last repeated key.
+            ("a_fragment_that_splices_a_second_name", br#"{},"name":"order.cancel""#),
+        ];
+        for (branch, bad) in cases {
+            let error = command_hash_json("order.place", bad).expect_err(branch);
+            assert!(error.message.contains("not one JSON value"), "{branch}: {error}");
+        }
     }
 
     #[test]
@@ -149,7 +200,7 @@ mod tests {
                 Err(serde::ser::Error::custom("secret field must not leave the process"))
             }
         }
-        let error = command_hash(&Unencodable).expect_err("serialization fails");
+        let error = command_hash("x", &Unencodable).expect_err("serialization fails");
         assert_eq!(error, Error::codec("command payload is not JSON-encodable: secret field must not leave the process"));
     }
 }

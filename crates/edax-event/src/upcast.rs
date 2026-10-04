@@ -29,14 +29,14 @@ use edax_core::Error;
 /// `from > to` is an error (downgrades are not modeled: the payload comes from a newer writer than
 /// this reader). Both errors are `codec`: the event cannot be unmarshaled to the target version, and
 /// no retry changes that.
-pub fn upcast_plan(from: i32, to: i32, available: Option<&[i32]>) -> Result<Vec<i32>, Error> {
+pub fn upcast_plan(from: u32, to: u32, available: Option<&[u32]>) -> Result<Vec<u32>, Error> {
     if from > to {
         return Err(Error::codec(format_args!(
             "cannot upcast downward: from {from} > to {to} (the payload comes from a newer writer)"
         )));
     }
     let Some(available) = available else { return Ok(Vec::new()) };
-    let have: BTreeSet<i32> = available.iter().copied().collect();
+    let have: BTreeSet<u32> = available.iter().copied().collect();
     if let Some(step) = (from..to).find(|step| !have.contains(step)) {
         return Err(Error::codec(format_args!(
             "missing upcast step {step} (no transform for v{step} -> v{})",
@@ -54,10 +54,10 @@ mod tests {
     fn upcast_plan_branches() {
         struct Case {
             name: &'static str,
-            from: i32,
-            to: i32,
-            available: Option<&'static [i32]>,
-            want: Result<Vec<i32>, &'static str>,
+            from: u32,
+            to: u32,
+            available: Option<&'static [u32]>,
+            want: Result<Vec<u32>, &'static str>,
         }
         let cases = [
             Case { name: "already current", from: 1, to: 1, available: Some(&[]), want: Ok(vec![]) },

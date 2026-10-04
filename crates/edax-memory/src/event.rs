@@ -1,26 +1,27 @@
 //! The event store view: the per-aggregate log, its snapshots and the transactional outbox.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error};
+use edax_event::{EventDraft, EventMessage};
 
-use crate::tx::{held_by_other, sequence_of, store_view, Committed, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{held_by_other, page, prune, sequence_of, store_view, Committed, MemoryState, MemoryTransactor, WriteSet};
 
-/// Refuse a batch carrying an envelope id the store already holds, another open transaction or this
+/// Refuse a batch carrying an event id the store already holds, another open transaction or this
 /// one has staged, or the batch repeats. Deterministic, so `codec`.
 fn refuse_known_ids(
     committed: &Committed,
-    others: &std::collections::HashMap<i64, WriteSet>,
+    others: &HashMap<i64, WriteSet>,
     own: &WriteSet,
-    events: &[edax_event::EventEnvelope],
+    drafts: &[EventDraft],
 ) -> Result<(), Error> {
     // Every staged id once, then the batch's own: a batch id already in the set is a repeat.
     let mut known: HashSet<&str> =
         std::iter::once(own).chain(others.values()).flat_map(|set| set.streams.values().flatten()).map(|e| e.id.as_str()).collect();
-    for env in events {
-        if committed.event_ids.contains(&env.id) || !known.insert(env.id.as_str()) {
-            return Err(Error::codec(format_args!("envelope id {} is already stored", env.id)));
+    for draft in drafts {
+        if committed.event_ids.contains(&draft.id) || !known.insert(draft.id.as_str()) {
+            return Err(Error::codec(format_args!("event id {} is already stored", draft.id)));
         }
     }
     Ok(())
@@ -36,8 +37,8 @@ pub struct Snapshot {
 
 /// In-memory event store for development and tests: a per-aggregate event log with optimistic
 /// concurrency on the sequence, one snapshot per aggregate, and a transactional outbox that holds
-/// only unpublished rows. Events are held as the kernel's own structured
-/// [`EventEnvelope`](edax_event::EventEnvelope) — no serialization at the binding. Appends and
+/// only unpublished rows. Events are held as the kernel's own structured [`EventMessage`], with no
+/// serialization at the binding. The store stamps each event's `recorded_at` as it appends. Appends and
 /// snapshots under an open token are staged until the transactor commits; the outbox is read by the
 /// relay outside any transaction and holds committed rows only. Not for production: a durable store
 /// appends events and enqueues the outbox in one database transaction.
@@ -49,9 +50,9 @@ pub struct MemoryEventStore {
 store_view!(MemoryEventStore, event_store);
 
 impl MemoryEventStore {
-    /// Envelopes for `aggregate_id` whose sequence is greater than `after`, including the ones `tx`
+    /// Events of `aggregate_id` whose sequence is greater than `after`, including the ones `tx`
     /// itself appended. `Err` only if `tx` names no open transaction.
-    pub fn load(&self, tx: i64, aggregate_id: &str, after: u64) -> Result<Vec<edax_event::EventEnvelope>, Error> {
+    pub fn load(&self, tx: i64, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
         lock(&self.state).read(tx, |committed, own| {
             let committed_stream = committed.events.get(aggregate_id).into_iter().flatten();
             let staged_tail = own.and_then(|set| set.streams.get(aggregate_id)).into_iter().flatten();
@@ -59,13 +60,19 @@ impl MemoryEventStore {
         })
     }
 
-    /// Append `events` and enqueue the same onto the outbox, atomically. The stream's last sequence
-    /// as `tx` sees it must equal `expected_version`, else a conflict error is returned; the batch
-    /// must carry sequences `expected_version + 1, + 2, ...` in order, and every envelope id must be
-    /// new to the whole store (stored, staged by any open transaction, or earlier in the batch), else
-    /// a codec error is returned and nothing is written. A stream another open transaction has
-    /// appended to is held until that transaction ends: the conflict reports the version it would
-    /// commit.
+    /// Append `drafts`, stamped at `recorded_at`, and enqueue the same onto the outbox, atomically.
+    /// Returns the stored events. Under an open token they are staged: the caller holds them before
+    /// they commit, and a rollback discards them.
+    ///
+    /// `recorded_at` is the store's clock reading, in unix nanoseconds. The caller passes it because a
+    /// binding cannot hand this store a clock to call. A durable store reads its own clock instead.
+    ///
+    /// The stream's last sequence as `tx` sees it must equal `expected_version`, else a conflict error
+    /// is returned. The batch must carry sequences `expected_version + 1, + 2, ...` in order, and every
+    /// event id must be new to the whole store (stored, staged by any open transaction, or earlier in
+    /// the batch), else a codec error is returned and nothing is written. A stream another open
+    /// transaction has appended to is held until that transaction ends: the conflict reports the
+    /// version it would commit.
     ///
     /// The id rule is what makes [`mark_published`](Self::mark_published) by id safe: with two rows
     /// under one id, publishing the first would prune the second unpublished. A durable store gets it
@@ -79,8 +86,9 @@ impl MemoryEventStore {
         tx: i64,
         aggregate_id: &str,
         expected_version: u64,
-        events: Vec<edax_event::EventEnvelope>,
-    ) -> Result<(), Error> {
+        drafts: Vec<EventDraft>,
+        recorded_at: i64,
+    ) -> Result<Vec<EventMessage>, Error> {
         lock(&self.state).write(tx, |committed, others, own| {
             // The stale-writer conflict is checked first: it is the documented reload-and-retry signal,
             // and a stale caller's sequences are wrong by construction.
@@ -98,16 +106,17 @@ impl MemoryEventStore {
             //
             // A `codec` error (terminal), not `store`: the same batch fails identically every time, so a
             // transient code would have a host retry its whole budget and then redeliver it forever.
-            let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
-            edax_event::sequence::check_batch(expected_version, &sequences)?;
-            refuse_known_ids(committed, others, own, &events)?;
+            let sequences: Vec<Option<u64>> = drafts.iter().map(|d| d.sequence).collect();
+            edax_event::check_batch(expected_version, &sequences)?;
+            refuse_known_ids(committed, others, own, &drafts)?;
             // An empty batch stages no tail, so it holds nothing: it was a version check only.
-            if events.is_empty() {
-                return Ok(());
+            if drafts.is_empty() {
+                return Ok(Vec::new());
             }
+            let events: Vec<EventMessage> = drafts.into_iter().map(|d| d.record(recorded_at)).collect();
             own.streams.entry(aggregate_id.to_owned()).or_default().extend(events.iter().cloned());
-            own.outbox.extend(events);
-            Ok(())
+            own.outbox.extend(events.iter().cloned());
+            Ok(events)
         })
     }
 
@@ -152,8 +161,8 @@ impl MemoryEventStore {
     /// unpublished rows (published ones are pruned by [`mark_published`](Self::mark_published)), so
     /// this is a bounded prefix scan rather than a filter over an ever-growing log. The relay reads
     /// outside any transaction, so there is no token: a staged append is not a row to publish.
-    pub fn unpublished(&self, limit: usize) -> Vec<edax_event::EventEnvelope> {
-        lock(&self.state).committed.outbox.iter().take(limit).cloned().collect()
+    pub fn unpublished(&self, limit: usize) -> Vec<EventMessage> {
+        page(&lock(&self.state).committed.outbox, limit)
     }
 
     /// How many committed outbox rows are waiting: the backlog depth a relay's health check reads,
@@ -162,22 +171,21 @@ impl MemoryEventStore {
         lock(&self.state).committed.outbox.len()
     }
 
-    /// Mark outbox rows published by envelope id — pruning them from the outbox so it stays bounded.
+    /// Mark outbox rows published by event id — pruning them from the outbox so it stays bounded.
     pub fn mark_published(&self, ids: Vec<String>) {
-        let set: HashSet<String> = ids.into_iter().collect();
-        lock(&self.state).committed.outbox.retain(|e| !set.contains(&e.id));
+        prune(&mut lock(&self.state).committed.outbox, ids);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{envelope, ids, wire};
+    use crate::testkit::{draft, event, ids, wire, RECORDED_AT};
     use crate::tx::NO_TX;
     /// An event store holding one committed event at sequence 1 (also sitting in the outbox).
     fn seeded_event_store() -> MemoryEventStore {
         let store = MemoryEventStore::new();
-        store.append(NO_TX, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).expect("seed appends");
+        store.append(NO_TX, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).expect("seed appends");
         store
     }
 
@@ -186,7 +194,7 @@ mod tests {
         struct Case {
             name: &'static str,
             expected_version: u64,
-            events: Vec<edax_event::EventEnvelope>,
+            events: Vec<EventDraft>,
             error_code: Option<&'static str>,
             stored: Vec<&'static str>,
             outbox: Vec<&'static str>,
@@ -195,7 +203,7 @@ mod tests {
             Case {
                 name: "matching_version_appends_and_enqueues",
                 expected_version: 1,
-                events: vec![envelope("evt-2", Some(2))],
+                events: vec![draft("evt-2", Some(2))],
                 error_code: None,
                 stored: vec!["evt-1", "evt-2"],
                 outbox: vec!["evt-1", "evt-2"],
@@ -211,25 +219,25 @@ mod tests {
             Case {
                 name: "stale_version_conflicts_and_writes_nothing",
                 expected_version: 0,
-                events: vec![envelope("evt-2", Some(2))],
+                events: vec![draft("evt-2", Some(2))],
                 error_code: Some("concurrency: expected 0, stored 1"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
             Case {
-                name: "sequence_less_envelope_is_rejected",
+                name: "sequence_less_event_is_rejected",
                 expected_version: 1,
-                events: vec![envelope("evt-2", None)],
-                error_code: Some("codec: envelope 0 has no sequence"),
+                events: vec![draft("evt-2", None)],
+                error_code: Some("codec: event 0 has no sequence"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
             Case {
-                // The whole batch is rejected on the first sequence-less envelope, not partially applied.
-                name: "sequence_less_envelope_rejects_the_whole_batch",
+                // The whole batch is rejected on the first sequence-less event, not partially applied.
+                name: "sequence_less_event_rejects_the_whole_batch",
                 expected_version: 1,
-                events: vec![envelope("evt-2", Some(2)), envelope("evt-3", None)],
-                error_code: Some("codec: envelope 1 has no sequence"),
+                events: vec![draft("evt-2", Some(2)), draft("evt-3", None)],
+                error_code: Some("codec: event 1 has no sequence"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
@@ -237,8 +245,8 @@ mod tests {
                 // A gap would pass the last-sequence version check yet break the gap-free `load`.
                 name: "gapped_sequence_is_rejected",
                 expected_version: 1,
-                events: vec![envelope("evt-2", Some(3))],
-                error_code: Some("codec: envelope 0 has sequence 3, expected 2"),
+                events: vec![draft("evt-2", Some(3))],
+                error_code: Some("codec: event 0 has sequence 3, expected 2"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
@@ -246,8 +254,8 @@ mod tests {
                 // Reordered within the batch: the last element is right, the first is not.
                 name: "reordered_batch_is_rejected",
                 expected_version: 1,
-                events: vec![envelope("evt-3", Some(3)), envelope("evt-2", Some(2))],
-                error_code: Some("codec: envelope 0 has sequence 3, expected 2"),
+                events: vec![draft("evt-3", Some(3)), draft("evt-2", Some(2))],
+                error_code: Some("codec: event 0 has sequence 3, expected 2"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
@@ -255,8 +263,8 @@ mod tests {
                 // Sequences are `u64` end to end, so the error names the value the caller sent.
                 name: "sequence_past_i64_max_is_rejected_by_its_real_value",
                 expected_version: 1,
-                events: vec![envelope("evt-2", Some(u64::MAX))],
-                error_code: Some("codec: envelope 0 has sequence 18446744073709551615, expected 2"),
+                events: vec![draft("evt-2", Some(u64::MAX))],
+                error_code: Some("codec: event 0 has sequence 18446744073709551615, expected 2"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },
@@ -264,7 +272,7 @@ mod tests {
                 // A stale writer sees the conflict, not a sequence complaint: reload-and-retry first.
                 name: "stale_version_conflicts_before_the_sequence_check",
                 expected_version: 0,
-                events: vec![envelope("evt-2", None)],
+                events: vec![draft("evt-2", None)],
                 error_code: Some("concurrency: expected 0, stored 1"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
@@ -273,10 +281,12 @@ mod tests {
 
         for case in cases {
             let store = seeded_event_store();
-            let got = store.append(NO_TX, "invoice-7", case.expected_version, case.events);
+            // On success the store returns the batch as it stored it: every draft stamped at `RECORDED_AT`.
+            let recorded: Vec<EventMessage> = case.events.iter().map(|d| d.clone().record(RECORDED_AT)).collect();
+            let got = store.append(NO_TX, "invoice-7", case.expected_version, case.events, RECORDED_AT);
             match case.error_code {
                 Some(message) => assert_eq!(wire(got), Err(message.to_owned()), "{}", case.name),
-                None => assert_eq!(got, Ok(()), "{}", case.name),
+                None => assert_eq!(got, Ok(recorded), "{}", case.name),
             }
             assert_eq!(ids(&store.load(NO_TX, "invoice-7", 0).unwrap()), case.stored, "{} stored", case.name);
             assert_eq!(ids(&store.unpublished(100)), case.outbox, "{} outbox", case.name);
@@ -291,29 +301,30 @@ mod tests {
             // Past `i64::MAX` the sequence is itself: no cast clamps or wraps it.
             ("past_i64_max_is_exact", Some(u64::MAX), u64::MAX),
         ] {
-            assert_eq!(sequence_of(&envelope("evt-1", sequence)), want, "{name}");
+            assert_eq!(sequence_of(&event("evt-1", sequence)), want, "{name}");
         }
     }
 
     #[test]
     fn load_filters_by_sequence_and_aggregate() {
         let store = seeded_event_store();
-        store.append(NO_TX, "invoice-7", 1, vec![envelope("evt-2", Some(2))]).expect("appends");
+        store.append(NO_TX, "invoice-7", 1, vec![draft("evt-2", Some(2))], RECORDED_AT).expect("appends");
 
         assert_eq!(ids(&store.load(NO_TX, "invoice-7", 0).unwrap()), ["evt-1", "evt-2"]);
         assert_eq!(ids(&store.load(NO_TX, "invoice-7", 1).unwrap()), ["evt-2"], "after is exclusive");
         assert!(store.load(NO_TX, "invoice-7", 2).unwrap().is_empty(), "nothing past the last sequence");
         assert!(store.load(NO_TX, "invoice-404", 0).unwrap().is_empty(), "unknown aggregate reads empty");
 
-        // The stored envelope survives the round trip field for field, not just by id.
+        // The stored event survives the round trip field for field, not just by id, and carries the
+        // store's clock reading.
         let loaded = store.load(NO_TX, "invoice-7", 1).unwrap().remove(0);
-        assert_eq!(loaded, envelope("evt-2", Some(2)));
+        assert_eq!(loaded, event("evt-2", Some(2)));
     }
 
     #[test]
     fn unpublished_limit_branches() {
         let store = seeded_event_store();
-        store.append(NO_TX, "invoice-7", 1, vec![envelope("evt-2", Some(2)), envelope("evt-3", Some(3))]).expect("appends");
+        store.append(NO_TX, "invoice-7", 1, vec![draft("evt-2", Some(2)), draft("evt-3", Some(3))], RECORDED_AT).expect("appends");
 
         for (name, limit, expected) in [
             ("zero_limit_reads_nothing", 0usize, vec![]),
@@ -332,7 +343,7 @@ mod tests {
         assert_eq!(ids(&store.unpublished(10)), ["evt-2", "evt-3"]);
         assert_eq!(store.unpublished_count(), 2, "a marked row stops counting");
         let tx = store.transactor().begin();
-        store.append(tx, "invoice-7", 3, vec![envelope("evt-4", Some(4))]).expect("stages");
+        store.append(tx, "invoice-7", 3, vec![draft("evt-4", Some(4))], RECORDED_AT).expect("stages");
         assert_eq!(store.unpublished_count(), 2, "a staged append is not waiting to publish");
         assert!(store.transactor().rollback(tx));
     }
@@ -387,7 +398,7 @@ mod tests {
             }
             let tx = store.transactor().begin();
             if c.stage {
-                store.append(tx, "invoice-7", 1, vec![envelope("evt-2", Some(2)), envelope("evt-3", Some(3))]).unwrap();
+                store.append(tx, "invoice-7", 1, vec![draft("evt-2", Some(2)), draft("evt-3", Some(3))], RECORDED_AT).unwrap();
             }
             let got = store.save_snapshot(tx, "invoice-7", "Invoice", c.version, b"this".to_vec());
             assert_eq!(wire(got), c.want.map_err(str::to_owned), "{}", c.name);
@@ -403,7 +414,7 @@ mod tests {
     #[test]
     fn concurrent_snapshot_saves_keep_the_higher_version_whichever_commits_last() {
         let store = seeded_event_store();
-        store.append(NO_TX, "invoice-7", 1, vec![envelope("evt-2", Some(2))]).unwrap();
+        store.append(NO_TX, "invoice-7", 1, vec![draft("evt-2", Some(2))], RECORDED_AT).unwrap();
         for (name, order) in [("newer commits last", [2u64, 1]), ("older commits last", [1, 2])] {
             let txs: Vec<i64> = order.iter().map(|_| store.transactor().begin()).collect();
             // Saved highest first, committed in `order`.
@@ -421,60 +432,60 @@ mod tests {
     }
 
     #[test]
-    fn a_known_envelope_id_is_refused_and_writes_nothing() {
+    fn a_known_event_id_is_refused_and_writes_nothing() {
         struct Case {
             name: &'static str,
             /// Staged by another open transaction first.
             other: Option<(&'static str, &'static str)>,
             /// Staged by this transaction first, on another stream.
             own: Option<&'static str>,
-            events: Vec<edax_event::EventEnvelope>,
+            events: Vec<EventDraft>,
             want: Result<(), &'static str>,
         }
         let cases = [
-            Case { name: "a fresh id appends", other: None, own: None, events: vec![envelope("evt-2", Some(2))], want: Ok(()) },
+            Case { name: "a fresh id appends", other: None, own: None, events: vec![draft("evt-2", Some(2))], want: Ok(()) },
             Case {
                 name: "an id already stored on this stream",
                 other: None,
                 own: None,
-                events: vec![envelope("evt-1", Some(2))],
-                want: Err("codec: envelope id evt-1 is already stored"),
+                events: vec![draft("evt-1", Some(2))],
+                want: Err("codec: event id evt-1 is already stored"),
             },
             Case {
                 name: "an id another open transaction staged on another stream",
                 other: Some(("order-3", "evt-2")),
                 own: None,
-                events: vec![envelope("evt-2", Some(2))],
-                want: Err("codec: envelope id evt-2 is already stored"),
+                events: vec![draft("evt-2", Some(2))],
+                want: Err("codec: event id evt-2 is already stored"),
             },
             Case {
                 name: "an id this transaction staged on another stream",
                 other: None,
                 own: Some("evt-2"),
-                events: vec![envelope("evt-2", Some(2))],
-                want: Err("codec: envelope id evt-2 is already stored"),
+                events: vec![draft("evt-2", Some(2))],
+                want: Err("codec: event id evt-2 is already stored"),
             },
             Case {
                 name: "an id repeated inside the batch",
                 other: None,
                 own: None,
-                events: vec![envelope("evt-2", Some(2)), envelope("evt-2", Some(3))],
-                want: Err("codec: envelope id evt-2 is already stored"),
+                events: vec![draft("evt-2", Some(2)), draft("evt-2", Some(3))],
+                want: Err("codec: event id evt-2 is already stored"),
             },
         ];
         for c in cases {
             let store = seeded_event_store();
             // An id stored on another aggregate counts too: ids are unique store-wide.
-            store.append(NO_TX, "order-9", 0, vec![envelope("evt-9", Some(1))]).unwrap();
+            store.append(NO_TX, "order-9", 0, vec![draft("evt-9", Some(1))], RECORDED_AT).unwrap();
             let other = store.transactor().begin();
             if let Some((aggregate_id, id)) = c.other {
-                store.append(other, aggregate_id, 0, vec![envelope(id, Some(1))]).unwrap();
+                store.append(other, aggregate_id, 0, vec![draft(id, Some(1))], RECORDED_AT).unwrap();
             }
             let tx = store.transactor().begin();
             if let Some(id) = c.own {
-                store.append(tx, "order-4", 0, vec![envelope(id, Some(1))]).unwrap();
+                store.append(tx, "order-4", 0, vec![draft(id, Some(1))], RECORDED_AT).unwrap();
             }
-            let got = store.append(tx, "invoice-7", 1, c.events);
+            let got = store.append(tx, "invoice-7", 1, c.events, RECORDED_AT).map(|_| ());
             assert_eq!(wire(got), c.want.map_err(str::to_owned), "{}", c.name);
             let stored = store.load(tx, "invoice-7", 0).unwrap();
             let want_len = if c.want.is_ok() { 2 } else { 1 };
@@ -484,8 +495,8 @@ mod tests {
         }
         let store = seeded_event_store();
         assert_eq!(
-            wire(store.append(NO_TX, "order-9", 0, vec![envelope("evt-1", Some(1))])),
-            Err("codec: envelope id evt-1 is already stored".to_owned()),
+            wire(store.append(NO_TX, "order-9", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)),
+            Err("codec: event id evt-1 is already stored".to_owned()),
             "an id stored on another aggregate"
         );
     }
@@ -495,9 +506,9 @@ mod tests {
         // Two aggregates' events under one host-chosen id. The second append is refused, so
         // publishing the first and marking its id cannot drop an unpublished row.
         let store = MemoryEventStore::new();
-        store.append(NO_TX, "invoice-7", 0, vec![envelope("dup", Some(1))]).unwrap();
-        assert!(store.append(NO_TX, "invoice-8", 0, vec![envelope("dup", Some(1))]).is_err());
-        store.append(NO_TX, "invoice-8", 0, vec![envelope("evt-8", Some(1))]).unwrap();
+        store.append(NO_TX, "invoice-7", 0, vec![draft("dup", Some(1))], RECORDED_AT).unwrap();
+        assert!(store.append(NO_TX, "invoice-8", 0, vec![draft("dup", Some(1))], RECORDED_AT).is_err());
+        store.append(NO_TX, "invoice-8", 0, vec![draft("evt-8", Some(1))], RECORDED_AT).unwrap();
         let first = store.unpublished(1);
         store.mark_published(first.iter().map(|e| e.id.clone()).collect());
         assert_eq!(ids(&store.unpublished(10)), ["evt-8"], "the other aggregate's row is still waiting");

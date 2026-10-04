@@ -38,11 +38,8 @@ vectors](kernels/golden-vectors.md).
 
 **Aggregate** — a consistency boundary with an id, a version, and a fold from events to state.
 
-**Aggregate id** — the routing and ordering key. It decides the partition, and it is the broker
-message key.
-
-**Envelope** — the wire form of a stored event: the event itself plus id, aggregate id, sequence,
-namespace, metadata and timestamp. `EventEnvelope` in Rust, `edax.EventEnvelope` in Python.
+**Aggregate id** — the aggregate a message belongs to or targets. An event always has one. A
+command may name one. When present, it is the message's ordering key.
 
 **Optimistic concurrency** — `EventStore.append` and `ProjectionStore.save` are database-enforced
 compare-and-set operations on a version. A stale writer gets `ConcurrencyError` and nothing is
@@ -53,6 +50,78 @@ written.
 **Transactional Outbox** — writing the events and the rows to publish in one transaction, so
 committed state and published events cannot diverge. `Relay` and `pump` drain it. See
 [outbox](sdk/outbox.md).
+
+**Command outbox** — the optional outbox for commands a unit of work decides. `Repository.save(...,
+commands=[...])` stages them in the same transaction as the events, and a `Relay` sends them after
+the commit. A saga keeps its own command outbox in the `SagaStore`.
+
+## Messages
+
+**Message** — what crosses a process boundary. Two kinds exist, an event message and a command
+message. Both are flat: identity, payload, lineage, time, then two string maps. See
+[edax-event](kernels/event.md#domain--the-messages).
+
+**Event message** — a stored fact, as the store returns it and every reader downstream sees it.
+`EventMessage` in Rust and Python. Its fields are listed in
+[edax-event](kernels/event.md#domain--the-messages).
+
+**Event draft** — an event as `Repository` hands it to `EventStore.append`. `EventDraft` has every
+field of an event message but `recorded_at`, which the store stamps.
+
+**Command message** — a request for something to happen, as a bus dispatches it, an outbox holds it
+and a broker carries it. `CommandMessage`. Its fields are listed in
+[edax-event](kernels/event.md#domain--the-messages).
+
+**Event** — a codec's output: `name`, `version` and `data`. An aggregate holds its pending events in
+this shape until a save turns them into drafts. Not a wire type of its own.
+
+**Kind** — `event` or `command`. The bytes do not say which kind they hold; the media type does.
+
+**Typed field** — a message field an edax kernel or SDK decision reads, such as `aggregate_id` or
+`correlation_id`.
+
+**Extensions** — a string map for edax extensions, such as a W3C `traceparent`. A key outside the
+kernel's [extension key rule](kernels/event.md#three-tiers-of-fields) raises `CodecError`.
+
+**Metadata** — a string map that belongs to the application. edax never reads it. Tenancy lives
+here too.
+
+**Broker facts** — the offset, partition and broker time of a delivery. They never enter a message.
+A transport reports them beside the message, as `KafkaFetched` does.
+
+**Ordering key** — the key that orders a message against others: its aggregate id, or a command's
+own id when it names no aggregate. See [edax-event](kernels/event.md#the-ordering-key).
+
+## Time
+
+[edax-event](kernels/event.md#time) owns these terms: who sets each one and what it means.
+
+**Valid time** — when a fact happened in the world: an event's `occurred_at`.
+
+**Transaction time** — when the store recorded a fact: an event's `recorded_at`.
+
+**Issued at** — a command's `issued_at`: the issuer's clock when it built the command.
+
+**Broker time** — the time a broker attaches to a record, carried on the delivery.
+
+**Processing time** — when a handler takes a message. edax never stores it.
+
+## Lineage
+
+**Lineage** — the two typed ids that place a message in its flow: `correlation_id` and
+`causation_id`. `Lineage` in Rust and Python. See [edax-event](kernels/event.md#causation--lineage).
+
+**Correlation id** — a message field, constant across one logical flow, such as one request or one
+saga run. Not the same thing as a saga's instance id, below.
+
+**Causation id** — a message field: the id of the single message that directly caused this one. A
+root message's causation id is its own correlation id.
+
+**Propagate** — the rule for a child: its causation id is the parent's id, and it inherits the
+parent's correlation id.
+
+**Originate** — the rule for a root: fill only the ids the caller lacks. A missing correlation id is
+a fresh one. A missing causation id is the correlation id.
 
 ## Transactions
 
@@ -76,9 +145,18 @@ host's transaction handle.
 
 **Ledger** — the `IdempotencyStore` the guard writes to.
 
-**Idempotency key** — the string one intent is claimed under. There is no command id. On the command
-path the key is a command *field* the host's `key` function reads, which makes it the request id a
-client retries with. On the consume path it is the envelope's `id`.
+**Idempotency key** — the string one client intent is claimed under. On the command path it is the
+command message's `idempotency_key`, such as an HTTP `Idempotency-Key` a client retries with. `None`
+makes no claim. On the consume path it is the event's `id`.
+
+**Command id** — a command message's `id`: this one message instance. It is the causation id of what
+the command causes, and the key a retry policy counts attempts by. It is not the idempotency key.
+
+**Scope** — the name of one command guard, such as a service or a stage within one. `idempotent`
+requires it, so two guards on one ledger never replay each other's outcome.
+
+**Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`. An event guard
+claims the raw event id. See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
 
 **Claim** — the atomic insert-if-absent that reserves an idempotency key. It must be linearizable
 across processes, never a read then a write.
@@ -86,8 +164,11 @@ across processes, never a read then a write.
 **Record** — what is stored under a key: `pending`, `done` or `failed`, plus the payload hash and
 the outcome.
 
-**Payload hash** — the kernel's hash of the whole command value, which binds a key to one payload.
-Reusing a key with different bytes is a `PayloadMismatch`.
+**Payload hash** — the hash stored with a claim, which binds a key to one payload. For a command it is
+the command hash. Reusing a key with a different command is a `PayloadMismatch`.
+
+**Command hash** — the kernel's hash of a command's name and its whole payload value, after any
+upcast. One key used for two command names is a mismatch, even when the payloads are equal.
 
 **Replay** — returning a cached outcome instead of running the handler again.
 
@@ -105,6 +186,10 @@ crashed worker blocks a key.
 **Claim handle** — what a won claim returns (`Won(handle)`, `Claim::Won(ClaimHandle)`) and the
 claimant presents on `complete`, `release` and `extend`. In the Redis ledger it is the exact value the
 claim wrote.
+
+**Forget** — deleting a settled record, so a re-driven message runs its handler again. Not a
+release: a release is the claimant settling its own claim. See
+[edax-cqrs](kernels/cqrs.md#forget--deleting-a-settled-record).
 
 **Fence** — the check a store applies to a claim handle. The call writes only while the key still
 holds that exact claim. A claimant whose claim lapsed then cannot settle the new holder's claim, and a
@@ -129,7 +214,7 @@ What you get when the ledger shares the work's transaction.
 **Exactly-once** — edax does not promise it, and neither does any system built on two independent
 commits.
 
-**Partition** — the kernel's local worker bucket for an aggregate id, `fnv1a32(id) % W`. It
+**Partition** — the kernel's local worker bucket for an ordering key, `fnv1a32(key) % W`. It
 selects a dispatcher worker, so one aggregate stays ordered while other aggregates run in parallel.
 Broker placement is a separate decision: `edax-kafka`'s `partition_for` uses Kafka's murmur2 rule.
 
@@ -145,14 +230,14 @@ means "commit the current position".
 does not decode. It must reach the dead-letter path, never a redelivery loop.
 
 **Media type** — the name a wire format goes by between services (RFC 6838, once "MIME type"), for
-example `application/vnd.edax.envelope+json`. A Kafka record carries it in the `content-type` header,
+example `application/vnd.edax.event+json`. edax mints one per format and kind. A Kafka record carries it in the `content-type` header,
 and a consumer routes the record to the serializer registered under it. A media type no serializer
 claims makes the message poison, never a fallback. Not a synonym for the header: `content-type` is
 the field name, the media type is its value.
 
 **Vendor tree (`vnd.`)** — the RFC 6838 prefix for a product-specific media type, as opposed to an
-IANA standard such as `application/json`. `application/vnd.edax.envelope+json` reads: vendor `edax`,
-format `envelope`, parse as JSON (the `+json` suffix, RFC 6839). Registration is optional in this
+IANA standard such as `application/json`. `application/vnd.edax.command+json` reads: vendor `edax`,
+kind `command`, parse as JSON (the `+json` suffix, RFC 6839). Registration is optional in this
 tree and has not been done. A custom serializer names its format the same way,
 `application/vnd.<vendor>.<format>+<syntax>`.
 
@@ -181,22 +266,15 @@ unique `id` tiebreak is appended automatically so paging never drops or repeats 
 **Upcast** — raising a stored event from its written version to the current one. The kernel plans
 the ordered steps and rejects a gap; your code rewrites the payload.
 
-**Causation** — `correlation_id` and `causation_id` propagation, carried in metadata so the wire
-format is untouched.
-
-**Correlation id (metadata)** — `metadata["correlation_id"]`, constant across one logical flow. Not
-the same thing as a saga's instance key, below.
-
 ## Patterns
 
 **Process manager** — the same thing this documentation calls a saga: a workflow that correlates
 events, keeps its own state, and emits commands.
 
-**Saga instance key** — what `Saga.correlation_id(env)` returns: which running instance this event
-belongs to, and the id the `SagaStore` is keyed by. It shares a word with the metadata
-`correlation_id` and is a different value — that one names a flow, this one names stored state.
-Nothing derives either from the other. It is often the aggregate id; see
-[sagas](sdk/sagas.md#the-correlation-rule).
+**Saga instance id** — what `Saga.instance_id(msg)` returns: which running instance this event
+belongs to, and the id the `SagaStore` is keyed by. It is not the event's `correlation_id`: that one
+names a flow, this one names stored state. Every command the instance sends carries it as
+`aggregate_id`. It is often the aggregate id; see [sagas](sdk/sagas.md#the-instance-rule).
 
 ## Abbreviations
 

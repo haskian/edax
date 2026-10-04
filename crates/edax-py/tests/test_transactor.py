@@ -16,8 +16,8 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import Counter, FakeKafkaClient, Tick, build_envelope, counter_repo
-from edax import EventEnvelope, KeyOrderedDispatcher, Snapshot, _edax, current_tx, transaction
+from conftest import Counter, FakeKafkaClient, Tick, build_message, claimed, counter_repo
+from edax import EventMessage, KeyOrderedDispatcher, Snapshot, _edax, current_tx, transaction
 from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import (
     MemoryBroker,
@@ -30,6 +30,7 @@ from edax.backend.memory import (
 from edax.command import CommandBus, Record, Won, idempotent
 from edax.projection import Entity
 from edax.store import Tx
+from edax.testing import drafted
 
 
 class CountingTransactor:
@@ -123,7 +124,7 @@ class RecordingStore:
         yield "store-own-tx"
 
     async def append(
-        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventEnvelope]
+        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventMessage]
     ) -> None:
         self.calls.append(("append", tx))
 
@@ -134,7 +135,7 @@ class RecordingStore:
         self.calls.append(("load_snapshot", tx))
         return None
 
-    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
+    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         self.calls.append(("load", tx))
         return []
 
@@ -235,7 +236,7 @@ async def test_dispatcher_workers_do_not_inherit_the_ambient_tx() -> None:
     seen: list[object] = []
     tr = CountingTransactor()
 
-    async def handle(env: EventEnvelope) -> None:
+    async def handle(env: EventMessage) -> None:
         seen.append(current_tx(tr))
         # The worker inherits no owner either, so its own unit of work on that same transactor is
         # not read as nesting inside the caller's.
@@ -245,7 +246,7 @@ async def test_dispatcher_workers_do_not_inherit_the_ambient_tx() -> None:
     dispatcher = KeyOrderedDispatcher(workers=1, handler=handle)
     async with transaction(tr):
         dispatcher.start()
-        await dispatcher.submit(build_envelope("acct-1", "Deposited", 1))
+        await dispatcher.submit(build_message("acct-1", "Deposited", 1))
     await dispatcher.stop()
     assert seen == [None]
     assert (tr.committed, tr.rolled_back) == (2, 0), "the caller's unit of work and the worker's"
@@ -284,7 +285,7 @@ class AmbientRecordingStore(RecordingStore):
         self.ambient: list[object] = []
 
     async def append(
-        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventEnvelope]
+        self, tx: Tx, aggregate_id: str, expected_version: int, events: Sequence[EventMessage]
     ) -> None:
         self.ambient.append(current_tx(self))
         await super().append(tx, aggregate_id, expected_version, events)
@@ -327,10 +328,6 @@ class Deposit:
     type: ClassVar[str] = "Deposit"
 
 
-def _request_id(cmd: Any) -> str:
-    return cmd.request_id
-
-
 class Rig:
     """Every participant over one transactor, plus a guarded bus whose handler saves through the
     repository: the README's topology, so the contract is executed through the SDK's own
@@ -344,7 +341,7 @@ class Rig:
         self.claims = MemoryIdempotencyStore(self.db)
         self.repo = counter_repo(self.store, iter(range(1, 100)))
         self.calls = 0
-        self.bus = CommandBus(idempotent(self.claims, key=_request_id))
+        self.bus = CommandBus(idempotent(self.claims, scope="test"))
         self.bus.register("Deposit", self._deposit)
 
     async def _deposit(self, cmd: Deposit) -> int:
@@ -356,7 +353,7 @@ class Rig:
 
     async def write_everything(self) -> None:
         """One write on every participant, inside the ambient unit of work."""
-        await self.bus.dispatch(Deposit("acct-1", 100, "req-A"))
+        await self.bus.dispatch(Deposit("acct-1", 100, "req-A"), idempotency_key="req-A")
         await self.proj.save(Entity("acct-1", 0, {"balance": 100}))
         await self.sagas.save("order-1", {"status": "open"}, 0, "", [])
 
@@ -368,7 +365,7 @@ class Rig:
         # transaction of its own that is rolled back.
         try:
             async with self.db.transaction() as probe:
-                taken = not isinstance(await self.claims.claim("req-A", 0, tx=probe), Won)
+                taken = not isinstance(await self.claims.claim(claimed("req-A"), 0, tx=probe), Won)
                 raise _Undo
         except _Undo:
             pass
@@ -409,19 +406,19 @@ async def test_a_rolled_back_claim_releases_the_key_so_the_next_dispatch_reruns_
     rig = Rig()
     with pytest.raises(RuntimeError):
         async with transaction(rig.db):
-            await rig.bus.dispatch(Deposit("acct-1", 100, "req-A"))
+            await rig.bus.dispatch(Deposit("acct-1", 100, "req-A"), idempotency_key="req-A")
             raise RuntimeError("a later write in the same unit of work failed")
     assert rig.calls == 1
 
     async with transaction(rig.db):
-        balance = await rig.bus.dispatch(Deposit("acct-1", 100, "req-A"))
+        balance = await rig.bus.dispatch(Deposit("acct-1", 100, "req-A"), idempotency_key="req-A")
     assert rig.calls == 2, "the handler ran again: no phantom cached result"
     assert balance == 100, "and deposited once, not twice"
     assert len(await rig.store.load(None, "acct-1", 0)) == 1
 
     # Now the claim is committed: a third dispatch replays without running the handler.
     async with transaction(rig.db):
-        assert await rig.bus.dispatch(Deposit("acct-1", 100, "req-A")) == 100
+        assert await rig.bus.dispatch(Deposit("acct-1", 100, "req-A"), idempotency_key="req-A") == 100
     assert rig.calls == 2
 
 
@@ -659,7 +656,7 @@ async def test_two_databases_nest_and_each_store_joins_its_own(case: NestedCase)
             await projections.save(Entity("order-7", 0, {"status": "paid"}))
             assert isinstance(await ledger.claim("req-7", 7), Won)
             await repo.save(acct)
-            await audit_log.append(None, "audit-1", 0, [build_envelope("audit-1", "OrderPaid", 1)])
+            await audit_log.append(None, "audit-1", 0, [drafted(build_message("audit-1", "OrderPaid", 1))])
             assert current_tx(orders) == outer_tx and current_tx(audit) == audit_tx
             if case.inner_fails:
                 raise RuntimeError("the audit write failed")

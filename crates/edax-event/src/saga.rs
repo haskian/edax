@@ -18,10 +18,11 @@
 
 use std::collections::BTreeMap;
 
-use edax_core::Error;
+use edax_core::{scoped, Error};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Event, EventEnvelope};
+use crate::causation::propagate;
+use crate::domain::{CommandMessage, Event, EventMessage, Extensions, Metadata};
 use crate::staleness::{advance, is_stale};
 
 /// What the store holds for a correlation when the runner loads it.
@@ -43,32 +44,38 @@ pub enum SagaWrite {
     /// Nothing was loaded and the fold neither keeps state nor sends a command: write nothing, so a
     /// concurrent creator of the same correlation is not made to conflict with a no-op.
     Nothing,
-    /// Save the new state and the commands at `expected + 1`, if the store is still at `expected`.
+    /// Save the new state and the commands at `version`, if the store is still at `expected`.
     Save {
         /// The version the write is conditional on.
         expected: u64,
+        /// The version the write commits, `expected + 1`: the one the step's command ids carry.
+        version: u64,
     },
-    /// Write the tombstone and the commands at `expected + 1`, if the store is still at `expected`.
+    /// Write the tombstone and the commands at `version`, if the store is still at `expected`.
     Complete {
         /// The version the write is conditional on.
         expected: u64,
+        /// The version the write commits, `expected + 1`: the one the step's command ids carry.
+        version: u64,
     },
 }
 
 /// The write for a step that loaded `loaded` and whose fold `completes` the instance (or keeps it
 /// running) and emitted commands or not (`has_commands`). A completed instance never gets here:
 /// [`saga_admit`] skips every event that finds one.
-pub fn saga_write(loaded: Loaded, completes: bool, has_commands: bool) -> SagaWrite {
+///
+/// An instance at the last `u64` version has no version to commit: a `codec` error, the same on
+/// every retry.
+pub fn saga_write(loaded: Loaded, completes: bool, has_commands: bool) -> Result<SagaWrite, Error> {
     let expected = match loaded {
-        Loaded::Absent if completes && !has_commands => return SagaWrite::Nothing,
+        Loaded::Absent if completes && !has_commands => return Ok(SagaWrite::Nothing),
         Loaded::Absent => 0,
         Loaded::Active { version } => version,
     };
-    if completes {
-        SagaWrite::Complete { expected }
-    } else {
-        SagaWrite::Save { expected }
-    }
+    let version = expected
+        .checked_add(1)
+        .ok_or_else(|| Error::codec(format_args!("saga instance at version {expected} has no next version")))?;
+    Ok(if completes { SagaWrite::Complete { expected, version } } else { SagaWrite::Save { expected, version } })
 }
 
 /// The last event a saga instance folded from one source aggregate.
@@ -98,7 +105,7 @@ pub enum SagaAdmit {
     },
 }
 
-/// Whether an instance that has folded `folded` folds `env`, or is `completed` (a tombstone) and
+/// Whether an instance that has folded `folded` folds `event`, or is `completed` (a tombstone) and
 /// folds nothing. `folded` is the text the last write saved, empty for a new instance; a store keeps
 /// it as it is and never reads it.
 ///
@@ -110,7 +117,7 @@ pub enum SagaAdmit {
 ///
 /// # Errors
 /// A `codec` error when `folded` is not text this function wrote.
-pub fn saga_admit(completed: bool, folded: &str, env: &EventEnvelope) -> Result<SagaAdmit, Error> {
+pub fn saga_admit(completed: bool, folded: &str, event: &EventMessage) -> Result<SagaAdmit, Error> {
     if completed {
         return Ok(SagaAdmit::Completed);
     }
@@ -119,12 +126,12 @@ pub fn saga_admit(completed: bool, folded: &str, env: &EventEnvelope) -> Result<
     } else {
         serde_json::from_str(folded).map_err(|e| Error::codec(format_args!("saga folded marks {folded:?}: {e}")))?
     };
-    let stored = marks.get(&env.aggregate_id);
-    if stored.is_some_and(|mark| mark.id == env.id || is_stale(mark.sequence, env.sequence)) {
+    let stored = marks.get(&event.aggregate_id);
+    if stored.is_some_and(|mark| mark.id == event.id || is_stale(mark.sequence, event.sequence)) {
         return Ok(SagaAdmit::Repeat);
     }
-    let sequence = advance(stored.and_then(|mark| mark.sequence), env.sequence);
-    marks.insert(env.aggregate_id.clone(), Mark { sequence, id: env.id.clone() });
+    let sequence = advance(stored.and_then(|mark| mark.sequence), event.sequence);
+    marks.insert(event.aggregate_id.clone(), Mark { sequence, id: event.id.clone() });
     let folded = serde_json::to_string(&marks).map_err(Error::codec)?;
     Ok(SagaAdmit::Fold { folded })
 }
@@ -138,48 +145,77 @@ pub fn saga_command_id(correlation_id: &str, version: u64, index: u64) -> String
     format!("{correlation_id}:{version}:{index}")
 }
 
-/// One command in a saga's outbox: committed with the step that decided it, sent by a relay after
-/// the commit, marked sent by `id`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SagaCommand {
-    /// [`saga_command_id`] of the step that decided it.
-    pub id: String,
-    /// The saga instance that decided it.
-    pub correlation_id: String,
-    /// The command, marshaled by the host's codec: its name, schema version and payload.
-    pub command: Event,
-    /// When the step decided it, in the host clock's nanoseconds: the outbox lag a health check reads.
-    pub timestamp: i64,
+/// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
+/// committed `version`, folding the event `cause_id` of the flow `cause_correlation_id`: the row its
+/// outbox holds and the message its relay sends.
+///
+/// Both SDKs build it here, so one saga run over one store writes the same row from either:
+///
+/// - `id` is [`saga_command_id`]: the outbox row's key, unique within the saga's store;
+/// - `idempotency_key` is that id [`scoped`] by the saga's name, `"{len(saga)}:{saga}:{id}"`: a re-sent row
+///   keeps it, so the consuming bus deduplicates it, and two sagas that share an instance id and a
+///   bus never replay or refuse each other's commands. The name's byte length keeps it injective;
+/// - `aggregate_id` is the instance, so one instance's commands keep their order on every transport
+///   and a store can find its rows;
+/// - the lineage is the event's child ([`propagate`]): causation is the folded event, correlation is
+///   the event's flow, not the instance id.
+///
+/// Pinned by `testdata/golden/saga.json`.
+// The cause is two strings, not the event, because only its id and correlation are read: a host that
+// holds them apart (a binding, say) need not rebuild a whole event to pass them.
+#[allow(clippy::too_many_arguments)]
+pub fn saga_command(
+    saga: &str,
+    instance_id: &str,
+    version: u64,
+    index: u64,
+    command: Event,
+    cause_id: &str,
+    cause_correlation_id: &str,
+    issued_at: i64,
+) -> CommandMessage {
+    let id = saga_command_id(instance_id, version, index);
+    let lineage = propagate(cause_id, cause_correlation_id);
+    CommandMessage {
+        idempotency_key: Some(scoped(saga, &id)),
+        id,
+        aggregate_id: Some(instance_id.to_owned()),
+        name: command.name,
+        version: command.version,
+        data: command.data,
+        correlation_id: lineage.correlation_id,
+        causation_id: lineage.causation_id,
+        issued_at,
+        extensions: Extensions::new(),
+        metadata: Metadata::new(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::base_event;
 
     #[test]
     fn saga_write_branches() {
+        let save = |expected, version| Ok(SagaWrite::Save { expected, version });
+        let complete = |expected, version| Ok(SagaWrite::Complete { expected, version });
+        let last = Err("codec: saga instance at version 18446744073709551615 has no next version".to_owned());
         let cases = [
-            ("absent, completes, no commands: nothing", Loaded::Absent, true, false, SagaWrite::Nothing),
-            ("absent, completes with commands: tombstone at 0", Loaded::Absent, true, true, SagaWrite::Complete { expected: 0 }),
-            ("absent, keeps state: save at 0", Loaded::Absent, false, false, SagaWrite::Save { expected: 0 }),
-            ("active, keeps state: save at its version", Loaded::Active { version: 3 }, false, true, SagaWrite::Save { expected: 3 }),
-            ("active, completes: tombstone at its version", Loaded::Active { version: 3 }, true, false, SagaWrite::Complete { expected: 3 }),
+            ("absent, completes, no commands: nothing", Loaded::Absent, true, false, Ok(SagaWrite::Nothing)),
+            ("absent, completes with commands: tombstone at 0", Loaded::Absent, true, true, complete(0, 1)),
+            ("absent, keeps state: save at 0", Loaded::Absent, false, false, save(0, 1)),
+            ("active, keeps state: save at its version", Loaded::Active { version: 3 }, false, true, save(3, 4)),
+            ("active, completes: tombstone at its version", Loaded::Active { version: 3 }, true, false, complete(3, 4)),
+            ("active at the last version: no next version", Loaded::Active { version: u64::MAX }, false, true, last),
         ];
         for (name, loaded, completes, has_commands, want) in cases {
-            assert_eq!(saga_write(loaded, completes, has_commands), want, "{name}");
+            assert_eq!(saga_write(loaded, completes, has_commands).map_err(|e| e.to_string()), want, "{name}");
         }
     }
 
-    fn event(aggregate_id: &str, sequence: Option<u64>, id: &str) -> EventEnvelope {
-        EventEnvelope {
-            id: id.to_owned(),
-            aggregate_id: aggregate_id.to_owned(),
-            event: Event { name: "OrderCreated".to_owned(), version: 1, data: br#"{"total":1200}"#.to_vec() },
-            sequence,
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 1_714_564_800_000_000_000,
-        }
+    fn event(aggregate_id: &str, sequence: Option<u64>, id: &str) -> EventMessage {
+        EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() }
     }
 
     #[test]
@@ -188,7 +224,7 @@ mod tests {
         let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
         let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
         let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
-        let cases: [(&str, &str, EventEnvelope, Result<SagaAdmit, String>); 11] = [
+        let cases: [(&str, &str, EventMessage, Result<SagaAdmit, String>); 11] = [
             ("a new instance folds and marks", "", event("order-7", Some(1), "evt-1"), fold(one)),
             ("the last event again is a repeat", one, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::Repeat)),
             ("an older event of the aggregate is a repeat", two, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::Repeat)),

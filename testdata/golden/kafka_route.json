@@ -1,16 +1,29 @@
 [
   {
+    "default_kind": "event",
     "headers": [],
     "name": "no_headers_routes_to_the_default",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "route": "default"
     }
   },
   {
+    "default_kind": "command",
+    "headers": [],
+    "name": "no_headers_under_a_command_default_is_headerless",
+    "registered": [
+      "application/vnd.edax.command+json"
+    ],
+    "want": {
+      "route": "headerless"
+    }
+  },
+  {
+    "default_kind": "event",
     "headers": [
       {
         "key": "traceparent",
@@ -19,23 +32,24 @@
     ],
     "name": "a_foreign_header_only_routes_to_the_default",
     "registered": [
-      "application/vnd.edax.envelope+json"
+      "application/vnd.edax.event+json"
     ],
     "want": {
       "route": "default"
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       }
     ],
     "name": "a_registered_media_type_names_its_index",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "index": 1,
@@ -43,6 +57,43 @@
     }
   },
   {
+    "default_kind": "event",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
+      }
+    ],
+    "name": "a_command_media_type_names_its_own_index",
+    "registered": [
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.command+json"
+    ],
+    "want": {
+      "index": 1,
+      "route": "registered"
+    }
+  },
+  {
+    "default_kind": "event",
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
+      }
+    ],
+    "name": "a_command_media_type_nobody_registered_is_unknown",
+    "registered": [
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
+    ],
+    "want": {
+      "media_type": "application/vnd.edax.command+json",
+      "route": "unknown"
+    }
+  },
+  {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
@@ -51,7 +102,7 @@
     ],
     "name": "a_host_media_type_is_as_good_as_a_kernel_one",
     "registered": [
-      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.event+json",
       "application/x-test-id"
     ],
     "want": {
@@ -60,6 +111,7 @@
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
@@ -68,8 +120,8 @@
     ],
     "name": "an_unregistered_media_type_is_unknown",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "media_type": "application/x-protobuf",
@@ -77,20 +129,22 @@
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
     "name": "nothing_registered_makes_every_media_type_unknown",
     "registered": [],
     "want": {
-      "media_type": "application/vnd.edax.envelope+json",
+      "media_type": "application/vnd.edax.event+json",
       "route": "unknown"
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
@@ -99,8 +153,8 @@
     ],
     "name": "an_empty_value_is_unknown_not_the_default",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "media_type": "",
@@ -108,36 +162,38 @@
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "Content-Type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       }
     ],
     "name": "the_name_is_matched_case_sensitively",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "route": "default"
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6d73677061636b"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       },
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
     "name": "the_first_of_two_wins",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "index": 1,
@@ -145,6 +201,7 @@
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
@@ -152,32 +209,33 @@
       },
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
     "name": "a_non_utf8_first_value_reads_as_absent",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
       "route": "default"
     }
   },
   {
+    "default_kind": "event",
     "headers": [
       {
         "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e3b20636861727365743d7574662d38"
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e3b20636861727365743d7574662d38"
       }
     ],
     "name": "parameters_are_not_stripped",
     "registered": [
-      "application/vnd.edax.envelope+json",
-      "application/vnd.edax.envelope+msgpack"
+      "application/vnd.edax.event+json",
+      "application/vnd.edax.event+msgpack"
     ],
     "want": {
-      "media_type": "application/vnd.edax.envelope+json; charset=utf-8",
+      "media_type": "application/vnd.edax.event+json; charset=utf-8",
       "route": "unknown"
     }
   },
@@ -185,12 +243,12 @@
     "headers": [],
     "name": "a_media_type_registered_twice_is_refused",
     "registered": [
-      "application/vnd.edax.envelope+json",
+      "application/vnd.edax.event+json",
       "application/x-test-id",
-      "application/vnd.edax.envelope+json"
+      "application/vnd.edax.event+json"
     ],
     "want": {
-      "error": "already_registered: two serializers claim the media type \"application/vnd.edax.envelope+json\""
+      "error": "already_registered: two serializers claim the media type \"application/vnd.edax.event+json\""
     }
   },
   {

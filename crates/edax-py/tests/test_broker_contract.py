@@ -17,11 +17,19 @@ from typing import Any
 import edax
 import pytest
 from aiokafka import TopicPartition
-from conftest import FakeKafkaClient, FakeKafkaCluster, agg_id, build_envelope, delivered, sequence_of
+from conftest import (
+    FakeKafkaClient,
+    FakeKafkaCluster,
+    agg_id,
+    build_message,
+    delivered,
+    event_of,
+    sequence_of,
+)
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import MemoryBroker, MemoryEventStore
 from edax.broker import UNDECODABLE, Consumer, UndecodableDelivery, _ConsumerLoop
-from edax.testing import BrokerContract
+from edax.testing import BrokerContract, drafted
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -33,7 +41,7 @@ class MemoryRig:
         self.broker = MemoryBroker(partitions)
         self.groups: dict[str, MemoryBroker] = {}
 
-    async def publish(self, env: edax.EventEnvelope) -> None:
+    async def publish(self, env: edax.EventMessage | edax.CommandMessage) -> None:
         await self.broker.publish(env)
 
     async def consumer(self, group: str) -> Consumer:
@@ -63,13 +71,15 @@ class KafkaRig:
         self.clusters: dict[str, FakeKafkaCluster] = {}
         self.members: dict[str, tuple[FakeKafkaClient, KafkaConsumer]] = {}
 
-    async def publish(self, env: edax.EventEnvelope) -> None:
+    async def publish(self, env: edax.EventMessage | edax.CommandMessage) -> None:
         await self.producer.publish(env)
 
     async def _join(self, group: str) -> KafkaConsumer:
         cluster = self.clusters.setdefault(group, self.broker.group())
         client = FakeKafkaClient(cluster)
-        consumer = KafkaConsumer(client, serializer=edax.KernelSerializer())
+        consumer = KafkaConsumer(
+            client, serializer=edax.KernelSerializer(), serializers=[edax.KernelSerializer("json", "command")]
+        )
         client.subscribe(["t"], listener=consumer.rebalance_listener(drain_timeout_s=0))
         await cluster.join(client)
         self.members[group] = (client, consumer)
@@ -117,7 +127,7 @@ def make_rig(request: Any) -> Callable[[], MemoryRig | KafkaRig]:
 
 async def _append(store: MemoryEventStore, versions: dict[int, int], agg: int, n: int) -> list[str]:
     v = versions.get(agg, 0)
-    envs = [build_envelope(agg_id(agg), "Tick", v + i + 1) for i in range(n)]
+    envs = [drafted(build_message(agg_id(agg), "Tick", v + i + 1)) for i in range(n)]
     async with edax.transaction(store) as tx:
         await store.append(tx, agg_id(agg), v, envs)
     versions[agg] = v + n
@@ -148,7 +158,7 @@ POISON_BYTES = b'{"schema":"v3","balance_cents":4200}'
 class RunCase:
     script: list  # per poll: "d" (a delivery), "poison", None, or "block"
     cancel: bool
-    handled: list  # envelope sequences the dispatcher handled, in order
+    handled: list  # event sequences the dispatcher handled, in order
     settled: list  # "ack" / "nack" per delivery, in settlement order
     returns: bool  # run() returned (end of stream) rather than raising CancelledError
     dead: list  # event names the dead-letter hook saw
@@ -234,7 +244,7 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
     handled: list[int] = []
     settled: list[str] = []
     dead: list[str] = []
-    envs = [build_envelope(agg_id(0), "Tick", n) for n in range(1, 3)]
+    envs = [build_message(agg_id(0), "Tick", n) for n in range(1, 3)]
 
     def poison_nack() -> None:
         settled.append("nack")
@@ -261,10 +271,10 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
 
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
         assert isinstance(err, edax.CodecError) and err.terminal
-        assert bytes(delivery.envelope.event.data) == POISON_BYTES, "the raw payload must survive"
+        assert bytes(delivery.message.data) == POISON_BYTES, "the raw payload must survive"
         # Recorded before the raise: `dead` is what the sink saw, so it doubles as the call count and
         # the raising row still proves the sink was reached exactly once.
-        dead.append(delivery.envelope.event.name)
+        dead.append(delivery.message.name)
         if case.sink_raises:
             raise edax.StoreError("dead-letter sink unavailable")
 
@@ -321,7 +331,7 @@ def test_drain_history_reaches_consumer_in_key_order(
         for _ in range(total):
             # timeout: a broken nack/publish leaves poll blocking forever; fail instead of hanging
             d = delivered(await asyncio.wait_for(consumer.poll(), 1))
-            seen[d.envelope.aggregate_id].append(d.envelope.id)
+            seen[event_of(d.message).aggregate_id].append(d.message.id)
             await d.ack()
         assert seen == {agg_id(a): ids for a, ids in want.items()}
         await rig.commit("drain")
@@ -337,7 +347,7 @@ async def test_in_memory_broker_reports_an_unsettled_delivery() -> None:
     and lose the message against a durable broker, which is the one bug the rig exists to catch.
     """
     broker = MemoryBroker()
-    await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
+    await broker.publish(build_message(agg_id(0), "Deposited", 1))
     assert not broker.empty()
 
     delivery = delivered(await broker.poll())
@@ -348,16 +358,16 @@ async def test_in_memory_broker_reports_an_unsettled_delivery() -> None:
 
 
 async def test_the_same_id_in_flight_twice_needs_two_settlements() -> None:
-    """The outbox republishes an envelope after a crash between `publish` and `mark_published`, so
+    """The outbox republishes a message after a crash between `publish` and `mark_published`, so
     one id is legitimately in flight twice. Tracking ids in a set would collapse the two into one
     entry and report drained while a delivery is still outstanding."""
     broker = MemoryBroker()
-    env = build_envelope(agg_id(0), "Deposited", 1)
+    env = build_message(agg_id(0), "Deposited", 1)
     await broker.publish(env)
-    await broker.publish(env)  # at-least-once: the same envelope, republished
+    await broker.publish(env)  # at-least-once: the same message, republished
 
     first, second = delivered(await broker.poll()), delivered(await broker.poll())
-    assert first.envelope.id == second.envelope.id, "the rig really is holding one id twice"
+    assert first.message.id == second.message.id, "the rig really is holding one id twice"
 
     await first.ack()
     assert not broker.empty(), "one copy settled, the other is still outstanding"
@@ -370,7 +380,7 @@ async def test_settling_a_delivery_twice_does_not_lose_an_outstanding_one() -> N
     or the broker would report drained while another delivery is outstanding."""
     broker = MemoryBroker()
     for seq in (1, 2):
-        await broker.publish(build_envelope(agg_id(0), "Deposited", seq))
+        await broker.publish(build_message(agg_id(0), "Deposited", seq))
     first, second = delivered(await broker.poll()), delivered(await broker.poll())
 
     await first.ack()
@@ -383,12 +393,12 @@ async def test_settling_a_delivery_twice_does_not_lose_an_outstanding_one() -> N
 
 async def test_in_memory_broker_nack_settles_and_requeues() -> None:
     broker = MemoryBroker()
-    await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
+    await broker.publish(build_message(agg_id(0), "Deposited", 1))
     delivery = delivered(await broker.poll())
     await delivery.nack()
     # Settled as far as the poll is concerned, but back on the queue — so still not empty.
     assert not broker.empty()
-    assert delivered(await broker.poll()).envelope.aggregate_id == agg_id(0)
+    assert delivered(await broker.poll()).message.aggregate_id == agg_id(0)
 
 
 @pytest.mark.parametrize(
@@ -398,7 +408,7 @@ async def test_in_memory_broker_poll_parks_until_a_message_arrives(wake: str) ->
     """The waiting is the one part Python owns over the native machine: a poll that finds nothing
     must park, and both ways a message can appear (a publish, a nack's requeue) must wake it."""
     broker = MemoryBroker()
-    env = build_envelope(agg_id(0), "Deposited", 1)
+    env = build_message(agg_id(0), "Deposited", 1)
     held: edax.Delivery | None = None
     if wake != "publish":
         await broker.publish(env)
@@ -416,7 +426,7 @@ async def test_in_memory_broker_poll_parks_until_a_message_arrives(wake: str) ->
         broker.crash()
     # timeout: a lost wakeup leaves the poll parked forever; fail instead of hanging
     delivery = delivered(await asyncio.wait_for(parked, 1))
-    assert delivery.envelope.id == env.id
+    assert delivery.message.id == env.id
     await delivery.ack()
     assert broker.empty()
 
@@ -425,13 +435,13 @@ async def test_in_memory_broker_ack_after_nack_does_not_drop_the_redelivery() ->
     """At-least-once: a stale ack of an already-nacked delivery must settle nothing, or the
     requeued copy would vanish before anyone handled it."""
     broker = MemoryBroker()
-    await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
+    await broker.publish(build_message(agg_id(0), "Deposited", 1))
     first = delivered(await broker.poll())
     await first.nack()
     await first.ack()  # the bug: the delivery was already settled by the nack
     assert not broker.empty(), "the redelivery is still queued"
     again = delivered(await asyncio.wait_for(broker.poll(), 1))
-    assert again.envelope.id == first.envelope.id
+    assert again.message.id == first.message.id
     await again.ack()
     assert broker.empty()
 
@@ -456,7 +466,7 @@ async def test_memory_broker_warns_when_the_native_refuses_a_second_settlement(
     """The native machine refuses a second settlement of one token and says so with ``False``. The
     refusal is a caller bug, so it is logged rather than dropped."""
     broker = MemoryBroker()
-    await broker.publish(build_envelope(agg_id(0), "Tick", 1))
+    await broker.publish(build_message(agg_id(0), "Tick", 1))
     delivery = await broker.poll()
     assert delivery is not None
     settle = getattr(delivery, case.settle)
@@ -478,7 +488,7 @@ async def test_a_publish_wakes_a_poller_of_every_group() -> None:
     parked = asyncio.create_task(saga.poll())
     await asyncio.sleep(0.01)
     assert not parked.done()
-    await broker.publish(build_envelope(agg_id(0), "Deposited", 1))
+    await broker.publish(build_message(agg_id(0), "Deposited", 1))
     delivery = delivered(await asyncio.wait_for(parked, 1))
     await delivery.ack()
     assert saga.empty() and not broker.empty(), "each group settles on its own"
@@ -495,11 +505,11 @@ async def test_the_memory_broker_reproduces_kafkas_seek_back() -> None:
     cannot take the duplicate fails here first."""
     broker = MemoryBroker()
     for seq in (1, 2):
-        await broker.publish(build_envelope("a", "Deposited", seq, id=f"a-{seq}"))
+        await broker.publish(build_message("a", "Deposited", seq, id=f"a-{seq}"))
     a1, a2 = delivered(await broker.poll()), delivered(await broker.poll())
     await a2.ack()
     await a1.nack()
-    seen = [delivered(await asyncio.wait_for(broker.poll(), 1)).envelope.id for _ in range(2)]
+    seen = [delivered(await asyncio.wait_for(broker.poll(), 1)).message.id for _ in range(2)]
     assert seen == ["a-1", "a-2"]
 
 
@@ -514,11 +524,11 @@ class QueueRig(MemoryRig):
 
     def __init__(self) -> None:
         super().__init__()
-        self.queue: list[edax.EventEnvelope] = []
+        self.queue: list[edax.EventMessage] = []
         self.unsettled = 0
 
-    async def publish(self, env: edax.EventEnvelope) -> None:
-        self.queue.append(env)
+    async def publish(self, env: edax.EventMessage | edax.CommandMessage) -> None:
+        self.queue.append(event_of(env))
 
     async def consumer(self, group: str) -> Consumer:
         rig = self

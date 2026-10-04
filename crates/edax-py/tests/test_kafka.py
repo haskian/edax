@@ -13,12 +13,13 @@ import warnings
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import edax
 import pytest
 from aiokafka import TopicPartition
 from conftest import (
+    FAKE_KAFKA_EPOCH_MS,
     FakeKafkaClient,
     FakeKafkaCluster,
     IdSerializer,
@@ -26,7 +27,8 @@ from conftest import (
     Recording,
     SeqSerializer,
     SpyProducerClient,
-    build_envelope,
+    build_command,
+    build_message,
     delivered,
     golden,
     kafka_consumer,
@@ -77,7 +79,7 @@ async def test_a_nack_rewinds_the_partition_and_retires_what_was_fetched() -> No
     await k.flush()
     assert c.commits == [], "committed past nacked offset 0"
     again = [delivered(await k.poll()) for _ in range(3)]
-    assert [d.envelope.id for d in again] == ["0", "1", "2"], "redelivered in order, the acked 1 included"
+    assert [d.message.id for d in again] == ["0", "1", "2"], "redelivered in order, the acked 1 included"
     for d in again:
         assert d.live()
         await d.ack()
@@ -170,12 +172,12 @@ async def test_a_stale_nack_seeks_nowhere() -> None:
     "key_fn, want_key",
     [
         (None, b"acct-1"),  # default: the aggregate id keys the partition, so per-key order holds
-        (lambda env: env.namespace["tenant"], b"t1"),  # caller-supplied key
+        (lambda env: env.metadata["tenant"], b"t1"),  # caller-supplied key
     ],
 )
-async def test_publish_sends_keyed_encoded_envelope(key_fn: KeyFn | None, want_key: bytes) -> None:
+async def test_publish_sends_keyed_encoded_message(key_fn: KeyFn | None, want_key: bytes) -> None:
     client, serializer = SpyProducerClient(), edax.KernelSerializer()
-    env = build_envelope("acct-1", "Deposited", 3, namespace={"tenant": "t1"})
+    env = build_message("acct-1", "Deposited", 3, metadata={"tenant": "t1"})
     await KafkaProducer(client, "events.account", serializer=serializer, key=key_fn).publish(env)
 
     assert len(client.sent) == 1
@@ -185,7 +187,7 @@ async def test_publish_sends_keyed_encoded_envelope(key_fn: KeyFn | None, want_k
     assert partition == _edax.kafka_partition_for(want_key, 12)
     # The one contract header: the media type a consumer routes on, under the kernel's name. The id,
     # event name and version travel in the value, which every reader decodes anyway.
-    assert headers == [(CONTENT_TYPE, b"application/vnd.edax.envelope+json")]
+    assert headers == [(CONTENT_TYPE, b"application/vnd.edax.event+json")]
     assert CONTENT_TYPE == "content-type"
 
 
@@ -214,7 +216,7 @@ async def test_a_python_producer_places_a_key_where_java_and_rust_do(case: dict[
     key = bytes.fromhex(case["key_hex"])
     client = SpyProducerClient(case["partitions"])
     producer = KafkaProducer(client, "t", serializer=edax.KernelSerializer(), middleware=[_KeyFromHex(key)])
-    await producer.publish(build_envelope("acct-1", "Deposited", 1))
+    await producer.publish(build_message("acct-1", "Deposited", 1))
     (_, _, sent_key, partition, _) = client.sent[0]
     assert (sent_key, partition) == (key, case["expected"])
     if case["java_murmur2"] is not None:
@@ -227,7 +229,7 @@ async def test_every_event_of_an_aggregate_lands_on_one_partition() -> None:
     producer = KafkaProducer(client, "t")
     for seq in range(1, 6):
         for agg in ("acct-1", "acct-2", "acct-3"):
-            await producer.publish(build_envelope(agg, "Deposited", seq))
+            await producer.publish(build_message(agg, "Deposited", seq))
     by_key: dict[bytes, set[int]] = defaultdict(set)
     for _, _, key, partition, _ in client.sent:
         by_key[key].add(partition)
@@ -237,7 +239,7 @@ async def test_every_event_of_an_aggregate_lands_on_one_partition() -> None:
 async def test_a_topic_reported_with_no_partitions_is_refused_and_sends_nothing() -> None:
     client = SpyProducerClient(0)
     with pytest.raises(edax.CodecError, match="at least one partition"):
-        await KafkaProducer(client, "t").publish(build_envelope("acct-1", "Deposited", 1))
+        await KafkaProducer(client, "t").publish(build_message("acct-1", "Deposited", 1))
     assert client.sent == []
 
 
@@ -274,7 +276,7 @@ async def test_the_commit_guard_never_steps_backwards() -> None:
     c = _GatedCommitClient()
     producer = KafkaProducer(c, "t", serializer=IdSerializer())
     for i in range(4):
-        await producer.publish(build_envelope("a", "Tick", 1, id=str(i)))
+        await producer.publish(build_message("a", "Tick", 1, id=str(i)))
     k = KafkaConsumer(c, serializer=IdSerializer())
     d0, d1, _d2, d3 = [delivered(await k.poll()) for _ in range(4)]
 
@@ -304,29 +306,30 @@ class _SchemaSerializer:
     the way a third-party serializer raises its own error type rather than the SDK's."""
 
     media_type = "application/x-test-schema"
+    kind: Literal["event"] = "event"
 
-    def encode(self, env: edax.EventEnvelope) -> bytes:
+    def encode(self, env: edax.EventMessage | edax.CommandMessage) -> bytes:
         return env.id.encode()
 
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
+    def decode(self, wire: bytes) -> edax.EventMessage:
         if not wire.isdigit():
             raise ValueError(f"no schema for {wire[:16]!r}")
-        return build_envelope("acct-1", "Tick", 1, id=wire.decode())
+        return build_message("acct-1", "Tick", 1, id=wire.decode())
 
 
 POISON_BYTES = b'{"schema":"v3","balance_cents":4200}'
 
 
 async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark_advances() -> None:
-    """The poison message: `decode` fails, so there is no envelope and no handler run. The offset
+    """The poison message: `decode` fails, so there is no message and no handler run. The offset
     is booked before the decode, so the loop can dead-letter the message and ack it — without that
     the watermark pins on the offset and the consumer replays the same failure after every restart.
     """
     c = FakeKafkaClient()
     producer = KafkaProducer(c, "t", serializer=_SchemaSerializer())
-    await producer.publish(build_envelope("acct-1", "Tick", 1, id="0"))
+    await producer.publish(build_message("acct-1", "Tick", 1, id="0"))
     await c.send_and_wait("t", POISON_BYTES)  # another writer's bytes, no headers of ours
-    await producer.publish(build_envelope("acct-1", "Tick", 1, id="2"))
+    await producer.publish(build_message("acct-1", "Tick", 1, id="2"))
 
     handled: list[str] = []
     dead: list[tuple[str, bytes, str, str]] = []
@@ -334,10 +337,10 @@ async def test_a_payload_that_will_not_decode_is_dead_lettered_and_the_watermark
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
         dead.append(
             (
-                delivery.envelope.event.name,
-                bytes(delivery.envelope.event.data),
+                delivery.message.name,
+                bytes(delivery.message.data),
                 str(err),
-                delivery.envelope.id,
+                delivery.message.id,
             )
         )
 
@@ -397,7 +400,7 @@ async def test_nullable_record_parts_cross_as_empty_bytes(
     assert all(v is not None for _, v in fetched.headers), branch
     if kind == "ok":
         assert not isinstance(delivery, UndecodableDelivery), branch
-        assert delivery.envelope.id == text, branch
+        assert delivery.message.id == text, branch
     else:
         assert isinstance(delivery, UndecodableDelivery), branch
         assert text in str(delivery.error), branch
@@ -405,7 +408,7 @@ async def test_nullable_record_parts_cross_as_empty_bytes(
 
 async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
     """The offset is per partition, so the bare offset is not an identity. Two poison messages at
-    offset 0 on different partitions would share one envelope id, and a dead-letter queue keyed on it
+    offset 0 on different partitions would share one message id, and a dead-letter queue keyed on it
     — the natural key, and the one `idempotent_by_id` uses — keeps the first and rejects the second
     as a `PayloadMismatch`. Silently: the first one wins.
     """
@@ -413,7 +416,7 @@ async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
     k = KafkaConsumer(c, serializer=_SchemaSerializer())
     # The id is built in `poll`; the test above already pins that a poison delivery reaches `on_dead`
     # carrying it, so there is nothing a dispatcher and a consumer loop would add here.
-    ids = [delivered(await k.poll()).envelope.id for _ in range(2)]
+    ids = [delivered(await k.poll()).message.id for _ in range(2)]
 
     assert ids == ["t/0/0", "t/1/0"], "one id per partition, not one shared offset"
 
@@ -425,15 +428,16 @@ async def test_poison_ids_differ_across_partitions_at_one_offset() -> None:
 
 class _UpperSerializer:
     """A second serializer on the same topic, under a media type of its own. Its decode tags the id,
-    so the envelope names the serializer that produced it and a wrong route cannot pass unseen."""
+    so the message names the serializer that produced it and a wrong route cannot pass unseen."""
 
     media_type = "application/x-test-upper"
+    kind: Literal["event"] = "event"
 
-    def encode(self, env: edax.EventEnvelope) -> bytes:
+    def encode(self, env: edax.EventMessage | edax.CommandMessage) -> bytes:
         return env.id.upper().encode()
 
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
-        return build_envelope("a", "Tick", 1, id=f"upper:{wire.decode()}")
+    def decode(self, wire: bytes) -> edax.EventMessage:
+        return build_message("a", "Tick", 1, id=f"upper:{wire.decode()}")
 
 
 @pytest.mark.parametrize(
@@ -499,7 +503,7 @@ async def test_serializer_registry_branches(
 ) -> None:
     """One record, one header changed per case. A media type no serializer claims is never decoded
     with the default: that fallback is how a record in another format reaches a handler as a wrong
-    envelope instead of the dead-letter sink."""
+    message instead of the dead-letter sink."""
     client = FakeKafkaClient()
     client.log.append(KafkaMsg("t", 0, 0, b"a", b"evt-1", headers))
     consumer = KafkaConsumer(client, serializer=IdSerializer(), serializers=[_UpperSerializer()])
@@ -508,11 +512,11 @@ async def test_serializer_registry_branches(
 
     if want_poison is None:
         assert not isinstance(delivery, UndecodableDelivery), branch
-        assert delivery.envelope.id == want_id, branch
+        assert delivery.message.id == want_id, branch
     else:
         assert isinstance(delivery, UndecodableDelivery), branch
         assert want_poison in str(delivery.error), branch
-        assert delivery.envelope.id == "t/0/0", branch
+        assert delivery.message.id == "t/0/0", branch
     # Booked before the decode either way, so settling a poison record moves the watermark past it
     # instead of pinning the partition on bytes that will never decode.
     await delivery.ack()
@@ -592,7 +596,7 @@ Stack = Callable[[list[str]], list[RecordMiddleware]]
 ID_TYPE = IdSerializer.media_type
 
 
-#: What the consumer made of the record coming back: the decoded envelope id, the text of the poison
+#: What the consumer made of the record coming back: the decoded message id, the text of the poison
 #: error the delivery carries, or the exception type ``poll`` propagated instead of returning.
 Want = tuple[str, Any]
 
@@ -647,7 +651,7 @@ async def test_record_middleware_branches(
     middleware = stack(calls)
     client = FakeKafkaClient()
     await KafkaProducer(client, "t", serializer=IdSerializer(), middleware=middleware).publish(
-        build_envelope("a", "Tick", 1, id="evt-1")
+        build_message("a", "Tick", 1, id="evt-1")
     )
 
     want_content_type, want_value, want_extra = want_wire
@@ -674,7 +678,7 @@ async def test_record_middleware_branches(
     assert calls == want_calls, branch
     if kind == "ok":
         assert not isinstance(delivery, UndecodableDelivery), branch
-        assert delivery.envelope.id == expected, branch
+        assert delivery.message.id == expected, branch
     else:
         assert isinstance(delivery, UndecodableDelivery), branch
         assert expected in str(delivery.error), branch
@@ -772,12 +776,12 @@ async def test_a_nack_keeps_per_key_order_so_the_staleness_guard_loses_nothing(s
     and skip the redelivered seq 1 as stale for good. The rewind retires that copy, so the redelivered
     seq 1 runs first."""
     client = FakeKafkaClient()
-    await publish_all(client, "t", SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in (1, 2)])
+    await publish_all(client, "t", SeqSerializer(), [build_message("a", "Tick", seq) for seq in (1, 2)])
     stored: int | None = None
     applied: list[int] = []
     runs: list[int] = []
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal stored
         runs.append(sequence_of(env))
         if env.sequence == 1 and runs.count(1) == 1:
@@ -808,18 +812,18 @@ async def test_a_raising_sink_nacks_and_gets_another_try(slept: list[int]) -> No
     path instead, the redelivery reaches the sink again, and the partition drains."""
     client = FakeKafkaClient()
     await publish_all(
-        client, "t", IdSerializer(), [build_envelope(f"k{i}", "Tick", 1, id=str(i)) for i in range(10)]
+        client, "t", IdSerializer(), [build_message(f"k{i}", "Tick", 1, id=str(i)) for i in range(10)]
     )
     sink_calls: list[str] = []
     seen: list[str] = []
 
-    def handler(env: edax.EventEnvelope) -> None:
+    def handler(env: edax.EventMessage) -> None:
         seen.append(env.id)
         if env.id == "3":
             raise edax.CodecError("bad payload")  # terminal: dead-letters on the first attempt
 
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        sink_calls.append(delivery.envelope.id)
+        sink_calls.append(delivery.message.id)
         if len(sink_calls) == 1:
             raise ConnectionError("DLQ topic unavailable")
 
@@ -889,7 +893,7 @@ async def test_run_survives_a_transient_middleware_failure(slept: list[int]) -> 
     """One key-service blip must not end the run, or nothing polls again. The loop waits a backoff step
     per consecutive failure and polls again; the poll already sought back."""
     client = FakeKafkaClient()
-    await publish_all(client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id="0")])
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
     handled: list[str] = []
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok
@@ -909,7 +913,7 @@ async def test_run_survives_a_transient_middleware_failure(slept: list[int]) -> 
 async def test_a_terminal_poll_failure_ends_the_run() -> None:
     """A failure that repeats on every poll is not retried: the run fails fast with it."""
     client = FakeKafkaClient()
-    await publish_all(client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id="0")])
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, on_dead=sink_ok)
     middleware = _FlakyKeyService(1, edax.BadHandle("built on another thread"))
     consumer = KafkaConsumer(client, serializer=IdSerializer(), middleware=[middleware])
@@ -922,7 +926,7 @@ async def test_a_stopped_client_ends_the_run_and_commits_what_settled() -> None:
     run returns, and its final flush commits the work that settled."""
     client = FakeKafkaClient()
     await publish_all(
-        client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id=str(i)) for i in range(3)]
+        client, "t", IdSerializer(), [build_message("a", "Tick", 1, id=str(i)) for i in range(3)]
     )
     handled: list[str] = []
     dispatcher = edax.KeyOrderedDispatcher(
@@ -944,7 +948,7 @@ async def test_commits_are_batched_off_the_ack_path() -> None:
     settles; the committer commits what is due on its interval, in one call."""
     client = FakeKafkaClient()
     await publish_all(
-        client, "t", IdSerializer(), [build_envelope(f"k{i % 7}", "Tick", 1, id=str(i)) for i in range(100)]
+        client, "t", IdSerializer(), [build_message(f"k{i % 7}", "Tick", 1, id=str(i)) for i in range(100)]
     )
     dispatcher = edax.KeyOrderedDispatcher(workers=4, handler=lambda env: None, on_dead=sink_ok)
     consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_interval_s=0.01)
@@ -960,7 +964,7 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     watermark is due again once the broker is back."""
     client = FakeKafkaClient()
     await publish_all(
-        client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id=str(i)) for i in range(3)]
+        client, "t", IdSerializer(), [build_message("a", "Tick", 1, id=str(i)) for i in range(3)]
     )
     consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_timeout_s=0.05)
     for _ in range(3):
@@ -974,7 +978,7 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     assert consumer.stats()[TP0].committed is None, "a commit that did not land was recorded"
 
     # The run keeps consuming while every commit times out, and its own stop is not held hostage.
-    await publish_all(client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id="3")])
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="3")])
     handled: list[str] = []
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok
@@ -1001,13 +1005,13 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     first.subscribe(["t"])
     await cluster.join(first)
     await publish_all(
-        first, "t", IdSerializer(), [build_envelope(f"k{i % 3}", "Tick", 1, id=str(i)) for i in range(20)]
+        first, "t", IdSerializer(), [build_message(f"k{i % 3}", "Tick", 1, id=str(i)) for i in range(20)]
     )
 
     handled: list[tuple[str, int]] = []
     stuck = asyncio.Event()
 
-    async def first_handler(env: edax.EventEnvelope) -> None:
+    async def first_handler(env: edax.EventMessage) -> None:
         handled.append(("first", int(env.id)))
         if env.id == "12":
             await stuck.wait()  # mid-batch: this one never finishes before the crash
@@ -1029,7 +1033,7 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     second.subscribe(["t"])
     await cluster.join(second)
 
-    async def second_handler(env: edax.EventEnvelope) -> None:
+    async def second_handler(env: edax.EventMessage) -> None:
         handled.append(("second", int(env.id)))
 
     second_dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=second_handler, on_dead=sink_ok)
@@ -1054,15 +1058,15 @@ async def test_a_rebalance_mid_batch_drains_then_hands_over_without_overlap(slep
     await cluster.join(first)
     keys = ["a", "b", "c", "d", "e", "f"]
     await publish_all(
-        first, "t", SeqSerializer(), [build_envelope(k, "Tick", seq) for seq in range(1, 9) for k in keys]
+        first, "t", SeqSerializer(), [build_message(k, "Tick", seq) for seq in range(1, 9) for k in keys]
     )
 
     active: dict[str, str] = {}
     handled: dict[str, list[tuple[str, int]]] = defaultdict(list)
     overlaps: list[str] = []
 
-    def handler_for(owner: str) -> Callable[[edax.EventEnvelope], Awaitable[None]]:
-        async def handler(env: edax.EventEnvelope) -> None:
+    def handler_for(owner: str) -> Callable[[edax.EventMessage], Awaitable[None]]:
+        async def handler(env: edax.EventMessage) -> None:
             key = env.aggregate_id
             if key in active and active[key] != owner:
                 overlaps.append(f"{key}: {active[key]} and {owner}")
@@ -1115,12 +1119,12 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
     first.subscribe(["t"], listener=consumer.rebalance_listener(drain_timeout_s=0.05))
     await cluster.join(first)
     await publish_all(
-        first, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id=str(i)) for i in range(5)]
+        first, "t", IdSerializer(), [build_message("a", "Tick", 1, id=str(i)) for i in range(5)]
     )
     release = asyncio.Event()
     handled: list[str] = []
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         handled.append(env.id)
         if env.id == "0":
             await release.wait()  # running when the revoke comes
@@ -1191,9 +1195,9 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
     client.subscribe(["t"])
     await cluster.join(client)
     producer = KafkaProducer(client, "t", serializer=_SchemaSerializer(), middleware=[_TraceHeader()])
-    await producer.publish(build_envelope("acct-9", "Tick", 1, id="BAD" if cause == "poison" else "7"))
+    await producer.publish(build_message("acct-9", "Tick", 1, id="BAD" if cause == "poison" else "7"))
 
-    def handler(env: edax.EventEnvelope) -> None:
+    def handler(env: edax.EventMessage) -> None:
         raise edax.CodecError("negative balance")  # terminal
 
     dispatcher = edax.KeyOrderedDispatcher(
@@ -1221,7 +1225,7 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
 
 async def test_the_dead_letter_sink_refuses_a_delivery_with_no_kafka_record() -> None:
     sink = KafkaDeadLetterSink(SpyProducerClient(), "t.dlq")
-    delivery = edax.Delivery(build_envelope("a", "Tick", 1), lambda: None, lambda: None)
+    delivery = edax.Delivery(build_message("a", "Tick", 1), lambda: None, lambda: None)
     with pytest.raises(TypeError, match="no Kafka record"):
         await sink(delivery, edax.CodecError("bad"))
 
@@ -1244,7 +1248,7 @@ async def test_a_failed_fetch_propagates_and_the_loop_backs_off(slept: list[int]
     """A fetch that fails is no end of stream: ``poll`` raises it, and the loop waits a growing step and
     polls again. Only a stopped client ends the stream."""
     client = _BrokenFetch(2)
-    await publish_all(client, "t", IdSerializer(), [build_envelope("a", "Tick", 1, id="0")])
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
     with pytest.raises(ConnectionError):
         await KafkaConsumer(client, serializer=IdSerializer()).poll()
     handled: list[str] = []
@@ -1265,3 +1269,91 @@ def test_a_client_without_aiokafka_errors_is_never_stopped(monkeypatch: pytest.M
 
     monkeypatch.setitem(sys.modules, "aiokafka.errors", None)
     assert kafka_module._consumer_stopped(ConnectionError("x")) is False
+
+
+# =========================================================================
+# commands on a topic: the record per kind, the consumer's registry per kind
+# =========================================================================
+
+
+async def test_a_command_travels_under_its_own_media_type_and_comes_back_whole() -> None:
+    """The producer writes a command with the command serializer, keyed by the kernel's ordering key (its
+    id when it names no aggregate). A consumer that registers the command serializer delivers the
+    :class:`~edax.CommandMessage` as it was published, with the broker's timestamp on the fetched record."""
+    client = FakeKafkaClient()
+    command = build_command("Deposit", id="cmd-1", idempotency_key="req-1", metadata={"user": "u-7"})
+    await KafkaProducer(client, "t").publish(command)
+    [record] = client.log
+    assert record.key == b"cmd-1", "no aggregate: the command's own id is the key"
+    assert record.headers == [(CONTENT_TYPE, b"application/vnd.edax.command+json")]
+
+    consumer = KafkaConsumer(client, serializers=[edax.KernelSerializer("json", "command")])
+    delivery = delivered(await consumer.poll())
+    assert not isinstance(delivery, UndecodableDelivery)
+    assert delivery.message == command
+    fetched = delivery.origin
+    assert isinstance(fetched, KafkaFetched)
+    assert (fetched.timestamp, fetched.timestamp_type) == (FAKE_KAFKA_EPOCH_MS, 0)
+
+
+@pytest.mark.parametrize(
+    "branch, serializer, serializers, publish, want",
+    [
+        pytest.param(
+            "event_consumer",
+            None,
+            (),
+            "command",
+            "no serializer for content type 'application/vnd.edax.command+json'",
+            id="an_event_consumer_refuses_a_command_record",
+        ),
+        pytest.param(
+            "command_consumer",
+            edax.KernelSerializer("json", "command"),
+            (),
+            "event",
+            "no serializer for content type 'application/vnd.edax.event+json'",
+            id="a_command_consumer_refuses_an_event_record",
+        ),
+        pytest.param(
+            "command_consumer",
+            edax.KernelSerializer("json", "command"),
+            (),
+            "header_less",
+            "no readable content-type header",
+            id="a_command_consumer_has_no_header_less_default",
+        ),
+    ],
+)
+async def test_a_record_of_a_kind_the_consumer_does_not_read_is_poison(
+    branch: str, serializer: Any, serializers: tuple[Any, ...], publish: str, want: str
+) -> None:
+    client = FakeKafkaClient()
+    if publish == "header_less":
+        await client.send_and_wait("t", edax.KernelSerializer("json").encode(build_message("a", "Tick", 1)))
+    else:
+        message = build_command("Deposit") if publish == "command" else build_message("a", "Tick", 1)
+        await KafkaProducer(client, "t").publish(message)
+    consumer = KafkaConsumer(client, serializer=serializer, serializers=serializers)
+    delivery = delivered(await consumer.poll())
+    assert isinstance(delivery, UndecodableDelivery), branch
+    assert isinstance(delivery.error, edax.CodecError) and delivery.error.terminal
+    assert want in str(delivery.error)
+
+
+@pytest.mark.parametrize(
+    "role, kwargs",
+    [
+        ("serializer", {"serializer": edax.KernelSerializer("json", "command")}),
+        ("command_serializer", {"command_serializer": edax.KernelSerializer("json")}),
+    ],
+)
+def test_a_producer_refuses_a_serializer_of_the_wrong_kind(role: str, kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match=role):
+        KafkaProducer(SpyProducerClient(), "t", **kwargs)
+
+
+def test_a_fetched_record_reads_without_a_broker_timestamp() -> None:
+    """A client that reports no timestamp leaves both fields unset, so a hand-built record still works."""
+    fetched = KafkaFetched("t", 0, 7, b"k", b"v", ())
+    assert (fetched.timestamp, fetched.timestamp_type) == (None, None)

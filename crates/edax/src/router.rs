@@ -1,10 +1,10 @@
-//! Read-side event router. [`EventRouter`] dispatches an envelope to the handler registered for its event name,
+//! Read-side event router. [`EventRouter`] dispatches an event to the handler registered for its name,
 //! through a middleware chain, and plugs into a [`crate::dispatcher::KeyOrderedDispatcher`].
 //! [`idempotent_by_id`] claims the event id, making a handler's side effect effectively-once.
 
 use std::sync::Arc;
 
-use edax_event::{event_idempotency, EventEnvelope};
+use edax_event::{event_idempotency, EventMessage};
 
 use crate::chain::Chain;
 use crate::command::{guarded, HandlerError, IdempotencyStore};
@@ -13,7 +13,7 @@ use crate::Error;
 /// Handles one committed event. `Send + Sync` so a router can sit behind a worker pool. It fails with
 /// the same [`HandlerError`] a command handler does, so a saga that dispatches a command returns the
 /// command's failure with `?` and its verdict survives to the dispatcher.
-pub type EventHandler = Box<dyn Fn(&EventEnvelope) -> Result<(), HandlerError> + Send + Sync>;
+pub type EventHandler = Box<dyn Fn(&EventMessage) -> Result<(), HandlerError> + Send + Sync>;
 pub type EventMiddleware = Box<dyn Fn(EventHandler) -> EventHandler + Send + Sync>;
 /// The store behind [`idempotent_by_id`], shared by every wrapped handler and worker thread. Its result is `()`.
 pub type EventIdempotencyStore<T = ()> = Arc<dyn IdempotencyStore<(), Tx = T> + Send + Sync>;
@@ -56,17 +56,17 @@ impl EventRouter {
         self.chain.register(name.into(), handler)
     }
 
-    /// Route `env` to the handler for `env.event.name`. An unregistered name is ignored unless a fallback is set.
-    pub fn dispatch(&self, env: &EventEnvelope) -> Result<(), HandlerError> {
-        match self.chain.get(&env.event.name).or(self.on_unhandled.as_ref()) {
-            Some(handler) => handler(env),
+    /// Route `event` to the handler for `event.name`. An unregistered name is ignored unless a fallback is set.
+    pub fn dispatch(&self, event: &EventMessage) -> Result<(), HandlerError> {
+        match self.chain.get(&event.name).or(self.on_unhandled.as_ref()) {
+            Some(handler) => handler(event),
             None => Ok(()),
         }
     }
 }
 
 /// Run a handler at most once per event id, so a broker redelivery does not repeat its side effect. The key and
-/// hash are the kernel's ([`edax_event::event_idempotency`]): `env.id`, and FNV-1a over the raw `event.data`
+/// hash are the kernel's ([`edax_event::event_idempotency`]): `event.id`, and FNV-1a over the raw `event.data`
 /// bytes; the `()` result is stored as `null`. A redelivery of a completed event returns `Ok(())`. A claim
 /// another worker holds gives the transient `in_progress` error, which the dispatcher nacks. A transient
 /// handler failure, or a panic, releases the claim; a terminal one is cached with its code and replays as the
@@ -81,20 +81,20 @@ pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(store: EventIdempote
 /// and returns the handle for the claim, the terminal record and any release. The handler enlists its own writes
 /// in the same handle, so the claim commits with them and a rollback drops both. Outside a unit of work
 /// `current` returns the auto-commit handle and the guarantee falls back to at-least-once. `current` runs on
-/// worker threads, so it must be `Send + Sync`, and it takes the envelope: one slot every worker reads is a race.
+/// worker threads, so it must be `Send + Sync`, and it takes the event: one slot every worker reads is a race.
 pub fn idempotent_by_id_in<T: Send + Sync + 'static>(
     store: EventIdempotencyStore<T>,
-    current: impl Fn(&EventEnvelope) -> T + Send + Sync + 'static,
+    current: impl Fn(&EventMessage) -> T + Send + Sync + 'static,
 ) -> EventMiddleware {
     // The middleware closure runs once per registered handler; the reference counts give each a cheap clone.
     let current = Arc::new(current);
     Box::new(move |next: EventHandler| {
         let store = Arc::clone(&store);
         let current = Arc::clone(&current);
-        Box::new(move |env: &EventEnvelope| -> Result<(), HandlerError> {
-            let rule = event_idempotency(env);
-            let mut tx = current(env);
-            guarded(&*store, &mut tx, rule.key, rule.payload_hash, || next(env))
+        Box::new(move |event: &EventMessage| -> Result<(), HandlerError> {
+            let rule = event_idempotency(event);
+            let mut tx = current(event);
+            guarded(&*store, &mut tx, rule.key, rule.payload_hash, || next(event))
         })
     })
 }
@@ -106,7 +106,7 @@ mod tests {
     use crate::ErrorCode;
     use crate::dispatcher::{Delivery, KeyOrderedDispatcher};
     use crate::{MemoryIdempotencyStore, MemoryTransactor, MemoryTx, Transactor};
-    use edax_event::Event;
+    use crate::testkit::event;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::collections::HashMap;
@@ -115,24 +115,11 @@ mod tests {
     const DEPOSITED: &[u8] =
         br#"{"account_id":"acct-1","amount_cents":4200,"currency":"USD","occurred_at":"2024-05-01T12:00:00Z"}"#;
 
-    fn envelope(aggregate_id: &str, name: &str, sequence: u64) -> EventEnvelope {
-        EventEnvelope {
-            id: format!("{aggregate_id}-{sequence}"),
-            aggregate_id: aggregate_id.to_string(),
-            event: Event { name: name.to_string(), version: 1, data: Vec::new() },
-            sequence: Some(sequence),
-            namespace: Default::default(),
-            metadata: Default::default(),
-            timestamp: 0,
-        }
-    }
-
-    /// One committed event; every case redelivers this exact envelope (or one sharing its id).
-    fn deposited(data: &[u8]) -> EventEnvelope {
-        let mut env = envelope("acct-1", "Deposited", 3);
-        env.event.data = data.to_vec();
+    /// One committed event; every case redelivers this exact event (or one sharing its id).
+    fn deposited(data: &[u8]) -> EventMessage {
+        let mut env = event("acct-1", "Deposited", 3);
+        env.data = data.to_vec();
         env.metadata.insert("trace".into(), "abc".into());
-        env.timestamp = 1_714_564_800;
         env
     }
 
@@ -141,7 +128,7 @@ mod tests {
         let trace = Arc::clone(trace);
         Box::new(move |next: EventHandler| {
             let trace = Arc::clone(&trace);
-            Box::new(move |env: &EventEnvelope| {
+            Box::new(move |env: &EventMessage| {
                 trace.lock().unwrap().push(format!(">{name}"));
                 next(env)?;
                 trace.lock().unwrap().push(format!("<{name}"));
@@ -210,23 +197,23 @@ mod tests {
             let mut router = EventRouter::new();
             let n = Arc::clone(&named);
             router
-                .register("Created", Box::new(move |_: &EventEnvelope| {
+                .register("Created", Box::new(move |_: &EventMessage| {
                     *n.lock().unwrap() += 1;
                     Ok(())
                 }))
                 .unwrap();
             router
-                .register("Broken", Box::new(|_: &EventEnvelope| Err(Error::store("projection down").into())))
+                .register("Broken", Box::new(|_: &EventMessage| Err(Error::store("projection down").into())))
                 .unwrap();
             if c.fallback {
                 let u = Arc::clone(&unhandled);
-                router.on_unhandled(Box::new(move |_: &EventEnvelope| {
+                router.on_unhandled(Box::new(move |_: &EventMessage| {
                     *u.lock().unwrap() += 1;
                     Ok(())
                 }));
             }
 
-            let got = router.dispatch(&envelope("a", c.event, 1));
+            let got = router.dispatch(&event("a", c.event, 1));
             match (c.want_err, got) {
                 (None, Ok(())) => {}
                 (Some(want), Err(e)) => assert_eq!(e.downcast_ref::<Error>(), Some(&Error::store(want)), "{}", c.name),
@@ -267,19 +254,19 @@ mod tests {
             let mut router = EventRouter::new().with(tracing("a", &trace)).with(tracing("b", &trace));
             let t = Arc::clone(&trace);
             router
-                .register("Deposited", Box::new(move |_: &EventEnvelope| {
+                .register("Deposited", Box::new(move |_: &EventMessage| {
                     t.lock().unwrap().push("handler".into());
                     Ok(())
                 }))
                 .unwrap();
             if c.fallback {
                 let t = Arc::clone(&trace);
-                router.on_unhandled(Box::new(move |_: &EventEnvelope| {
+                router.on_unhandled(Box::new(move |_: &EventMessage| {
                     t.lock().unwrap().push("fallback".into());
                     Ok(())
                 }));
             }
-            router.dispatch(&envelope("acct-1", c.event, 3)).unwrap();
+            router.dispatch(&event("acct-1", c.event, 3)).unwrap();
             assert_eq!(*trace.lock().unwrap(), c.want, "{}", c.name);
         }
     }
@@ -397,7 +384,7 @@ mod tests {
             let calls = Arc::new(AtomicUsize::new(0));
             let calls_h = Arc::clone(&calls);
             let errors = c.errors;
-            let handler: EventHandler = Box::new(move |_: &EventEnvelope| {
+            let handler: EventHandler = Box::new(move |_: &EventMessage| {
                 let n = calls_h.fetch_add(1, Ordering::SeqCst);
                 match errors[n] {
                     Some(make) => Err(make()),
@@ -432,7 +419,7 @@ mod tests {
         let store = CountingStore::new();
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_h = Arc::clone(&calls);
-        let handler: EventHandler = Box::new(move |_: &EventEnvelope| {
+        let handler: EventHandler = Box::new(move |_: &EventMessage| {
             if calls_h.fetch_add(1, Ordering::SeqCst) == 0 {
                 panic!("handler bug");
             }
@@ -457,16 +444,16 @@ mod tests {
         let h = Arc::clone(&hits);
         let mut router = EventRouter::new();
         router
-            .register("Created", Box::new(move |_e: &EventEnvelope| {
+            .register("Created", Box::new(move |_e: &EventMessage| {
                 *h.lock().unwrap() += 1;
                 Ok(())
             }))
             .unwrap();
         let router = Arc::new(router);
 
-        let dispatcher = KeyOrderedDispatcher::new(2, move |e: &EventEnvelope| router.dispatch(e)).expect("the dispatcher's workers spawn");
-        dispatcher.submit(envelope("a", "Created", 1));
-        dispatcher.submit(envelope("a", "Ignored", 2)); // no handler -> no-op
+        let dispatcher = KeyOrderedDispatcher::new(2, move |e: &EventMessage| router.dispatch(e)).expect("the dispatcher's workers spawn");
+        dispatcher.submit(event("a", "Created", 1));
+        dispatcher.submit(event("a", "Ignored", 2)); // no handler -> no-op
         dispatcher.stop();
         assert_eq!(*hits.lock().unwrap(), 1);
     }
@@ -481,14 +468,14 @@ mod tests {
         let mut router = EventRouter::new().with(idempotent_by_id(store));
         let c = Arc::clone(&calls);
         router
-            .register("Deposited", Box::new(move |_: &EventEnvelope| {
+            .register("Deposited", Box::new(move |_: &EventMessage| {
                 c.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }))
             .unwrap();
         let router = Arc::new(router);
 
-        let dispatcher = KeyOrderedDispatcher::new(1, move |e: &EventEnvelope| router.dispatch(e)).expect("the dispatcher's workers spawn");
+        let dispatcher = KeyOrderedDispatcher::new(1, move |e: &EventMessage| router.dispatch(e)).expect("the dispatcher's workers spawn");
         for _ in 0..2 {
             let (a, n) = (Arc::clone(&settled), Arc::clone(&settled));
             dispatcher.deliver(Delivery::new(
@@ -506,7 +493,7 @@ mod tests {
     /// The consume-path twin of the command path's `idempotent_in`: the claim commits with the
     /// host's unit of work, so a rollback frees the key and the redelivery re-runs the handler
     /// instead of replaying an outcome that never landed. Two workers run at once, each under its
-    /// own open transaction, which is what the per-envelope `current` exists for: with one shared
+    /// own open transaction, which is what the per-event `current` exists for: with one shared
     /// slot a peer overwrites the handle between the write and the claim.
     /// `tests/test_router.py`'s `test_claim_enlists_in_the_ambient_tx` is the same rule in the
     /// Python SDK.
@@ -520,12 +507,12 @@ mod tests {
         let runs: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
         let counter = Arc::clone(&runs);
-        let handler: EventHandler = Box::new(move |env: &EventEnvelope| {
+        let handler: EventHandler = Box::new(move |env: &EventMessage| {
             *counter.lock().expect("no worker panics").entry(env.id.clone()).or_insert(0) += 1;
             Ok(())
         });
         let published = Arc::clone(&open);
-        let guarded = Arc::new(idempotent_by_id_in(store, move |env: &EventEnvelope| {
+        let guarded = Arc::new(idempotent_by_id_in(store, move |env: &EventMessage| {
             published.lock().expect("no worker panics").get(&env.id).copied().unwrap_or_else(MemoryTx::auto_commit)
         })(handler));
 
@@ -538,7 +525,7 @@ mod tests {
                 let (db, open, guarded, both_open) =
                     (db.clone(), Arc::clone(&open), Arc::clone(&guarded), Arc::clone(&both_open));
                 std::thread::spawn(move || {
-                    let env = envelope(aggregate, "Deposited", 1);
+                    let env = event(aggregate, "Deposited", 1);
                     let unit = db.transaction(|tx| {
                         open.lock().expect("no worker panics").insert(env.id.clone(), *tx);
                         both_open.wait();
@@ -561,7 +548,7 @@ mod tests {
         // Both units of work are over, so a redelivery runs under the auto-commit handle.
         open.lock().expect("no worker panics").clear();
         for aggregate in ["acct-1", "acct-2"] {
-            guarded(&envelope(aggregate, "Deposited", 1)).expect("the redelivery settles");
+            guarded(&event(aggregate, "Deposited", 1)).expect("the redelivery settles");
         }
         let runs = runs.lock().expect("no worker panics").clone();
         assert_eq!(runs.get("acct-1-1"), Some(&1), "the committed claim skips the redelivery");
@@ -580,11 +567,11 @@ mod tests {
             .expect("the vector carries the Rust-written rejection");
         let message = row["error"].as_str().expect("a failed row has a message").to_owned();
         let store: EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::new());
-        let handler: EventHandler = Box::new(move |_: &EventEnvelope| Err(crate::Terminal::new(message.clone()).into()));
+        let handler: EventHandler = Box::new(move |_: &EventMessage| Err(crate::Terminal::new(message.clone()).into()));
         let guarded = idempotent_by_id(Arc::clone(&store))(handler);
-        let mut env = envelope("acct-1", "Deposited", 1);
+        let mut env = event("acct-1", "Deposited", 1);
         env.id = "evt-1".into();
-        env.event.data = b"cmd-a".to_vec();
+        env.data = b"cmd-a".to_vec();
         let err = guarded(&env).expect_err("the handler rejects");
         assert!(err.downcast_ref::<crate::Terminal>().is_some(), "the caller sees its own rejection");
 

@@ -9,7 +9,7 @@ ships with edax; you bring one.
 
 ```mermaid
 flowchart LR
-    E["envelope"] --> H["event handler"]
+    E["EventMessage"] --> H["event handler"]
     H -->|"get by aggregate id"| G["ProjectionStore.get"]
     G -->|"Entity or None"| H
     H -->|"fold the event into document"| N["Entity: id, version, document"]
@@ -114,16 +114,16 @@ which is shared by `edax.query.query` and by every backend's `get_many` so the t
 
 ## Keeping a projection up to date
 
-An event handler folds an envelope into an `Entity`. This is the handler from
+An event handler folds an event message into an `Entity`. This is the handler from
 `examples/py/10_idempotent_events.py`, without the failure that example injects:
 
 ```python
 @router.on("Deposited")
-async def add_deposit(envelope: EventEnvelope) -> None:
-    row = await balances.get(envelope.aggregate_id)
+async def add_deposit(msg: EventMessage) -> None:
+    row = await balances.get(msg.aggregate_id)
     if row is None:
-        row = Entity(envelope.aggregate_id, 0, {"balance": 0})
-    row.document["balance"] += json.loads(envelope.event.data)["amount"]
+        row = Entity(msg.aggregate_id, 0, {"balance": 0})
+    row.document["balance"] += json.loads(msg.data)["amount"]
     await balances.save(row)  # joins the guard's transaction
 ```
 
@@ -131,7 +131,7 @@ Read it in four steps. Load the entity by aggregate id. Seed version `0` when th
 exist, so the first `save` is an insert. Fold the event into the document. Save, with no explicit
 `tx`, so the store picks up the ambient transaction the guard opened.
 
-That fold is `balance + amount`, which is not idempotent: a redelivered envelope applied twice
+That fold is `balance + amount`, which is not idempotent: a redelivered event applied twice
 double-counts. The guard is what stops it, and what the guard is worth depends on whether the claim
 and this `save` commit together. `examples/py/10_idempotent_events.py` shares one unit of work and
 asserts each deposit counted once. `examples/py/19_fault_injection.py` puts the ledger in a database

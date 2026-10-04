@@ -18,8 +18,9 @@ use edax_core::ErrorCode;
 use edax_cqrs::{encode_record, Record};
 use edax_golden::{hex, write_or_check};
 use edax_redis::{
-    check_claim, check_config, claim_outcome, claim_value, ledger_key, reply_error, settled_value, split_value,
-    ClaimOutcome, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, MAX_TTL_MS, RELEASE_SCRIPT,
+    check_claim, check_config, claim_outcome, claim_value, forget_outcome, ledger_key, reply_error, settled_value,
+    split_value, ClaimOutcome, ForgetOutcome, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, FORGET_SCRIPT, MAX_TTL_MS,
+    RELEASE_SCRIPT,
 };
 use serde_json::{json, Value};
 
@@ -275,6 +276,37 @@ fn outcome_cases() -> Vec<Value> {
         .collect()
 }
 
+/// `forget_outcome`: whether a forget deletes the value it read, from what that value holds. The key
+/// only names itself in a refusal.
+fn forget_cases() -> Vec<Value> {
+    const KEY: &str = "order-7";
+    let failed = encoded(&Record::failed(HASH, ErrorCode::Rejected, "insufficient funds"));
+    let cases: [(&str, Option<Vec<u8>>); 7] = [
+        ("a_free_key_sends_nothing", None),
+        ("a_pending_claim_is_refused", Some(claim_of(MINTED).into_bytes())),
+        // The refusal reads the record, not the owner: another owner's pending claim may complete too.
+        ("another_owners_pending_claim_is_refused", Some(claim_of(ZEROS).into_bytes())),
+        ("a_cached_success_is_deleted", Some(settled_of(&claim_of(MINTED)).into_bytes())),
+        (
+            "a_cached_failure_is_deleted",
+            Some(text(settled_value(claim_of(MINTED).as_bytes(), &failed).expect("a well-formed claim")).into_bytes()),
+        ),
+        // A record half no reader decodes replays as a cached failure: forgetting it is the way out.
+        ("an_unreadable_record_half_is_deleted", Some(format!("1{MINTED}{{not json").into_bytes())),
+        ("an_unreadable_frame_is_deleted", Some(b"{not a ledger value".to_vec())),
+    ];
+    cases
+        .into_iter()
+        .map(|(name, held)| {
+            let want = outcome_json(forget_outcome(KEY, held.as_deref()).map(|outcome| match outcome {
+                ForgetOutcome::Nothing => "nothing",
+                ForgetOutcome::Delete => "delete",
+            }));
+            json!({ "name": name, "op": "forget", "key": KEY, "held_hex": held.as_deref().map(hex), "want": want })
+        })
+        .collect()
+}
+
 /// `reply_error`: the verdict on a Redis error reply.
 fn reply_cases() -> Vec<Value> {
     [
@@ -313,6 +345,7 @@ fn script_cases() -> Vec<Value> {
         ("claim", CLAIM_SCRIPT),
         ("complete", COMPLETE_SCRIPT),
         ("release", RELEASE_SCRIPT),
+        ("forget", FORGET_SCRIPT),
         ("extend", EXTEND_SCRIPT),
     ]
     .into_iter()
@@ -330,7 +363,9 @@ const RECORD_TTL: u64 = 90_000;
 /// What each script does, as a table a test replays against a real server: the key's value before,
 /// the script and its `ARGV`, then the reply and the key's value and TTL after. The expectations
 /// are written out by hand, not computed: they are the specification the Lua must meet, and no
-/// Rust code here re-implements the scripts. Each row runs on one key, `KEYS[1]`.
+/// Rust code here re-implements the scripts. Each row runs on one key, `KEYS[1]`. The forget script
+/// has no rows of its own: its body is the release script's, byte for byte, as `redis_scripts.json`
+/// pins, so the release rows run it.
 fn fence_cases() -> Vec<Value> {
     let claim = claim_of(MINTED);
     let other = claim_of(ZEROS);
@@ -564,6 +599,7 @@ fn golden() {
     ledger.extend(config_cases());
     ledger.extend(handle_cases());
     ledger.extend(outcome_cases());
+    ledger.extend(forget_cases());
     ledger.extend(reply_cases());
     write_or_check("redis_ledger.json", ledger);
 

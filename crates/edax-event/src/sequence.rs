@@ -12,10 +12,10 @@ use edax_core::Error;
 /// Check that `sequences` is the dense ascending run `expected + 1, expected + 2, ...`.
 ///
 /// `expected` is the stream version the append is made against, and `sequences` holds each
-/// envelope's sequence in batch order. An envelope with no sequence is refused: it is invisible to a
+/// event's sequence in batch order. An event with no sequence is refused: it is invisible to a
 /// sequenced read and never bumps the version. An empty batch passes — it is a version check only.
 /// Versions and sequences are one `u64` space, so the comparison is exact everywhere; a batch that
-/// would run past `u64::MAX` is refused rather than clamped, since a clamp would let two envelopes
+/// would run past `u64::MAX` is refused rather than clamped, since a clamp would let two events
 /// share the ceiling.
 ///
 /// The error names the 0-based batch index, the one identifier the kernel shares with every host.
@@ -24,14 +24,14 @@ pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<(), Error
     let mut want = expected;
     for (index, sequence) in sequences.iter().enumerate() {
         let Some(next) = want.checked_add(1) else {
-            return Err(Error::codec(format_args!("envelope {index} would run the stream past sequence {}", u64::MAX)));
+            return Err(Error::codec(format_args!("event {index} would run the stream past sequence {}", u64::MAX)));
         };
         want = next;
         let Some(sequence) = *sequence else {
-            return Err(Error::codec(format_args!("envelope {index} has no sequence")));
+            return Err(Error::codec(format_args!("event {index} has no sequence")));
         };
         if sequence != want {
-            return Err(Error::codec(format_args!("envelope {index} has sequence {sequence}, expected {want}")));
+            return Err(Error::codec(format_args!("event {index} has sequence {sequence}, expected {want}")));
         }
     }
     Ok(())
@@ -64,25 +64,25 @@ mod tests {
                 name: "missing_sequence",
                 expected: 0,
                 sequences: vec![Some(1), None],
-                want: Err(Error::codec("envelope 1 has no sequence")),
+                want: Err(Error::codec("event 1 has no sequence")),
             },
             Case {
                 name: "gap",
                 expected: 1,
                 sequences: vec![Some(2), Some(4)],
-                want: Err(Error::codec("envelope 1 has sequence 4, expected 3")),
+                want: Err(Error::codec("event 1 has sequence 4, expected 3")),
             },
             Case {
                 name: "reordered",
                 expected: 0,
                 sequences: vec![Some(2), Some(1)],
-                want: Err(Error::codec("envelope 0 has sequence 2, expected 1")),
+                want: Err(Error::codec("event 0 has sequence 2, expected 1")),
             },
             Case {
                 name: "repeat",
                 expected: 0,
                 sequences: vec![Some(1), Some(1)],
-                want: Err(Error::codec("envelope 1 has sequence 1, expected 2")),
+                want: Err(Error::codec("event 1 has sequence 1, expected 2")),
             },
             Case {
                 name: "past_the_i64_range_is_exact",
@@ -96,24 +96,24 @@ mod tests {
                 sequences: vec![Some(u64::MAX)],
                 want: Ok(()),
             },
-            // A clamp would let both envelopes sit at the ceiling; the run is refused instead.
+            // A clamp would let both events sit at the ceiling; the run is refused instead.
             Case {
                 name: "a_repeat_at_the_ceiling_is_refused",
                 expected: u64::MAX - 1,
                 sequences: vec![Some(u64::MAX), Some(u64::MAX)],
-                want: Err(Error::codec("envelope 1 would run the stream past sequence 18446744073709551615")),
+                want: Err(Error::codec("event 1 would run the stream past sequence 18446744073709551615")),
             },
             Case {
                 name: "a_stream_already_at_the_ceiling_takes_nothing",
                 expected: u64::MAX,
                 sequences: vec![Some(u64::MAX)],
-                want: Err(Error::codec("envelope 0 would run the stream past sequence 18446744073709551615")),
+                want: Err(Error::codec("event 0 would run the stream past sequence 18446744073709551615")),
             },
             Case {
                 name: "a_sequence_far_ahead",
                 expected: 1,
                 sequences: vec![Some(u64::MAX)],
-                want: Err(Error::codec("envelope 0 has sequence 18446744073709551615, expected 2")),
+                want: Err(Error::codec("event 0 has sequence 18446744073709551615, expected 2")),
             },
         ];
         for c in cases {

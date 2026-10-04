@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 import edax
 import pytest
 import redis.asyncio
-from conftest import REDIS_URL, Charge, fresh_prefix, ledger_key
+from conftest import REDIS_URL, Charge, claimed, fresh_prefix, ledger_key
 from edax.backend.redis import CLAIM_SCRIPT, COMPLETE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
 from edax.command import CommandBus, Record, Won, idempotent
 
@@ -121,12 +121,14 @@ async def test_a_reply_dropped_on_the_wire_is_resent_by_redis_py_and_runs_the_ha
     async with proxy.serving() as port:
         via_proxy = redis.asyncio.Redis(host="127.0.0.1", port=port)
         store = RedisIdempotencyStore(AsyncRedisClient(via_proxy), prefix)
-        bus = CommandBus(idempotent(store, key=lambda c: c.request_id))
+        bus = CommandBus(idempotent(store, scope="test"))
         bus.register(Charge.type, handler)
         proxy.marker = hashlib.sha1(body.encode()).hexdigest().encode()
-        assert await bus.dispatch(Charge("req-1")) == "charged"
+        assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
         assert proxy.dropped == 1, "the proxy dropped one reply"
-        assert await bus.dispatch(Charge("req-1")) == "charged", "the redelivery replays"
+        assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged", (
+            "the redelivery replays"
+        )
         await via_proxy.aclose()
     assert runs == ["req-1"]
 
@@ -190,12 +192,12 @@ async def test_a_server_frozen_past_the_claim_ttl_refuses_the_late_complete(dire
                 await asyncio.sleep(1.5)
         return "charged"
 
-    bus = CommandBus(idempotent(store, key=lambda c: c.request_id))
+    bus = CommandBus(idempotent(store, scope="test"))
     bus.register(Charge.type, handler)
     with pytest.raises(edax.StoreError, match="taken over"):
-        await bus.dispatch(Charge("req-1"))
-    assert await direct.get(ledger_key(prefix, "req-1")) is None
-    assert await bus.dispatch(Charge("req-1")) == "charged"
+        await bus.dispatch(Charge("req-1"), idempotency_key="req-1")
+    assert await direct.get(ledger_key(prefix, claimed("req-1"))) is None
+    assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
     assert runs == ["req-1", "req-1"]
 
 

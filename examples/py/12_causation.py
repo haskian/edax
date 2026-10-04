@@ -1,12 +1,14 @@
 """Step 12: link events into a chain with correlation and causation ids.
 
-Two metadata keys follow a flow across services:
+Every message carries two ids that follow a flow across services:
 
-- `correlation_id` is the same for every event of one flow;
-- `causation_id` is the id of the event that directly caused this one.
+- `correlation_id` is the same for every message of one flow;
+- `causation_id` is the id of the message that directly caused this one.
 
-`ensure_ids()` starts a chain for a root event. `propagate(parent.metadata, parent.id)` continues it
-for an event the parent caused. Pass the result to `Repository.save(metadata=...)`.
+A save no message caused starts a new flow. `originate()` builds that lineage from the ids an inbound
+request already carries. Inside a handler, `EventRouter`, the dispatcher and the saga runner set the
+ambient lineage to `propagate(msg)`, so a save there continues the flow with no argument. `caused_by(msg)`
+does the same by hand.
 
 Run:  cd examples/py && uv run python 12_causation.py
 """
@@ -16,9 +18,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from edax import Aggregate, EventEnvelope, Repository, ensure_ids, json_codec, propagate
+from edax import Aggregate, EventMessage, EventRouter, Repository, json_codec, originate
 from edax.backend.memory import MemoryEventStore
-from edax.causation import CAUSATION_ID, CORRELATION_ID
 
 
 @dataclass
@@ -54,34 +55,41 @@ class AccountCodec:
         return str(account.balance).encode()
 
 
-def show(label: str, envelope: EventEnvelope) -> None:
-    chain = envelope.metadata
-    print(f"{label:<14} id={envelope.id}")
-    print(f"{'':<14} correlation={chain[CORRELATION_ID]} causation={chain[CAUSATION_ID]}")
+def show(label: str, event: EventMessage) -> None:
+    print(f"{label:<14} id={event.id}")
+    print(f"{'':<14} correlation={event.correlation_id} causation={event.causation_id}")
 
 
 async def main() -> None:
     events = json_codec({"AccountOpened": AccountOpened, "BonusPaid": BonusPaid})
     repo = Repository(MemoryEventStore(), events, AccountCodec())
 
-    # 1. A request opens an account. It starts the flow, so it gets fresh chain ids.
+    # 1. A request opens an account. It carries a request id, which becomes the flow's correlation id.
     account = await repo.load("acct-1")
     account.apply(AccountOpened("Ann"))
-    saved = await repo.save(account, metadata=ensure_ids())
+    saved = await repo.save(account, lineage=originate(correlation_id="req-42"))
     opened = saved[0]
     show("AccountOpened", opened)
 
-    # 2. A welcome-bonus handler reacts to that event. Its event continues the chain.
-    account = await repo.load("acct-1")
-    account.apply(BonusPaid(10))
-    saved = await repo.save(account, metadata=propagate(opened.metadata, opened.id))
-    bonus = saved[0]
+    # 2. A welcome-bonus handler reacts to that event. The router runs it under the event's lineage,
+    #    so its save continues the flow with no argument.
+    bonuses: list[EventMessage] = []
+    router = EventRouter()
+
+    @router.on("AccountOpened")
+    async def pay_bonus(event: EventMessage) -> None:
+        account = await repo.load(event.aggregate_id)
+        account.apply(BonusPaid(10))
+        bonuses.extend(await repo.save(account))
+
+    await router.dispatch(opened)
+    [bonus] = bonuses
     show("BonusPaid", bonus)
 
     # 3. One flow id for both; the bonus names the event that caused it.
-    assert bonus.metadata[CORRELATION_ID] == opened.metadata[CORRELATION_ID]
-    assert bonus.metadata[CAUSATION_ID] == opened.id
-    assert opened.metadata[CAUSATION_ID] == opened.metadata[CORRELATION_ID], "a root causes itself"
+    assert bonus.correlation_id == opened.correlation_id == "req-42"
+    assert bonus.causation_id == opened.id
+    assert opened.causation_id == opened.correlation_id, "a root causes itself"
     print("\nok: both events share one correlation id; the bonus points at its cause")
 
 

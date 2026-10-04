@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import NO_WAIT, build_envelope
+from conftest import NO_WAIT, build_message
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
 from edax.filter import eq, matches
 
@@ -116,12 +116,12 @@ async def _through_the_guard(source: Source) -> Outcome:
         source.fail()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, lambda cmd: cmd.request_id))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
     bus.register("Withdraw", handler)
     seen: list[str] = []
     for _ in range(2):
         with pytest.raises(Exception) as caught:
-            await bus.dispatch(WITHDRAW)
+            await bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id)
         seen.append(type(caught.value).__name__)
         if isinstance(caught.value, edax.CachedFailure):
             assert caught.value.original_code == source.code, "the replay keeps the original code"
@@ -140,7 +140,7 @@ async def _through_the_dispatcher(source: Source, handler_for: Callable[[], Any]
 
     dispatcher = edax.KeyOrderedDispatcher(1, handler, max_attempts=3, on_dead=on_dead, pacing=NO_WAIT)
     dispatcher.start()
-    env = build_envelope("acct-1", "Withdrawn", 1)
+    env = build_message("acct-1", "Withdrawn", 1)
     for _ in range(3):
         outcome: list[str] = []
         delivery = edax.Delivery(
@@ -159,7 +159,7 @@ def _plain_handler(source: Source) -> Callable[[], Any]:
     def build() -> Any:
         count = 0
 
-        async def handler(env: edax.EventEnvelope) -> None:
+        async def handler(env: edax.EventMessage) -> None:
             nonlocal count
             count += 1
             source.fail()
@@ -172,10 +172,12 @@ def _plain_handler(source: Source) -> Callable[[], Any]:
 class _WithdrawSaga:
     """Every `Withdrawn` event asks for one more withdrawal, so the saga's step is a command."""
 
-    def correlation_id(self, env: edax.EventEnvelope, /) -> str | None:
+    name: ClassVar[str] = "withdraw"
+
+    def instance_id(self, env: edax.EventMessage, /) -> str | None:
         return env.aggregate_id
 
-    def handle(self, state: Any, env: edax.EventEnvelope, /) -> tuple[Any, list[Any]]:
+    def handle(self, state: Any, env: edax.EventMessage, /) -> tuple[Any, list[Any]]:
         return "open", [WITHDRAW]
 
 
@@ -192,17 +194,17 @@ async def _through_the_saga_relay(source: Source) -> Outcome:
         source.fail()
 
     db = MemoryTransactor()
-    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(db), lambda cmd: cmd.request_id))
+    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(db), scope="test"))
     bus.register("Withdraw", command)
     store = MemorySagaStore(db)
     runner = edax.SagaRunner(_WithdrawSaga(), store, edax.json_codec({"Withdraw": Withdraw}))
-    await runner.on_event(build_envelope("acct-1", "Withdrawn", 1))
+    await runner.on_event(build_message("acct-1", "Withdrawn", 1))
     dead: list[str] = []
 
-    async def on_dead(row: edax.SagaCommand, error: BaseException) -> None:
+    async def on_dead(row: edax.CommandMessage, error: BaseException) -> None:
         dead.append(row.id)
 
-    relay = runner.relay(bus.dispatch, on_dead=on_dead, max_attempts=3, pacing=NO_WAIT)
+    relay = runner.relay(bus, on_dead=on_dead, max_attempts=3, pacing=NO_WAIT)
     settled: list[str] = []
     for _ in range(3):
         try:
@@ -275,12 +277,12 @@ async def test_a_cancel_is_never_cached() -> None:
             await gate.wait()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, lambda cmd: cmd.request_id))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
     bus.register("Withdraw", handler)
-    task = asyncio.ensure_future(bus.dispatch(WITHDRAW))
+    task = asyncio.ensure_future(bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id))
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await bus.dispatch(WITHDRAW)
+    await bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id)
     assert runs == 2

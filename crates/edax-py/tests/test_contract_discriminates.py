@@ -19,7 +19,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from edax.aggregate import EventEnvelope
+from edax import _edax
+from edax.aggregate import EventMessage, _replace
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -39,6 +40,7 @@ from edax.testing import (
     IdempotencyStoreContract,
     ProjectionStoreContract,
     SagaStoreContract,
+    recorded,
 )
 from edax.testing.faults import _Delegating
 
@@ -61,9 +63,10 @@ class CountsPublishedRows(_Delegating):
         super().__init__(inner)
         self._ever = 0
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
-        await self._inner.append(tx, aggregate_id, expected, events)
-        self._ever += len(list(events))
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        stored = await self._inner.append(tx, aggregate_id, expected, events)
+        self._ever += len(stored)
+        return stored
 
     async def unpublished_count(self) -> int:
         return self._ever
@@ -77,9 +80,10 @@ class LeakyOutbox(_Delegating):
         super().__init__(inner)
         self._staged: list[Any] = []
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
-        await self._inner.append(tx, aggregate_id, expected, events)
-        self._staged.extend(events)
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        stored = await self._inner.append(tx, aggregate_id, expected, events)
+        self._staged.extend(stored)
+        return stored
 
     async def unpublished(self, limit: int = 100) -> Any:
         committed = await self._inner.unpublished(limit=limit)
@@ -147,23 +151,12 @@ class KeysRowsByAggregateAndId(_Delegating):
     """The outbox keyed by `(aggregate_id, id)` instead of `id`: a second aggregate's event under a taken
     id is stored, and marking the first one published by id prunes both."""
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
         try:
-            await self._inner.append(tx, aggregate_id, expected, events)
+            return await self._inner.append(tx, aggregate_id, expected, events)
         except CodecError:
-            renamed = [
-                EventEnvelope(
-                    id=f"{e.id}@{aggregate_id}",
-                    aggregate_id=e.aggregate_id,
-                    event=e.event,
-                    namespace=e.namespace,
-                    metadata=e.metadata,
-                    sequence=e.sequence,
-                    timestamp=e.timestamp,
-                )
-                for e in events
-            ]
-            await self._inner.append(tx, aggregate_id, expected, renamed)
+            renamed = [_replace(e, id=f"{e.id}@{aggregate_id}") for e in events]
+            return await self._inner.append(tx, aggregate_id, expected, renamed)
 
 
 class DeletesOnComplete:
@@ -228,58 +221,52 @@ class SendsBeforeTheWrite(_Delegating):
         return (await self._inner.unpublished(limit) + self._sent)[:limit]
 
 
-class MarksTheWholeCorrelation(_Delegating):
-    """`mark_published` prunes every command of the marked command's correlation: a `DELETE ... WHERE
-    correlation_id = ?`. The commands decided after it are dropped unsent."""
+class MarksTheWholeInstance(_Delegating):
+    """`mark_published` prunes every command of the marked command's instance: a `DELETE ... WHERE
+    aggregate_id = ?`. The commands decided after it are dropped unsent."""
 
     async def mark_published(self, ids: Any) -> None:
-        correlations = {i.rsplit(":", 2)[0] for i in ids}
+        instances = {i.rsplit(":", 2)[0] for i in ids}
         rows = await self._inner.unpublished(1000)
-        await self._inner.mark_published([c.id for c in rows if c.correlation_id in correlations] + list(ids))
+        await self._inner.mark_published([c.id for c in rows if c.aggregate_id in instances] + list(ids))
 
 
 class DropsMetadata(_Delegating):
-    """Persists the columns it recognised and quietly drops `metadata`. The correlation and causation
-    ids go with it, so tracing dies at the first replay and nothing reports an error."""
+    """Persists the columns it recognised and quietly drops `metadata`: the application's context is gone
+    at the first replay, and nothing reports an error."""
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
-        stripped = []
-        for e in events:
-            stripped.append(
-                EventEnvelope(
-                    id=e.id,
-                    aggregate_id=e.aggregate_id,
-                    event=e.event,
-                    namespace=dict(e.namespace),
-                    metadata={},
-                    sequence=e.sequence,
-                    timestamp=e.timestamp,
-                )
-            )
-        await self._inner.append(tx, aggregate_id, expected, stripped)
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        stripped = [_replace(e, metadata={}) for e in events]
+        return await self._inner.append(tx, aggregate_id, expected, stripped)
+
+
+class RestampsOnRead(_Delegating):
+    """Reads ``recorded_at`` from the clock at query time, a computed column, rather than the time the row
+    was written: the outbox lag and every age a reader computes come out wrong."""
+
+    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventMessage]:
+        rows = await self._inner.load(tx, aggregate_id, after)
+        return [_replace(m, recorded_at=_edax.current_timestamp()) for m in rows]
 
 
 class ShortcutsEmptyAppend(_Delegating):
     """Returns early for an empty batch instead of checking the version. A stale caller then believes
     it holds the current version, and its next save overwrites someone else's work."""
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
         if not events:
-            return
-        await self._inner.append(tx, aggregate_id, expected, events)
+            return []
+        return await self._inner.append(tx, aggregate_id, expected, events)
 
 
 class RenumbersTheBatch(_Delegating):
     """Assigns the batch its own dense sequences (an auto-increment column) instead of refusing a batch
     the caller numbered wrong. The version check still holds, so nothing else in the suite notices; the
-    stream then disagrees with the envelopes the caller published."""
+    stream then disagrees with the drafts the caller numbered."""
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
-        renumbered = [
-            EventEnvelope(e.id, e.aggregate_id, e.event, e.namespace, e.metadata, e.timestamp, expected + i)
-            for i, e in enumerate(events, start=1)
-        ]
-        await self._inner.append(tx, aggregate_id, expected, renumbered)
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        renumbered = [_replace(e, sequence=expected + i) for i, e in enumerate(events, start=1)]
+        return await self._inner.append(tx, aggregate_id, expected, renumbered)
 
 
 class DropsTheErrorCode(_Delegating):
@@ -490,30 +477,34 @@ class CheckThenActEventStore:
     passes it; two writers at version 0 both commit sequence 1, a forked stream."""
 
     def __init__(self) -> None:
-        self.rows: dict[str, list[EventEnvelope]] = {}
+        self.rows: dict[str, list[EventMessage]] = {}
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[list[tuple[str, list[EventEnvelope]]]]:
-        staged: list[tuple[str, list[EventEnvelope]]] = []
+    async def transaction(self) -> AsyncIterator[list[tuple[str, list[EventMessage]]]]:
+        staged: list[tuple[str, list[EventMessage]]] = []
         yield staged  # an exception skips the apply: the rollback
         for agg, events in staged:
             self.rows.setdefault(agg, []).extend(events)
 
-    def _view(self, tx: Any, agg: str) -> list[EventEnvelope]:
+    def _view(self, tx: Any, agg: str) -> list[EventMessage]:
         mine = [e for a, es in (tx or []) if a == agg for e in es]
         return self.rows.get(agg, []) + mine
 
-    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
+    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         await asyncio.sleep(0)
         return [e for e in self._view(tx, aggregate_id) if (e.sequence or 0) > after]
 
-    async def append(self, tx: Any, aggregate_id: str, expected_version: int, events: Any) -> None:
+    async def append(
+        self, tx: Any, aggregate_id: str, expected_version: int, events: Any
+    ) -> list[EventMessage]:
         current = self._view(tx, aggregate_id)
         version = current[-1].sequence if current else 0
         if version != expected_version:
             raise ConcurrencyError(f"expected {expected_version}, stored {version}")
         await asyncio.sleep(0)  # the database round trip between the check and the insert
-        tx.append((aggregate_id, list(events)))
+        stored = [recorded(d, _edax.current_timestamp()) for d in events]
+        tx.append((aggregate_id, stored))
+        return stored
 
 
 class OverlayDb:
@@ -603,11 +594,12 @@ class LeakyEventStore(_Delegating):
 
     def __init__(self, inner: MemoryEventStore) -> None:
         super().__init__(inner)
-        self._staged: list[EventEnvelope] = []
+        self._staged: list[EventMessage] = []
 
-    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> None:
-        await self._inner.append(tx, aggregate_id, expected, events)
-        self._staged.extend(events)
+    async def append(self, tx: Any, aggregate_id: str, expected: int, events: Any) -> list[EventMessage]:
+        stored = await self._inner.append(tx, aggregate_id, expected, events)
+        self._staged.extend(stored)
+        return stored
 
     async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> Any:
         rows = await self._inner.load(tx, aggregate_id, after)
@@ -694,16 +686,16 @@ class LockingEventStore:
     commit, as a deadlock detector may."""
 
     def __init__(self, *, victim: bool = False) -> None:
-        self.rows: dict[str, list[EventEnvelope]] = {}
+        self.rows: dict[str, list[EventMessage]] = {}
         self.locks = RowLocks()
         self.victim = victim
         self._minted = 0
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[tuple[int, list[tuple[str, list[EventEnvelope]]]]]:
+    async def transaction(self) -> AsyncIterator[tuple[int, list[tuple[str, list[EventMessage]]]]]:
         self._minted += 1
         tx = self._minted
-        staged: list[tuple[str, list[EventEnvelope]]] = []
+        staged: list[tuple[str, list[EventMessage]]] = []
         try:
             yield tx, staged
             if self.victim and tx == 1:
@@ -713,17 +705,21 @@ class LockingEventStore:
         finally:
             await self.locks.end(tx)
 
-    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventEnvelope]:
+    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[EventMessage]:
         mine = [e for a, es in tx[1] if a == aggregate_id for e in es] if tx else []
         return [e for e in self.rows.get(aggregate_id, []) + mine if (e.sequence or 0) > after]
 
-    async def append(self, tx: Any, aggregate_id: str, expected_version: int, events: Any) -> None:
+    async def append(
+        self, tx: Any, aggregate_id: str, expected_version: int, events: Any
+    ) -> list[EventMessage]:
         await self.locks.lock(tx[0], aggregate_id)
         current = await self.load(tx, aggregate_id)
         version = current[-1].sequence if current else 0
         if version != expected_version:
             raise ConcurrencyError(f"expected {expected_version}, stored {version}")
-        tx[1].append((aggregate_id, list(events)))
+        stored = [recorded(d, _edax.current_timestamp()) for d in events]
+        tx[1].append((aggregate_id, stored))
+        return stored
 
 
 class LockingLedger(OverlayLedger):
@@ -920,7 +916,7 @@ BROKEN: list[Broken] = [
     Broken(
         "outbox_keyed_by_aggregate_and_id",
         EventStoreContract,
-        "test_an_envelope_id_already_stored_is_refused",
+        "test_an_event_id_already_stored_is_refused",
         lambda db: KeysRowsByAggregateAndId(MemoryEventStore(db)),
     ),
     Broken(
@@ -949,16 +945,22 @@ BROKEN: list[Broken] = [
         lambda db, store: {"transactor": db},
     ),
     Broken(
-        "saga_outbox_marked_by_correlation",
+        "saga_outbox_marked_by_instance",
         SagaStoreContract,
         "test_mark_published_prunes_commands_idempotently",
-        lambda db: MarksTheWholeCorrelation(MemorySagaStore(db)),
+        lambda db: MarksTheWholeInstance(MemorySagaStore(db)),
     ),
     Broken(
         "drops_metadata",
         EventStoreContract,
-        "test_every_envelope_field_survives_the_round_trip",
+        "test_every_draft_field_survives_the_round_trip",
         lambda db: DropsMetadata(MemoryEventStore(db)),
+    ),
+    Broken(
+        "restamps_recorded_at_on_read",
+        EventStoreContract,
+        "test_every_draft_field_survives_the_round_trip",
+        lambda db: RestampsOnRead(MemoryEventStore(db)),
     ),
     Broken(
         "empty_append_skips_the_version_check",

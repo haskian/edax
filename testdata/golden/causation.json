@@ -1,69 +1,34 @@
 [
   {
     "expected": {
+      "causation_id": "evt-2",
+      "correlation_id": "corr-1"
+    },
+    "parent_correlation_id": "corr-1",
+    "parent_id": "evt-2"
+  },
+  {
+    "expected": {
       "causation_id": "evt-root",
       "correlation_id": "evt-root"
     },
-    "parent_event_id": "evt-root",
-    "parent_metadata": {}
+    "parent_correlation_id": "evt-root",
+    "parent_id": "evt-root"
   },
   {
     "expected": {
-      "causation_id": "evt-2",
-      "correlation_id": "corr-1"
-    },
-    "parent_event_id": "evt-2",
-    "parent_metadata": {
-      "correlation_id": "corr-1"
-    }
-  },
-  {
-    "expected": {
-      "causation_id": "evt-2",
-      "correlation_id": "corr-1"
-    },
-    "parent_event_id": "evt-2",
-    "parent_metadata": {
-      "causation_id": "evt-1",
-      "correlation_id": "corr-1"
-    }
-  },
-  {
-    "expected": {
-      "causation_id": "evt-2",
-      "correlation_id": "evt-2"
-    },
-    "parent_event_id": "evt-2",
-    "parent_metadata": {
-      "causation_id": "evt-1"
-    }
-  },
-  {
-    "expected": {
-      "causation_id": "evt-3",
-      "correlation_id": "evt-3"
-    },
-    "parent_event_id": "evt-3",
-    "parent_metadata": {
-      "trace": "t-9"
-    }
-  },
-  {
-    "expected": {
-      "causation_id": "evt-4",
+      "causation_id": "cmd-1",
       "correlation_id": ""
     },
-    "parent_event_id": "evt-4",
-    "parent_metadata": {
-      "correlation_id": ""
-    }
+    "parent_correlation_id": "",
+    "parent_id": "cmd-1"
   },
   {
     "expected": {
       "causation_id": "",
-      "correlation_id": ""
+      "correlation_id": "corr-1"
     },
-    "parent_event_id": "",
-    "parent_metadata": {}
+    "parent_correlation_id": "corr-1",
+    "parent_id": ""
   }
 ]

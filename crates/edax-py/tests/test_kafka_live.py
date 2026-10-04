@@ -23,7 +23,7 @@ import edax
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from conftest import SeqSerializer, build_envelope, publish_all, sequence_of, sink_ok
+from conftest import SeqSerializer, build_message, publish_all, sequence_of, sink_ok
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 
 BOOTSTRAP: str | None = os.environ.get("EDAX_KAFKA_BOOTSTRAP")
@@ -137,7 +137,7 @@ class Member:
         self,
         topic: str,
         group: str,
-        handler: Callable[[edax.EventEnvelope], Any],
+        handler: Callable[[edax.EventMessage], Any],
         *,
         on_dead: Any = None,
         serializer: Any = None,
@@ -175,15 +175,13 @@ async def test_a_nack_on_a_real_fetcher_keeps_the_key_in_order(
     """Live: seq 1 fails once while seq 2 and 3 are already fetched. The seek-back redelivers them
     behind seq 1, the copies fetched before it are skipped, and the staleness guard loses nothing."""
     name = await topic(1)
-    await publish_all(
-        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in (1, 2, 3)]
-    )
+    await publish_all(producer, name, SeqSerializer(), [build_message("a", "Tick", seq) for seq in (1, 2, 3)])
     stored: int | None = None
     applied: list[int] = []
     runs: list[int] = []
     member_box: list[Member] = []
 
-    async def handler(env: edax.EventEnvelope) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         nonlocal stored
         runs.append(sequence_of(env))
         if sequence_of(env) == 1 and runs.count(1) == 1:
@@ -216,7 +214,7 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
     commit runs again, and none below it."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await publish_all(
-        producer, name, SeqSerializer(), [build_envelope(f"k{i % 4}", "Tick", i + 1) for i in range(40)]
+        producer, name, SeqSerializer(), [build_message(f"k{i % 4}", "Tick", i + 1) for i in range(40)]
     )
     script = textwrap.dedent(
         f"""
@@ -289,14 +287,14 @@ async def test_a_member_joining_mid_batch_drains_the_revoked_work_first(
         producer,
         name,
         SeqSerializer(),
-        [build_envelope(k, "Tick", seq) for seq in range(1, 61) for k in keys],
+        [build_message(k, "Tick", seq) for seq in range(1, 61) for k in keys],
     )
     active: dict[str, str] = {}
     overlaps: list[str] = []
     handled: dict[str, set[int]] = defaultdict(set)
 
-    def handler_for(owner: str) -> Callable[[edax.EventEnvelope], Awaitable[None]]:
-        async def handler(env: edax.EventEnvelope) -> None:
+    def handler_for(owner: str) -> Callable[[edax.EventMessage], Awaitable[None]]:
+        async def handler(env: edax.EventMessage) -> None:
             key = env.aggregate_id
             if key in active and active[key] != owner:
                 overlaps.append(f"{key}: {active[key]} and {owner}")
@@ -338,16 +336,16 @@ async def test_a_raising_sink_gets_another_try_and_the_partition_drains(
     and the partition's commit reaches its end."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await publish_all(
-        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in range(1, 11)]
+        producer, name, SeqSerializer(), [build_message("a", "Tick", seq) for seq in range(1, 11)]
     )
     sink_calls: list[int] = []
 
-    def handler(env: edax.EventEnvelope) -> None:
+    def handler(env: edax.EventMessage) -> None:
         if sequence_of(env) == 4:
             raise edax.CodecError("negative balance")
 
     async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        sink_calls.append(sequence_of(delivery.envelope))
+        sink_calls.append(sequence_of(delivery.message))
         if len(sink_calls) == 1:
             raise ConnectionError("DLQ topic unavailable")
 
@@ -368,7 +366,7 @@ async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
     handful a second rather than tens of thousands, and a run with no sink is refused outright."""
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await producer.send_and_wait(
-        name, b"\xff\xfe not an envelope", key=b"a", headers=[("content-type", b"application/x-nobody")]
+        name, b"\xff\xfe not a message", key=b"a", headers=[("content-type", b"application/x-nobody")]
     )
     tries: list[float] = []
 
@@ -401,14 +399,14 @@ async def test_a_frozen_broker_costs_a_commit_its_deadline_not_the_run(
     _needs_container()
     name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
     await publish_all(
-        producer, name, SeqSerializer(), [build_envelope("a", "Tick", seq) for seq in range(1, 6)]
+        producer, name, SeqSerializer(), [build_message("a", "Tick", seq) for seq in range(1, 6)]
     )
     handled: list[int] = []
     member = Member(name, group, lambda e: handled.append(sequence_of(e)), commit_timeout_s=1.0)
     await member.start()
     await _wait(lambda: len(handled) == 5, 30, "every message handled")
     await _wait(lambda: any(o == 5 for _, _, o in member.commits), 10, "the first commit")
-    await publish_all(producer, name, SeqSerializer(), [build_envelope("a", "Tick", 6)])
+    await publish_all(producer, name, SeqSerializer(), [build_message("a", "Tick", 6)])
     await _wait(lambda: len(handled) == 6, 30, "the sixth message")
     _docker("pause", CONTAINER or "")
     try:
@@ -478,7 +476,7 @@ async def test_a_broker_restart_during_publishes_loses_nothing_acked(topic: Any)
                 )
             for _ in range(100):
                 try:
-                    await edax_producer.publish(build_envelope("a", "Tick", seq))
+                    await edax_producer.publish(build_message("a", "Tick", seq))
                     acked.append(seq)
                     break
                 except Exception:  # noqa: BLE001 - the broker is restarting; the relay retries too

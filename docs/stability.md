@@ -20,10 +20,10 @@ written against them. Pin a minor in your dependency declaration
 | Surface | Promise |
 |---|---|
 | Names exported from `edax` (Python) | The stable API. Breaks only in a minor. |
-| Kernel decisions: local partition and Kafka placement, the canonical form (RFC 8785) and the payload and command hashes, the idempotency record, verdict and settle, the replay of an unreadable record, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
-| The envelope wire format | Pinned by golden vectors. Within a minor, old bytes stay readable. A minor may refuse an old shape; the upgrade notes below name each one. |
+| Kernel decisions: local partition and Kafka placement, the ordering key, lineage, the extension key rule, the canonical form (RFC 8785) and the payload and command hashes, the claim key, the idempotency record, verdict, settle and forget, the replay of an unreadable record, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
+| The message wire format, events and commands, and its media types | Pinned by golden vectors. Within a minor, old bytes stay readable. A minor may refuse an old shape; the upgrade notes below name each one. |
 | The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is named, and replays as a cached `codec` failure instead of being split at the wrong place. |
-| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
+| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `CommandOutbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
 | The conformance suites in `edax.testing` | A new clause may fail a backend that passed before, so clauses are added in a minor. |
 
 ## What is not covered
@@ -46,16 +46,49 @@ written against them. Pin a minor in your dependency declaration
 
 0.2 is a minor release, so it may break the surfaces above, and it does.
 
-- **MessagePack envelopes.** 0.1 wrote a MessagePack envelope as a positional array. 0.2 writes and
-  reads only the map keyed by field name, and refuses an array with the terminal `codec` error. A
-  consumer dead-letters every 0.1 MessagePack record it meets. JSON envelopes are unchanged.
-  Before you upgrade, drain the outbox: let every 0.1 relay publish its rows and every consumer
-  commit past them. Or republish the retained records as JSON. 0.2 has no reader for the array
-  form, by design.
+- **The message wire format.** 0.2 replaces the 0.1 event envelope with two flat messages,
+  `EventMessage` and `CommandMessage`. The payload no longer nests, `namespace` is gone, and
+  `timestamp` became the store's `recorded_at` beside an optional `occurred_at`. The lineage moved out
+  of `metadata` into the typed `correlation_id` and `causation_id` fields. Trace context moved to
+  `extensions`. MessagePack is a map keyed by field name, never 0.1's positional array.
+- **Media types.** `application/vnd.edax.envelope+json` and `+msgpack` are gone. Events are
+  `application/vnd.edax.event+json` and `+msgpack`. Commands are `application/vnd.edax.command+json`
+  and `+msgpack`. A 0.2 consumer treats a 0.1 media type as poison and dead-letters it. A 0.1
+  record without the header fails the new shape the same way.
+- **Command hash and claim key.** The command hash now covers the command name with the payload.
+  A command guard claims `claim_key(scope, key)`, not the raw key. So every hash a 0.1 ledger stored
+  differs from the one 0.2 computes, under a key 0.2 never claims. A client retry that crosses the
+  upgrade runs its handler again. Event guards keep the raw event id.
+- **Drain before you upgrade.** 0.2 has no reader for any 0.1 message, by design. Stop the 0.1
+  producers. Let every relay publish its outbox rows, saga command outboxes included, and every
+  consumer commit past them. Let every idempotency ledger expire, past the longest window a client
+  retries in. Then start 0.2 everywhere.
+- **Event store seam.** `EventStore.append` takes `EventDraft`s and returns the stored
+  `EventMessage`s, each stamped with the store's `recorded_at`. A durable store needs columns for
+  `occurred_at`, `recorded_at`, `correlation_id`, `causation_id` and `extensions`.
+- **Command identity.** `idempotent` takes a required `scope` and no `key` function. The key comes
+  from the dispatch, `dispatch(cmd, idempotency_key=...)`, or from the message's `idempotency_key`.
+  A saga's `correlation_id(env)` became `instance_id(msg)`, and `SagaCommand` became `CommandMessage`.
+  `SagaRunner.relay` takes the `CommandBus`, not a dispatch callable. `Delivery.envelope` became
+  `Delivery.message`.
+- **New required seam methods.** `IdempotencyStore` gained `forget(key, tx=None)`, and `RedisConn`
+  gained `get(key)`. A store or a connection of your own must implement them.
 - **Saga store seam.** `SagaStore.save` takes the instance's `folded` marks, and `load` returns them
   as `SagaInstance.folded`. A durable saga store needs a text column for them. An instance saved
   before the column existed has empty marks, so its first redelivery after the upgrade may fold once
   more.
+- **Serializer seam.** A `Serializer` declares `kind`, `"event"` or `"command"`, beside its
+  `media_type`. `decode` returns an `EventMessage` for the first and a `CommandMessage` for the
+  second. A serializer of your own must add it.
+- **Kafka route.** The kernel's route takes the default serializer's kind. Under a command default,
+  a record with no `content-type` header is the `headerless` route, and the consumer dead-letters it.
+- **Lineage helpers.** `ensure_ids` is gone; `originate()` replaces it. `propagate(msg)` and
+  `originate(correlation_id=, causation_id=)` return a `Lineage`, not a metadata dictionary.
+- **Store clock.** `Repository(now=)` is gone. The store stamps `recorded_at` with its own clock:
+  `MemoryEventStore(now=)`, or a durable store's own.
+- **Saga name.** A `Saga` declares `name`. Each command it sends carries the idempotency key
+  `"{len(name)}:{name}:{id}"`, not the bare command id. So two sagas that share an instance id and a
+  bus never claim one key.
 - **Retry policy at the boundary.** The native `retries` takes the sink flag at construction, and
   `Retries.failed` takes the failure's error code instead of a failure kind.
 - **Unreadable idempotency records.** A stored record no reader can decode replays as

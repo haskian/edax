@@ -8,6 +8,7 @@ tests wrap a store in them directly.
 """
 
 import asyncio
+import base64
 import json
 import os
 import types
@@ -17,7 +18,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from unittest import mock
 
 import aiokafka
@@ -29,15 +30,28 @@ import redis.asyncio
 import redis.exceptions
 from aiokafka import TopicPartition
 from edax import _edax
+from edax.aggregate import _fields_of
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
     MemoryIdempotencyStore,
     MemoryTransactor,
 )
 from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
+from edax.testing import event as build_message
+from edax.testing import event_of
 from edax.testing.faults import Refusing
 
 GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
+
+#: The ``scope`` of the ``idempotent`` guard the suites wire.
+SCOPE = "test"
+
+
+def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
+    """The ledger key a guard of ``scope`` claims for ``idempotency_key``: the kernel's ``claim_key``."""
+    return _edax.claim_key(scope, idempotency_key)
+
+
 _GOLDEN_READ: set[str] = set()
 
 
@@ -74,11 +88,12 @@ def delivered(delivery: edax.Delivery | None) -> edax.Delivery:
     return delivery
 
 
-def sequence_of(env: edax.EventEnvelope) -> int:
-    """An envelope's ``sequence``. Optional on the wire (an unsequenced envelope is legal), but
-    every envelope these tests build or store carries one, so a ``None`` here is a store defect."""
-    assert env.sequence is not None, f"envelope {env.id} reached the handler without a sequence"
-    return env.sequence
+def sequence_of(msg: edax.EventMessage | edax.CommandMessage) -> int:
+    """An event's ``sequence``. Optional on the wire (an unsequenced event is legal), but every event
+    these tests build or store carries one, so a ``None`` here is a store defect."""
+    event = event_of(msg)
+    assert event.sequence is not None, f"event {event.id} reached the handler without a sequence"
+    return event.sequence
 
 
 def assert_logged(caplog: pytest.LogCaptureFixture, logger_name: str, fragments: Sequence[str]) -> None:
@@ -97,29 +112,46 @@ class CreateUser:
     type = "user.create"
 
 
-def build_envelope(
-    aggregate_id: str,
+def build_command(
     name: str,
-    sequence: int | None,
     *,
-    id: str | None = None,
+    id: str = "cmd-1",
+    aggregate_id: str | None = None,
+    idempotency_key: str | None = None,
     version: int = 1,
-    data: bytes = b"",
-    namespace: dict[str, str] | None = None,
+    data: bytes = b"{}",
+    correlation_id: str = "flow-1",
+    causation_id: str = "evt-1",
+    issued_at: int = 0,
+    extensions: dict[str, str] | None = None,
     metadata: dict[str, str] | None = None,
-    timestamp: int = 0,
-) -> edax.EventEnvelope:
-    """A native :class:`edax.EventEnvelope` with sensible defaults; ``id`` defaults to a stable
-    ``{aggregate_id}-{name}-{sequence}``."""
-    return edax.EventEnvelope(
-        id=id or f"{aggregate_id}-{name}-{sequence}",
+) -> edax.CommandMessage:
+    """A native :class:`edax.CommandMessage` with sensible defaults."""
+    return edax.CommandMessage(
+        id=id,
+        idempotency_key=idempotency_key,
         aggregate_id=aggregate_id,
-        event=edax.Event(name, version, data),
-        namespace=namespace or {},
+        name=name,
+        version=version,
+        data=data,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        issued_at=issued_at,
+        extensions=extensions or {},
         metadata=metadata or {},
-        timestamp=timestamp,
-        sequence=sequence,
     )
+
+
+def message_from_obj(o: dict[str, Any]) -> edax.EventMessage | edax.CommandMessage:
+    """The native message a golden's JSON object names: a command if it carries ``issued_at``."""
+    fields: dict[str, Any] = {**o, "data": base64.b64decode(o["data"])}
+    return edax.CommandMessage(**fields) if "issued_at" in o else edax.EventMessage(**fields)
+
+
+def message_as_obj(msg: edax.EventMessage | edax.CommandMessage) -> dict[str, Any]:
+    """The golden's message shape out of a native message, so a case compares one value against the
+    vector's JSON instead of a dozen fields."""
+    return _fields_of(msg) | {"data": base64.b64encode(bytes(msg.data)).decode()}
 
 
 class Recording(edax.Observer):
@@ -171,25 +203,26 @@ class SeqSerializer:
     """Wire form ``agg:seq``, so one aggregate's events carry real sequences."""
 
     media_type = "application/x-test-seq"
+    kind: Literal["event"] = "event"
 
-    def encode(self, env: edax.EventEnvelope) -> bytes:
-        return f"{env.aggregate_id}:{env.sequence}".encode()
+    def encode(self, msg: edax.EventMessage | edax.CommandMessage) -> bytes:
+        return f"{msg.aggregate_id}:{msg.sequence if isinstance(msg, edax.EventMessage) else ''}".encode()
 
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
+    def decode(self, wire: bytes) -> edax.EventMessage:
         agg, seq = wire.decode().split(":")
-        return build_envelope(agg, "Tick", int(seq), id=f"{agg}-{seq}")
+        return build_message(agg, "Tick", int(seq), id=f"{agg}-{seq}")
 
 
 async def sink_ok(delivery: edax.Delivery, err: BaseException) -> None:
     """A dead-letter sink that takes everything: what a test that is not about the sink wires."""
 
 
-async def publish_all(client: Any, topic: str, serializer: Any, envs: Sequence[edax.EventEnvelope]) -> None:
-    """Publish ``envs`` in order to ``topic`` through a :class:`KafkaProducer` over ``client``, fake or
+async def publish_all(client: Any, topic: str, serializer: Any, msgs: Sequence[edax.EventMessage]) -> None:
+    """Publish ``msgs`` in order to ``topic`` through a :class:`KafkaProducer` over ``client``, fake or
     live."""
     producer = KafkaProducer(client, topic, serializer=serializer)
-    for env in envs:
-        await producer.publish(env)
+    for msg in msgs:
+        await producer.publish(msg)
 
 
 class SpyProducerClient:
@@ -270,7 +303,7 @@ async def redis_client(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
 
 
 # =========================================================================
-# Model-test helpers: envelope comparison, expectation wrapping, a Counter aggregate
+# Model-test helpers: message comparison, expectation wrapping, a Counter aggregate
 # =========================================================================
 
 
@@ -325,21 +358,21 @@ def expect(exc: type[BaseException] | None, match: str | None = None) -> Abstrac
     return pytest.raises(exc, match=match) if exc is not None else nullcontext()
 
 
-def same(got: Sequence[edax.EventEnvelope], want: Sequence[edax.EventEnvelope]) -> None:
-    """Full envelope equality, not just ids: namespace/metadata/timestamp fidelity. Envelopes compare by
+def same(got: Sequence[edax.EventMessage], want: Sequence[edax.EventMessage]) -> None:
+    """Full message equality, not just ids: extensions/metadata/recorded_at fidelity. Messages compare by
     value, and a failed comparison shows each one's fields."""
     assert list(got) == list(want)
 
 
-def stamp(variant: int) -> tuple[dict[str, str], dict[str, str], int]:
-    """Envelope decoration varied per append, so the comparison covers the fields a store could
+def stamp(variant: int) -> tuple[dict[str, str], dict[str, str]]:
+    """Extensions and metadata varied per append, so the comparison covers the fields a store could
     silently drop rather than just ids and sequences."""
     if variant % 3 == 0:
-        return {}, {}, 0
+        return {}, {}
     if variant % 3 == 1:
-        return {"tenant": "t1"}, {"trace": "abc"}, 1000
+        return {"traceparent": "00-a-b-01"}, {"tenant": "t1", "trace": "abc"}
     # non-ASCII: the field has to survive the binding round-trip byte for byte
-    return {"tenant": "t2", "region": "eu"}, {"trace": "déjà-vu"}, 2000
+    return {"tracestate": "vendor=1", "baggage": "eu"}, {"tenant": "t2", "trace": "déjà-vu"}
 
 
 def agg_id(agg: int) -> str:
@@ -366,7 +399,7 @@ class TickEvents:
     def marshal(self, event: Any) -> edax.Event:
         return edax.Event("Tick", 1, str(event.v).encode())
 
-    def unmarshal(self, event: edax.Event) -> Any:
+    def unmarshal(self, event: edax.aggregate.Payload) -> Any:
         return Tick(int(bytes(event.data).decode()))
 
 
@@ -384,16 +417,23 @@ class CounterCodec:
 
 
 def counter_repo(store: Any, ids: Iterator[int]) -> edax.Repository[Counter]:
-    """A Repository over ``store`` with a deterministic id sequence and clock. The codec fixes the
-    aggregate type, so ``repo.load(...)`` is a :class:`Counter`."""
-    return edax.Repository(store, TickEvents(), CounterCodec(), new_id=lambda: f"e{next(ids)}", now=lambda: 0)
+    """A Repository over ``store`` with a deterministic id sequence. The codec fixes the aggregate type, so
+    ``repo.load(...)`` is a :class:`Counter`."""
+    return edax.Repository(store, TickEvents(), CounterCodec(), new_id=lambda: f"e{next(ids)}")
 
 
 # =========================================================================
 # Broker fakes: producer + consumer client in one object, no server
 # =========================================================================
 
-KafkaMsg = namedtuple("KafkaMsg", "topic partition offset key value headers")
+# A record as aiokafka hands it over. The broker timestamp is optional here, so a test that builds a record
+# by hand needs none; the fake cluster stamps every record it appends.
+KafkaMsg = namedtuple(
+    "KafkaMsg", "topic partition offset key value headers timestamp timestamp_type", defaults=(None, None)
+)
+
+#: The broker clock of the fake: a record's ``CreateTime`` is this plus its offset, in milliseconds.
+FAKE_KAFKA_EPOCH_MS = 1_700_000_000_000
 
 
 class FakeKafkaCluster:
@@ -426,7 +466,10 @@ class FakeKafkaCluster:
 
     def append(self, topic: str, partition: int, key: bytes | None, value: bytes | None, headers: Any) -> int:
         log = self.logs[(topic, partition)]
-        log.append(KafkaMsg(topic, partition, len(log), key, value, list(headers)))
+        offset = len(log)
+        log.append(
+            KafkaMsg(topic, partition, offset, key, value, list(headers), FAKE_KAFKA_EPOCH_MS + offset, 0)
+        )
         self.wake()
         return len(log) - 1
 
@@ -617,16 +660,17 @@ class FakeKafkaClient:
 
 
 class IdSerializer:
-    """A custom serializer whose wire form is the envelope id, under a media type of its own, so a
+    """A custom serializer whose wire form is the event id, under a media type of its own, so a
     record it wrote routes back to it through the consumer's registry."""
 
     media_type = "application/x-test-id"
+    kind: Literal["event"] = "event"
 
-    def encode(self, env: edax.EventEnvelope) -> bytes:
-        return env.id.encode()
+    def encode(self, msg: edax.EventMessage | edax.CommandMessage) -> bytes:
+        return msg.id.encode()
 
-    def decode(self, wire: bytes) -> edax.EventEnvelope:
-        return build_envelope("a", "Tick", 1, id=wire.decode())
+    def decode(self, wire: bytes) -> edax.EventMessage:
+        return build_message("a", "Tick", 1, id=wire.decode())
 
 
 async def kafka_consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
@@ -636,5 +680,5 @@ async def kafka_consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
     c = FakeKafkaClient()
     producer = KafkaProducer(c, "t", serializer=IdSerializer())
     for i in range(n):
-        await producer.publish(build_envelope("a", "Tick", 1, id=str(i)))
+        await producer.publish(build_message("a", "Tick", 1, id=str(i)))
     return c, KafkaConsumer(c, serializer=IdSerializer())

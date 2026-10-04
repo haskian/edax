@@ -44,9 +44,9 @@ clauses check that a staged write is invisible to every other reader until it co
 driver: a driver that blocks the event loop on a row lock deadlocks any concurrent asyncio code, this kit
 included.
 
-**Payloads.** Every envelope carries a time-ordered :func:`~edax.guid` id, a nanosecond
-:func:`~edax.current_timestamp` and a real JSON body, as the SDK writes them, so a store with an ``id
-uuid`` column or a ``timestamptz`` column takes them as they come in production.
+**Payloads.** Every draft carries a time-ordered :func:`~edax.guid` id, a lineage of guids and a real JSON
+body, as the SDK writes them, so a store with an ``id uuid`` column takes them as they come in production.
+The store stamps ``recorded_at`` itself, so a ``timestamptz`` column holds the store's own clock.
 """
 
 from __future__ import annotations
@@ -59,11 +59,11 @@ from typing import Any, Literal, Protocol
 import pytest
 
 from .. import _edax
-from ..aggregate import Event, EventEnvelope
+from ..aggregate import _DRAFT_FIELDS, CommandMessage, Event, EventDraft, EventMessage, _replace
 from ..broker import Consumer
 from ..command import Record, Won, joins_transaction
 from ..dispatcher import Delivery
-from ..errors import BadHandle, CodecError, ConcurrencyError, StoreError
+from ..errors import BadHandle, CodecError, ConcurrencyError, InProgress, StoreError
 from ..filter import eq
 from ..projection import Entity
 from ..query import encode_cursor, sort_key
@@ -76,21 +76,93 @@ __all__ = [
     "IdempotencyStoreContract",
     "ProjectionStoreContract",
     "SagaStoreContract",
+    "drafted",
+    "event",
+    "recorded",
 ]
 
 
-def envelope(aggregate_id: str, sequence: int | None, *, name: str = "Deposited") -> EventEnvelope:
-    """One event envelope as the SDK writes it: a fresh time-ordered id, the current nanosecond timestamp, a
-    real JSON body and the correlation metadata a repository stamps."""
-    return EventEnvelope(
+def _body(aggregate_id: str) -> bytes:
+    return f'{{"account_id":"{aggregate_id}","amount":100,"currency":"EUR"}}'.encode()
+
+
+def draft(aggregate_id: str, sequence: int | None, *, name: str = "Deposited") -> EventDraft:
+    """One event draft as a repository writes it: a fresh time-ordered id, a real JSON body, the lineage of
+    a new flow, and the application's metadata."""
+    flow = _edax.guid()
+    return EventDraft(
         id=_edax.guid(),
         aggregate_id=aggregate_id,
-        event=Event(name, 1, f'{{"account_id":"{aggregate_id}","amount":100,"currency":"EUR"}}'.encode()),
-        namespace={"tenant": "acme"},
-        metadata={"correlation_id": _edax.guid()},
         sequence=sequence,
-        timestamp=_edax.current_timestamp(),
+        name=name,
+        version=1,
+        data=_body(aggregate_id),
+        correlation_id=flow,
+        causation_id=flow,
+        extensions={},
+        metadata={"tenant": "acme"},
     )
+
+
+def event(
+    aggregate_id: str,
+    name: str,
+    sequence: int | None = None,
+    *,
+    id: str | None = None,
+    version: int = 1,
+    data: bytes = b"",
+    correlation_id: str | None = None,
+    causation_id: str | None = None,
+    occurred_at: int | None = None,
+    extensions: dict[str, str] | None = None,
+    metadata: dict[str, str] | None = None,
+    recorded_at: int = 0,
+) -> EventMessage:
+    """A stored event built by hand, for a test or an example that publishes one with no store behind it.
+
+    ``id`` defaults to a stable ``{aggregate_id}-{name}-{sequence}``. The lineage defaults to a root's: the
+    correlation id is the event's own id, and the causation id is the correlation id. ``extensions`` and
+    ``metadata`` default to empty, and ``recorded_at`` to 0."""
+    message_id = f"{aggregate_id}-{name}-{sequence}" if id is None else id
+    correlation = message_id if correlation_id is None else correlation_id
+    return EventMessage(
+        id=message_id,
+        aggregate_id=aggregate_id,
+        sequence=sequence,
+        name=name,
+        version=version,
+        data=data,
+        correlation_id=correlation,
+        causation_id=correlation if causation_id is None else causation_id,
+        occurred_at=occurred_at,
+        recorded_at=recorded_at,
+        extensions=extensions or {},
+        metadata=metadata or {},
+    )
+
+
+def drafted(msg: EventMessage) -> EventDraft:
+    """The draft ``msg`` was stored from: every field but ``recorded_at``."""
+    return EventDraft(**{name: getattr(msg, name) for name in _DRAFT_FIELDS})
+
+
+def recorded(draft: EventDraft, recorded_at: int) -> EventMessage:
+    """The message a store keeps for ``draft``: every field as drafted, recorded at ``recorded_at``
+    nanoseconds."""
+    return _edax.record_event(draft, recorded_at)
+
+
+def event_of(msg: EventMessage | CommandMessage) -> EventMessage:
+    """Narrow a delivered message to the event that was published, failing the test on a command."""
+    assert isinstance(msg, EventMessage), f"{msg.id} came back as a command; it was published as an event"
+    return msg
+
+
+def message(aggregate_id: str, sequence: int | None, *, name: str = "Deposited") -> EventMessage:
+    """One stored event as a relay publishes it: a draft's fields plus the current nanosecond
+    ``recorded_at``."""
+    return recorded(draft(aggregate_id, sequence, name=name), _edax.current_timestamp())
 
 
 def _id(prefix: str) -> str:
@@ -213,10 +285,11 @@ class EventStoreContract:
         """ "``load`` returns every event with ``sequence > after``, ascending, gap-free." The store
         never renumbers: the sequences that come back are the ones handed in."""
         agg = _id("acct")
-        written = [envelope(agg, 1), envelope(agg, 2)]
+        written = [draft(agg, 1), draft(agg, 2)]
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, written)
+            appended = await event_store.append(tx, agg, 0, written)
             loaded = await event_store.load(tx, agg)
+        assert loaded == appended, "load returns what append returned"
         assert [e.sequence for e in loaded] == [1, 2], "ascending and gap-free, as handed in"
         assert [e.id for e in loaded] == [e.id for e in written]
 
@@ -225,7 +298,7 @@ class EventStoreContract:
         replayed. An off-by-one here double-applies one event per load."""
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2, 3)])
+            await event_store.append(tx, agg, 0, [draft(agg, n) for n in (1, 2, 3)])
             assert [e.sequence for e in await event_store.load(tx, agg, after=2)] == [3]
             assert [e.sequence for e in await event_store.load(tx, agg, after=3)] == []
 
@@ -235,7 +308,7 @@ class EventStoreContract:
         stale state."""
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
             assert len(await event_store.load(tx, agg)) == 1, "uncommitted, but visible to its own tx"
 
     async def test_append_is_compare_and_set_on_the_stored_version(self, event_store: Any) -> None:
@@ -247,15 +320,15 @@ class EventStoreContract:
         """
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
 
         async with event_store.transaction() as tx:
             with pytest.raises(ConcurrencyError):
-                await event_store.append(tx, agg, 0, [envelope(agg, 2)])  # stale: stored is 1
+                await event_store.append(tx, agg, 0, [draft(agg, 2)])  # stale: stored is 1
 
         async with event_store.transaction() as tx:
             with pytest.raises(ConcurrencyError):
-                await event_store.append(tx, agg, 7, [envelope(agg, 8)])  # ahead: nothing wrote 2..7
+                await event_store.append(tx, agg, 7, [draft(agg, 8)])  # ahead: nothing wrote 2..7
 
         async with event_store.transaction() as tx:
             assert [e.sequence for e in await event_store.load(tx, agg)] == [1], "and wrote nothing"
@@ -265,10 +338,10 @@ class EventStoreContract:
         one that conflicts. A store that writes the batch and then checks leaves a partial stream."""
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
         async with event_store.transaction() as tx:
             with pytest.raises(ConcurrencyError):
-                await event_store.append(tx, agg, 0, [envelope(agg, 2), envelope(agg, 3)])
+                await event_store.append(tx, agg, 0, [draft(agg, 2), draft(agg, 3)])
         async with event_store.transaction() as tx:
             assert [e.sequence for e in await event_store.load(tx, agg)] == [1]
 
@@ -284,46 +357,64 @@ class EventStoreContract:
     async def test_a_batch_that_is_not_dense_is_refused_and_writes_nothing(
         self, event_store: Any, branch: str, sequences: list[int | None]
     ) -> None:
-        """ "A batch must carry ``expected_version + 1, + 2, ...`` in order, every envelope sequenced."
+        """ "A batch must carry ``expected_version + 1, + 2, ...`` in order, every draft sequenced."
         Checking only the stored version passes a batch with a gap, a repeat or a reordering, and the
         stream then breaks the gap-free ascending read every reader relies on. The refusal is the
         kernel's terminal ``CodecError`` (:func:`~edax.store.check_sequence_batch`): the same batch
         fails the same way on every retry, so a transient error would loop forever."""
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
         async with event_store.transaction() as tx:
             with pytest.raises(CodecError) as caught:
-                batch = [envelope(agg, n, name=f"T{i}") for i, n in enumerate(sequences)]
+                batch = [draft(agg, n, name=f"T{i}") for i, n in enumerate(sequences)]
                 await event_store.append(tx, agg, 1, batch)
         assert caught.value.terminal, branch
         async with event_store.transaction() as tx:
             loaded = await event_store.load(tx, agg)
         assert [e.sequence for e in loaded] == [1], f"{branch}: and wrote nothing"
 
-    async def test_every_envelope_field_survives_the_round_trip(self, event_store: Any) -> None:
-        """A store that persists only the fields it recognises silently drops the rest.
+    async def test_every_draft_field_survives_the_round_trip(self, event_store: Any) -> None:
+        """ "``append`` stamps every draft with the time the store records it ... and returns the stored
+        message per draft, in order. ``load`` and ``unpublished`` return the same ``recorded_at``."
 
-        `namespace` carries tenancy, `metadata` carries the correlation and causation ids the whole
-        tracing story depends on, and `timestamp` orders nothing but is read by humans. A column
-        missing for any of them loses data no replay can recover. Non-ASCII included, because a
-        latin-1 column passes every test written in English.
-        """
+        A store that persists only the fields it recognises silently drops the rest. The lineage is what
+        the whole tracing story depends on, `extensions` carry the trace parent, `metadata` the
+        application's context, `occurred_at` the producer's own time. A column missing for any of them
+        loses data no replay can recover. Non-ASCII included, because a latin-1 column passes every test
+        written in English. The batch's timestamps are not compared with each other: a store may stamp
+        them with one reading or one per row."""
         agg = _id("acct")
         body = f'{{"account_id":"{agg}","amount":100,"currency":"EUR","memo":"déjà-vu"}}'
-        env = EventEnvelope(
-            id=_edax.guid(),
-            aggregate_id=agg,
-            event=Event("Deposited", 3, body.encode()),
-            namespace={"tenant": "acme"},
-            metadata={"correlation_id": _edax.guid(), "causation_id": _edax.guid(), "note": "déjà-vu"},
-            sequence=1,
-            timestamp=_edax.current_timestamp(),
-        )
+        written = [
+            EventDraft(
+                id=_edax.guid(),
+                aggregate_id=agg,
+                sequence=n,
+                name="Deposited",
+                version=3,
+                data=body.encode(),
+                correlation_id=_edax.guid(),
+                causation_id=_edax.guid(),
+                occurred_at=occurred_at,
+                extensions={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+                metadata={"tenant": "acme", "note": "déjà-vu"},
+            )
+            for n, occurred_at in ((1, 1_700_000_000_000_000_000), (2, None))
+        ]
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [env])
-            (got,) = await event_store.load(tx, agg)
-        assert got == env, "every field, the event's nested ones included, survived"
+            appended = await event_store.append(tx, agg, 0, written)
+            loaded = await event_store.load(tx, agg)
+        assert [drafted(m) for m in appended] == written, (
+            "append returns one message per draft, every field as drafted"
+        )
+        assert all(isinstance(m.recorded_at, int) and m.recorded_at > 0 for m in appended), (
+            "the store stamped recorded_at"
+        )
+        assert loaded == appended, "load returns the stored messages, recorded_at included"
+        if self.supports_outbox:
+            outbox = [m for m in await event_store.unpublished(limit=1000) if m.aggregate_id == agg]
+            assert outbox == appended, "the outbox row is the stored message, recorded_at included"
 
     async def test_an_empty_append_still_checks_the_version(self, event_store: Any) -> None:
         """`Repository.save` on an aggregate with nothing pending still calls `append`. It must remain
@@ -331,7 +422,7 @@ class EventStoreContract:
         the current version, and the next save writes over someone else's work."""
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
 
         async with event_store.transaction() as tx:
             await event_store.append(tx, agg, 1, [])  # correct version, nothing to write
@@ -347,8 +438,8 @@ class EventStoreContract:
         aggregate contend with every other one."""
         a, b = _id("a"), _id("b")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, a, 0, [envelope(a, 1)])
-            await event_store.append(tx, b, 0, [envelope(b, 1)])
+            await event_store.append(tx, a, 0, [draft(a, 1)])
+            await event_store.append(tx, b, 0, [draft(b, 1)])
             assert len(await event_store.load(tx, a)) == 1
             assert len(await event_store.load(tx, b)) == 1
 
@@ -360,7 +451,7 @@ class EventStoreContract:
         agg = _id("acct")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
-                await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+                await event_store.append(tx, agg, 0, [draft(agg, 1)])
                 raise RuntimeError("the handler failed")
         async with event_store.transaction() as tx:
             assert await event_store.load(tx, agg) == [], "the rollback took the events with it"
@@ -373,7 +464,7 @@ class EventStoreContract:
         agg = _id("acct")
         async with event_store.transaction() as tx:
             assert await event_store.load_snapshot(tx, agg) is None, "none stored yet"
-            await event_store.append(tx, agg, 0, [envelope(agg, 1), envelope(agg, 2)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1), draft(agg, 2)])
             await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b'{"balance":1}'))
         async with event_store.transaction() as tx:
             snap = await event_store.load_snapshot(tx, agg)
@@ -389,7 +480,7 @@ class EventStoreContract:
             raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
+            await event_store.append(tx, agg, 0, [draft(agg, n) for n in (1, 2)])
             await event_store.save_snapshot(tx, Snapshot(agg, "Account", 1, b"first"))
             await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"newer"))
         async with event_store.transaction() as tx:
@@ -405,34 +496,26 @@ class EventStoreContract:
             raise pytest.skip.Exception("backend declares no snapshot support")
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
         with pytest.raises(CodecError):
             async with event_store.transaction() as tx:
                 await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"ahead"))
         async with event_store.transaction() as tx:
             # The transaction's own appends count: a snapshot of what it just wrote is not ahead.
-            await event_store.append(tx, agg, 1, [envelope(agg, 2)])
+            await event_store.append(tx, agg, 1, [draft(agg, 2)])
             await event_store.save_snapshot(tx, Snapshot(agg, "Account", 2, b"level"))
         async with event_store.transaction() as tx:
             snap = await event_store.load_snapshot(tx, agg)
             assert snap is not None and (snap.version, snap.data) == (2, b"level")
 
-    async def test_an_envelope_id_already_stored_is_refused(self, event_store: Any) -> None:
-        """ "An envelope id is unique store-wide." Two rows under one id, and marking the first published
+    async def test_an_event_id_already_stored_is_refused(self, event_store: Any) -> None:
+        """ "An event id is unique store-wide." Two rows under one id, and marking the first published
         prunes the second unpublished: an event that never reaches a consumer."""
         first, second = _id("acct"), _id("acct")
-        taken = envelope(first, 1)
+        taken = draft(first, 1)
         async with event_store.transaction() as tx:
             await event_store.append(tx, first, 0, [taken])
-        duplicate = EventEnvelope(
-            id=taken.id,
-            aggregate_id=second,
-            event=taken.event,
-            namespace=taken.namespace,
-            metadata=taken.metadata,
-            sequence=1,
-            timestamp=taken.timestamp,
-        )
+        duplicate = _replace(taken, aggregate_id=second)
         with pytest.raises(CodecError):
             async with event_store.transaction() as tx:
                 await event_store.append(tx, second, 0, [duplicate])
@@ -446,7 +529,7 @@ class EventStoreContract:
             raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1), envelope(agg, 2)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1), draft(agg, 2)])
         mine = [e for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
         assert [e.sequence for e in mine] == [1, 2], "one row per event, in sequence order"
 
@@ -458,7 +541,7 @@ class EventStoreContract:
         agg = _id("acct")
         with pytest.raises(RuntimeError):
             async with event_store.transaction() as tx:
-                await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+                await event_store.append(tx, agg, 0, [draft(agg, 1)])
                 raise RuntimeError("rolled back")
         mine = [e for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
         assert mine == [], "a rolled-back append leaves nothing to publish"
@@ -470,7 +553,7 @@ class EventStoreContract:
             raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, 1)])
+            await event_store.append(tx, agg, 0, [draft(agg, 1)])
         ids = [e.id for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
         assert ids, "the append produced an outbox row"
         await event_store.mark_published(ids)
@@ -489,7 +572,7 @@ class EventStoreContract:
         # Deltas, not absolutes: the store may hold rows from other clauses in this suite.
         before = await event_store.unpublished_count()
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2)])
+            await event_store.append(tx, agg, 0, [draft(agg, n) for n in (1, 2)])
         assert await event_store.unpublished_count() - before == 2, "one row per appended event"
         ids = [e.id for e in await event_store.unpublished(limit=1000) if e.aggregate_id == agg]
         await event_store.mark_published(ids[:1])
@@ -502,7 +585,7 @@ class EventStoreContract:
             raise pytest.skip.Exception("backend declares no outbox")
         agg = _id("acct")
         async with event_store.transaction() as tx:
-            await event_store.append(tx, agg, 0, [envelope(agg, n) for n in (1, 2, 3)])
+            await event_store.append(tx, agg, 0, [draft(agg, n) for n in (1, 2, 3)])
         assert len(await event_store.unpublished(limit=2)) == 2, "three rows wait, so the limit decides"
 
     async def test_two_writers_at_one_version_land_exactly_one_append(self, event_store: Any) -> None:
@@ -511,7 +594,7 @@ class EventStoreContract:
         store that checks the version and then inserts lets both land: two events at sequence 1, a forked
         stream. Exactly one may land, and the stream holds its event alone."""
         agg = _id("acct")
-        first, second = envelope(agg, 1), envelope(agg, 1)
+        first, second = draft(agg, 1), draft(agg, 1)
         outcomes = await _race(
             event_store.transaction,
             lambda tx: event_store.append(tx, agg, 0, [first]),
@@ -528,7 +611,7 @@ class EventStoreContract:
         agg = _id("acct")
         seen = await _staged_then_read(
             event_store.transaction,
-            lambda tx: event_store.append(tx, agg, 0, [envelope(agg, 1)]),
+            lambda tx: event_store.append(tx, agg, 0, [draft(agg, 1)]),
             lambda tx: event_store.load(tx, agg),
         )
         assert seen == [], "another transaction saw a staged append"
@@ -722,20 +805,27 @@ class ProjectionStoreContract:
             )
 
 
-def _saga_command(cid: str, version: int, index: int) -> Any:
-    """The ``index``-th command a saga step committing ``version`` of ``cid`` sends: the kernel's id, a
-    real ``Fulfill`` payload."""
-    return _edax.SagaCommand(
-        _edax.saga_command_id(cid, version, index),
+def _saga_command(cid: str, version: int, index: int) -> CommandMessage:
+    """The ``index``-th command a saga step committing ``version`` of instance ``cid`` sends: the kernel's
+    row, with a real ``Fulfill`` payload, caused by the ``OrderPaid`` event ``evt-<cid>-<version>`` of the
+    flow ``flow-<cid>``."""
+    payload = Event("Fulfill", 1, f'{{"order_id":"{cid}"}}'.encode())
+    return _edax.saga_command(
+        "order",
         cid,
-        Event("Fulfill", 1, f'{{"order_id":"{cid}"}}'.encode()),
-        1_714_564_800_000_000_000,
+        version,
+        index,
+        payload,
+        f"evt-{cid}-{version}",
+        f"flow-{cid}",
+        1_714_564_800_000_000_001,
     )
 
 
 class SagaStoreContract:
-    """Per-correlation saga instance state under optimistic concurrency, its tombstone, and the saga
-    outbox.
+    """Per-instance saga state under optimistic concurrency, its tombstone, and the saga outbox. The
+    outbox rows are the kernel's :class:`~edax.aggregate.CommandMessage`, with the instance id as their
+    ``aggregate_id``.
 
     Supply a ``saga_store`` fixture.
     """
@@ -745,9 +835,9 @@ class SagaStoreContract:
     supports_transactions: bool = True
 
     async def _unpublished(self, saga_store: Any, cid: str) -> list[str]:
-        return [c.id for c in await saga_store.unpublished(limit=1000) if c.correlation_id == cid]
+        return [c.id for c in await saga_store.unpublished(limit=1000) if c.aggregate_id == cid]
 
-    async def test_an_unknown_correlation_loads_as_none(self, saga_store: Any) -> None:
+    async def test_an_unknown_instance_loads_as_none(self, saga_store: Any) -> None:
         """A saga that has not started yet has no instance; the runner reads ``None`` as "new"."""
         assert await saga_store.load(_id("corr")) is None
 
@@ -760,7 +850,7 @@ class SagaStoreContract:
         assert instance.version == version == 1 and not instance.completed
 
     async def test_save_is_compare_and_set_on_the_version(self, saga_store: Any) -> None:
-        """Two events for one correlation can arrive concurrently. Without a CAS here one fold
+        """Two events for one instance can arrive concurrently. Without a CAS here one fold
         silently overwrites the other and the saga forgets a step."""
         cid = _id("corr")
         await saga_store.save(cid, {"step": "one"}, 0, "", [])
@@ -811,19 +901,7 @@ class SagaStoreContract:
         sent = [_saga_command(cid, 1, 0).id, _saga_command(cid, 2, 0).id, want.id]
         assert await self._unpublished(saga_store, cid) == sent
         row = next(c for c in await saga_store.unpublished(limit=1000) if c.id == want.id)
-        assert (
-            row.correlation_id,
-            row.command.name,
-            row.command.version,
-            bytes(row.command.data),
-            row.timestamp,
-        ) == (
-            want.correlation_id,
-            want.command.name,
-            want.command.version,
-            bytes(want.command.data),
-            want.timestamp,
-        )
+        assert row == want, "every field of the command, its lineage and issued_at included"
 
     async def test_mark_published_prunes_commands_idempotently(self, saga_store: Any) -> None:
         """A relay is at-least-once, so it re-marks after a lost response: a second mark and an unknown
@@ -1143,6 +1221,36 @@ class IdempotencyStoreContract:
         replayed = await idempotency_store.claim(key, payload)
         assert not isinstance(replayed, Won) and replayed.result == {"balance": 43}
 
+    async def test_forget_deletes_a_settled_record_and_keeps_a_pending_claim(
+        self, idempotency_store: Any
+    ) -> None:
+        """ "``forget`` deletes a completed or failed record ... a pending claim raises InProgress and
+        stays." A dead-lettered command is re-driven by forgetting its record, so the next claim must win.
+        A pending claim's run may still complete, and its record would land after the delete, so it is
+        refused and left alone. An absent key is a no-op."""
+        payload = 1234
+        settled = {
+            "completed": Record(payload, result={"balance": 42}),
+            "failed": Record(payload, error="insufficient funds", error_code="rejected"),
+        }
+        for name, record in settled.items():
+            key = _id("req")
+            handle = await self._won(idempotency_store, key, payload)
+            await idempotency_store.complete(key, handle, record)
+            await idempotency_store.forget(key)
+            assert isinstance(await idempotency_store.claim(key, payload), Won), f"{name}: forgotten, so free"
+
+        pending = _id("req")
+        await self._won(idempotency_store, pending, payload)
+        with pytest.raises(InProgress):
+            await idempotency_store.forget(pending)
+        held = await idempotency_store.claim(pending, payload)
+        assert not isinstance(held, Won) and held.pending, "the refused forget kept the claim"
+
+        absent = _id("req")
+        await idempotency_store.forget(absent)
+        assert isinstance(await idempotency_store.claim(absent, payload), Won), "nothing was there to forget"
+
     async def test_the_record_keeps_the_payload_hash_it_was_given(self, idempotency_store: Any) -> None:
         """The kernel compares hashes to decide ``PayloadMismatch``, so a store that truncates or
         re-signs the value turns a genuine duplicate into a mismatch.
@@ -1162,7 +1270,7 @@ class IdempotencyStoreContract:
         assert isinstance(await idempotency_store.claim(b, 2), Won), "a different key is still free"
 
     async def test_a_rollback_frees_the_claim(self, idempotency_store: Any, request: Any) -> None:
-        """ "all three operations join that transaction, so a rollback removes the claim:
+        """ "every operation joins that transaction, so a rollback removes the claim:
         effectively-once."
 
         Only a ledger that joins the transaction runs this clause. A ledger of its own keeps the claim,
@@ -1183,8 +1291,8 @@ class IdempotencyStoreContract:
     async def test_a_claim_with_no_tx_joins_the_ambient_transaction(
         self, idempotency_store: Any, request: Any
     ) -> None:
-        """ "Given ``tx``, or with :func:`~edax.store.current_tx` of its own transactor set, all three
-        operations join that transaction." The guard claims with no ``tx`` inside the unit of work it
+        """ "Given ``tx``, or with :func:`~edax.store.current_tx` of its own transactor set, every
+        operation joins that transaction." The guard claims with no ``tx`` inside the unit of work it
         opened, so this is the path production runs. A ledger that auto-commits there keeps the claim
         after the rollback, and the key stays pending for good."""
         if not joins_transaction(idempotency_store):
@@ -1392,10 +1500,11 @@ async def _settle_while_held(
 
 class BrokerRig(Protocol):
     """What :class:`BrokerContract` drives: one broker, a producer into it, and one consumer per consumer
-    group. Asking for the same group twice returns the same consumer."""
+    group. Asking for the same group twice returns the same consumer. The producer takes events and
+    commands, and the consumer reads both."""
 
-    async def publish(self, env: EventEnvelope) -> None:
-        """Publish ``env`` and return once the broker holds it."""
+    async def publish(self, msg: EventMessage | CommandMessage) -> None:
+        """Publish ``msg`` and return once the broker holds it."""
         ...
 
     async def consumer(self, group: str) -> Consumer:
@@ -1432,7 +1541,7 @@ async def _quiet(consumer: Consumer) -> None:
         extra = await asyncio.wait_for(consumer.poll(), _QUIET_S)
     except asyncio.TimeoutError:
         return
-    raise AssertionError(f"delivered {extra.envelope.id if extra else None} after everything was settled")
+    raise AssertionError(f"delivered {extra.message.id if extra else None} after everything was settled")
 
 
 class BrokerContract:
@@ -1445,13 +1554,13 @@ class BrokerContract:
     nothing, and consumer groups that each read every message."""
 
     async def test_publish_then_poll_keeps_each_keys_order(self, broker_rig: Any) -> None:
-        envs = [envelope(agg, seq) for seq in (1, 2, 3) for agg in ("a", "b")]
-        for env in envs:
-            await broker_rig.publish(env)
+        msgs = [message(agg, seq) for seq in (1, 2, 3) for agg in ("a", "b")]
+        for msg in msgs:
+            await broker_rig.publish(msg)
         consumer = await broker_rig.consumer("g")
         seen: dict[str, list[int | None]] = {}
-        for d in await _poll(consumer, len(envs)):
-            seen.setdefault(d.envelope.aggregate_id, []).append(d.envelope.sequence)
+        for d in await _poll(consumer, len(msgs)):
+            seen.setdefault(event_of(d.message).aggregate_id, []).append(event_of(d.message).sequence)
             await d.ack()
         assert seen == {"a": [1, 2, 3], "b": [1, 2, 3]}
         await broker_rig.commit("g")
@@ -1459,8 +1568,8 @@ class BrokerContract:
 
     async def test_acks_out_of_order_settle_everything(self, broker_rig: Any) -> None:
         """The dispatcher acks in worker order, not in fetch order."""
-        for env in [envelope("a", 1), envelope("b", 1), envelope("a", 2)]:
-            await broker_rig.publish(env)
+        for msg in [message("a", 1), message("b", 1), message("a", 2)]:
+            await broker_rig.publish(msg)
         consumer = await broker_rig.consumer("g")
         deliveries = await _poll(consumer, 3)
         for d in reversed(deliveries[1:]):
@@ -1472,12 +1581,12 @@ class BrokerContract:
         assert broker_rig.drained("g")
 
     async def test_a_nack_redelivers_the_message(self, broker_rig: Any) -> None:
-        await broker_rig.publish(envelope("a", 1))
+        await broker_rig.publish(message("a", 1))
         consumer = await broker_rig.consumer("g")
         (first,) = await _poll(consumer, 1)
         await first.nack()
         (again,) = await _poll(consumer, 1)
-        assert again.envelope.id == first.envelope.id
+        assert again.message.id == first.message.id
         # The broker's own redelivery count where it keeps one, else 0: never lower than before.
         assert again.attempt >= first.attempt
         assert again.live()
@@ -1490,14 +1599,14 @@ class BrokerContract:
         is a-1, and the a-2 copy handed out before the nack is retired: running it would apply a-2 ahead
         of a-1. a-2 comes back behind a-1, so a handler sees it again: at-least-once."""
         for seq in (1, 2):
-            await broker_rig.publish(envelope("a", seq))
+            await broker_rig.publish(message("a", seq))
         consumer = await broker_rig.consumer("g")
         first, second = await _poll(consumer, 2)
         await second.ack()
         await first.nack()
         assert not second.live(), "the a-2 copy handed out before the nack is still live"
         again = await _poll(consumer, 2)
-        assert [d.envelope.sequence for d in again] == [1, 2], "the key came back out of order"
+        assert [event_of(d.message).sequence for d in again] == [1, 2], "the key came back out of order"
         for d in again:
             assert d.live()
             await d.ack()
@@ -1509,8 +1618,8 @@ class BrokerContract:
         """The consumer dies holding two unsettled deliveries. Its replacement gets both again and nothing
         the group committed past, and a late ack from the dead consumer settles nothing the group sees: a
         zombie that finishes its handler after the crash must not commit past the redelivery."""
-        for env in [envelope("a", 1), envelope("b", 1), envelope("a", 2)]:
-            await broker_rig.publish(env)
+        for msg in [message("a", 1), message("b", 1), message("a", 2)]:
+            await broker_rig.publish(msg)
         consumer = await broker_rig.consumer("g")
         held = await _poll(consumer, 3)
         await held[0].ack()
@@ -1521,7 +1630,7 @@ class BrokerContract:
         await broker_rig.commit("g")
         assert not broker_rig.drained("g"), "a dead consumer's late ack settled a redelivered message"
         again = await _poll(replacement, 2)
-        assert sorted(d.envelope.id for d in again) == sorted(d.envelope.id for d in held[1:])
+        assert sorted(d.message.id for d in again) == sorted(d.message.id for d in held[1:])
         for d in again:
             await d.ack()
         await broker_rig.commit("g")
@@ -1531,7 +1640,7 @@ class BrokerContract:
     async def test_every_consumer_group_reads_every_message(self, broker_rig: Any) -> None:
         """A projection and a saga on one topic each get every message and settle on their own."""
         for seq in (1, 2):
-            await broker_rig.publish(envelope("a", seq))
+            await broker_rig.publish(message("a", seq))
         projection = await broker_rig.consumer("projection")
         for d in await _poll(projection, 2):
             await d.ack()
@@ -1539,4 +1648,33 @@ class BrokerContract:
         assert broker_rig.drained("projection")
         assert not broker_rig.drained("saga"), "one group's acks settled another's"
         saga = await broker_rig.consumer("saga")
-        assert [d.envelope.sequence for d in await _poll(saga, 2)] == [1, 2]
+        assert [event_of(d.message).sequence for d in await _poll(saga, 2)] == [1, 2]
+
+    async def test_a_command_is_delivered_whole_and_keyed_by_its_id(self, broker_rig: Any) -> None:
+        """A broker carries commands as well as events. A command that names no aggregate is ordered by its
+        own id, so two of them never wait on each other, and every field arrives as published."""
+        commands = [
+            CommandMessage(
+                id=f"cmd-{n}",
+                idempotency_key=f"req-{n}",
+                aggregate_id=None,
+                name="Deposit",
+                version=1,
+                data=b'{"amount_cents":4200}',
+                correlation_id="flow-1",
+                causation_id="evt-1",
+                issued_at=_edax.current_timestamp(),
+                extensions={"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+                metadata={"tenant": "acme"},
+            )
+            for n in (1, 2)
+        ]
+        for command in commands:
+            await broker_rig.publish(command)
+        consumer = await broker_rig.consumer("g")
+        got = await _poll(consumer, 2)
+        assert sorted((d.message for d in got), key=lambda m: m.id) == commands
+        for d in got:
+            await d.ack()
+        await broker_rig.commit("g")
+        assert broker_rig.drained("g")

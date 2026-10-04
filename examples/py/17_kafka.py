@@ -18,7 +18,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 
-from edax import Delivery, Event, EventEnvelope, KeyOrderedDispatcher, Rejected, Relay, guid, transaction
+from edax import Delivery, EventDraft, EventMessage, KeyOrderedDispatcher, Rejected, Relay, guid, transaction
 from edax.backend.memory import MemoryBroker, MemoryEventStore
 from edax.broker import Consumer
 
@@ -32,20 +32,23 @@ class InvalidOrder(Rejected):
     """Terminal: the same order is invalid on every delivery."""
 
 
-def order_placed(order_id: str, quantity: int) -> EventEnvelope:
-    return EventEnvelope(
+def order_placed(order_id: str, quantity: int) -> EventDraft:
+    return EventDraft(
         id=f"{order_id}-placed",
         aggregate_id=order_id,  # the Kafka message key: one order stays on one partition
-        event=Event("OrderPlaced", 1, json.dumps({"quantity": quantity}).encode()),
-        namespace={},
-        metadata={},
-        timestamp=0,
         sequence=1,
+        name="OrderPlaced",
+        version=1,
+        data=json.dumps({"quantity": quantity}).encode(),
+        correlation_id=f"{order_id}-placed",
+        causation_id=f"{order_id}-placed",
+        extensions={},
+        metadata={},
     )
 
 
 async def run(
-    publish: Callable[[EventEnvelope], Awaitable[None]], consumer: Consumer, sink: DeadLetterSink | None
+    publish: Callable[[EventMessage], Awaitable[None]], consumer: Consumer, sink: DeadLetterSink | None
 ) -> None:
     # 1. Save the orders, then let the Relay publish them from the outbox.
     store = MemoryEventStore()
@@ -58,15 +61,17 @@ async def run(
     packed: list[str] = []
     dead: list[str] = []
 
-    async def pack(envelope: EventEnvelope) -> None:
-        if json.loads(envelope.event.data)["quantity"] < 1:
-            raise InvalidOrder(f"{envelope.aggregate_id} has no items")
-        packed.append(envelope.aggregate_id)
-        print(f"  packed {envelope.aggregate_id}")
+    async def pack(event: EventMessage) -> None:
+        if json.loads(event.data)["quantity"] < 1:
+            raise InvalidOrder(f"{event.aggregate_id} has no items")
+        packed.append(event.aggregate_id)
+        print(f"  packed {event.aggregate_id}")
 
     async def to_dead_letters(delivery: Delivery, error: BaseException) -> None:
-        dead.append(delivery.envelope.aggregate_id)
-        print(f"  dead-lettered {delivery.envelope.aggregate_id}: {error}")
+        order = delivery.message
+        assert isinstance(order, EventMessage), "the topic carries events only"
+        dead.append(order.aggregate_id)
+        print(f"  dead-lettered {order.aggregate_id}: {error}")
         if sink is not None:
             await sink(delivery, error)
 

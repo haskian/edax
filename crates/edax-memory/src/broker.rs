@@ -12,6 +12,9 @@
 //!   compete for them;
 //! - order holds per partition, and so per key, not across keys once there are several partitions.
 //!
+//! It carries events and commands on one log, each placed by its ordering key, so a command and the
+//! events of the aggregate it targets keep their relative order.
+//!
 //! A group commits on every ack that moves its watermark: in memory a commit costs nothing. Nothing
 //! is ever deleted from the log, which suits a test and not a long-running process.
 
@@ -19,20 +22,48 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use edax_core::{lock, Error};
-use edax_event::EventEnvelope;
+use edax_event::{CommandMessage, EventMessage, Message as _};
 use edax_kafka::{partition_for, AckDecision, NackDecision, OffsetTracker};
 
 /// The topic name the groups' trackers book under: the broker is one topic.
 const TOPIC: &str = "memory";
 
-/// A delivery handed out by [`MemoryBroker::try_poll`]: the envelope, where it sits in the log, and
+/// A message on the log, of either kind: what a [`PolledDelivery`] carries.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Message {
+    /// An event.
+    Event(EventMessage),
+    /// A command.
+    Command(CommandMessage),
+}
+
+impl Message {
+    /// The key that places the message on the log, whichever its kind.
+    pub fn ordering_key(&self) -> &str {
+        match self {
+            Message::Event(event) => event.ordering_key(),
+            Message::Command(command) => command.ordering_key(),
+        }
+    }
+
+    /// The message's own id, whichever its kind.
+    pub fn id(&self) -> &str {
+        match self {
+            Message::Event(event) => event.id(),
+            Message::Command(command) => command.id(),
+        }
+    }
+}
+
+/// A delivery handed out by [`MemoryBroker::try_poll`]: the message, where it sits in the log, and
 /// the token that settles it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolledDelivery {
     pub token: i64,
     pub partition: i32,
     pub offset: i64,
-    pub envelope: EventEnvelope,
+    /// The message delivered, which names its kind.
+    pub message: Message,
 }
 
 /// One consumer group's view of the log: what it has fetched, what it has committed, and the
@@ -70,7 +101,7 @@ impl Group {
 
 struct BrokerState {
     /// One append-only log per partition.
-    log: Vec<Vec<EventEnvelope>>,
+    log: Vec<Vec<Message>>,
     groups: BTreeMap<String, Group>,
 }
 
@@ -110,14 +141,24 @@ impl MemoryBroker {
         Ok(Self { state: Mutex::new(BrokerState { log: vec![Vec::new(); count], groups: BTreeMap::new() }) })
     }
 
-    /// Append `envelope` to its key's partition. Every group sees it.
-    pub fn publish(&self, envelope: EventEnvelope) {
+    /// Append `event` to the partition of its ordering key, its aggregate. Every group sees it.
+    pub fn publish_event(&self, event: EventMessage) {
+        self.publish(Message::Event(event));
+    }
+
+    /// Append `command` to the partition of its ordering key: its target aggregate, or its own id when
+    /// it has none. Every group sees it.
+    pub fn publish_command(&self, command: CommandMessage) {
+        self.publish(Message::Command(command));
+    }
+
+    fn publish(&self, message: Message) {
         let mut state = lock(&self.state);
         let count = u32::try_from(state.log.len()).unwrap_or(u32::MAX);
         // The broker always has a partition, so `partition_for` cannot refuse; the fallback is the first.
-        let partition = partition_for(envelope.aggregate_id.as_bytes(), count).unwrap_or(0);
+        let partition = partition_for(message.ordering_key().as_bytes(), count).unwrap_or(0);
         if let Some(log) = usize::try_from(partition).ok().and_then(|p| state.log.get_mut(p)) {
-            log.push(envelope);
+            log.push(message);
         }
     }
 
@@ -133,7 +174,7 @@ impl MemoryBroker {
             let (Some(records), Some(position)) = (log.get(p), group.position.get_mut(p)) else {
                 continue;
             };
-            let Some(envelope) = usize::try_from(*position).ok().and_then(|o| records.get(o)) else {
+            let Some(message) = usize::try_from(*position).ok().and_then(|o| records.get(o)) else {
                 continue;
             };
             let partition = i32::try_from(p).map_err(Error::codec)?;
@@ -141,7 +182,7 @@ impl MemoryBroker {
             let token = group.tracker.book(TOPIC, partition, offset)?;
             *position = offset.saturating_add(1);
             group.next = (p + 1) % log.len();
-            return Ok(Some(PolledDelivery { token, partition, offset, envelope: envelope.clone() }));
+            return Ok(Some(PolledDelivery { token, partition, offset, message: message.clone() }));
         }
         Ok(None)
     }
@@ -222,14 +263,19 @@ mod tests {
     use super::*;
     use edax_core::NO_TOKEN;
 
-    use crate::testkit::envelope;
+    use crate::testkit::{command, event};
 
     const G: &str = "projection";
     const H: &str = "saga";
 
-    /// An envelope of aggregate `agg` with id `"{agg}-{seq}"`, so a key's order reads off the ids.
-    fn keyed(agg: &str, seq: u64) -> EventEnvelope {
-        EventEnvelope { aggregate_id: agg.to_owned(), ..envelope(&format!("{agg}-{seq}"), Some(seq)) }
+    /// An event of aggregate `agg` with id `"{agg}-{seq}"`, so a key's order reads off the ids.
+    fn keyed(agg: &str, seq: u64) -> EventMessage {
+        EventMessage { aggregate_id: agg.to_owned(), ..event(&format!("{agg}-{seq}"), Some(seq)) }
+    }
+
+    /// The id of the message a delivery carries, whichever its kind.
+    fn id_of(d: &PolledDelivery) -> &str {
+        d.message.id()
     }
 
     /// One step of a broker scenario. `Poll` records what `try_poll` returned for a group; the
@@ -248,7 +294,7 @@ mod tests {
     struct Case {
         name: &'static str,
         steps: &'static [Step],
-        /// Envelope ids each `Poll` produced, in order; `None` for an empty poll.
+        /// Message ids each `Poll` produced, in order; `None` for an empty poll.
         polled: &'static [Option<&'static str>],
         /// What each settle and liveness step returned, in order.
         answers: &'static [bool],
@@ -262,10 +308,10 @@ mod tests {
         let mut answers: Vec<bool> = Vec::new();
         for step in case.steps {
             match step {
-                Step::Publish(agg, seq) => broker.publish(keyed(agg, *seq)),
+                Step::Publish(agg, seq) => broker.publish_event(keyed(agg, *seq)),
                 Step::Poll(group) => match broker.try_poll(group).expect("a poll never fails here") {
                     Some(d) => {
-                        polled.push(Some(d.envelope.id.clone()));
+                        polled.push(Some(id_of(&d).to_owned()));
                         held.push((group, d));
                     }
                     None => polled.push(None),
@@ -298,7 +344,7 @@ mod tests {
                 empty: &[(G, true)],
             },
             Case {
-                name: "a published envelope makes every group non-empty, polled or not",
+                name: "a published event makes every group non-empty, polled or not",
                 steps: &[Publish("a", 1)],
                 polled: &[],
                 answers: &[],
@@ -345,7 +391,7 @@ mod tests {
                 empty: &[(G, true)],
             },
             Case {
-                // Fails against a set of envelope ids: one ack would clear the single entry and the
+                // Fails against a set of message ids: one ack would clear the single entry and the
                 // broker would report drained with a delivery still outstanding.
                 name: "the same id published twice needs two settlements",
                 steps: &[Publish("a", 1), Publish("a", 1), Poll(G), Poll(G), Ack(0)],
@@ -483,15 +529,16 @@ mod tests {
         let keys = ["a", "b", "c", "d", "e", "f"];
         for seq in 1..=3 {
             for key in keys {
-                broker.publish(keyed(key, seq));
+                broker.publish_event(keyed(key, seq));
             }
         }
         let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut held: Vec<PolledDelivery> = Vec::new();
         while let Some(d) = broker.try_poll(G).expect("poll") {
-            seen.entry(d.envelope.aggregate_id.clone()).or_default().push(d.envelope.id.clone());
+            let Message::Event(event) = &d.message else { panic!("only events were published") };
+            seen.entry(event.aggregate_id.clone()).or_default().push(event.id.clone());
             let want = u32::try_from(d.partition).expect("partition");
-            assert_eq!(partition_for(d.envelope.aggregate_id.as_bytes(), 4).ok(), Some(want), "Kafka's placement");
+            assert_eq!(partition_for(event.aggregate_id.as_bytes(), 4).ok(), Some(want), "Kafka's placement");
             held.push(d);
         }
         for key in keys {
@@ -507,18 +554,18 @@ mod tests {
         let first = held.first().expect("polled").clone();
         assert!(broker.nack(G, first.token));
         for d in &held[1..] {
-            assert_eq!(broker.is_live(G, d.token), d.partition != first.partition, "{}", d.envelope.id);
+            assert_eq!(broker.is_live(G, d.token), d.partition != first.partition, "{}", id_of(d));
         }
     }
 
     #[test]
     fn broker_tokens_are_unique_per_delivery_and_never_the_placeholder() {
         let broker = MemoryBroker::new();
-        broker.publish(envelope("evt-1", Some(1)));
+        broker.publish_event(event("evt-1", Some(1)));
         let first = broker.try_poll(G).expect("poll").expect("queued");
         assert_ne!(first.token, NO_TOKEN, "a live delivery never carries the placeholder token");
         assert_eq!((first.partition, first.offset), (0, 0));
-        assert_eq!(first.envelope, envelope("evt-1", Some(1)), "the envelope crosses field for field");
+        assert_eq!(first.message, Message::Event(event("evt-1", Some(1))), "the event crosses field for field");
 
         // A redelivery is a new delivery: it settles by its own token, not the stale one.
         assert!(broker.nack(G, first.token));
@@ -535,18 +582,48 @@ mod tests {
     fn concurrent_polls_hand_each_message_out_once() {
         let broker = MemoryBroker::new();
         for seq in 1..=4 {
-            broker.publish(envelope(&format!("evt-{seq}"), Some(seq)));
+            broker.publish_event(event(&format!("evt-{seq}"), Some(seq)));
         }
         let mut deliveries: Vec<PolledDelivery> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8).map(|_| s.spawn(|| broker.try_poll(G).expect("poll"))).collect();
             handles.into_iter().filter_map(|h| h.join().expect("poller thread")).collect()
         });
         deliveries.sort_by_key(|d| d.offset);
-        assert_eq!(deliveries.iter().map(|d| d.envelope.id.as_str()).collect::<Vec<_>>(), ["evt-1", "evt-2", "evt-3", "evt-4"]);
+        assert_eq!(deliveries.iter().map(id_of).collect::<Vec<_>>(), ["evt-1", "evt-2", "evt-3", "evt-4"]);
         assert!(!broker.is_empty(G), "all four are unsettled");
         for d in &deliveries {
             assert!(broker.ack(G, d.token));
         }
         assert!(broker.is_empty(G));
+    }
+
+    #[test]
+    fn commands_share_the_log_and_the_placement_with_events() {
+        // Four partitions, so placement is visible. A command lands where its ordering key puts it:
+        // beside its target aggregate's events, in publish order, or on its own id when it targets none.
+        let broker = MemoryBroker::with_partitions(4).expect("four partitions");
+        broker.publish_event(keyed("invoice-7", 1));
+        broker.publish_command(command("cmd-1", Some("invoice-7")));
+        broker.publish_event(keyed("invoice-7", 2));
+        // `cmd-3` lands on another partition than `invoice-7`, so the two placements are told apart.
+        broker.publish_command(command("cmd-3", None));
+        let mut held: Vec<PolledDelivery> = Vec::new();
+        while let Some(d) = broker.try_poll(G).expect("poll") {
+            held.push(d);
+        }
+        let placed = |key: &str| partition_for(key.as_bytes(), 4).ok().and_then(|p| i32::try_from(p).ok());
+        let on_invoice: Vec<&str> = held.iter().filter(|d| Some(d.partition) == placed("invoice-7")).map(id_of).collect();
+        assert_eq!(on_invoice, ["invoice-7-1", "cmd-1", "invoice-7-2"], "a command keeps its order among its aggregate's events");
+        let untargeted = held.iter().find(|d| id_of(d) == "cmd-3").expect("delivered");
+        assert_eq!(Some(untargeted.partition), placed("cmd-3"), "a command with no target is placed by its id");
+        assert_ne!(placed("cmd-3"), placed("invoice-7"));
+
+        // The delivery names its kind, and the command crosses field for field.
+        let cmd = held.iter().find(|d| id_of(d) == "cmd-1").expect("delivered");
+        assert_eq!(cmd.message, Message::Command(command("cmd-1", Some("invoice-7"))));
+        for d in &held {
+            assert!(broker.ack(G, d.token));
+        }
+        assert!(broker.is_empty(G), "a command settles like an event");
     }
 }

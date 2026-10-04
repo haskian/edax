@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error, TokenMint, NO_TOKEN};
+use edax_event::{CommandMessage, EventMessage, Message};
 use serde_json::{Map, Value};
 
 use crate::event::{MemoryEventStore, Snapshot};
 use crate::idempotency::MemoryIdempotencyStore;
+use crate::outbox::MemoryCommandOutbox;
 use crate::projection::MemoryProjectionStore;
 use crate::saga::{MemorySagaStore, SagaRow};
 
@@ -41,40 +43,67 @@ pub(crate) fn unknown_tx(tx: i64) -> Error {
     Error::bad_handle(format_args!("unknown transaction {tx}: not begun, or already committed or rolled back"))
 }
 
-/// An envelope's sequence, with an unsequenced one reading as 0. The stream's version space is the
+/// An event's sequence, with an unsequenced one reading as 0. The stream's version space is the
 /// kernel's `u64`, so no conversion can clamp or wrap it.
-pub(crate) fn sequence_of(env: &edax_event::EventEnvelope) -> u64 {
-    env.sequence.unwrap_or(0)
+pub(crate) fn sequence_of(event: &EventMessage) -> u64 {
+    event.sequence.unwrap_or(0)
 }
 
+/// The first `limit` committed rows, oldest commit first. The outbox holds unpublished rows only, so
+/// this is a bounded prefix scan rather than a filter over an ever-growing log. One page, one refusal
+/// and one prune serve every outbox (events, saga commands, outbox commands), so the three cannot
+/// drift apart.
+pub(crate) fn page<R: Message + Clone>(rows: &[R], limit: usize) -> Vec<R> {
+    rows.iter().take(limit).cloned().collect()
+}
 
+/// Refuse a `batch` of `what` rows when one's id is already `waiting` (committed, or staged by any open
+/// transaction) or repeats within the batch. A relay marks rows sent by id, so two rows under one id
+/// could not be told apart, and marking one would prune both. Deterministic, so `codec`.
+pub(crate) fn refuse_waiting<'a, R: Message + 'a>(waiting: impl Iterator<Item = &'a R>, batch: &[R], what: &str) -> Result<(), Error> {
+    let mut ids: HashSet<&str> = waiting.map(Message::id).collect();
+    for row in batch {
+        if !ids.insert(row.id()) {
+            return Err(Error::codec(format_args!("{what} {} is already in the outbox", row.id())));
+        }
+    }
+    Ok(())
+}
+
+/// Drop the rows marked sent, keeping the outbox bounded. Idempotent; an unknown id is a no-op.
+pub(crate) fn prune<R: Message>(rows: &mut Vec<R>, ids: Vec<String>) {
+    let sent: HashSet<String> = ids.into_iter().collect();
+    rows.retain(|row| !sent.contains(row.id()));
+}
 
 /// Everything committed, for every seam. One struct so one lock guards it all: a commit applies a
 /// transaction's writes to every seam while holding that lock, so no reader can see the events
 /// without the claim that guards them.
 #[derive(Default)]
 pub(crate) struct Committed {
-    pub(crate) events: HashMap<String, Vec<edax_event::EventEnvelope>>, // aggregate_id -> ordered events
-    pub(crate) event_ids: HashSet<String>,                              // every stored envelope id
-    pub(crate) snapshots: HashMap<String, Snapshot>,                   // aggregate_id -> snapshot
-    pub(crate) outbox: Vec<edax_event::EventEnvelope>,                  // unpublished rows only (pruned on publish)
-    pub(crate) projections: BTreeMap<String, (u64, Document)>,          // id -> (version, document); id-ordered
-    pub(crate) claims: HashMap<String, Held>,                           // idempotency key -> record (and claim)
-    pub(crate) sagas: HashMap<String, (u64, SagaRow)>,                  // correlation id -> (version, row)
-    pub(crate) saga_commands: Vec<edax_event::SagaCommand>,             // unsent saga commands only (pruned on send)
+    pub(crate) events: HashMap<String, Vec<EventMessage>>,     // aggregate_id -> ordered events
+    pub(crate) event_ids: HashSet<String>,                     // every stored event id
+    pub(crate) snapshots: HashMap<String, Snapshot>,           // aggregate_id -> snapshot
+    pub(crate) outbox: Vec<EventMessage>,                      // unpublished rows only (pruned on publish)
+    pub(crate) projections: BTreeMap<String, (u64, Document)>, // id -> (version, document); id-ordered
+    pub(crate) claims: HashMap<String, Held>,                  // idempotency key -> record (and claim)
+    pub(crate) sagas: HashMap<String, (u64, SagaRow)>,         // saga instance id -> (version, row)
+    pub(crate) saga_commands: Vec<CommandMessage>,             // unsent saga commands only (pruned on send)
+    pub(crate) commands: Vec<CommandMessage>,                  // unsent outbox commands only (pruned on send)
 }
 
 /// One open transaction's staged writes: the overlay a read inside it sees over [`Committed`], and
 /// the set [`MemoryTransactor::commit`] applies. A `None` in `claims` is a staged delete.
 #[derive(Default)]
 pub(crate) struct WriteSet {
-    pub(crate) streams: HashMap<String, Vec<edax_event::EventEnvelope>>, // aggregate_id -> appended tail
-    pub(crate) outbox: Vec<edax_event::EventEnvelope>,                   // the same envelopes, in append order
+    pub(crate) streams: HashMap<String, Vec<EventMessage>>, // aggregate_id -> appended tail
+    pub(crate) outbox: Vec<EventMessage>,                   // the same events, in append order
     pub(crate) snapshots: HashMap<String, Snapshot>,
     pub(crate) projections: HashMap<String, (u64, Document)>,
     pub(crate) claims: HashMap<String, Option<Held>>,
     pub(crate) sagas: HashMap<String, (u64, SagaRow)>,
-    pub(crate) saga_commands: Vec<edax_event::SagaCommand>, // the same commands, in write order
+    pub(crate) saga_commands: Vec<CommandMessage>, // the same commands, in write order
+    pub(crate) commands: Vec<CommandMessage>,      // outbox commands, in enqueue order
 }
 
 impl WriteSet {
@@ -169,6 +198,7 @@ impl Committed {
         }
         self.sagas.extend(set.sagas);
         self.saga_commands.extend(set.saga_commands);
+        self.commands.extend(set.commands);
     }
 }
 
@@ -206,7 +236,7 @@ pub(crate) use store_view;
 /// readers see nothing of it until [`commit`](Self::commit). `Clone` shares the same database.
 ///
 /// Isolation is by exclusion, not by blocking: a key (an aggregate's stream, a projection id, an
-/// idempotency key, a correlation id) staged by one open transaction is held until that transaction
+/// idempotency key, a saga instance id) staged by one open transaction is held until that transaction
 /// ends, and a second writer conflicts at once instead of waiting. A durable store would park the
 /// second writer on a row lock; an in-memory store driven from one asyncio loop cannot park anyone
 /// without deadlocking the loop, so the conflict is reported as the reload-and-retry signal the
@@ -285,6 +315,11 @@ impl MemoryTransactor {
     pub fn saga_store(&self) -> MemorySagaStore {
         MemorySagaStore { state: Arc::clone(&self.state) }
     }
+
+    /// The command outbox over this database.
+    pub fn command_outbox(&self) -> MemoryCommandOutbox {
+        MemoryCommandOutbox { state: Arc::clone(&self.state) }
+    }
 }
 
 #[cfg(test)]
@@ -292,7 +327,7 @@ mod tests {
     use super::*;
     use crate::idempotency::Claimed;
     use crate::saga::SagaRow;
-    use crate::testkit::{envelope, ids};
+    use crate::testkit::{draft, ids, RECORDED_AT};
     use serde_json::json;
     /// One database with every seam, and a handle on each view.
     struct Db {
@@ -343,7 +378,7 @@ mod tests {
 
     /// Stage one write on every seam under `tx`.
     fn write_everything(db: &Db, tx: i64) {
-        db.events.append(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).expect("append");
+        db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).expect("append");
         db.events.save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec()).expect("snapshot");
         db.projections.save(tx, "user-1", 0, doc()).expect("projection");
         won(db.claims.claim(tx, "req-A", HASH));
@@ -415,7 +450,7 @@ mod tests {
         let cases = [
             Case {
                 name: "event stream",
-                write: |db, tx| db.events.append(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]),
+                write: |db, tx| db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).map(|_| ()),
             },
             Case { name: "projection row", write: |db, tx| db.projections.save(tx, "user-1", 0, doc()).map(|_| ()) },
             Case { name: "saga instance", write: |db, tx| db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()) },
@@ -804,10 +839,10 @@ mod tests {
         // release frees the key for the same transaction, and a save-then-delete leaves no row.
         let db = db();
         let tx = db.tr.begin();
-        db.events.append(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).unwrap();
-        db.events.append(tx, "invoice-7", 1, vec![envelope("evt-2", Some(2))]).unwrap();
+        db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
+        db.events.append(tx, "invoice-7", 1, vec![draft("evt-2", Some(2))], RECORDED_AT).unwrap();
         assert_eq!(
-            db.events.append(tx, "invoice-7", 1, vec![envelope("evt-3", Some(2))]),
+            db.events.append(tx, "invoice-7", 1, vec![draft("evt-3", Some(2))], RECORDED_AT),
             Err(Error::concurrency(1, 2)),
             "the staged tail is the version the transaction sees"
         );
@@ -819,8 +854,8 @@ mod tests {
         assert!(db.sagas.load(tx, "order-1").unwrap().is_some_and(|row| row.value == SagaRow::Completed), "completed in the same transaction");
         assert!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).is_err(), "and never started again");
         // An empty batch is a version check only: it stages no tail and holds nothing.
-        db.events.append(tx, "invoice-8", 0, vec![]).unwrap();
-        db.events.append(NO_TX, "invoice-8", 0, vec![envelope("evt-9", Some(1))]).expect("not held");
+        db.events.append(tx, "invoice-8", 0, vec![], RECORDED_AT).unwrap();
+        db.events.append(NO_TX, "invoice-8", 0, vec![draft("evt-9", Some(1))], RECORDED_AT).expect("not held");
 
         db.tr.commit(tx).unwrap();
         assert_eq!(ids(&db.events.load(NO_TX, "invoice-7", 0).unwrap()), ["evt-1", "evt-2"]);
@@ -839,7 +874,7 @@ mod tests {
         for (name, tx) in [("never begun", 12_345), ("another transactor", foreign), ("already closed", closed)] {
             let want: Result<(), Error> = Err(unknown_tx(tx));
             assert_eq!(db.events.load(tx, "invoice-7", 0).map(|_| ()), want, "{name}: load");
-            assert_eq!(db.events.append(tx, "invoice-7", 0, vec![]).map(|_| ()), want, "{name}: append");
+            assert_eq!(db.events.append(tx, "invoice-7", 0, vec![], RECORDED_AT).map(|_| ()), want, "{name}: append");
             assert_eq!(db.events.load_snapshot(tx, "invoice-7").map(|_| ()), want, "{name}: load_snapshot");
             assert_eq!(db.events.save_snapshot(tx, "invoice-7", "Invoice", 1, vec![]).map(|_| ()), want, "{name}: save_snapshot");
             assert_eq!(db.projections.get(tx, "user-1").map(|_| ()), want, "{name}: get");
@@ -848,6 +883,7 @@ mod tests {
             assert_eq!(db.claims.claim(tx, "req-A", HASH).map(|_| ()), want, "{name}: claim");
             assert_eq!(db.claims.complete(tx, "req-A", b"", b"{}").map(|_| ()), want, "{name}: complete");
             assert_eq!(db.claims.release(tx, "req-A", b"").map(|_| ()), want, "{name}: release");
+            assert_eq!(db.claims.forget(tx, "req-A"), want, "{name}: forget");
             assert_eq!(db.sagas.load(tx, "order-1").map(|_| ()), want, "{name}: saga load");
             assert_eq!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()), want, "{name}: saga save");
             assert_eq!(db.sagas.complete(tx, "order-1", 0, vec![]).map(|_| ()), want, "{name}: saga complete");
@@ -862,7 +898,7 @@ mod tests {
     fn a_standalone_store_and_its_transactor_share_one_database() {
         let store = MemoryEventStore::new();
         let tx = store.transactor().begin();
-        store.append(tx, "invoice-7", 0, vec![envelope("evt-1", Some(1))]).unwrap();
+        store.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
         assert!(store.load(NO_TX, "invoice-7", 0).unwrap().is_empty());
         store.transactor().commit(tx).unwrap();
         assert_eq!(ids(&store.load(NO_TX, "invoice-7", 0).unwrap()), ["evt-1"]);
@@ -885,9 +921,9 @@ mod tests {
                         let tx = db.tr.begin();
                         // Every thread writes its own projection row and races on one stream.
                         db.projections.save(tx, &format!("user-{i}"), 0, doc())?;
-                        let raced = db.events.append(tx, "invoice-7", 0, vec![envelope(&format!("evt-{i}"), Some(1))]);
+                        let raced = db.events.append(tx, "invoice-7", 0, vec![draft(&format!("evt-{i}"), Some(1))], RECORDED_AT);
                         match raced {
-                            Ok(()) => db.tr.commit(tx),
+                            Ok(_) => db.tr.commit(tx),
                             Err(e) => {
                                 assert!(db.tr.rollback(tx));
                                 Err(e)

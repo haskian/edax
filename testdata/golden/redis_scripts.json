@@ -12,6 +12,10 @@
     "name": "release"
   },
   {
+    "body": "\nif redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('DEL', KEYS[1])\nend\nreturn 0\n",
+    "name": "forget"
+  },
+  {
     "body": "\nif redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('PEXPIRE', KEYS[1], ARGV[2])\nend\nreturn 0\n",
     "name": "extend"
   }
