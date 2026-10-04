@@ -491,7 +491,8 @@ mod tests {
             sequence,
             ..order_event(aggregate_id, "Created")
         };
-        let cases: [(&str, Vec<EventMessage>, &[&str]); 7] = [
+        let failed = |id: &str| EventMessage { name: SAGA_COMMAND_FAILED.to_owned(), ..at("order-7", None, id) };
+        let cases: [(&str, Vec<EventMessage>, &[&str]); 8] = [
             ("the last event again", vec![at("order-7", Some(1), "o-1"), at("order-7", Some(1), "o-1")], &["o-1"]),
             (
                 "a crash replays every event above the commit",
@@ -509,6 +510,13 @@ mod tests {
                 "an older unsequenced event is folded again",
                 vec![at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
                 &["u-1", "u-2", "u-1"],
+            ),
+            (
+                // A relay that lost its mark replays the first dead row after the second died: the
+                // instance keeps every failure it folded, so neither compensates twice.
+                "two failures, then the first replayed",
+                vec![failed("order-7:1:0:failed"), failed("order-7:1:1:failed"), failed("order-7:1:0:failed")],
+                &["order-7:1:0:failed", "order-7:1:1:failed"],
             ),
             (
                 "a crash replays one aggregate's sequenced and unsequenced events",

@@ -357,17 +357,19 @@ finished workflow again. `folded` is the text the instance's last write saved, e
 instance. It holds one mark per source aggregate, with two ids kept apart. One is the id of the
 event at the highest sequence folded from it. The other is the id of the last unsequenced event
 folded from it. An unsequenced event never overwrites the sequenced id, so a crash replay of an
-aggregate that mixes both is skipped whole. The answers:
+aggregate that mixes both is skipped whole. A `SagaCommandFailed` event is kept apart again: the
+mark holds the id of every failure folded, one per dead command at most. So when two commands die
+and a relay that lost its mark replays the first, it is still a repeat. The answers:
 
 | The event | Answer |
 |---|---|
-| its id is one of its aggregate's two ids | `Repeat`: a redelivery, or a replay after a crash |
+| its id is one of its aggregate's two ids, or a failure folded before | `Repeat`: a redelivery, or a replay after a crash |
 | its sequence is below its aggregate's highest | `BelowMark`: assumed folded, see below |
 | anything else | `Fold { folded }`: the marks to save with the step |
 
 The runner folds nothing on `Completed`, `Repeat` or `BelowMark`, so a step whose ack was lost does
-not decide its commands again. An unsequenced event is a repeat only of the last unsequenced one
-folded from its aggregate. Marks the function did not write are a `codec` error.
+not decide its commands again. An unsequenced event other than a failure is a repeat only of the
+last unsequenced one folded from its aggregate. Marks the function did not write are a `codec` error.
 
 `BelowMark` rests on order: a dispatcher hands one aggregate's events over in order, so a lower
 sequence was folded before. A dead letter breaks that. If the dispatcher dead-letters sequence 4 and
@@ -383,7 +385,7 @@ the row names, so the saga can compensate:
 
 | Field | Value | Why |
 |---|---|---|
-| `id` | `"{command.id}:failed"` | a sink that runs twice for one row builds the same event; the instance skips the second |
+| `id` | `"{command.id}:failed"` | a sink that runs twice for one row builds the same event; the instance skips the second, whatever folded between |
 | `aggregate_id` | the command's: the instance | the runner folds it there, without the saga's `instance_id` |
 | `sequence` | `None` | the failure has no place in an aggregate's order |
 | `name` | `SagaCommandFailed` | the saga's `handle` branches on it |

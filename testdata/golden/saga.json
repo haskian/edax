@@ -334,6 +334,58 @@
     }
   },
   {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}",
+      "id": "order-7:2:1:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"unsequenced\":\"order-7:2:0:failed\"}}",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
     "command_id": "order-7:1:0",
     "index": 0,
     "instance_id": "order-7",
