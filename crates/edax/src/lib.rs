@@ -40,6 +40,9 @@ pub use router::{idempotent_by_id, idempotent_by_id_in, EventHandler, EventIdemp
 /// wire form `"<code>: <message>"`. Every SDK renders and caches a failure the same way, and the code
 /// carries the terminal / transient verdict ([`ErrorCode::is_terminal`]).
 pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, ErrorCode};
+// The tenancy rule a host chooses a mode by ([`Repository::tenancy`]) and composes its own keys with
+// (a saga instance, a read-model id), so a Rust host names it from `edax` as a Python host does.
+pub use edax_core::{check_tenant, tenant_key, Tenancy, TENANT_MAX};
 // Kernel decisions a host calls directly, re-exported so a host need not reach past `edax` into
 // `edax_event`. No SDK code path calls `is_stale` or `advance`: the host owns where the watermark lives.
 pub use edax_event::{advance, is_stale, originate, propagate};
@@ -64,5 +67,7 @@ mod tests {
         assert!(!crate::guid().is_empty());
         assert!(crate::current_timestamp() < crate::current_timestamp());
         assert!(crate::backoff_millis(crate::Backoff::DEFAULT, 0, u64::MAX) <= 100);
+        assert_eq!(crate::tenant_key(crate::Tenancy::Pool, Some("acme"), "order-1"), Ok("4:acme:order-1".to_owned()));
+        assert!(crate::check_tenant(&"a".repeat(crate::TENANT_MAX + 1)).is_err());
     }
 }
