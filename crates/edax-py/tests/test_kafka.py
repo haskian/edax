@@ -891,31 +891,52 @@ async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept:
 
 
 @pytest.mark.parametrize(
-    ("listener", "on_dead", "raises"),
+    ("wiring", "on_dead", "raises"),
     [
-        pytest.param(True, None, "on_dead", id="a_dispatcher_without_a_sink"),
+        pytest.param("subscribed_with_a_listener", None, "on_dead", id="a_dispatcher_without_a_sink"),
         pytest.param(
-            False, sink_ok, "without a rebalance listener", id="a_client_subscribed_without_a_listener"
+            "subscribed_without_a_listener",
+            sink_ok,
+            "without a rebalance listener",
+            id="a_client_subscribed_without_a_listener",
+        ),
+        pytest.param(
+            "assigned_by_hand", sink_ok, None, id="a_client_assigned_by_hand_without_a_listener_runs"
         ),
     ],
 )
-async def test_run_refuses_a_wiring_that_stalls(
-    listener: bool, on_dead: Callable[[edax.Delivery, BaseException], Awaitable[None]] | None, raises: str
+async def test_run_refuses_only_a_wiring_that_stalls(
+    wiring: str,
+    on_dead: Callable[[edax.Delivery, BaseException], Awaitable[None]] | None,
+    raises: str | None,
 ) -> None:
     """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its partition
     forever. A client the group assigns partitions to, with no listener, keeps a revoked partition's
     bookkeeping, and the client then refuses every commit that names it. The run refuses both before
-    it polls anything."""
+    it polls anything. A client that took its partitions by hand has no group to revoke them, so it
+    runs without a listener."""
     cluster = FakeKafkaCluster()
     client = FakeKafkaClient(cluster)
     await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
     consumer = KafkaConsumer(client, serializer=IdSerializer())
-    client.subscribe(["t"], listener=consumer.rebalance_listener() if listener else None)
-    await cluster.join(client)
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, on_dead=on_dead)
-    with pytest.raises(ValueError, match=raises):
-        await consumer.run(dispatcher)
-    assert client.cursor == 0, "nothing was polled"
+    if wiring == "assigned_by_hand":
+        client.assign([TP0])
+    else:
+        listener = consumer.rebalance_listener() if wiring == "subscribed_with_a_listener" else None
+        client.subscribe(["t"], listener=listener)
+        await cluster.join(client)
+    handled: list[str] = []
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=on_dead
+    )
+    if raises is not None:
+        with pytest.raises(ValueError, match=raises):
+            await consumer.run(dispatcher)
+        assert client.cursor == 0, "nothing was polled"
+        return
+    run = await _drive(consumer, dispatcher, lambda: handled == ["0"])
+    assert handled == ["0"], wiring
+    assert run.cancelled(), "the run was stopped by the test, not refused"
 
 
 class _FlakyKeyService:

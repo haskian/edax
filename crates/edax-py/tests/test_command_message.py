@@ -3,6 +3,7 @@ how a received message is run again, how a record is forgotten, and the optional
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -17,6 +18,7 @@ from edax import (
     current_command,
     forget,
     idempotent,
+    idempotent_by_id,
     json_codec,
     msgpack_codec,
 )
@@ -262,10 +264,19 @@ async def test_an_ingress_and_a_consumer_guard_on_one_ledger_both_run() -> None:
         assert not isinstance(record, edax.Won) and record.result == f"{stage}:ord-7f3c"
 
 
-def test_a_scope_that_is_not_a_str_is_refused_at_wiring() -> None:
-    with pytest.raises(TypeError, match="must be a str"):
-        not_a_str: Any = None
-        idempotent(MemoryIdempotencyStore(), scope=not_a_str, tenancy=edax.Tenancy.SILO)
+@pytest.mark.parametrize(
+    "guard, match",
+    [
+        pytest.param(idempotent, r"idempotent\(scope=\.\.\.\) names the guard", id="command_guard"),
+        pytest.param(
+            idempotent_by_id, r"idempotent_by_id\(scope=\.\.\.\) names the consumer", id="event_guard"
+        ),
+    ],
+)
+def test_a_scope_that_is_not_a_str_is_refused_at_wiring(guard: Callable[..., Any], match: str) -> None:
+    not_a_str: Any = None
+    with pytest.raises(TypeError, match=match):
+        guard(MemoryIdempotencyStore(), scope=not_a_str, tenancy=edax.Tenancy.SILO)
 
 
 # =========================================================================
