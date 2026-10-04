@@ -203,8 +203,10 @@ only if its tuple sorts strictly after the cursor tuple; an equal tuple was the 
 row.
 
 The canonical form is RFC 8785, whose numbers are doubles. Say a page ends on a row whose sort value is
-an integer past 2^53. Then it cannot mint `next`: the query fails with `CodecError` rather than
-resume at the wrong row. Keep sort keys and ids that wide as strings.
+an integer outside -(2^53 - 1) to 2^53 - 1. Then it cannot mint `next`: the query fails with
+`CodecError` rather than resume at the wrong row. Keep sort keys and ids that wide as strings. A
+float sort value pages exactly at any size: RFC 8785 writes a whole float past 2^53 as an integer,
+and the kernel reads an integer outside that range back as the float it was minted from.
 
 A backend does not re-derive any of that. The kernel owns both halves of the round trip.
 Read `after` with `decode_cursor`, which refuses a cursor minted under another sort, and mint `next`
@@ -222,15 +224,21 @@ values = decode_cursor(spec["after"], spec["sort"])  # one value per key in `key
 All three are pinned by `testdata/golden/cursor.json` and `query.json`, which every binding's suite
 reads. A backend that decodes differently fails a test instead of paging wrong in production.
 `ProjectionStoreContract` holds a backend that declares `supports_kernel_queries` to the same rules.
-Every row arrives once while another writer commits between pages. `next` is the kernel's cursor.
-A cursor under another sort is refused.
+Every row arrives once while other writers insert or delete rows between pages. `next` is the
+kernel's cursor. A cursor under another sort is refused.
 
-The document must carry a non-null, unique `"id"`. The kernel appends `{"path": "id"}` as a
-final sort key unless your sort already ends there. No two rows then share a full sort tuple, and a
-page boundary landing inside a tie neither drops nor repeats a row. A row whose `id` is missing or
-`null` cannot mint a cursor: that is a `CodecError`. Rows tied on every other key would tie on the
-tiebreak too, and paging past them would drop the rest of the tie. An empty sort takes no
-tiebreak and no cursor.
+That promise covers rows whose sort values hold still. A row whose sort value changes between pages
+moves to the other side of the cursor. It then arrives twice, or not at all. Sort by `balance`
+descending, read the first page, then let one deposit lift a row from the second page to the top: the
+walk never sees it. The property tests state this premise.
+
+The document must carry a unique `"id"` that is a string or a number. The kernel appends
+`{"path": "id"}` as a final sort key unless your sort already ends there. No two rows then share a
+full sort tuple, and a page boundary landing inside a tie neither drops nor repeats a row. A row
+whose `id` is missing, `null`, an array or an object cannot mint a cursor: that is a `CodecError`.
+Arrays and objects compare by type alone, so rows tied on every other key would tie on the tiebreak
+too, and paging past them would drop the rest of the tie. An empty sort takes no tiebreak and no
+cursor.
 
 `MemoryProjectionStore` injects the row key as `"id"` before querying. That injected value is
 authoritative and overwrites any `"id"` already in the document. A durable backend must do the
@@ -321,7 +329,7 @@ page a set you already hold.
 | Raised | When | Verdict |
 |---|---|---|
 | `ConcurrencyError` | `save` version mismatch, and nothing else | transient: reload and refold |
-| `CodecError` | a malformed or misspelled filter or spec, a `None` comparand, a cursor minted under another sort, a `next` from a row without an `id`; a document the backend cannot marshal | terminal |
+| `CodecError` | a malformed or misspelled filter or spec, a `None` comparand, a cursor minted under another sort, a `next` from a row without a string or number `id`; a document the backend cannot marshal, or one holding an integer wider than 64 bits | terminal |
 | `StoreError` | anything else the backend fails on | transient |
 
 A corrupt cursor tagged as a store failure would look transient, and the handler paging with it
@@ -331,6 +339,10 @@ asserts `caught.value.terminal is True` for each refusal above.
 A scalar or array document is rejected at `save`, not at the query. It has nowhere for the store to
 inject the row key as `"id"`. Such a row could be written and then never paged. The memory adapter
 raises `CodecError` while the caller can still fix it, and leaves the entity's version alone.
+
+A document holding an integer wider than 64 bits is rejected at `save` too, and by `query`. The filter
+and the sort would read it as the nearest float, and `get` would return it rounded. Store such a
+value as a string.
 
 See [errors](./errors.md).
 
@@ -352,7 +364,9 @@ What a reader should do about it:
 - **Return the version.** `Entity.version` is monotonic per row, so a caller can tell an unchanged
   document from a refreshed one, and a client can refuse to go backwards.
 - **Hold a cursor, not an offset, across pages.** A projection is being written while you page it;
-  `offset` drifts under inserts, `after` does not.
+  `offset` drifts under inserts, `after` does not. Neither holds a row whose sort value changes
+  mid-walk: it is repeated or skipped. Sort a walk that must see every row once by a value the fold
+  never changes, such as `id`.
 - **Keep the fold safe under redelivery.** The store's compare-and-set protects the row, not your
   arithmetic. `balance + amount` applied twice is wrong however the version check went. Guard the
   handler; see [idempotency](./idempotency.md).

@@ -579,7 +579,9 @@ CURSOR = "W3sicGF0aCI6ImJhbGFuY2VfY2VudHMifV0="
         # limit is tested against None, not truthiness: limit=0 is "an empty page", not "no limit".
         ("limit_zero_is_kept", {"limit": 0}, {"limit": 0}),
         ("after_set", {"sort": SORT, "after": CURSOR}, {"sort": SORT, "after": CURSOR}),
-        ("after_empty_is_omitted", {"after": ""}, {}),
+        # after is tested against None, not truthiness: "" (from `?after=`) reaches the kernel, which
+        # refuses it as it refuses it from every other binding.
+        ("after_empty_is_kept", {"after": ""}, {"after": ""}),
         (
             "every_field_set",
             {"filter": FILTER, "sort": SORT, "offset": 20, "limit": 50, "after": CURSOR},

@@ -157,7 +157,7 @@ pub fn query(query: &str, docs: &str) -> Result<String, String> {
 }
 
 /// Mint the keyset cursor that resumes after a document (JSON string) under sort keys (JSON string),
-/// for a backend that pages natively. A row without a non-null `id` is a `codec:` error.
+/// for a backend that pages natively. A row whose `id` is not a string or a number is a `codec:` error.
 pub fn encode_cursor(doc: &str, sort: &str) -> Result<String, String> {
     edax_cqrs::encode_cursor_json(doc.as_bytes(), sort.as_bytes()).map_err(wire)
 }
@@ -280,8 +280,8 @@ pub fn payload_hash(payload: &[u8]) -> u64 {
 
 /// Canonicalize a UTF-8 JSON payload (RFC 8785) and hash it. Canonicalization lives in the kernel,
 /// so every binding gets the same hash; don't canonicalize on the host side. A command's guard uses
-/// [`command_hash_json`], which also binds the command name. An integer literal past 2^53 is a
-/// `codec` error.
+/// [`command_hash_json`], which also binds the command name. An integer literal outside
+/// `-(2^53-1)..=2^53-1` is a `codec` error.
 pub fn payload_hash_json(payload: &[u8]) -> Result<u64, String> {
     let canonical = edax_cqrs::canonical_json(payload).map_err(wire)?;
     Ok(edax_cqrs::payload_hash(&canonical))
@@ -298,7 +298,7 @@ pub fn canonical_json(payload: &[u8]) -> Result<String, String> {
 /// The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
 /// `{"name": name, "payload": payload}`. `payload` is the command value as UTF-8 JSON, in the shape
 /// the handler receives (after upcast). The kernel canonicalizes, so every binding agrees. An integer
-/// literal past 2^53 is a `codec` error. See [`edax_cqrs::command_hash_json`].
+/// literal outside `-(2^53-1)..=2^53-1` is a `codec` error. See [`edax_cqrs::command_hash_json`].
 pub fn command_hash_json(name: &str, payload: &[u8]) -> Result<u64, String> {
     edax_cqrs::command_hash_json(name, payload).map_err(wire)
 }
@@ -1052,8 +1052,10 @@ impl MemoryTransactor {
     /// Persist `document_json` under `tx` at `version + 1` if the stored version still equals
     /// `version`; returns the new version. A document that is not a JSON object is a `codec:` error:
     /// the query injects the row key as its `"id"`, so a scalar or an array could be saved and never
-    /// queried.
+    /// queried. So is one the kernel's [`edax_cqrs::filter::check_document`] refuses, an integer wider
+    /// than 64 bits, which would be stored as the nearest float.
     pub fn save_projection(&self, tx: i64, id: &str, version: u64, document_json: &str) -> Result<u64, String> {
+        edax_cqrs::filter::check_document(document_json.as_bytes()).map_err(wire)?;
         let document: edax_memory::Document = parse_json("a projection document is a JSON object", document_json)?;
         self.inner.projection_store().save(tx, id, version, document).map_err(wire)
     }

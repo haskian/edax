@@ -278,7 +278,7 @@ class DefaultedPlaceOrder:
     lines: list[DefaultedShipping]
     order_id: str = "ord-7f3c"
     total_cents: int = 4200
-    reference: int = 9007199254740992
+    reference: int = 9007199254740991
     weight_kg: float = 2.5
     note: str | None = None
     customer: str = "café ☕ 🦀"
@@ -300,7 +300,7 @@ class DefaultedPlaceOrderStruct(msgspec.Struct):
     lines: list[DefaultedShippingStruct]
     order_id: str = "ord-7f3c"
     total_cents: int = 4200
-    reference: int = 9007199254740992
+    reference: int = 9007199254740991
     weight_kg: float = 2.5
     note: str | None = None
     customer: str = "café ☕ 🦀"
@@ -322,7 +322,7 @@ DEFAULTED_ORDER: dict[str, Any] = {
     "lines": [{"city": "LA", "zip": None}],
     "order_id": "ord-7f3c",
     "total_cents": 4200,
-    "reference": 9007199254740992,
+    "reference": 9007199254740991,
     "weight_kg": 2.5,
     "note": None,
     "customer": "café ☕ 🦀",

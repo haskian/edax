@@ -2,6 +2,8 @@
 semantics from JSON; the table below pins the dict each constructor emits, which is the only part
 the SDK owns — a wrong key or op name would sail past the golden vectors."""
 
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 import edax
@@ -82,6 +84,27 @@ def test_golden_filter() -> None:
 def test_constructor_canonical_form(branch: str, built: dict, want_canonical: dict, want_match: bool) -> None:
     assert built == want_canonical
     assert F.matches(built, ACCOUNT) is want_match  # the kernel accepts what we built
+
+
+# The SDK's encoder writes these host types as text, so a filter compares their text. `_json` and
+# docs/sdk/errors.md state each ordering; an encoder change that moves one fails here.
+@pytest.mark.parametrize(
+    "branch, built, document, want",
+    [
+        ("decimal_orders_as_text", F.gt("price", Decimal("10")), {"price": Decimal("9.5")}, True),
+        ("decimal_equality_is_by_spelling", F.eq("price", Decimal("9.5")), {"price": Decimal("9.50")}, False),
+        (
+            "a_whole_second_sorts_after_a_later_half_second",
+            F.gt("at", datetime(2024, 1, 1, 0, 0, 0, 500000, tzinfo=timezone.utc)),
+            {"at": datetime(2024, 1, 1, tzinfo=timezone.utc)},
+            True,
+        ),
+    ],
+)
+def test_host_types_encoded_as_text_compare_as_text(
+    branch: str, built: dict[str, Any], document: dict[str, Any], want: bool
+) -> None:
+    assert F.matches(built, document) is want, branch
 
 
 def test_null_semantics() -> None:

@@ -140,6 +140,8 @@ async def test_get_many_paging_branches(case: PageCase) -> None:
         ("a_none_comparand", {"filter": f.eq("age", None)}),
         ("an_empty_path_segment", {"filter": f.exists("owner..name")}),
         ("an_integer_wider_than_64_bits", {"filter": f.eq("age", 2**70)}),
+        # As from `?after=`: the kernel refuses it, so the SDK must not read it as "no cursor".
+        ("an_empty_cursor", {"sort": [q.sort_key("name")], "after": ""}),
     ],
 )
 async def test_get_many_rejects_a_bad_spec_as_terminal(branch: str, kwargs: dict[str, Any]) -> None:
@@ -184,9 +186,71 @@ class _RollBack(Exception):
     """Ends the open writer's transaction without committing it."""
 
 
+# A sort value: a small integer, so rows tie often, or a whole-number float past 2^53, which the cursor
+# carries as integer digits that are not its exact value.
+_SORT_VALUE = st.one_of(st.integers(0, 3), st.sampled_from([5.808820077685227e16, 1.1108287563226614e18]))
+_SORT = [q.sort_key("n")]
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    value=st.one_of(
+        st.floats(allow_nan=False, allow_infinity=False),
+        st.integers(2**53, 2**70).map(float),
+        st.integers(-(2**53 - 1), 2**53 - 1),
+    )
+)
+def test_a_sort_value_round_trips_through_the_cursor(value: int | float) -> None:
+    """Every finite float, and every integer the cursor accepts, decodes as the value it was minted from,
+    so the next page resumes exactly at its row."""
+    decoded = q.decode_cursor(q.encode_cursor({"id": "a", "n": value}, _SORT), _SORT)
+    assert decoded == [value, "a"]
+
+
+@pytest.mark.parametrize(
+    "tiebreak",
+    [None, ["t1", 0], {"tenant": "t1", "n": 0}],
+    ids=["null_id", "array_id", "object_id"],
+)
+def test_a_row_whose_id_is_not_a_string_or_a_number_mints_no_cursor(tiebreak: Any) -> None:
+    # Arrays and objects compare by type alone, so these rows tie on the tiebreak as null ids would,
+    # and resuming after the first would drop the second.
+    rows = [{"id": tiebreak, "k": 1}, {"id": tiebreak, "k": 1}]
+    with pytest.raises(CodecError) as caught:
+        q.query(rows, sort=[q.sort_key("k")], limit=1)
+    assert "string or number `id`" in str(caught.value)
+
+
+_WIDE_DOCUMENT: dict[str, Any] = {"id": "a", "name": "ada", "n": 2**64 + 1}
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["save", "query", "matches", "encode_cursor"],
+)
+async def test_a_document_integer_wider_than_64_bits_is_refused(boundary: str) -> None:
+    """The filter and the sort would read the integer as the nearest float, and ``get``, ``get_many`` and
+    ``query`` would return it rounded. So every boundary that takes a document refuses it, as the spec
+    refuses one, and the save stores nothing."""
+    store = MemoryProjectionStore()
+    entity = Entity("a", 0, dict(_WIDE_DOCUMENT))
+    with pytest.raises(CodecError) as caught:
+        if boundary == "save":
+            await store.save(entity)
+        elif boundary == "query":
+            q.query([_WIDE_DOCUMENT])
+        elif boundary == "matches":
+            f.matches(f.eq("name", "ada"), _WIDE_DOCUMENT)
+        else:
+            q.encode_cursor(_WIDE_DOCUMENT, [q.sort_key("n")])
+    assert caught.value.terminal is True
+    assert "outside the 64-bit range" in str(caught.value)
+    assert await store.get("a") is None and entity.version == 0
+
+
 @settings(max_examples=150, deadline=None)
 @given(
-    initial=st.lists(st.one_of(st.none(), st.integers(0, 3)), max_size=10),
+    initial=st.lists(st.one_of(st.none(), _SORT_VALUE), max_size=10),
     sort=st.sampled_from(
         [[q.sort_key("k")], [q.sort_key("k", desc=True)], [q.sort_key("k"), q.sort_key("id", desc=True)]]
     ),
@@ -194,7 +258,7 @@ class _RollBack(Exception):
     changes=st.lists(
         st.lists(
             st.one_of(
-                st.tuples(st.just("insert"), st.one_of(st.none(), st.integers(0, 3))),
+                st.tuples(st.just("insert"), st.one_of(st.none(), _SORT_VALUE)),
                 st.tuples(st.just("delete"), st.integers(0, 63)),
             ),
             max_size=3,
@@ -203,16 +267,16 @@ class _RollBack(Exception):
     ),
 )
 def test_keyset_paging_never_skips_or_repeats_under_concurrent_writes(
-    initial: list[int | None],
+    initial: list[int | float | None],
     sort: list[q.SortKey],
     limit: int,
-    changes: list[list[tuple[str, int | None]]],
+    changes: list[list[tuple[str, int | float | None]]],
 ) -> None:
     """The Python twin of the kernel's proptest, through the kernel's own ``query``: other writers insert
     and delete rows between pages (sort keys never change, the stable-sort premise). No row is returned
     twice, and every row present for the whole walk is returned exactly once."""
 
-    def row(i: int, k: int | None) -> dict[str, Any]:
+    def row(i: int, k: int | float | None) -> dict[str, Any]:
         return {"id": f"r{i:03d}"} if k is None else {"id": f"r{i:03d}", "k": k}
 
     table = [row(i, k) for i, k in enumerate(initial)]
@@ -235,7 +299,7 @@ def test_keyset_paging_never_skips_or_repeats_under_concurrent_writes(
                 table.append(row(next_id, arg))
                 next_id += 1
             elif table:
-                gone = table.pop((arg or 0) % len(table))
+                gone = table.pop(int(arg or 0) % len(table))
                 survivors.discard(gone["id"])
         page = q.query(table, sort=sort, limit=limit, after=page.next)
     assert len(seen) == len(set(seen)), f"a row was returned twice: {seen}"

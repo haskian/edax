@@ -54,8 +54,8 @@ fn canonical_payload_hash_cases() -> Vec<Value> {
         r#"{"ls":"\u2028"}"#,
         r#"{"n":1e20}"#,
         r#"{"n":1.0E+20}"#,
-        r#"{"n":9007199254740992}"#,
-        r#"{"n":9007199254740992.0}"#,
+        r#"{"n":9007199254740991}"#,
+        r#"{"n":9007199254740991.0}"#,
         r#"{"k":"v","items":[3,1,2]}"#,
         r#"{"outer":{"z":1,"a":2}}"#,
         r#"{}"#,
@@ -79,8 +79,9 @@ fn canonical_payload_hash_cases() -> Vec<Value> {
 /// The canonical form itself (RFC 8785), so a second SDK (or a store that re-canonicalizes) can check
 /// bytes and not only hashes. Each row: the input text, its canonical text or the error, and the
 /// hash. The rows pin what `serde_json` features or a host encoder could otherwise change — key
-/// order, number spelling, escaping — and the kernel's own rule: an integer literal past 2^53, which
-/// a double would round, is refused.
+/// order, number spelling, escaping — and the kernel's own rule: an integer literal outside the
+/// I-JSON safe range `-(2^53-1)..=2^53-1`, which a double would round or could not tell from its
+/// neighbour, is refused.
 fn canonical_json_cases() -> Vec<Value> {
     [
         ("keys_inserted_out_of_order", r#"{"b":2,"a":1,"c":{"z":0,"y":[{"q":1,"p":2}]}}"#),
@@ -90,7 +91,9 @@ fn canonical_json_cases() -> Vec<Value> {
         ("int_and_whole_float_are_one_number", r#"{"n":[2,2.0,2e0,20e-1,2E+0]}"#),
         ("negative_zero_is_zero", r#"{"n":[-0,-0.0]}"#),
         ("fractions_are_shortest_round_trip", r#"{"n":[1.10,0.1,1.5e-7,0.000001,1e2,123456.789]}"#),
-        ("integers_at_2_pow_53_stay_exact", r#"{"n":[9007199254740992,-9007199254740992]}"#),
+        ("safe_integers_stay_exact", r#"{"n":[9007199254740991,-9007199254740991]}"#),
+        ("integer_at_2_pow_53_is_refused", r#"{"n":9007199254740992}"#),
+        ("negative_integer_at_2_pow_53_is_refused", r#"{"n":-9007199254740992}"#),
         ("integer_past_2_pow_53_is_refused", r#"{"n":9007199254740993}"#),
         ("negative_integer_past_2_pow_53_is_refused", r#"{"n":-9007199254740993}"#),
         ("u64_max_is_refused", r#"{"n":18446744073709551615}"#),
@@ -171,11 +174,12 @@ fn command_hash_cases() -> Vec<Value> {
         ("whole_number_float_hashes_as_the_integer", "order.place", with(json!({ "weight_kg": 1.0 }))),
         // The same float field as an encoder that drops the fraction writes it: the same hash.
         ("whole_number_float_given_as_an_int", "order.place", with(json!({ "weight_kg": 1 }))),
-        // 2^53, the widest integer a double (and so RFC 8785) keeps exact: it hashes as itself.
-        ("integer_at_2_pow_53_stays_exact", "order.place", with(json!({ "reference": 9_007_199_254_740_992u64 }))),
-        // One past it a double rounds, so two ids one apart would hash alike: refused as `codec`, in
-        // every SDK, before any handler runs. Above `i64::MAX` too, where a signed reader also fails.
-        ("integer_past_2_pow_53_is_refused", "order.place", with(json!({ "reference": 9_007_199_254_740_993u64 }))),
+        // 2^53 - 1, the widest safe integer (I-JSON, RFC 7493): it hashes as itself.
+        ("safe_integer_stays_exact", "order.place", with(json!({ "reference": 9_007_199_254_740_991u64 }))),
+        // From 2^53 a double cannot tell two ids one apart, so they would hash alike: refused as
+        // `codec`, in every SDK, before any handler runs. Above `i64::MAX` too, where a signed reader
+        // also fails.
+        ("integer_at_2_pow_53_is_refused", "order.place", with(json!({ "reference": 9_007_199_254_740_992u64 }))),
         ("u64_above_i64_max_is_refused", "order.place", with(json!({ "reference": 9_223_372_036_854_775_809u64 }))),
         // An optional field that is unset is serialized as null, not omitted.
         ("unset_optional_is_null_not_omitted", "order.place", with(json!({ "note": null }))),
@@ -492,6 +496,13 @@ fn query_cases() -> Vec<Value> {
             json!([{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d", "n": 1}]),
         ),
         ("offset_after_a_cursor", json!({"sort": by_n(), "offset": 1, "after": mint(json!({"id": "r0", "n": 1}), by_n())}), ns(&[1, 2, 3, 4])),
+        // A whole-number double past 2^53 sits in the cursor as integer digits that are not its exact
+        // value; read back as the double, the walk resumes inside the tie and not before its own row.
+        (
+            "resume_after_a_whole_number_double_past_2_pow_53",
+            json!({"sort": by_n(), "limit": 1, "after": mint(json!({"id": "a", "n": 5.808820077685227e16}), by_n())}),
+            json!([{"id": "a", "n": 5.808820077685227e16}, {"id": "b", "n": 5.808820077685227e16}, {"id": "c"}]),
+        ),
         // Ints, floats and integers past 2^53 in one key: by value, exactly.
         (
             "numeric_sort_by_value",
@@ -513,6 +524,7 @@ fn query_cases() -> Vec<Value> {
         ("refused_cursor_under_another_direction", json!({"sort": [{"path": "n", "desc": true}], "after": mint(json!({"id": "r0", "n": 1}), by_n())}), ns(&[1, 2])),
         ("refused_cursor_without_a_sort", json!({"after": mint(json!({"id": "r0", "n": 1}), by_n())}), ns(&[1, 2])),
         ("refused_next_from_a_row_without_an_id", json!({"sort": [{"path": "k"}], "limit": 1}), json!([{"k": 1}, {"k": 1}])),
+        ("refused_next_from_a_row_with_an_object_id", json!({"sort": [{"path": "k"}], "limit": 1}), json!([{"id": {"n": 0}, "k": 1}, {"id": {"n": 1}, "k": 1}])),
         ("refused_unknown_field", json!({"sort": by_n(), "limt": 1}), ns(&[1])),
     ];
     cases
@@ -552,8 +564,12 @@ fn cursor_cases() -> Vec<Value> {
         (json!([{"path": "v"}]), json!({"id": "t1", "v": {"k": [1, "two", true, null, "café ☕"]}})),
         // Bytes whose standard base64 would carry `+` and `/`: base64url carries `-` and `_`.
         (json!([{"path": "q"}]), json!({"id": "~~~", "q": "x?>"})),
-        // 2^53 and its negative: the widest integers the RFC 8785 cursor text keeps exact.
-        (json!([{"path": "n"}]), json!({"id": 9_007_199_254_740_992u64, "n": -9_007_199_254_740_992i64})),
+        // 2^53 - 1 and its negative: the widest integers the RFC 8785 cursor text keeps exact.
+        (json!([{"path": "n"}]), json!({"id": 9_007_199_254_740_991u64, "n": -9_007_199_254_740_991i64})),
+        // Whole-number doubles past 2^53, which RFC 8785 writes as integer digits that are not their
+        // exact value (`58088200776852270`, `1110828756322661400`): they decode as the doubles.
+        (json!([{"path": "n"}]), json!({"id": "f1", "n": 5.808820077685227e16})),
+        (json!([{"path": "n"}, {"path": "m", "desc": true}]), json!({"id": "f2", "n": -1.1108287563226614e18, "m": [1e20]})),
     ];
     let minted_rows = minted.into_iter().map(|(sort, doc)| {
         let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();
@@ -580,8 +596,11 @@ fn cursor_cases() -> Vec<Value> {
         ("encode_without_a_sort", json!([]), json!({"id": "user-3"}), None),
         ("encode_from_a_row_without_an_id", json!([{"path": "n"}]), json!({"n": 1}), None),
         ("encode_from_a_row_with_a_null_id", json!([{"path": "n"}]), json!({"n": 1, "id": null}), None),
-        // The cursor is RFC 8785 text, whose doubles would round this value onto its neighbour.
-        ("encode_a_sort_value_past_2_pow_53", json!([{"path": "n"}]), json!({"n": 9_007_199_254_740_993u64, "id": "a"}), None),
+        // Arrays and objects compare by rank only, so such ids tie the way a null id does.
+        ("encode_from_a_row_with_an_array_id", json!([{"path": "n"}]), json!({"n": 1, "id": ["t1", 1]}), None),
+        ("encode_from_a_row_with_an_object_id", json!([{"path": "n"}]), json!({"n": 1, "id": {"tenant": "t1", "n": 1}}), None),
+        // The cursor is RFC 8785 text, whose doubles could not tell this value from its neighbour.
+        ("encode_a_sort_value_at_2_pow_53", json!([{"path": "n"}]), json!({"n": 9_007_199_254_740_992u64, "id": "a"}), None),
     ];
     let refused_rows = refused.into_iter().map(|(name, sort, doc, cursor)| {
         let keys: Vec<SortKey> = serde_json::from_value(sort.clone()).unwrap();

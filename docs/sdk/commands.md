@@ -71,8 +71,9 @@ would not do that. That is one key and two numbers, so a genuine duplicate raise
 A dataclass is read through its declared fields, defaults included. A command may be decoded off a
 queue with a defaulted field left implicit. It hashes as the one its constructor builds. The hashed
 form is RFC 8785, whose numbers are doubles, so an `amount: float` built with `2` and the same command
-decoded as `2.0` bind to one key. A double rounds an integer past 2^53, so a command carrying one
-(a 64-bit id, say) is refused as a terminal `CodecError` before any claim: carry such ids as strings.
+decoded as `2.0` bind to one key. A double rounds an integer past 2^53, so a command carrying an
+integer outside -(2^53 - 1) to 2^53 - 1 (a 64-bit id, say) is refused as a terminal `CodecError`
+before any claim: carry such ids as strings.
 A command decoded from the wire hashes after its upcast, as the dispatched one does.
 
 In Rust, register each command type as its own struct on the type-erased `CommandBus`. Never route

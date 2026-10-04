@@ -64,14 +64,17 @@ already treated `2 == 2.0`; the hash agrees with it.
   an exponent: `1e+21`.
 - A number too large for a double (`1e400`) is a `codec` error, never silently infinity.
 
-**The 2^53 rule (the kernel's own).** A double holds every integer up to 2^53 exactly and rounds the
-ones past it. So JCS would write `9007199254740993` as `9007199254740992`, and two ids one apart
-would share a hash. So an **integer literal whose magnitude exceeds 2^53** is a terminal `codec`
-error, at any depth. The kernel reads the input text before `serde_json` parses it, so
-`arbitrary_precision` cannot hide a wide literal. A number written as a float (`9007199254740993.0`,
-`1e20`) is a float, and rounds as one. A payload that carries wider integers (a 64-bit id, a
-snowflake) must carry them as strings. One consequence: the canonical text of a whole float between
-2^53 and `1e21` is an integer literal past 2^53, so canonicalizing it a second time is refused.
+**The safe-integer rule (the kernel's own).** A double rounds the integers past 2^53. So JCS would
+write `9007199254740993` as `9007199254740992`, and two ids one apart would share a hash. 2^53 itself
+is ambiguous too, since `9007199254740993` reads back as it. So an **integer literal outside
+-(2^53 - 1) to 2^53 - 1** is a terminal `codec` error, at any depth. That is the I-JSON safe range
+(RFC 7493) and JavaScript's `Number.MAX_SAFE_INTEGER`. An off-the-shelf JCS library (Python's
+`rfc8785`, say) refuses the same integers, so it reproduces every form the kernel writes. The kernel
+reads the input text before `serde_json` parses it, so `arbitrary_precision` cannot hide a wide
+literal. A number written as a float (`9007199254740993.0`, `1e20`) is a float, and rounds as one. A
+payload that carries wider integers (a 64-bit id, a snowflake) must carry them as strings. One
+consequence: the canonical text of a whole float between 2^53 and `1e21` is an integer literal
+outside the safe range, so canonicalizing it a second time is refused.
 
 ### What is data and what is formatting
 
@@ -85,7 +88,7 @@ snowflake) must carry them as strings. One consequence: the canonical text of a 
 | `{"name":"café"}`, `{"name":"caf\u00e9"}` | raw UTF-8, unescaped | an escape is decoded first: escaping is formatting |
 | `"\b\u0001\"\\"` | `"\b\u0001\"\\"` | `"`, `\` and control characters are escaped, by name where JSON has one |
 | `{"n":[2,2.0,-0.0,1.10]}` | `{"n":[2,2,0,1.1]}` | numbers by value |
-| `{"id":9007199254740993}` | `codec` error | an integer a double would round |
+| `{"id":9007199254740992}` | `codec` error | an integer outside the safe range: a double cannot tell it from `9007199254740993` |
 | `{"email":"a@b.c",}` | `codec` error naming the line and column | the parser does not accept JSON-ish text |
 | `{"total":1e400}` | `codec` error, `out of range` | never coerced to `null`, which would collide |
 | `"\ud800"` | `codec` error | a string must be valid Unicode |
@@ -93,7 +96,9 @@ snowflake) must carry them as strings. One consequence: the canonical text of a 
 Every row is a case in the kernel's own table-driven test, and `testdata/golden/canonical_json.json`
 carries the input, the canonical text (or the error) and the hash for every SDK to check. A keyset
 cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint, so a sort
-value past 2^53 cannot be minted into a cursor either.
+value that is an integer outside the safe range cannot be minted into a cursor either. A whole float
+past 2^53 can: RFC 8785 writes it as integer digits, so `decode_cursor` reads an integer outside the
+safe range back as the double it was minted from.
 
 ---
 

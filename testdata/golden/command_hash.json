@@ -120,7 +120,7 @@
       "customer": "Ada Lovelace",
       "note": "leave at the door",
       "order_id": "ord-7f3c",
-      "reference": 9007199254740992,
+      "reference": 9007199254740991,
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -133,8 +133,8 @@
       "weight_kg": 2.5
     },
     "error": null,
-    "expected": 515903038077820924,
-    "name": "integer_at_2_pow_53_stays_exact",
+    "expected": 4932948591937455533,
+    "name": "safe_integer_stays_exact",
     "type": "order.place"
   },
   {
@@ -143,7 +143,7 @@
       "customer": "Ada Lovelace",
       "note": "leave at the door",
       "order_id": "ord-7f3c",
-      "reference": 9007199254740993,
+      "reference": 9007199254740992,
       "shipping": {
         "city": "NYC",
         "zip": "10001"
@@ -155,9 +155,9 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
-    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "expected": null,
-    "name": "integer_past_2_pow_53_is_refused",
+    "name": "integer_at_2_pow_53_is_refused",
     "type": "order.place"
   },
   {
@@ -178,7 +178,7 @@
       "total_cents": 4200,
       "weight_kg": 2.5
     },
-    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -2^53..=2^53, the integers RFC 8785 keeps exact",
+    "error": "codec: command payload canonicalization failed: integer at byte 137 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "expected": null,
     "name": "u64_above_i64_max_is_refused",
     "type": "order.place"
