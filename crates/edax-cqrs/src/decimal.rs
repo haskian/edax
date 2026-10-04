@@ -15,14 +15,17 @@
 //!
 //! Decimal text is an optional sign, digits with at most one `.` and at least one digit, and an
 //! optional exponent: `e` or `E`, an optional sign, and digits within the 32-bit range. No
-//! whitespace, no `_`, no `NaN` and no `Infinity`. Its plain notation holds at most
-//! [`MAX_DECIMAL_DIGITS`] digits, so a short text such as `1E+999999` cannot expand into a megabyte.
+//! whitespace, no `_`, no `NaN` and no `Infinity`. It is at most [`MAX_DECIMAL_TEXT`] bytes long, its
+//! digits without leading or trailing zeros number at most [`MAX_DECIMAL_DIGITS`], and so does its
+//! plain notation, so a short text such as `1E+999999` cannot expand into a megabyte.
 //! `testdata/golden/host_values.json` pins the form.
 //!
 //! `bigdecimal` does the arithmetic: the parse, the normal form and the exact order. This module adds
 //! what it leaves open. Its parser is looser than this grammar (it reads `1_000`) and panics on an
-//! exponent past `i64`, so the grammar is checked first. The digit bound is checked on the normal
-//! form, which holds the coefficient and the scale, before anything is written out in plain notation.
+//! exponent past `i64`, so the grammar is checked first. Its parse and normal form cost more than
+//! linear time in the digits, and a filter parses its comparand once per document, so the grammar
+//! also bounds the text and its digits before the parse. The plain notation's length is bounded on the
+//! normal form, before anything is written out.
 
 use bigdecimal::BigDecimal;
 use edax_core::Error;
@@ -33,12 +36,19 @@ use std::str::FromStr;
 /// `0` before the point of a value below one.
 pub const MAX_DECIMAL_DIGITS: usize = 1000;
 
+/// The longest decimal text the kernel reads, in bytes: the longest plain notation with its sign and
+/// point, and about as much again for padding zeros and an exponent.
+pub const MAX_DECIMAL_TEXT: usize = 2 * MAX_DECIMAL_DIGITS;
+
 /// Read decimal text into its normal form, or say why it is not decimal text.
 fn parse(text: &str) -> Result<BigDecimal, Error> {
     check_grammar(text)?;
     let decimal = BigDecimal::from_str(text).map_err(|e| Error::codec(format_args!("{text:?} is not decimal text: {e}")))?;
     let decimal = decimal.normalized();
-    if plain_digits(&decimal).is_none_or(|count| count > MAX_DECIMAL_DIGITS) {
+    // The digits before the point (one, the `0`, for a value below one) and after it. The grammar holds
+    // the exponent to 32 bits and the digits to a few thousand, so neither sum overflows.
+    let plain = decimal.order_of_magnitude().max(0) + 1 + decimal.fractional_digit_count().max(0);
+    if !usize::try_from(plain).is_ok_and(|plain| plain <= MAX_DECIMAL_DIGITS) {
         return Err(Error::codec(format_args!(
             "{text:?} has more than {MAX_DECIMAL_DIGITS} digits in plain notation"
         )));
@@ -46,23 +56,15 @@ fn parse(text: &str) -> Result<BigDecimal, Error> {
     Ok(decimal)
 }
 
-/// How many digits the plain notation of a normalized decimal holds, or `None` past `u64`.
-fn plain_digits(decimal: &BigDecimal) -> Option<usize> {
-    let (_, scale) = decimal.as_bigint_and_exponent();
-    let digits = decimal.digits();
-    let count = match u64::try_from(scale) {
-        // A whole number written with `-scale` zeros after its coefficient.
-        Err(_) => digits.checked_add(scale.unsigned_abs())?,
-        Ok(scale) if digits > scale => digits,
-        // A value below one carries a `0` before the point.
-        Ok(scale) => scale.checked_add(1)?,
-    };
-    usize::try_from(count).ok()
-}
-
-/// Refuse what `BigDecimal::from_str` would read but the grammar does not admit, and an exponent it
-/// could not hold.
+/// Refuse what `BigDecimal::from_str` would read but the grammar does not admit, an exponent it could
+/// not hold, and text too long to parse in bounded time.
 fn check_grammar(text: &str) -> Result<(), Error> {
+    if text.len() > MAX_DECIMAL_TEXT {
+        return Err(Error::codec(format_args!(
+            "decimal text of {} bytes is longer than {MAX_DECIMAL_TEXT}",
+            text.len()
+        )));
+    }
     let unsigned = text.strip_prefix(['-', '+']).unwrap_or(text);
     if ["nan", "snan", "inf", "infinity"].iter().any(|word| unsigned.eq_ignore_ascii_case(word)) {
         return Err(Error::codec(format_args!("{text:?} is not a finite decimal")));
@@ -85,6 +87,11 @@ fn check_grammar(text: &str) -> Result<(), Error> {
         if exponent.parse::<i32>().is_err() {
             return Err(Error::codec(format_args!("{text:?} has an exponent outside the 32-bit range")));
         }
+    }
+    // The coefficient the parse builds, but for the zeros that do not change the value.
+    let significant = integer.trim_start_matches('0').len() + fraction.trim_end_matches('0').len();
+    if significant > MAX_DECIMAL_DIGITS {
+        return Err(Error::codec(format_args!("{text:?} has more than {MAX_DECIMAL_DIGITS} significant digits")));
     }
     Ok(())
 }
@@ -110,7 +117,8 @@ mod tests {
     use super::*;
 
     /// One case per branch of the parse and the render: sign, special value, exponent, point,
-    /// leading and trailing zeros, zero, the digit bound, and every grammar refusal.
+    /// leading and trailing zeros, zero, the text, significant digit and plain digit bounds, and every
+    /// grammar refusal.
     #[test]
     fn canonical_decimal_branches() {
         let at_bound = format!("1E+{}", MAX_DECIMAL_DIGITS - 1);
@@ -119,6 +127,11 @@ mod tests {
         let tiny_at_bound = format!("1E-{}", MAX_DECIMAL_DIGITS - 1);
         let tiny_at_bound_plain = format!("0.{}1", "0".repeat(MAX_DECIMAL_DIGITS - 2));
         let tiny_past_bound = format!("1E-{MAX_DECIMAL_DIGITS}");
+        let padded_at_text_bound = format!("{}1.{}", "0".repeat(999), "0".repeat(MAX_DECIMAL_TEXT - 1001));
+        let padded_past_text_bound = format!("{padded_at_text_bound}0");
+        let significant_at_bound = format!("1{}E-{}", "0".repeat(MAX_DECIMAL_DIGITS - 1), MAX_DECIMAL_DIGITS - 1);
+        let integer_zeros_past_bound = format!("1{}E-{MAX_DECIMAL_DIGITS}", "0".repeat(MAX_DECIMAL_DIGITS));
+        let fraction_zeros_past_bound = format!("0.{}1E+{}", "0".repeat(MAX_DECIMAL_DIGITS), MAX_DECIMAL_DIGITS + 1);
         let cases: Vec<(&str, &str, Result<&str, &str>)> = vec![
             ("an_integer", "42", Ok("42")),
             ("a_fraction", "9.5", Ok("9.5")),
@@ -142,6 +155,13 @@ mod tests {
             ("a_fraction_at_the_digit_bound", &tiny_at_bound, Ok(&tiny_at_bound_plain)),
             ("past_the_digit_bound", &past_bound, Err("more than 1000 digits")),
             ("a_fraction_past_the_digit_bound", &tiny_past_bound, Err("more than 1000 digits")),
+            ("zero_padding_at_the_text_bound", &padded_at_text_bound, Ok("1")),
+            // Trailing zeros make the coefficient the parse builds long, and its normal form costs more
+            // than linear time: the length is refused before the parse.
+            ("zero_padding_past_the_text_bound", &padded_past_text_bound, Err("decimal text of 2001 bytes is longer than 2000")),
+            ("significant_digits_at_the_bound", &significant_at_bound, Ok("1")),
+            ("integer_zeros_past_the_significant_bound", &integer_zeros_past_bound, Err("more than 1000 significant digits")),
+            ("fraction_zeros_past_the_significant_bound", &fraction_zeros_past_bound, Err("more than 1000 significant digits")),
             ("zero_at_the_widest_exponent", "0E+2147483647", Ok("0")),
             ("the_widest_exponent_meets_the_digit_bound", "1E-2147483648", Err("more than 1000 digits")),
             ("an_exponent_past_32_bits", "1E+2147483648", Err("outside the 32-bit range")),
