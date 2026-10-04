@@ -48,8 +48,7 @@ def encode_bytes(value: Any) -> bytes:
     """``value`` as UTF-8 JSON bytes, for a kernel call that takes bytes."""
     try:
         return msgspec.json.encode(_shared_form(msgspec.to_builtins(value, builtin_types=_OWN_FORM)))
-    # UnicodeEncodeError (a lone surrogate) is a ValueError, as is a naive datetime; a self-containing value
-    # recurses.
+    # UnicodeEncodeError (a lone surrogate) is a ValueError; a self-containing value recurses.
     except (TypeError, ValueError, OverflowError, RecursionError) as e:
         raise CodecError(f"value is not JSON-encodable: {e}") from e
 
@@ -70,10 +69,7 @@ def _shared_form(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_shared_form(item) for item in value]
     if isinstance(value, datetime):
-        if value.utcoffset() is None:
-            # A ValueError, so encode_bytes reports it as every other value it cannot encode.
-            raise ValueError(f"datetime {value.isoformat()} has no UTC offset, so its instant is unknown")
-        with errors.mapped():
+        with errors.mapped():  # the kernel refuses a naive value: its text has no offset
             return _edax.canonical_timestamp(value.isoformat())
     if isinstance(value, Decimal):
         with errors.mapped():

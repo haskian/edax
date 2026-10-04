@@ -623,6 +623,7 @@ class PayloadCase:
     encoded: dict[str, Any] | None  # the parsed payload, for an encodable command
     # An SDK error, not any exception: the case below asserts `terminal` on what it caught.
     raises: type[edax.EdaxError] | None = None
+    match: str = "not JSON-encodable"  # what the refusal says, for a command that raises
 
 
 @pytest.mark.parametrize(
@@ -675,7 +676,10 @@ class PayloadCase:
         ),
         pytest.param(
             PayloadCase(
-                PlaceOrderWithScalars(uuid.UUID(int=1), datetime.datetime(2026, 1, 2)), None, edax.CodecError
+                PlaceOrderWithScalars(uuid.UUID(int=1), datetime.datetime(2026, 1, 2)),
+                None,
+                edax.CodecError,
+                match="with an offset",  # the kernel's refusal: a naive value's text has none
             ),
             id="naive_datetime_has_no_instant_and_is_terminal",
         ),
@@ -695,7 +699,7 @@ def test_payload_json_branches(case: PayloadCase) -> None:
     # command, so it must surface as the terminal CodecError; a bare TypeError / RecursionError
     # would read as transient and be redelivered forever.
     if case.raises is not None:
-        with pytest.raises(case.raises, match="not JSON-encodable") as caught:
+        with pytest.raises(case.raises, match=case.match) as caught:
             C._payload_json(case.cmd)
         assert caught.value.terminal is True
         assert caught.value.__cause__ is not None  # the underlying encoder error is preserved
