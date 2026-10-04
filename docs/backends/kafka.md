@@ -403,10 +403,10 @@ It leaves the rest to the host:
   up to `drain_timeout_s`. No key is then handled by two members at once. The new owner starts from
   the commit, so the skipped work runs there: at-least-once. Keep `drain_timeout_s` above the slowest
   handler and below the client's `max_poll_interval_ms`. Without the listener, a revoked partition
-  keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark is
-  due, the client refuses every commit that names it, so no partition commits again. So `run` refuses an
-  `AIOKafkaConsumer` subscribed to topics with no listener, with `ValueError`. A client assigned its
-  partitions by hand (`assign`) has no rebalance and needs none.
+  keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark
+  is due, the client refuses every commit that names it, so no partition commits again. `run`
+  therefore raises `ValueError` for an `AIOKafkaConsumer` subscribed to topics with no listener. A
+  client assigned its partitions by hand (`assign`) has no rebalance and needs none.
 - **Threads.** `KafkaConsumer` keeps its offset bookkeeping in native state bound to the thread that
   built it. Build the consumer on the thread that runs its event loop. A consumer built on the main
   thread and run in `threading.Thread(target=asyncio.run, ...)` raises the terminal `BadHandle` on

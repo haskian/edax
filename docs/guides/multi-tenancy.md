@@ -96,8 +96,8 @@ Variations, from strictest down:
   it takes the pool rules.
 
 **In edax.** `Tenancy.SILO`, the default of a repository and a producer. The idempotency guards,
-`claim_key` and `forget` have no default, so pass it there. A tenant is optional and no key carries one. Stamp one
-anyway if the data may ever move into a pool: the field travels, costs almost nothing, and gives you
+`claim_key` and `forget` have no default, so pass the mode to each of them. A tenant is optional
+and no key carries one. Stamp one anyway if the data may ever move into a pool: the field travels, costs almost nothing, and gives you
 an audit trail.
 
 ## 2. Fully shared, the pool model
@@ -196,11 +196,12 @@ The same shape covers a Pub/Sub topic path, an SNS topic ARN, or one Kafka topic
 tenant you cannot place to a parking destination rather than raising, because a row whose tenant is
 unknown fails the same way on every attempt.
 
-On a shared topic, `tenancy=Tenancy.POOL` makes the record key the composed key. The kernel decides it
-(`edax_kafka::record_key`, pinned by `kafka_record.json`), so every SDK producing to the topic places
-one aggregate on one partition. Two tenants' same-named aggregates then take different partitions, and
-a consumer reads the tenant off the key without decoding the value. A subscription that filters on attributes instead, such as SNS to SQS, needs the
-tenant as an attribute, and the adapter you write is what adds it.
+On a shared topic, `tenancy=Tenancy.POOL` makes the record key the composed key. The kernel decides
+it (`edax_kafka::record_key`, pinned by `kafka_record.json`), so every SDK producing to the topic
+places one aggregate on one partition. Two tenants' same-named aggregates then take different
+partitions, and a consumer reads the tenant off the key without decoding the value. A subscription
+that filters on attributes instead, such as SNS to SQS, needs the tenant as an attribute, and the
+adapter you write is what adds it.
 
 ### One shared outbox, one shared queue
 

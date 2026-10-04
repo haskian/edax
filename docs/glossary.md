@@ -265,8 +265,9 @@ evaluator that pins the match verdict. A missing or null path makes a leaf false
 **Keyset cursor** — a base64url position token from the kernel's `query`, portable between services. A
 unique `id` tiebreak is appended automatically so paging never drops or repeats tied rows.
 
-**Upcast** — raising a stored event from its written version to its event name's current one: one past the
-highest step of the name's upcaster, or 1 with none. The kernel decides that version, plans
+**Upcast** — raising a stored event from its written version to the current version of its name.
+That version is one past the highest step of the name's upcaster, or 1 with none. The kernel decides
+that version, plans
 the ordered steps and rejects a gap; your code rewrites the payload.
 
 ## Patterns

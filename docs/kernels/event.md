@@ -61,7 +61,7 @@ Every key in a message has one owner.
 |---|---|---|
 | a typed field | edax: a kernel or an SDK decision reads it | its own type, pinned by the codec goldens |
 | `extensions` | edax extensions: trace context, request origin | keys match `[a-z0-9][a-z0-9._-]{0,63}`; values are opaque strings |
-| `metadata` | the application | opaque to edax; the tenant is a typed field, not a key here |
+| `metadata` | the application | opaque to edax; the tenant has its own typed field |
 
 `check_extensions` is the key rule: 1 to 64 bytes of lowercase ASCII letters, digits, `.`, `_` and
 `-`, starting with a letter or a digit. A dot namespaces keys per extension, as in `http.origin_ip`.
@@ -98,7 +98,8 @@ callable clock. None of these times orders anything: order on `sequence`.
 aggregate id. A command's is its target aggregate, or its own id when it names none. A command
 without a target then spreads by id, instead of piling onto one empty key. An empty aggregate id
 is still an aggregate id. The Kafka record key (composed with the tenant under a pool), the memory
-broker's partition and the dispatcher's worker all start from it. `testdata/golden/ordering_key.json` pins it.
+broker's partition and the dispatcher's worker all start from it.
+`testdata/golden/ordering_key.json` pins it.
 
 `received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
 client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
@@ -231,10 +232,10 @@ let back: edax_event::EventMessage = Format::Msgpack.decode(&wire)?;
 ```
 
 Encoding fails only on an extension key or a tenant outside its rule. A message holds nothing else
-that can fail to serialize. Decoding fails on any bytes the rule above refuses, a bad tenant included,
-so a tenant another service minted is checked before any key is composed from it. The binding tags both failures
-with the `codec` error code. The host then raises a terminal `CodecError` instead of retrying a
-poison message forever.
+that can fail to serialize. Decoding fails on any bytes the rule above refuses, a bad tenant
+included. So the decoder checks a tenant another service minted before any key is composed from it.
+The binding tags both failures with the `codec` error code. The host then raises a terminal
+`CodecError` instead of retrying a poison message forever.
 
 ## `upcast` — planning a version chain
 
@@ -379,9 +380,9 @@ reports it (`Observer.saga_skipped`). A host must re-drive a dead-lettered saga 
 later event of its aggregate reaches the saga, or repair the instance by hand.
 
 `saga_command_failed(command, code, error, recorded_at)` builds the event a saga folds when a
-command its outbox sent died: the reply a participant that rejected it never sends. Both runners
-call it from their relay's dead-letter sink (`command_failed`) and fold the event into the instance
-the row names, so the saga can compensate:
+command its outbox sent died. The event replaces the reply a participant that rejected the
+command never sends. Both runners call it from their relay's dead-letter sink (`command_failed`) and
+fold the event into the instance the row names, so the saga can compensate:
 
 | Field | Value | Why |
 |---|---|---|
@@ -418,7 +419,7 @@ index, tenant, command, cause_id, cause_correlation_id, issued_at)` builds each 
 | `id` | `saga_command_id(instance_id, version, index)` = `"{instance_id}:{version}:{index}"` | unique per committed transition; a re-sent row keeps it |
 | `idempotency_key` | `scoped(saga, id)` = `"{len(saga)}:{saga}:{id}"`, with `len` in UTF-8 bytes | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
 | `aggregate_id` | the instance id | one instance's commands keep their order on every transport, and a store can find its rows |
-| `tenant` | the folded event's | the command inherits the tenancy of the fact that caused it, so the bus that runs it claims inside that tenant |
+| `tenant` | the folded event's | the command inherits the tenant of the event that caused it, so the bus that runs it claims inside that tenant |
 | `correlation_id` | the folded event's | the command stays in the event's flow, not the instance's |
 | `causation_id` | the folded event's id | the event caused the command |
 | `name`, `version`, `data` | the saga's command, marshaled by the runner's codec | — |

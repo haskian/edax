@@ -40,7 +40,7 @@ commands in the outbox. `runner.relay(bus, on_dead=runner.command_failed)` sends
 fails terminally is handed back on every drain, and the rows behind it wait. `command_failed` is the
 sink that tells the instance; see [compensation](#compensation). In Rust, the codec is a
 `RegistryCodec` over the command enum, and `Relay::<_, CommandMessage>::new(store).on_dead(sink)`
-with `runner.command(row)` sends them, the sink calling `runner.command_failed(tx, row, error)`.
+with `runner.command(row)` sends them. The sink calls `runner.command_failed(tx, row, error)`.
 
 ### The name
 
@@ -122,14 +122,14 @@ durable store purges tombstones by retention, longer than any redelivery window.
 `folded` is the kernel's record of the events the instance has folded (`saga_admit`). It is opaque
 text: the store keeps it in a text column, as `save` wrote it, and `load` returns it. It
 holds one entry per source aggregate: the highest sequence folded from it with that event's id, and,
-apart, the id of the last unsequenced event folded from it. It also keeps the id of every
+separately, the id of the last unsequenced event folded from it. It also keeps the id of every
 `SagaCommandFailed` folded, one per dead command. So it grows with the aggregates a workflow touches
 and the commands that died, not with its events. Before it folds, the runner asks the kernel whether the
 instance has folded the event already. A repeat is skipped: no fold, no write, no command. So a
-redelivered step never decides its commands a second time under the next version's ids, also when
+redelivered step never decides its commands a second time under the next version's ids, even when
 one aggregate mixes sequenced and unsequenced events. An unsequenced event has no order, so only the
-last unsequenced one folded from its aggregate is recognized. A failure is the exception: every one
-folded is recognized.
+last unsequenced one folded from its aggregate is recognized. A `SagaCommandFailed` is the exception: the
+kernel recognizes every one folded.
 
 The rule relies on the dispatcher handing one aggregate's events over in order, as the staleness
 rule does: an event below its aggregate's highest sequence is assumed folded (`below_mark`). A dead
@@ -294,7 +294,8 @@ def handle(self, state: Any, msg: EventMessage, /) -> tuple[Any, list[Any]]:
 A completed instance folds nothing, this event included. So a saga that may compensate keeps its
 instance open until the commands it waits on have run, instead of completing in the step that sends
 them. The event's id is the row's id plus `:failed`, so a sink that runs twice for one row folds it
-once, also when another command's failure folded in between. [edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists its fields.
+once, even when another command's failure folded in between.
+[edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists its fields.
 
 ## See also
 

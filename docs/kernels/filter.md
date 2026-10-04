@@ -81,9 +81,9 @@ whether the array at a path includes a given value.
 
 `collation` is optional and left out of the wire form when unset (see [Decimals](#decimals)).
 
-`Operator` and `Collation` are `#[non_exhaustive]`, so a new operator or collation is additive. `Filter` is not. A `match` over
-its variants must stay exhaustive. A new variant is then a compile error rather than a wildcard's
-silent default.
+`Operator` and `Collation` are `#[non_exhaustive]`, so a new operator or collation is additive.
+`Filter` is not. A `match` over its variants must stay exhaustive. A new variant is then a compile
+error rather than a wildcard's silent default.
 
 ## Operators
 
@@ -158,7 +158,7 @@ Two other forms order wrongly, silently, if they reach a document as plain strin
 ## Host values every SDK writes alike
 
 A document, a filter and a command hash agree across languages only when every SDK writes a host
-value as the same JSON. Two host types have no JSON form of their own, so the kernel fixes it.
+value as the same JSON. Two host types have no JSON form of their own, so the kernel fixes one.
 A Rust SDK, or a third one, must emit exactly this:
 
 | Host type | JSON | Kernel function | Refused, as `codec` |

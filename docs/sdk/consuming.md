@@ -115,8 +115,8 @@ can still end that way there and the health check shows it.
 **Shutdown.** Pass the deadline to `stop(timeout=...)` rather than wrapping `stop()` in
 `asyncio.wait_for`. Either way `stop` returns only once no worker is left, so a later `start()` never
 puts two workers on one queue. Past the deadline it cancels the workers, nacks the delivery each one
-held and every delivery still queued, and so leaves nothing submitted unsettled. The observer hears
-each of them once, as `stopped`. After `stop`, `submit` raises `RuntimeError` until the next `start`.
+held and every delivery still queued, and so leaves nothing submitted unsettled. Each of them
+reaches the observer once, as `stopped`. After `stop`, `submit` raises `RuntimeError` until the next `start`.
 
 ## Settlement
 
@@ -275,7 +275,7 @@ dead-lettered. The attempt count is kept whatever `max_attempts` says, including
 grows across redeliveries instead of repeating a flat first step. An entry for a nacked message
 that never comes back stays for the life of the dispatcher. That happens when a broker-side
 dead-letter queue takes the message, or when a rebalance moves its partition to another consumer.
-Neither SDK bounds the maps today; this is a known limit. Python reports their size as
+Neither SDK bounds the maps today. Python reports their size as
 `stats().attempts_tracked` and `stats().contended_tracked`, and steady growth there is this case. A
 bare message is never counted, because nothing settles it.
 

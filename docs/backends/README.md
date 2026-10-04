@@ -36,9 +36,10 @@ Specification: `edax.store.Transactor`.
 
 Specification: `edax.store.EventStore`.
 
-- The stream is named by the `aggregate_id` argument of `append`, `load` and `load_snapshot`, and by
-  the snapshot's `aggregate_id` for `save_snapshot`, never by a draft's own `aggregate_id`. Under
-  `Tenancy.POOL` the argument is the id composed with the tenant while the drafts keep the bare id.
+- The `aggregate_id` argument of `append`, `load` and `load_snapshot` names the stream. For
+  `save_snapshot`, the snapshot's `aggregate_id` names it. A draft's own `aggregate_id` never does.
+  Under `Tenancy.POOL` the argument is the id composed with the tenant, while the drafts keep the
+  bare id.
 - `append` is a compare-and-set on the version, enforced in the database.
 - On a mismatch it raises `ConcurrencyError` and writes nothing.
 - Event rows and outbox rows commit together in the caller's `tx`.

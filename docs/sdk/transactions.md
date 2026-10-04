@@ -132,7 +132,7 @@ its own.
 
 The hook and the opener have different names on purpose. `async with edax.transaction(store):` opens
 the store's own unit of work through `store.begin()` and publishes it. No method named `transaction`
-opens one unpublished, so a host cannot reach for the wrong one. `transaction(transactor, observer=...)` reports
+opens one unpublished, so a host cannot call the wrong one. `transaction(transactor, observer=...)` reports
 each unit of work as `committed` or `rolled_back` with its duration. See
 [observability.md](./observability.md).
 

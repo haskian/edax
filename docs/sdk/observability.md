@@ -253,13 +253,18 @@ A `KafkaConsumer` revoke waited its `drain_timeout_s` and handlers were still ru
 of the revoked partitions may run one of their keys while this member still does, so per-key order
 is broken for that window. `handling` is how many handlers were still running. Alert on any count,
 and raise the deadline above the slowest handler.
+
 #### `saga_skipped(name, reason, event_id)`: an event a saga instance did not fold
+
 A `SagaRunner` routed an event to an instance, and the kernel's `saga_admit` answered that the
 instance does not fold it: no fold, no write, no command. This fires once per skipped event, before
 `on_event` returns, and also for the failure event `command_failed` folds.
+
 `name` is the saga's name. `reason` is one of `SAGA_SKIPS`, the kernel's answer. `completed` is a
 tombstone, and `repeat` an event id the instance folded. `below_mark` is a sequence below the highest
-one the instance folded from its aggregate. `event_id` is for the log line, never a label. Read `repeat` as the redelivery rate. Read a `below_mark` that follows a re-drive of a
+one the instance folded from its aggregate. `event_id` is for the log line, never a label.
+
+Read `repeat` as the redelivery rate. Read a `below_mark` that follows a re-drive of a
 dead-lettered event as that event lost: the instance moved past it ([sagas](./sagas.md#sagastore)).
 An event the saga's `instance_id` ignores never reaches an instance, so it is not reported.
 
@@ -359,7 +364,7 @@ kernel's wire code: `concurrency`, `store`, `codec`, `payload_mismatch`, `in_pro
 `cached_failure`, `handler_not_found`, `already_registered`, `bad_handle`, `rejected`. For any other
 exception it is the qualified class name, `builtins.ValueError` or
 `asyncpg.exceptions.DeadlockDetectedError`, which is the OTel recommendation for a host exception.
-A host exception's own `code` attribute is never read: `HTTPError.code` is an int, and gRPC's
+`error_type` never reads a host exception's own `code` attribute: `HTTPError.code` is an int, and gRPC's
 `RpcError.code` is a method whose text holds the error details.
 
 ```python

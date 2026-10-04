@@ -28,8 +28,9 @@ command message: given to `dispatch`, carried by a message `dispatch_message` ru
 own `id` when it carries none. A Rust host still reads it, and the tenant, with a key closure that
 returns an `IdempotencyKey` (a plain `String` is a key with no tenant). `None` makes no claim, and the
 handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes on one
-ledger never replay each other's outcome. Under a pool the key carries the tenant, and under a pool or
-a bridge a command with no tenant is refused as `codec` before the claim. The hash covers the command name and the whole
+ledger never replay each other's outcome. Under a pool the key carries the tenant. Under a pool or a
+bridge the guard refuses a command with no tenant as `codec` before the claim. The hash covers the
+command name and the whole
 command value, every instance field. The kernel serializes, canonicalizes and hashes it in
 `edax_cqrs::command_hash`. A Python command declares its name as `type: ClassVar[str]`. A Rust
 command implements `command_type()`. Reusing a key with another command, or another name, is a
