@@ -1,7 +1,8 @@
 """Step 10: a redelivered event must not update the read model twice.
 
 A broker delivers at least once, so a handler sees some events twice. `idempotent_by_id` claims each
-event id before the handler runs, and skips an id it has seen.
+event id before the handler runs, and skips an id it has seen. Its `scope` names this consumer, so
+another consumer guarding over the same ledger keeps its own record of the same events.
 
 The ledger and the read model share one database here. With `unit_of_work=db` the guard opens the
 transaction: the claim and the read-model write commit together, or roll back together.
@@ -27,7 +28,7 @@ async def main() -> None:
     # 1. One database for the ledger and the read model.
     db = MemoryTransactor()
     balances = MemoryProjectionStore(db)
-    router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db))
+    router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances"))
     runs: list[str] = []
     audit_log_down = True  # the first run of e2 fails after its write
 

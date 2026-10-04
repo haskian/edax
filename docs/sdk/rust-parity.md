@@ -14,7 +14,7 @@ only when a shared decision needs a second implementation to pin it, never to ma
 | aggregate | `Aggregate`, `Root` | `Aggregate`, `Version` |
 | event codec | `RegistryCodec<T, PayloadFormat>`, `SerdeCodec<T, PayloadFormat>`, `Upcaster` | `json_codec()`, `msgpack_codec()`, `Upcaster` |
 | repository | `Repository` (`load` / `save`, `load_in` / `save_in`, `save_with` for a lineage, `load_for` / `load_for_in` for a tenant) | `Repository` (`tx=None` joins the ambient unit of work; `save(commands=...)` stages a command outbox; `load(tenant=...)` for a tenant) |
-| tenancy | `Repository::tenancy(Tenancy)`, and `edax_core::tenant_key` where a host keys | `tenancy=` on `Repository`, `idempotent` and `KafkaProducer`; `edax.tenant_key` where a host keys |
+| tenancy | `Repository::tenancy(Tenancy)`, a `Tenancy` argument on `idempotent` and `idempotent_by_id`, and `edax_core::tenant_key` where a host keys | `tenancy=` on `Repository`, `idempotent`, `idempotent_by_id`, `forget` and `KafkaProducer`; `edax.tenant_key` where a host keys |
 | outbox drain | `Relay::drain` over any `Outbox<R>` | `Relay.drain` and `Relay.run`, plus `pump` |
 | command bus | `CommandBus` (`register::<C, O>`, `wrap`), `retry`, `idempotent`, `idempotent_in`, `Terminal` | `CommandBus` (`dispatch`, `dispatch_message`), `command_message`, `current_command`, `retry`, `idempotent`, `forget`, `Rejected` |
 | consume path | `KeyOrderedDispatcher`, `Delivery::with_live`, `EventRouter`, `idempotent_by_id` | `KeyOrderedDispatcher`, `Delivery.live`, `EventRouter`, `idempotent_by_id` |
@@ -31,12 +31,15 @@ byte. The in-memory stores are one implementation (`edax-memory`) behind both.
 
 - **No ambient transaction.** Rust has no `current_tx`. A handler is a synchronous closure on its caller's
   thread. So a participant takes the handle explicitly (`&mut Tx`). A guard gets it from a provider closure
-  the host passes (`idempotent_in(store, scope, key, current)`). The closure takes the command or the event
+  the host passes (`idempotent_in(store, scope, tenancy, key, current)`). The closure takes the command or the event
   message, so each worker can return its own handle.
 - **No ambient message.** Rust has no `current_command` and no ambient lineage. A command is a plain value:
-  the guard reads its key through a closure, `idempotent(store, scope, key)`, and a save takes its
-  `Lineage` explicitly through `save_with`. The scope, the claim key and the hash are the kernel's, so
-  both SDKs claim the same key with the same hash.
+  the guard reads its key and the command's tenant through a closure, `idempotent(store, scope, tenancy,
+  key)`, which returns an `IdempotencyKey` (a plain `String` is a key with no tenant), and a save takes
+  its `Lineage` explicitly through `save_with`. The claim key, tenant included, and the hash are the
+  kernel's (`claim_key`, `event_idempotency`), so both SDKs claim the same key with the same hash under
+  every tenancy. Rust has no `forget` helper: a host deletes a settled record through its store with
+  the key `edax_cqrs::claim_key` composes, as Python's `forget` does.
 - **A nested unit of work is refused, not joined.** `transaction` keeps the databases open on its thread,
   keyed by `Transactor::identity`. A second unit of work on one of them is refused with the terminal
   `bad_handle` before it begins. `Repository::save` inside a host's body is such a unit of work. It can

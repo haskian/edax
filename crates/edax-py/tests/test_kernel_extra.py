@@ -796,7 +796,7 @@ def test_mapped_types_native_failures(
         ("lone_surrogate_wire", lambda: _edax.split_error("\ud800")),
         # Kernel refusals of a value's content.
         ("canonical_json_refuses_a_lone_surrogate_escape", lambda: _edax.canonical_json(b'{"s":"\\ud800"}')),
-        ("event_rule_takes_a_message", lambda: _edax.event_idempotency("evt-1")),  # ty: ignore[invalid-argument-type]
+        ("event_rule_takes_a_message", lambda: _edax.event_idempotency("evt-1", "silo", "test")),  # ty: ignore[invalid-argument-type]
     ],
 )
 def test_every_deterministic_boundary_failure_is_terminal(branch: str, call: Callable[[], Any]) -> None:

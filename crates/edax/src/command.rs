@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use edax_core::ErrorCode;
+use edax_core::{ErrorCode, Tenancy};
 use edax_cqrs::{cached_failure, claim_key, command_hash, outcome, Outcome};
 use serde::Serialize;
 
@@ -369,29 +369,64 @@ where
     }
 }
 
-/// Deduplicate dispatches by idempotency key. `key` returns the key for a command, or `None` to bypass the
-/// guard. The guard claims the kernel's [`claim_key`] for `scope` and that key, so two guards with different
-/// scopes on one store (an ingress and a consumer, say) never replay each other's outcome. The guard binds
-/// the command's idempotency hash (see [`Command`]) to the claim, so reusing the key with a different
-/// command errors. See `docs/sdk/idempotency.md`.
+/// What a command's guard claims under, as the host's key closure reads it off the command: the
+/// request's idempotency key and the tenant the command belongs to. A plain `String` or `&str` converts
+/// to a key with no tenant, which is all a silo needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdempotencyKey {
+    /// The client's request id.
+    pub key: String,
+    /// The tenant the command belongs to. Required under [`Tenancy::Pool`] and [`Tenancy::Bridge`].
+    pub tenant: Option<String>,
+}
+
+impl IdempotencyKey {
+    /// `key` sent by `tenant`.
+    pub fn for_tenant(tenant: impl Into<String>, key: impl Into<String>) -> Self {
+        Self { key: key.into(), tenant: Some(tenant.into()) }
+    }
+}
+
+impl From<String> for IdempotencyKey {
+    fn from(key: String) -> Self {
+        Self { key, tenant: None }
+    }
+}
+
+impl From<&str> for IdempotencyKey {
+    fn from(key: &str) -> Self {
+        key.to_owned().into()
+    }
+}
+
+/// Deduplicate dispatches by idempotency key. `key` returns the key for a command (and, in a multi-tenant
+/// deployment, its tenant), or `None` to bypass the guard. The guard claims the kernel's [`claim_key`] for
+/// `scope`, `tenancy` and that key, so two guards with different scopes on one store (an ingress and a
+/// consumer, say) never replay each other's outcome, and a Python guard of the same scope claims the same
+/// row. Under [`Tenancy::Pool`] the key carries the tenant, so one request id reused by two tenants claims
+/// two rows; under a pool or a bridge a command whose key names no tenant is the terminal `codec` error,
+/// before any claim. The guard binds the command's idempotency hash (see [`Command`]) to the claim, so
+/// reusing the key with a different command errors. See `docs/sdk/idempotency.md`.
 ///
 /// The first dispatch of a key wins the claim and runs the handler; a later one replays the prior record or
 /// gets the transient [`ErrorCode::InProgress`] error while the winner runs. Verdicts surface as an
 /// [`Error`] in the [`HandlerError`]. A terminal handler error is cached with its code; a transient one or a
 /// panic releases the claim. The default handle gives at-least-once with dedup; [`idempotent_in`] commits
 /// it with the events.
-pub fn idempotent<C, O, S>(
+pub fn idempotent<C, O, S, K>(
     store: S,
     scope: impl Into<String>,
-    key: impl Fn(&C) -> Option<String> + Send + Sync + 'static,
+    tenancy: Tenancy,
+    key: impl Fn(&C) -> Option<K> + Send + Sync + 'static,
 ) -> Middleware<C, O>
 where
     C: Command + 'static,
     O: Clone + 'static,
     S: IdempotencyStore<O> + Send + Sync + 'static,
     S::Tx: Default + 'static,
+    K: Into<IdempotencyKey>,
 {
-    idempotent_in(store, scope, key, |_| S::Tx::default())
+    idempotent_in(store, scope, tenancy, key, |_| S::Tx::default())
 }
 
 /// [`idempotent`] over the host's transaction. `current` is called once per guarded dispatch, with the
@@ -401,10 +436,11 @@ where
 /// same handle, so the claim commits with the events and a rollback drops both. Outside a unit of work
 /// `current` returns the auto-commit handle. Never wrap it in [`retry`]: retry the whole unit of work
 /// with [`retry_transaction`](crate::retry_transaction).
-pub fn idempotent_in<C, O, S>(
+pub fn idempotent_in<C, O, S, K>(
     store: S,
     scope: impl Into<String>,
-    key: impl Fn(&C) -> Option<String> + Send + Sync + 'static,
+    tenancy: Tenancy,
+    key: impl Fn(&C) -> Option<K> + Send + Sync + 'static,
     current: impl Fn(&C) -> S::Tx + Send + Sync + 'static,
 ) -> Middleware<C, O>
 where
@@ -412,6 +448,7 @@ where
     O: Clone + 'static,
     S: IdempotencyStore<O> + Send + Sync + 'static,
     S::Tx: 'static,
+    K: Into<IdempotencyKey>,
 {
     // The middleware closure runs once per registered handler; share `store`, `scope`, `key` and `current`
     // through reference counts so each produced handler owns a cheap clone.
@@ -426,10 +463,13 @@ where
         let current = Arc::clone(&current);
         Box::new(move |cmd: &C| -> Result<O, HandlerError> {
             let Some(k) = key(cmd) else { return next(cmd) };
-            // A command the kernel cannot hash is the kernel's terminal `codec` error; the message names the step.
+            let IdempotencyKey { key, tenant } = k.into();
+            // A key the tenancy refuses, or a command the kernel cannot hash, is the kernel's terminal
+            // `codec` error, raised before the claim; the message names the step.
+            let claim = claim_key(tenancy, tenant.as_deref(), &scope, &key)?;
             let hash = command_hash(cmd.command_type(), cmd)?;
             let mut tx = current(cmd);
-            guarded(&*store, &mut tx, &claim_key(&scope, &k), hash, || next(cmd))
+            guarded(&*store, &mut tx, &claim, hash, || next(cmd))
         })
     })
 }
@@ -452,7 +492,7 @@ mod tests {
 
     /// The ledger key a guard scoped [`SCOPE`] claims for idempotency key `key`.
     fn claimed(key: &str) -> String {
-        claim_key(SCOPE, key)
+        claim_key(Tenancy::Silo, None, SCOPE, key).unwrap()
     }
 
     /// A call counter the handlers and test stores share. Atomic, because the command path is
@@ -577,7 +617,7 @@ mod tests {
             let store: Arc<dyn IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(MemoryIdempotencyStore::<()>::new());
             let mut bus = CommandBus::new();
             let key = name.to_owned();
-            let guard = idempotent(Arc::clone(&store), SCOPE, move |_: &Typed| Some(key.clone()));
+            let guard = idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, move |_: &Typed| Some(key.clone()));
             let runs = Arc::new(AtomicUsize::new(0));
             let counted = Arc::clone(&runs);
             let handler = move |_: &Typed| {
@@ -643,10 +683,10 @@ mod tests {
         let receipts: Arc<dyn IdempotencyStore<String, Tx = MemoryTx> + Send + Sync> = Arc::new(ledger.idempotency_store::<String>());
         let balances: Arc<dyn IdempotencyStore<u32, Tx = MemoryTx> + Send + Sync> = Arc::new(ledger.idempotency_store::<u32>());
         let mut bus = CommandBus::new();
-        let withdraw_guard = idempotent(Arc::clone(&receipts), SCOPE, |_: &Withdraw| Some("w-1".to_owned()));
+        let withdraw_guard = idempotent(Arc::clone(&receipts), SCOPE, Tenancy::Silo, |_: &Withdraw| Some("w-1".to_owned()));
         let withdraw: Handler<Withdraw, String> = Box::new(|w: &Withdraw| Ok(format!("receipt for {}", w.amount_cents)));
         bus.register("Withdraw", wrap(withdraw, vec![withdraw_guard])).unwrap();
-        let deposit_guard = idempotent(Arc::clone(&balances), SCOPE, |_: &Deposit| Some("d-1".to_owned()));
+        let deposit_guard = idempotent(Arc::clone(&balances), SCOPE, Tenancy::Silo, |_: &Deposit| Some("d-1".to_owned()));
         bus.register("Deposit", wrap(Box::new(|d: &Deposit| Ok(d.amount_cents)), vec![deposit_guard])).unwrap();
 
         let cmd = Withdraw { account: "a", amount_cents: 500 };
@@ -759,6 +799,7 @@ mod tests {
         }
 
         let command_key = claimed(KEY);
+        let event_key = edax_event::event_idempotency(&crate::testkit::event("acct-1", "Deposited", 3), Tenancy::Silo, SCOPE).unwrap().key;
         let command_hash = command_hash("Deposit", &deposit()).unwrap();
         let event_hash = payload_hash(DEPOSIT_BODY);
 
@@ -767,21 +808,21 @@ mod tests {
             let command_store: Arc<dyn IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(MemoryIdempotencyStore::<()>::new());
             seed(&*command_store, &command_key, (c.prior)(command_hash));
             let mut bus = CommandBus::new();
-            let guard = idempotent(Arc::clone(&command_store), SCOPE, |_: &Deposit| Some(KEY.to_string()));
+            let guard = idempotent(Arc::clone(&command_store), SCOPE, Tenancy::Silo, |_: &Deposit| Some(KEY.to_string()));
             bus.register("Deposit", wrap(Box::new(|_: &Deposit| Ok(())), vec![guard])).unwrap();
             let command_err = bus.dispatch::<Deposit, ()>(&deposit()).expect_err(c.name);
 
             // --- consume path ---
             let event_store: crate::EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::<()>::new());
-            seed(&*event_store, KEY, (c.prior)(event_hash));
-            let mut router = crate::EventRouter::new().with(crate::idempotent_by_id(Arc::clone(&event_store)));
+            seed(&*event_store, &event_key, (c.prior)(event_hash));
+            let mut router = crate::EventRouter::new().with(crate::idempotent_by_id(Arc::clone(&event_store), SCOPE, Tenancy::Silo));
             router.register("Deposited", Box::new(|_: &EventMessage| Ok(()))).unwrap();
             let mut env = crate::testkit::event("acct-1", "Deposited", 3);
             env.data = DEPOSIT_BODY.to_vec();
             let event_err = router.dispatch(&env).expect_err(c.name);
 
             assert_eq!(command_err.downcast_ref::<Error>(), Some(&(c.want)(&command_key)), "{}: command path", c.name);
-            assert_eq!(event_err.downcast_ref::<Error>(), Some(&(c.want)(KEY)), "{}: consume path", c.name);
+            assert_eq!(event_err.downcast_ref::<Error>(), Some(&(c.want)(&event_key)), "{}: consume path", c.name);
             assert_eq!(is_terminal(&*command_err), c.want_terminal, "{}: command class", c.name);
             assert_eq!(is_terminal(&*event_err), c.want_terminal, "{}: consume class", c.name);
         }
@@ -927,7 +968,7 @@ mod tests {
             let store = Arc::new(FaultStore::default());
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
-            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, c.key);
+            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, Tenancy::Silo, c.key);
             let handler: Handler<NotJson, i64> = Box::new(move |_: &NotJson| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(1)
@@ -952,6 +993,107 @@ mod tests {
             }
             assert_eq!(calls.get(), c.want_calls, "{}: handler calls", c.name);
             assert_eq!(store.claims.get(), 0, "{}: no claim is taken", c.name);
+        }
+    }
+
+    #[test]
+    fn idempotent_keys_the_claim_by_the_guards_tenancy() {
+        // Two tenants dispatch one request id with one payload over one shared store. The guard's
+        // tenancy decides whether they claim one row or two, and refuses a command with no tenant
+        // where the mode requires one, before any claim.
+        #[derive(Serialize)]
+        struct Open {
+            owner: &'static str,
+            // Travels beside the command, as a message's tenant does: never part of the hash.
+            #[serde(skip)]
+            tenant: Option<&'static str>,
+        }
+        impl Command for Open {
+            fn command_type(&self) -> &str {
+                "Open"
+            }
+        }
+        struct Case {
+            name: &'static str,
+            tenancy: Tenancy,
+            tenants: [Option<&'static str>; 2],
+            want_runs: usize,
+            /// The row the first dispatch claimed, or `None` when it was refused.
+            want_key: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                name: "a pool claims one row per tenant",
+                tenancy: Tenancy::Pool,
+                tenants: [Some("acme"), Some("globex")],
+                want_runs: 2,
+                want_key: Some("4:acme:edax:cmd:8:payments:req-1"),
+            },
+            Case {
+                name: "a silo never keys by the tenant",
+                tenancy: Tenancy::Silo,
+                tenants: [Some("acme"), Some("globex")],
+                want_runs: 1,
+                want_key: Some("edax:cmd:8:payments:req-1"),
+            },
+            Case {
+                name: "a bridge keeps the key bare",
+                tenancy: Tenancy::Bridge,
+                tenants: [Some("acme"), Some("globex")],
+                want_runs: 1,
+                want_key: Some("edax:cmd:8:payments:req-1"),
+            },
+            Case {
+                name: "a pool refuses a command without a tenant before the claim",
+                tenancy: Tenancy::Pool,
+                tenants: [None, None],
+                want_runs: 0,
+                want_key: None,
+            },
+            Case {
+                name: "a bridge refuses a command without a tenant before the claim",
+                tenancy: Tenancy::Bridge,
+                tenants: [None, None],
+                want_runs: 0,
+                want_key: None,
+            },
+        ];
+        for c in cases {
+            let store = Arc::new(FaultStore::default());
+            let calls = Arc::new(Counter::default());
+            let calls_h = Arc::clone(&calls);
+            let guard = idempotent(
+                Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
+                SCOPE,
+                c.tenancy,
+                |o: &Open| Some(IdempotencyKey { key: "req-1".to_owned(), tenant: o.tenant.map(ToOwned::to_owned) }),
+            );
+            let handler: Handler<Open, i64> = Box::new(move |_: &Open| {
+                calls_h.set(calls_h.get() + 1);
+                Ok(7)
+            });
+            let mut bus = CommandBus::new();
+            bus.register("Open", wrap(handler, vec![guard])).unwrap();
+            for tenant in c.tenants {
+                let got = bus.dispatch::<Open, i64>(&Open { owner: "ada", tenant });
+                match c.want_key {
+                    Some(_) => assert_eq!(got.ok(), Some(7), "{}: the same request, the same answer", c.name),
+                    None => assert!(
+                        matches!(got, Err(e) if e.downcast_ref::<Error>().is_some_and(|e| e.code == ErrorCode::Codec)),
+                        "{}",
+                        c.name
+                    ),
+                }
+            }
+            assert_eq!(calls.get(), c.want_runs, "{}: handler runs", c.name);
+            match c.want_key {
+                Some(key) => assert!(
+                    matches!(store.inner.claim(&mut MemoryTx::auto_commit(), key, 0), Ok(Claim::Prior(_))),
+                    "{}: the claimed row",
+                    c.name
+                ),
+                None => assert_eq!(store.claims.get(), 0, "{}: no claim is taken", c.name),
+            }
         }
     }
 
@@ -1059,7 +1201,7 @@ mod tests {
             let calls = Arc::new(Counter::default());
             let calls_h = Arc::clone(&calls);
             let errors = c.errors;
-            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, |c: &Pay| {
+            let guard = idempotent(Arc::clone(&store) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>, SCOPE, Tenancy::Silo, |c: &Pay| {
                 Some(c.id.clone())
             });
             let bus = pay_bus(
@@ -1118,7 +1260,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone()))],
+            vec![idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone()))],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 if calls_h.get() == 1 {
@@ -1161,7 +1303,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
+            vec![idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
             Box::new(move |_c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Err(Error::codec("bad payload").into())
@@ -1190,7 +1332,7 @@ mod tests {
         let calls = Arc::new(Counter::default());
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
+            vec![idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone())), retry(3, Pacing::instant())],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(c.amount)
@@ -1263,7 +1405,7 @@ mod tests {
         // one claim; swapped, each retry would take and release its own, which the claim count shows.
         let (pacing, slept) = Pacing::recording();
         let bus = pay_bus(
-            vec![idempotent(Arc::clone(&store), SCOPE, |c: &Pay| Some(c.id.clone())), retry(2, pacing)],
+            vec![idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone())), retry(2, pacing)],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 if calls_h.get() == 1 {
@@ -1301,7 +1443,7 @@ mod tests {
 
         let calls_h = Arc::clone(&calls);
         let bus = pay_bus(
-            vec![idempotent(store, SCOPE, |c: &Pay| Some(c.id.clone()))],
+            vec![idempotent(store, SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone()))],
             Box::new(move |c: &Pay| {
                 calls_h.set(calls_h.get() + 1);
                 Ok(c.amount)
@@ -1343,7 +1485,7 @@ mod tests {
             };
             let raised_h = raised.clone();
             let bus = pay_bus(
-                vec![idempotent(store, SCOPE, |c: &Pay| Some(c.id.clone()))],
+                vec![idempotent(store, SCOPE, Tenancy::Silo, |c: &Pay| Some(c.id.clone()))],
                 Box::new(move |_c: &Pay| {
                     calls_h.set(calls_h.get() + 1);
                     Err(Box::new(raised_h.clone()) as HandlerError)

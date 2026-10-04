@@ -312,27 +312,33 @@ pub fn command_hash_json(name: &str, payload: &[u8]) -> Result<u64, String> {
 }
 
 /// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
-/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`. Two guards with different scopes
-/// never share a key. See [`edax_cqrs::claim_key`].
-pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
-    edax_cqrs::claim_key(scope, idempotency_key)
+/// `scope`, in a deployment of tenancy `mode` (`"silo"`, `"pool"` or `"bridge"`):
+/// `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`, composed with `tenant` under a pool. Two
+/// guards with different scopes never share a key. A mode that requires a tenant and a call that
+/// names none is a `codec:` error. Pinned by `testdata/golden/claim_key.json`. See
+/// [`edax_cqrs::claim_key`].
+pub fn claim_key(mode: &str, scope: &str, idempotency_key: &str, tenant: Option<String>) -> Result<String, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    edax_cqrs::claim_key(mode, tenant.as_deref(), scope, idempotency_key).map_err(wire)
 }
 
 /// What an event's idempotency guard claims: the key and the payload hash. See
 /// [`edax_event::event_idempotency`].
 pub struct EventIdempotency {
-    /// The event id.
+    /// The event id under the guard's scope, composed with the event's tenant under a pool.
     pub key: String,
     /// FNV-1a over the raw `data` bytes.
     pub payload_hash: u64,
 }
 
-/// The key and hash an event's idempotency guard claims for `message`: the kernel's rule, pinned by
-/// `testdata/golden/event_idempotency.json`, so two SDKs consuming one stream bind alike.
-pub fn event_idempotency(message: EventMessage) -> EventIdempotency {
-    let msg = kernel_event_message(message);
-    let rule = edax_event::event_idempotency(&msg);
-    EventIdempotency { key: rule.key.to_owned(), payload_hash: rule.payload_hash }
+/// The key and hash the event idempotency guard named `scope` claims for `message`, in a deployment
+/// of tenancy `mode`: the kernel's rule, pinned by `testdata/golden/event_idempotency.json`, so two
+/// SDKs consuming one stream bind alike. A mode that requires a tenant and a message that names none
+/// is a `codec:` error.
+pub fn event_idempotency(message: EventMessage, mode: &str, scope: &str) -> Result<EventIdempotency, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    let rule = edax_event::event_idempotency(&kernel_event_message(message), mode, scope).map_err(wire)?;
+    Ok(EventIdempotency { key: rule.key, payload_hash: rule.payload_hash })
 }
 
 // ---- idempotency record --------------------------------------------------
@@ -1940,10 +1946,16 @@ mod tests {
 
     #[test]
     fn idempotency_inputs_cross_in_argument_order() {
-        // The event guard's key and hash cross as two fields: the event id, and the hash of the body.
-        let rule = event_idempotency(event_message("evt-1", Some(1)));
-        assert_eq!(rule.key, "evt-1");
+        // The event guard's key and hash cross as two fields: the scoped event id, and the hash of the
+        // body. The mode crosses by name, and an unknown one is the kernel's `codec` refusal.
+        let rule = event_idempotency(event_message("evt-1", Some(1)), "silo", "balances").unwrap();
+        assert_eq!(rule.key, "edax:evt:8:balances:evt-1");
         assert_eq!(rule.payload_hash, payload_hash(&event_message("evt-1", Some(1)).data));
+        assert!(event_idempotency(event_message("evt-1", Some(1)), "shard", "balances").is_err_and(|e| e.starts_with("codec:")));
+
+        // (mode, scope, key, tenant): the tenant reaches the key only under a pool.
+        assert_eq!(claim_key("pool", "api", "req-1", Some("acme".to_owned())), Ok("4:acme:edax:cmd:3:api:req-1".to_owned()));
+        assert!(claim_key("pool", "api", "req-1", None).is_err_and(|e| e.starts_with("codec:")));
 
         // (name, payload): the name reaches the hash, so another name over one payload is another hash.
         let payload = br#"{"invoice_id":"invoice-7","total":5000}"#;

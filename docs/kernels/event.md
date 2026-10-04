@@ -528,7 +528,8 @@ not older. `is_stale(5, 5)` is false, so the event applies again. That makes it 
 its own for a replayed batch. A replay with the ordinal check as its only dedup skips every stale
 event, but applies each key's newest event twice, because its sequence equals the stored one. Put
 `idempotent_by_id` in front of the handler when the effect is not itself idempotent. The key that
-guard claims is the kernel's too: `event_idempotency(msg)` in `dedup`.
+guard claims is the kernel's too: `event_idempotency(msg, mode, scope)` in `dedup`, the event id
+under the consumer's scope, so two consumers sharing a ledger keep separate records.
 
 The ordering also assumes the consumer itself does not reorder. Say a nack seeks back while later
 copies of the same aggregate are already queued, and a worker runs them. The older event then

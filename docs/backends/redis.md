@@ -66,8 +66,9 @@ Two pitfalls follow from plain concatenation:
 - A `{...}` hash tag in the prefix pins every ledger key to one Redis Cluster slot. That slot's
   shard then serves the whole ledger.
 
-Give each service and environment its own prefix. Within one prefix, the command guard's `scope`
-keeps guards apart: it claims `claim_key(scope, key)`, never the raw key. See
+Give each service and environment its own prefix. Within one prefix, each guard's `scope` keeps
+guards apart: a command guard claims `claim_key(scope, key)` and an event guard the event id under
+its scope, never the raw key. See
 [commands.md](../sdk/commands.md#scope-names-the-guard).
 
 ## Two TTLs

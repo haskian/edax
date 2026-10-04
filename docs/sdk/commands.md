@@ -162,9 +162,11 @@ Name a service, or a stage within one. The
 the scope has no default.
 
 Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL` as well. The claim is then that
-scoped key composed with the message's `tenant`. One request id reused by two tenants claims two rows
-instead of replaying one tenant's result to the other. See
-[multi-tenancy](../guides/multi-tenancy.md).
+scoped key composed with the message's `tenant`: `claim_key("billing.api", "req-1", tenancy=POOL,
+tenant="acme")` is `4:acme:edax:cmd:11:billing.api:req-1`. One request id reused by two tenants claims
+two rows instead of replaying one tenant's result to the other. Under a pool or a bridge a message
+with no tenant raises `CodecError` before the claim. The kernel composes the key, so a Rust guard of
+the same scope and tenancy claims the same row. See [multi-tenancy](../guides/multi-tenancy.md).
 
 The ledger keeps its own namespace too. `RedisIdempotencyStore(conn, prefix=...)` requires the
 prefix, with no default. Give each service and environment its own prefix.
@@ -241,8 +243,10 @@ from edax.command import forget, received_key
 await forget(ledger, "billing.worker", received_key(msg))  # the scope and key the guard claimed
 ```
 
-`forget(store, scope, key, *, tx=None)` deletes the record the guard stored under
-`claim_key(scope, key)`. The kernel's
+`forget(store, scope, key, *, tenancy=Tenancy.SILO, tenant=None, tx=None)` deletes the record the
+guard stored under `claim_key(scope, key, tenancy=..., tenant=...)`. Pass the guard's tenancy and the
+message's tenant: a pool's record lives under the composed key, and a pool or a bridge refuses a
+`forget` with no tenant as `CodecError` rather than delete nothing. The kernel's
 [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it may
 delete.
 

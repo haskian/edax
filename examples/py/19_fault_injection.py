@@ -30,7 +30,7 @@ async def main() -> None:
     db = MemoryTransactor()
     balances = MemoryProjectionStore(db)
     unit = BrokenCommit(db, arm="lost_response")  # the next commit lands, then raises
-    router = EventRouter(idempotent_by_id(MemoryLedger(), unit_of_work=unit))
+    router = EventRouter(idempotent_by_id(MemoryLedger(), unit_of_work=unit, scope="balances"))
     runs: list[str] = []
 
     # 2. An idempotent handler: it skips a deposit it has already applied.

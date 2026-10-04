@@ -152,11 +152,13 @@ makes no claim. On the consume path it is the event's `id`.
 **Command id** — a command message's `id`: this one message instance. It is the causation id of what
 the command causes, and the key a retry policy counts attempts by. It is not the idempotency key.
 
-**Scope** — the name of one command guard, such as a service or a stage within one. `idempotent`
-requires it, so two guards on one ledger never replay each other's outcome.
+**Scope** — the name of one guard, such as a service, a stage within one, or a read model.
+`idempotent` and `idempotent_by_id` require it, so two guards on one ledger never replay or skip each
+other's outcome.
 
-**Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`. An event guard
-claims the raw event id. See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
+**Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`, composed with the
+tenant under a pool. An event guard claims the event id under its scope the same way (`edax:evt:`).
+See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
 
 **Claim** — the atomic insert-if-absent that reserves an idempotency key. It must be linearizable
 across processes, never a read then a write.

@@ -239,32 +239,120 @@ class OpenAccount:
     type = "OpenAccount"
 
 
+class KeyLog(MemoryIdempotencyStore):
+    """A ledger that records every key a guard claims, so a case can assert the exact composed row."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.claimed: list[str] = []
+
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> edax.command.Claimed:
+        self.claimed.append(key)
+        return await super().claim(key, payload_hash, tx)
+
+
 @pytest.mark.parametrize(
-    "name, mode, want_runs",
+    "mode, tenants, want_runs, want_claimed, want_error",
     [
-        ("a pool separates two tenants' claims", Tenancy.POOL, 2),
-        ("a silo reads one request id once", Tenancy.SILO, 1),
+        pytest.param(
+            Tenancy.POOL,
+            TENANTS,
+            2,
+            ["4:acme:edax:cmd:3:api:req-1", "6:globex:edax:cmd:3:api:req-1"],
+            None,
+            id="a_pool_separates_two_tenants_claims",
+        ),
+        pytest.param(
+            Tenancy.SILO,
+            TENANTS,
+            1,
+            ["edax:cmd:3:api:req-1", "edax:cmd:3:api:req-1"],
+            None,
+            id="a_silo_reads_one_request_id_once",
+        ),
+        pytest.param(
+            Tenancy.BRIDGE,
+            TENANTS,
+            1,
+            ["edax:cmd:3:api:req-1", "edax:cmd:3:api:req-1"],
+            None,
+            id="bridge_keeps_the_key_bare",
+        ),
+        pytest.param(
+            Tenancy.POOL, (None,), 0, [], CodecError, id="pool_without_tenant_refuses_before_the_claim"
+        ),
+        pytest.param(
+            Tenancy.BRIDGE, (None,), 0, [], CodecError, id="bridge_without_tenant_refuses_before_the_claim"
+        ),
     ],
 )
 async def test_an_idempotency_claim_is_keyed_by_tenant_in_a_pool(
-    name: str, mode: Tenancy, want_runs: int
+    mode: Tenancy,
+    tenants: tuple[str | None, ...],
+    want_runs: int,
+    want_claimed: list[str],
+    want_error: type[Exception] | None,
 ) -> None:
-    """Two tenants, one shared ledger, the same client request id and the same payload: only the tenant
-    differs. In a pool each tenant claims its own row and the handler runs twice; without the
-    composition the second tenant replays the first's cached result, which is the leak."""
+    """Tenants share one ledger, the same client request id and the same payload: only the tenant
+    differs. In a pool each tenant claims its own row and the handler runs once per tenant; without the
+    composition the second tenant replays the first's cached result, which is the leak. A mode that
+    requires a tenant refuses a message without one before it touches the ledger."""
     runs: list[str | None] = []
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="api", tenancy=mode))
+    ledger = KeyLog()
+    bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
 
     @bus.on("OpenAccount")
     async def open_account(cmd: OpenAccount) -> str:
         runs.append(cmd.owner)
         return f"account:{cmd.owner}"
 
-    results = [
-        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant) for tenant in TENANTS
-    ]
-    assert results == ["account:ada", "account:ada"], "the same request, so the same answer"
-    assert len(runs) == want_runs, name
+    for tenant in tenants:
+        if want_error is None:
+            result = await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+            assert result == "account:ada", "the same request, so the same answer"
+        else:
+            with pytest.raises(want_error):
+                await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    assert len(runs) == want_runs
+    assert ledger.claimed == want_claimed
+
+
+@pytest.mark.parametrize(
+    "mode, forget_tenant, want_runs, want_error",
+    [
+        pytest.param(Tenancy.POOL, "acme", 2, None, id="forget_under_pool_reruns_the_handler"),
+        pytest.param(Tenancy.SILO, None, 2, None, id="forget_under_silo_reruns_the_handler"),
+        pytest.param(Tenancy.POOL, None, 1, CodecError, id="forget_under_pool_without_tenant_refuses"),
+    ],
+)
+async def test_forget_deletes_the_row_the_guard_wrote(
+    mode: Tenancy, forget_tenant: str | None, want_runs: int, want_error: type[Exception] | None
+) -> None:
+    """A re-drive of a cached failure: ``forget`` composes the guard's key, so the next dispatch runs the
+    handler again. Under a pool a ``forget`` that names no tenant refuses rather than delete nothing,
+    and the cached failure stays."""
+    runs = 0
+    ledger = MemoryIdempotencyStore()
+    bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
+    tenant = "acme" if mode is Tenancy.POOL else None
+
+    @bus.on("OpenAccount")
+    async def open_account(cmd: OpenAccount) -> str:
+        nonlocal runs
+        runs += 1
+        raise edax.Rejected("owner is blocked")
+
+    with pytest.raises(edax.Rejected):
+        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    if want_error is None:
+        await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+    else:
+        with pytest.raises(want_error):
+            await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+    with pytest.raises((edax.Rejected, edax.CachedFailure)) as redriven:
+        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    assert runs == want_runs
+    assert isinstance(redriven.value, edax.CachedFailure) is (want_error is not None)
 
 
 # ---- sagas ---------------------------------------------------------------

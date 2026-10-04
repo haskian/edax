@@ -582,7 +582,7 @@ mod tests {
         let ledger: Arc<dyn crate::IdempotencyStore<(), Tx = MemoryTx> + Send + Sync> = Arc::new(crate::MemoryIdempotencyStore::<()>::new());
         let current_row: Arc<Mutex<String>> = Arc::default();
         let key_row = Arc::clone(&current_row);
-        let guard = idempotent(ledger, "fulfillment", move |_: &OrderCommand| Some(key_row.lock().expect("no panics").clone()));
+        let guard = idempotent(ledger, "fulfillment", edax_core::Tenancy::Silo, move |_: &OrderCommand| Some(key_row.lock().expect("no panics").clone()));
         let runs: Arc<Mutex<Vec<OrderCommand>>> = Arc::default();
         let effect = Arc::clone(&runs);
         let handler: crate::Handler<OrderCommand, ()> = Box::new(move |cmd: &OrderCommand| {

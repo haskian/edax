@@ -43,13 +43,19 @@ from edax.testing.faults import Refusing
 
 GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
 
-#: The ``scope`` of the ``idempotent`` guard the suites wire.
+#: The ``scope`` of the ``idempotent`` and ``idempotent_by_id`` guards the suites wire.
 SCOPE = "test"
 
 
 def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
     """The ledger key a guard of ``scope`` claims for ``idempotency_key``: the kernel's ``claim_key``."""
-    return _edax.claim_key(scope, idempotency_key)
+    return edax.claim_key(scope, idempotency_key)
+
+
+def event_claimed(event_id: str, scope: str = SCOPE) -> str:
+    """The ledger key the event guard of ``scope`` claims for the event ``event_id``: the kernel's
+    ``event_idempotency`` key. Only the id and the scope reach it, so any event with that id will do."""
+    return _edax.event_idempotency(build_message("agg-1", "Probe", 1, id=event_id), "silo", scope).key
 
 
 _GOLDEN_READ: set[str] = set()

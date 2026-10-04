@@ -33,7 +33,7 @@ from .errors import (  # re-exported: the command errors are part of this module
 from .observe import ClaimVerdict, Observer, Settlement, _wrap
 from .pacing import Pacing
 from .store import EventCodec, Transactor, Tx, _in_unit_of_work, _transaction
-from .tenancy import Tenancy, tenant_key
+from .tenancy import Tenancy
 
 __all__ = [
     "AlreadyRegistered",
@@ -417,11 +417,17 @@ class IdempotencyStore(Protocol):
         ...
 
 
-def claim_key(scope: str, idempotency_key: str) -> str:
-    """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``. Two
-    scopes never share a ledger key. Pinned by ``testdata/golden/claim_key.json``."""
+def claim_key(
+    scope: str, idempotency_key: str, *, tenancy: Tenancy = Tenancy.SILO, tenant: str | None = None
+) -> str:
+    """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``, in a
+    deployment that separates tenants by ``tenancy``. Two scopes never share a ledger key. Under
+    :attr:`~edax.tenancy.Tenancy.POOL` the key carries ``tenant``, so two tenants never share one either.
+    A mode that requires a tenant and a call that names none raises :class:`~edax.errors.CodecError`.
+    The composition is the kernel's, pinned by ``testdata/golden/claim_key.json``, so a guard in another
+    binding sharing the ledger claims the same row."""
     with errors.mapped():
-        return _edax.claim_key(scope, idempotency_key)
+        return _edax.claim_key(tenancy.value, scope, idempotency_key, tenant)
 
 
 def received_key(msg: CommandMessage) -> str:
@@ -431,12 +437,22 @@ def received_key(msg: CommandMessage) -> str:
     return _edax.received_key(msg.id, msg.idempotency_key)
 
 
-async def forget(store: IdempotencyStore, scope: str, idempotency_key: str, *, tx: Tx | None = None) -> None:
+async def forget(
+    store: IdempotencyStore,
+    scope: str,
+    idempotency_key: str,
+    *,
+    tenancy: Tenancy = Tenancy.SILO,
+    tenant: str | None = None,
+    tx: Tx | None = None,
+) -> None:
     """Delete the record the :func:`idempotent` guard named ``scope`` keeps for ``idempotency_key``, so the
     next dispatch of that key runs its handler again. Use it to re-drive a dead-lettered command whose
-    failure was cached. The *Forget* clause of :class:`IdempotencyStore` says what happens to a claim still
-    in flight and to a key with no record."""
-    await store.forget(claim_key(scope, idempotency_key), tx)
+    failure was cached. Pass the guard's ``tenancy`` and the command's ``tenant``: the record lives under
+    the key :func:`claim_key` composes from them, and a mode that requires a tenant raises
+    :class:`~edax.errors.CodecError` without one rather than delete nothing. The *Forget* clause of
+    :class:`IdempotencyStore` says what happens to a claim still in flight and to a key with no record."""
+    await store.forget(claim_key(scope, idempotency_key, tenancy=tenancy, tenant=tenant), tx)
 
 
 def _payload_json(cmd: Command) -> bytes:
@@ -526,11 +542,12 @@ def idempotent(
     the transaction: each attempt then re-claims in a fresh unit of work.
 
     ``scope`` names this guard, usually the service or the stage it guards: ``"api"`` at ingress,
-    ``"billing-worker"`` on a consumer. The ledger key is the kernel's ``claim_key(scope, idempotency_key)``,
-    so two guards that share a ledger never replay each other's outcome for one key. The kernel hashes the
-    message name with the value the handler receives, so one key reused by another command, or with another
-    payload, raises :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same
-    scope and key. See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
+    ``"billing-worker"`` on a consumer. The ledger key is the kernel's :func:`claim_key` of the scope, the
+    message's ``idempotency_key`` and, under a pool, its ``tenant``, so two guards that share a ledger never
+    replay each other's outcome for one key. The kernel hashes the message name with the value the handler
+    receives, so one key reused by another command, or with another payload, raises
+    :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same scope, tenancy,
+    tenant and key. See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
 
     A cached success crosses the store as JSON, so a replay hands back the handler's declared return type,
     not the plain JSON value: ``result_type``, else the return annotation of the handler this guard wraps
@@ -542,9 +559,9 @@ def idempotent(
 
     ``tenancy`` is how the deployment this guard runs in separates tenants, fixed at wiring as it is on a
     :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the ledger key is composed
-    with the message's ``tenant`` (:func:`~edax.tenancy.tenant_key`), so one request id reused by two
-    tenants claims two rows rather than replaying one tenant's result to the other. A message that names
-    no tenant then raises :class:`~edax.errors.CodecError` instead of claiming a shared key.
+    with the message's ``tenant`` (:func:`claim_key`), so one request id reused by two tenants claims two
+    rows rather than replaying one tenant's result to the other. Under a pool or a bridge, a message that
+    names no tenant raises :class:`~edax.errors.CodecError` instead of claiming a shared key.
 
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
@@ -562,10 +579,7 @@ def idempotent(
             msg = current_command()
             if msg is None or msg.idempotency_key is None:
                 return await next_(cmd)
-            # Scope first, then tenant: the scope names the guard and the tenant separates the
-            # deployment's tenants inside it. Both compositions are the kernel's, so another binding
-            # sharing this ledger spells the same row.
-            key = tenant_key(tenancy, claim_key(scope, msg.idempotency_key), msg.tenant)
+            key = claim_key(scope, msg.idempotency_key, tenancy=tenancy, tenant=msg.tenant)
             guard = _Guard(store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
             return await _guarded(guard, lambda: next_(cmd), unit_of_work)
 

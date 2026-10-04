@@ -302,7 +302,7 @@ event is already decided by its ordering key. The router runs each handler under
 event, so an event a handler saves continues the flow.
 
 ```python
-router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
+router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore(), scope="balances"))
 
 
 @router.on("Deposited")
@@ -334,8 +334,11 @@ Python takes it in the constructor; Rust takes it through the builder `EventRout
 ### idempotent_by_id
 
 The consume-path guard. It runs a handler at most once per event `id`, so a broker redelivery does
-not repeat its side effect. The key is `msg.id`, raw and unscoped, and the hash is the kernel's
-`payload_hash` over the raw `msg.data` bytes.
+not repeat its side effect. The key is the kernel's `event_idempotency`: `msg.id` under the required
+`scope`, which names this consumer, composed with the message's `tenant` under `tenancy=Tenancy.POOL`.
+The hash is the kernel's `payload_hash` over the raw `msg.data` bytes. Two consumers guarding over one
+ledger therefore keep separate records: the second runs its own handler instead of skipping on the
+first's record. Under a pool or a bridge an event with no tenant raises `CodecError` before the claim.
 
 | Redelivery meets | Result |
 |---|---|
@@ -345,14 +348,16 @@ not repeat its side effect. The key is `msg.id`, raw and unscoped, and the hash 
 | a cached terminal failure | `CachedFailure`, itself terminal, so the dispatcher dead-letters the redelivery too |
 | the same id with a different body | `PayloadMismatch`: an integrity error, not a duplicate |
 
-Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`. Pinned end to end by
+Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`, and the key by
+`test_router.py::test_idempotent_by_id_keys_the_claim_by_scope_and_tenant`. Pinned end to end by
 `test_router.py::test_redelivery_through_the_dispatcher_is_skipped_and_acked`.
 
 **A worker has no ambient transaction to inherit.** The Python dispatcher clears the ambient
 transaction per worker, and Rust has no ambient transaction at all. A handler that opens one
 internally opens it after the claim was already taken. So `unit_of_work=` is the only way the guard gets a
 transaction. It opens the transaction itself, in the right place. The claim then commits with the
-handler's writes, and a rollback drops both. Rust's form is `idempotent_by_id_in(store, current)`,
+handler's writes, and a rollback drops both. Rust's form is
+`idempotent_by_id_in(store, scope, tenancy, current)`,
 where `current` hands each worker thread its own live handle.
 
 [Idempotency](./idempotency.md) covers what each mode guarantees, and

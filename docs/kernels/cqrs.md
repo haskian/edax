@@ -169,17 +169,23 @@ Python command carrying `type` as an instance field.
 
 ## `claim_key` — which ledger key a command guard claims
 
-`claim_key(scope, idempotency_key)` is `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
-`len(scope)` counts UTF-8 bytes, so `café` is 5.
+`claim_key(mode, tenant, scope, idempotency_key)` is `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`,
+composed with the tenant by `tenant_key` (`edax-core`) when the tenancy `mode` is a pool:
+`"4:acme:edax:cmd:7:billing:req-1"`. `len` counts UTF-8 bytes, so `café` is 5. Both guards and every
+`forget` spell the key here, so a Python guard and a Rust guard of one scope claim one row.
 
 | Part | Why |
 |---|---|
 | `scope` | names the guard: a service, or a stage within one. An ingress guard and a consumer guard that share one ledger never replay each other's outcome for the same key |
 | `len(scope)` | makes the key injective: scope `a:b` with key `c` and scope `a` with key `b:c` are two keys |
-| `edax:cmd:` | keeps command claims apart from event claims |
+| `edax:cmd:` | keeps command claims apart from event claims, which start `edax:evt:` |
+| tenant, outermost | under a pool, one request id reused by two tenants claims two rows. Outermost, as on every key `tenant_key` composes, so one tenant's rows share a prefix in every store. A bridge keeps the key bare: its store is the tenant's |
 
-An event guard keeps the raw event id as its key, so no live ledger is re-keyed. An event id is a
-`guid()` by default, which never starts `edax:cmd:`. `testdata/golden/claim_key.json` pins the key.
+A mode that requires a tenant (pool, bridge) and a command that names none is a `codec` error, before
+any claim, so a pool never claims a shared row. The event guard's key follows the same rule with
+`edax:evt:` and the event id (`event_idempotency` in [`edax-event`](event.md)); both call
+`edax_core::guard_key`, so the two cannot compose in different orders.
+`testdata/golden/claim_key.json` pins the key, with a row per mode.
 
 The scope is required in both SDKs. A default would put two services on one ledger under one scope,
 and the second would replay the first one's outcome.
