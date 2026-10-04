@@ -200,6 +200,7 @@ async def test_unit_of_work_windows(case: Case) -> None:
             with pytest.raises(expected) as raised:
                 await rig.dispatch()
     if case.second is edax.CachedFailure:
+        assert isinstance(raised.value, edax.CachedFailure), case.name
         assert raised.value.original_code == case.cached_code, case.name
 
     assert rig.runs == case.runs, f"{case.name}: handler ran {rig.runs}x"
