@@ -306,6 +306,7 @@ from edax import (
     Relay,
     Repository,
     SagaRunner,
+    Tenancy,
     idempotent,
     idempotent_by_id,
     transaction,
@@ -314,8 +315,10 @@ from edax import (
 observer = OtelObserver()  # yours; see the adapter below
 
 repo = Repository(store, events, aggregates, observer=observer)
-bus = CommandBus(idempotent(ledger, scope="accounts", observer=observer))
-router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, scope="balances", observer=observer))
+bus = CommandBus(idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, observer=observer))
+router = EventRouter(
+    idempotent_by_id(ledger, unit_of_work=db, scope="balances", tenancy=Tenancy.SILO, observer=observer)
+)
 dispatcher = KeyOrderedDispatcher(4, router.dispatch, on_dead=sink, observer=observer)
 relay = Relay(store, producer.publish, observer=observer)
 runner = SagaRunner(saga, saga_store, commands, observer=observer)

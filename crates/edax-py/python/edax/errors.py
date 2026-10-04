@@ -152,6 +152,21 @@ def code_of(e: BaseException) -> str | None:
 _ARGUMENT_ERRORS = (OverflowError, TypeError, UnicodeError)
 
 
+def _wiring_u32(value: int, what: str) -> int:
+    """``value`` if the kernel can carry it as an unsigned 32-bit integer. A negative or oversized one raises
+    :class:`ValueError`, and a non-integer :class:`TypeError`, at wiring time: the same value would fail every
+    message it reaches. ``what`` names the setting, for the message."""
+    # A bool is an int to Python, and the binding would convert it silently.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{what} must be an int, got {type(value).__name__}")
+    try:
+        # The binding's own conversion is the range check, so the width is not restated here.
+        _edax.Event("", value, b"")
+    except OverflowError as e:
+        raise ValueError(f"{what} must be an unsigned 32-bit integer, got {value}") from e
+    return value
+
+
 @contextmanager
 def mapped() -> Iterator[None]:
     """Re-raise a failed native call as its typed :class:`EdaxError`: a ``RuntimeError`` by its kernel code,

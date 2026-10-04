@@ -156,7 +156,9 @@ runs the own-ledger mode through the commit-lands-reply-lost window, with `Broke
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
 db = MemoryTransactor()
 balances = MemoryProjectionStore(db)
-router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances"))
+router = EventRouter(
+    idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
+)
 ```
 
 ## The record lifecycle
@@ -320,7 +322,7 @@ Windows outside that table, each pinned elsewhere:
 | `complete` fails after a success | nothing: `_complete_or_release` releases instead | re-runs the handler | `test_idempotent_branches[success_with_failing_complete_releases_the_claim]` |
 | `complete` lands, its reply is lost (every in-tree ledger fences: Redis and both memory stores) | `done`: the release carries the claim's handle and finds the settled record, so it deletes nothing | replays the cached result | `test_redis.py::test_a_complete_whose_reply_was_lost_keeps_the_record` |
 | `complete` fails after a terminal failure | nothing: released, and the caller sees the handler's error, not the store's | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_shows_the_handlers_verdict]` |
-| the handler's result will not serialize | nothing: terminal and released | re-runs the handler | `test_unserializable_result_is_terminal_and_releases_the_claim` |
+| the handler's result will not serialize | `failed` of code `codec`: the guard encodes the result before the work commits, so the work rolls back | raises `CachedFailure`; the handler does not run | `test_unserializable_result_is_terminal_and_cached`, `split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure` |
 | the dispatch is cancelled mid-handler | nothing: the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
 | the dispatch is cancelled mid-`complete` | nothing: released | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_complete_releases_the_claim]` |
 | a Rust handler panics | nothing: released, and the panic keeps unwinding | re-runs the handler | `a_panicking_handler_releases_the_claim` |
@@ -365,7 +367,9 @@ both. So `retry` refuses to run while any `transaction` is open, and goes outsid
 
 ```python
 # examples/py/05_idempotent_commands.py: retry outermost, the guard owns the unit of work.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
+bus = CommandBus(
+    retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
+)
 ```
 
 **Store contract clauses for a claim taken inside a transaction**:

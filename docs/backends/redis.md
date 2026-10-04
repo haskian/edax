@@ -115,9 +115,10 @@ ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:", claim_ttl_ms=3
 ```
 
 With `heartbeat=True` the store renews each won claim every `claim_ttl_ms / 3` through the kernel's
-extend script, until `complete` or `release` settles it. `op_timeout_ms` must then be under
+extend script, until `complete` or `release` settles it. The beats keep a fixed cadence, timed from
+when the claim was sent, so a slow reply never delays the next beat. `op_timeout_ms` must then be under
 `claim_ttl_ms / 3`, or the store raises `BadHandle` when built. A renewal that stalls for the whole
-deadline delays the next one by that long, and the next must still land before the claim lapses.
+deadline still leaves the next one time to land before the claim lapses.
 With the default `op_timeout_ms=5_000`, that means a `claim_ttl_ms` above 15 000.
 A crashed worker stops renewing, so its key frees within `claim_ttl_ms`. `extend(key, handle)` is the same renewal, for a caller that schedules
 its own.

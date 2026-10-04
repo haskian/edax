@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from edax import Entity, EventMessage, EventRouter, idempotent_by_id, testing
+from edax import Entity, EventMessage, EventRouter, Tenancy, idempotent_by_id, testing
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
 
 
@@ -28,7 +28,9 @@ async def main() -> None:
     # 1. One database for the ledger and the read model.
     db = MemoryTransactor()
     balances = MemoryProjectionStore(db)
-    router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances"))
+    router = EventRouter(
+        idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
+    )
     runs: list[str] = []
     audit_log_down = True  # the first run of e2 fails after its write
 

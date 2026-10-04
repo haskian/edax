@@ -56,6 +56,21 @@ written against them. Pin a minor in your dependency declaration
   `Decimal` replays its canonical text, so `Decimal("50.00")` comes back as `Decimal("50")`.
 - **Decimal order.** A range filter or a sort orders decimal text by value only under the decimal
   collation. A `Decimal` comparand sets it, and `sort_key(path, decimal=True)` sets it for a sort.
+- **Codec versions are per name.** `json_codec` and `msgpack_codec` lost `version=`. Each event name
+  now writes one past the highest step of its own upcaster, and 1 with none. A row stored at the old
+  registry-wide `version` reads as written by a newer writer, so its aggregate stops loading with
+  `CodecError`. Before the upgrade, give each name identity upcaster steps up to the old `version`:
+  `Upcaster().step(1, lambda data: data)` for a 0.4 codec built with `version=2`.
+- **Event guard keys moved.** `idempotent_by_id` now claims `edax:evt:<scope length>:<scope>:<id>`, no
+  longer the raw event id. No 0.4 record is found again, so a redelivery that crosses the upgrade runs
+  its handler again. Let the event idempotency ledgers expire first, or drain every consumer past its
+  topic before the upgrade.
+- **Integers at ±2^53.** The canonical form and the keyset cursor now refuse an integer of magnitude
+  2^53, as they refused larger ones. A command or a sort value that carries one raises `CodecError`.
+  Carry such a value as a string or a `Decimal`.
+- **Tenancy is required.** `idempotent`, `idempotent_by_id`, `claim_key` and `forget` take a `tenancy`
+  with no default. Pass `tenancy=Tenancy.SILO` where you relied on the default, or the mode the
+  deployment runs.
 
 ### 0.1 to 0.2
 
@@ -73,7 +88,7 @@ written against them. Pin a minor in your dependency declaration
 - **Command hash and claim key.** The command hash now covers the command name with the payload.
   A command guard claims `claim_key(scope, key)`, not the raw key. So every hash a 0.1 ledger stored
   differs from the one 0.2 computes, under a key 0.2 never claims. A client retry that crosses the
-  upgrade runs its handler again. Event guards keep the raw event id.
+  upgrade runs its handler again. Event guards keep the raw event id until 0.5.
 - **Drain before you upgrade.** 0.2 has no reader for any 0.1 message, by design. Stop the 0.1
   producers. Let every relay publish its outbox rows, saga command outboxes included, and every
   consumer commit past them. Let every idempotency ledger expire, past the longest window a client

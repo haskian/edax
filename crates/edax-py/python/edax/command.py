@@ -417,9 +417,7 @@ class IdempotencyStore(Protocol):
         ...
 
 
-def claim_key(
-    scope: str, idempotency_key: str, *, tenancy: Tenancy = Tenancy.SILO, tenant: str | None = None
-) -> str:
+def claim_key(scope: str, idempotency_key: str, *, tenancy: Tenancy, tenant: str | None = None) -> str:
     """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``, in a
     deployment that separates tenants by ``tenancy``. Two scopes never share a ledger key. Under
     :attr:`~edax.tenancy.Tenancy.POOL` the key carries ``tenant``, so two tenants never share one either.
@@ -529,9 +527,9 @@ def idempotent(
     unit_of_work: Transactor | None = None,
     *,
     scope: str,
+    tenancy: Tenancy,
     result_type: Any = None,
     observer: Observer | None = None,
-    tenancy: Tenancy = Tenancy.SILO,
 ) -> Middleware:
     """Deduplicate dispatches by the ``idempotency_key`` of the :func:`current_command`. A message with no
     key runs unguarded and writes nothing to the ledger. The first dispatch of a key wins the claim and runs
@@ -562,7 +560,9 @@ def idempotent(
     :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the ledger key is composed
     with the message's ``tenant`` (:func:`claim_key`), so one request id reused by two tenants claims two
     rows rather than replaying one tenant's result to the other. Under a pool or a bridge, a message that
-    names no tenant raises :class:`~edax.errors.CodecError` instead of claiming a shared key.
+    names no tenant raises :class:`~edax.errors.CodecError` instead of claiming a shared key. ``tenancy`` has
+    no default, as on :func:`forget`: a pooled deployment that missed one guard would claim outside its
+    tenant.
 
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
@@ -721,6 +721,10 @@ async def _guarded_around_the_work(
         try:
             async with _unit(unit_of_work, guard.observe):
                 result = await run()
+                done = Record(payload_hash, result=result)
+                # Encoded before the commit: refused after it, the release would let a retry run work
+                # that already landed. Refused here, the work rolls back and the codec failure is cached.
+                encode_record(done)
         except BaseException as e:
             # The kernel's settle table: a terminal failure is cached with its code; a transient one, or a
             # cancel, releases the claim so a retry or a redelivery can re-run. Shielded in every case: a
@@ -730,7 +734,7 @@ async def _guarded_around_the_work(
             record = None if code is None else Record(payload_hash, error=str(e), error_code=code)
             how = await asyncio.shield(_settle_failure(store, key, handle, record))
             raise
-        refusal = await _complete_or_release(store, key, handle, Record(payload_hash, result=result))
+        refusal = await _complete_or_release(store, key, handle, done)
         if refusal is not None:
             how = "released"
             raise refusal

@@ -121,7 +121,7 @@ async def test_a_reply_dropped_on_the_wire_is_resent_by_redis_py_and_runs_the_ha
     async with proxy.serving() as port:
         via_proxy = redis.asyncio.Redis(host="127.0.0.1", port=port)
         store = RedisIdempotencyStore(AsyncRedisClient(via_proxy), prefix)
-        bus = CommandBus(idempotent(store, scope="test"))
+        bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
         bus.register(Charge.type, handler)
         proxy.marker = hashlib.sha1(body.encode()).hexdigest().encode()
         assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
@@ -192,7 +192,7 @@ async def test_a_server_frozen_past_the_claim_ttl_refuses_the_late_complete(dire
                 await asyncio.sleep(1.5)
         return "charged"
 
-    bus = CommandBus(idempotent(store, scope="test"))
+    bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     with pytest.raises(edax.StoreError, match="taken over"):
         await bus.dispatch(Charge("req-1"), idempotency_key="req-1")

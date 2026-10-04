@@ -15,7 +15,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import Backoff, CommandBus, Entity, Pacing, Rejected, idempotent, is_terminal, retry
+from edax import Backoff, CommandBus, Entity, Pacing, Rejected, Tenancy, idempotent, is_terminal, retry
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
 
 
@@ -55,7 +55,9 @@ async def main() -> None:
     # 2. Short waits so the example runs fast. The default backoff starts at 100 ms.
     fast = Pacing(backoff=Backoff(base_millis=1, cap_millis=10))
     ledger = MemoryIdempotencyStore(db)
-    bus = CommandBus(retry(3, pacing=fast), idempotent(ledger, db, scope="accounts-api"))
+    bus = CommandBus(
+        retry(3, pacing=fast), idempotent(ledger, db, scope="accounts-api", tenancy=Tenancy.SILO)
+    )
     bus.register("Withdraw", withdraw)
 
     # 3. Transient: attempt 1 writes, fails, and rolls back. Attempt 2 starts from 100 again.

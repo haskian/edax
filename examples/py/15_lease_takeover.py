@@ -17,7 +17,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import ClassVar
 
-from edax import CommandBus, InProgress, StoreError, claim_key, idempotent
+from edax import CommandBus, InProgress, StoreError, Tenancy, claim_key, idempotent
 from edax.backend.memory import MemoryLedger
 
 
@@ -30,7 +30,7 @@ class ChargeCard:
 
 async def main() -> None:
     ledger = MemoryLedger()  # its own database, like Redis: joins no transaction
-    bus = CommandBus(idempotent(ledger, scope="payments"))
+    bus = CommandBus(idempotent(ledger, scope="payments", tenancy=Tenancy.SILO))
     runs: list[int] = []
     worker_a_may_finish = asyncio.Event()
 
@@ -58,7 +58,7 @@ async def main() -> None:
         print("worker B: InProgress, A holds the claim")
 
     # 3. A's claim runs out, as a Redis claim TTL would. B takes over and finishes.
-    ledger.expire(claim_key("payments", "pay-1"))
+    ledger.expire(claim_key("payments", "pay-1", tenancy=Tenancy.SILO))
     result_b = await bus.dispatch(command, idempotency_key="pay-1")
     print(f"worker B: took over -> {result_b}")
 

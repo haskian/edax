@@ -474,7 +474,7 @@ class BusReplay:
         self.model: dict[int, Record] = {}
         # The handle of each pending claim a SeedPending took, so a Release can name it.
         self.seeded: dict[int, bytes] = {}
-        self.bus = C.CommandBus(C.idempotent(store, scope="test"))
+        self.bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
         self.bus.register("A", self.handler)
         self.bus.register("B", self.handler)
 

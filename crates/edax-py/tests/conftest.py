@@ -49,7 +49,7 @@ SCOPE = "test"
 
 def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
     """The ledger key a guard of ``scope`` claims for ``idempotency_key``: the kernel's ``claim_key``."""
-    return edax.claim_key(scope, idempotency_key)
+    return edax.claim_key(scope, idempotency_key, tenancy=edax.Tenancy.SILO)
 
 
 def event_claimed(event_id: str, scope: str = SCOPE) -> str:
@@ -566,13 +566,14 @@ class FakeKafkaCluster:
 
 @dataclass(frozen=True)
 class FakeSubscription:
-    """What the adapter reads of aiokafka's ``SubscriptionState``: a topic subscription, whose partitions
-    the group assigns, and the rebalance listener it was made with."""
+    """What the adapter reads of aiokafka's ``SubscriptionState``: the rebalance listener it was made with,
+    and whether the group assigns its partitions (a topic subscription) or the caller did (``assign``)."""
 
     listener: Any
+    auto_assigned: bool = True
 
     def partitions_auto_assigned(self) -> bool:
-        return True
+        return self.auto_assigned
 
 
 class FakeKafkaClient:
@@ -637,6 +638,12 @@ class FakeKafkaClient:
 
     def subscribe(self, topics: Sequence[str], listener: Any = None) -> None:
         self._subscription = FakeSubscription(listener)
+
+    def assign(self, partitions: Sequence[TopicPartition]) -> None:
+        """Take ``partitions`` by hand, as aiokafka's ``assign``: no group, so no listener and no revoke."""
+        self._subscription = FakeSubscription(None, auto_assigned=False)
+        self.assignment = set(partitions)
+        self._changed.set()
 
     @property
     def listener(self) -> Any:

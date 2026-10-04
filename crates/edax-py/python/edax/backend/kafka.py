@@ -15,7 +15,7 @@ import logging
 import warnings
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from .. import _edax
 from .._owned import ThreadBound
@@ -54,6 +54,9 @@ logger = logging.getLogger("edax.backend.kafka")
 
 #: How often a revoke looks at the handlers still running.
 _DRAIN_POLL_S = 0.01
+
+#: How long one send may take, by default, on the producer and on the dead-letter sink alike.
+_PUBLISH_TIMEOUT_S: Final = 30.0
 
 # The kernel's record structs, re-exported here so a middleware builds one without importing `_edax`.
 KafkaRecord = _edax.KafkaRecord
@@ -231,7 +234,9 @@ class KafkaDeadLetterSink:
     :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`.
     ``publish_timeout_s`` bounds each send, as on :class:`KafkaProducer`."""
 
-    def __init__(self, client: ProducerClient, topic: str, *, publish_timeout_s: float = 30.0) -> None:
+    def __init__(
+        self, client: ProducerClient, topic: str, *, publish_timeout_s: float = _PUBLISH_TIMEOUT_S
+    ) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
@@ -305,7 +310,7 @@ class KafkaProducer:
         key: KeyFn | None = None,
         middleware: Sequence[RecordMiddleware] = (),
         tenancy: Tenancy = Tenancy.SILO,
-        publish_timeout_s: float = 30.0,
+        publish_timeout_s: float = _PUBLISH_TIMEOUT_S,
     ) -> None:
         _check_producer(client)
         self._client = client

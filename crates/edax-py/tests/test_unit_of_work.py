@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, ClassVar
 
 import edax
@@ -48,15 +49,18 @@ class Rig:
     ``runs`` counts handler invocations; ``landed()`` reports whether the handler's write survived.
     Between them the two say what actually happened, which no single assertion does."""
 
-    def __init__(self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None) -> None:
+    def __init__(
+        self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None, result: Any = None
+    ) -> None:
         self.db = MemoryTransactor()
         self.projections = MemoryProjectionStore(self.db)
         self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.unit: Any = BrokenCommit(self.db, commit) if commit else self.db
         self.runs = 0
         self._raises = raises
+        self._result = result
 
-        async def handler(cmd: Deposit) -> int:
+        async def handler(cmd: Deposit) -> Any:
             self.runs += 1
             entity = await self.projections.get(DOC)
             if entity is None:
@@ -65,9 +69,11 @@ class Rig:
             await self.projections.save(entity)
             if self._raises is not None:
                 raise self._raises
-            return int(entity.document["balance"])
+            return int(entity.document["balance"]) if self._result is None else self._result
 
-        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
+        self.bus = CommandBus(
+            idempotent(self.ledger, scope="test", unit_of_work=self.unit, tenancy=edax.Tenancy.SILO)
+        )
         self.bus.register("Deposit", handler)
 
     async def dispatch(self) -> Any:
@@ -84,8 +90,10 @@ class Case:
     shared: bool
     commit: CommitFault = None
     raises: Exception | None = None
+    result: Any = None  # what the handler returns instead of the balance
     first: type[BaseException] | None = None  # what the first dispatch raises, if anything
     second: type[BaseException] | None = None  # what the redelivery raises, if anything
+    cached_code: str | None = None  # the code a cached failure replays with
     runs: int = 1  # handler invocations across both dispatches
     balance: int = 100  # what the projection holds at the end
 
@@ -140,6 +148,19 @@ CASES = [
         raises=edax.CodecError("malformed payload"),
         first=edax.CodecError,
         second=edax.CachedFailure,
+        cached_code="codec",
+        runs=1,
+        balance=0,
+    ),
+    Case(
+        # Encoded before the commit: refused after it, the claim would be released over work that landed,
+        # and the redelivery would run it again.
+        "split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure",
+        shared=False,
+        result={"at": datetime(2024, 1, 1)},  # naive: no offset to compare by
+        first=edax.CodecError,
+        second=edax.CachedFailure,
+        cached_code="codec",
         runs=1,
         balance=0,
     ),
@@ -170,14 +191,16 @@ CASES = [
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 async def test_unit_of_work_windows(case: Case) -> None:
-    rig = Rig(shared=case.shared, commit=case.commit, raises=case.raises)
+    rig = Rig(shared=case.shared, commit=case.commit, raises=case.raises, result=case.result)
 
     for expected in (case.first, case.second):
         if expected is None:
             await rig.dispatch()
         else:
-            with pytest.raises(expected):
+            with pytest.raises(expected) as raised:
                 await rig.dispatch()
+    if case.second is edax.CachedFailure:
+        assert raised.value.original_code == case.cached_code, case.name
 
     assert rig.runs == case.runs, f"{case.name}: handler ran {rig.runs}x"
     assert await rig.balance() == case.balance, case.name
@@ -213,7 +236,9 @@ class Broker:
                 failure, self._fail_first = self._fail_first, None  # one-shot
                 raise failure
 
-        guard = idempotent_by_id(self.ledger, unit_of_work=self.db if uow else None, scope=SCOPE)
+        guard = idempotent_by_id(
+            self.ledger, unit_of_work=self.db if uow else None, scope=SCOPE, tenancy=edax.Tenancy.SILO
+        )
         router = edax.EventRouter(guard)
         router.register("Deposited", handler)
         self.dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, max_attempts=2, on_dead=self._dead)
@@ -328,7 +353,7 @@ async def test_losing_the_claim_never_releases_the_winners_key() -> None:
     delete the *winner's* live claim. Only the caller that won the claim may settle it."""
     ledger = MemoryLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", _never_completes)
 
     # A claim taken by someone else and still pending: the guard must report it, not clear it.
@@ -373,7 +398,7 @@ async def test_a_claim_that_raises_is_not_compensated() -> None:
     case deletes the winner's live claim. Retention settles the first case instead."""
     ledger = ClaimRaisesLedger()
     db = MemoryTransactor()
-    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+    bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", _never_completes)
 
     cmd = Deposit(100, "req-A")
@@ -447,7 +472,7 @@ async def test_a_refused_compensation_never_replaces_the_handlers_error(
         runs += 1
         raise case.handler_error
 
-    bus = CommandBus(idempotent(ledger, scope="test"))
+    bus = CommandBus(idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Deposit", handler)
     cmd = Deposit(100, "req-A")
 
@@ -532,7 +557,9 @@ class History:
                 raise edax.CodecError("terminal")
             return int(entity.document["applied"])
 
-        self.bus = CommandBus(idempotent(self.ledger, scope="test", unit_of_work=self.unit))
+        self.bus = CommandBus(
+            idempotent(self.ledger, scope="test", unit_of_work=self.unit, tenancy=edax.Tenancy.SILO)
+        )
         self.bus.register("Deposit", handler)
 
     async def run(self, ops: list[Op]) -> None:
@@ -612,11 +639,13 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
         DOC, "Deposited", 1, id="evt-1", data=b'{"amount":100}', recorded_at=1_714_564_800_000_000_000
     )
     if guard == "idempotent":
-        bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db))
+        bus = CommandBus(idempotent(ledger, scope="test", unit_of_work=db, tenancy=edax.Tenancy.SILO))
         bus.register("Deposit", handler)
         dispatched, key = bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A"), claimed("req-A")
     else:
-        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db, scope=SCOPE))
+        router = edax.EventRouter(
+            idempotent_by_id(ledger, unit_of_work=db, scope=SCOPE, tenancy=edax.Tenancy.SILO)
+        )
         router.register("Deposited", handler)
         dispatched, key = router.dispatch(env), event_claimed(env.id)
     with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):

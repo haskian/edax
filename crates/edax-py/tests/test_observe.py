@@ -279,7 +279,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
             raise error
         return f"user:{cmd.email}"
 
-    bus = edax.CommandBus(edax.idempotent(ledger, unit_of_work, observer=observer, scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(ledger, unit_of_work, observer=observer, scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("user.create", handler)
     if case.held:
         assert isinstance(
@@ -308,9 +310,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
 
 async def test_idempotent_by_id_threads_the_observer_through_the_same_guard() -> None:
     observer = Recording()
-    guarded = edax.idempotent_by_id(MemoryIdempotencyStore(), observer=observer, scope=SCOPE)(
-        lambda env: None
-    )
+    guarded = edax.idempotent_by_id(
+        MemoryIdempotencyStore(), observer=observer, scope=SCOPE, tenancy=edax.Tenancy.SILO
+    )(lambda env: None)
     env = build_message("acct-1", "Deposited", 3, data=DEPOSITED)
 
     await maybe_await(guarded(env))
@@ -551,7 +553,9 @@ async def _drain_with(observer: edax.Observer) -> None:
 
 
 async def _guard_with(observer: edax.Observer) -> None:
-    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(), observer=observer, scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(MemoryIdempotencyStore(), observer=observer, scope="test", tenancy=edax.Tenancy.SILO)
+    )
 
     async def handler(cmd: CreateUser) -> str:
         return "ok"

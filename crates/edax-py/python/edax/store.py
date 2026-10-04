@@ -729,14 +729,7 @@ def _retry_policy(max_attempts: int, sink: bool, what: str) -> ThreadBound[_edax
     ``max_attempts`` the kernel cannot carry raises :class:`ValueError` (negative or too large) or
     :class:`TypeError` (not an int) here, at wiring time: built lazily, it would fail the first message
     and leave it unsettled, pinning a log partition."""
-    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
-        raise TypeError(f"{what} max_attempts must be an int, got {type(max_attempts).__name__}")
-    try:
-        # The binding's own conversion is the range check, so the width is not restated here. The
-        # throwaway policy is dropped on the thread that built it.
-        _edax.retries(max_attempts, sink)
-    except OverflowError as e:
-        raise ValueError(f"{what} max_attempts must be an unsigned 32-bit count, got {max_attempts}") from e
+    errors._wiring_u32(max_attempts, f"{what} max_attempts")
     return ThreadBound.lazy(lambda: _edax.retries(max_attempts, sink), what)
 
 

@@ -42,11 +42,18 @@ def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date:
 def test_golden_host_values(case: dict[str, Any]) -> None:
     value = _host_value(case["kind"], case["input"])
     if case["error"] is not None:
-        with pytest.raises(edax.CodecError) as caught:
-            _json.encode({"nested": [value]})
-        assert caught.value.code == case["error"]
+        # As a value and as a dict key: the encoder walks keys too. A signalling NaN cannot hash, so it
+        # is never a key.
+        holders: list[dict[Any, Any]] = [{"nested": [value]}]
+        if not (isinstance(value, Decimal) and value.is_snan()):
+            holders.append({value: "key"})
+        for holder in holders:
+            with pytest.raises(edax.CodecError) as caught:
+                _json.encode(holder)
+            assert caught.value.code == case["error"], holder
         return
     assert _json.encode(value) == case["json"]
+    assert _json.encode({value: 1}) == f"{{{case['json']}:1}}", "a dict key takes the same form"
     if case["epoch_micros"] is not None:
         assert isinstance(value, dt.datetime)
         assert (value - EPOCH) // MICROSECOND == case["epoch_micros"], "the row's input is its pinned instant"
@@ -209,7 +216,7 @@ async def test_command_hash_sees_host_values_by_value(
         runs.append(cmd)
         return "charged"
 
-    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test"))
+    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     assert await bus.dispatch(first, idempotency_key="req-1") == "charged"
     assert await bus.dispatch(second, idempotency_key="req-1") == "charged"
@@ -230,7 +237,7 @@ async def test_command_refusals_are_codec_errors_before_the_handler(branch: str,
     async def handler(cmd: Charge) -> None:
         runs.append(cmd)
 
-    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test"))
+    bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     with pytest.raises(edax.CodecError) as caught:
         await bus.dispatch(cmd, idempotency_key="req-1")

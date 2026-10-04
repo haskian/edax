@@ -71,7 +71,7 @@ def idempotent_by_id(
     unit_of_work: Transactor | None = None,
     *,
     scope: str,
-    tenancy: Tenancy = Tenancy.SILO,
+    tenancy: Tenancy,
     observer: Observer | None = None,
 ) -> EventMiddleware:
     """Run a handler at most once per event ``id``, so a broker redelivery does not repeat its side effect.

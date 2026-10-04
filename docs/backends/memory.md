@@ -175,7 +175,7 @@ guard's release must not delete it.
 from edax.backend.memory import MemoryLedger
 
 ledger = MemoryLedger()  # a database of its own; ignores tx; joins_transaction = False
-bus = CommandBus(idempotent(ledger, scope="accounts", unit_of_work=db))
+bus = CommandBus(idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db))
 ```
 
 **Claims are fenced, as Redis fences them.** `claim` returns a handle naming that claim. `complete` writes
