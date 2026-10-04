@@ -1172,6 +1172,39 @@
   {
     "documents": [
       {
+        "id": "8"
+      },
+      {
+        "id": "7"
+      },
+      {
+        "id": "07"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiMDczN2M3NGI1OGU0NThkYiIsInYiOlsiNyIsIjciXX0",
+      "rows": [
+        {
+          "id": "7"
+        }
+      ]
+    },
+    "name": "decimal_id_sort_keeps_the_plain_tiebreak",
+    "query": {
+      "after": "eyJzIjoiMDczN2M3NGI1OGU0NThkYiIsInYiOlsiMDciLCIwNyJdfQ",
+      "limit": 1,
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "id"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
         "id": "r0",
         "n": 1
       },

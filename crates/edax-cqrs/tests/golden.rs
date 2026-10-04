@@ -590,6 +590,13 @@ fn query_cases() -> Vec<Value> {
             json!({"filter": {"compare": {"path": "p", "op": "gte", "value": "9.5", "collation": "decimal"}}, "sort": by_p()}),
             decimals(),
         ),
+        // "7" and "07" tie under a decimal id key, so the plain id still breaks the tie: the walk from
+        // "07" resumes at "7" instead of skipping it.
+        (
+            "decimal_id_sort_keeps_the_plain_tiebreak",
+            json!({"sort": [{"path": "id", "collation": "decimal"}], "limit": 1, "after": mint(json!({"id": "07"}), json!([{"path": "id", "collation": "decimal"}]))}),
+            json!([{"id": "8"}, {"id": "7"}, {"id": "07"}]),
+        ),
         ("offset_past_the_end", json!({"sort": by_n(), "offset": 5}), ns(&[1, 2])),
         // Refused: a cursor under another sort, a cursor without one, and a page whose `next` would
         // be minted from a row without the tiebreak id.

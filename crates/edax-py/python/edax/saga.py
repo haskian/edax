@@ -213,7 +213,7 @@ class SagaRunner:
 
         The fold skips the event as :meth:`on_event` would: a completed instance folds nothing, so a saga
         that compensates stays open until its commands have run. A sink that runs twice for one row folds
-        once, while no other unsequenced event of the instance's id folded between them. A failed fold
+        once, whatever folded between them: the instance keeps every failure it folded. A failed fold
         raises, so the relay hands the row back and the sink runs again."""
         with errors.mapped():
             failed = _edax.saga_command_failed(row, str(error), self._now(), _carried_code(error))

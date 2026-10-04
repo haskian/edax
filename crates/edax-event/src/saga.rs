@@ -21,7 +21,7 @@
 //! [`saga_command_failed`] is the reply the sink folds back instead: an event for the instance
 //! that names the dead command and its error.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use edax_core::{scoped, Error, ErrorCode};
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,9 @@ pub fn saga_write(loaded: Loaded, completes: bool, has_commands: bool) -> Result
 
 /// What a saga instance folded from one source aggregate. The sequenced and the unsequenced events
 /// keep apart: an unsequenced event that overwrote the id guarding the sequence would let a replay of
-/// the sequenced one fold again.
+/// the sequenced one fold again. The failures of the instance's own commands keep apart too, every one
+/// of them: a relay that lost its mark replays one dead row after another died, and a failure folded
+/// twice compensates twice.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Mark {
     /// The highest sequence folded from the aggregate; absent while every one was unsequenced.
@@ -97,6 +99,10 @@ struct Mark {
     /// The id of the last unsequenced event folded from the aggregate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unsequenced: Option<String>,
+    /// The id of every [`SAGA_COMMAND_FAILED`] event folded into the instance: one per command it sent
+    /// at most, so bounded by them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    failed: BTreeSet<String>,
 }
 
 /// Whether a saga step folds an event, from what the instance has folded so far.
@@ -132,7 +138,9 @@ pub enum SagaAdmit {
 /// order, so a lower one was folded before. That holds only while no event of the aggregate was
 /// dead-lettered: once a later one folded, a re-driven dead letter is below the mark and never
 /// folds. An unsequenced event is a repeat only of the last unsequenced one folded from its
-/// aggregate. The marks grow by one per source aggregate, not per event.
+/// aggregate, except a [`SAGA_COMMAND_FAILED`] one: the instance keeps the id of every failure it
+/// folded, so each dead command folds once. The marks grow by one per source aggregate and by one per
+/// dead command, not per event.
 ///
 /// # Errors
 /// A `codec` error when `folded` is not text this function wrote.
@@ -146,7 +154,9 @@ pub fn saga_admit(completed: bool, folded: &str, event: &EventMessage) -> Result
         serde_json::from_str(folded).map_err(|e| Error::codec(format_args!("saga folded marks {folded:?}: {e}")))?
     };
     let mark = marks.entry(event.aggregate_id.clone()).or_default();
-    if [&mark.id, &mark.unsequenced].into_iter().any(|id| id.as_deref() == Some(event.id.as_str())) {
+    if [&mark.id, &mark.unsequenced].into_iter().any(|id| id.as_deref() == Some(event.id.as_str()))
+        || mark.failed.contains(&event.id)
+    {
         return Ok(SagaAdmit::Repeat);
     }
     if is_stale(mark.sequence, event.sequence) {
@@ -155,6 +165,8 @@ pub fn saga_admit(completed: bool, folded: &str, event: &EventMessage) -> Result
     if event.sequence.is_some() {
         mark.sequence = advance(mark.sequence, event.sequence);
         mark.id = Some(event.id.clone());
+    } else if event.name == SAGA_COMMAND_FAILED {
+        mark.failed.insert(event.id.clone());
     } else {
         mark.unsequenced = Some(event.id.clone());
     }
@@ -245,8 +257,7 @@ pub struct SagaCommandFailed {
 /// names, so the saga can compensate.
 ///
 /// - `id` is `"{command.id}:failed"`: a sink that runs twice for one row builds the same event, and
-///   the instance skips the second as a repeat, while no other unsequenced event of its id folded
-///   between them ([`saga_admit`]);
+///   the instance skips the second as a repeat, whatever folded between them ([`saga_admit`]);
 /// - `aggregate_id` is the command's: the saga instance that sent it;
 /// - `sequence` is `None`: the failure has no place in any aggregate's order;
 /// - `name` is [`SAGA_COMMAND_FAILED`], `version` `1`, and `data` the JSON of [`SagaCommandFailed`];
@@ -318,6 +329,12 @@ mod tests {
         EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() }
     }
 
+    /// The failure of the `index`-th command the instance `order-7` sent at version 2.
+    fn failure(index: u64) -> EventMessage {
+        let id = format!("{}:failed", saga_command_id("order-7", 2, index));
+        EventMessage { name: SAGA_COMMAND_FAILED.to_owned(), ..event("order-7", None, &id) }
+    }
+
     #[test]
     fn saga_admit_branches() {
         let fold = |folded: &str| Ok(SagaAdmit::Fold { folded: folded.to_owned() });
@@ -325,7 +342,9 @@ mod tests {
         let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
         let unsequenced = r#"{"order-7":{"unsequenced":"evt-u"}}"#;
         let mixed = r#"{"order-7":{"sequence":2,"id":"evt-2","unsequenced":"evt-v"}}"#;
-        let cases: [(&str, &str, EventMessage, Result<SagaAdmit, String>); 13] = [
+        let first_failed = r#"{"order-7":{"unsequenced":"evt-u","failed":["order-7:2:0:failed"]}}"#;
+        let both_failed = r#"{"order-7":{"unsequenced":"evt-u","failed":["order-7:2:0:failed","order-7:2:1:failed"]}}"#;
+        let cases: [(&str, &str, EventMessage, Result<SagaAdmit, String>); 17] = [
             ("a new instance folds and marks", "", event("order-7", Some(1), "evt-1"), fold(one)),
             ("the last event again is a repeat", one, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::Repeat)),
             ("an older event of the aggregate is below the mark", two, event("order-7", Some(1), "evt-1"), Ok(SagaAdmit::BelowMark)),
@@ -347,6 +366,15 @@ mod tests {
                 unsequenced,
                 event("order-7", Some(3), "evt-3"),
                 fold(r#"{"order-7":{"sequence":3,"id":"evt-3","unsequenced":"evt-u"}}"#),
+            ),
+            ("a failure folds beside the unsequenced id", unsequenced, failure(0), fold(first_failed)),
+            ("a second failure keeps the first", first_failed, failure(1), fold(both_failed)),
+            ("the first failure replayed after the second is a repeat", both_failed, failure(0), Ok(SagaAdmit::Repeat)),
+            (
+                "a failure kept as the unsequenced id before the failed set is a repeat",
+                r#"{"order-7":{"unsequenced":"order-7:2:0:failed"}}"#,
+                failure(0),
+                Ok(SagaAdmit::Repeat),
             ),
             (
                 "marks this function did not write are a codec error",

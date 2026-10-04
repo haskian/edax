@@ -248,7 +248,11 @@ mod tests {
     /// `Shipped` fulfills it and waits: a failed `Fulfill` refunds and completes it.
     /// The instance is the order, while the events come from the order and the payment aggregates:
     /// two workers can fold one instance at once, which is what the version is for.
-    struct OrderSaga;
+    #[derive(Default)]
+    struct OrderSaga {
+        /// The payload of every failure it folded, so a test reads what the sink built.
+        failures: Arc<Mutex<Vec<SagaCommandFailed>>>,
+    }
 
     impl Saga for OrderSaga {
         type State = String;
@@ -271,7 +275,10 @@ mod tests {
                 (Some("open"), "Noted") => (Some("open".to_owned()), vec![]),
                 // A step that waits for its command's outcome: a dead `Fulfill` comes back as a failure.
                 (Some("open"), "Shipped") => (Some("shipping".to_owned()), vec![OrderCommand::Fulfill(Fulfill { order_id })]),
-                (Some("shipping"), SAGA_COMMAND_FAILED) => (None, vec![OrderCommand::Refund(Refund { order_id: "order-7".into() })]),
+                (Some("shipping"), SAGA_COMMAND_FAILED) => {
+                    self.failures.lock().expect("no panics").push(serde_json::from_slice(&event.data).expect("the kernel's payload"));
+                    (None, vec![OrderCommand::Refund(Refund { order_id: "order-7".into() })])
+                }
                 // Nothing loaded and nothing to start: a stray event writes nothing.
                 (None, _) => (None, vec![]),
                 (Some(s), _) => (Some(s.to_owned()), vec![]),
@@ -290,7 +297,7 @@ mod tests {
     type Runner<ST> = SagaRunner<OrderSaga, ST, JsonRegistryCodec<OrderCommand>>;
 
     fn runner<ST: SagaStore<State = String>>(store: ST) -> Runner<ST> {
-        SagaRunner::new(OrderSaga, store, JsonRegistryCodec::new().unwrap()).with_clock(|| 1_714_564_800_000_000_000)
+        SagaRunner::new(OrderSaga::default(), store, JsonRegistryCodec::new().unwrap()).with_clock(|| 1_714_564_800_000_000_000)
     }
 
 
@@ -491,7 +498,8 @@ mod tests {
             sequence,
             ..order_event(aggregate_id, "Created")
         };
-        let cases: [(&str, Vec<EventMessage>, &[&str]); 7] = [
+        let failed = |id: &str| EventMessage { name: SAGA_COMMAND_FAILED.to_owned(), ..at("order-7", None, id) };
+        let cases: [(&str, Vec<EventMessage>, &[&str]); 8] = [
             ("the last event again", vec![at("order-7", Some(1), "o-1"), at("order-7", Some(1), "o-1")], &["o-1"]),
             (
                 "a crash replays every event above the commit",
@@ -509,6 +517,13 @@ mod tests {
                 "an older unsequenced event is folded again",
                 vec![at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
                 &["u-1", "u-2", "u-1"],
+            ),
+            (
+                // A relay that lost its mark replays the first dead row after the second died: the
+                // instance keeps every failure it folded, so neither compensates twice.
+                "two failures, then the first replayed",
+                vec![failed("order-7:1:0:failed"), failed("order-7:1:1:failed"), failed("order-7:1:0:failed")],
+                &["order-7:1:0:failed", "order-7:1:1:failed"],
             ),
             (
                 "a crash replays one aggregate's sequenced and unsequenced events",
@@ -650,43 +665,77 @@ mod tests {
 
     #[test]
     fn a_dead_command_folds_back_into_its_instance_as_a_failure() {
-        // `Fulfill` is rejected, so it saves no event: without the sink the instance would wait forever.
-        // The sink folds the failure into the instance, which compensates with a `Refund`.
-        let store = MemorySagaStore::<String>::new();
-        let runner = Arc::new(runner(store.clone()));
-        runner.run(&mut MemoryTx::auto_commit(), &order_event("order-7", "Created")).unwrap();
-        runner.run(&mut MemoryTx::auto_commit(), &order_event("order-7", "Shipped")).unwrap();
-        let refunded: Arc<Mutex<Vec<OrderCommand>>> = Arc::default();
-        let effect = Arc::clone(&refunded);
-        let refund: crate::Handler<OrderCommand, ()> = Box::new(move |cmd: &OrderCommand| {
-            effect.lock().expect("no panics").push(cmd.clone());
-            Ok(())
-        });
-        let fulfill: crate::Handler<OrderCommand, ()> = Box::new(|_: &OrderCommand| Err(Terminal::new("out of stock").into()));
-        let mut bus = CommandBus::new();
-        bus.register("Fulfill", fulfill).unwrap();
-        bus.register("Refund", refund).unwrap();
-        let dead: Arc<Mutex<Vec<CommandMessage>>> = Arc::default();
-        let (sink, kept) = (Arc::clone(&runner), Arc::clone(&dead));
-        let relay = Relay::<_, CommandMessage>::new(store.clone()).pacing(Pacing::instant()).on_dead(move |row: &CommandMessage, error| {
-            kept.lock().expect("no panics").push(row.clone());
-            sink.command_failed(&mut MemoryTx::auto_commit(), row, error)
-        });
-        let publish = |row: &CommandMessage| bus.dispatch::<OrderCommand, ()>(&runner.command(row)?);
+        // `Fulfill` dies, so it saves no event: without the sink the instance would wait forever. The
+        // sink folds the failure into the instance, which compensates with a `Refund`. The payload
+        // carries the failure's taxonomy code apart from its message, whatever the error's kind.
+        #[derive(Clone, Copy, Debug)]
+        enum Fails {
+            Rejected,
+            Kernel,
+            Unclassified,
+        }
+        let error = |fails: Fails| -> HandlerError {
+            match fails {
+                Fails::Rejected => Terminal::new("out of stock").into(),
+                Fails::Kernel => Error::store("warehouse API timed out").into(),
+                Fails::Unclassified => std::io::Error::other("disk full").into(),
+            }
+        };
+        let failed = |code: Option<&str>, error: &str| SagaCommandFailed {
+            command_id: "order-7:2:0".into(),
+            command: "Fulfill".into(),
+            code: code.map(ToOwned::to_owned),
+            error: error.into(),
+        };
+        let cases = [
+            ("a terminal rejection", Fails::Rejected, failed(Some("rejected"), "out of stock")),
+            ("a kernel error, without its code in the message", Fails::Kernel, failed(Some("store"), "warehouse API timed out")),
+            ("an error no code classifies", Fails::Unclassified, failed(None, "disk full")),
+        ];
+        for (name, fails, want) in cases {
+            let store = MemorySagaStore::<String>::new();
+            let saga = OrderSaga::default();
+            let failures = Arc::clone(&saga.failures);
+            let runner =
+                Arc::new(SagaRunner::new(saga, store.clone(), JsonRegistryCodec::new().unwrap()).with_clock(|| 1_714_564_800_000_000_000));
+            runner.run(&mut MemoryTx::auto_commit(), &order_event("order-7", "Created")).unwrap();
+            runner.run(&mut MemoryTx::auto_commit(), &order_event("order-7", "Shipped")).unwrap();
+            let refunded: Arc<Mutex<Vec<OrderCommand>>> = Arc::default();
+            let effect = Arc::clone(&refunded);
+            let refund: crate::Handler<OrderCommand, ()> = Box::new(move |cmd: &OrderCommand| {
+                effect.lock().expect("no panics").push(cmd.clone());
+                Ok(())
+            });
+            let fulfill: crate::Handler<OrderCommand, ()> = Box::new(move |_: &OrderCommand| Err(error(fails)));
+            let mut bus = CommandBus::new();
+            bus.register("Fulfill", fulfill).unwrap();
+            bus.register("Refund", refund).unwrap();
+            let dead: Arc<Mutex<Vec<CommandMessage>>> = Arc::default();
+            let (sink, kept) = (Arc::clone(&runner), Arc::clone(&dead));
+            // One attempt: a transient failure dies at once too, as it would at the last of several.
+            let relay = Relay::<_, CommandMessage>::new(store.clone()).pacing(Pacing::instant()).max_attempts(1).on_dead(
+                move |row: &CommandMessage, error| {
+                    kept.lock().expect("no panics").push(row.clone());
+                    sink.command_failed(&mut MemoryTx::auto_commit(), row, error)
+                },
+            );
+            let publish = |row: &CommandMessage| bus.dispatch::<OrderCommand, ()>(&runner.command(row)?);
 
-        assert_eq!(relay.drain(10, publish).unwrap(), 1, "the dead Fulfill is settled");
-        let rows = Outbox::<CommandMessage>::unpublished(&store, 10).unwrap();
-        let compensation: Vec<(&str, &str)> = rows.iter().map(|row| (row.id.as_str(), row.causation_id.as_str())).collect();
-        assert_eq!(compensation, [("order-7:3:0", "order-7:2:0:failed")], "the Refund is the failure's child");
-        assert_eq!(instance(&store), Some(SagaInstance::Completed { version: 3 }));
-        assert_eq!(relay.drain(10, publish).unwrap(), 1, "the Refund is sent");
-        assert_eq!(*refunded.lock().unwrap(), [OrderCommand::Refund(Refund { order_id: "order-7".into() })]);
+            assert_eq!(relay.drain(10, publish).unwrap(), 1, "{name}: the dead Fulfill is settled");
+            assert_eq!(*failures.lock().unwrap(), [want], "{name}: the folded payload");
+            let rows = Outbox::<CommandMessage>::unpublished(&store, 10).unwrap();
+            let compensation: Vec<(&str, &str)> = rows.iter().map(|row| (row.id.as_str(), row.causation_id.as_str())).collect();
+            assert_eq!(compensation, [("order-7:3:0", "order-7:2:0:failed")], "{name}: the Refund is the failure's child");
+            assert_eq!(instance(&store), Some(SagaInstance::Completed { version: 3 }), "{name}");
+            assert_eq!(relay.drain(10, publish).unwrap(), 1, "{name}: the Refund is sent");
+            assert_eq!(*refunded.lock().unwrap(), [OrderCommand::Refund(Refund { order_id: "order-7".into() })], "{name}");
 
-        // The sink runs again for the same row (its mark was lost): the completed instance folds nothing.
-        let row = dead.lock().unwrap().remove(0);
-        let again: HandlerError = Terminal::new("out of stock").into();
-        runner.command_failed(&mut MemoryTx::auto_commit(), &row, &again).unwrap();
-        assert_eq!(instance(&store), Some(SagaInstance::Completed { version: 3 }), "no second fold");
-        assert!(Outbox::<CommandMessage>::unpublished(&store, 10).unwrap().is_empty(), "no second Refund");
+            // The sink runs again for the same row (its mark was lost): the completed instance folds nothing.
+            let row = dead.lock().unwrap().remove(0);
+            runner.command_failed(&mut MemoryTx::auto_commit(), &row, &error(fails)).unwrap();
+            assert_eq!(instance(&store), Some(SagaInstance::Completed { version: 3 }), "{name}: no second fold");
+            assert!(Outbox::<CommandMessage>::unpublished(&store, 10).unwrap().is_empty(), "{name}: no second Refund");
+            assert_eq!(failures.lock().unwrap().len(), 1, "{name}: folded once");
+        }
     }
 }

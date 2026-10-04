@@ -830,16 +830,33 @@ fn saga_cases() -> Vec<Value> {
         (false, r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
         (false, "[1]", "order-7", Some(1), "evt-1"),
     ];
+    let admit_json = |completed: bool, folded: &str, env: &EventMessage| match edax_event::saga_admit(completed, folded, env) {
+        Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
+        Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
+        Ok(edax_event::SagaAdmit::BelowMark) => json!({ "below_mark": true }),
+        Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
+        Err(e) => json!({ "error": e.to_string() }),
+    };
     for (completed, folded, aggregate_id, sequence, id) in admits {
         let env = EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() };
-        let want = match edax_event::saga_admit(completed, folded, &env) {
-            Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
-            Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
-            Ok(edax_event::SagaAdmit::BelowMark) => json!({ "below_mark": true }),
-            Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
-            Err(e) => json!({ "error": e.to_string() }),
-        };
+        let want = admit_json(completed, folded, &env);
         cases.push(json!({ "admit": { "completed": completed, "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
+    }
+    // Two of the instance's commands die and the relay, its mark lost, replays the first: each failure
+    // folds once. A failure kept as the last unsequenced id, before the failed set, is a repeat still.
+    let first = r#"{"order-7":{"failed":["order-7:2:0:failed"]}}"#;
+    let both = r#"{"order-7":{"failed":["order-7:2:0:failed","order-7:2:1:failed"]}}"#;
+    let failures: [(&str, &str); 4] = [
+        ("", "order-7:2:0:failed"),
+        (first, "order-7:2:1:failed"),
+        (both, "order-7:2:0:failed"),
+        (r#"{"order-7":{"unsequenced":"order-7:2:0:failed"}}"#, "order-7:2:0:failed"),
+    ];
+    for (folded, id) in failures {
+        let name = edax_event::SAGA_COMMAND_FAILED;
+        let env = EventMessage { id: id.to_owned(), aggregate_id: "order-7".to_owned(), sequence: None, name: name.to_owned(), ..base_event() };
+        let want = admit_json(false, folded, &env);
+        cases.push(json!({ "admit": { "completed": false, "folded": folded, "aggregate_id": "order-7", "sequence": null, "id": id, "name": name }, "want": want }));
     }
     for (instance_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
         cases.push(json!({

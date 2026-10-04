@@ -374,10 +374,13 @@ class ReserveSaga:
         return (state or 0) + 1, [Reserve("sku-1", env.id)]
 
 
-def at(aggregate_id: str, sequence: int | None, id: str) -> edax.EventMessage:
-    return build_message(
-        aggregate_id, "OrderCreated", sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"}
-    )
+def at(aggregate_id: str, sequence: int | None, id: str, name: str = "OrderCreated") -> edax.EventMessage:
+    return build_message(aggregate_id, name, sequence, id=id, data=b'{"total": 1200}', metadata={"order": "order-7"})
+
+
+def failed(id: str) -> edax.EventMessage:
+    """The unsequenced failure a dead-letter sink folds back when one of the instance's commands dies."""
+    return at("order-7", None, id, edax.SAGA_COMMAND_FAILED)
 
 
 @pytest.mark.parametrize(
@@ -416,6 +419,13 @@ def at(aggregate_id: str, sequence: int | None, id: str) -> edax.EventMessage:
             [at("order-7", None, "u-1"), at("order-7", None, "u-2"), at("order-7", None, "u-1")],
             ["u-1", "u-2", "u-1"],
             id="an_older_unsequenced_event_is_folded_again",
+        ),
+        pytest.param(
+            # A relay that lost its mark replays the first dead row after the second died: the instance
+            # keeps every failure it folded, so neither compensates twice.
+            [failed("order-7:1:0:failed"), failed("order-7:1:1:failed"), failed("order-7:1:0:failed")],
+            ["order-7:1:0:failed", "order-7:1:1:failed"],
+            id="two_failures_then_the_first_replayed",
         ),
         pytest.param(
             [

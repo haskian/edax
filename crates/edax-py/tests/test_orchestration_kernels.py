@@ -313,7 +313,9 @@ def test_golden_saga() -> None:
     for row in golden("saga.json"):
         if "admit" in row:
             admit, want = row["admit"], row["want"]
-            env = build_message(admit["aggregate_id"], "OrderCreated", admit["sequence"], id=admit["id"])
+            # Only a failure row names its event: the kernel reads the name of no other.
+            name = admit.get("name", "OrderCreated")
+            env = build_message(admit["aggregate_id"], name, admit["sequence"], id=admit["id"])
             if "error" in want:
                 with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
                     _edax.saga_admit(admit["completed"], admit["folded"], env)

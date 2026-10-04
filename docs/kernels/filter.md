@@ -127,7 +127,10 @@ Under it, `"9.5"` is below `"10"`, and `"9.50"` equals `"9.5"`. The rules:
 - `Contains` takes no collation and compares the text.
 
 Decimal text is an optional sign, digits with at most one `.`, and an optional exponent (`1E+2`).
-`NaN` and `Infinity` are not decimal text. Its plain notation holds at most 1000 digits.
+`NaN` and `Infinity` are not decimal text. The text is at most 2000 bytes long. Its digits, less
+the leading zeros of the integer and the trailing zeros of the fraction, number at most 1000, and
+so do the digits of its plain notation. The kernel checks the length and the digits before it
+parses, so a filter over untrusted text costs bounded time per comparison.
 `canonical_decimal` writes the one canonical form: `9.50` becomes `9.5`, `1E+2` becomes `100`, and
 `-0.0` becomes `0`. `bigdecimal` does the parsing and the comparison.
 
@@ -160,7 +163,7 @@ A Rust SDK, or a third one, must emit exactly this:
 
 | Host type | JSON | Kernel function | Refused, as `codec` |
 |---|---|---|---|
-| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `NaN`, an infinity, more than 1000 digits |
+| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
 | instant (Python aware `datetime`) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
 | calendar date (Python `date`) | ISO `"YYYY-MM-DD"`, already one width | — | — |
 
