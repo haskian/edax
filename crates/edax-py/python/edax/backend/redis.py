@@ -170,15 +170,15 @@ class RedisIdempotencyStore:
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         """Write the terminal record for ``key`` under ``ttl_ms``, replacing the claim ``handle`` names and
         only that one. A claim already taken over is reported, not overwritten: another worker owns it."""
-        try:
-            # Encoded and framed before any I/O: an unencodable result or a handle the kernel never
-            # minted is a terminal CodecError, and a transient verdict would redeliver it forever.
-            body = encode_record(record)
-            with errors.mapped():
-                value = _edax.redis_settled_value(handle, body)
-            written = await self._eval("complete", key, [handle, value, self._ttl_ms])
-        finally:
-            self._stop_renewing(handle)
+        # Stopped before the call, not after it: a beat while the reply is late would find the settled
+        # value and report the claim lost.
+        self._stop_renewing(handle)
+        # Encoded and framed before any I/O: an unencodable result or a handle the kernel never minted is
+        # a terminal CodecError, and a transient verdict would redeliver it forever.
+        body = encode_record(record)
+        with errors.mapped():
+            value = _edax.redis_settled_value(handle, body)
+        written = await self._eval("complete", key, [handle, value, self._ttl_ms])
         if not written:
             # Loud on purpose: the outcome was not recorded, so the caller must not report success.
             raise StoreError(
@@ -189,12 +189,10 @@ class RedisIdempotencyStore:
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         """Delete ``key`` while it still holds the claim ``handle`` names. A release that arrives after the
         claim lapsed, or after its own ``complete`` landed with the reply lost, deletes nothing."""
-        try:
-            with errors.mapped():
-                _edax.redis_check_claim(handle)
-            await self._eval("release", key, [handle])
-        finally:
-            self._stop_renewing(handle)
+        self._stop_renewing(handle)  # before the call, as in `complete`
+        with errors.mapped():
+            _edax.redis_check_claim(handle)
+        await self._eval("release", key, [handle])
 
     async def extend(self, key: str, handle: bytes) -> bool:
         """Reset the claim's TTL to ``claim_ttl_ms`` while the key still holds the claim ``handle`` names.
