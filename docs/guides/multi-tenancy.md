@@ -46,6 +46,7 @@ Pass `tenancy=` once, where you build the thing:
 ```python
 repo = Repository(store, events, aggregates, tenancy=Tenancy.POOL)
 bus = CommandBus(idempotent(ledger, scope="api", tenancy=Tenancy.POOL))
+router = EventRouter(idempotent_by_id(ledger, scope="balances", tenancy=Tenancy.POOL))
 producer = KafkaProducer(client, "events", tenancy=Tenancy.POOL)
 ```
 
@@ -54,6 +55,8 @@ producer = KafkaProducer(client, "events", tenancy=Tenancy.POOL)
 | `Repository.load(id, tenant=...)` | the event stream and the snapshot | the aggregate carries it, so the save that follows cannot name another |
 | `Repository.save` | every event's `tenant` field | stamped by the repository, from the aggregate |
 | `idempotent(..., tenancy=...)` | the ledger claim, inside its `scope` | read off the command message |
+| `forget(..., tenancy=..., tenant=...)` | the ledger record a re-drive deletes | passed by the operator, from the dead-lettered message |
+| `idempotent_by_id(..., tenancy=...)` | the event claim, inside its `scope` | read off the event message |
 | `CommandBus.dispatch(..., tenant=...)` | the message it builds | a typed field of the message |
 | `KafkaProducer` | the record key, and so the partition | read off the message |
 | `SagaRunner` | the instance, through the saga's own `instance_id` | inherited by every command a step emits |

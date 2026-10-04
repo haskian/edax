@@ -29,7 +29,7 @@ pub use codec::{PayloadFormat, Json, JsonCodec, JsonRegistryCodec, RegistryCodec
 #[cfg(feature = "msgpack")]
 pub use codec::{Msgpack, MsgpackCodec, MsgpackRegistryCodec};
 pub use command::{
-    idempotent, idempotent_in, retry, wrap, Claim, ClaimHandle, Command, CommandBus, Handler, HandlerError, IdempotencyStore,
+    idempotent, idempotent_in, retry, wrap, Claim, ClaimHandle, Command, CommandBus, Handler, HandlerError, IdempotencyKey, IdempotencyStore,
     Middleware, Record, State, Terminal,
 };
 pub use dispatcher::{DeadLetter, Delivery, DispatcherBuilder, HandlerFailure, KeyOrderedDispatcher};
@@ -39,7 +39,7 @@ pub use router::{idempotent_by_id, idempotent_by_id_in, EventHandler, EventIdemp
 /// The SDK's one failure type is the kernel's: a [`ErrorCode`] and a message, whose `Display` is the
 /// wire form `"<code>: <message>"`. Every SDK renders and caches a failure the same way, and the code
 /// carries the terminal / transient verdict ([`ErrorCode::is_terminal`]).
-pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, ErrorCode};
+pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, ErrorCode, Tenancy};
 // Kernel decisions a host calls directly, re-exported so a host need not reach past `edax` into
 // `edax_event`. No SDK code path calls `is_stale` or `advance`: the host owns where the watermark lives.
 pub use edax_event::{advance, is_stale, originate, propagate};

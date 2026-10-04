@@ -13,7 +13,8 @@
 //! - [`payload_hash`] — a stable hash of bytes, for idempotency-key payload binding.
 //! - [`command_hash`] — *which* bytes a command's idempotency hash covers: its name and the whole
 //!   command value, serialized, canonicalized, hashed. The input rule is the kernel's, not the host's.
-//! - [`claim_key`] — the ledger key a command's idempotency guard claims, scoped by the guard.
+//! - [`claim_key`] — the ledger key a command's idempotency guard claims, scoped by the guard and,
+//!   in a pool, by the tenant.
 //! - [`Record`] / [`outcome`] — the stored idempotency record's wire shape, its reading order, and
 //!   the verdict a losing claimant reaches from it (in flight, cached failure, cached success).
 //!
@@ -111,15 +112,19 @@ fn hash_canonical(json: &[u8]) -> Result<u64, Error> {
 }
 
 /// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
-/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
+/// `scope`, in a deployment that separates tenants by `mode`:
+/// `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`, composed with the command's `tenant` under
+/// [`Tenancy::Pool`](edax_core::Tenancy::Pool) (`"4:acme:edax:cmd:..."`).
 ///
 /// The scope names the guard (a service, or a stage within one), so an ingress guard and a consumer
 /// guard sharing one ledger never replay each other's outcome for the same key. The scope's byte
 /// length makes the key injective: no scope and key pair spells another's. The `edax:cmd:` prefix
-/// keeps command claims apart from event claims, whose key is the event id (a guid by default).
-/// Pinned by `testdata/golden/claim_key.json`.
-pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
-    format!("edax:cmd:{}", edax_core::scoped(scope, idempotency_key))
+/// keeps command claims apart from event claims. The tenant keeps one request id reused by two
+/// tenants of a pool on two rows. A mode that requires a tenant and a command that names none is a
+/// `codec` error, so a pool never claims a shared row. Both guards and every `forget` spell the key
+/// here ([`edax_core::guard_key`]). Pinned by `testdata/golden/claim_key.json`.
+pub fn claim_key(mode: edax_core::Tenancy, tenant: Option<&str>, scope: &str, idempotency_key: &str) -> Result<String, Error> {
+    edax_core::guard_key(mode, tenant, "cmd", scope, idempotency_key)
 }
 
 #[cfg(test)]

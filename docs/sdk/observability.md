@@ -256,7 +256,7 @@ observer = OtelObserver()  # yours; see the adapter below
 
 repo = Repository(store, events, aggregates, observer=observer)
 bus = CommandBus(idempotent(ledger, scope="accounts", observer=observer))
-router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, observer=observer))
+router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, scope="balances", observer=observer))
 dispatcher = KeyOrderedDispatcher(4, router.dispatch, on_dead=sink, observer=observer)
 relay = Relay(store, producer.publish, observer=observer)
 

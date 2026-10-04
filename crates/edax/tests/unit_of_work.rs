@@ -23,6 +23,7 @@ use support::{Shared, SCOPE};
 
 use std::sync::Arc;
 
+use edax::Tenancy;
 use edax::{
     idempotent_in, Claim, Command, CommandBus, Entity, Error, IdempotencyStore, MemoryProjectionStore,
     MemoryTransactor, MemoryTx, ProjectionStore, State, Transactor,
@@ -92,6 +93,7 @@ impl History {
         let guard = idempotent_in(
             Arc::clone(&ledger) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
             SCOPE,
+            Tenancy::Silo,
             |cmd: &Deposit| Some(cmd.key.clone()),
             move |_: &Deposit| current(),
         );
@@ -157,7 +159,7 @@ proptest! {
                 .unwrap()
                 .map_or(0, |e| e.document["applied"].as_i64().unwrap_or(0));
             // Reading the record means claiming it, which is safe: the history is over.
-            let prior = match h.ledger.claim(&mut tx, &claim_key(SCOPE, &key.to_string()), 0).unwrap() {
+            let prior = match h.ledger.claim(&mut tx, &claim_key(Tenancy::Silo, None, SCOPE, &key.to_string()).unwrap(), 0).unwrap() {
                 Claim::Won(_) => None,
                 Claim::Prior(record) => Some(record),
             };

@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use edax::command::{Claim, State};
+use edax::Tenancy;
 use edax::{
     idempotent, propagate, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
     EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher,
@@ -332,7 +333,7 @@ fn cmd_hash(kind: u8, payload: u8) -> u64 {
 
 /// The ledger key the guard claims for model key `key`.
 fn claimed(key: u8) -> String {
-    claim_key(SCOPE, &key.to_string())
+    claim_key(Tenancy::Silo, None, SCOPE, &key.to_string()).unwrap()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,7 +378,7 @@ proptest! {
         let mut bus = CommandBus::new();
         for (kind, name) in [(0u8, "A"), (1u8, "B")] {
             let counter = Arc::clone(&calls[kind as usize]);
-            let guard = idempotent(Arc::clone(&store), SCOPE, |c: &Cmd| Some(c.key.to_string()));
+            let guard = idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Cmd| Some(c.key.to_string()));
             let handler: edax::Handler<Cmd, u8> = Box::new(move |cmd: &Cmd| {
                 counter.set(counter.get() + 1);
                 match cmd.outcome {

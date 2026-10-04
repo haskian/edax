@@ -1,32 +1,106 @@
 [
   {
+    "error": null,
     "expected": "edax:cmd:7:billing:req-1",
     "idempotency_key": "req-1",
-    "scope": "billing"
+    "scope": "billing",
+    "tenancy": "silo",
+    "tenant": null
   },
   {
+    "error": null,
     "expected": "edax:cmd:0::req-1",
     "idempotency_key": "req-1",
-    "scope": ""
+    "scope": "",
+    "tenancy": "silo",
+    "tenant": null
   },
   {
+    "error": null,
     "expected": "edax:cmd:3:a:b:c",
     "idempotency_key": "c",
-    "scope": "a:b"
+    "scope": "a:b",
+    "tenancy": "silo",
+    "tenant": null
   },
   {
+    "error": null,
     "expected": "edax:cmd:1:a:b:c",
     "idempotency_key": "b:c",
-    "scope": "a"
+    "scope": "a",
+    "tenancy": "silo",
+    "tenant": null
   },
   {
+    "error": null,
     "expected": "edax:cmd:5:café:clé-1",
     "idempotency_key": "clé-1",
-    "scope": "café"
+    "scope": "café",
+    "tenancy": "silo",
+    "tenant": null
   },
   {
+    "error": null,
     "expected": "edax:cmd:7:ingress:",
     "idempotency_key": "",
-    "scope": "ingress"
+    "scope": "ingress",
+    "tenancy": "silo",
+    "tenant": null
+  },
+  {
+    "error": null,
+    "expected": "edax:cmd:7:billing:req-1",
+    "idempotency_key": "req-1",
+    "scope": "billing",
+    "tenancy": "silo",
+    "tenant": "acme"
+  },
+  {
+    "error": null,
+    "expected": "4:acme:edax:cmd:7:billing:req-1",
+    "idempotency_key": "req-1",
+    "scope": "billing",
+    "tenancy": "pool",
+    "tenant": "acme"
+  },
+  {
+    "error": null,
+    "expected": "3:a:b:edax:cmd:1:c:req-1",
+    "idempotency_key": "req-1",
+    "scope": "c",
+    "tenancy": "pool",
+    "tenant": "a:b"
+  },
+  {
+    "error": null,
+    "expected": "1:a:edax:cmd:3:b:c:req-1",
+    "idempotency_key": "req-1",
+    "scope": "b:c",
+    "tenancy": "pool",
+    "tenant": "a"
+  },
+  {
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "idempotency_key": "req-1",
+    "scope": "billing",
+    "tenancy": "pool",
+    "tenant": null
+  },
+  {
+    "error": null,
+    "expected": "edax:cmd:7:billing:req-1",
+    "idempotency_key": "req-1",
+    "scope": "billing",
+    "tenancy": "bridge",
+    "tenant": "acme"
+  },
+  {
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "idempotency_key": "req-1",
+    "scope": "billing",
+    "tenancy": "bridge",
+    "tenant": null
   }
 ]

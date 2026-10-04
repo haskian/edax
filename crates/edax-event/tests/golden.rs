@@ -14,7 +14,7 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
-use edax_core::ErrorCode;
+use edax_core::{ErrorCode, Tenancy};
 use edax_event::testkit::{base_command, base_event, map};
 use edax_event::{CommandMessage, EventMessage, Extensions, Format, Message, Metadata};
 use edax_golden::{hex, write_or_check};
@@ -509,9 +509,11 @@ fn snapshot_due_cases() -> Vec<Value> {
         .collect()
 }
 
-/// The event guard's input rule: the message id is the key, the raw `data` bytes are hashed. The
-/// message's other fields take no part, so two deliveries of one event differing only in metadata,
-/// extensions or time claim the same key with the same hash.
+/// The event guard's input rule: the message id under the guard's scope is the key, composed with the
+/// tenant under a pool, and the raw `data` bytes are hashed. The message's other fields take no part,
+/// so two deliveries of one event differing only in metadata, extensions or time claim the same key
+/// with the same hash. Two scopes are two keys for one event: that is what lets two consumers share a
+/// ledger. A mode that wants a tenant and an event that names none is the `codec` error.
 fn event_idempotency_cases() -> Vec<Value> {
     let base = EventMessage {
         id: "acct-1-3".to_owned(),
@@ -533,31 +535,51 @@ fn event_idempotency_cases() -> Vec<Value> {
         edit(&mut env);
         env
     };
+    let tenant = |tenant: &str| {
+        let mut env = base.clone();
+        env.tenant = Some(tenant.to_owned());
+        env
+    };
+    let (silo, pool, bridge) = (Tenancy::Silo, Tenancy::Pool, Tenancy::Bridge);
     let cases = [
-        ("deposit", base.clone()),
+        ("deposit", silo, "balances", base.clone()),
+        // The same event under another consumer's scope: its own key, so neither skips the other.
+        ("another_scope_is_another_key", silo, "receipts", base.clone()),
+        // A separator in the scope spells no other scope's key.
+        ("separator_in_the_scope", silo, "a:b", base.clone()),
         // Same bytes reordered: raw, not canonical, so a different hash under the same key.
-        ("raw_bytes_not_canonical", with(|e| e.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
-        ("metadata_and_time_take_no_part", with(|e| {
+        ("raw_bytes_not_canonical", silo, "balances", with(|e| e.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
+        ("metadata_and_time_take_no_part", silo, "balances", with(|e| {
             e.metadata.insert("retry".to_owned(), "2".to_owned());
             e.extensions.insert("traceparent".to_owned(), "00-a-b-01".to_owned());
             e.recorded_at += 1;
         })),
-        ("empty_body", with(|e| e.data = Vec::new())),
-        ("non_utf8_body", with(|e| e.data = vec![0xde, 0xad, 0xbe, 0xef])),
+        ("empty_body", silo, "balances", with(|e| e.data = Vec::new())),
+        ("non_utf8_body", silo, "balances", with(|e| e.data = vec![0xde, 0xad, 0xbe, 0xef])),
+        ("a_silo_never_keys_by_the_tenant", silo, "balances", tenant("acme")),
+        ("a_pool_composes_the_tenant_outermost", pool, "balances", tenant("acme")),
+        ("separator_in_the_tenant", pool, "balances", tenant("a:b")),
+        ("a_pool_refuses_an_event_without_a_tenant", pool, "balances", base.clone()),
+        ("a_bridge_keeps_the_key_bare", bridge, "balances", tenant("acme")),
+        ("a_bridge_refuses_an_event_without_a_tenant", bridge, "balances", base.clone()),
     ];
     cases
         .into_iter()
-        .map(|(name, env)| {
-            let rule = edax_event::event_idempotency(&env);
+        .map(|(name, mode, scope, env)| {
+            let rule = edax_event::event_idempotency(&env, mode, scope);
             json!({
                 "name": name,
+                "tenancy": mode.name(),
+                "scope": scope,
                 "id": env.id,
+                "tenant": env.tenant,
                 "data_hex": hex(&env.data),
                 "metadata": env.metadata,
                 "extensions": env.extensions,
                 "recorded_at": env.recorded_at,
-                "key": rule.key,
-                "payload_hash": rule.payload_hash,
+                "key": rule.as_ref().ok().map(|rule| &rule.key),
+                "payload_hash": rule.as_ref().ok().map(|rule| rule.payload_hash),
+                "error": rule.as_ref().err().map(ToString::to_string),
             })
         })
         .collect()

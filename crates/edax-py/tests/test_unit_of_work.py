@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import RefusingLedger, build_message, claimed
+from conftest import SCOPE, RefusingLedger, build_message, claimed, event_claimed
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
 from edax.command import Claimed, CommandBus, Record, Won, _payload_hash, idempotent, joins_transaction
 from edax.projection import Entity
@@ -213,7 +213,7 @@ class Broker:
                 failure, self._fail_first = self._fail_first, None  # one-shot
                 raise failure
 
-        guard = idempotent_by_id(self.ledger, unit_of_work=self.db if uow else None)
+        guard = idempotent_by_id(self.ledger, unit_of_work=self.db if uow else None, scope=SCOPE)
         router = edax.EventRouter(guard)
         router.register("Deposited", handler)
         self.dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, max_attempts=2, on_dead=self._dead)
@@ -281,7 +281,7 @@ async def test_in_progress_nacks_without_burning_the_attempt_budget() -> None:
     ``InProgress`` deliveries would otherwise be enough to kill it."""
     broker = Broker(shared=False)
     # Someone else takes the claim first and never settles it.
-    await broker.ledger.claim("evt-1", edax.payload_hash(b"100"))
+    await broker.ledger.claim(event_claimed("evt-1"), edax.payload_hash(b"100"))
 
     for _ in range(3):
         await broker.deliver()
@@ -616,9 +616,9 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
         bus.register("Deposit", handler)
         dispatched, key = bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A"), claimed("req-A")
     else:
-        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db))
+        router = edax.EventRouter(idempotent_by_id(ledger, unit_of_work=db, scope=SCOPE))
         router.register("Deposited", handler)
-        dispatched, key = router.dispatch(env), env.id
+        dispatched, key = router.dispatch(env), event_claimed(env.id)
     with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):
         await dispatched
     assert runs == 0, "refused at the claim, before the handler ran"

@@ -12,7 +12,7 @@
 
 use edax_cqrs::query::{decode_cursor, effective_sort, encode_cursor, query_json, SortKey};
 use edax_cqrs::eval_json;
-use edax_core::ErrorCode;
+use edax_core::{ErrorCode, Tenancy};
 use edax_cqrs::{
     cached_failure, canonical_json, command_hash, decode_prior, decode_record, encode_record, outcome, payload_hash, Outcome,
     Record, State,
@@ -121,19 +121,37 @@ fn canonical_json_cases() -> Vec<Value> {
     .collect()
 }
 
-/// The command guard's ledger key: scope and key, injective whatever either holds.
+/// The command guard's ledger key: scope and key, then the tenant under a pool, injective whatever any
+/// of them holds. A mode that wants a tenant and a command that names none is the `codec` error.
 fn claim_key_cases() -> Vec<Value> {
-    let cases: [(&str, &str); 6] = [
-        ("billing", "req-1"),
-        ("", "req-1"),     // an unscoped guard still gets the prefix and the length
-        ("a:b", "c"),      // a colon in the scope
-        ("a", "b:c"),      // the same text split the other way: a different key
-        ("café", "clé-1"), // the length counts bytes, not characters
-        ("ingress", ""),   // an empty key is still a key
+    let cases: [(Tenancy, Option<&str>, &str, &str); 13] = [
+        (Tenancy::Silo, None, "billing", "req-1"),
+        (Tenancy::Silo, None, "", "req-1"),     // an unscoped guard still gets the prefix and the length
+        (Tenancy::Silo, None, "a:b", "c"),      // a colon in the scope
+        (Tenancy::Silo, None, "a", "b:c"),      // the same text split the other way: a different key
+        (Tenancy::Silo, None, "café", "clé-1"), // the length counts bytes, not characters
+        (Tenancy::Silo, None, "ingress", ""),   // an empty key is still a key
+        (Tenancy::Silo, Some("acme"), "billing", "req-1"), // a silo never keys by the tenant it carries
+        (Tenancy::Pool, Some("acme"), "billing", "req-1"), // the tenant goes outermost
+        (Tenancy::Pool, Some("a:b"), "c", "req-1"),        // a colon in the tenant
+        (Tenancy::Pool, Some("a"), "b:c", "req-1"),        // the same text split the other way
+        (Tenancy::Pool, None, "billing", "req-1"),         // a pool refuses a shared row
+        (Tenancy::Bridge, Some("acme"), "billing", "req-1"), // the store is the tenant's: the key stays bare
+        (Tenancy::Bridge, None, "billing", "req-1"),       // a bridge cannot route without a tenant
     ];
     cases
         .into_iter()
-        .map(|(scope, key)| json!({ "scope": scope, "idempotency_key": key, "expected": edax_cqrs::claim_key(scope, key) }))
+        .map(|(mode, tenant, scope, key)| {
+            let outcome = edax_cqrs::claim_key(mode, tenant, scope, key);
+            json!({
+                "tenancy": mode.name(),
+                "tenant": tenant,
+                "scope": scope,
+                "idempotency_key": key,
+                "expected": outcome.as_ref().ok(),
+                "error": outcome.as_ref().err().map(ToString::to_string),
+            })
+        })
         .collect()
 }
 

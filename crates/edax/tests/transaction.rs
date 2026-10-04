@@ -17,6 +17,7 @@ use support::{Shared, SCOPE};
 
 use std::sync::Arc;
 
+use edax::Tenancy;
 use edax::{
     idempotent_in, Aggregate, AggregateCodec, Command, CommandBus, Entity, Error, ErrorCode, EventCodec, EventDraft, EventMessage,
     EventStore, HandlerError, IdempotencyStore, MemoryEventStore, MemoryProjectionStore, MemorySagaStore, MemoryTransactor, MemoryTx,
@@ -133,6 +134,7 @@ fn rig() -> Rig {
     let guard = idempotent_in(
         Arc::clone(&claims) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
         SCOPE,
+        Tenancy::Silo,
         |c: &Deposit| Some(c.request_id.clone()),
         move |_: &Deposit| provider.get(),
     );
@@ -182,7 +184,7 @@ impl Rig {
             // A losing claim proves the key is taken; a winning one must be undone, or the probe
             // itself would take the key.
             let probe = self.db.begin().expect("a probe transaction");
-            let taken = !matches!(self.claims.claim(&mut { probe }, &claim_key(SCOPE, "req-A"), 0), Ok(edax::Claim::Won(_)));
+            let taken = !matches!(self.claims.claim(&mut { probe }, &claim_key(Tenancy::Silo, None, SCOPE, "req-A").unwrap(), 0), Ok(edax::Claim::Won(_)));
             self.db.rollback(probe);
             taken
         };

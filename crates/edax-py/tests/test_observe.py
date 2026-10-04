@@ -15,6 +15,7 @@ from typing import Any
 import edax
 import pytest
 from conftest import (
+    SCOPE,
     CounterCodec,
     CreateUser,
     FakeKafkaClient,
@@ -240,7 +241,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
 
 async def test_idempotent_by_id_threads_the_observer_through_the_same_guard() -> None:
     observer = Recording()
-    guarded = edax.idempotent_by_id(MemoryIdempotencyStore(), observer=observer)(lambda env: None)
+    guarded = edax.idempotent_by_id(MemoryIdempotencyStore(), observer=observer, scope=SCOPE)(
+        lambda env: None
+    )
     env = build_message("acct-1", "Deposited", 3, data=DEPOSITED)
 
     await maybe_await(guarded(env))

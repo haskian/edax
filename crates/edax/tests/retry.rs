@@ -21,6 +21,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use edax::Tenancy;
 use edax::{
     idempotent, idempotent_in, retry, retry_transaction, transaction, wrap, Command, CommandBus, Entity, Error,
     ErrorCode, HandlerError, IdempotencyStore, MemoryProjectionStore, MemoryTransactor, MemoryTx, Pacing,
@@ -109,6 +110,7 @@ impl Rig {
         idempotent_in(
             ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
             SCOPE,
+            Tenancy::Silo,
             |cmd: &Deposit| Some(cmd.request_id.clone()),
             move |_: &Deposit| handle.get(),
         )
@@ -262,6 +264,7 @@ fn retry_inside_idempotent_without_a_transaction_is_still_allowed() {
     let guard = idempotent(
         ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
         SCOPE,
+        Tenancy::Silo,
         |cmd: &Deposit| Some(cmd.request_id.clone()),
     );
     let bus = rig.bus(vec![guard, retry(2, Pacing::instant())], 0);
