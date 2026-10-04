@@ -114,8 +114,8 @@ can still end that way there and the health check shows it.
 **Shutdown.** Pass the deadline to `stop(timeout=...)` rather than wrapping `stop()` in
 `asyncio.wait_for`. Either way `stop` returns only once no worker is left, so a later `start()` never
 puts two workers on one queue. Past the deadline it cancels the workers, nacks the delivery each one
-held and every delivery still queued, and so leaves nothing submitted unsettled. After `stop`,
-`submit` raises `RuntimeError` until the next `start`.
+held and every delivery still queued, and so leaves nothing submitted unsettled. The observer hears
+each of them once, as `stopped`. After `stop`, `submit` raises `RuntimeError` until the next `start`.
 
 ## Settlement
 
@@ -197,7 +197,9 @@ sequenceDiagram
 By default a raising handler nacks and the broker redelivers forever. Two settings bound that:
 `max_attempts` and `on_dead`. The rule below is the kernel's (`edax_event::Retries`, pinned by
 `testdata/golden/retries.json`). Both SDKs' dispatchers, and both `Relay`s, perform its answers, so
-two services consuming one topic dead-letter the same message at the same attempt.
+two services consuming one topic dead-letter the same message at the same attempt. `max_attempts` is
+an unsigned 32-bit count; the Python dispatcher and `Relay` refuse any other value with `ValueError`
+when they are built.
 
 An attempt is one handler run of a delivery, counted as
 

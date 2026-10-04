@@ -377,8 +377,11 @@ class KafkaConsumer(_ConsumerLoop):
         lost commit only means redelivery after a restart."""
         try:
             await self.flush()
-        except Exception:
+        except Exception as e:
             logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=True)
+            # Absent only for the last flush after `run` ends, whose failure the log line carries.
+            if self._dispatcher is not None:
+                self._dispatcher.observer.commit_failed(e)
 
     async def _commit_loop(self) -> None:
         while True:
@@ -451,6 +454,7 @@ class KafkaConsumer(_ConsumerLoop):
                     running,
                     timeout,
                 )
+                dispatcher.observer.revoke_overrun(running)
                 return
             await asyncio.sleep(min(_DRAIN_POLL_S, remaining))
 

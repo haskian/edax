@@ -162,11 +162,15 @@ class Recording(edax.Observer):
         self.claims: list[tuple[str, str]] = []  # (name, verdict)
         self.settlements: list[tuple[str, str, int]] = []  # (name, how, duration_ns)
         self.deliveries: list[tuple[str, str, int, int, str | None]] = []
+        self.delivered_ids: list[tuple[str, str]] = []  # (message_id, correlation_id), per delivery
         self.settlement_failures: list[tuple[str, str, type[BaseException]]] = []
         self.transactions: list[tuple[str, int]] = []
-        self.drains: list[tuple[int, int, int | None]] = []
-        self.drain_failures: list[type[BaseException]] = []
+        self.drains: list[tuple[int, int, int, int | None]] = []  # (published, dead, duration, oldest)
+        self.drain_failures: list[tuple[type[BaseException], int, int]] = []  # (error, published, dead)
         self.undecodables: list[tuple[str, type[BaseException]]] = []
+        self.poll_failures: list[type[BaseException]] = []
+        self.commit_failures: list[type[BaseException]] = []
+        self.revoke_overruns: list[int] = []
 
     def claim(self, name: str, verdict: str) -> None:
         assert verdict in CLAIM_VERDICTS, verdict
@@ -177,10 +181,18 @@ class Recording(edax.Observer):
         self.settlements.append((name, how, duration_ns))
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
+        self,
+        name: str,
+        message_id: str,
+        correlation_id: str,
+        outcome: str,
+        attempt: int,
+        duration_ns: int,
+        error_type: str | None,
     ) -> None:
         assert outcome in DELIVERY_OUTCOMES, outcome
         self.deliveries.append((name, outcome, attempt, duration_ns, error_type))
+        self.delivered_ids.append((message_id, correlation_id))
 
     def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
         self.settlement_failures.append((name, event_id, type(error)))
@@ -189,14 +201,25 @@ class Recording(edax.Observer):
         assert outcome in TRANSACTIONS, outcome
         self.transactions.append((outcome, duration_ns))
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        self.drains.append((published, duration_ns, oldest_timestamp))
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
+        self.drains.append((published, dead_lettered, duration_ns, oldest_timestamp))
 
-    def drain_failed(self, error: BaseException) -> None:
-        self.drain_failures.append(type(error))
+    def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
+        self.drain_failures.append((type(error), published, dead_lettered))
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         self.undecodables.append((message_id, type(error)))
+
+    def poll_failed(self, error: BaseException) -> None:
+        self.poll_failures.append(type(error))
+
+    def commit_failed(self, error: BaseException) -> None:
+        self.commit_failures.append(type(error))
+
+    def revoke_overrun(self, handling: int) -> None:
+        self.revoke_overruns.append(handling)
 
 
 class SeqSerializer:

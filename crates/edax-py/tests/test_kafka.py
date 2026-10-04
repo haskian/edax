@@ -980,17 +980,20 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     # The run keeps consuming while every commit times out, and its own stop is not held hostage.
     await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="3")])
     handled: list[str] = []
+    observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
-        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok, observer=observer
     )
     run_consumer = KafkaConsumer(
         client, serializer=IdSerializer(), commit_interval_s=0.01, commit_timeout_s=0.05
     )
     started = loop.time()
-    await _drive(run_consumer, dispatcher, lambda: handled == ["3"])
+    await _drive(run_consumer, dispatcher, lambda: handled == ["3"] and bool(observer.commit_failures))
     assert handled == ["3"], "the client's fetch position is past 0..2, so only the new record comes"
     assert loop.time() - started < 2, "a paused broker hung the run"
     assert client.commits == []
+    # A consumer whose progress is not saved is a counter, not only a log line.
+    assert observer.commit_failures and set(observer.commit_failures) == {asyncio.TimeoutError}
 
     client.cluster.resume_commits()
     await consumer.flush()
@@ -1129,7 +1132,8 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
         if env.id == "0":
             await release.wait()  # running when the revoke comes
 
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink_ok)
+    observer = Recording()
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink_ok, observer=observer)
     dispatcher.start()
     run = asyncio.create_task(consumer.run(dispatcher))
     while dispatcher.stats().queue_depth != [4] or dispatcher.stats().handling != 1:
@@ -1142,6 +1146,9 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
         "the revoke did not wait for, or did not give up on, the handler"
     )
     assert consumer.stats() == {}, "the revoked partition was not reset"
+    assert observer.revoke_overruns == [1], (
+        "an overrun lets two members run one key: a counter, not a log line"
+    )
     release.set()
     await asyncio.sleep(0.01)
     assert handled == ["0"], "a queued delivery of the revoked partition ran"
