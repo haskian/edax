@@ -13,9 +13,9 @@
 //! - text with no offset, whose instant is unknown: guessing UTC would misplace it silently;
 //! - a fraction finer than a microsecond, which the form cannot hold: truncating it would make two
 //!   instants one string;
-//! - a UTC year outside `0000..=9999`, which four digits cannot hold (`jiff` refuses one past 9999
-//!   itself).
+//! - a UTC year below `0000`, which four digits cannot hold (`jiff` refuses one past 9999 itself).
 //!
+//! `jiff` then prints the instant at six fraction digits: four-digit year, `T`, and `Z`.
 //! `testdata/golden/host_values.json` pins the form.
 
 use edax_core::Error;
@@ -27,24 +27,14 @@ use jiff::Timestamp;
 pub fn canonical_timestamp(text: &str) -> Result<String, Error> {
     let instant: Timestamp =
         text.parse().map_err(|e| Error::codec(format_args!("{text:?} is not an RFC 3339 timestamp with an offset: {e}")))?;
-    let utc = Offset::UTC.to_datetime(instant);
-    let nanos = utc.subsec_nanosecond();
-    if nanos % 1_000 != 0 {
+    if instant.subsec_nanosecond() % 1_000 != 0 {
         return Err(Error::codec(format_args!("{text:?} is finer than a microsecond")));
     }
-    if !(0..=9999).contains(&utc.year()) {
-        return Err(Error::codec(format_args!("{text:?} falls outside the UTC years 0000 to 9999")));
+    // jiff prints a year below 0000 with a `-00` prefix, which breaks the fixed width.
+    if Offset::UTC.to_datetime(instant).year() < 0 {
+        return Err(Error::codec(format_args!("{text:?} falls before the UTC year 0000")));
     }
-    Ok(format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
-        utc.year(),
-        utc.month(),
-        utc.day(),
-        utc.hour(),
-        utc.minute(),
-        utc.second(),
-        nanos / 1_000
-    ))
+    Ok(format!("{instant:.6}"))
 }
 
 #[cfg(test)]
@@ -69,7 +59,7 @@ mod tests {
             ("no_offset", "2024-01-01T00:00:00", Err("not an RFC 3339 timestamp with an offset")),
             ("not_a_timestamp", "yesterday", Err("not an RFC 3339 timestamp with an offset")),
             ("finer_than_a_microsecond", "2024-01-01T00:00:00.0000001Z", Err("finer than a microsecond")),
-            ("a_negative_year", "0000-01-01T00:00:00+01:00", Err("outside the UTC years")),
+            ("a_negative_year", "0000-01-01T00:00:00+01:00", Err("before the UTC year 0000")),
             // Past jiff's own range, which ends in the last days of 9999.
             ("past_year_9999", "9999-12-31T23:30:00-01:00", Err("not an RFC 3339 timestamp with an offset")),
         ];
