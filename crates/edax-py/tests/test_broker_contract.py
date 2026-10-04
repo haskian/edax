@@ -20,6 +20,7 @@ from aiokafka import TopicPartition
 from conftest import (
     FakeKafkaClient,
     FakeKafkaCluster,
+    Recording,
     agg_id,
     build_message,
     delivered,
@@ -169,6 +170,7 @@ class RunCase:
     slept: list = field(default_factory=list)  # backoff steps waited, in order
     raises: type[BaseException] | None = None  # run() raised this instead of returning or being cancelled
     nack_raises: bool = False  # the poison's nack raises, as a seek on a lost partition does
+    poll_failures: list = field(default_factory=list)  # what the observer hears a poll raise, in order
 
 
 @pytest.mark.parametrize(
@@ -215,12 +217,23 @@ class RunCase:
         ),
         # A transient poll failure (a middleware's key service) waits a growing step and polls again.
         pytest.param(
-            RunCase(["fail", "fail", "d", None], False, [1], ["ack"], True, [], slept=[0, 1]),
+            RunCase(
+                ["fail", "fail", "d", None],
+                False,
+                [1],
+                ["ack"],
+                True,
+                [],
+                slept=[0, 1],
+                poll_failures=[ConnectionError, ConnectionError],
+            ),
             id="a_transient_poll_failure_backs_off_and_the_loop_continues",
         ),
         # A failure that repeats on every poll ends the loop at once rather than spinning on it.
         pytest.param(
-            RunCase(["terminal"], False, [], [], False, [], raises=edax.BadHandle),
+            RunCase(
+                ["terminal"], False, [], [], False, [], raises=edax.BadHandle, poll_failures=[edax.BadHandle]
+            ),
             id="a_terminal_poll_failure_ends_the_loop",
         ),
         # A nack that raises while the poison settles is the transport's fault: logged, and the loop goes on.
@@ -278,11 +291,13 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
         if case.sink_raises:
             raise edax.StoreError("dead-letter sink unavailable")
 
+    observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
         workers=2,
         handler=lambda env: handled.append(sequence_of(env)),
         max_queue=case.max_queue,
         on_dead=on_dead if case.on_dead else None,
+        observer=observer,
     )
     if case.start:
         dispatcher.start()
@@ -303,6 +318,7 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
     assert settled == case.settled  # every polled delivery reached settlement
     assert dead == case.dead
     assert slept == case.slept
+    assert observer.poll_failures == case.poll_failures, "a failed poll is a counter, not only a log line"
     assert task.done() and (not task.cancelled() and task.exception() is None) is case.returns
 
 

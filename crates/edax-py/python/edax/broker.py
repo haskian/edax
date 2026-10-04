@@ -131,6 +131,7 @@ class _ConsumerLoop:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                dispatcher.observer.poll_failed(e)
                 # A terminal failure repeats on every poll: fail fast rather than loop on it.
                 if is_terminal(e):
                     raise

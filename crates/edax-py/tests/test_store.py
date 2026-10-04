@@ -752,7 +752,7 @@ async def test_a_store_that_fails_backs_the_drain_off_and_a_store_that_recovers_
     failed: list[str] = []
 
     class Failures(edax.Observer):
-        def drain_failed(self, error: BaseException) -> None:
+        def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
             failed.append(str(error))
 
     relay = edax.Relay(store, lambda env: None, observer=Failures())

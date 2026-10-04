@@ -700,7 +700,7 @@ async def _guarded_around_the_work(
     # Won the claim. From here every exit must settle the record, including a failure of the commit
     # itself. That is why the transaction opens here and not around the caller.
     started = perf_counter_ns()
-    # What a raise out of the completion below means: the store would not take the record.
+    # What a raise out of the completion below means: the store took neither the record nor the release.
     how: Settlement = "refused"
     try:
         try:
@@ -715,7 +715,10 @@ async def _guarded_around_the_work(
             record = None if code is None else Record(payload_hash, error=str(e), error_code=code)
             how = await asyncio.shield(_settle_failure(store, key, handle, record))
             raise
-        await _complete_or_release(store, key, handle, Record(payload_hash, result=result))
+        refusal = await _complete_or_release(store, key, handle, Record(payload_hash, result=result))
+        if refusal is not None:
+            how = "released"
+            raise refusal
         how = "completed"
         return result
     finally:
@@ -726,8 +729,9 @@ async def _settle_failure(
     store: IdempotencyStore, key: str, handle: bytes, record: Record | None
 ) -> Settlement:
     """Settle the claim after the handler failed: cache ``record``, or release when there is nothing to
-    cache. Never raises; returns how the claim ended: ``cached``, ``released``, or ``refused`` when the
-    store would not take the compensation. The handler's exception is the verdict the caller,
+    cache or the store would not take the record. Never raises; returns how the claim ended: ``cached``,
+    ``released``, or ``refused`` when the store would not take the release. The handler's exception is
+    the verdict the caller,
     :func:`retry` and the dispatcher act on, so a compensation the store refuses must not replace it.
     Inside the host's transaction that refusal is usually the abort the handler's own failed statement
     caused, and the host's rollback frees the claim; on a ledger of its own the claim stays pending until
@@ -736,8 +740,15 @@ async def _settle_failure(
         if record is None:
             await store.release(key, handle)
             return "released"
-        await _complete_or_release(store, key, handle, record)
-        return "cached"
+        refusal = await _complete_or_release(store, key, handle, record)
+        if refusal is None:
+            return "cached"
+        logger.warning(
+            "edax idempotency: caching the failure of %r was refused; the claim is released instead",
+            key,
+            exc_info=refusal,
+        )
+        return "released"
     except Exception:
         # Expected when the ledger shares a transaction the handler already aborted, so it is not news.
         expected = joins_transaction(store) and _in_unit_of_work()
@@ -778,17 +789,22 @@ def _replay(name: str, key: str, payload_hash: int, prior: Record, observe: Obse
     return replayed  # "succeeded": the cached value, `None` included
 
 
-async def _complete_or_release(store: IdempotencyStore, key: str, handle: bytes, record: Record) -> None:
+async def _complete_or_release(
+    store: IdempotencyStore, key: str, handle: bytes, record: Record
+) -> BaseException | None:
     """Overwrite the pending claim with its terminal record; if that write fails, release the
     claim instead of leaving it pending for the store's whole retention. Both carry the claim's handle,
-    so a fenced store deletes nothing when the write did land and only its reply was lost."""
+    so a fenced store deletes nothing when the write did land and only its reply was lost. Returns
+    ``None`` once the record is written, or the error ``complete`` raised once the release has landed,
+    for the caller to raise or log: the ledger then holds no record. A release that fails too raises."""
     try:
         await store.complete(key, handle, record)
-    except BaseException:  # recording the outcome failed or was cancelled, not the handler
+    except BaseException as e:  # noqa: BLE001 - the record failed or was cancelled, not the handler; returned
         # Shielded for the same reason as the cancellation branch in `_guarded_around_the_work`:
         # a cancel landing mid-release leaves the claim pending for the store's whole retention.
         await asyncio.shield(store.release(key, handle))
-        raise
+        return e
+    return None
 
 
 def _outcome(prior: Record, current: int) -> ClaimVerdict:

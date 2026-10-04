@@ -565,8 +565,9 @@ class Relay:
     Two relays over one store need ``unpublished`` to lease the rows it returns.
 
     Every completed drain is reported to ``observer`` (:meth:`~edax.observe.Observer.drain`) and kept in
-    :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed` and
-    leaves :attr:`last` as it was."""
+    :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed`, with
+    the rows it published and dead-lettered before the failure, and leaves :attr:`last` as it was.
+    A ``max_attempts`` the kernel cannot carry raises :class:`ValueError` at construction."""
 
     def __init__(
         self,
@@ -583,9 +584,7 @@ class Relay:
         self._observer = _wrap(observer)
         self._on_dead = on_dead
         self._pacing = pacing or Pacing()
-        # The kernel's retry policy, built on first use on the loop's thread: the native handle is bound
-        # to the thread that builds it, and a relay may be built on another.
-        self._retries = ThreadBound.lazy(lambda: _edax.retries(max_attempts, on_dead is not None), "Relay")
+        self._retries = _retry_policy(max_attempts, on_dead is not None, "Relay")
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
@@ -600,6 +599,8 @@ class Relay:
         on one relay are serialized, not overlapped."""
         async with self._draining:
             started = perf_counter_ns()
+            # What the drain did before a store failure, so `drain_failed` loses none of it.
+            published = dead = 0
             try:
                 rows = await self._store.unpublished(batch)
                 settled, published, dead, failure = await self._publish_in_order(rows)
@@ -608,19 +609,19 @@ class Relay:
             except Exception as e:
                 # The store failed, not a row. Reported so a stuck relay is a counter, not only a log line
                 # at the caller, and waited out with a step that grows while the store stays down.
-                self._observer.drain_failed(e)
+                self._observer.drain_failed(e, published, dead)
                 await self._pacing.wait(self._store_failures)
                 self._store_failures += 1
                 raise
             self._store_failures = 0
             if failure is not None:
                 step, error = failure
-                self._observer.drain_failed(error)
+                self._observer.drain_failed(error, published, dead)
                 await self._pacing.wait(step)
                 raise error
             oldest = min((t for row in rows if (t := _written_at(row)) is not None), default=None)
-            self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
-            self._observer.drain(self.last.published, self.last.duration_ns, self.last.oldest_timestamp)
+            last = self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
+            self._observer.drain(last.published, last.dead_lettered, last.duration_ns, last.oldest_timestamp)
             return published + dead
 
     async def run(self, *, idle_s: float = 1.0, stop: asyncio.Event | None = None, batch: int = 100) -> None:
@@ -681,6 +682,24 @@ def _written_at(row: object) -> int | None:
     if isinstance(row, CommandMessage):
         return row.issued_at
     return None
+
+
+def _retry_policy(max_attempts: int, sink: bool, what: str) -> ThreadBound[_edax.Retries]:
+    """The kernel's retry and dead-letter policy of a :class:`Relay` or a
+    :class:`~edax.dispatcher.KeyOrderedDispatcher`, built on first use on the loop's thread: the native
+    handle is bound to the thread that builds it, and its owner may be built on another. A
+    ``max_attempts`` the kernel cannot carry raises :class:`ValueError` (negative or too large) or
+    :class:`TypeError` (not an int) here, at wiring time: built lazily, it would fail the first message
+    and leave it unsettled, pinning a log partition."""
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+        raise TypeError(f"{what} max_attempts must be an int, got {type(max_attempts).__name__}")
+    try:
+        # The binding's own conversion is the range check, so the width is not restated here. The
+        # throwaway policy is dropped on the thread that built it.
+        _edax.retries(max_attempts, sink)
+    except OverflowError as e:
+        raise ValueError(f"{what} max_attempts must be an unsigned 32-bit count, got {max_attempts}") from e
+    return ThreadBound.lazy(lambda: _edax.retries(max_attempts, sink), what)
 
 
 async def _dead_letter(
