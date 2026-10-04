@@ -15,6 +15,7 @@
 )]
 
 use edax_event::testkit::{base_command, base_event, map};
+use edax_core::Tenancy;
 use edax_event::{CommandMessage, EventMessage, Extensions, Format, Kind, Message, Metadata};
 use edax_golden::{hex, write_or_check};
 use edax_kafka::{
@@ -81,15 +82,15 @@ fn headers_json(headers: &[KafkaHeader]) -> Value {
     headers.iter().map(|h| json!({ "key": h.key, "value_hex": hex(&h.value) })).collect()
 }
 
-/// One message of either kind encoded as a record, as a row: the record on success, the error
-/// otherwise.
-fn record_row<M: Message + Serialize>(name: &str, format: Format, key: Option<&str>, msg: &M) -> Value {
-    let rec = encode_record(format, msg, key);
+/// One message of either kind encoded as a record under `tenancy`, as a row: the record on success,
+/// the error otherwise.
+fn record_row<M: Message + Serialize>(name: &str, format: Format, tenancy: Tenancy, key: Option<&str>, msg: &M) -> Value {
+    let rec = encode_record(format, msg, tenancy, key);
     if let Ok(rec) = &rec {
         // The primitive path with the kernel's own bytes must build the identical record, or a host
         // serializer would get a different key or a different header set.
         let value = format.encode(msg).unwrap();
-        assert_eq!(*rec, record(msg, key, value, content_type(&rec.headers).unwrap()), "{name}");
+        assert_eq!(*rec, record(msg, tenancy, key, value, content_type(&rec.headers).unwrap()).unwrap(), "{name}");
     }
     let (key_hex, value_hex, headers, error) = match rec {
         Ok(rec) => (Some(hex(&rec.key)), Some(hex(&rec.value)), headers_json(&rec.headers), None),
@@ -99,6 +100,7 @@ fn record_row<M: Message + Serialize>(name: &str, format: Format, key: Option<&s
         "name": name,
         "kind": M::KIND.name(),
         "format": format.name(),
+        "tenancy": tenancy.name(),
         "key": key,
         "message": serde_json::to_value(msg).unwrap(),
         "key_hex": key_hex,
@@ -109,43 +111,70 @@ fn record_row<M: Message + Serialize>(name: &str, format: Format, key: Option<&s
 }
 
 /// The base event under a tenant: what a pool publishes, with the tenant as a typed field of the
-/// value and composed into the key the producer passes.
+/// value and, under a pool, composed into the key.
 fn tenanted() -> EventMessage {
     EventMessage { tenant: Some("acme".to_owned()), ..base_event() }
 }
 
-/// What a producer puts on the wire: the key rule, the `content-type` header, the value bytes.
+/// The base command under a tenant, `edit`ed.
+fn tenanted_command(edit: impl Fn(&mut CommandMessage)) -> CommandMessage {
+    command_with(|c| {
+        edit(c);
+        c.tenant = Some("acme".to_owned());
+    })
+}
+
+/// What a producer puts on the wire: the key rule under each tenancy, the `content-type` header, the
+/// value bytes.
 fn kafka_record_cases() -> Vec<Value> {
+    use Tenancy::{Bridge, Pool, Silo};
     let bad_extension = |msg: &mut Extensions| {
         msg.insert("Traceparent".to_owned(), "00-a-b-01".to_owned());
     };
-    let events: Vec<(&str, Format, Option<&str>, EventMessage)> = vec![
-        ("event_json_keyed_by_aggregate_id", Format::Json, None, base_event()),
-        ("event_msgpack_keyed_by_aggregate_id", Format::Msgpack, None, base_event()),
+    let events: Vec<(&str, Format, Tenancy, Option<&str>, EventMessage)> = vec![
+        ("event_json_keyed_by_aggregate_id", Format::Json, Silo, None, base_event()),
+        ("event_msgpack_keyed_by_aggregate_id", Format::Msgpack, Silo, None, base_event()),
         // The override: a host keying by tenant to co-locate a tenant's aggregates.
-        ("event_json_key_override", Format::Json, Some("tenant/acme"), base_event()),
-        ("event_msgpack_key_override", Format::Msgpack, Some("tenant/acme"), base_event()),
-        // What a pool producer passes: the ordering key composed with the tenant, the kernel's own
-        // `tenant_key`, so two tenants' same-named aggregates never share a key or a partition.
-        ("event_json_tenanted_keyed_by_the_composed_key", Format::Json, Some("4:acme:agg-1"), tenanted()),
-        ("event_msgpack_tenanted_keyed_by_the_composed_key", Format::Msgpack, Some("4:acme:agg-1"), tenanted()),
-        ("event_json_no_sequence_empty_payload", Format::Json, None, unsequenced()),
-        ("event_msgpack_no_sequence_empty_payload", Format::Msgpack, None, unsequenced()),
-        ("event_json_unicode", Format::Json, None, unicode()),
-        ("event_msgpack_unicode", Format::Msgpack, None, unicode()),
+        ("event_json_key_override", Format::Json, Silo, Some("tenant/acme"), base_event()),
+        ("event_msgpack_key_override", Format::Msgpack, Silo, Some("tenant/acme"), base_event()),
+        // A pool composes the tenant into the ordering key, so two tenants' same-named aggregates
+        // never share a key or a partition, whichever SDK produced the record.
+        ("event_json_pool_keyed_by_the_composed_key", Format::Json, Pool, None, tenanted()),
+        ("event_msgpack_pool_keyed_by_the_composed_key", Format::Msgpack, Pool, None, tenanted()),
+        // A silo and a bridge carry the tenant in the value only: the key stays the bare aggregate.
+        ("event_json_silo_keeps_a_tenanted_key_bare", Format::Json, Silo, None, tenanted()),
+        ("event_json_bridge_keeps_a_tenanted_key_bare", Format::Json, Bridge, None, tenanted()),
+        // An override replaces the rule outright, under a pool too.
+        ("event_json_pool_key_override_is_kept_verbatim", Format::Json, Pool, Some("tenant/acme"), tenanted()),
+        ("event_pool_without_a_tenant_is_refused", Format::Json, Pool, None, base_event()),
+        ("event_bridge_without_a_tenant_is_refused", Format::Json, Bridge, None, base_event()),
+        ("event_json_no_sequence_empty_payload", Format::Json, Silo, None, unsequenced()),
+        ("event_msgpack_no_sequence_empty_payload", Format::Msgpack, Silo, None, unsequenced()),
+        ("event_json_unicode", Format::Json, Silo, None, unicode()),
+        ("event_msgpack_unicode", Format::Msgpack, Silo, None, unicode()),
         // A producer never mints what every consumer would refuse.
-        ("event_bad_extension_key_is_refused", Format::Json, None, event_with(|e| bad_extension(&mut e.extensions))),
+        ("event_bad_extension_key_is_refused", Format::Json, Silo, None, event_with(|e| bad_extension(&mut e.extensions))),
     ];
-    let commands: Vec<(&str, Format, Option<&str>, CommandMessage)> = vec![
-        ("command_json_keyed_by_aggregate_id", Format::Json, None, base_command()),
-        ("command_msgpack_keyed_by_aggregate_id", Format::Msgpack, None, base_command()),
-        ("command_json_without_aggregate_keyed_by_id", Format::Json, None, untargeted()),
-        ("command_msgpack_without_aggregate_keyed_by_id", Format::Msgpack, None, untargeted()),
-        ("command_json_key_override", Format::Json, Some("tenant/acme"), untargeted()),
-        ("command_bad_extension_key_is_refused", Format::Json, None, command_with(|c| bad_extension(&mut c.extensions))),
+    let commands: Vec<(&str, Format, Tenancy, Option<&str>, CommandMessage)> = vec![
+        ("command_json_keyed_by_aggregate_id", Format::Json, Silo, None, base_command()),
+        ("command_msgpack_keyed_by_aggregate_id", Format::Msgpack, Silo, None, base_command()),
+        ("command_json_without_aggregate_keyed_by_id", Format::Json, Silo, None, untargeted()),
+        ("command_msgpack_without_aggregate_keyed_by_id", Format::Msgpack, Silo, None, untargeted()),
+        ("command_json_key_override", Format::Json, Silo, Some("tenant/acme"), untargeted()),
+        ("command_json_pool_keyed_by_the_composed_aggregate", Format::Json, Pool, None, tenanted_command(|_| ())),
+        (
+            "command_json_pool_without_aggregate_keyed_by_the_composed_id",
+            Format::Json,
+            Pool,
+            None,
+            tenanted_command(|c| c.aggregate_id = None),
+        ),
+        ("command_pool_without_a_tenant_is_refused", Format::Json, Pool, None, base_command()),
+        ("command_bad_extension_key_is_refused", Format::Json, Silo, None, command_with(|c| bad_extension(&mut c.extensions))),
     ];
-    let events = events.iter().map(|(name, format, key, msg)| record_row(name, *format, *key, msg));
-    let commands = commands.iter().map(|(name, format, key, msg)| record_row(name, *format, *key, msg));
+    let events = events.iter().map(|(name, format, tenancy, key, msg)| record_row(name, *format, *tenancy, *key, msg));
+    let commands =
+        commands.iter().map(|(name, format, tenancy, key, msg)| record_row(name, *format, *tenancy, *key, msg));
     events.chain(commands).collect()
 }
 
@@ -203,10 +232,10 @@ fn kafka_partition_cases() -> Vec<Value> {
 /// What a consumer makes of a fetched record: which format and kind the headers select, and how a
 /// record it cannot read fails.
 fn kafka_decode_cases() -> Vec<Value> {
-    let json_event = encode_record(Format::Json, &base_event(), None).unwrap();
-    let msgpack_event = encode_record(Format::Msgpack, &base_event(), None).unwrap();
-    let json_command = encode_record(Format::Json, &base_command(), None).unwrap();
-    let msgpack_command = encode_record(Format::Msgpack, &base_command(), None).unwrap();
+    let json_event = encode_record(Format::Json, &base_event(), Tenancy::Silo, None).unwrap();
+    let msgpack_event = encode_record(Format::Msgpack, &base_event(), Tenancy::Silo, None).unwrap();
+    let json_command = encode_record(Format::Json, &base_command(), Tenancy::Silo, None).unwrap();
+    let msgpack_command = encode_record(Format::Msgpack, &base_command(), Tenancy::Silo, None).unwrap();
     let event_json = Format::Json.media_type(Kind::Event);
     let event_msgpack = Format::Msgpack.media_type(Kind::Event);
     let command_json = Format::Json.media_type(Kind::Command);

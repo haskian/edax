@@ -144,8 +144,8 @@ def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
 
 def test_golden_kafka_record() -> None:
     """The record a :class:`~edax.backend.kafka.KafkaProducer` sends, through a spy client: the
-    serializer's bytes and media type in the kernel's record. A second SDK writing a different key or
-    header set would split the topic in two."""
+    serializer's bytes and media type in the kernel's record, keyed under the row's tenancy. A second SDK
+    writing a different key or header set would split the topic in two."""
     for c in golden("kafka_record.json"):
         msg, key = message_from_obj(c["message"]), c["key"]
         client = SpyProducerClient()
@@ -155,6 +155,7 @@ def test_golden_kafka_record() -> None:
             serializer=edax.KernelSerializer(c["format"]),
             command_serializer=edax.KernelSerializer(c["format"], "command"),
             key=None if key is None else lambda _, key=key: key,
+            tenancy=edax.Tenancy(c["tenancy"]),
         )
         if c["error"] is not None:
             with pytest.raises(edax.CodecError) as refused:

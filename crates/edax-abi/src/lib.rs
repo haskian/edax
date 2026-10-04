@@ -239,8 +239,17 @@ pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), Strin
     edax_event::check_extensions(&ordered(extensions)).map_err(wire)
 }
 
-/// Refuse a tenant id that breaks the rule, as a `codec:` error. A tenant id is 1 to 64 bytes; the
-/// charset is open, because `tenant_key` is injective over any bytes. See [`edax_core::check_tenant`].
+/// The longest tenant id the key rule allows, in bytes. A call, because the generator binds functions
+/// and not constants: a host reads the limit from here instead of restating it. See
+/// [`edax_core::TENANT_MAX`].
+pub fn tenant_max() -> u32 {
+    // 64 by definition, so the conversion never saturates.
+    u32::try_from(edax_core::TENANT_MAX).unwrap_or(u32::MAX)
+}
+
+/// Refuse a tenant id that breaks the rule, as a `codec:` error. A tenant id is 1 to [`tenant_max`]
+/// bytes; the charset is open, because `tenant_key` is injective over any bytes. See
+/// [`edax_core::check_tenant`].
 pub fn check_tenant(tenant: &str) -> Result<(), String> {
     edax_core::check_tenant(tenant).map_err(wire)
 }
@@ -1282,11 +1291,36 @@ fn record_from_kafka_record(record: edax_kafka::KafkaRecord) -> KafkaRecord {
     }
 }
 
-/// Build the record for value bytes the host already encoded, under `key`. `content_type` names the
-/// format and kind of `value`. The key is the host's choice made: its override, or the message's
-/// [`ordering_key`]. See [`edax_kafka::keyed_record`].
-pub fn kafka_record(key: &str, value: Vec<u8>, content_type: &str) -> KafkaRecord {
-    record_from_kafka_record(edax_kafka::keyed_record(key, value, content_type))
+/// Build the record for an event whose value bytes the host already encoded. `content_type` names the
+/// format and kind of `value`. The key is `key`, the host's override, or else the kernel's: the
+/// event's aggregate composed with its tenant where the `tenancy` mode (`"silo"`, `"pool"` or
+/// `"bridge"`) composes keys. A mode that requires a tenant and an event that names none is a
+/// `codec:` error. See [`edax_kafka::record`].
+// `key` is optional, so it trails: alef moves optional parameters to the end.
+pub fn kafka_event_record(
+    tenancy: &str,
+    message: EventMessage,
+    value: Vec<u8>,
+    content_type: &str,
+    key: Option<String>,
+) -> Result<KafkaRecord, String> {
+    let tenancy = edax_core::Tenancy::from_name(tenancy).map_err(wire)?;
+    let message = kernel_event_message(message);
+    edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type).map(record_from_kafka_record).map_err(wire)
+}
+
+/// [`kafka_event_record`] for a command: its key is the target aggregate, or else its own id, under
+/// the same tenancy rule. See [`edax_kafka::record`].
+pub fn kafka_command_record(
+    tenancy: &str,
+    message: CommandMessage,
+    value: Vec<u8>,
+    content_type: &str,
+    key: Option<String>,
+) -> Result<KafkaRecord, String> {
+    let tenancy = edax_core::Tenancy::from_name(tenancy).map_err(wire)?;
+    let message = kernel_command_message(message);
+    edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type).map(record_from_kafka_record).map_err(wire)
 }
 
 /// Where a fetched record goes by its `content-type`: flattened from [`edax_kafka::Route`]. No field
@@ -1636,8 +1670,8 @@ mod tests {
     /// derives on the generated twin), and a whole-record assert is what proves nothing is dropped at
     /// the boundary.
     fn assert_same_event(got: &EventMessage, want: &EventMessage, case: &str) {
-        assert_eq!((&got.id, &got.aggregate_id, got.sequence), (&want.id, &want.aggregate_id, want.sequence), "{case}");
-        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.id, &got.aggregate_id, &got.tenant), (&want.id, &want.aggregate_id, &want.tenant), "{case}");
+        assert_eq!((got.sequence, &got.name, got.version, &got.data), (want.sequence, &want.name, want.version, &want.data), "{case}");
         assert_eq!((&got.correlation_id, &got.causation_id), (&want.correlation_id, &want.causation_id), "{case}");
         assert_eq!((got.occurred_at, got.recorded_at), (want.occurred_at, want.recorded_at), "{case}");
         assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
@@ -1646,7 +1680,7 @@ mod tests {
     /// Field-by-field command equality, for the reason [`assert_same_event`] gives.
     fn assert_same_command(got: &CommandMessage, want: &CommandMessage, case: &str) {
         assert_eq!((&got.id, &got.idempotency_key, &got.aggregate_id), (&want.id, &want.idempotency_key, &want.aggregate_id), "{case}");
-        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.tenant, &got.name, got.version, &got.data), (&want.tenant, &want.name, want.version, &want.data), "{case}");
         assert_eq!((&got.correlation_id, &got.causation_id, got.issued_at), (&want.correlation_id, &want.causation_id, want.issued_at), "{case}");
         assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
     }
@@ -2073,16 +2107,29 @@ mod tests {
 
     #[test]
     fn messages_round_trip_through_every_format() {
+        // The tenant crosses every record conversion: the draft's, the event's both ways, the command's
+        // both ways. `event` takes the draft path, and each case checks the tenant against the literal,
+        // so a conversion that drops it fails here.
+        let event = |sequence: Option<u64>, tenant: Option<&str>| {
+            record_event(EventDraft { tenant: tenant.map(str::to_owned), ..draft("evt-1", sequence) }, RECORDED_AT)
+        };
+        let command = |aggregate_id: Option<&str>, tenant: Option<&str>| CommandMessage {
+            tenant: tenant.map(str::to_owned),
+            ..command_message(aggregate_id)
+        };
         for format in ["json", "msgpack"] {
-            for sequence in [Some(7), None] {
-                let wire = encode_event(format, event_message("evt-1", sequence)).unwrap();
+            for (sequence, tenant) in [(Some(7), None), (None, None), (Some(7), Some("acme"))] {
+                let wire = encode_event(format, event(sequence, tenant)).unwrap();
                 let back = decode_event(format, &wire).unwrap();
-                assert_same_event(&back, &event_message("evt-1", sequence), &format!("{format} sequence={sequence:?}"));
+                let case = format!("{format} sequence={sequence:?} tenant={tenant:?}");
+                assert_eq!(back.tenant.as_deref(), tenant, "{case}");
+                assert_same_event(&back, &event(sequence, tenant), &case);
             }
-            for aggregate_id in [Some("invoice-7"), None] {
-                let wire = encode_command(format, command_message(aggregate_id)).unwrap();
+            for (aggregate_id, tenant) in [(Some("invoice-7"), None), (None, None), (Some("invoice-7"), Some("acme"))] {
+                let wire = encode_command(format, command(aggregate_id, tenant)).unwrap();
                 let back = decode_command(format, &wire).unwrap();
-                assert_same_command(&back, &command_message(aggregate_id), &format!("{format} aggregate={aggregate_id:?}"));
+                let case = format!("{format} aggregate={aggregate_id:?} tenant={tenant:?}");
+                assert_same_command(&back, &command(aggregate_id, tenant), &case);
             }
             // (format, kind) in that order.
             for kind in ["event", "command"] {
@@ -2466,8 +2513,9 @@ mod tests {
     /// `testdata/golden/kafka_record.json`.
     #[test]
     fn kafka_record_crosses_the_record_structurally() {
-        let record = kafka_record("invoice-7", b"<invoice/>".to_vec(), "application/xml");
-        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the host's key, untouched");
+        let tenanted = || EventMessage { tenant: Some("acme".to_owned()), ..event_message("evt-1", Some(1)) };
+        let record = kafka_event_record("silo", tenanted(), b"<invoice/>".to_vec(), "application/xml", None).unwrap();
+        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the aggregate, bare outside a pool");
         assert_eq!(record.value.as_slice(), b"<invoice/>".as_slice(), "the host's own bytes, untouched");
         let headers: Vec<(&str, &[u8])> =
             record.headers.iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
@@ -2490,6 +2538,35 @@ mod tests {
         let headerless = kafka_route(Vec::new(), Vec::new(), "command").unwrap();
         assert!(headerless.headerless, "no header under a command default is poison");
         assert!(kafka_route(Vec::new(), Vec::new(), "query").is_err(), "an unknown kind is refused");
+
+        // The key crosses as the kernel decides it: `(tenancy, message, ..., key)`, each argument
+        // reaching its own place. The rule itself is pinned by `kafka_record.json`.
+        let command = || CommandMessage { tenant: Some("acme".to_owned()), ..command_message(None) };
+        let keys = [
+            ("pool_composes_the_aggregate", kafka_event_record("pool", tenanted(), Vec::new(), "x", None), Ok("4:acme:invoice-7")),
+            ("pool_composes_a_commands_own_id", kafka_command_record("pool", command(), Vec::new(), "x", None), Ok("4:acme:cmd-1")),
+            ("override_wins_outright", kafka_event_record("pool", tenanted(), Vec::new(), "x", Some("k".to_owned())), Ok("k")),
+            (
+                "pool_without_a_tenant_is_refused",
+                kafka_event_record("pool", event_message("evt-1", Some(1)), Vec::new(), "x", None),
+                Err("codec: tenancy pool requires a tenant, and none was given"),
+            ),
+            (
+                "bridge_without_a_tenant_is_refused",
+                kafka_command_record("bridge", command_message(None), Vec::new(), "x", None),
+                Err("codec: tenancy bridge requires a tenant, and none was given"),
+            ),
+            (
+                "unknown_mode_is_refused",
+                kafka_event_record("shard", tenanted(), Vec::new(), "x", None),
+                Err("codec: unknown tenancy mode: shard"),
+            ),
+        ];
+        for (name, got, want) in keys {
+            let got = got.map(|record| String::from_utf8(record.key).unwrap());
+            assert_eq!(got, want.map(str::to_owned).map_err(str::to_owned), "{name}");
+        }
+        assert_eq!(tenant_max(), 64, "the kernel's limit, read rather than restated");
 
         // A dead letter keeps the record and appends its source.
         let dead = kafka_dead_letter_record(

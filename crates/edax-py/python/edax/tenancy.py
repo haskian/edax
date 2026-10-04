@@ -17,8 +17,8 @@ from . import _edax, errors
 
 __all__ = ["TENANT_MAX", "Tenancy", "check_tenant", "tenant_key"]
 
-#: The longest tenant id the kernel's key rule allows, in bytes.
-TENANT_MAX: Final = 64
+#: The longest tenant id the kernel's key rule allows, in bytes, read from the kernel.
+TENANT_MAX: Final[int] = _edax.tenant_max()
 
 
 class Tenancy(str, Enum):
