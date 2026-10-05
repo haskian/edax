@@ -1,14 +1,17 @@
 [
   {
+    "check_settled": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record",
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "pending_claim",
     "outcome": "in_progress",
     "payload_hash": 11234062831410934249,
+    "replay_error": "in_progress: req-1",
     "state": "pending",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "cached_success_with_value",
@@ -22,6 +25,7 @@
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "cached_success_with_null_result",
@@ -32,6 +36,7 @@
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}",
     "error": "unknown field `amount`",
@@ -39,11 +44,12 @@
     "name": "cached_failure",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: unknown field `amount`",
+    "replay_error": "cached_failure: codec: unknown field `amount`",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds: balance 300, withdrawal 500\",\"error_code\":\"rejected\",\"pending\":false}",
     "error": "insufficient funds: balance 300, withdrawal 500",
@@ -51,11 +57,12 @@
     "name": "cached_rejection_written_by_rust",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: rejected: insufficient funds: balance 300, withdrawal 500",
+    "replay_error": "cached_failure: rejected: insufficient funds: balance 300, withdrawal 500",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds: balance 300, withdrawal 500\",\"error_code\":\"rejected\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}",
     "error": "",
@@ -63,11 +70,12 @@
     "name": "cached_failure_with_empty_message",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: ",
+    "replay_error": "cached_failure: codec: ",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"error_code\":null,\"pending\":false}",
     "error": "boom",
@@ -75,11 +83,12 @@
     "name": "unknown_error_code_reads_as_no_code",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: boom",
+    "replay_error": "cached_failure: boom",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"error_code\":\"quota_exceeded\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "older_writer_without_pending_field_success",
@@ -90,6 +99,7 @@
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"error_code\":null,\"pending\":false}",
     "error": "boom",
@@ -97,11 +107,12 @@
     "name": "older_writer_without_pending_field_failure",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: boom",
+    "replay_error": "cached_failure: boom",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\"}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "absent_result_reads_as_null",
@@ -112,15 +123,18 @@
     "stored": "{\"payload_hash\":11234062831410934249,\"pending\":false}"
   },
   {
+    "check_settled": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record",
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "pending_wins_over_a_stale_error",
     "outcome": "in_progress",
     "payload_hash": 11234062831410934249,
+    "replay_error": "in_progress: req-1",
     "state": "pending",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"pending\":true}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"boom\",\"error_code\":null,\"pending\":false}",
     "error": "boom",
@@ -128,20 +142,23 @@
     "name": "error_wins_over_a_result",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: boom",
+    "replay_error": "cached_failure: boom",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":\"boom\",\"pending\":false}"
   },
   {
+    "check_settled": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record",
     "current": 11234059532876049616,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
     "name": "payload_mismatch_while_pending",
     "outcome": "payload_mismatch",
     "payload_hash": 11234062831410934249,
+    "replay_error": "payload_mismatch: req-1",
     "state": "pending",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}",
     "error": "unknown field `amount`",
@@ -149,30 +166,36 @@
     "name": "payload_mismatch_on_cached_failure",
     "outcome": "payload_mismatch",
     "payload_hash": 11234062831410934249,
+    "replay_error": "payload_mismatch: req-1",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "payload_mismatch_on_cached_success",
     "outcome": "payload_mismatch",
     "payload_hash": 11234062831410934249,
+    "replay_error": "payload_mismatch: req-1",
     "result": 42,
     "state": "done",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":0,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "stored_zero_hash_mismatches",
     "outcome": "payload_mismatch",
     "payload_hash": 0,
+    "replay_error": "payload_mismatch: req-1",
     "result": 42,
     "state": "done",
     "stored": "{\"payload_hash\":0,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 0,
     "encoded": "{\"payload_hash\":0,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "stored_zero_hash_replays_against_zero",
@@ -183,6 +206,7 @@
     "stored": "{\"payload_hash\":0,\"result\":42,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":7,\"error\":null,\"error_code\":null,\"pending\":false}",
     "name": "an_unknown_field_is_ignored",
@@ -193,6 +217,7 @@
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":7,\"error\":null,\"pending\":false,\"ttl_ms\":1000}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: idempotency record is not a JSON object",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: idempotency record is not a JSON object\",\"error_code\":\"codec\",\"pending\":false}",
@@ -201,11 +226,12 @@
     "name": "not_an_object",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: idempotency record is not a JSON object",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: idempotency record is not a JSON object",
     "state": "failed",
     "stored": "[1,null,null]"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: missing field `payload_hash`",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: missing field `payload_hash`\",\"error_code\":\"codec\",\"pending\":false}",
@@ -214,11 +240,12 @@
     "name": "missing_payload_hash",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: missing field `payload_hash`",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: missing field `payload_hash`",
     "state": "failed",
     "stored": "{\"result\":null,\"error\":null,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: invalid type: floating point `1.1234062831410934e+19`, expected u64",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: floating point `1.1234062831410934e+19`, expected u64\",\"error_code\":\"codec\",\"pending\":false}",
@@ -227,11 +254,12 @@
     "name": "float_payload_hash",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: floating point `1.1234062831410934e+19`, expected u64",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: floating point `1.1234062831410934e+19`, expected u64",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249.0,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: invalid value: integer `-1`, expected u64",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: invalid value: integer `-1`, expected u64\",\"error_code\":\"codec\",\"pending\":false}",
@@ -240,11 +268,12 @@
     "name": "negative_payload_hash",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid value: integer `-1`, expected u64",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid value: integer `-1`, expected u64",
     "state": "failed",
     "stored": "{\"payload_hash\":-1,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: invalid type: string \"11234062831410934249\", expected u64",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: string \\\"11234062831410934249\\\", expected u64\",\"error_code\":\"codec\",\"pending\":false}",
@@ -253,24 +282,26 @@
     "name": "string_payload_hash",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: string \"11234062831410934249\", expected u64",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: string \"11234062831410934249\", expected u64",
     "state": "failed",
     "stored": "{\"payload_hash\":\"11234062831410934249\",\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
-    "decode_error": "codec: invalid type: floating point `1.8446744073709552e+19`, expected u64",
-    "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: floating point `1.8446744073709552e+19`, expected u64\",\"error_code\":\"codec\",\"pending\":false}",
-    "error": "unreadable idempotency record: invalid type: floating point `1.8446744073709552e+19`, expected u64",
+    "decode_error": "codec: integer at byte 16 is outside the 64-bit range",
+    "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: integer at byte 16 is outside the 64-bit range\",\"error_code\":\"codec\",\"pending\":false}",
+    "error": "unreadable idempotency record: integer at byte 16 is outside the 64-bit range",
     "error_code": "codec",
     "name": "payload_hash_past_u64",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: floating point `1.8446744073709552e+19`, expected u64",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: integer at byte 16 is outside the 64-bit range",
     "state": "failed",
     "stored": "{\"payload_hash\":18446744073709551616,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "decode_error": "codec: invalid type: integer `42`, expected a string",
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: integer `42`, expected a string\",\"error_code\":\"codec\",\"pending\":false}",
@@ -279,11 +310,12 @@
     "name": "non_string_error",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: integer `42`, expected a string",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: integer `42`, expected a string",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"error\":42,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "decode_error": "codec: invalid type: integer `7`, expected a string",
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: integer `7`, expected a string\",\"error_code\":\"codec\",\"pending\":false}",
@@ -292,11 +324,12 @@
     "name": "non_string_error_code",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: integer `7`, expected a string",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: integer `7`, expected a string",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"error\":\"boom\",\"error_code\":7,\"pending\":false}"
   },
   {
+    "check_settled": null,
     "current": 11234062831410934249,
     "decode_error": "codec: invalid type: null, expected a boolean",
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: null, expected a boolean\",\"error_code\":\"codec\",\"pending\":false}",
@@ -305,11 +338,40 @@
     "name": "null_pending",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: null, expected a boolean",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: null, expected a boolean",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"pending\":null}"
   },
   {
+    "check_settled": null,
+    "current": 11234062831410934249,
+    "decode_error": "codec: integer at byte 46 is outside the 64-bit range",
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: integer at byte 46 is outside the 64-bit range\",\"error_code\":\"codec\",\"pending\":false}",
+    "error": "unreadable idempotency record: integer at byte 46 is outside the 64-bit range",
+    "error_code": "codec",
+    "name": "result_past_64_bits",
+    "outcome": "failed",
+    "payload_hash": 11234062831410934249,
+    "replay_error": "cached_failure: codec: unreadable idempotency record: integer at byte 46 is outside the 64-bit range",
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":18446744073709551616,\"error\":null,\"pending\":false}"
+  },
+  {
+    "check_settled": null,
+    "current": 11234062831410934249,
+    "decode_error": "codec: integer at byte 55 is outside the 64-bit range",
+    "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: integer at byte 55 is outside the 64-bit range\",\"error_code\":\"codec\",\"pending\":false}",
+    "error": "unreadable idempotency record: integer at byte 55 is outside the 64-bit range",
+    "error_code": "codec",
+    "name": "result_below_i64_min",
+    "outcome": "failed",
+    "payload_hash": 11234062831410934249,
+    "replay_error": "cached_failure: codec: unreadable idempotency record: integer at byte 55 is outside the 64-bit range",
+    "state": "failed",
+    "stored": "{\"payload_hash\":11234062831410934249,\"result\":{\"total\":-9223372036854775809},\"error\":null,\"pending\":false}"
+  },
+  {
+    "check_settled": null,
     "current": 11234062831410934249,
     "decode_error": "codec: invalid type: string \"settling\", expected a boolean",
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: string \\\"settling\\\", expected a boolean\",\"error_code\":\"codec\",\"pending\":false}",
@@ -318,11 +380,12 @@
     "name": "unknown_pending_state",
     "outcome": "failed",
     "payload_hash": 11234062831410934249,
-    "replay": "cached_failure: codec: unreadable idempotency record: invalid type: string \"settling\", expected a boolean",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: invalid type: string \"settling\", expected a boolean",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"pending\":\"settling\"}"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: EOF while parsing an object at line 1 column 1",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: EOF while parsing an object at line 1 column 1\",\"error_code\":\"codec\",\"pending\":false}",
@@ -331,11 +394,12 @@
     "name": "not_json",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: EOF while parsing an object at line 1 column 1",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: EOF while parsing an object at line 1 column 1",
     "state": "failed",
     "stored": "{"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: expected value at line 1 column 1",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: expected value at line 1 column 1\",\"error_code\":\"codec\",\"pending\":false}",
@@ -344,11 +408,12 @@
     "name": "garbage",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: expected value at line 1 column 1",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: expected value at line 1 column 1",
     "state": "failed",
     "stored": "\u0001edax"
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: EOF while parsing a string at line 1 column 48",
     "encoded": "{\"payload_hash\":11234059532876049616,\"result\":null,\"error\":\"unreadable idempotency record: EOF while parsing a string at line 1 column 48\",\"error_code\":\"codec\",\"pending\":false}",
@@ -357,11 +422,12 @@
     "name": "torn_write_from_rust",
     "outcome": "failed",
     "payload_hash": 11234059532876049616,
-    "replay": "cached_failure: codec: unreadable idempotency record: EOF while parsing a string at line 1 column 48",
+    "replay_error": "cached_failure: codec: unreadable idempotency record: EOF while parsing a string at line 1 column 48",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"result\":{\""
   },
   {
+    "check_settled": null,
     "current": 11234059532876049616,
     "decode_error": "codec: invalid type: integer `42`, expected a string",
     "encoded": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unreadable idempotency record: invalid type: integer `42`, expected a string\",\"error_code\":\"codec\",\"pending\":false}",
@@ -370,6 +436,7 @@
     "name": "unreadable_record_reused_by_another_command",
     "outcome": "payload_mismatch",
     "payload_hash": 11234062831410934249,
+    "replay_error": "payload_mismatch: req-1",
     "state": "failed",
     "stored": "{\"payload_hash\":11234062831410934249,\"error\":42,\"pending\":false}"
   }

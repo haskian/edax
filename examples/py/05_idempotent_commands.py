@@ -73,7 +73,7 @@ async def main() -> None:
     bus = CommandBus(
         retry(3), idempotent(MemoryIdempotencyStore(db), db, scope="accounts-api", tenancy=Tenancy.SILO)
     )
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     # 3. The first request deposits.
     first = await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-A")

@@ -13,12 +13,12 @@ from __future__ import annotations
 from enum import Enum
 from typing import Final
 
-from . import _edax, errors
+from . import _names, _native
 
 __all__ = ["TENANT_MAX", "Tenancy", "check_tenant", "tenant_key"]
 
 #: The longest tenant id the kernel's key rule allows, in bytes, read from the kernel.
-TENANT_MAX: Final[int] = _edax.tenant_max()
+TENANT_MAX: Final[int] = _native.tenant_max()
 
 
 class Tenancy(str, Enum):
@@ -37,30 +37,29 @@ class Tenancy(str, Enum):
     @property
     def requires_tenant(self) -> bool:
         """Whether this mode requires every message and every keyed call to name a tenant."""
-        with errors.mapped():
-            return bool(_edax.tenancy_rules(self.value).requires_tenant)
+        return bool(_native.tenancy_rules(self.value).requires_tenant)
 
     @property
     def composes_keys(self) -> bool:
         """Whether this mode composes the tenant into the keys a seam is called with."""
-        with errors.mapped():
-            return bool(_edax.tenancy_rules(self.value).composes_keys)
+        return bool(_native.tenancy_rules(self.value).composes_keys)
+
+
+_names.check((mode.value for mode in Tenancy), _native.tenancy_modes(), "tenancy modes")
 
 
 def check_tenant(tenant: str) -> None:
     """Raise :class:`~edax.errors.CodecError` if ``tenant`` breaks the kernel's rule: 1 to
     :data:`TENANT_MAX` bytes. The charset is open, because :func:`tenant_key` is injective over any
     bytes, so a separator inside a tenant id spells no other tenant's key."""
-    with errors.mapped():
-        _edax.check_tenant(tenant)
+    _native.check_tenant(tenant)
 
 
-def tenant_key(mode: Tenancy, key: str, tenant: str | None) -> str:
+def tenant_key(mode: Tenancy, tenant: str | None, key: str) -> str:
     """The key a seam is called with under ``mode``: ``key`` itself, or ``key`` composed with its
-    tenant.
+    ``tenant``. The arguments run as in the Rust SDK's ``tenant_key(mode, tenant, key)``.
 
     A mode that requires a tenant and a call that names none raises
     :class:`~edax.errors.CodecError`, so a pool can never read an uncomposed key by omission.
     """
-    with errors.mapped():
-        return _edax.tenant_key(mode.value, key, tenant)
+    return _native.tenant_key(mode.value, key, tenant)

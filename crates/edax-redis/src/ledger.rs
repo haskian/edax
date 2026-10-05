@@ -27,7 +27,7 @@
 //! See [`crate::scripts`].
 
 use edax_core::{guid_simple, Error};
-use edax_cqrs::{decode_record, encode_record, Record, State};
+use edax_cqrs::{decode_record, encode_record, Claimed, Record, State};
 
 /// The layout version, the first byte of every stored value.
 pub const LAYOUT_VERSION: u8 = b'1';
@@ -40,20 +40,25 @@ pub const OWNER_LEN: usize = 32;
 /// overflows, so a bound far below `i64::MAX` keeps that refusal out of reach.
 pub const MAX_TTL_MS: i64 = (1 << 53) - 1;
 
-/// A fresh owner token: the kernel's id in its 32-character lowercase hex form, no hyphens.
+/// A fresh claim's value for `payload_hash`, under a new owner token: [`claim_value`] over the kernel's
+/// id in its 32-character lowercase hex form, no hyphens. The value is the claim's handle.
 ///
 /// v7 rather than random bytes so tokens sort by mint time, which makes a ledger dump readable. The
 /// 32 random bits and the shared 42-bit counter (`edax_core::guid`) are what make two claimants
 /// distinguishable.
-pub fn new_owner() -> String {
-    guid_simple()
+pub fn new_claim(payload_hash: u64) -> Result<Vec<u8>, Error> {
+    claim_value(&guid_simple(), payload_hash)
 }
 
-/// A fresh claim's value for `payload_hash`, under a new owner token: [`claim_value`] over
-/// [`new_owner`]. The value is the claim's handle.
-pub fn new_claim(payload_hash: u64) -> Result<Vec<u8>, Error> {
-    claim_value(&new_owner(), payload_hash)
-}
+/// The ledger defaults every SDK's store is built with unless its host overrides them, in
+/// milliseconds: the record TTL (a day, the dedup window a settled outcome is replayed in), the claim
+/// TTL (five minutes, how long a dead worker's claim blocks its key) and the deadline on each Redis
+/// call. One set, so two SDKs on one ledger left at their defaults agree on its windows.
+pub const DEFAULT_TTL_MS: i64 = 86_400_000;
+/// See [`DEFAULT_TTL_MS`].
+pub const DEFAULT_CLAIM_TTL_MS: i64 = 300_000;
+/// See [`DEFAULT_TTL_MS`].
+pub const DEFAULT_OP_TIMEOUT_MS: i64 = 5_000;
 
 /// Refuse a prefix that cannot name a ledger. The prefix is the ledger's identity: an empty one puts
 /// every service sharing a Redis into one key space, where a request id two services both use is one
@@ -91,6 +96,18 @@ fn check_ttl(name: &str, ttl_ms: i64) -> Result<(), Error> {
 /// TTL, timed from the claim's send. [`check_config`] refuses a deadline of a third of the TTL or more.
 pub const HEARTBEATS_PER_TTL: i64 = 3;
 
+/// When beat `beat` of a heartbeat is due, in the clock's milliseconds: `sent_at_ms + beat *
+/// claim_ttl_ms / HEARTBEATS_PER_TTL`, where `sent_at_ms` is when the store sent the claim. Rounded
+/// down, so a beat is never late, and saturating at the ends of `i64`. The schedule runs from the
+/// claim's send and never from a reply: the bound [`check_config`] proves holds only on this schedule,
+/// so every SDK times its beats with this function rather than restating it.
+pub fn heartbeat_due_ms(sent_at_ms: i64, claim_ttl_ms: i64, beat: u32) -> i64 {
+    // In i128 the product cannot overflow: |beat * claim_ttl_ms| < 2^32 * 2^63.
+    let offset = (i128::from(beat) * i128::from(claim_ttl_ms)).div_euclid(i128::from(HEARTBEATS_PER_TTL));
+    let due = i128::from(sent_at_ms) + offset;
+    i64::try_from(due).unwrap_or(if due < 0 { i64::MIN } else { i64::MAX })
+}
+
 /// Refuse the settings a ledger store is built with, as a `bad_handle` error naming the first one
 /// refused, so a misconfigured store fails when it is built rather than on every dispatch: an empty
 /// `prefix`, a `ttl_ms` or `claim_ttl_ms` Redis would refuse, an `op_timeout_ms` deadline that is not
@@ -103,12 +120,20 @@ pub const HEARTBEATS_PER_TTL: i64 = 3;
 /// within `op_timeout_ms`, so before `S + claim_ttl_ms` whenever `op_timeout_ms` is under a third of the
 /// TTL. Otherwise one stalled renewal lets a second worker win the key while the first still runs its
 /// handler.
-pub fn check_config(prefix: &str, ttl_ms: i64, claim_ttl_ms: i64, op_timeout_ms: i64, heartbeat: bool) -> Result<(), Error> {
+pub fn check_config(
+    prefix: &str,
+    ttl_ms: i64,
+    claim_ttl_ms: i64,
+    op_timeout_ms: i64,
+    heartbeat: bool,
+) -> Result<(), Error> {
     check_prefix(prefix)?;
     check_ttl("ttl_ms", ttl_ms)?;
     check_ttl("claim_ttl_ms", claim_ttl_ms)?;
     if op_timeout_ms <= 0 {
-        return Err(Error::bad_handle(format_args!("op_timeout_ms is {op_timeout_ms} ms; a deadline must be positive")));
+        return Err(Error::bad_handle(format_args!(
+            "op_timeout_ms is {op_timeout_ms} ms; a deadline must be positive"
+        )));
     }
     // Saturating: a deadline near `i64::MAX` is refused, never wrapped below the TTL.
     if heartbeat && op_timeout_ms.saturating_mul(HEARTBEATS_PER_TTL) >= claim_ttl_ms {
@@ -138,16 +163,32 @@ pub fn claim_value(owner: &str, payload_hash: u64) -> Result<Vec<u8>, Error> {
 /// The record is passed through untouched. A host that already holds the record's bytes (an SDK
 /// encoding its own result type) must not re-encode them here, or a result would round-trip through
 /// a second serializer on the way to the ledger.
+///
+/// A record that reads as pending is refused as `bad_handle` ([`edax_cqrs::check_settled`]): it would
+/// hold the key as a claim nobody runs for the whole record TTL.
 pub fn settled_value(claim: &[u8], record_json: &str) -> Result<Vec<u8>, Error> {
-    let owner = claim_owner(claim)?;
+    let (owner, _) = parse_claim(claim)?;
+    edax_cqrs::check_settled(record_json.as_bytes())?;
     Ok(frame(owner, record_json.as_bytes()))
+}
+
+/// What the complete script's reply means for `key`: `written` is whether it wrote the record (`1`)
+/// rather than finding another value under the key (`0`). Not written means the claim lapsed and was
+/// taken over, or the key settled with another record: [`edax_cqrs::lapsed_claim`], a `store` error.
+/// The outcome was not recorded, so the caller must not report success.
+pub fn complete_outcome(key: &str, written: bool) -> Result<(), Error> {
+    if written {
+        Ok(())
+    } else {
+        Err(edax_cqrs::lapsed_claim(key))
+    }
 }
 
 /// Refuse a claim handle this kernel never minted: not a whole value, an owner token of the wrong
 /// shape, or a record that is not pending. The scripts compare the handle exactly, so a malformed
 /// one could only ever fail to match. Refusing it names the wiring mistake instead.
 pub fn check_claim(claim: &[u8]) -> Result<(), Error> {
-    claim_owner(claim).map(|_| ())
+    parse_claim(claim).map(|_| ())
 }
 
 /// Take a stored value apart into `(owner, record)`.
@@ -157,38 +198,42 @@ pub fn check_claim(claim: &[u8]) -> Result<(), Error> {
 /// kernel would not mint still reads back, so the record behind it is never stranded. What the
 /// record half says is the record decoder's business, not this function's.
 pub fn split_value(raw: &[u8]) -> Result<(String, String), Error> {
-    let text = std::str::from_utf8(raw).map_err(|e| Error::codec(format_args!("stored value is not UTF-8: {e}")))?;
-    let Some(rest) = text.strip_prefix(char::from(LAYOUT_VERSION)) else {
-        return Err(match text.chars().next() {
-            None => Error::codec("stored value is empty"),
-            Some(version) => Error::codec(format_args!(
-                "stored value has layout version {version:?}; this kernel reads version {:?}",
-                char::from(LAYOUT_VERSION)
-            )),
-        });
-    };
-    // Fails on a value too short for a token, or on a multibyte character straddling the token's
-    // width. Neither was written by this kernel: the token is ASCII.
-    let (owner, record) = rest
-        .split_at_checked(OWNER_LEN)
-        .ok_or_else(|| Error::codec(format_args!("stored value has no {OWNER_LEN}-character owner token")))?;
+    let (owner, record) = unframe(raw).map_err(|fault| match fault {
+        FrameFault::NotUtf8(e) => Error::codec(format_args!("stored value is not UTF-8: {e}")),
+        FrameFault::Empty => Error::codec("stored value is empty"),
+        FrameFault::Version(version) => Error::codec(format_args!(
+            "stored value has layout version {version:?}; this kernel reads version {:?}",
+            char::from(LAYOUT_VERSION)
+        )),
+        FrameFault::Short => Error::codec(format_args!("stored value has no {OWNER_LEN}-character owner token")),
+    })?;
     Ok((owner.to_owned(), record.to_owned()))
 }
 
-/// What a claim's reply means. `#[must_use]` and exhaustive: a host that ignores [`ClaimOutcome::Won`]
-/// never settles its claim, and every variant needs a decision.
-#[must_use]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClaimOutcome {
-    /// This caller holds the claim: run the handler, then settle with the claim value as handle.
-    Won,
-    /// Another claim or a settled record holds the key. Carries that record's JSON, which the host
-    /// reads with `edax_cqrs::decode_prior`.
-    Prior(String),
+/// Why a value has no frame to take apart. Each reader words it for its own input: a stored value
+/// read back, or a claim handle the caller passed.
+enum FrameFault {
+    NotUtf8(std::str::Utf8Error),
+    Empty,
+    /// The first character, which is not [`LAYOUT_VERSION`].
+    Version(char),
+    /// Too short for a token, or a multibyte character straddles the token's width. Neither was
+    /// written by this kernel: the token is ASCII.
+    Short,
+}
+
+/// The one frame reader: `raw` as `(owner, record)` under the layout version, the token unchecked.
+fn unframe(raw: &[u8]) -> Result<(&str, &str), FrameFault> {
+    let text = std::str::from_utf8(raw).map_err(FrameFault::NotUtf8)?;
+    let Some(rest) = text.strip_prefix(char::from(LAYOUT_VERSION)) else {
+        return Err(text.chars().next().map_or(FrameFault::Empty, FrameFault::Version));
+    };
+    rest.split_at_checked(OWNER_LEN).ok_or(FrameFault::Short)
 }
 
 /// Read the claim script's reply. `reply` is the value the key held before the script ran, `None`
-/// when it was free; `claim` is the value this caller asked the script to write.
+/// when it was free; `claim` is the value this caller asked the script to write, and the handle a
+/// [`Claimed::Won`] carries.
 ///
 /// A reply equal to `claim` is this caller's own claim: the first send landed, its reply was lost,
 /// and the client sent the command again (redis-py does by default). Reading that as someone else's
@@ -198,16 +243,18 @@ pub enum ClaimOutcome {
 /// `Prior` of the kernel's unreadable record ([`Record::unreadable`]) under the claimant's hash, as an
 /// unreadable record half does, so every SDK replays it as a cached `codec` failure. Only a `claim`
 /// this kernel never minted is an error.
-pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<ClaimOutcome, Error> {
+pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<Claimed, Error> {
     match reply {
-        None => Ok(ClaimOutcome::Won),
-        Some(held) if held == claim => Ok(ClaimOutcome::Won),
+        None => Ok(Claimed::Won(claim.to_vec())),
+        Some(held) if held == claim => Ok(Claimed::Won(claim.to_vec())),
         Some(held) => match split_value(held) {
-            Ok((_, record)) => Ok(ClaimOutcome::Prior(record)),
+            Ok((_, record)) => Ok(Claimed::Prior(record.into_bytes())),
             Err(cause) => {
                 let (_, claimant_hash) = parse_claim(claim)?;
-                let record = encode_record(&Record::<()>::unreadable(claimant_hash, &cause))?;
-                Ok(ClaimOutcome::Prior(String::from_utf8_lossy(&record).into_owned()))
+                Ok(Claimed::Prior(encode_record(&Record::<()>::unreadable(
+                    claimant_hash,
+                    &cause,
+                ))?))
             }
         },
     }
@@ -217,6 +264,15 @@ pub fn claim_outcome(reply: Option<&[u8]>, claim: &[u8]) -> Result<ClaimOutcome,
 /// round is one read and one [`FORGET_SCRIPT`](crate::FORGET_SCRIPT), and the key changes only when a
 /// record lapses and a new claim takes it, so a few rounds suffice.
 pub const FORGET_READS: u32 = 3;
+
+/// The error a forget of `key` gives up with once the key changed under it on each of its
+/// [`FORGET_READS`] reads: `store`, so transient. Each change is a record lapsing and a new claim taking
+/// the key, which settles, so a later forget succeeds.
+pub fn forget_exhausted(key: &str) -> Error {
+    Error::store(format_args!(
+        "idempotency key {key} changed on every one of {FORGET_READS} forget reads"
+    ))
+}
 
 /// What forgetting a key does, from the value it holds. `#[must_use]` and exhaustive: every variant
 /// needs a decision.
@@ -252,19 +308,15 @@ fn frame(owner: &str, record: &[u8]) -> Vec<u8> {
     [&[LAYOUT_VERSION][..], owner.as_bytes(), record].concat()
 }
 
-/// The owner token of a well-formed claim handle. See [`check_claim`].
-fn claim_owner(claim: &[u8]) -> Result<&str, Error> {
-    parse_claim(claim).map(|(owner, _)| owner)
-}
-
-/// A well-formed claim handle's owner token and the payload hash its pending record carries.
+/// A well-formed claim handle's owner token and the payload hash its pending record carries. See
+/// [`check_claim`].
 fn parse_claim(claim: &[u8]) -> Result<(&str, u64), Error> {
     let refused = |why: &str| Error::codec(format_args!("claim handle is not a claim this kernel minted: {why}"));
-    let text = std::str::from_utf8(claim).map_err(|_| refused("not UTF-8"))?;
-    let rest = text
-        .strip_prefix(char::from(LAYOUT_VERSION))
-        .ok_or_else(|| refused("no layout version"))?;
-    let (owner, record) = rest.split_at_checked(OWNER_LEN).ok_or_else(|| refused("too short"))?;
+    let (owner, record) = unframe(claim).map_err(|fault| match fault {
+        FrameFault::NotUtf8(_) => refused("not UTF-8"),
+        FrameFault::Empty | FrameFault::Version(_) => refused("no layout version"),
+        FrameFault::Short => refused("too short"),
+    })?;
     check_owner(owner)?;
     match decode_record::<()>(record.as_bytes()) {
         Ok(Record {
@@ -275,7 +327,7 @@ fn parse_claim(claim: &[u8]) -> Result<(&str, u64), Error> {
     }
 }
 
-/// Reject a token that is not one [`new_owner`] mints: 32 lowercase hex characters. Upper case is
+/// Reject a token that is not one [`new_claim`] mints: 32 lowercase hex characters. Upper case is
 /// refused rather than folded, because the scripts compare bytes and `ABC` is not `abc`. The token
 /// itself is kept out of the message: inside a claim value it authorizes settling that claim.
 fn check_owner(owner: &str) -> Result<(), Error> {
@@ -303,7 +355,7 @@ mod tests {
         r#"{"payload_hash":11258580006047770801,"result":null,"error":null,"error_code":null,"pending":true}"#;
     /// A settled record, as `edax-cqrs` encodes a success.
     const DONE: &str = r#"{"payload_hash":11258580006047770801,"result":{"balance_cents":4200},"error":null,"error_code":null,"pending":false}"#;
-    /// A well-formed token, in the shape `new_owner` mints.
+    /// A well-formed token, in the shape `new_claim` mints.
     const OWNER: &str = "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d";
 
     fn claim() -> Vec<u8> {
@@ -311,20 +363,16 @@ mod tests {
     }
 
     #[test]
-    fn a_minted_token_is_one_the_scripts_can_compare() {
-        let owner = new_owner();
-        assert_eq!(owner.len(), OWNER_LEN);
-        assert_ne!(
-            owner,
-            new_owner(),
-            "the shared counter and the random bits -> distinct tokens"
-        );
-        // A minted token must pass the check the writers apply, or no claim could ever be written.
-        assert_eq!(claim_value(&owner, HASH), Ok(format!("1{owner}{PENDING}").into_bytes()));
-        // A fresh claim is a claim the kernel accepts as a handle, under its own owner each time.
+    fn a_minted_claim_is_one_the_scripts_can_compare() {
         let claim = new_claim(HASH).unwrap();
+        let (owner, record) = split_value(&claim).unwrap();
+        assert_eq!(owner.len(), OWNER_LEN);
+        assert_eq!(record, PENDING);
+        // A minted token must pass the check the writers apply, or no claim could ever be written.
+        assert_eq!(claim_value(&owner, HASH), Ok(claim.clone()));
         assert_eq!(check_claim(&claim), Ok(()));
-        assert_ne!(split_value(&claim).unwrap().0, split_value(&new_claim(HASH).unwrap()).unwrap().0);
+        // The shared counter and the random bits make every claim's owner distinct.
+        assert_ne!(owner, split_value(&new_claim(HASH).unwrap()).unwrap().0);
     }
 
     #[test]
@@ -415,6 +463,42 @@ mod tests {
     }
 
     #[test]
+    fn settled_value_refuses_a_pending_record() {
+        let refused = settled_value(&claim(), PENDING).unwrap_err();
+        assert_eq!(
+            refused,
+            edax_cqrs::check_settled(PENDING.as_bytes()).unwrap_err(),
+            "the record kernel's refusal"
+        );
+        assert_eq!(refused.code, edax_core::ErrorCode::BadHandle);
+    }
+
+    #[test]
+    fn complete_outcome_branches() {
+        assert_eq!(complete_outcome("order-7", true), Ok(()), "written");
+        assert_eq!(
+            complete_outcome("order-7", false),
+            Err(edax_cqrs::lapsed_claim("order-7")),
+            "the fence refused it"
+        );
+    }
+
+    #[test]
+    fn heartbeat_due_branches() {
+        for (name, sent_at, claim_ttl, beat, want) in [
+            ("the_claim_itself", 1_000, 6_000, 0, 1_000),
+            ("the_first_beat_is_a_third_on", 1_000, 6_000, 1, 3_000),
+            ("the_third_beat_is_a_whole_ttl_on", 1_000, 6_000, 3, 7_000),
+            ("a_ttl_not_divisible_by_three_rounds_down", 0, 10, 1, 3),
+            ("the_second_beat_of_it_rounds_down_too", 0, 10, 2, 6),
+            ("saturates_at_the_top", i64::MAX - 1, MAX_TTL_MS, u32::MAX, i64::MAX),
+            ("saturates_at_the_bottom", i64::MIN, -MAX_TTL_MS, u32::MAX, i64::MIN),
+        ] {
+            assert_eq!(heartbeat_due_ms(sent_at, claim_ttl, beat), want, "{name}");
+        }
+    }
+
+    #[test]
     fn split_value_branches() {
         assert_eq!(split_value(&claim()), Ok((OWNER.to_owned(), PENDING.to_owned())));
         let refused: [(&str, Vec<u8>, &str); 5] = [
@@ -446,35 +530,41 @@ mod tests {
     fn claim_outcome_branches() {
         let other = format!("1{}{PENDING}", "f".repeat(32)).into_bytes();
         let settled = format!("1{OWNER}{DONE}").into_bytes();
-        assert_eq!(claim_outcome(None, &claim()), Ok(ClaimOutcome::Won), "free key");
+        assert_eq!(claim_outcome(None, &claim()), Ok(Claimed::Won(claim())), "free key");
         assert_eq!(
             claim_outcome(Some(&claim()), &claim()),
-            Ok(ClaimOutcome::Won),
+            Ok(Claimed::Won(claim())),
             "own claim, reply lost"
         );
         assert_eq!(
             claim_outcome(Some(&other), &claim()),
-            Ok(ClaimOutcome::Prior(PENDING.to_owned()))
+            Ok(Claimed::Prior(PENDING.as_bytes().to_vec()))
         );
         assert_eq!(
             claim_outcome(Some(&settled), &claim()),
-            Ok(ClaimOutcome::Prior(DONE.to_owned()))
+            Ok(Claimed::Prior(DONE.as_bytes().to_vec()))
         );
         // A value no layout reads still holds the key: the claimant reads the kernel's unreadable record
         // under its own hash, a cached codec failure.
         let unreadable = |cause: &str| {
             let record = Record::<()>::unreadable(HASH, &Error::codec(cause));
-            Ok(ClaimOutcome::Prior(String::from_utf8(encode_record(&record).unwrap()).unwrap()))
+            Ok(Claimed::Prior(encode_record(&record).unwrap()))
         };
         assert_eq!(
             claim_outcome(Some(b"garbage"), &claim()),
             unreadable("stored value has layout version 'g'; this kernel reads version '1'")
         );
-        assert_eq!(claim_outcome(Some(&[b'1', 0xff]), &claim()), unreadable("stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1"));
+        assert_eq!(
+            claim_outcome(Some(&[b'1', 0xff]), &claim()),
+            unreadable("stored value is not UTF-8: invalid utf-8 sequence of 1 bytes from index 1")
+        );
         assert_eq!(claim_outcome(Some(b""), &claim()), unreadable("stored value is empty"));
         // The claimant's own handle is the one thing that must be well formed.
         let refused = claim_outcome(Some(b"garbage"), b"not a claim").unwrap_err();
-        assert_eq!(refused.to_string(), "codec: claim handle is not a claim this kernel minted: no layout version");
+        assert_eq!(
+            refused.to_string(),
+            "codec: claim handle is not a claim this kernel minted: no layout version"
+        );
     }
 
     #[test]
@@ -487,25 +577,59 @@ mod tests {
         );
         // One row per refusal of `check_config`, and the edges of the TTL range.
         let refused = |prefix, ttl, claim_ttl, deadline, heartbeat| {
-            check_config(prefix, ttl, claim_ttl, deadline, heartbeat).err().map(|e| (e.code, e.message))
+            check_config(prefix, ttl, claim_ttl, deadline, heartbeat)
+                .err()
+                .map(|e| (e.code, e.message))
         };
         let bad = |message: &str| Some((edax_core::ErrorCode::BadHandle, message.to_owned()));
         assert_eq!(refused("x", 1, MAX_TTL_MS, 1, false), None);
-        assert_eq!(refused("x", 86_400_000, 300_000, 5_000, true), None, "a heartbeat at the defaults");
-        assert_eq!(refused("x", 1, 4, 1, true), None, "a deadline just under a third of the claim TTL");
-        assert_eq!(refused("", 1, 1, 1, false), bad("the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\""));
+        assert_eq!(
+            refused("x", DEFAULT_TTL_MS, DEFAULT_CLAIM_TTL_MS, DEFAULT_OP_TIMEOUT_MS, true),
+            None,
+            "a heartbeat at the defaults"
+        );
+        assert_eq!(
+            refused("x", 1, 4, 1, true),
+            None,
+            "a deadline just under a third of the claim TTL"
+        );
+        assert_eq!(
+            refused("", 1, 1, 1, false),
+            bad("the ledger prefix is empty; name the service and the environment, as in \"billing:prod:idem:\"")
+        );
         for ttl in [0, -5, MAX_TTL_MS + 1, i64::MIN] {
-            let want = format!("ttl_ms is {ttl} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}");
+            let want =
+                format!("ttl_ms is {ttl} ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}");
             assert_eq!(refused("x", ttl, 1, 1, false), bad(&want), "{ttl}");
         }
-        assert_eq!(refused("x", 1, 0, 1, false), bad(&format!("claim_ttl_ms is 0 ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}")));
-        assert_eq!(refused("x", 1, 1, 0, false), bad("op_timeout_ms is 0 ms; a deadline must be positive"));
+        assert_eq!(
+            refused("x", 1, 0, 1, false),
+            bad(&format!(
+                "claim_ttl_ms is 0 ms; a Redis TTL is a whole number of milliseconds from 1 to {MAX_TTL_MS}"
+            ))
+        );
+        assert_eq!(
+            refused("x", 1, 1, 0, false),
+            bad("op_timeout_ms is 0 ms; a deadline must be positive")
+        );
         let stalled = |deadline: i64, claim_ttl: i64| {
             bad(&format!("op_timeout_ms is {deadline} ms and claim_ttl_ms is {claim_ttl} ms; a heartbeat renews every 1/3 of the claim TTL, so one renewal stalled for the whole deadline lets the claim lapse unless op_timeout_ms is under 1/3 of claim_ttl_ms"))
         };
-        assert_eq!(refused("x", 1, 15_000, 5_000, true), stalled(5_000, 15_000), "a deadline of exactly a third");
-        assert_eq!(refused("x", 1, 2, 1, true), stalled(1, 2), "a claim TTL too short to divide");
-        assert_eq!(refused("x", 1, MAX_TTL_MS, i64::MAX, true), stalled(i64::MAX, MAX_TTL_MS), "saturates");
+        assert_eq!(
+            refused("x", 1, 15_000, 5_000, true),
+            stalled(5_000, 15_000),
+            "a deadline of exactly a third"
+        );
+        assert_eq!(
+            refused("x", 1, 2, 1, true),
+            stalled(1, 2),
+            "a claim TTL too short to divide"
+        );
+        assert_eq!(
+            refused("x", 1, MAX_TTL_MS, i64::MAX, true),
+            stalled(i64::MAX, MAX_TTL_MS),
+            "saturates"
+        );
         assert_eq!(refused("x", 1, 15_000, 5_000, false), None, "no heartbeat, no bound");
     }
 }

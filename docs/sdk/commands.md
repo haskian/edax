@@ -26,7 +26,8 @@ flowchart LR
 | | Rust SDK | Python SDK |
 |---|---|---|
 | Declaration | `trait Command: Serialize` | `class Command(Protocol)` |
-| Name | `fn command_type(&self) -> &str` | `type`, a class attribute |
+| Name | `const TYPE: &'static str` | `type`, a class attribute |
+| Result | `type Output`: a dispatch's result type, checked at compile time | the handler's return annotation, read by a guard's replay |
 | Payload | whatever `Serialize` writes | the declared instance fields |
 | Hash input | the name and the whole command value | the name and the whole command value |
 | Hashed by | `edax_cqrs::command_hash(name, value)` | `_edax.command_hash_json(cmd.type, ...)` over `msgspec.json.encode` |
@@ -35,7 +36,8 @@ Rust:
 
 ```rust
 pub trait Command: Serialize {
-    fn command_type(&self) -> &str;
+    const TYPE: &'static str;
+    type Output;
 }
 ```
 
@@ -63,8 +65,8 @@ sides.
 
 The name enters the hash once, as the name. One idempotency key names one request. So
 `Deposit(account="x", amount=10)` and `Withdraw(account="x", amount=10)` under one key are a
-`PayloadMismatch`, not a replay of the wrong command's result. In Rust the name is a method return;
-in Python it must be a class attribute. Declared as a Python instance field it would enter `vars()`
+`PayloadMismatch`, not a replay of the wrong command's result. In Rust the name is an associated
+constant; in Python it must be a class attribute. Declared as a Python instance field it would enter `vars()`
 and be hashed a second time, inside the payload. The Rust command carrying the same business fields
 would not do that. That is one key and two numbers, so a genuine duplicate raises `PayloadMismatch`.
 
@@ -76,15 +78,19 @@ integer outside -(2^53 - 1) to 2^53 - 1 (a 64-bit id, say) is refused as a termi
 before any claim. Carry such ids as strings.
 A command decoded from the wire hashes after its upcast, as the dispatched one does.
 
-In Rust, register each command type as its own struct on the type-erased `CommandBus`. Never route
-several command types through one enum: serde's external tag (`{"Withdraw":{...}}`) would enter the
-hash. The same command dispatched from Python, or from the plain struct, would then hash differently
-and read as a `PayloadMismatch` on a shared ledger.
+In Rust each command type is its own struct with one `TYPE`, registered on the type-erased
+`CommandBus` as itself. An enum of several command types cannot implement `Command`, so it cannot be
+dispatched. Its serde tag (`{"Withdraw":{...}}`) would enter the hash. The same command dispatched
+from Python, or from the plain struct, would then read as a `PayloadMismatch` on a shared ledger.
+A saga may still emit an enum of its commands through a registry codec, which writes each variant's own
+value. Its relay runs each row as the command its name names, with `dispatch_message`.
 
 ## The command message
 
-Every Python dispatch builds a `CommandMessage`, the shape a command has on the wire. A handler still
-receives the command value. It reads the message, while it runs, through `current_command()`.
+Every dispatch builds a `CommandMessage`, the shape a command has on the wire. The message is the unit
+of dispatch in both SDKs. Middleware receives it as an argument with the command, so a guard reads the
+idempotency key and the tenant off it and cannot miss them. A handler still receives the command value
+alone. In Python it reads the message, while it runs, through `current_command()`.
 
 | Field | Value |
 |---|---|
@@ -96,7 +102,7 @@ receives the command value. It reads the message, while it runs, through `curren
 | `issued_at` | the issuer's clock, Unix nanoseconds |
 | `extensions`, `metadata` | edax extension context, and the application's own |
 
-[edax-event](../kernels/event.md#domain--the-messages) lists which decision reads each field.
+[edax-event](../kernels/event.md#message--the-messages) lists which decision reads each field.
 
 **Two ids, two jobs.** `id` names one message. `idempotency_key` names one intent. A client that
 retries an HTTP request sends a new message each time, under the same key, so the guard replays the
@@ -124,11 +130,21 @@ handler runs.
 
 ### `dispatch_message`: from the wire
 
-`await bus.dispatch_message(msg, codec)` runs a `CommandMessage` a broker or an outbox delivered.
-`codec` unmarshals `msg` by its name and version, upcasting on the way, as an `EventCodec` does an
-event. The hash covers the value the handler receives, after the upcast. A message with no
-`idempotency_key` gets its own `id` as one, so a broker redelivery of the same message replays
-instead of running twice. The message keeps its lineage, so its handler's events stay in its flow.
+`await bus.dispatch_message(msg)` runs a `CommandMessage` a broker or an outbox delivered. The bus's
+codec is the `CommandCodec` given as `CommandBus(*middleware, codec=...)`. It unmarshals `msg` by its
+name and version, upcasting on the way, as it does an event. The codec is the bus's one map from a
+command's name to its class. `register` refuses a command the codec does not name with `BadHandle`.
+`dispatch_message` on a bus built without a codec raises `BadHandle` too. `dispatch` builds its message
+with the codec as well. A bus that only dispatches in-process needs none. In Rust each command type
+carries its own codec, whose `Domain` is `C`: `register_with_codec::<C, _>(handler, codec, middleware)`.
+`dispatch_message::<C>(&msg)` reads with it and `dispatch` builds with it. A type registered with plain
+`register` dispatches in-process only: its message is the command's JSON at version 1, and
+`dispatch_message` refuses one with `BadHandle`. The hash covers
+the value the handler receives, after the upcast. A guard claims a
+message with no `idempotency_key` under its own `id` (`received_key`), so a broker redelivery of the
+same message replays instead of running twice. The message runs as received: middleware and
+`current_command()` see the key the sender set, `None` included. It keeps its lineage, so its
+handler's events stay in its flow.
 
 ### `command_message`: build one without dispatching
 
@@ -231,7 +247,7 @@ side. [Backends](../backends/README.md#commandoutbox) lists what it refuses. A s
 with the same guarantee; see [sagas](./sagas.md).
 
 On the consuming side, the dispatcher's handler hands each delivered command to
-`bus.dispatch_message(msg, command_codec)`, with the codec the producer built the message with. The
+`bus.dispatch_message(msg)`, on a bus built with the codec the producer built the message with. The
 consumer's guard then claims the message's idempotency key under its own scope.
 
 ## Forget: re-driving a dead-lettered command
@@ -242,7 +258,8 @@ dead-letter queue, the cached failure must go first.
 
 ```python
 from edax import Tenancy
-from edax.command import forget, received_key
+from edax.command import received_key
+from edax.idempotency import forget
 
 # The scope, key and tenancy the guard claimed with.
 await forget(ledger, "billing.worker", received_key(msg), tenancy=Tenancy.SILO)
@@ -260,20 +277,21 @@ delete.
 | Operation | Rust | Python |
 |---|---|---|
 | Construct | `CommandBus::new()` | `CommandBus(*middleware)` |
-| Middleware | per command type: `wrap(handler, vec![mw, ...])` before `register` | bus-wide, passed to the constructor |
-| Register | `register::<C, O>(command_type, handler) -> Result<(), Error>` | `register(command_type, handler) -> None`, or the `@bus.on(command_type)` decorator, as `EventRouter.on` |
+| Middleware | per command type, passed to `register` | bus-wide, passed to the constructor |
+| Register | `register::<C>(handler, middleware) -> Result<(), Error>`, under `C::TYPE`, in-process only; `register_with_codec::<C, _>(handler, codec, middleware)` for a type that crosses the wire | `register(Command, handler) -> None`, under `Command.type`, or the `@bus.on(Command)` decorator, as `EventRouter.on` |
 | Duplicate registration | `Err` with code `already_registered` | `raise AlreadyRegistered(command_type)` |
-| Dispatch | `dispatch::<C, O>(&cmd) -> Result<O, HandlerError>` | `await dispatch(cmd, *, idempotency_key=None, aggregate_id=None, lineage=None, extensions=None, metadata=None) -> Any` |
-| Dispatch a message | none: a Rust host decodes the command itself | `await dispatch_message(msg, codec) -> Any` |
-| The message in flight | none | `current_command()`, the `CommandMessage` being handled |
-| No handler | code `handler_not_found` (also for a handler registered for another `C` or `O`) | `raise HandlerNotFound(cmd.type)` |
+| Dispatch | `dispatch(&cmd, DispatchOptions) -> Result<C::Output, HandlerError>` | `await dispatch(cmd, *, idempotency_key=None, aggregate_id=None, tenant=None, lineage=None, extensions=None, metadata=None) -> Any` |
+| Build the message | `command_message(&cmd, &codec, DispatchOptions)`: the codec's name, version and data | `command_message(cmd, codec=None, ...)` |
+| Dispatch a message | `dispatch_message::<C>(&msg) -> Result<C::Output, HandlerError>` with the codec `C` was registered with, claimed under `received_key` | `await dispatch_message(msg) -> Any` with the bus's `codec`, claimed under `received_key` |
+| The message in flight | the middleware's argument | the middleware's argument, and `current_command()` for a handler |
+| No handler | code `handler_not_found` (also for another Rust type registered under `C::TYPE`) | `raise HandlerNotFound(cmd.type)` |
 | Handler failed | the handler's `HandlerError`, unchanged | the handler's exception propagates |
 
 The Rust bus is type-erased: one bus routes any number of command types, each registered as its own
-type `C` with its own result type `O`. Its middleware is typed by the command it reads and the result
-it caches, so `wrap` applies it to each handler rather than once for the bus. Several
-`idempotent` guards may share one ledger: `MemoryTransactor::idempotency_store::<O>()` hands out a
-typed view per result type over one database.
+type `C` with its own `C::Output`. Its middleware is typed by the command it reads and the result it
+caches, so `register` applies it to each handler rather than once for the bus. Several `idempotent`
+guards may share one ledger: `MemoryTransactor::idempotency_store::<O>()` hands out a typed view per
+result type over one database.
 
 `AlreadyRegistered` is a startup wiring error, not a runtime failure. `EventRouter::register`
 returns the same code for a duplicate event handler. One taxonomy covers both paths. It is terminal,
@@ -286,34 +304,39 @@ Every failure the SDK itself raises is an `edax::Error`, the kernel's `Error { c
 inside that box; a caller downcasts to read its code. Python raises `HandlerNotFound` directly and
 lets a handler's exception propagate untouched.
 
-A replayed result is the handler's own type in both SDKs: Rust decodes the record as `O`, and Python's
+A replayed result is the handler's own type in both SDKs: Rust decodes the record as `C::Output`, and Python's
 `idempotent` converts it to `result_type` or the handler's return annotation. See
 [idempotency](./idempotency.md#the-loser-paths).
 
 ## The middleware chain
 
-Both SDKs use the same shape: a middleware takes the next handler and returns a handler.
+Both SDKs use the same shape: a middleware takes the next step and returns a step. A step takes the
+message being dispatched and the command; the handler at the end of the chain takes the command alone.
 
 ```rust
 pub type HandlerError = Box<dyn std::error::Error + Send + Sync>;
-pub type Handler<C, O> = Box<dyn Fn(&C) -> Result<O, HandlerError> + Send + Sync>;
-pub type Middleware<C, O> = Box<dyn Fn(Handler<C, O>) -> Handler<C, O> + Send + Sync>;
+pub type Handler<C> = Box<dyn Fn(&C) -> Result<C::Output, HandlerError> + Send + Sync>;
+pub type Next<C> = Box<dyn Fn(&CommandMessage, &C) -> Result<C::Output, HandlerError> + Send + Sync>;
+pub type Middleware<C> = Box<dyn Fn(Next<C>) -> Next<C> + Send + Sync>;
 ```
 
 ```python
 # Handlers are coroutines: a command handler awaits the storage seam (Repository.save, etc.).
 Handler = Callable[[Any], Awaitable[Any]]
-Middleware = Callable[[Handler], Handler]
+Next = Callable[[CommandMessage, Any], Awaitable[Any]]
+Middleware = Callable[[Next], Next]
 ```
 
 The Rust handler is synchronous and takes the command by reference. The Python handler is a
 coroutine, because it awaits the storage seam. `next` is threaded the same way in both: the
-middleware closes over the handler it was given and calls it.
+middleware closes over the step it was given and calls it with the message and the command. The
+message is an argument, not ambient state: a guard can never miss it, and sync Rust middleware has no
+async-local slot to read one from.
 
 ### Composition order
 
-The chain is wrapped around each handler before it is registered (Rust `wrap`, Python the bus at
-`register` time). It folds the middleware list in reverse, so the first middleware listed ends up
+The chain is wrapped around each handler when it is registered (Rust `register(handler, middleware)`,
+Python the bus at `register` time). It folds the middleware list in reverse, so the first middleware listed ends up
 outermost:
 
 ```rust
@@ -329,8 +352,8 @@ for mw in reversed(self._middleware):
 Two consequences. First, `CommandBus(retry(3), idempotent(...))` runs the retry first and the guard
 inside it. Second, the chain is frozen at registration.
 
-A Python middleware receives the command value, as the handler does. It reads the message around it
-with `current_command()`: its idempotency key, its lineage, its extensions.
+A middleware receives the message with the command value: its idempotency key, its tenant, its
+lineage, its extensions. A handler receives the command alone.
 
 ### One dispatch, drawn
 
@@ -380,19 +403,22 @@ The guard never releases a claim it lost: the key belongs to the winner.
 
 | | Rust | Python |
 |---|---|---|
-| Signature | `retry(attempts: usize, pacing: Pacing) -> Middleware<C, O>` | `retry(attempts: int, *, pacing=None) -> Middleware`; `None` is `Pacing()` |
-| Floor | `attempts.max(1)` | `attempts < 1` raises `ValueError` |
+| Signature | `retry(attempts: NonZeroU32, pacing: Pacing) -> Middleware<C>` | `retry(attempts: int, *, pacing=None) -> Middleware`; `None` is `Pacing()` |
+| Floor | `0` is unrepresentable: `NonZeroU32`, the type the kernel's `retry_step` takes | `0` raises `BadHandle`, the kernel's refusal |
+| Decision | `edax_event::retry_step` | `_edax.retry_step` |
 | Wait | `pacing.sleep`, default `std::thread::sleep`, blocking | `pacing.sleep`, default `await asyncio.sleep` |
 | Backoff | `pacing.delay(failures)`: the kernel's jittered `backoff_millis` | the same, through `_edax.backoff_millis` |
 | Not retried | terminal errors, and a panic keeps unwinding | terminal errors, and `BaseException` is never caught |
 
-`attempts` counts handler runs, not extra runs: `retry(3)` calls the handler at most three times. Python
-refuses a count below one at wiring (`test_retry_refuses_fewer_than_one_attempt`), where a typo is cheap
-to find; the Rust reference model clamps it to one (`zero_attempts_clamps_to_one`).
+`attempts` counts handler runs, not extra runs: `retry(3)` calls the handler at most three times. A
+count below one is refused at wiring in both SDKs, where a typo is cheap to find: Rust cannot spell it,
+and Python raises (`test_retry_refuses_fewer_than_one_attempt`).
 
 **What it retries.** Only transient failures. A terminal error is returned or re-raised at once
-without using an attempt, because a deterministic failure cannot come out differently. The verdict
-is the kernel's; see [errors](./errors.md). Python catches `Exception`, so
+without using an attempt, because a deterministic failure cannot come out differently. When to stop
+and which step to wait is the kernel's `retry_step`, pinned by `testdata/golden/retry_step.json`; see
+[errors](./errors.md). Contention (`InProgress`, a key another dispatch holds) spends an attempt here,
+unlike in a consumer: the caller is waiting, so a winner that never finishes must not hold it forever. Python catches `Exception`, so
 `asyncio.CancelledError` passes straight through and is never retried.
 
 **The backoff.** The kernel's schedule with full jitter: failed attempt `i` waits a random duration in
@@ -438,7 +464,7 @@ The wiring `examples/py/05_idempotent_commands.py` runs, with a `submit` entry p
 bus = CommandBus(
     retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
 )
-bus.register("Deposit", deposit)
+bus.register(Deposit, deposit)
 
 
 async def submit(request_id: str, account_id: str, amount: int) -> int:

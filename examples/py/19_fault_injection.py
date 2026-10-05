@@ -4,9 +4,11 @@ In a lost reply the write landed, and the reply never came back. The caller cann
 write that failed, so it sends again. `BrokenCommit(db, "lost_response")` makes a
 commit land and then raise, so a test can prove the handler survives it.
 
-Here the ledger lives in its own database (as Redis does). The guard sees the failed commit and
-frees the claim, so the redelivery runs the handler a second time. The handler is safe only
-because it remembers which deposits it already applied.
+The outer guard's ledger lives in its own database (as Redis does). It sees the failed commit and
+frees the claim, so the redelivery gets past it. A second `idempotent_by_id` guard absorbs that run:
+its ledger lives in the read model's database, so its record committed with the deposit, and it skips
+the deposit it already applied. No hand-rolled list of applied ids is needed, and none grows without
+bound.
 
 Run:  cd examples/py && uv run python 19_fault_injection.py
 """
@@ -14,15 +16,24 @@ Run:  cd examples/py && uv run python 19_fault_injection.py
 from __future__ import annotations
 
 import asyncio
-import json
+from dataclasses import dataclass, replace
 
-from edax import Entity, EventMessage, EventRouter, StoreError, Tenancy, idempotent_by_id, testing
-from edax.backend.memory import MemoryLedger, MemoryProjectionStore, MemoryTransactor
+from edax import Entity, EventMessage, EventRouter, StoreError, Tenancy, idempotent_by_id, json_codec, testing
+from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
+from edax.router import EventHandler
 from edax.testing.faults import BrokenCommit
 
 
+@dataclass
+class Deposited:
+    amount: int
+
+
+events = json_codec({"Deposited": Deposited})
+
+
 def deposited(event_id: str, amount: int) -> EventMessage:
-    return testing.event("acct-1", "Deposited", id=event_id, data=json.dumps({"amount": amount}).encode())
+    return testing.event("acct-1", "Deposited", id=event_id, data=events.marshal(Deposited(amount)).data)
 
 
 async def main() -> None:
@@ -30,24 +41,33 @@ async def main() -> None:
     db = MemoryTransactor()
     balances = MemoryProjectionStore(db)
     unit = BrokenCommit(db, arm="lost_response")  # the next commit lands, then raises
-    router = EventRouter(
-        idempotent_by_id(MemoryLedger(), unit_of_work=unit, scope="balances", tenancy=Tenancy.SILO)
-    )
-    runs: list[str] = []
+    deliveries: list[str] = []
+    applied: list[str] = []
 
-    # 2. An idempotent handler: it skips a deposit it has already applied.
+    def count_deliveries(next_: EventHandler) -> EventHandler:
+        async def handler(event: EventMessage) -> None:
+            deliveries.append(event.id)
+            ran = next_(event)
+            if ran is not None:  # a handler may be sync or async
+                await ran
+
+        return handler
+
+    # 2. Two guards, first outermost. The outer one opens the unit of work over `unit`, with a ledger of its
+    #    own. The inner one joins that unit of work, so its record commits with the deposit.
+    router = EventRouter(
+        idempotent_by_id(MemoryLedger(), unit_of_work=unit, scope="balances", tenancy=Tenancy.SILO),
+        count_deliveries,
+        idempotent_by_id(MemoryIdempotencyStore(db), scope="balances-fold", tenancy=Tenancy.SILO),
+    )
+
     @router.on("Deposited")
     async def add_deposit(event: EventMessage) -> None:
-        runs.append(event.id)
-        row = await balances.get(event.aggregate_id)
-        if row is None:
-            row = Entity(event.aggregate_id, 0, {"balance": 0, "applied": []})
-        if event.id in row.document["applied"]:
-            print(f"  {event.id} already applied: nothing to do")
-            return
-        row.document["balance"] += json.loads(event.data)["amount"]
-        row.document["applied"].append(event.id)
-        await balances.save(row)
+        applied.append(event.id)
+        row = await balances.get(event.aggregate_id) or Entity(event.aggregate_id, 0, {"balance": 0})
+        deposit: Deposited = events.unmarshal(event)
+        balance = row.document["balance"] + deposit.amount
+        await balances.save(replace(row, document={"balance": balance}))
 
     # 3. The first delivery: the deposit lands, but the caller sees an error.
     try:
@@ -56,17 +76,20 @@ async def main() -> None:
     except StoreError as e:
         print(f"delivery 1: {e}")
 
-    # 4. The broker redelivers. The commit works now, and the claim is free again.
+    # 4. The broker redelivers. The commit works now, and the outer claim is free again.
     unit.arm = None
     await router.dispatch(deposited("e1", 100))
     print("delivery 2: ok")
 
     row = await balances.get("acct-1")
     assert row is not None
-    print(f"handler ran {len(runs)}x; balance {row.document['balance']}")
-    assert runs == ["e1", "e1"], "a ledger of its own lets the redelivery run the handler again"
-    assert row.document["balance"] == 100, "and the idempotent handler applied the deposit once"
-    print("\nok: the lost reply caused a second run, and the handler absorbed it")
+    print(
+        f"passed the outer guard {len(deliveries)}x; applied {len(applied)}x; balance {row.document['balance']}"
+    )
+    assert deliveries == ["e1", "e1"], "a ledger of its own lets the redelivery past the outer guard"
+    assert applied == ["e1"], "the inner guard's record committed with the deposit, so it skips the rerun"
+    assert row.document["balance"] == 100
+    print("\nok: the lost reply caused a second run, and the inner guard absorbed it")
 
 
 if __name__ == "__main__":

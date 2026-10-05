@@ -37,7 +37,7 @@
   },
   {
     "code": "bad_handle",
-    "failure": "terminal"
+    "failure": "fatal"
   },
   {
     "code": "rejected",

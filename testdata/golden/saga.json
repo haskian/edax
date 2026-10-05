@@ -6,9 +6,9 @@
       "state": "absent"
     },
     "want": {
+      "action": "save",
       "expected": 0,
-      "version": 1,
-      "write": "save"
+      "version": 1
     }
   },
   {
@@ -18,9 +18,9 @@
       "state": "absent"
     },
     "want": {
+      "action": "save",
       "expected": 0,
-      "version": 1,
-      "write": "save"
+      "version": 1
     }
   },
   {
@@ -30,7 +30,7 @@
       "state": "absent"
     },
     "want": {
-      "write": "nothing"
+      "action": "nothing"
     }
   },
   {
@@ -40,9 +40,9 @@
       "state": "absent"
     },
     "want": {
+      "action": "complete",
       "expected": 0,
-      "version": 1,
-      "write": "complete"
+      "version": 1
     }
   },
   {
@@ -53,9 +53,9 @@
       "version": 3
     },
     "want": {
+      "action": "save",
       "expected": 3,
-      "version": 4,
-      "write": "save"
+      "version": 4
     }
   },
   {
@@ -66,9 +66,9 @@
       "version": 3
     },
     "want": {
+      "action": "save",
       "expected": 3,
-      "version": 4,
-      "write": "save"
+      "version": 4
     }
   },
   {
@@ -79,9 +79,9 @@
       "version": 3
     },
     "want": {
+      "action": "complete",
       "expected": 3,
-      "version": 4,
-      "write": "complete"
+      "version": 4
     }
   },
   {
@@ -92,9 +92,9 @@
       "version": 3
     },
     "want": {
+      "action": "complete",
       "expected": 3,
-      "version": 4,
-      "write": "complete"
+      "version": 4
     }
   },
   {
@@ -139,194 +139,346 @@
     },
     "want": {
       "error": "codec: saga instance at version 18446744073709551615 has no next version"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": false,
+    "loaded": {
+      "state": "completed",
+      "version": 3
+    },
+    "want": {
+      "error": "codec: saga instance completed at version 3 takes no write"
+    }
+  },
+  {
+    "completes": false,
+    "has_commands": true,
+    "loaded": {
+      "state": "completed",
+      "version": 3
+    },
+    "want": {
+      "error": "codec: saga instance completed at version 3 takes no write"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": false,
+    "loaded": {
+      "state": "completed",
+      "version": 3
+    },
+    "want": {
+      "error": "codec: saga instance completed at version 3 takes no write"
+    }
+  },
+  {
+    "completes": true,
+    "has_commands": true,
+    "loaded": {
+      "state": "completed",
+      "version": 3
+    },
+    "want": {
+      "error": "codec: saga instance completed at version 3 takes no write"
+    }
+  },
+  {
+    "loaded_row": {
+      "completed": false,
+      "version": null
+    },
+    "want": {
+      "state": "absent"
+    }
+  },
+  {
+    "loaded_row": {
+      "completed": false,
+      "version": 3
+    },
+    "want": {
+      "state": "active",
+      "version": 3
+    }
+  },
+  {
+    "loaded_row": {
+      "completed": true,
+      "version": 3
+    },
+    "want": {
+      "state": "completed",
+      "version": 3
+    }
+  },
+  {
+    "loaded_row": {
+      "completed": true,
+      "version": null
+    },
+    "want": {
+      "error": "codec: a completed saga instance carries its version"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": true,
       "folded": "",
       "id": "evt-1",
+      "loaded": {
+        "state": "completed",
+        "version": 3
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
-      "completed": true
+      "action": "completed"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": true,
       "folded": "[1]",
       "id": "evt-1",
+      "loaded": {
+        "state": "completed",
+        "version": 3
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
-      "completed": true
+      "action": "completed"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "",
       "id": "evt-1",
+      "loaded": {
+        "state": "absent"
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-1",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
       "id": "evt-1",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
-      "below_mark": true
+      "action": "below_mark"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-2",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 2
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "payment-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-p",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"},\"payment-7\":{\"sequence\":1,\"id\":\"evt-p\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-u",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-v",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"unsequenced\":\"evt-v\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\"}}",
       "id": "evt-v",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}",
       "id": "evt-2",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 2
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}",
       "id": "evt-v",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-1\"}}",
       "id": "evt-x",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":1,\"id\":\"evt-x\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-3",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 3
     },
     "want": {
+      "action": "fold",
       "folded": "{\"order-7\":{\"sequence\":3,\"id\":\"evt-3\",\"unsequenced\":\"evt-u\"}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "café",
-      "completed": false,
       "folded": "{\"café\":{\"sequence\":18446744073709551615,\"id\":\"évt\"}}",
       "id": "évt",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 18446744073709551615
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
       "folded": "[1]",
       "id": "evt-1",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "saga": "shipping",
       "sequence": 1
     },
     "want": {
@@ -336,83 +488,232 @@
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
+      "causation_id": "8:shipping:order-7:2:0",
       "folded": "",
-      "id": "order-7:2:0:failed",
+      "id": "8:shipping:order-7:2:0:failed",
+      "loaded": {
+        "state": "absent"
+      },
       "name": "SagaCommandFailed",
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}"
+      "action": "fold",
+      "folded": "{\"order-7\":{\"failed\":[\"8:shipping:order-7:2:0:failed\"]}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
-      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}",
-      "id": "order-7:2:1:failed",
+      "causation_id": "8:shipping:order-7:2:1",
+      "folded": "{\"order-7\":{\"failed\":[\"8:shipping:order-7:2:0:failed\"]}}",
+      "id": "8:shipping:order-7:2:1:failed",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
       "name": "SagaCommandFailed",
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}"
+      "action": "fold",
+      "folded": "{\"order-7\":{\"failed\":[\"8:shipping:order-7:2:0:failed\",\"8:shipping:order-7:2:1:failed\"]}}"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
-      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}",
-      "id": "order-7:2:0:failed",
+      "causation_id": "8:shipping:order-7:2:0",
+      "folded": "{\"order-7\":{\"failed\":[\"8:shipping:order-7:2:0:failed\",\"8:shipping:order-7:2:1:failed\"]}}",
+      "id": "8:shipping:order-7:2:0:failed",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
       "name": "SagaCommandFailed",
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
     "admit": {
       "aggregate_id": "order-7",
-      "completed": false,
-      "folded": "{\"order-7\":{\"unsequenced\":\"order-7:2:0:failed\"}}",
-      "id": "order-7:2:0:failed",
+      "causation_id": "8:shipping:order-7:2:0",
+      "folded": "{\"order-7\":{\"unsequenced\":\"8:shipping:order-7:2:0:failed\"}}",
+      "id": "8:shipping:order-7:2:0:failed",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
       "name": "SagaCommandFailed",
+      "saga": "shipping",
       "sequence": null
     },
     "want": {
-      "repeat": true
+      "action": "repeat"
     }
   },
   {
-    "command_id": "order-7:1:0",
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "cmd-1",
+      "folded": "",
+      "id": "evt-h1",
+      "loaded": {
+        "state": "absent"
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-h1\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "cmd-1",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-h1\"}}",
+      "id": "evt-h2",
+      "loaded": {
+        "state": "active",
+        "version": 2
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-h2\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "8:shipping:payment-7:2:0",
+      "folded": "",
+      "id": "8:shipping:payment-7:2:0:failed",
+      "loaded": {
+        "state": "absent"
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"8:shipping:payment-7:2:0:failed\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "7:billing:order-7:2:0",
+      "folded": "",
+      "id": "7:billing:order-7:2:0:failed",
+      "loaded": {
+        "state": "absent"
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"7:billing:order-7:2:0:failed\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "8:shipping:order-7:2:0",
+      "folded": "",
+      "id": "evt-x",
+      "loaded": {
+        "state": "absent"
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-x\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "causation_id": "cmd-1",
+      "folded": "",
+      "id": "cmd-1:failed",
+      "loaded": {
+        "state": "absent"
+      },
+      "name": "SagaCommandFailed",
+      "saga": "shipping",
+      "sequence": null
+    },
+    "want": {
+      "action": "fold",
+      "folded": "{\"order-7\":{\"unsequenced\":\"cmd-1:failed\"}}"
+    }
+  },
+  {
+    "command_id": "8:shipping:order-7:1:0",
     "index": 0,
     "instance_id": "order-7",
+    "saga": "shipping",
     "version": 1
   },
   {
-    "command_id": "order-7:2:1",
+    "command_id": "8:shipping:order-7:2:1",
     "index": 1,
     "instance_id": "order-7",
+    "saga": "shipping",
     "version": 2
   },
   {
-    "command_id": "a:1:2:0",
+    "command_id": "7:billing:order-7:2:1",
+    "index": 1,
+    "instance_id": "order-7",
+    "saga": "billing",
+    "version": 2
+  },
+  {
+    "command_id": "8:shipping:a:1:2:0",
     "index": 0,
     "instance_id": "a:1",
+    "saga": "shipping",
     "version": 2
   },
   {
-    "command_id": ":1:0",
+    "command_id": "3:a:1:x:2:0",
+    "index": 0,
+    "instance_id": "x",
+    "saga": "a:1",
+    "version": 2
+  },
+  {
+    "command_id": "0:::1:0",
     "index": 0,
     "instance_id": "",
+    "saga": "",
     "version": 1
   },
   {
-    "command_id": "café:18446744073709551615:18446744073709551615",
+    "command_id": "5:café:café:18446744073709551615:18446744073709551615",
     "index": 18446744073709551615,
     "instance_id": "café",
+    "saga": "café",
     "version": 18446744073709551615
   },
   {
@@ -453,7 +754,7 @@
       "correlation_id": "corr-1",
       "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
       "extensions": {},
-      "id": "4:acme:order-7:4:1",
+      "id": "8:shipping:4:acme:order-7:4:1",
       "idempotency_key": "8:shipping:4:acme:order-7:4:1",
       "issued_at": 1700000000000000001,
       "metadata": {},
@@ -471,7 +772,7 @@
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
         "extensions": {},
-        "id": "4:acme:order-7:4:1",
+        "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
@@ -484,11 +785,11 @@
     },
     "want": {
       "aggregate_id": "4:acme:order-7",
-      "causation_id": "4:acme:order-7:4:1",
+      "causation_id": "8:shipping:4:acme:order-7:4:1",
       "correlation_id": "corr-1",
-      "data": "eyJjb21tYW5kX2lkIjoiNDphY21lOm9yZGVyLTc6NDoxIiwiY29tbWFuZCI6IkZ1bGZpbGwiLCJjb2RlIjoicmVqZWN0ZWQiLCJlcnJvciI6Im91dCBvZiBzdG9jayJ9",
+      "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo0OjEiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOiJyZWplY3RlZCIsImVycm9yIjoib3V0IG9mIHN0b2NrIn0=",
       "extensions": {},
-      "id": "4:acme:order-7:4:1:failed",
+      "id": "8:shipping:4:acme:order-7:4:1:failed",
       "metadata": {},
       "name": "SagaCommandFailed",
       "occurred_at": null,
@@ -507,7 +808,7 @@
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
         "extensions": {},
-        "id": "4:acme:order-7:4:1",
+        "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
@@ -520,11 +821,11 @@
     },
     "want": {
       "aggregate_id": "4:acme:order-7",
-      "causation_id": "4:acme:order-7:4:1",
+      "causation_id": "8:shipping:4:acme:order-7:4:1",
       "correlation_id": "corr-1",
-      "data": "eyJjb21tYW5kX2lkIjoiNDphY21lOm9yZGVyLTc6NDoxIiwiY29tbWFuZCI6IkZ1bGZpbGwiLCJjb2RlIjpudWxsLCJlcnJvciI6IndhcmVob3VzZSBBUEkgdGltZWQgb3V0In0=",
+      "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo0OjEiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOm51bGwsImVycm9yIjoid2FyZWhvdXNlIEFQSSB0aW1lZCBvdXQifQ==",
       "extensions": {},
-      "id": "4:acme:order-7:4:1:failed",
+      "id": "8:shipping:4:acme:order-7:4:1:failed",
       "metadata": {},
       "name": "SagaCommandFailed",
       "occurred_at": null,
@@ -543,7 +844,7 @@
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
         "extensions": {},
-        "id": "4:acme:order-7:4:1",
+        "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
@@ -555,7 +856,7 @@
       "recorded_at": 1700000000000000002
     },
     "want": {
-      "error": "codec: command \"4:acme:order-7:4:1\" names no saga instance"
+      "error": "codec: command \"8:shipping:4:acme:order-7:4:1\" names no saga instance"
     }
   }
 ]

@@ -10,10 +10,15 @@ import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from . import _edax
+from . import _native
+from ._wiring import U64_MAX, wiring_u64
 
-#: The largest value the kernel's ``u64`` arguments take.
-_U64_MAX = 2**64 - 1
+__all__ = [
+    "DEFAULT_BACKOFF",
+    "Backoff",
+    "Pacing",
+    "Sleep",
+]
 
 #: Blocks the calling task for a number of seconds.
 Sleep = Callable[[float], Awaitable[None]]
@@ -23,23 +28,24 @@ Sleep = Callable[[float], Awaitable[None]]
 class Backoff:
     """A backoff policy, in milliseconds: retry ``attempt`` (0-based) waits a random duration in
     ``0 ..= min(base_millis * 2**attempt, cap_millis)``. The schedule is the kernel's, pinned by
-    ``testdata/golden/backoff.json``; the default is :data:`DEFAULT_BACKOFF`."""
+    ``testdata/golden/backoff.json``; the default is :data:`DEFAULT_BACKOFF`. A duration that is not an
+    ``int`` the kernel can carry (negative, or past ``2**64 - 1``) raises the terminal
+    :class:`~edax.errors.BadHandle`."""
 
     base_millis: int
     cap_millis: int
 
     def __post_init__(self) -> None:
         # A wiring mistake, so it fails at construction rather than on the first retry.
-        for name, value in (("base_millis", self.base_millis), ("cap_millis", self.cap_millis)):
-            if not 0 <= value <= _U64_MAX:
-                raise ValueError(f"Backoff.{name} must be within 0 .. 2**64 - 1, got {value}")
+        wiring_u64(self.base_millis, "Backoff.base_millis")
+        wiring_u64(self.cap_millis, "Backoff.cap_millis")
 
     def delay_millis(self, attempt: int, entropy: int) -> int:
         """The kernel's wait before retry ``attempt`` for the random draw ``entropy``."""
-        return _edax.backoff_millis(self.base_millis, self.cap_millis, min(attempt, _U64_MAX), entropy)
+        return _native.backoff_millis(self.base_millis, self.cap_millis, min(attempt, U64_MAX), entropy)
 
 
-_DEFAULT = _edax.default_backoff()
+_DEFAULT = _native.default_backoff()
 #: The kernel's default policy: 100 ms, doubling, capped at 30 s.
 DEFAULT_BACKOFF = Backoff(_DEFAULT.base_millis, _DEFAULT.cap_millis)
 

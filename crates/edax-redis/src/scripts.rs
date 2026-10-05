@@ -87,7 +87,7 @@ return 0
 ///   request fails the same way every time, so terminal `bad_handle`.
 /// - Anything else is transient `store`: a passing server state (`LOADING`, `BUSY`, `READONLY` during
 ///   a failover, `MASTERDOWN`, `CLUSTERDOWN`, `TRYAGAIN`, `MOVED`, `ASK`, `NOREPLICAS`, `OOM`,
-///   `MISCONF`, `NOSCRIPT`) or a prefix this kernel does not know. That is `edax_core::verdict`'s
+///   `MISCONF`, `NOSCRIPT`) or a prefix this kernel does not know. That is `edax_core::is_terminal`'s
 ///   default: a wrongly transient failure is redelivered loudly, a wrongly terminal one is
 ///   dead-lettered.
 pub fn reply_error(reply: &str) -> Error {
@@ -149,7 +149,13 @@ mod tests {
     /// Every script takes exactly one key and touches no other, which is what makes it cluster-safe.
     #[test]
     fn every_script_names_only_its_one_key() {
-        for script in [CLAIM_SCRIPT, COMPLETE_SCRIPT, RELEASE_SCRIPT, FORGET_SCRIPT, EXTEND_SCRIPT] {
+        for script in [
+            CLAIM_SCRIPT,
+            COMPLETE_SCRIPT,
+            RELEASE_SCRIPT,
+            FORGET_SCRIPT,
+            EXTEND_SCRIPT,
+        ] {
             assert!(script.contains("KEYS[1]") && !script.contains("KEYS[2]"), "{script}");
         }
     }

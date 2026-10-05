@@ -103,7 +103,12 @@ struct PartitionState {
 impl PartitionState {
     /// The bookkeeping of a partition whose first booking is `offset`.
     fn new(offset: i64) -> Self {
-        Self { inflight: BTreeMap::new(), first: offset, max_delivered: offset, committed: None }
+        Self {
+            inflight: BTreeMap::new(),
+            first: offset,
+            max_delivered: offset,
+            committed: None,
+        }
     }
 
     /// The offset a commit names: the lowest still in flight, else one past the highest delivered.
@@ -111,7 +116,11 @@ impl PartitionState {
     /// watermark. Committing `i64::MAX` for it redelivers that one offset after a restart, which
     /// at-least-once allows.
     fn watermark(&self) -> i64 {
-        self.inflight.keys().next().copied().unwrap_or_else(|| self.max_delivered.saturating_add(1))
+        self.inflight
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or_else(|| self.max_delivered.saturating_add(1))
     }
 
     /// The watermark when it is progress: higher than the last one committed, and higher than the
@@ -156,9 +165,9 @@ impl Inner {
 ///
 /// The bookkeeping holds only while the partition is assigned. A revoked partition's unsettled
 /// offsets are the new owner's to redeliver from the last committed watermark (at-least-once). So on
-/// revoke a rebalance listener first commits what is [`due`](Self::due), while the partition is still
-/// this member's, then calls [`reset`](Self::reset) for it, which retires every delivery of it still
-/// queued. It may then wait, under its own deadline, for the handlers still running, so the new
+/// revoke a rebalance listener calls [`revoke`](Self::revoke) for it, which hands back its last due
+/// watermark and retires every delivery of it still queued, and commits that watermark while the
+/// partition is still this member's. It may then wait, under its own deadline, for the handlers still running, so the new
 /// owner never runs a key this member is running. It does not drain the queue before the commit: a
 /// deep queue could outlast the rebalance, and the new owner fetches that work again from the
 /// commit. A handler that finishes during the wait settles nothing, so its work runs again there.
@@ -207,7 +216,14 @@ impl OffsetTracker {
         if let Some(stale) = replaced {
             inner.bookings.remove(&stale);
         }
-        inner.bookings.insert(token, Booking { topic, partition, offset });
+        inner.bookings.insert(
+            token,
+            Booking {
+                topic,
+                partition,
+                offset,
+            },
+        );
         Ok(token)
     }
 
@@ -247,7 +263,11 @@ impl OffsetTracker {
             .iter()
             .flat_map(|(topic, partitions)| {
                 partitions.iter().filter_map(move |(partition, state)| {
-                    state.due().map(|offset| Due { topic: topic.to_string(), partition: *partition, offset })
+                    state.due().map(|offset| Due {
+                        topic: topic.to_string(),
+                        partition: *partition,
+                        offset,
+                    })
                 })
             })
             .collect()
@@ -282,7 +302,10 @@ impl OffsetTracker {
             return NackDecision::Stale;
         };
         let (partition, offset) = (booking.partition, booking.offset);
-        let Some(state) = topics.get_mut(&*booking.topic).and_then(|partitions| partitions.get(&partition)) else {
+        let Some(state) = topics
+            .get_mut(&*booking.topic)
+            .and_then(|partitions| partitions.get(&partition))
+        else {
             return NackDecision::Stale;
         };
         // The nacked offset is still in flight, so the map is never empty here; its own offset is
@@ -291,7 +314,36 @@ impl OffsetTracker {
         for stale in state.inflight.values() {
             bookings.remove(stale);
         }
-        NackDecision::Seek { partition, offset: target }
+        NackDecision::Seek {
+            partition,
+            offset: target,
+        }
+    }
+
+    /// Give up a revoked partition in one step: its last watermark still due, for the shell to commit,
+    /// and the partition [`reset`](Self::reset). `None` when nothing of it is due, a partition never
+    /// booked included.
+    ///
+    /// One call so the order is the kernel's and not each shell's: the watermark is read before the
+    /// bookkeeping goes, and nothing settles in between. The shell commits the row while the
+    /// partition is still this member's (a rebalance listener runs before the hand-over), and reports
+    /// nothing back: the partition is no longer tracked, so [`committed`](Self::committed) would be a
+    /// no-op.
+    pub fn revoke(&self, topic: &str, partition: i32) -> Option<Due> {
+        let mut inner = lock(&self.state);
+        let partitions = inner.topics.get_mut(topic)?;
+        let state = partitions.remove(&partition)?;
+        if partitions.is_empty() {
+            inner.topics.remove(topic);
+        }
+        for token in state.inflight.values() {
+            inner.bookings.remove(token);
+        }
+        state.due().map(|offset| Due {
+            topic: topic.to_owned(),
+            partition,
+            offset,
+        })
     }
 
     /// Drop a revoked partition's bookkeeping and retire its tokens.
@@ -300,19 +352,9 @@ impl OffsetTracker {
     /// watermark left behind here would refuse a lower, correct commit if the partition came back,
     /// and a token left live would settle a delivery the tracker no longer owns.
     pub fn reset(&self, topic: &str, partition: i32) {
-        let mut inner = lock(&self.state);
-        let Some(partitions) = inner.topics.get_mut(topic) else {
-            return;
-        };
-        let Some(state) = partitions.remove(&partition) else {
-            return;
-        };
-        if partitions.is_empty() {
-            inner.topics.remove(topic);
-        }
-        for token in state.inflight.values() {
-            inner.bookings.remove(token);
-        }
+        // The same drop as a revoke, minus the commit: a partition assigned afresh has nothing of
+        // this member's left to commit.
+        self.revoke(topic, partition);
     }
 
     /// A snapshot of every assigned partition, ordered by topic then partition.
@@ -327,7 +369,13 @@ impl OffsetTracker {
                     topic: topic.to_string(),
                     partition: *partition,
                     unsettled: count(state.inflight.len()),
-                    live: count(state.inflight.values().filter(|token| bookings.contains_key(token)).count()),
+                    live: count(
+                        state
+                            .inflight
+                            .values()
+                            .filter(|token| bookings.contains_key(token))
+                            .count(),
+                    ),
                     max_delivered: state.max_delivered,
                     committed: state.committed,
                 })

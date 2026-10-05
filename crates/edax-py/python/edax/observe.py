@@ -26,13 +26,12 @@ not the label set."""
 
 from __future__ import annotations
 
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from time import perf_counter_ns
 from typing import Any, Final, Literal, get_args
 
-from ._async import MaybeAwaitable, maybe_await
+from ._hooks import safely
 from .errors import EdaxError
 
 __all__ = [
@@ -128,17 +127,19 @@ SETTLEMENTS: Final[tuple[Settlement, ...]] = get_args(Settlement)
 #:   after one backoff step; no attempt spent.
 #: - ``sink_failed``: ``on_dead`` raised, so the delivery was nacked after one backoff step; the
 #:   redelivery gives the sink another try. Worth an alert: the dead-letter route is down.
-#: - ``stale``: the transport retired the delivery (a nack rewound its partition, or a rebalance took
+#: - ``retired``: the transport retired the delivery (a nack rewound its partition, or a rebalance took
 #:   the partition away) before or while the handler ran. Not settled; the transport fetches the
 #:   message again. ``attempt`` is the one this delivery would have been, ``duration_ns`` is ``0`` when
 #:   the handler never ran.
 #: - ``stopped``: :meth:`~edax.dispatcher.KeyOrderedDispatcher.stop` cancelled the worker before the
-#:   delivery settled (in the handler, the sink or a backoff wait), or the delivery was still queued.
-#:   Nacked at once; the broker redelivers. ``error_type`` is set when the handler had already raised.
+#:   delivery settled (in the handler, the sink or a backoff wait), or the delivery was still queued; or
+#:   a fatal failure (:func:`~edax.errors.is_fatal`) stopped the dispatcher, on this delivery or before it
+#:   ran. Nacked at once and never counted; the broker redelivers. ``error_type`` is set when the handler
+#:   had already raised.
 #: - ``unsettled``: the ack or the nack itself raised, or a stop cut it short. Neither is known to have
 #:   landed; on a log-based broker the message comes back only after a rebalance or a restart.
 DeliveryOutcome = Literal[
-    "ack", "nack", "dead", "in_progress", "sink_failed", "stale", "stopped", "unsettled"
+    "ack", "nack", "dead", "in_progress", "sink_failed", "retired", "stopped", "unsettled"
 ]
 DELIVERY_OUTCOMES: Final[tuple[DeliveryOutcome, ...]] = get_args(DeliveryOutcome)
 #: ``Observer.transaction`` outcomes: how a ``transaction`` unit of work ended.
@@ -180,10 +181,10 @@ class Observer:
     it with :func:`error_type`, never with the message.
 
     Wire an instance explicitly (``observer=``) on :class:`~edax.dispatcher.KeyOrderedDispatcher`,
-    :class:`~edax.store.Relay`, :class:`~edax.store.Repository`, :func:`~edax.store.transaction`,
-    :func:`~edax.command.idempotent`, :func:`~edax.router.idempotent_by_id` and
-    :class:`~edax.saga.SagaRunner`; there is no default
-    global. Every call is guarded by the SDK: an observer that raises is logged and never fails a
+    :class:`~edax.outbox.Relay`, :class:`~edax.repository.Repository`, :func:`~edax.unit_of_work.transaction`,
+    :func:`~edax.command.idempotent`, :func:`~edax.router.idempotent_by_id`,
+    :class:`~edax.saga.SagaRunner` and :class:`~edax.backend.redis.RedisIdempotencyStore`; there is no
+    default global. Every call is guarded by the SDK: an observer that raises is logged and never fails a
     dispatch, a drain, a transaction or a settlement. Metric labels follow the cardinality rule in
     the module docstring."""
 
@@ -228,9 +229,9 @@ class Observer:
         error_type: str | None,
     ) -> None:
         """A :class:`~edax.dispatcher.KeyOrderedDispatcher` worker ran the handler for one broker
-        delivery and settled it. Fires exactly once per :class:`~edax.dispatcher.Delivery`, after the
+        delivery and settled it. Fires exactly once per :class:`~edax.delivery.Delivery`, after the
         ack, the nack or the dead-letter, even if that settlement raised. A delivery that
-        :meth:`~edax.dispatcher.KeyOrderedDispatcher.stop` hands back reports ``stopped``.
+        :meth:`~edax.dispatcher.KeyOrderedDispatcher.stop` or a fatal failure hands back reports ``stopped``.
 
         ``name`` is the name of the delivered message, ``msg.name``, so every delivery signal breaks down
         per handler; on the consume path it is whatever the producer wrote (see the cardinality rule).
@@ -247,9 +248,11 @@ class Observer:
         settlement's own failure: that is :meth:`settlement_failed`."""
 
     def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
-        """The handler ran, and then the ack or the nack itself raised. The delivery is now neither
-        acked nor nacked; a log-based broker brings it back only after a rebalance or a restart. Fires at
-        most once per delivery, before :meth:`delivery` reports that same delivery as ``unsettled``.
+        """The handler ran, or the dead-letter sink took a poison message, and then the ack or the nack
+        itself raised. The delivery is now neither acked nor nacked; a log-based broker brings it back only
+        after a rebalance or a restart. Fires at most once per delivery, before :meth:`delivery` reports
+        that same delivery as ``unsettled``, or before
+        :meth:`~edax.dispatcher.KeyOrderedDispatcher.settle_poison` returns it.
 
         ``name`` is the event name, as on :meth:`delivery`.
         ``event_id`` is for the log line, never a label. ``error`` is the transport's exception; label
@@ -259,9 +262,10 @@ class Observer:
         Not fired when ``on_dead`` raises: that is a sink failure, reported as ``sink_failed``."""
 
     def transaction(self, outcome: TransactionOutcome, duration_ns: int) -> None:
-        """A unit of work opened through :func:`~edax.store.transaction` ended. Fires once per unit of work
-        the SDK opened: a ``transaction`` you called with an observer, a :class:`~edax.store.Repository`
-        that opened its own, or an idempotency guard given a ``unit_of_work``.
+        """A unit of work opened through :func:`~edax.unit_of_work.transaction` ended. Fires once per unit of
+        work the SDK opened: a ``transaction`` you called with an observer, a
+        :class:`~edax.repository.Repository` that opened its own, or an idempotency guard given a
+        ``unit_of_work``.
 
         ``outcome`` is one of :data:`TRANSACTIONS`: ``committed`` when the body returned and the commit
         landed, ``rolled_back`` when the body raised, was cancelled, or the commit itself failed.
@@ -273,7 +277,7 @@ class Observer:
     def drain(
         self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
     ) -> None:
-        """A :class:`~edax.store.Relay` drained one outbox batch to completion: every row published (or
+        """A :class:`~edax.outbox.Relay` drained one outbox batch to completion: every row published (or
         dead-lettered) and the batch marked. Fires once per completed drain, an empty batch included.
 
         ``published`` is the count of rows published, ``0`` for an empty outbox. ``dead_lettered`` is
@@ -287,9 +291,9 @@ class Observer:
         Not fired for a drain that raised: that is :meth:`drain_failed`."""
 
     def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
-        """A :class:`~edax.store.Relay` drain raised: ``unpublished``, ``publish`` or ``mark_published``
-        failed. The rows published before the failure are marked; the failing row and the rows behind it
-        come back on the next drain, so delivery stays at-least-once. Fires once per failed drain, before
+        """A :class:`~edax.outbox.Relay` drain raised: ``unpublished``, ``publish`` or ``mark_published``
+        failed. The rows the drain settled are marked; the failing row and the rows behind it of its own
+        key come back on the next drain, so delivery stays at-least-once. Fires once per failed drain, before
         the backoff wait and before the error re-raises to the caller.
 
         ``published`` and ``dead_lettered`` count what the drain did before it failed, so the sent and
@@ -323,9 +327,10 @@ class Observer:
         Not a :meth:`delivery`: the message never reached the dispatcher."""
 
     def poll_failed(self, error: BaseException) -> None:
-        """A consumer loop's ``poll`` raised. A transient error waits one backoff step and polls again;
-        a terminal one ends the loop and re-raises to the caller. Fires once per failed poll, from the
-        loop, for any ``Consumer``, through the observer of the dispatcher it feeds.
+        """A consumer loop's ``poll`` raised. A fatal error (:func:`~edax.errors.is_fatal`) ends the loop
+        and re-raises to the caller; any other waits one backoff step, which grows while the polls keep
+        failing, and polls again. Fires once per failed poll, from the loop, for any ``Consumer``, through
+        the observer of the dispatcher it feeds.
 
         Label by :func:`error_type` of ``error``. Read a sustained rate as a broker, or a record
         middleware's dependency, that is down: nothing is consumed meanwhile."""
@@ -338,6 +343,17 @@ class Observer:
         Label by :func:`error_type` of ``error``. Read a sustained rate as a consumer whose progress is
         not saved: a restart or a rebalance redelivers everything since the last commit that landed."""
 
+    def lease_lost(self, key: str, error: BaseException | None) -> None:
+        """A :class:`~edax.backend.redis.RedisIdempotencyStore` heartbeat stopped renewing a claim before
+        it settled. The handler under that claim may still be running, and once the claim lapses another
+        worker can take the key and run it too: at-least-once, for that key. Fires once per stopped
+        renewal.
+
+        ``key`` is the idempotency key, for the log line only, never a label. ``error`` is ``None`` when
+        the claim was already lost (it lapsed, and another worker may hold it), else the terminal failure
+        that stopped the renewal; label by :func:`error_type` of it. Any count is worth an alert: a
+        handler that outlives its claim breaks the guard's at-most-one-run promise for its key."""
+
     def revoke_overrun(self, handling: int) -> None:
         """A :class:`~edax.backend.kafka.KafkaConsumer` rebalance revoke passed its drain deadline with
         handlers still running. The new owner of the revoked partitions may run one of their keys
@@ -348,89 +364,37 @@ class Observer:
         alert: raise the drain deadline above the slowest handler."""
 
 
-def _safely(call: Callable[..., object], *args: Any) -> None:
-    """Call a host telemetry hook; log and swallow whatever it raises. The one guard behind every
-    observer call and the :func:`timing` recorder, so a broken exporter never fails the work it
-    measures. A hook is synchronous: an ``async def`` one returns a coroutine nobody awaits, so its metric
-    would be dropped with only a ``RuntimeWarning``. That coroutine is closed and logged as an error."""
-    name = getattr(call, "__qualname__", repr(call))
-    try:
-        result: object = call(*args)
-    except Exception:
-        logger.exception("edax observe: %s raised; the failure is ignored", name)
-        return
-    if inspect.isawaitable(result):
-        if inspect.iscoroutine(result):
-            result.close()
-        logger.error(
-            "edax observe: %s returned an awaitable, which is never awaited: observer hooks are synchronous; "
-            "hand the value to your own task or queue instead",
-            name,
-        )
-
-
-class _Guarded(Observer):
-    """A host :class:`Observer` behind :func:`_safely`: the orchestration objects call this and never
-    see the host's exceptions. Every public hook of :class:`Observer` is wrapped below, so a hook added
-    there is guarded here without a second edit."""
-
-    def __init__(self, inner: Observer) -> None:
-        self._inner = inner
-
-
-def _guard(hook: str) -> Callable[..., None]:
-    def guarded(self: _Guarded, *args: Any) -> None:
-        _safely(getattr(self._inner, hook), *args)
-
-    guarded.__name__ = guarded.__qualname__ = hook
-    return guarded
-
-
-for _hook in [name for name, value in vars(Observer).items() if not name.startswith("_") and callable(value)]:
-    setattr(_Guarded, _hook, _guard(_hook))
-
-
-# One no-op for every unobserved call site: `transaction` resolves its observer per call, so a fresh
-# instance there would be an allocation on every unit of work.
-_NOOP: Final[Observer] = Observer()
-
-
-def _wrap(observer: Observer | None) -> Observer:
-    """Resolve an ``observer=`` keyword: ``None`` is the no-op :class:`Observer`, and a host observer
-    is wrapped so its failures are logged, never raised."""
-    return _NOOP if observer is None else _Guarded(observer)
-
-
 # --- handler timing ----------------------------------------------------------------------------
 
 #: What ``timing`` records: ``(name, outcome, error_type, duration_ns)``. ``outcome`` is ``"ok"`` with
 #: ``error_type=None``, or ``"error"`` with the :func:`error_type` of the raised exception.
 TimingRecorder = Callable[[str, HandlerOutcome, str | None, int], None]
 
-_Wrapped = Callable[[Any], MaybeAwaitable[Any]]
-_Timed = Callable[[Any], Awaitable[Any]]
+# A step takes the message first: an event handler the event alone, a command step the message and the
+# command (`edax.command.Next`).
+_Step = Callable[..., Awaitable[Any]]
 
 
-def timing(record: TimingRecorder, name: Callable[[Any], str]) -> Callable[[_Wrapped], _Timed]:
-    """A middleware that times the handler it wraps and hands ``record`` one row per call:
-    ``(name(x), "ok", None, duration_ns)`` on success, ``(name(x), "error", error_type(e),
-    duration_ns)`` when the handler raises, which it then re-raises. ``record`` is guarded like an
+def timing(record: TimingRecorder, name: Callable[[Any], str]) -> Callable[[_Step], _Step]:
+    """A middleware that times the step it wraps and hands ``record`` one row per call:
+    ``(name(msg), "ok", None, duration_ns)`` on success, ``(name(msg), "error", error_type(e),
+    duration_ns)`` when the step raises, which it then re-raises. ``record`` is guarded like an
     observer call. Structurally a :data:`~edax.command.Middleware` and an
-    :data:`~edax.router.EventMiddleware`; only ``name`` differs: ``lambda c: c.type`` for commands,
-    ``lambda msg: msg.name`` for events. This is the one place command latency is measured.
+    :data:`~edax.router.EventMiddleware`: both hand the message first, so ``lambda msg: msg.name`` names a
+    command and an event alike. This is the one place command latency is measured.
     A host tracer wraps the same seam to start the span the handler's own calls nest under."""
 
-    def mw(next_: _Wrapped) -> _Timed:
-        async def handler(x: Any) -> Any:
+    def mw(next_: _Step) -> _Step:
+        async def step(msg: Any, *rest: Any) -> Any:
             started = perf_counter_ns()
             try:
-                result = await maybe_await(next_(x))
+                result = await next_(msg, *rest)
             except Exception as e:
-                _safely(record, name(x), "error", error_type(e), perf_counter_ns() - started)
+                safely(record, name(msg), "error", error_type(e), perf_counter_ns() - started)
                 raise
-            _safely(record, name(x), "ok", None, perf_counter_ns() - started)
+            safely(record, name(msg), "ok", None, perf_counter_ns() - started)
             return result
 
-        return handler
+        return step
 
     return mw

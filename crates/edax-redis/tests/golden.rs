@@ -15,12 +15,12 @@
 )]
 
 use edax_core::ErrorCode;
-use edax_cqrs::{encode_record, Record};
+use edax_cqrs::{encode_record, Claimed, Record};
 use edax_golden::{hex, write_or_check};
 use edax_redis::{
-    check_claim, check_config, claim_outcome, claim_value, forget_outcome, ledger_key, reply_error, settled_value,
-    split_value, ClaimOutcome, ForgetOutcome, CLAIM_SCRIPT, COMPLETE_SCRIPT, EXTEND_SCRIPT, FORGET_SCRIPT, MAX_TTL_MS,
-    RELEASE_SCRIPT,
+    check_claim, check_config, claim_outcome, claim_value, complete_outcome, forget_exhausted, forget_outcome,
+    heartbeat_due_ms, ledger_key, reply_error, settled_value, split_value, ForgetOutcome, CLAIM_SCRIPT,
+    COMPLETE_SCRIPT, EXTEND_SCRIPT, FORGET_SCRIPT, MAX_TTL_MS, RELEASE_SCRIPT,
 };
 use serde_json::{json, Value};
 
@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 const HASH: u64 = 11_258_580_006_047_770_801;
 /// The owner token of that same Python fixture: a value a reader can eyeball against the record.
 const ZEROS: &str = "00000000000000000000000000000000";
-/// A token in the shape `new_owner` mints, so the vector shows a realistic value too.
+/// A token in the shape `new_claim` mints (`edax_core::guid_simple`), so the vector shows a realistic value too.
 const MINTED: &str = "0190b5c8e1f37c4b9a2d5e6f7a8b9c0d";
 
 /// A settled record's JSON, encoded by the kernel that owns the shape.
@@ -197,17 +197,39 @@ fn config_cases() -> Vec<Value> {
     [
         ("accepted", "idem:", 86_400_000, 300_000, 5_000, false),
         ("the_largest_exact_integer", "idem:", MAX_TTL_MS, MAX_TTL_MS, 1, false),
-        ("a_heartbeat_with_the_deadline_under_a_third_of_the_claim_ttl", "idem:", 1, 4, 1, true),
+        (
+            "a_heartbeat_with_the_deadline_under_a_third_of_the_claim_ttl",
+            "idem:",
+            1,
+            4,
+            1,
+            true,
+        ),
         ("an_empty_prefix_is_refused", "", 86_400_000, 300_000, 5_000, false),
         ("a_zero_ttl_is_refused", "idem:", 0, 300_000, 5_000, false),
         ("a_negative_claim_ttl_is_refused", "idem:", 86_400_000, -5, 5_000, false),
-        ("past_the_largest_exact_integer_is_refused", "idem:", MAX_TTL_MS + 1, 300_000, 5_000, false),
+        (
+            "past_the_largest_exact_integer_is_refused",
+            "idem:",
+            MAX_TTL_MS + 1,
+            300_000,
+            5_000,
+            false,
+        ),
         ("a_zero_deadline_is_refused", "idem:", 86_400_000, 300_000, 0, false),
-        ("a_heartbeat_whose_deadline_is_a_third_of_the_claim_ttl_is_refused", "idem:", 86_400_000, 15_000, 5_000, true),
+        (
+            "a_heartbeat_whose_deadline_is_a_third_of_the_claim_ttl_is_refused",
+            "idem:",
+            86_400_000,
+            15_000,
+            5_000,
+            true,
+        ),
     ]
     .into_iter()
     .map(|(name, prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)| {
-        let want = outcome_json(check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat).map(|()| Value::Null));
+        let want =
+            outcome_json(check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat).map(|()| Value::Null));
         json!({
             "name": name, "op": "config", "prefix": prefix, "ttl_ms": ttl_ms, "claim_ttl_ms": claim_ttl_ms,
             "op_timeout_ms": op_timeout_ms, "heartbeat": heartbeat, "want": want,
@@ -254,15 +276,21 @@ fn outcome_cases() -> Vec<Value> {
             "a_settled_record_is_prior",
             Some(settled_of(&claim_of(ZEROS)).into_bytes()),
         ),
-        ("an_unreadable_value_replays_a_cached_codec_failure", Some(b"{not a ledger value".to_vec())),
+        (
+            "an_unreadable_value_replays_a_cached_codec_failure",
+            Some(b"{not a ledger value".to_vec()),
+        ),
     ];
     cases
         .into_iter()
         .map(|(name, reply)| {
             let want = outcome_json(
                 claim_outcome(reply.as_deref(), claim.as_bytes()).map(|outcome| match outcome {
-                    ClaimOutcome::Won => json!({ "won": true }),
-                    ClaimOutcome::Prior(record) => json!({ "prior": record }),
+                    Claimed::Won(handle) => {
+                        assert_eq!(handle, claim.as_bytes(), "{name}: the handle is the claim value");
+                        json!({ "won": true })
+                    }
+                    Claimed::Prior(record) => json!({ "prior": text(record) }),
                 }),
             );
             json!({
@@ -285,14 +313,23 @@ fn forget_cases() -> Vec<Value> {
         ("a_free_key_sends_nothing", None),
         ("a_pending_claim_is_refused", Some(claim_of(MINTED).into_bytes())),
         // The refusal reads the record, not the owner: another owner's pending claim may complete too.
-        ("another_owners_pending_claim_is_refused", Some(claim_of(ZEROS).into_bytes())),
-        ("a_cached_success_is_deleted", Some(settled_of(&claim_of(MINTED)).into_bytes())),
+        (
+            "another_owners_pending_claim_is_refused",
+            Some(claim_of(ZEROS).into_bytes()),
+        ),
+        (
+            "a_cached_success_is_deleted",
+            Some(settled_of(&claim_of(MINTED)).into_bytes()),
+        ),
         (
             "a_cached_failure_is_deleted",
             Some(text(settled_value(claim_of(MINTED).as_bytes(), &failed).expect("a well-formed claim")).into_bytes()),
         ),
         // A record half no reader decodes replays as a cached failure: forgetting it is the way out.
-        ("an_unreadable_record_half_is_deleted", Some(format!("1{MINTED}{{not json").into_bytes())),
+        (
+            "an_unreadable_record_half_is_deleted",
+            Some(format!("1{MINTED}{{not json").into_bytes()),
+        ),
         ("an_unreadable_frame_is_deleted", Some(b"{not a ledger value".to_vec())),
     ];
     cases
@@ -305,6 +342,68 @@ fn forget_cases() -> Vec<Value> {
             json!({ "name": name, "op": "forget", "key": KEY, "held_hex": held.as_deref().map(hex), "want": want })
         })
         .collect()
+}
+
+/// `settled_value` as a store's `complete` calls it: a record that would settle the claim, or a pending
+/// one, which would hold the key as a claim nobody runs.
+fn settle_cases() -> Vec<Value> {
+    let claim = claim_of(MINTED);
+    [
+        (
+            "a_done_record_settles",
+            encoded(&Record::done(
+                HASH,
+                json!({"account_id": "acct-1", "balance_cents": 4200}),
+            )),
+        ),
+        ("a_pending_record_is_refused", encoded(&Record::pending(HASH))),
+    ]
+    .into_iter()
+    .map(|(name, record_json)| {
+        let want = outcome_json(settled_value(claim.as_bytes(), &record_json).map(text));
+        json!({ "name": name, "op": "settle", "claim": claim, "record_json": record_json, "want": want })
+    })
+    .collect()
+}
+
+/// `complete_outcome`: what the complete script's reply means.
+fn complete_outcome_cases() -> Vec<Value> {
+    [("the_record_landed", true), ("the_fence_refused_it", false)]
+        .into_iter()
+        .map(|(name, written)| {
+            let want = outcome_json(complete_outcome("order-7", written).map(|()| Value::Null));
+            json!({ "name": name, "op": "complete_outcome", "key": "order-7", "written": written, "want": want })
+        })
+        .collect()
+}
+
+/// `forget_exhausted`: the error a forget gives up with when the key changed on every read.
+fn forget_exhausted_cases() -> Vec<Value> {
+    vec![json!({
+        "name": "the_key_kept_changing",
+        "op": "forget_exhausted",
+        "key": "order-7",
+        "want": { "error": forget_exhausted("order-7").to_string() },
+    })]
+}
+
+/// `heartbeat_due_ms`: when each beat of a heartbeat is sent, from the claim's send.
+fn heartbeat_cases() -> Vec<Value> {
+    [
+        ("the_first_beat", 1_000, 300_000, 1),
+        ("the_second_beat", 1_000, 300_000, 2),
+        ("the_third_beat_is_a_whole_claim_ttl_on", 1_000, 300_000, 3),
+        ("a_claim_ttl_not_divisible_by_three_rounds_down", 1_000, 10_000, 1),
+        ("saturates_rather_than_wrapping", i64::MAX - 1, MAX_TTL_MS, u32::MAX),
+    ]
+    .into_iter()
+    .map(|(name, sent_at_ms, claim_ttl_ms, beat)| {
+        json!({
+            "name": name, "op": "heartbeat_due", "sent_at_ms": sent_at_ms, "claim_ttl_ms": claim_ttl_ms, "beat": beat,
+            "want": { "ok": heartbeat_due_ms(sent_at_ms, claim_ttl_ms, beat) },
+        })
+    })
+    .collect()
 }
 
 /// `reply_error`: the verdict on a Redis error reply.
@@ -365,7 +464,10 @@ const RECORD_TTL: u64 = 90_000;
 /// are written out by hand, not computed: they are the specification the Lua must meet, and no
 /// Rust code here re-implements the scripts. Each row runs on one key, `KEYS[1]`. The forget script
 /// has no rows of its own: its body is the release script's, byte for byte, as `redis_scripts.json`
-/// pins, so the release rows run it.
+/// pins, so the release rows run it. Which write a fence lets through is the backend-neutral table
+/// `idempotency_fence.json` (`edax_cqrs::complete_fence`), which the Python suite also replays against
+/// these scripts; the rows here add what is Redis's own: the TTLs, the claim script, `extend`, and
+/// handles compared byte for byte.
 fn fence_cases() -> Vec<Value> {
     let claim = claim_of(MINTED);
     let other = claim_of(ZEROS);
@@ -600,6 +702,10 @@ fn golden() {
     ledger.extend(handle_cases());
     ledger.extend(outcome_cases());
     ledger.extend(forget_cases());
+    ledger.extend(settle_cases());
+    ledger.extend(complete_outcome_cases());
+    ledger.extend(forget_exhausted_cases());
+    ledger.extend(heartbeat_cases());
     ledger.extend(reply_cases());
     write_or_check("redis_ledger.json", ledger);
 

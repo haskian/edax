@@ -14,26 +14,26 @@ covers both cases.
 | `idempotent_by_id(store, scope, tenancy)` | consume | `msg.id` under `scope`, and the message's `tenant` under a pool | the raw `msg.data` bytes | `edax.router.idempotent_by_id(store, scope=..., tenancy=...)` |
 | `idempotent_by_id_in(store, scope, tenancy, current)` | consume | same, plus a `Fn(&EventMessage) -> Tx` handle provider | same | `edax.router.idempotent_by_id(store, unit_of_work=, scope=...)` |
 
-The Rust guards live in `edax::command` and `edax::router`. The Python guards live in `edax.command`
-and `edax.router`.
+The Rust guards live in `edax::command` and `edax::router`, over the engine in `edax::idempotency`. The
+Python guards live in `edax.command` and `edax.router`, over the engine in `edax.idempotency`.
 
 ## The four guards
 
-Both paths share one orchestration. Python routes both through `_guarded`; Rust routes both through
+Both paths share one orchestration. Python routes both through `guarded`; Rust routes both through
 `guarded`. The guards differ only in how the key and the hash are derived and in what the caller
 does with the result.
 
-**Command path.** The key is the client's intent. In Python it is the `idempotency_key` of the
-command message: given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
-own `id` when it carries none. A Rust host still reads it, and the tenant, with a key closure that
-returns an `IdempotencyKey` (a plain `String` is a key with no tenant). `None` makes no claim, and the
-handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes on one
+**Command path.** The key is the client's intent: the `idempotency_key` of the command message, in
+both SDKs. It is given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
+own `id` when it carries none (the kernel's `received_key`). The guard reads it, and the tenant, off
+the message its middleware receives, which runs as it was received. A message `dispatch` built with no
+key makes no claim, and the handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes on one
 ledger never replay each other's outcome. Under a pool the key carries the tenant. Under a pool or a
 bridge the guard refuses a command with no tenant as `codec` before the claim. The hash covers the
 command name and the whole
 command value, every instance field. The kernel serializes, canonicalizes and hashes it in
 `edax_cqrs::command_hash`. A Python command declares its name as `type: ClassVar[str]`. A Rust
-command implements `command_type()`. Reusing a key with another command, or another name, is a
+command declares `const TYPE`. Reusing a key with another command, or another name, is a
 `PayloadMismatch`.
 
 **Consume path.** The key is `msg.id` under the guard's `scope`, which names the consumer:
@@ -50,7 +50,7 @@ There is one behavioural difference. No caller awaits an event handler's result.
 completed event therefore returns nothing and skips silently. A command redelivery returns the
 winner's cached value.
 
-The seam is one Protocol in Python (`edax.command.IdempotencyStore`) and one trait in Rust
+The seam is one Protocol in Python (`edax.idempotency.IdempotencyStore`) and one trait in Rust
 (`edax::IdempotencyStore<O>`, which carries the transaction handle type as `type Tx`). `joins_transaction`
 is Python-only; see [Rust parity](#rust-parity).
 
@@ -151,7 +151,8 @@ not.
 
 `examples/py/10_idempotent_events.py` runs the shared mode. `examples/py/19_fault_injection.py`
 runs the own-ledger mode through the commit-lands-reply-lost window, with `BrokenCommit` from
-`edax.testing.faults`.
+`edax.testing.faults`. A second guard in the shared mode, inside the first, absorbs the rerun that
+window causes.
 
 ```python
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
@@ -197,8 +198,11 @@ That is why `failed` is unreachable there: `_guarded_in_one_commit` never writes
 written anyway would roll back with the failure that produced it.
 
 **Forget.** `IdempotencyStore.forget(key)` deletes a settled record, so a re-driven message runs
-its handler again. `edax.command.forget(store, scope, key, tenancy=..., tenant=...)` forgets what a
-command guard of that scope stored, under the same composed key the guard claimed. Use it when an operator re-drives a dead-lettered message after fixing its cause. The
+its handler again. Each guard has its own helper, which deletes under the same composed key the guard
+claimed. `edax.forget(store, scope, key, tenancy=..., tenant=...)` forgets what a command guard of that
+scope stored. `edax.forget_event(store, scope, event_id, tenancy=..., tenant=...)` forgets what an
+`idempotent_by_id` guard stored for an event. Use them when an operator re-drives a dead-lettered
+message after fixing its cause. The
 kernel's [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records
 it deletes. See [commands](./commands.md#forget-re-driving-a-dead-lettered-command) for the call.
 
@@ -323,7 +327,7 @@ Windows outside that table, each pinned elsewhere:
 | `complete` fails after a success | nothing: `_complete_or_release` releases instead | re-runs the handler | `test_idempotent_branches[success_with_failing_complete_releases_the_claim]` |
 | `complete` lands, its reply is lost (every in-tree ledger fences: Redis and both memory stores) | `done`: the release carries the claim's handle and finds the settled record, so it deletes nothing | replays the cached result | `test_redis.py::test_a_complete_whose_reply_was_lost_keeps_the_record` |
 | `complete` fails after a terminal failure | nothing: released, and the caller sees the handler's error, not the store's | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_shows_the_handlers_verdict]` |
-| the handler's result will not serialize | `failed` of code `codec`: the guard encodes the result before the work commits, so the work rolls back | raises `CachedFailure`; the handler does not run | `test_unserializable_result_is_terminal_and_cached`, `split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure` |
+| the handler's result will not serialize, or holds an integer wider than 64 bits | `failed` of code `codec`: both guards encode the result before `complete`. Python encodes it before the work commits, so the work rolls back | raises `CachedFailure`; the handler does not run | `test_unserializable_result_is_terminal_and_cached`, `split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure`, `an_unencodable_result_is_cached_as_a_codec_failure_and_never_reruns` |
 | the dispatch is cancelled mid-handler | nothing: the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
 | the dispatch is cancelled mid-`complete` | nothing: released | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_complete_releases_the_claim]` |
 | a Rust handler panics | nothing: released, and the panic keeps unwinding | re-runs the handler | `a_panicking_handler_releases_the_claim` |

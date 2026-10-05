@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use edax_core::{lock, Error};
 use edax_event::CommandMessage;
 
-use crate::tx::{page, prune, refuse_waiting, store_view, MemoryState, MemoryTransactor};
+use crate::tx::{store_view, MemoryState, MemoryTransactor, Tx};
 
 /// The command outbox view: enqueue under a transaction, read and prune outside one.
 pub struct MemoryCommandOutbox {
@@ -23,29 +23,29 @@ impl MemoryCommandOutbox {
     /// already waiting in the outbox, staged by any open transaction, or repeated in the batch, is a
     /// `codec` error: the relay marks rows sent by id, so two rows under one id could not be told
     /// apart, and marking one would prune both. A refused batch stages nothing.
-    pub fn enqueue(&self, tx: i64, commands: Vec<CommandMessage>) -> Result<(), Error> {
+    pub fn enqueue(&self, tx: Tx, commands: Vec<CommandMessage>) -> Result<(), Error> {
         lock(&self.state).write(tx, |committed, others, own| {
-            let staged = own.commands.iter().chain(others.values().flat_map(|set| &set.commands));
-            refuse_waiting(committed.commands.iter().chain(staged), &commands, "command")?;
-            own.commands.extend(commands);
-            Ok(())
+            let staged_by_others = others.values().flat_map(|set| &set.command_outbox);
+            committed
+                .command_outbox
+                .stage(staged_by_others, &mut own.command_outbox, commands, "command")
         })
     }
 
     /// Committed commands not yet sent, oldest commit first, capped at `limit`. The relay reads
     /// outside any transaction, so there is no token: a staged command is not one to send.
     pub fn unpublished(&self, limit: usize) -> Vec<CommandMessage> {
-        page(&lock(&self.state).committed.commands, limit)
+        lock(&self.state).committed.command_outbox.page(limit)
     }
 
     /// How many committed commands wait, without paging them.
     pub fn unpublished_count(&self) -> usize {
-        lock(&self.state).committed.commands.len()
+        lock(&self.state).committed.command_outbox.count()
     }
 
     /// Mark commands sent by id, pruning them. Idempotent; an unknown id is a no-op.
-    pub fn mark_published(&self, ids: Vec<String>) {
-        prune(&mut lock(&self.state).committed.commands, ids);
+    pub fn mark_published(&self, ids: &[String]) {
+        lock(&self.state).committed.command_outbox.prune(ids);
     }
 }
 
@@ -53,7 +53,7 @@ impl MemoryCommandOutbox {
 mod tests {
     use super::*;
     use crate::testkit::{command, draft, ids, wire, RECORDED_AT};
-    use crate::tx::NO_TX;
+    use crate::tx::Tx;
 
     #[test]
     fn enqueued_commands_commit_and_roll_back_with_the_events() {
@@ -61,37 +61,56 @@ mod tests {
         let (events, outbox) = (tr.event_store(), tr.command_outbox());
 
         let tx = tr.begin();
-        events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
+        events
+            .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .unwrap();
         outbox.enqueue(tx, vec![command("cmd-1", Some("invoice-7"))]).unwrap();
         assert!(outbox.unpublished(10).is_empty(), "a staged command is not one to send");
         assert!(tr.rollback(tx));
-        assert!(outbox.unpublished(10).is_empty(), "a rolled-back command never reaches the relay");
+        assert!(
+            outbox.unpublished(10).is_empty(),
+            "a rolled-back command never reaches the relay"
+        );
 
         let tx = tr.begin();
-        events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
-        outbox.enqueue(tx, vec![command("cmd-1", Some("invoice-7")), command("cmd-2", None)]).unwrap();
+        events
+            .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .unwrap();
+        outbox
+            .enqueue(tx, vec![command("cmd-1", Some("invoice-7")), command("cmd-2", None)])
+            .unwrap();
         tr.commit(tx).unwrap();
         assert_eq!(ids(&outbox.unpublished(10)), ["cmd-1", "cmd-2"]);
         assert_eq!(outbox.unpublished_count(), 2);
         assert_eq!(ids(&outbox.unpublished(1)), ["cmd-1"], "the limit caps the page");
 
-        outbox.mark_published(vec!["cmd-1".into(), "unknown".into()]);
+        outbox.mark_published(&["cmd-1".into(), "unknown".into()]);
         assert_eq!(ids(&outbox.unpublished(10)), ["cmd-2"]);
     }
 
     #[test]
     fn an_id_already_waiting_is_refused() {
         let outbox = MemoryCommandOutbox::new();
-        outbox.enqueue(NO_TX, vec![command("cmd-1", None)]).unwrap();
+        outbox.enqueue(Tx::auto_commit(), vec![command("cmd-1", None)]).unwrap();
         let cases = [
             ("waiting_in_the_outbox", vec![command("cmd-1", None)]),
-            ("repeated_in_the_batch", vec![command("cmd-2", None), command("cmd-2", None)]),
+            (
+                "repeated_in_the_batch",
+                vec![command("cmd-2", None), command("cmd-2", None)],
+            ),
         ];
         for (name, batch) in cases {
-            let want = Err(format!("codec: command {} is already in the outbox", batch[batch.len() - 1].id));
-            assert_eq!(wire(outbox.enqueue(NO_TX, batch)), want, "{name}");
+            let want = Err(format!(
+                "codec: command {} is already in the outbox",
+                batch[batch.len() - 1].id
+            ));
+            assert_eq!(wire(outbox.enqueue(Tx::auto_commit(), batch)), want, "{name}");
         }
-        assert_eq!(ids(&outbox.unpublished(10)), ["cmd-1"], "a refused batch stages nothing");
+        assert_eq!(
+            ids(&outbox.unpublished(10)),
+            ["cmd-1"],
+            "a refused batch stages nothing"
+        );
     }
 
     #[test]
@@ -101,10 +120,22 @@ mod tests {
         let (mine, theirs) = (tr.begin(), tr.begin());
         outbox.enqueue(mine, vec![command("cmd-1", None)]).unwrap();
         let want = Err("codec: command cmd-1 is already in the outbox".to_owned());
-        assert_eq!(wire(outbox.enqueue(mine, vec![command("cmd-1", None)])), want, "staged earlier in the same transaction");
-        assert_eq!(wire(outbox.enqueue(theirs, vec![command("cmd-1", None)])), want, "staged by another open transaction");
+        assert_eq!(
+            wire(outbox.enqueue(mine, vec![command("cmd-1", None)])),
+            want,
+            "staged earlier in the same transaction"
+        );
+        assert_eq!(
+            wire(outbox.enqueue(theirs, vec![command("cmd-1", None)])),
+            want,
+            "staged by another open transaction"
+        );
         tr.commit(mine).unwrap();
         tr.commit(theirs).unwrap();
-        assert_eq!(ids(&outbox.unpublished(10)), ["cmd-1"], "one row, so marking it sent prunes only it");
+        assert_eq!(
+            ids(&outbox.unpublished(10)),
+            ["cmd-1"],
+            "one row, so marking it sent prunes only it"
+        );
     }
 }

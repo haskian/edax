@@ -39,12 +39,12 @@ flowchart LR
 | Doc | What it answers |
 |---|---|
 | [Kernels overview](kernels/README.md) | what the kernels own, and what they are forbidden to do |
-| [edax-core](kernels/core.md) | hashing, backoff, the clock, id generation, the error taxonomy, the lock, settlement tokens |
+| [edax-core](kernels/core.md) | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
-| [edax-event](kernels/event.md) | the event and command messages, their three tiers of fields and their times, the codec and media types, lineage, the ordering key, partition, upcast, staleness, dedup, sequence, the retry policy, the saga step |
-| [edax-cqrs](kernels/cqrs.md) | canonical JSON, the command hash, the claim key, the idempotency record, decision and forget |
-| [edax-kafka](kernels/kafka.md) | the record key and header per kind of message, the media types, the token-settled offset watermark |
-| [edax-redis](kernels/redis.md) | the idempotency ledger's value layout, its owner token, and the fence scripts |
+| [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
+| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `payload_hash`, `command_hash`, `claim_key`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query` |
+| [edax-kafka](kernels/kafka.md) | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`) |
+| [edax-redis](kernels/redis.md) | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | [Golden vectors](kernels/golden-vectors.md) | the cross-language contract, and when regenerating is legitimate |
 
 ### SDK — the wiring

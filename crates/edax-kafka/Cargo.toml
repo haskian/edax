@@ -4,17 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Kafka record and offset kernel for the edax seams, shared by every SDK"
+description = "Kafka protocol kernel of edax: record, broker partition, offset watermark, client settings and broker errors"
 
 [dependencies]
 edax-core.workspace = true
 edax-event.workspace = true
-serde.workspace = true
 
 [dev-dependencies]
 edax-event = { workspace = true, features = ["testkit"] }
 edax-golden.workspace = true
 proptest = "1"
+serde.workspace = true
 serde_json = "1"
 
 [lints]

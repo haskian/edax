@@ -40,9 +40,9 @@ classDiagram
 | `MemoryTx` | the handle | a frozen dataclass of the transactor plus the native token |
 | `MemoryEventStore` | `EventStore` | events, snapshots and the outbox; is itself a `Transactor`, so `transaction(store)` works; `append` stamps `recorded_at` from `now=` (default: the kernel clock) |
 | `MemoryIdempotencyStore` | `IdempotencyStore` | the atomic claim over the transactor's database; declares `joins_transaction = True`; `complete` and `release` are fenced on the claim's handle, `forget(key)` deletes a settled record, `expire(key)` lapses a key, and `put_raw(key, raw)` stores unchecked bytes |
-| `MemoryLedger` | `IdempotencyStore` | the same claim on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False`, the ordering a Redis ledger has |
-| `MemoryProjectionStore` | `ProjectionStore` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page |
-| `MemorySagaStore` | `SagaStore` | per-instance state with optimistic concurrency, a tombstone on completion, and the saga outbox of `CommandMessage`s |
+| `MemoryLedger` | `IdempotencyStore` | wraps a `MemoryIdempotencyStore` on a database of its own: ignores `tx`, lands every call at once, declares `joins_transaction = False`, the ordering a Redis ledger has; `expire` and `put_raw` forward to the store it wraps |
+| `MemoryProjectionStore` | `ProjectionStore`, `ProjectionQuery` | `get_many` runs the kernel query, so it is the reference for how a durable backend must page; every read carries the row key as `"id"` |
+| `MemorySagaStore` | `SagaStore` | per-instance state with optimistic concurrency, a tombstone on completion, and each saga's outbox of `CommandMessage`s, all keyed by the saga's name; `unpublished_count(saga)` counts one saga's backlog |
 | `MemoryCommandOutbox` | command outbox | the commands a unit of work decided, staged under its transaction and drained by a `Relay` |
 | `MemoryBroker` | `Producer` and `Consumer` | `Relay(store, broker.publish)` and `broker.run(dispatcher)` with no infrastructure; a partitioned log of events and commands that behaves like a Kafka topic |
 
@@ -54,8 +54,10 @@ terminal `BadHandle`, rather than the binding's own panic.
 
 The Rust reference model ships the same set over the same crate: `MemoryTransactor`, `MemoryTx`,
 `MemoryEventStore`, `MemoryIdempotencyStore`, `MemoryLedger` (`Tx = ()`), `MemoryProjectionStore`,
-`MemorySagaStore`, `MemoryCommandOutbox` and `MemoryBroker`. There `MemoryTx` is a plain `Copy` token, and the
-no-transaction handle is `MemoryTx::auto_commit()`, which is also its `Default`.
+`MemorySagaStore`, `MemoryCommandOutbox` and `MemoryBroker`. There `MemoryTx` is the crate's own typed
+token, `edax_memory::Tx`, a plain `Copy` value, and the no-transaction handle is
+`MemoryTx::auto_commit()`, which is also its `Default`. A binding crosses the token as the number its
+host holds and converts it at the boundary.
 
 ## The transaction is real
 
@@ -179,7 +181,8 @@ bus = CommandBus(idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit
 ```
 
 **Claims are fenced, as Redis fences them.** `claim` returns a handle naming that claim. `complete` writes
-only while the key still holds the claim the handle names, or already holds the same record. Otherwise it
+only while the key still holds the claim the handle names, or already holds the same record that same
+claim settled. The same bytes another claimant settled are its record, not this one's. Otherwise it
 raises `StoreError`. `release` deletes only that claim, and is a no-op otherwise. So a release after a
 `complete` whose reply was lost keeps the record. Both memory stores share the fence: it is the native
 store's.
@@ -187,7 +190,8 @@ store's.
 **`expire(key)` is the lease running out.** It lapses whatever the key holds in committed state: a claim
 or a settled record. A test can then force the takeover a claim TTL produces. Worker A's claim lapses
 mid-handler. Worker B claims and runs. A's late `complete` is refused, and B's outcome stands. A claim
-staged by an open unit of work is not committed, so it does not lapse. The same contract clauses run over
+staged by an open unit of work is not committed, so it does not lapse. A delete staged by an open unit of
+work goes with the lapse. What it deletes is gone, and its commit must not erase the claim that took over. The same contract clauses run over
 `MemoryLedger` and the Redis store (`test_contract_memory.py`, `test_redis.py`). `test_memory_ledger.py`
 drives each scenario through the guard over both and asserts the same outcome.
 `examples/py/15_lease_takeover.py` walks through the takeover one step at a time.
@@ -195,7 +199,9 @@ drives each scenario through the guard over both and asserts the same outcome.
 **`put_raw(key, raw)` is another writer's damage.** It stores bytes as the key's settled record in
 committed state, unchecked: a torn write, another layout, a field of the wrong type. The next claim reads
 them as the kernel does, a cached `codec` failure, so a test can rehearse a corrupted ledger row. A key an
-open unit of work holds is refused with `ConcurrencyError`. Rust has the same hook on both memory stores.
+open unit of work holds is refused with `ConcurrencyError`. It is one write under the database's lock, so
+no claim can land between the lapse and the overwrite. Rust has the same hook on both memory stores; both
+call `edax-memory`'s one `put_raw`.
 
 **`forget(key)` is the re-drive.** It deletes a settled record, so the next claim of the key wins and
 the handler runs again. The kernel's
@@ -252,7 +258,7 @@ panicking handler does not abandon a token.
 
 ## The broker is a log
 
-`MemoryBroker(partitions=1)` is a partitioned, append-only log, settled through the Kafka kernel's
+`MemoryBroker(partitions=1, *, tenancy=Tenancy.SILO)` is a partitioned, append-only log, settled through the Kafka kernel's
 `OffsetTracker`. It does to a handler what Kafka does, so a handler that only survives a queue fails
 here first and not in production.
 
@@ -267,8 +273,11 @@ here first and not in production.
   the beginning and settles on its own. A projection and a saga on one broker each get their own
   group, as they would on Kafka, instead of competing for each message.
 - **Order holds per key, not across keys,** once there is more than one partition. A key lands on
-  Kafka's partition for it. The key is the kernel's
-  [ordering key](../kernels/event.md#the-ordering-key), so a command lands beside the events of the aggregate it targets.
+  Kafka's partition for it. The key is the one `KafkaProducer` writes: the kernel's
+  [ordering key](../kernels/event.md#the-ordering-key), composed with the message's tenant where
+  `tenancy` composes keys. A command lands beside the events of the aggregate it targets, and two
+  tenants' same-named aggregates under a pool take the partitions Kafka gives them. A pooled message
+  with no tenant raises `CodecError`, as on Kafka.
 - **A delivery carries either kind.** `publish` takes an `EventMessage` or a `CommandMessage`, and
   `Delivery.message` hands back what was published.
 

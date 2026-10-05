@@ -200,7 +200,7 @@ async def main() -> None:
         return account.balance
 
     bus = CommandBus(idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO))
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     # "req-A" is the client's idempotency key, such as an HTTP Idempotency-Key header
     first = await bus.dispatch(Deposit("acct-1", 100), idempotency_key="req-A")
@@ -255,7 +255,7 @@ async def main() -> None:
     # claim, events, snapshot, outbox: one commit or one rollback per attempt
     ledger = MemoryIdempotencyStore(db)
     bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db))
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     async def submit(cmd: Deposit, request_id: str) -> int:
         return await bus.dispatch(cmd, idempotency_key=request_id)  # no transaction around it
@@ -295,7 +295,7 @@ flowchart LR
     MEM["edax-memory<br/>in-memory backends"]
     KAF["edax-kafka<br/>Kafka record + offsets"]
     RED["edax-redis<br/>Redis ledger value + fence"]
-    ABI["crates/edax-abi/src/lib.rs<br/>flat plain-Rust surface<br/>HAND-WRITTEN"]
+    ABI["crates/edax-abi/src/<br/>flat plain-Rust surface<br/>HAND-WRITTEN"]
     GEN["crates/edax-py/src/lib.rs<br/>pyo3 module<br/>ALEF-GENERATED"]
     SO["_edax native module<br/>crates/edax-py/python/edax/_edax.abi3.so"]
     PKG["crates/edax-py/python/edax/<br/>the SDK<br/>HAND-WRITTEN"]
@@ -311,7 +311,7 @@ flowchart LR
 
 | File | Owner | Rule |
 |---|---|---|
-| `crates/edax-abi/src/lib.rs` | you | change the binding surface here, then regenerate |
+| `crates/edax-abi/src/` | you | change the binding surface here, one module per kernel crate, then regenerate |
 | `crates/edax-py/src/lib.rs` | alef | never hand-edit (`AGENTS.md`; header at line 1 of the file) |
 | `crates/edax-py/.alef/` | alef | throwaway scaffold, gitignored; not shipped (`alef.toml`) |
 | `crates/edax-py/python/edax/_edax.pyi` | alef, committed by hand | the one generated artefact that is committed, with alef's `# alef:hash:` header stripped so cleanup leaves it alone (`alef.toml`) |

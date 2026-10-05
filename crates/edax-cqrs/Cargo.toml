@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-and-query consistency kernel for edax: idempotency, filter, query"
+description = "Command-and-query consistency kernel of edax: canonical JSON, command hash, received and claim keys, idempotency record, ledger fence (complete_fence, release_fence, Claimed), host values, filter, query"
 
 [dependencies]
 edax-core.workspace = true

@@ -8,6 +8,7 @@ watermark and commit specifics live in ``test_kafka.py``.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 from collections import defaultdict
 from collections.abc import Callable
@@ -25,12 +26,15 @@ from conftest import (
     build_message,
     delivered,
     event_of,
+    golden,
+    handling,
     sequence_of,
 )
-from edax.aggregate import _replace
+from edax._values import replace
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import MemoryBroker, MemoryEventStore
-from edax.broker import UNDECODABLE, Consumer, UndecodableDelivery, _ConsumerLoop
+from edax.broker import Consumer, Polled, consume
+from edax.delivery import UNDECODABLE
 from edax.testing import BrokerContract, drafted
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -82,7 +86,8 @@ class KafkaRig:
         consumer = KafkaConsumer(
             client, serializer=edax.KernelSerializer(), serializers=[edax.KernelSerializer("json", "command")]
         )
-        client.subscribe(["t"], listener=consumer.rebalance_listener(drain_timeout_s=0))
+        # The shortest drain the kernel accepts: the contract's rebalances run no handler to wait for.
+        client.subscribe(["t"], listener=consumer.rebalance_listener(drain_timeout_s=0.001))
         await cluster.join(client)
         self.members[group] = (client, consumer)
         return consumer
@@ -136,7 +141,7 @@ async def _append(store: MemoryEventStore, versions: dict[int, int], agg: int, n
     return [e.id for e in envs]
 
 
-class _ScriptedConsumer(_ConsumerLoop):
+class _ScriptedConsumer:
     """A consumer whose ``poll`` replays a script: a :class:`edax.Delivery`, ``None`` (end of
     stream), or ``"block"`` (park until cancelled)."""
 
@@ -165,12 +170,14 @@ class RunCase:
     returns: bool  # run() returned (end of stream) rather than raising CancelledError
     dead: list  # event names the dead-letter hook saw
     on_dead: bool = True  # wire the dispatcher's dead-letter hook
-    sink_raises: bool = False  # the dead-letter sink is unreachable, the usual reason one fails
+    # What the dead-letter sink raises: an unreachable sink is the usual reason one fails.
+    sink_raises: type[Exception] | None = None
     max_queue: int = 0  # 0 = unbounded; a small queue makes `submit` block
     start: bool = True  # an unstarted dispatcher drains nothing, so its queue stays full
     slept: list = field(default_factory=list)  # backoff steps waited, in order
     raises: type[BaseException] | None = None  # run() raised this instead of returning or being cancelled
-    nack_raises: bool = False  # the poison's nack raises, as a seek on a lost partition does
+    # What the poison's nack raises, as a seek on a lost partition does.
+    nack_raises: type[Exception] | None = None
     poll_failures: list = field(default_factory=list)  # what the observer hears a poll raise, in order
 
 
@@ -211,7 +218,7 @@ class RunCase:
                 ["nack", "ack"],
                 True,
                 [UNDECODABLE],
-                sink_raises=True,
+                sink_raises=edax.StoreError,
                 slept=[0],
             ),
             id="undecodable_with_a_raising_sink_is_nacked_and_the_loop_continues",
@@ -230,12 +237,27 @@ class RunCase:
             ),
             id="a_transient_poll_failure_backs_off_and_the_loop_continues",
         ),
-        # A failure that repeats on every poll ends the loop at once rather than spinning on it.
+        # A fatal failure (the wiring) repeats on every poll: it ends the loop at once, as it ends a relay.
         pytest.param(
             RunCase(
-                ["terminal"], False, [], [], False, [], raises=edax.BadHandle, poll_failures=[edax.BadHandle]
+                ["fatal"], False, [], [], False, [], raises=edax.BadHandle, poll_failures=[edax.BadHandle]
             ),
-            id="a_terminal_poll_failure_ends_the_loop",
+            id="a_fatal_poll_failure_ends_the_loop",
+        ),
+        # A terminal one is one fetch the broker refused: the loop backs off and polls again, as a relay
+        # drains again after a terminal store failure. The step keeps growing across failure kinds.
+        pytest.param(
+            RunCase(
+                ["terminal", "fail", "d", None],
+                False,
+                [1],
+                ["ack"],
+                True,
+                [],
+                slept=[0, 1],
+                poll_failures=[edax.CodecError, ConnectionError],
+            ),
+            id="a_terminal_poll_failure_backs_off_and_the_loop_continues",
         ),
         # A nack that raises while the poison settles is the transport's fault: logged, and the loop goes on.
         pytest.param(
@@ -247,10 +269,41 @@ class RunCase:
                 True,
                 [],
                 on_dead=False,
-                nack_raises=True,
+                nack_raises=edax.StoreError,
                 slept=[0],
             ),
             id="a_poison_nack_that_raises_is_logged_and_the_loop_continues",
+        ),
+        # A sink that refuses the wiring refuses every poison alike. On a log transport the nack rewinds to
+        # the same poison, so a loop that went on would call the broken sink on every poll, unpaced.
+        pytest.param(
+            RunCase(
+                ["poison", "poison", "d", None],
+                False,
+                [],
+                ["nack"],
+                False,
+                [UNDECODABLE],
+                sink_raises=edax.BadHandle,
+                raises=edax.BadHandle,
+            ),
+            id="a_fatal_sink_refusal_on_a_poison_ends_the_loop",
+        ),
+        # A nack the transport refuses for its wiring fails every settlement alike: never logged away.
+        pytest.param(
+            RunCase(
+                ["poison", "d", None],
+                False,
+                [],
+                ["nack"],
+                False,
+                [],
+                on_dead=False,
+                nack_raises=edax.BadHandle,
+                slept=[0],
+                raises=edax.BadHandle,
+            ),
+            id="a_fatal_poison_nack_ends_the_loop",
         ),
     ],
 )
@@ -262,47 +315,52 @@ async def test_consumer_loop_run_branches(case: RunCase, slept: list[int]) -> No
 
     def poison_nack() -> None:
         settled.append("nack")
-        if case.nack_raises:
-            raise edax.StoreError("seek on a partition this member lost")
+        if case.nack_raises is not None:
+            raise case.nack_raises("seek on a partition this member lost")
 
     def scripted(step: Any) -> Any:
         if step == "poison":
-            return UndecodableDelivery(
-                POISON_BYTES,
+            return edax.Undecodable(
                 "msg-poison",
+                POISON_BYTES,
+                edax.CodecError("unknown schema v3"),
                 lambda: settled.append("ack"),
                 poison_nack,
-                edax.CodecError("unknown schema v3"),
             )
         if step == "fail":
             return ConnectionError("key service unreachable")
-        if step == "terminal":
+        if step == "fatal":
             return edax.BadHandle("built on another thread")
+        if step == "terminal":
+            return edax.CodecError("the broker refused a corrupt fetch")
         if step != "d":
             return step
         env = envs.pop(0)
         return edax.Delivery(env, lambda: settled.append("ack"), lambda: settled.append("nack"))
 
-    async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        assert isinstance(err, edax.CodecError) and err.terminal
-        assert bytes(delivery.message.data) == POISON_BYTES, "the raw payload must survive"
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        assert isinstance(letter.failure, edax.CodecError) and letter.failure.terminal
+        poison = letter.message
+        assert isinstance(poison, edax.Undecodable) and poison.payload == POISON_BYTES, (
+            "the raw payload survives"
+        )
         # Recorded before the raise: `dead` is what the sink saw, so it doubles as the call count and
         # the raising row still proves the sink was reached exactly once.
-        dead.append(delivery.message.name)
-        if case.sink_raises:
-            raise edax.StoreError("dead-letter sink unavailable")
+        dead.append(UNDECODABLE)
+        if case.sink_raises is not None:
+            raise case.sink_raises("dead-letter sink unavailable")
 
     observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
         workers=2,
-        handler=lambda env: handled.append(sequence_of(env)),
+        handler=handling(lambda env: handled.append(sequence_of(env))),
         max_queue=case.max_queue,
         on_dead=on_dead if case.on_dead else None,
         observer=observer,
     )
     if case.start:
         dispatcher.start()
-    task = asyncio.create_task(_ScriptedConsumer([scripted(s) for s in case.script]).run(dispatcher))
+    task = asyncio.create_task(consume(_ScriptedConsumer([scripted(s) for s in case.script]), dispatcher))
     if case.cancel:
         await asyncio.sleep(0.01)  # let the loop park (in poll, or in a submit that cannot proceed)
         task.cancel()
@@ -473,28 +531,29 @@ class DoubleSettleCase:
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(DoubleSettleCase("ack"), id="double_ack_warns"),
-        pytest.param(DoubleSettleCase("nack"), id="double_nack_warns"),
+        pytest.param(DoubleSettleCase("ack"), id="double_ack_is_logged"),
+        pytest.param(DoubleSettleCase("nack"), id="double_nack_is_logged"),
     ],
 )
-async def test_memory_broker_warns_when_the_native_refuses_a_second_settlement(
+async def test_memory_broker_logs_when_the_native_refuses_a_second_settlement(
     case: DoubleSettleCase, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The native machine refuses a second settlement of one token and says so with ``False``. The
-    refusal is a caller bug, so it is logged rather than dropped."""
+    """The native machine refuses a second settlement of one token and says so with ``False``. Nothing is
+    lost, and rewinds and rebalances make it routine, so it is logged at debug, as the Kafka consumer does."""
     broker = MemoryBroker()
     await broker.publish(build_message(agg_id(0), "Tick", 1))
     delivery = await broker.poll()
     assert delivery is not None
     settle = getattr(delivery, case.settle)
 
-    with caplog.at_level(logging.WARNING, logger="edax.backend.memory"):
+    with caplog.at_level(logging.DEBUG, logger="edax.backend.memory"):
         await settle()
         assert caplog.records == [], "the first settlement is accepted, so it says nothing"
         await settle()
 
-    assert len(caplog.records) == 1
-    assert f"{case.settle} of a settled or retired delivery" in caplog.records[0].getMessage()
+    assert [(r.levelno, r.getMessage().split(" delivery")[0]) for r in caplog.records] == [
+        (logging.DEBUG, f"edax memory broker: {case.settle} of a settled or retired")
+    ]
 
 
 async def test_a_publish_wakes_a_poller_of_every_group() -> None:
@@ -511,9 +570,56 @@ async def test_a_publish_wakes_a_poller_of_every_group() -> None:
     assert saga.empty() and not broker.empty(), "each group settles on its own"
 
 
+async def test_a_parked_group_run_with_no_reference_survives_a_collection() -> None:
+    """A host may start a group's run and keep no reference to its task. Parked on an empty log, that task is
+    reachable only through its view's wakeup, and a group view nobody holds keeps its wakeup weakly. The
+    wait itself holds it, so a collection mid-wait loses nothing: the next publish is handled."""
+    broker = MemoryBroker()
+    handled: list[int] = []
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=handling(lambda env: handled.append(sequence_of(env)))
+    )
+    dispatcher.start()
+    asyncio.ensure_future(broker.group("projection").run(dispatcher))  # noqa: RUF006 - the case under test
+    await asyncio.sleep(0.01)  # the run parks on the empty log
+    gc.collect()
+    await broker.publish(build_message(agg_id(0), "Deposited", 1))
+    for _ in range(100):
+        if broker.group("projection").empty():
+            break
+        await asyncio.sleep(0.001)
+    await dispatcher.stop()
+    assert handled == [1]
+    assert broker.group("projection").empty()
+
+
 def test_a_memory_broker_needs_a_partition() -> None:
     with pytest.raises(edax.CodecError, match="at least one partition"):
         MemoryBroker(0)
+
+
+async def test_a_pooled_memory_broker_places_two_tenants_where_kafka_does() -> None:
+    """Under a pool the key composes the tenant, as on Kafka: two tenants' ``order-1`` take the partitions
+    Kafka gives their composed keys, read from the placement vector, and a pooled message with no tenant is
+    refused and appended nowhere."""
+    partitions = 12
+    kafka = {
+        row["name"]: row["expected"]
+        for row in golden("kafka_partition.json")
+        if row["partitions"] == partitions and row["name"].startswith("pooled_")
+    }
+    broker = MemoryBroker(partitions, tenancy=edax.Tenancy.POOL)
+    for tenant in ("acme", "other"):
+        await broker.publish(build_message("order-1", "Placed", 1, tenant=tenant))
+    with pytest.raises(edax.CodecError, match="requires a tenant"):
+        await broker.publish(build_message("order-1", "Placed", 1))
+    # A delivery does not say where it sat, so the native log, which does, is read directly.
+    native = broker._log.native.get()
+    placed: dict[str, int] = {}
+    while (polled := native.try_poll("default")) is not None:
+        assert polled.event is not None and polled.event.tenant is not None
+        placed[polled.event.tenant] = polled.partition
+    assert placed == {"acme": kafka["pooled_acme_order"], "other": kafka["pooled_other_order"]}
 
 
 async def test_the_memory_broker_reproduces_kafkas_seek_back() -> None:
@@ -550,8 +656,8 @@ class QueueRig(MemoryRig):
     async def consumer(self, group: str) -> Consumer:
         rig = self
 
-        class Queue(_ConsumerLoop):
-            async def poll(self) -> edax.Delivery | None:
+        class Queue:
+            async def poll(self) -> Polled:
                 while not rig.queue:
                     await asyncio.sleep(0.001)
                 env = rig.queue.pop(0)
@@ -592,13 +698,13 @@ class GhostRig(MemoryRig):
         inner = await super().consumer(group)
         seen: list[edax.Delivery] = []
 
-        class Ghost(_ConsumerLoop):
-            async def poll(self) -> edax.Delivery | None:
+        class Ghost:
+            async def poll(self) -> Polled:
                 try:
                     delivery = await asyncio.wait_for(inner.poll(), 0.01)
                 except asyncio.TimeoutError:
                     return seen[0]
-                if delivery is not None:
+                if isinstance(delivery, edax.Delivery):
                     seen.append(delivery)
                 return delivery
 
@@ -610,7 +716,7 @@ class DropsTheTenantRig(MemoryRig):
     pooled consumer can key and claim nothing it receives."""
 
     async def publish(self, env: edax.EventMessage | edax.CommandMessage) -> None:
-        await super().publish(_replace(env, tenant=None))
+        await super().publish(replace(env, tenant=None))
 
 
 class SharedGroupRig(MemoryRig):

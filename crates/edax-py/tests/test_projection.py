@@ -1,43 +1,20 @@
 """ProjectionStore seam exercised by the shipped MemoryProjectionStore (get_many() defers to the query
 kernel; no durable store ships)."""
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from conftest import golden
+from edax import _edax
 from edax import filter as f
 from edax import query as q
 from edax.backend.memory import MemoryProjectionStore
 from edax.errors import CodecError
-from edax.projection import ConcurrencyError, Entity
+from edax.projection import Entity, check_document, keyed_document
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
-
-async def test_save_versions_then_get() -> None:
-    store = MemoryProjectionStore()
-    e = Entity("u1", 0, {"id": "u1", "name": "ada", "age": 36})
-    await store.save(e)
-    assert e.version == 1  # advanced in place
-    got = await store.get("u1")
-    assert got is not None
-    assert got.version == 1 and got.document["name"] == "ada"
-
-
-async def test_stale_version_raises() -> None:
-    store = MemoryProjectionStore()
-    e = Entity("u1", 0, {"id": "u1", "n": 1})
-    await store.save(e)  # now at version 1
-
-    stale = await store.get("u1")
-    assert stale is not None
-    stale.document["n"] = 2
-    await store.save(stale)  # store -> version 2
-
-    e.document["n"] = 3
-    with pytest.raises(ConcurrencyError):
-        await store.save(e)  # e.version is still 1, store is at 2
-
 
 # One realistic read model; every paging case below queries this same set. Documents are JSON:
 # the value type is heterogeneous by design, so it is `Any` rather than `str | int`.
@@ -117,7 +94,7 @@ async def test_get_many_paging_branches(case: PageCase) -> None:
     if case.cursor_after is not None:
         row = next(d for d in USERS if d["name"] == case.cursor_after)
         kwargs["after"] = q.encode_cursor(row, kwargs["sort"])
-    page = await store.get_many(**kwargs)
+    page = await store.get_many(q.Query(**kwargs))
     assert [d["name"] for d in page.rows] == case.names
     want_next = None
     if case.next_after is not None:
@@ -153,8 +130,31 @@ async def test_get_many_rejects_a_bad_spec_as_terminal(branch: str, kwargs: dict
     if kwargs.get("after") == "<name cursor>":
         kwargs = {**kwargs, "after": q.encode_cursor(USERS[0], [q.sort_key("name")])}
     with pytest.raises(CodecError) as caught:
-        await store.get_many(**kwargs)
+        await store.get_many(q.Query(**kwargs))
     assert caught.value.terminal is True, branch
+
+
+@pytest.mark.parametrize(
+    "kwargs, refused",
+    [
+        pytest.param({"sort": [q.sort_key("name")], "limit": 2}, False, id="a_valid_spec_passes"),
+        pytest.param({"sort": [{"path": "name", "dsc": True}]}, True, id="a_typo_in_a_sort_key"),
+        pytest.param({"filter": f.eq("age", None)}, True, id="a_none_comparand"),
+        pytest.param({"filter": f.exists("owner..name")}, True, id="an_empty_path_segment"),
+        pytest.param({"filter": f.eq("age", 2**70)}, True, id="an_integer_wider_than_64_bits"),
+        pytest.param({"after": "x"}, True, id="a_cursor_without_a_sort"),
+        # The cursor is read against the sort when the query runs, by `decode_cursor`.
+        pytest.param({"sort": [q.sort_key("name")], "after": "!!"}, False, id="the_cursor_is_not_read"),
+    ],
+)
+def test_check_query_refuses_the_specs_the_kernel_refuses(kwargs: dict[str, Any], refused: bool) -> None:
+    spec = q.Query(**kwargs)
+    if not refused:
+        assert q.check_query(spec) is None
+        return
+    with pytest.raises(CodecError) as caught:
+        q.check_query(spec)
+    assert caught.value.terminal is True
 
 
 async def test_paging_reads_every_row_once_while_other_transactions_commit_between_pages() -> None:
@@ -164,7 +164,7 @@ async def test_paging_reads_every_row_once_while_other_transactions_commit_betwe
     store = await _seeded()
     sort = [q.sort_key("age"), q.sort_key("name")]
     seen: list[str] = []
-    page = await store.get_many(sort=sort, limit=2)
+    page = await store.get_many(q.Query(sort=sort, limit=2))
     seen.extend(d["name"] for d in page.rows)
     async with store.transactor.begin():
         await store.save(Entity("u4", 0, {"id": "u4", "name": "eve", "age": 37}))  # after the cursor
@@ -176,7 +176,7 @@ async def test_paging_reads_every_row_once_while_other_transactions_commit_betwe
             for _ in range(len(USERS) + 1):  # bounded: a cursor that repeats a row must fail, not hang
                 if page.next is None:
                     break
-                page = await store.get_many(sort=sort, limit=2, after=page.next, tx=reader)
+                page = await store.get_many(q.Query(sort=sort, limit=2, after=page.next), tx=reader)
                 seen.extend(d["name"] for d in page.rows)
             raise _RollBack
     assert seen == ["dot", "ada", "cal", "eve", "bob"]
@@ -217,7 +217,7 @@ def test_a_row_whose_id_is_not_a_string_or_a_number_mints_no_cursor(tiebreak: An
     # and resuming after the first would drop the second.
     rows = [{"id": tiebreak, "k": 1}, {"id": tiebreak, "k": 1}]
     with pytest.raises(CodecError) as caught:
-        q.query(rows, sort=[q.sort_key("k")], limit=1)
+        q.query(rows, q.Query(sort=[q.sort_key("k")], limit=1))
     assert "string or number `id`" in str(caught.value)
 
 
@@ -245,7 +245,7 @@ async def test_a_document_integer_wider_than_64_bits_is_refused(boundary: str) -
             q.encode_cursor(_WIDE_DOCUMENT, [q.sort_key("n")])
     assert caught.value.terminal is True
     assert "outside the 64-bit range" in str(caught.value)
-    assert await store.get("a") is None and entity.version == 0
+    assert await store.get("a") is None
 
 
 @settings(max_examples=150, deadline=None)
@@ -287,7 +287,7 @@ def test_keyset_paging_never_skips_or_repeats_under_concurrent_writes(
     # Every page holds a row no earlier page held, so the walk ends within this many pages; a cursor
     # that resumes at or before its own row would loop forever.
     budget = len(table) + sum(len(c) for c in changes) + 1
-    page = q.query(table, sort=sort, limit=limit)
+    page = q.query(table, q.Query(sort=sort, limit=limit))
     while True:
         assert budget > 0, f"paging never reached the last page: {seen}"
         budget -= 1
@@ -301,7 +301,7 @@ def test_keyset_paging_never_skips_or_repeats_under_concurrent_writes(
             elif table:
                 gone = table.pop(int(arg or 0) % len(table))
                 survivors.discard(gone["id"])
-        page = q.query(table, sort=sort, limit=limit, after=page.next)
+        page = q.query(table, q.Query(sort=sort, limit=limit, after=page.next))
     assert len(seen) == len(set(seen)), f"a row was returned twice: {seen}"
     assert survivors <= set(seen), f"present throughout yet skipped: {survivors - set(seen)}"
 
@@ -313,7 +313,44 @@ def test_keyset_paging_never_skips_or_repeats_under_concurrent_writes(
 )
 def test_a_cursor_replayed_under_another_sort_is_refused(other_sort: list[q.SortKey]) -> None:
     rows = [{"id": "a", "k": 1}, {"id": "b", "k": 2}]
-    page = q.query(rows, sort=[q.sort_key("id")], limit=1)
+    page = q.query(rows, q.Query(sort=[q.sort_key("id")], limit=1))
     assert page.next is not None
     with pytest.raises(CodecError):
-        q.query(rows, sort=other_sort, after=page.next)
+        q.query(rows, q.Query(sort=other_sort, after=page.next))
+
+
+async def test_golden_projection_document() -> None:
+    """The kernel's document rule, read through every Python path to it: the check a host's own store
+    calls, the keyed read it calls in ``get``, and the memory store's save and both its reads. A row the
+    rule refuses saves nothing."""
+    for c in golden("projection_document.json"):
+        name, want = c["name"], c["want"]
+        try:
+            _edax.check_projection_document(c["id"], c["json"])
+            keyed = json.loads(_edax.keyed_projection_document(c["id"], c["json"]))
+            got: dict[str, Any] = {"ok": json.loads(c["json"]), "keyed": keyed}
+        except RuntimeError as e:
+            got = {"error": str(e)}
+        assert got == want, name
+
+        store = MemoryProjectionStore()
+        try:
+            document = json.loads(c["json"])
+        except json.JSONDecodeError:
+            continue  # text that is not JSON has no Python value to save
+        entity = Entity(c["id"], 0, document)
+        if "ok" in want:
+            check_document(c["id"], document)
+            assert keyed_document(c["id"], document) == want["keyed"], name
+            await store.save(entity)
+            stored = await store.get(c["id"])
+            assert stored is not None and stored.document == want["keyed"], name
+            assert (await store.get_many()).rows == [want["keyed"]], name
+            continue
+        for refuses in (check_document, keyed_document):
+            with pytest.raises(CodecError) as caught:
+                refuses(c["id"], document)
+            assert f"{caught.value.code}: {caught.value}" == want["error"], name
+        with pytest.raises(CodecError):
+            await store.save(entity)
+        assert await store.get(c["id"]) is None, name

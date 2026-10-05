@@ -23,7 +23,7 @@ flowchart LR
 | Piece | Source | Owns |
 |---|---|---|
 | `Consumer` | seam, `edax.broker` | poll one message, build a `Delivery`, run the submit loop |
-| `Delivery` | `edax.dispatcher`, `edax::dispatcher` | the message (`Delivery.message`, an event or a command) plus `attempt` and the two settle handles |
+| `Delivery` | `edax.delivery`, `edax::dispatcher` | the message (`Delivery.message`, an event or a command) plus `attempt` and the two settle handles |
 | `KeyOrderedDispatcher` | `edax.dispatcher`, `edax::dispatcher` | worker selection, settlement, the attempt budget, dead-letter routing |
 | `EventRouter` | `edax.router`, `edax::router` | the handler registry by event name and the middleware chain |
 
@@ -35,8 +35,10 @@ broker's other facts ride beside it too: Kafka's offset, partition and record ti
 
 There is no `Consumer` trait in the Rust software development kit (SDK). Rust ships the in-memory
 broker (`crates/edax/src/backend/broker.rs`) and expects a host adapter to call
-`KeyOrderedDispatcher::deliver` itself; Python declares the seam as a `Protocol` with a
-`_ConsumerLoop` mixin that supplies `run`.
+`KeyOrderedDispatcher::submit` itself. Python declares the seam as a `Protocol` with `poll` alone.
+`poll` returns a `Delivery`, an `Undecodable` for a record that will not decode, or `None` at the end
+of the stream. The free function `edax.broker.consume(consumer, dispatcher)` is the one submit loop,
+so a host's own backend writes only `poll`.
 
 ## KeyOrderedDispatcher
 
@@ -67,7 +69,7 @@ worker each.
 - Per-key order holds through a nack only on a transport that rewinds. A log (Kafka, the
   in-memory broker) seeks the partition back to its lowest unsettled offset. It also retires every
   delivery of the partition it already handed out. A worker skips a delivery that is no longer
-  `live`: no handler run, no settlement, reported as `stale`. The redelivered earlier event therefore
+  `live`: no handler run, no settlement, reported as `retired`. The redelivered earlier event therefore
   runs before the later one. A transport that requeues a nacked delivery behind later ones instead
   reorders the key, and the handler must tolerate that.
 - A nack costs duplicates on keys that never failed. The seek re-reads every message of the
@@ -86,8 +88,9 @@ per-key order.
 | Worker | an OS thread per queue, `std::thread::spawn` | an `asyncio.Task` per queue |
 | Queue | `std::sync::mpsc::sync_channel(depth)` | `asyncio.Queue(maxsize=max_queue)` |
 | Backpressure | a bounded channel; the send blocks when full | `max_queue`, `submit` awaits when full |
-| Configuration | `KeyOrderedDispatcher::builder(workers, handler).max_attempts(n).on_dead(f).pacing(p).build()?`; `build` refuses zero workers and fails when a worker thread cannot spawn | keyword arguments on the constructor, `pacing=` included; `workers` below 1 raises `ValueError` |
-| Handler bound | `Fn(&EventMessage) -> Result<(), HandlerError> + Send + Sync` | any callable, sync or async, taking the message |
+| Configuration | `KeyOrderedDispatcher::builder(workers, handler).max_attempts(n).on_dead(f).pacing(p).build()?`; `build` refuses zero workers and fails when a worker thread cannot spawn | keyword arguments on the constructor, `pacing=` included; `workers` below 1 raises `BadHandle`, as `build` does |
+| Message kind | `KeyOrderedDispatcher<M>`, `Delivery<M>`, `M` an `EventMessage` (the default) or a `CommandMessage` | `KeyOrderedDispatcher[M]`, `Delivery[M]`, `M` an `EventMessage`, a `CommandMessage`, or their union for a transport that carries both |
+| Handler bound | `Fn(&M) -> Result<(), HandlerError> + Send + Sync` | `Handler[M]`: a callable that takes the message and returns an awaitable, as an `EventRouter`'s handlers and a command handler are |
 | Crashing handler | `catch_unwind` keeps the worker alive; the panic settles as a nack | any `BaseException` but `KeyboardInterrupt`, `SystemExit` and the worker's own cancel nacks the delivery; the worker continues |
 | Stop | `stop(self)` drops the senders, drains, joins | `await stop(timeout=None)`, idempotent: refuses later `submit`s, drains, and past the deadline cancels the workers and nacks what they held or had queued |
 | Ambient unit of work | Rust has none; the host threads its own handle | the worker clears the ambient map so a handler cannot inherit the transaction of whoever started the dispatcher |
@@ -95,9 +98,14 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-In both SDKs, submitting a bare message instead of a `Delivery` runs the handler and nothing else.
-A failure waits no backoff step, reaches no `on_dead` and is not counted. This is the
-fire-and-forget path.
+Both SDKs take a `Delivery` only. A bare message would have nothing to settle it, so a handler
+failure would reach no ack, nack or sink. Python refuses one with `BadHandle`; in Rust it does not
+compile. A test that watches only the handler submits `edax.testing.delivery(msg)`, a delivery whose
+settlement does nothing.
+
+One dispatcher carries one message kind, the one its handler takes. Behind an `EventRouter` that is
+the event. A command consumer feeds received commands to `CommandBus.dispatch_message` instead, and
+its dispatcher carries the command.
 
 **Lineage.** The Python worker runs each handler under `propagate` of the message it delivers, so a
 `save` inside it continues the flow ([lineage rules](../kernels/event.md#causation--lineage)). The
@@ -115,8 +123,11 @@ can still end that way there and the health check shows it.
 **Shutdown.** Pass the deadline to `stop(timeout=...)` rather than wrapping `stop()` in
 `asyncio.wait_for`. Either way `stop` returns only once no worker is left, so a later `start()` never
 puts two workers on one queue. Past the deadline it cancels the workers, nacks the delivery each one
-held and every delivery still queued, and so leaves nothing submitted unsettled. Each of them
-reaches the observer once, as `stopped`. After `stop`, `submit` raises `RuntimeError` until the next `start`.
+held and every delivery still queued, and so leaves nothing submitted unsettled. A `submit` that
+was waiting on a full queue when `stop` began lands first, and is nacked with the rest. Each of them
+reaches the observer once, as `stopped`. After `stop`, `submit` raises `DispatcherStopped` (a
+`RuntimeError`) until the next `start`. A consumer loop that polled a delivery and then meets it
+nacks the delivery and ends.
 
 ## Settlement
 
@@ -199,7 +210,7 @@ By default a raising handler nacks and the broker redelivers forever. Two settin
 `max_attempts` and `on_dead`. The rule below is the kernel's (`edax_event::Retries`, pinned by
 `testdata/golden/retries.json`). Both SDKs' dispatchers, and both `Relay`s, perform its answers, so
 two services consuming one topic dead-letter the same message at the same attempt. `max_attempts` is
-an unsigned 32-bit count; the Python dispatcher and `Relay` refuse any other value with `ValueError`
+an unsigned 32-bit count; the Python dispatcher and `Relay` refuse any other value with `BadHandle`
 when they are built.
 
 An attempt is one handler run of a delivery, counted as
@@ -220,9 +231,20 @@ ceiling survive a restart. Neither in-tree backend reads one from its client, so
 | Raised, transient error, attempt reaches `max_attempts` | `on_dead`, then ack | nack, redelivered forever |
 | `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
 | Raised `InProgress` | sleep one backoff step, then nack; the budget is untouched | same |
+| Raised a fatal error (`BadHandle`) | nack at once, uncounted; the dispatcher stops | same |
 
 Terminal versus transient is the kernel's verdict for the code the error carries, read through
 `edax.is_terminal(err)`. See [errors.md](./errors.md).
+
+**A fatal error stops the dispatcher.** `bad_handle` is a wiring fault: a refused credential, a
+topic the broker refuses, a store that refuses its own settings. Every message would fail alike, so
+dead-lettering them would move the whole topic into the dead-letter queue one message at a time. The
+kernel answers `stop` instead, whatever `max_attempts` says and with or without a sink. The delivery
+is nacked at once and never counted. Every worker hands back what it has not run, reported as
+`stopped`. The next `submit` fails with the error: Python's raises it, and Rust's returns it. The consumer loop hands its polled delivery back and ends on it, so `consumer.run` raises the
+error for the host to fix the wiring and restart. `edax.is_fatal(err)` (Rust `edax::is_fatal`) reads
+the kind. A `Relay` stops the same way: the drain hands the row back without a wait, and
+`Relay.run` raises.
 `examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
 that passes, and one that reaches `max_attempts`.
 
@@ -233,17 +255,28 @@ nacked and redelivered forever, at the capped backoff. On a log that stalls the 
 `KafkaConsumer.run` refuses a dispatcher without `on_dead`.
 
 **A sink that raises nacks.** The policy keeps the attempt, so the redelivery reaches the sink
-again, after a longer wait. The observer reports `sink_failed`.
+again, after a longer wait. The observer reports `sink_failed`. A sink that raises a fatal error stops
+the dispatcher instead, as a fatal handler failure does. Say the broker refuses the dead-letter topic:
+every dead message would fail on it alike. The kernel decides (`Retries::sunk`, pinned by
+`retries.json`), and a `Relay` stops the same way on the sink's error (`relay_drain.json`).
 
-**A payload that will not decode** never reaches a handler. The consumer loop hands it to
-`dispatcher.settle_poison`: `on_dead`, then ack. With no sink, or a sink that raises, it nacks after
+**A payload that will not decode** never reaches a handler. The consumer's `poll` returns it as an
+`Undecodable`: its id, its raw bytes and the decode error, with no message. The consumer loop hands it
+to `dispatcher.settle_poison`: `on_dead`, then ack. With no sink, or a sink that raises, it nacks after
 a backoff step counted by the poison id, so one stray record cannot spin the consumer against the
-broker.
+broker. A sink that raises a fatal error nacks the record at once and ends the consumer loop on that
+error. Once the dispatcher has stopped, the sink is never called again: each poison goes straight back.
+An ack that fails after the sink took the record is reported through `Observer.settlement_failed`, and
+the outcome is `unsettled`, as on the handler path.
 
-Rust hands the sink a `DeadLetter { event, attempt, failure }` where `failure` is a
-`HandlerFailure::Error` or `HandlerFailure::Panic` carrying the unwind payload. A panic is
-unclassified, so it counts as transient: a single panic cannot be told apart from a transient
-failure. Python passes `on_dead(delivery, err)` instead.
+Both SDKs hand every sink one `DeadLetter`: the dispatcher's sink and the relay's. It carries the
+`message` that died, the `attempt` that killed it as the kernel counts it, and the `failure`, one name
+in both SDKs. In Python `origin` is the transport's record (`Delivery.origin`) for a sink that
+republishes it. A dispatcher's `message` is the handler's message, or the `Undecodable` poison. A
+relay's is the outbox row. In Rust a dispatcher's `failure` is a `HandlerFailure::Error` or a
+`HandlerFailure::Panic` carrying the unwind payload. A relay's sink borrows the row and the error,
+`DeadLetter<&R, &HandlerError>`. A panic is unclassified, so it counts as transient: a single panic
+cannot be told apart from a transient failure.
 
 ### InProgress is contention, not a failed attempt
 
@@ -276,8 +309,8 @@ grows across redeliveries instead of repeating a flat first step. An entry for a
 that never comes back stays for the life of the dispatcher. That happens when a broker-side
 dead-letter queue takes the message, or when a rebalance moves its partition to another consumer.
 Neither SDK bounds the maps today. Python reports their size as
-`stats().attempts_tracked` and `stats().contended_tracked`, and steady growth there is this case. A
-bare message is never counted, because nothing settles it.
+`stats().attempts_tracked` and `stats().contended_tracked`, and steady growth there is this case. The
+Rust dispatcher has no `stats()`: each worker keeps its own policy, and nothing reports its size.
 
 ## Commands off a broker
 
@@ -286,11 +319,12 @@ serializer decodes commands, and a handler that hands each one to the bus:
 
 ```python
 consumer = KafkaConsumer(client, serializer=edax.KernelSerializer("json", "command"))
-dispatcher = edax.KeyOrderedDispatcher(4, lambda msg: bus.dispatch_message(msg, commands))
+bus = edax.CommandBus(codec=edax.json_codec({"Ship": Ship}))
+dispatcher = edax.KeyOrderedDispatcher(4, bus.dispatch_message)
 ```
 
-`commands` is the codec that turns a message back into the command object, `json_codec({"Ship":
-Ship})`. The bus's guard claims the message's idempotency key under its scope, or the message id when
+The bus's codec turns a message back into the command object, and the bus refuses a handler for a
+command it does not name. The bus's guard claims the message's idempotency key under its scope, or the message id when
 it carries none, so a redelivery replays instead of running twice. A command that targets an
 aggregate shares its ordering key, so it runs on the worker of that aggregate. See
 [commands](./commands.md#three-routes-for-a-command).
@@ -325,13 +359,39 @@ dispatcher = edax.KeyOrderedDispatcher(4, router.dispatch)
   in the chain like any handler, or is ignored if that is unset. An ignored event runs no
   middleware.
 
+### Decoding the payload
+
+A handler receives the envelope, an `EventMessage`, with the payload as bytes. Decode it with the codec
+the writer used, `codec.unmarshal(msg)`. That is the same `json_codec` or `msgpack_codec` the
+`Repository` saves with. `unmarshal` applies the name's upcasts first, so an event a former release
+stored reads in today's shape. It raises the terminal `CodecError` for a payload it cannot read, a name
+it does not know, or a version from a newer writer than this codec. The dispatcher then dead-letters
+the message rather than redelivering it forever.
+
+```python
+events = json_codec({"Deposited": Deposited}, upcasters=upcasters)
+
+
+@router.on("Deposited")
+async def deposited(msg: edax.EventMessage) -> None:
+    deposit: Deposited = events.unmarshal(msg)
+    ...
+```
+
+Reading the bytes directly (`json.loads(msg.data)`) skips both rules. An old payload reaches the
+handler in its old shape. A newer writer's payload is read under the older schema, with no error.
+`examples/py/10_idempotent_events.py`, `17_kafka.py` and `19_fault_injection.py` decode this way. The
+router hands every handler the envelope and stays codec-agnostic: one router can serve events of several
+codecs, and an `on_unhandled` handler sees names no codec knows. A router that decodes for the handler is
+a deferred feature.
+
 ### The middleware chain
 
 The router wraps middleware around every handler at `register` time, first middleware outermost,
 as the `CommandBus` does. Two middlewares `a` and `b` produce `>a >b handler <b <a`.
 
 The chain is fixed at registration, so middleware must be added before the handlers it wraps.
-Python takes it in the constructor; Rust takes it through the builder `EventRouter::with`.
+Python and Rust both take it in the constructor, `EventRouter(middleware)` and `EventRouter::new(middleware)`.
 
 ### idempotent_by_id
 
@@ -353,6 +413,21 @@ first's record. Under a pool or a bridge an event with no tenant raises `CodecEr
 Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`, and the key by
 `test_router.py::test_idempotent_by_id_keys_the_claim_by_scope_and_tenant`. Pinned end to end by
 `test_router.py::test_redelivery_through_the_dispatcher_is_skipped_and_acked`.
+
+A cached terminal failure replays on every redelivery, by design. When an operator fixes the cause and
+re-drives the event from the dead-letter queue, the cached failure must go first:
+
+```python
+from edax import Tenancy, forget_event
+
+# The scope and tenancy the guard claimed with, and the event's own id and tenant.
+await forget_event(ledger, "balances", msg.id, tenancy=Tenancy.SILO, tenant=msg.tenant)
+```
+
+`forget_event(store, scope, event_id, *, tenancy, tenant=None, tx=None)` deletes the record the guard
+stored under `event_claim_key(scope, event_id, tenancy=..., tenant=...)`, the kernel's key from the id
+alone. It mirrors the command side's [`forget`](./commands.md#forget-re-driving-a-dead-lettered-command).
+Pinned by `test_router.py::test_forget_event_lets_a_re_driven_dead_letter_run_again`.
 
 **A worker has no ambient transaction to inherit.** The Python dispatcher clears the ambient
 transaction per worker, and Rust has no ambient transaction at all. A handler that opens one

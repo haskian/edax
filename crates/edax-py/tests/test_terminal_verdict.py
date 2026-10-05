@@ -18,6 +18,7 @@ from typing import Any, ClassVar
 import edax
 import pytest
 from conftest import NO_WAIT, build_message
+from edax import Relay, _edax
 from edax.backend.memory import MemoryIdempotencyStore, MemorySagaStore, MemoryTransactor
 from edax.filter import eq, matches
 
@@ -38,9 +39,7 @@ def _unencodable_filter_value() -> None:
 
 
 def _argument_the_binding_refuses() -> None:
-    # A lone surrogate escape: the canonical form refuses it.
-    with edax.errors.mapped():
-        edax.payload_hash_json(b'{"note":"\\ud800"}')
+    edax.partition("acct-1", -1)  # a negative worker count does not convert to `u32`
 
 
 def _raise(error: BaseException) -> Callable[[], None]:
@@ -64,7 +63,7 @@ def _claiming(error: edax.EdaxError, terminal: bool) -> edax.EdaxError:
 @dataclass
 class Source:
     name: str
-    fail: Callable[[], None]
+    fail: Callable[[], object]
     terminal: bool
     #: The code a terminal failure is cached under.
     code: str | None
@@ -74,6 +73,13 @@ SOURCES = [
     Source("kernel_refusal", _kernel_refusal, True, "codec"),
     Source("unencodable_filter_value", _unencodable_filter_value, True, "codec"),
     Source("argument_the_binding_refuses", _argument_the_binding_refuses, True, "codec"),
+    # Every root kernel function maps its failure, so none reaches a consumer as a bare `RuntimeError`.
+    # A lone surrogate escape: the canonical form refuses it.
+    Source("root_payload_hash_json", lambda: edax.payload_hash_json(b'{"note":"\\ud800"}'), True, "codec"),
+    Source("root_canonical_json", lambda: edax.canonical_json(b"[1"), True, "codec"),
+    Source("root_payload_hash", lambda: edax.payload_hash("not bytes"), True, "codec"),  # ty: ignore[invalid-argument-type]
+    Source("root_is_stale", lambda: edax.is_stale(-1, 5), True, "codec"),
+    Source("root_advance", lambda: edax.advance(5, -1), True, "codec"),
     Source("host_rejection", _raise(edax.Rejected("insufficient funds")), True, "rejected"),
     Source("host_exception_declaring_terminal", _raise(DeclaredTerminal("shipped")), True, "rejected"),
     Source("payload_mismatch", _raise(edax.PayloadMismatch("req-1")), True, "payload_mismatch"),
@@ -120,7 +126,7 @@ async def _through_retry(source: Source) -> Outcome:
         source.fail()
 
     bus = edax.CommandBus(edax.retry(3, pacing=NO_WAIT))
-    bus.register("Withdraw", handler)
+    bus.register(Withdraw, handler)
     with pytest.raises(Exception) as caught:
         await bus.dispatch(WITHDRAW)
     return Outcome(runs, [type(caught.value).__name__])
@@ -138,7 +144,7 @@ async def _through_the_guard(source: Source) -> Outcome:
 
     ledger = MemoryIdempotencyStore()
     bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("Withdraw", handler)
+    bus.register(Withdraw, handler)
     seen: list[str] = []
     for _ in range(2):
         with pytest.raises(Exception) as caught:
@@ -156,7 +162,7 @@ async def _through_the_dispatcher(source: Source, handler_for: Callable[[], Any]
     dead: list[int] = []
     handler, runs = handler_for()
 
-    async def on_dead(delivery: edax.Delivery, error: BaseException) -> None:
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
         dead.append(1)
 
     dispatcher = edax.KeyOrderedDispatcher(1, handler, max_attempts=3, on_dead=on_dead, pacing=NO_WAIT)
@@ -215,19 +221,20 @@ async def _through_the_saga_relay(source: Source) -> Outcome:
         source.fail()
 
     db = MemoryTransactor()
+    commands = edax.json_codec({"Withdraw": Withdraw})
     bus = edax.CommandBus(
-        edax.idempotent(MemoryIdempotencyStore(db), scope="test", tenancy=edax.Tenancy.SILO)
+        edax.idempotent(MemoryIdempotencyStore(db), scope="test", tenancy=edax.Tenancy.SILO), codec=commands
     )
-    bus.register("Withdraw", command)
+    bus.register(Withdraw, command)
     store = MemorySagaStore(db)
-    runner = edax.SagaRunner(_WithdrawSaga(), store, edax.json_codec({"Withdraw": Withdraw}))
+    runner = edax.SagaRunner(_WithdrawSaga(), store, commands)
     await runner.on_event(build_message("acct-1", "Withdrawn", 1))
     dead: list[str] = []
 
-    async def on_dead(row: edax.CommandMessage, error: BaseException) -> None:
-        dead.append(row.id)
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append(letter.message.id)
 
-    relay = runner.relay(bus, on_dead=on_dead, max_attempts=3, pacing=NO_WAIT)
+    relay = Relay(runner.outbox(), runner.publish_to(bus), on_dead=on_dead, max_attempts=3, pacing=NO_WAIT)
     settled: list[str] = []
     for _ in range(3):
         try:
@@ -237,7 +244,7 @@ async def _through_the_saga_relay(source: Source) -> Outcome:
             continue
         settled.append("dead" if dead else "ack")
         break
-    assert await store.unpublished() == [], "the row left the outbox, sent or dead-lettered"
+    assert await runner.outbox().unpublished(100) == [], "the row left the outbox, sent or dead-lettered"
     return Outcome(runs, settled)
 
 
@@ -284,7 +291,8 @@ def _failure_of(source: Source) -> BaseException:
 async def test_a_terminal_failure_is_never_retried_or_redelivered(consumer: str, source: Source) -> None:
     failure = _failure_of(source)
     assert edax.is_terminal(failure) is source.terminal, "the source raises what the row says"
-    assert edax.errors.code_of(failure) == source.code
+    cached = _edax.idempotency_settle_failure(1, str(failure), edax.errors.code_of(failure))
+    assert (cached and cached.error_code) == source.code
     assert await _run(consumer, source) == _want(consumer, source)
 
 
@@ -302,6 +310,39 @@ def test_a_subclass_cannot_restate_its_codes_verdict(parent: type[edax.EdaxError
         type("Restated", (parent,), {"terminal": restated})
 
 
+class _TwoArgumentCodec(Exception):
+    """A host error whose `__init__` takes two arguments: as a code's class, `from_wire` could not build it."""
+
+    def __init__(self, message: str, reason: str) -> None:
+        super().__init__(message, reason)
+
+
+@pytest.mark.parametrize(
+    ("parent", "code", "refused", "kernel_class"),
+    [
+        pytest.param(
+            edax.Rejected, "rejected", True, edax.Rejected, id="subclass_re_registering_its_parents_code"
+        ),
+        pytest.param(edax.EdaxError, "codec", True, edax.CodecError, id="new_class_taking_a_kernel_code"),
+        pytest.param(edax.Rejected, None, False, edax.Rejected, id="subclass_inheriting_the_code"),
+    ],
+)
+def test_a_kernel_code_keeps_its_own_class(
+    parent: type[edax.EdaxError], code: str | None, refused: bool, kernel_class: type[edax.EdaxError]
+) -> None:
+    """One class per code: a second one would replace the kernel's class in `from_wire` process-wide, and one
+    that cannot be built from a message turns every kernel failure of that code into a transient `TypeError`."""
+    kwargs = {} if code is None else {"code": code}
+    if refused:
+        with pytest.raises(TypeError, match="re-registers code"):
+            type("Mine", (_TwoArgumentCodec, parent), {}, **kwargs)
+    else:
+        assert type("Mine", (_TwoArgumentCodec, parent), {}, **kwargs).code == kernel_class.code
+    rebuilt = edax.errors.from_wire(f"{kernel_class.code}: boom")
+    assert type(rebuilt) is kernel_class
+    assert edax.is_terminal(rebuilt)
+
+
 async def test_a_cancel_is_never_cached() -> None:
     """A cancel is not a verdict: the guard releases, so the next dispatch runs the handler again."""
     runs = 0
@@ -315,7 +356,7 @@ async def test_a_cancel_is_never_cached() -> None:
 
     ledger = MemoryIdempotencyStore()
     bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("Withdraw", handler)
+    bus.register(Withdraw, handler)
     task = asyncio.ensure_future(bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id))
     await asyncio.sleep(0)
     task.cancel()

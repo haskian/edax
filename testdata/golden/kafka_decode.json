@@ -1,11 +1,22 @@
 [
   {
-    "default_format": "json",
     "headers": [],
-    "kind": "event",
     "name": "no_content_type_falls_back_to_the_default",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
+      "kind": "event",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "cmd-1",
@@ -28,17 +39,28 @@
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       }
     ],
-    "kind": "event",
     "name": "content_type_overrides_the_default",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "8da26964a56576742d31ac6167677265676174655f6964a56167672d31a674656e616e74c0a873657175656e636507a46e616d65ad496e766f696365497373756564a776657273696f6e01a464617461c404deadbeefae636f7272656c6174696f6e5f6964a6636f72722d31ac636175736174696f6e5f6964a5636d642d31ab6f636375727265645f6174c0ab7265636f726465645f6174cf17979cfe362a0000aa657874656e73696f6e7381ab7472616365706172656e74d93730302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031a86d6574616461746181a57472616365a76162632d313233",
     "want": {
+      "kind": "event",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "cmd-1",
@@ -61,22 +83,32 @@
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f782d70726f746f627566"
       }
     ],
-    "kind": "event",
-    "name": "an_unknown_content_type_is_refused",
+    "name": "an_unknown_content_type_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
-      "error": "codec: unknown format: application/x-protobuf"
+      "media_type": "application/x-protobuf",
+      "route": "unknown"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
@@ -87,10 +119,22 @@
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
-    "kind": "event",
     "name": "the_first_content_type_wins",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "8da26964a56576742d31ac6167677265676174655f6964a56167672d31a674656e616e74c0a873657175656e636507a46e616d65ad496e766f696365497373756564a776657273696f6e01a464617461c404deadbeefae636f7272656c6174696f6e5f6964a6636f72722d31ac636175736174696f6e5f6964a5636d642d31ab6f636375727265645f6174c0ab7265636f726465645f6174cf17979cfe362a0000aa657874656e73696f6e7381ab7472616365706172656e74d93730302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031a86d6574616461746181a57472616365a76162632d313233",
     "want": {
+      "kind": "event",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "cmd-1",
@@ -113,42 +157,74 @@
     }
   },
   {
-    "default_format": "json",
     "headers": [],
-    "kind": "event",
     "name": "header_less_bytes_in_another_format_do_not_decode",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "8da26964a56576742d31ac6167677265676174655f6964a56167672d31a674656e616e74c0a873657175656e636507a46e616d65ad496e766f696365497373756564a776657273696f6e01a464617461c404deadbeefae636f7272656c6174696f6e5f6964a6636f72722d31ac636175736174696f6e5f6964a5636d642d31ab6f636375727265645f6174c0ab7265636f726465645f6174cf17979cfe362a0000aa657874656e73696f6e7381ab7472616365706172656e74d93730302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031a86d6574616461746181a57472616365a76162632d313233",
     "want": {
       "error": "codec: decode: expected value at line 1 column 1"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": ""
       }
     ],
-    "kind": "event",
-    "name": "an_empty_content_type_is_refused",
+    "name": "an_empty_content_type_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
-      "error": "codec: unknown format: "
+      "media_type": "",
+      "route": "unknown"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "Content-Type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       }
     ],
-    "kind": "event",
     "name": "an_upper_case_header_name_is_not_the_content_type",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
+      "kind": "event",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "cmd-1",
@@ -171,7 +247,6 @@
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
@@ -182,10 +257,22 @@
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6d73677061636b"
       }
     ],
-    "kind": "event",
     "name": "a_non_utf8_first_content_type_reads_as_absent",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
+      "kind": "event",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "cmd-1",
@@ -208,77 +295,106 @@
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e3b20636861727365743d7574662d38"
       }
     ],
-    "kind": "event",
-    "name": "a_parameterized_media_type_is_refused",
+    "name": "a_parameterized_media_type_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
-      "error": "codec: unknown format: application/vnd.edax.event+json; charset=utf-8"
+      "media_type": "application/vnd.edax.event+json; charset=utf-8",
+      "route": "unknown"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e656e76656c6f70652b6a736f6e"
       }
     ],
-    "kind": "event",
-    "name": "the_envelope_media_type_is_refused",
+    "name": "the_envelope_media_type_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
-      "error": "codec: unknown format: application/vnd.edax.envelope+json"
+      "media_type": "application/vnd.edax.envelope+json",
+      "route": "unknown"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
       }
     ],
-    "kind": "event",
-    "name": "a_command_record_is_refused_by_kind",
+    "name": "a_command_record_under_an_event_registry_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a22636d642d31222c226964656d706f74656e63795f6b6579223a227265712d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c226e616d65223a224973737565496e766f696365222c2276657273696f6e223a312c2264617461223a2265794a6862573931626e51694f6a457766513d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636f72722d31222c226973737565645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b7d2c226d65746164617461223a7b2275736572223a22752d37227d7d",
     "want": {
-      "error": "codec: expected an event message, got a command media type"
+      "media_type": "application/vnd.edax.command+json",
+      "route": "unknown"
     }
   },
   {
-    "default_format": "json",
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
       }
     ],
-    "kind": "event",
-    "name": "event_bytes_under_a_command_media_type_are_refused_by_kind",
-    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
-    "want": {
-      "error": "codec: expected an event message, got a command media type"
-    }
-  },
-  {
-    "default_format": null,
-    "headers": [
-      {
-        "key": "content-type",
-        "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
-      }
-    ],
-    "kind": "command",
     "name": "a_json_command_decodes_by_its_content_type",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a22636d642d31222c226964656d706f74656e63795f6b6579223a227265712d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c226e616d65223a224973737565496e766f696365222c2276657273696f6e223a312c2264617461223a2265794a6862573931626e51694f6a457766513d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636f72722d31222c226973737565645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b7d2c226d65746164617461223a7b2275736572223a22752d37227d7d",
     "want": {
+      "kind": "command",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "corr-1",
@@ -298,17 +414,28 @@
     }
   },
   {
-    "default_format": null,
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6d73677061636b"
       }
     ],
-    "kind": "command",
     "name": "a_msgpack_command_decodes_by_its_content_type",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+msgpack"
+      }
+    ],
     "value_hex": "8ca26964a5636d642d31af6964656d706f74656e63795f6b6579a57265712d31ac6167677265676174655f6964a56167672d31a674656e616e74c0a46e616d65ac4973737565496e766f696365a776657273696f6e01a464617461c40d7b22616d6f756e74223a31307dae636f7272656c6174696f6e5f6964a6636f72722d31ac636175736174696f6e5f6964a6636f72722d31a96973737565645f6174cf17979cfe362a0000aa657874656e73696f6e7380a86d6574616461746181a475736572a3752d37",
     "want": {
+      "kind": "command",
       "message": {
         "aggregate_id": "agg-1",
         "causation_id": "corr-1",
@@ -328,43 +455,159 @@
     }
   },
   {
-    "default_format": null,
     "headers": [],
-    "kind": "command",
-    "name": "a_header_less_command_is_refused",
+    "name": "a_header_less_record_under_a_command_default_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a22636d642d31222c226964656d706f74656e63795f6b6579223a227265712d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c226e616d65223a224973737565496e766f696365222c2276657273696f6e223a312c2264617461223a2265794a6862573931626e51694f6a457766513d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636f72722d31222c226973737565645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b7d2c226d65746164617461223a7b2275736572223a22752d37227d7d",
     "want": {
-      "error": "codec: a command record has no readable content-type header"
+      "route": "headerless"
     }
   },
   {
-    "default_format": null,
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
-    "kind": "command",
-    "name": "an_event_record_is_refused_by_kind",
+    "name": "an_event_record_under_a_command_registry_is_poison",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      },
+      {
+        "format": "msgpack",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+msgpack"
+      }
+    ],
     "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
     "want": {
-      "error": "codec: expected a command message, got an event media type"
+      "media_type": "application/vnd.edax.event+json",
+      "route": "unknown"
     }
   },
   {
-    "default_format": null,
     "headers": [
       {
         "key": "content-type",
         "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
       }
     ],
-    "kind": "command",
-    "name": "command_bytes_under_an_event_media_type_are_refused_by_kind",
+    "name": "a_mixed_registry_decodes_an_event",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      }
+    ],
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
+    "want": {
+      "kind": "event",
+      "message": {
+        "aggregate_id": "agg-1",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "3q2+7w==",
+        "extensions": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "name": "InvoiceIssued",
+        "occurred_at": null,
+        "recorded_at": 1700000000000000000,
+        "sequence": 7,
+        "tenant": null,
+        "version": 1
+      }
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
+      }
+    ],
+    "name": "a_mixed_registry_decodes_a_command",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      }
+    ],
     "value_hex": "7b226964223a22636d642d31222c226964656d706f74656e63795f6b6579223a227265712d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c226e616d65223a224973737565496e766f696365222c2276657273696f6e223a312c2264617461223a2265794a6862573931626e51694f6a457766513d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636f72722d31222c226973737565645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b7d2c226d65746164617461223a7b2275736572223a22752d37227d7d",
     "want": {
-      "error": "codec: expected a command message, got an event media type"
+      "kind": "command",
+      "message": {
+        "aggregate_id": "agg-1",
+        "causation_id": "corr-1",
+        "correlation_id": "corr-1",
+        "data": "eyJhbW91bnQiOjEwfQ==",
+        "extensions": {},
+        "id": "cmd-1",
+        "idempotency_key": "req-1",
+        "issued_at": 1700000000000000000,
+        "metadata": {
+          "user": "u-7"
+        },
+        "name": "IssueInvoice",
+        "tenant": null,
+        "version": 1
+      }
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "content-type",
+        "value_hex": "6170706c69636174696f6e2f766e642e656461782e636f6d6d616e642b6a736f6e"
+      }
+    ],
+    "name": "event_bytes_under_a_command_media_type_do_not_decode",
+    "registry": [
+      {
+        "format": "json",
+        "kind": "event",
+        "media_type": "application/vnd.edax.event+json"
+      },
+      {
+        "format": "json",
+        "kind": "command",
+        "media_type": "application/vnd.edax.command+json"
+      }
+    ],
+    "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d",
+    "want": {
+      "error": "codec: decode: missing field `issued_at` at line 1 column 337"
     }
   }
 ]

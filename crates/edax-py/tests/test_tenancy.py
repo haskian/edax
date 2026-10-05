@@ -15,7 +15,7 @@ import edax
 import pytest
 from conftest import SpyProducerClient, build_command
 from edax import Aggregate, CommandBus, Repository, Tenancy, Version, json_codec, tenant_key
-from edax.aggregate import _replace
+from edax._values import replace
 from edax.backend.kafka import KafkaProducer
 from edax.backend.memory import (
     MemoryCommandOutbox,
@@ -65,7 +65,9 @@ class AccountCodec:
         return str(account.balance).encode()
 
 
-def repository(mode: Tenancy, store: MemoryEventStore, *, snapshot_every: int = 1) -> Repository[Account]:
+def repository(
+    mode: Tenancy, store: MemoryEventStore, *, snapshot_every: int = 1
+) -> Repository[Account, Any]:
     events = json_codec({"Deposited": Deposited})
     return Repository(store, events, AccountCodec(), tenancy=mode, snapshot_every=snapshot_every)
 
@@ -99,7 +101,7 @@ def test_a_mode_reports_the_kernels_rules(mode: Tenancy, requires_tenant: bool, 
 def test_tenant_key_composes_only_where_the_mode_says(
     name: str, mode: Tenancy, tenant: str | None, expected: str
 ) -> None:
-    assert tenant_key(mode, "order-1", tenant) == expected, name
+    assert tenant_key(mode, tenant, "order-1") == expected, name
 
 
 @pytest.mark.parametrize(
@@ -115,7 +117,7 @@ def test_a_bad_tenant_is_terminal(name: str, mode: Tenancy, tenant: str | None) 
     """Terminal, not transient: the same call fails the same way on every retry, so a guard caches it
     rather than releasing a claim for a key it will never accept."""
     with pytest.raises(CodecError):
-        tenant_key(mode, "order-1", tenant)
+        tenant_key(mode, tenant, "order-1")
 
 
 @pytest.mark.parametrize(
@@ -140,7 +142,7 @@ def test_two_tenants_never_share_a_composed_key() -> None:
     """The collision a bare separator would allow: tenant `a:b` with key `c`, against tenant `a` with
     key `b:c`. The kernel's length prefix is what keeps them apart, and this is the one case a host
     cannot be asked to remember."""
-    assert tenant_key(Tenancy.POOL, "c", "a:b") != tenant_key(Tenancy.POOL, "b:c", "a")
+    assert tenant_key(Tenancy.POOL, "a:b", "c") != tenant_key(Tenancy.POOL, "a", "b:c")
 
 
 # ---- the write side ------------------------------------------------------
@@ -272,7 +274,7 @@ async def test_a_saved_command_belongs_to_the_aggregates_tenant(
     rows = await outbox.unpublished(10)
     assert [row.tenant for row in rows] == [want], name
     assert [row.tenant for row in stored] == [want], f"{name}: the same tenant as the events"
-    assert rows == [_replace(ship, tenant=want)], f"{name}: every other field as built"
+    assert rows == [replace(ship, tenant=want)], f"{name}: every other field as built"
 
 
 # ---- the command side ----------------------------------------------------
@@ -292,7 +294,7 @@ class KeyLog(MemoryIdempotencyStore):
         super().__init__()
         self.claimed: list[str] = []
 
-    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> edax.command.Claimed:
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> edax.idempotency.Claimed:
         self.claimed.append(key)
         return await super().claim(key, payload_hash, tx)
 
@@ -347,7 +349,7 @@ async def test_an_idempotency_claim_is_keyed_by_tenant_in_a_pool(
     ledger = KeyLog()
     bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
 
-    @bus.on("OpenAccount")
+    @bus.on(OpenAccount)
     async def open_account(cmd: OpenAccount) -> str:
         runs.append(cmd.owner)
         return f"account:{cmd.owner}"
@@ -382,7 +384,7 @@ async def test_forget_deletes_the_row_the_guard_wrote(
     bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
     tenant = "acme" if mode is Tenancy.POOL else None
 
-    @bus.on("OpenAccount")
+    @bus.on(OpenAccount)
     async def open_account(cmd: OpenAccount) -> str:
         nonlocal runs
         runs += 1
@@ -391,10 +393,10 @@ async def test_forget_deletes_the_row_the_guard_wrote(
     with pytest.raises(edax.Rejected):
         await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
     if want_error is None:
-        await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+        await edax.idempotency.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
     else:
         with pytest.raises(want_error):
-            await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+            await edax.idempotency.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
     with pytest.raises((edax.Rejected, edax.CachedFailure)) as redriven:
         await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
     assert runs == want_runs
@@ -414,7 +416,7 @@ class Shipping:
         self._mode = mode
 
     def instance_id(self, msg: Any) -> str | None:
-        return tenant_key(self._mode, msg.aggregate_id, msg.tenant)
+        return tenant_key(self._mode, msg.tenant, msg.aggregate_id)
 
     def handle(self, state: str | None, msg: Any) -> tuple[Any, list[Fulfill]]:
         return ("seen" if state is None else f"{state}+seen"), [Fulfill(msg.aggregate_id)]
@@ -429,9 +431,9 @@ async def test_a_pool_saga_folds_one_instance_per_tenant() -> None:
         await runner.on_event(event("order-7", "OrderPaid", 1, id=f"{tenant}-evt-1", tenant=tenant))
 
     for tenant in TENANTS:
-        instance = await store.load(tenant_key(Tenancy.POOL, "order-7", tenant))
-        assert instance is not None and instance.state == "seen", tenant
-    assert await store.load("order-7") is None, "nothing under the bare correlation id"
+        instance = await store.load("shipping", tenant_key(Tenancy.POOL, tenant, "order-7"))
+        assert isinstance(instance, edax.RunningInstance) and instance.state == "seen", tenant
+    assert await store.load("shipping", "order-7") is None, "nothing under the bare correlation id"
 
 
 async def test_a_saga_command_inherits_the_folded_events_tenant() -> None:
@@ -440,9 +442,9 @@ async def test_a_saga_command_inherits_the_folded_events_tenant() -> None:
     store = MemorySagaStore(MemoryTransactor())
     runner = SagaRunner(Shipping(Tenancy.POOL), store, json_codec({"Fulfill": Fulfill}))
     await runner.on_event(event("order-7", "OrderPaid", 1, tenant="acme"))
-    rows = await store.unpublished(10)
+    rows = await runner.outbox().unpublished(10)
     assert [row.tenant for row in rows] == ["acme"], "the command inherits the folded event's tenant"
-    instance = tenant_key(Tenancy.POOL, "order-7", "acme")
+    instance = tenant_key(Tenancy.POOL, "acme", "order-7")
     assert [row.aggregate_id for row in rows] == [instance], "targeted and ordered by the instance"
 
 
@@ -456,7 +458,7 @@ def _shard_key(msg: Any) -> str:
 
 
 _ACME_EVENT = event("order-1", "Deposited", 1, tenant="acme")
-_ACME_COMMAND = _replace(build_command("Ship", aggregate_id="order-1"), tenant="acme")
+_ACME_COMMAND = replace(build_command("Ship", aggregate_id="order-1"), tenant="acme")
 
 
 @pytest.mark.parametrize(

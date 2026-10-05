@@ -67,15 +67,16 @@ The `Transactor` Protocol has one method, and its docstring is the specification
 | one handle | The yielded `tx` is one backend handle that every participant store accepts. Writes through it are atomic as a set: all commit or none. |
 | read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `transaction` sees the appended events. |
 | no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` of their own transactor instead of opening a second one, so no savepoint support is needed. A second `transaction` on the same transactor raises `BadHandle`; one over another database nests, and each database's stores see only its own unit of work. |
-| identity | An object whose `begin()` only delegates to another transactor names that transactor as its `transactor` attribute, so `transaction(store)` and `transaction(store.transactor)` open the same unit of work and every store over the database finds it. |
+| identity | An object whose `begin()` only delegates to another transactor names that transactor as its `transactor` attribute, so `transaction(store)` and `transaction(store.transactor)` open the same unit of work and every store over the database finds it. The SDK follows the attribute one hop, never a chain. |
 | threading | The handle is used from one asyncio task at a time; no thread safety required. |
 
-Rust states the same boundary as a trait. `identity` and `transaction` have default bodies:
+Rust states the same boundary as a trait. `transaction` has a default body. `identity` has none, so
+every backend names the database it opens units of work on:
 
 ```rust
 pub trait Transactor {
     type Tx;
-    fn identity(&self) -> usize; // the database; defaults to the transactor's address
+    fn identity(&self) -> usize; // the database: equal for two transactors over one database
     fn begin(&self) -> Result<Self::Tx, Error>;
     fn commit(&self, tx: Self::Tx) -> Result<(), Error>;
     fn rollback(&self, tx: Self::Tx);

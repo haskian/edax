@@ -44,7 +44,7 @@ async def charge_twice(ledger: IdempotencyStore) -> None:
         return f"charged {cmd.amount}"
 
     bus = CommandBus(idempotent(ledger, scope="payments", tenancy=Tenancy.SILO))
-    bus.register("ChargeCard", charge)
+    bus.register(ChargeCard, charge)
 
     # 1. A charge, then the same message again: replayed from the ledger.
     first = await bus.dispatch(ChargeCard("pay-1", "visa", 40), idempotency_key="pay-1")

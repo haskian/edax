@@ -23,8 +23,8 @@ flowchart LR
 
 | Concept | Rust | Python |
 |---|---|---|
-| the carried state | `Root<E>` embedded, reached through `root()` / `root_mut()` | fields on the `Aggregate` base: `id`, `version`, `pending` |
-| the version | `Root { version, pending }`, `current()` | `Version(initial, updates)`, `.current` property |
+| the carried state | `Root<E>` embedded, reached through `root()` / `root_mut()`, read through `id()`, `version()`, `tenant()`, `pending()` | on the `Aggregate` base: `id` and `tenant` fields, `version` and `pending` read-only properties |
+| the version | `Root::version()` and `pending()`, `current()` | `Version(initial, updates)`, `.current` property |
 | fold one event | `fn transition(&mut self, event: &Self::Event)` | `def transition(self, event) -> None` |
 | record a new event | `apply(event)`, one event | `apply(*events)`, any number |
 
@@ -32,10 +32,12 @@ Both SDKs split the version in two on purpose. One half is what storage last sai
 counts what this instance applied since. Their sum is the version a save is about to write. The
 stored half is the `expected_version` that save compares against.
 
-Python names the pair `Version(initial, updates)`, and `current` is their sum. Rust keeps `version:
-u64` on `Root` with a private `pending`, and `current()` is `version + pending.len()`. `pending` is
-private, so a host reaches it only through `apply` and `take_pending`. That keeps one source of
-truth for the version.
+Python names the pair `Version(initial, updates)`, and `current` is their sum. Rust keeps the
+loaded version and the pending events on `Root`, and `current()` is `version() + pending().len()`.
+Every `Root` field is private behind a getter. A host adds a pending event only through `apply`; the
+`Repository` is the only writer of the version, the tenant and the reset after a save. Python derives
+`version` the same way: `updates` is the count of pending events. Both `version` and `pending` are
+read-only properties, and `pending` is a tuple. That keeps one source of truth for the version.
 
 `apply` runs `transition` on the state, then records the event as pending, which advances the
 current version. Replay must never call it. A replayed event is already stored, and queueing it as
@@ -63,11 +65,11 @@ They are different seams with different jobs, and confusing them is a common mis
 
 | | `EventCodec` | `AggregateCodec` |
 |---|---|---|
-| bridges | one domain event object and its `Event`: `name`, `version`, `data` bytes | the whole aggregate and its snapshot bytes |
+| bridges | one domain event object and its `Payload`: `name`, `version`, `data` bytes | the whole aggregate and its snapshot bytes |
 | methods | `marshal` / `unmarshal` | `load` / `dump` (plus `type` in Python, `type_name()` in Rust) |
 | used on | every event, every save and every replay | one snapshot per save, one per load |
 | ships ready-made | yes: `json_codec`, `msgpack_codec` (Python); `JsonRegistryCodec`, `MsgpackRegistryCodec` (Rust) | no, hand-written on purpose |
-| where | `edax.codec`, `edax::codec` | `AggregateCodec` in `edax::aggregate`, `AggregateCodec` in `edax.store` |
+| where | `edax.codec`, `edax::codec` | `AggregateCodec` in `edax::aggregate`, `AggregateCodec` in `edax.aggregate` |
 
 The event codecs ship because the shape is mechanical: a fixed set of event types, each serialized
 whole. The snapshot codec does not, because only you know which fields are state and which are
@@ -80,6 +82,15 @@ events = json_codec({"Deposited": Deposited, "Withdrawn": Withdrawn})
 `json_codec` lives in `edax.codec`. `msgpack_codec` takes the same arguments and writes the smaller,
 binary MessagePack instead. Both accept `upcasters=`, so an older stored payload is raised to the
 current shape on load.
+
+Both write a payload through the SDK's one encoder, the one a command hash and a projection document
+use. A `Decimal` is written as the kernel's canonical decimal text (`Decimal("9.50")` as `"9.5"`). An
+aware `datetime` is written as fixed-width UTC text (`"2024-01-01T00:30:00.000000Z"`), in MessagePack
+too, never as a MessagePack timestamp. A naive `datetime` raises `CodecError`: its instant is unknown.
+A payload an earlier release stored, with `"9.50"` or a MessagePack timestamp, still reads as the same value. On read, a struct comes
+from a map only, at every depth: a positional array is a `CodecError` in both SDKs. A host value is
+read as strictly as it is written. A stored instant with no offset is a `CodecError` in both SDKs, and
+so is a decimal that is `NaN` or an infinity. `event_codec.json` pins both.
 
 Each event name has its own schema version, and its upcaster is the only place it is set. A name with
 no upcaster writes version 1. A name with one writes one past its highest step, as the kernel's
@@ -106,7 +117,11 @@ Rust's `JsonRegistryCodec::<AccountEvent>::new()` is the same registry. It has o
 the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
 `.upcaster(name, Upcaster)` per name. The upcaster sets that name's version the same way. The
 registry writes the same name and bytes as Python's `json_codec` for the same event, pinned by
-`testdata/golden/event_codec.json`, so a stream reads the same from either SDK.
+`testdata/golden/event_codec.json`, so a stream reads the same from either SDK. Declare a decimal
+field as `edax::Decimal` and an instant field as `edax::Instant`, so the Rust payload carries the
+same text as Python's `Decimal` and `datetime`. The payload rules (map-only structs, no trailing bytes)
+are the kernel's `Format::encode_payload` and `Format::decode_payload`; `Json` and `Msgpack` only name
+the format.
 `JsonCodec::<T>::new(name)` remains for one event type under one name. Its
 `.with_upcaster(Upcaster)` sets the version, and it asks the kernel the same way.
 
@@ -171,10 +186,10 @@ unsequenced event fails the load with `CodecError` instead of folding the wrong 
 A snapshot may lag the stream and must never lead it. Leading it would make the replay double-count
 the events the snapshot already contains.
 
-Rust has two entry points instead of an optional argument: `Repository::load` opens a unit of work
-of its own, `Repository::load_in` runs inside the caller's `&mut Tx`. Python has one
-`load(aggregate_id, *, tx=None)` that joins the ambient transaction when `tx` is omitted. See
-[transactions](./transactions.md).
+Rust has two entry points instead of an optional argument: `Repository::load(tenant, id)` opens a
+unit of work of its own, `Repository::load_in(tx, tenant, id)` runs inside the caller's `&mut Tx`.
+Python has one `load(aggregate_id, *, tenant=None, tx=None)` that joins the ambient transaction when
+`tx` is omitted. See [transactions](./transactions.md).
 
 ## Repository.save: marshal, append, snapshot
 
@@ -219,7 +234,7 @@ Sequence numbers are assigned by `Repository`, never renumbered by a store: the 
 `expected_version + 1 .. + n`. The store stamps `recorded_at`, and returns the stored messages. The snapshot is written at `current`, the version after the batch.
 
 The whole batch marshals first, so a codec failure on the third of three events fails the save
-outright and appends nothing. `Repository::save_with` marshals first for that reason, and
+outright and appends nothing. Rust's `Repository::save` marshals first for that reason, and
 the Rust store suite asserts it.
 
 An empty save still calls `append`. Nothing is written, but the compare-and-set still runs. A
@@ -345,11 +360,12 @@ matches both: `Repository::new(store, events, aggregates).with_ids(new_id)` pins
 
 Every event of one save carries the same context.
 
-| Argument | Python `save(...)` | Rust `save_with` / `save_with_in` | Default |
+| Argument | Python `save(...)` | Rust `save` / `save_in`, a field of `SaveOptions` | Default |
 |---|---|---|---|
-| lineage | `lineage=` | `lineage` | the ambient lineage of the message being handled, else a new flow |
+| lineage | `lineage=` | `lineage` | Python: the ambient lineage of the message being handled, else a new flow. Rust: a new flow |
 | extensions | `extensions=` | `extensions` | none |
 | metadata | `metadata=` | `metadata` | none |
+| valid time | `occurred_at=` | `occurred_at` | none: the facts happened when the store records them |
 | commands | `commands=` | none | none |
 | tenant | from the aggregate | from the aggregate | the tenant the load named; see [multi-tenancy](../guides/multi-tenancy.md) |
 

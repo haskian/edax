@@ -1,0 +1,102 @@
+[
+  {
+    "holds": "free",
+    "holds_after": "free",
+    "key": "order-7",
+    "name": "complete_over_free",
+    "op": "complete",
+    "want": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record"
+    }
+  },
+  {
+    "holds": "own_claim",
+    "holds_after": "same_record",
+    "key": "order-7",
+    "name": "complete_over_own_claim",
+    "op": "complete",
+    "want": {
+      "ok": "apply"
+    }
+  },
+  {
+    "holds": "other_claim",
+    "holds_after": "other_claim",
+    "key": "order-7",
+    "name": "complete_over_other_claim",
+    "op": "complete",
+    "want": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record"
+    }
+  },
+  {
+    "holds": "same_record",
+    "holds_after": "same_record",
+    "key": "order-7",
+    "name": "complete_over_same_record",
+    "op": "complete",
+    "want": {
+      "ok": "leave"
+    }
+  },
+  {
+    "holds": "other_record",
+    "holds_after": "other_record",
+    "key": "order-7",
+    "name": "complete_over_other_record",
+    "op": "complete",
+    "want": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record"
+    }
+  },
+  {
+    "holds": "free",
+    "holds_after": "free",
+    "key": "order-7",
+    "name": "release_over_free",
+    "op": "release",
+    "want": {
+      "ok": "leave"
+    }
+  },
+  {
+    "holds": "own_claim",
+    "holds_after": "free",
+    "key": "order-7",
+    "name": "release_over_own_claim",
+    "op": "release",
+    "want": {
+      "ok": "apply"
+    }
+  },
+  {
+    "holds": "other_claim",
+    "holds_after": "other_claim",
+    "key": "order-7",
+    "name": "release_over_other_claim",
+    "op": "release",
+    "want": {
+      "ok": "leave"
+    }
+  },
+  {
+    "holds": "same_record",
+    "holds_after": "same_record",
+    "key": "order-7",
+    "name": "release_over_same_record",
+    "op": "release",
+    "want": {
+      "ok": "leave"
+    }
+  },
+  {
+    "holds": "other_record",
+    "holds_after": "other_record",
+    "key": "order-7",
+    "name": "release_over_other_record",
+    "op": "release",
+    "want": {
+      "ok": "leave"
+    }
+  }
+]

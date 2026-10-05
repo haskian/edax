@@ -12,25 +12,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import warnings
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Collection, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast, get_args
 
-from .. import _edax
+from .. import _native, errors
+from .._deadline import within
 from .._owned import ThreadBound
-from ..aggregate import (
-    CommandMessage,
-    EventMessage,
-    KernelSerializer,
-    MessageKind,
-    Serializer,
-    message_kind,
-)
-from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
-from ..dispatcher import Delivery, KeyOrderedDispatcher
-from ..errors import CodecError, mapped
+from .._wiring import I64_MAX, is_int
+from ..broker import KeyFn, consume
+from ..delivery import DeadLetter, Delivery, Undecodable
+from ..dispatcher import KeyOrderedDispatcher
+from ..errors import BadHandle, CodecError
+from ..message import CommandMessage, EventMessage, MessageKind, message_kind
 from ..observe import error_type
+from ..serializer import KernelSerializer, Serializer
 from ..tenancy import Tenancy
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
@@ -39,6 +38,7 @@ if TYPE_CHECKING:  # the base package imports no broker library; these names are
 __all__ = [
     "CONTENT_TYPE",
     "ConsumerClient",
+    "FetchedRecord",
     "KafkaConsumer",
     "KafkaDeadLetterSink",
     "KafkaFetched",
@@ -52,23 +52,26 @@ __all__ = [
 
 logger = logging.getLogger("edax.backend.kafka")
 
-#: How often a revoke looks at the handlers still running.
-_DRAIN_POLL_S = 0.01
-
 #: How long one send may take, by default, on the producer and on the dead-letter sink alike.
 _PUBLISH_TIMEOUT_S: Final = 30.0
+#: How often the consumer commits what is due, by default.
+_COMMIT_INTERVAL_S: Final = 1.0
+#: How long one commit may take, by default.
+_COMMIT_TIMEOUT_S: Final = 10.0
+#: How long a revoke waits, by default, for the handlers still running.
+_DRAIN_TIMEOUT_S: Final = 30.0
 
 # The kernel's record structs, re-exported here so a middleware builds one without importing `_edax`.
-KafkaRecord = _edax.KafkaRecord
-KafkaHeader = _edax.KafkaHeader
+KafkaRecord = _native.KafkaRecord
+KafkaHeader = _native.KafkaHeader
 #: One partition's consumer bookkeeping as the kernel reports it: ``unsettled`` offsets delivered and not
 #: yet settled, how many of them are still ``live`` (a handler may still settle them; a rewind retired
 #: the rest), the highest ``max_delivered``, and the last ``committed`` watermark (``None`` before the
 #: first commit), under the ``topic`` and ``partition`` they belong to.
-PartitionStats = _edax.PartitionStats
+PartitionStats = _native.PartitionStats
 #: The header naming a record value's media type, the one header edax writes. A middleware that rewrites
 #: the value rewrites this header by this name, so the consumer still routes to the right serializer.
-CONTENT_TYPE: str = _edax.kafka_content_type_header()
+CONTENT_TYPE: str = _native.kafka_content_type_header()
 
 
 class ProducerClient(Protocol):
@@ -91,10 +94,33 @@ class ProducerClient(Protocol):
     ) -> Any: ...
 
 
+class FetchedRecord(Protocol):
+    """A record as the client hands it over, read-only: aiokafka's ``ConsumerRecord`` is one. ``timestamp``
+    is the broker timestamp in Unix milliseconds and ``timestamp_type`` whose clock it is, ``None`` when the
+    client reports none. A null key, value or header value is ``None``."""
+
+    @property
+    def topic(self) -> str: ...
+    @property
+    def partition(self) -> int: ...
+    @property
+    def offset(self) -> int: ...
+    @property
+    def key(self) -> bytes | None: ...
+    @property
+    def value(self) -> bytes | None: ...
+    @property
+    def headers(self) -> Sequence[tuple[str, bytes | None]] | None: ...
+    @property
+    def timestamp(self) -> int | None: ...
+    @property
+    def timestamp_type(self) -> int | None: ...
+
+
 class ConsumerClient(Protocol):
     """The three ``AIOKafkaConsumer`` calls :class:`KafkaConsumer` makes. Any client with these works."""
 
-    async def getone(self) -> Any: ...
+    async def getone(self) -> FetchedRecord: ...
 
     async def commit(self, offsets: dict[TopicPartition, int], /) -> Any: ...
 
@@ -119,31 +145,27 @@ def _consumer_stopped(e: Exception) -> bool:
 
 
 def _check_producer(client: ProducerClient) -> None:
-    """Warn when the client acks on the leader alone. The outbox marks a row published once ``publish``
-    returns, so an ack that a failed leader takes with it is a lost event. The probe reads a private
-    attribute of ``AIOKafkaProducer``, so a different client is not judged."""
+    """Warn as the kernel warns about the client's ``acks`` (anything but all): the outbox marks a row
+    published once ``publish`` returns, so an ack that a failed leader takes with it is a lost event. The
+    probe reads a private attribute of ``AIOKafkaProducer``, which holds ``acks`` as a number, so a
+    different client is not judged. Build it with ``enable_idempotence=True``, which implies
+    ``acks="all"``."""
     acks = getattr(getattr(client, "_sender", None), "_acks", None)
-    if acks is not None and acks != -1:
-        warnings.warn(
-            f"KafkaProducer: the client acks with acks={acks!r}; a leader failover loses an acked outbox "
-            "event. Build it with enable_idempotence=True (which implies acks='all'), or acks='all'.",
-            stacklevel=3,
-        )
+    if not is_int(acks):
+        return
+    warning = _native.kafka_acks_warning(acks)
+    if warning is not None:
+        warnings.warn(f"KafkaProducer: {warning}", stacklevel=3)
 
 
 def _check_consumer(client: ConsumerClient) -> None:
-    """Refuse a client configuration that loses or never commits offsets. Both probes read private
-    attributes of ``AIOKafkaConsumer``; a different client is not judged."""
-    if getattr(client, "_enable_auto_commit", False):
-        raise ValueError(
-            "KafkaConsumer: the client auto-commits its fetch position, which commits past deliveries still "
-            "in flight and loses them on a restart. Build it with enable_auto_commit=False."
-        )
-    if getattr(client, "_group_id", "") is None:
-        raise ValueError(
-            "KafkaConsumer: the client has no group_id, so every commit fails and nothing is ever "
-            "committed. Build it with a group_id."
-        )
+    """Refuse, as the kernel refuses, a client that auto-commits or has no group: it loses or never
+    commits offsets. Both probes read private attributes of ``AIOKafkaConsumer`` (``enable_auto_commit=False``
+    and a ``group_id`` are the fix); a fact a different client does not expose is passed as the safe value,
+    so that client is not judged."""
+    _native.kafka_check_consumer(
+        bool(getattr(client, "_enable_auto_commit", False)), getattr(client, "_group_id", "") is not None
+    )
 
 
 def _check_listener(client: ConsumerClient) -> None:
@@ -154,50 +176,93 @@ def _check_listener(client: ConsumerClient) -> None:
     judged."""
     subscription = getattr(client, "_subscription", None)
     if subscription is not None and subscription.partitions_auto_assigned() and subscription.listener is None:
-        raise ValueError(
+        raise BadHandle(
             "KafkaConsumer.run: the client is subscribed without a rebalance listener, so a revoked "
             "partition keeps its bookkeeping and blocks every later commit. Subscribe with "
             "listener=consumer.rebalance_listener()."
         )
 
 
-async def _send(client: ProducerClient, topic: str, record: KafkaRecord, timeout_s: float) -> None:
-    """Send ``record`` to ``topic`` and wait for the ack, raising a transient :class:`TimeoutError` after
-    ``timeout_s``. With ``enable_idempotence=True`` aiokafka never expires a batch, so without this bound a
-    send to a broker that stopped answering waits forever. A send cut off at the deadline may still land:
-    the batch stays in the client, so the caller's retry can write a second copy, which consumers dedup by
-    ``msg.id``."""
+def _whole_ms(name: str, seconds: float) -> int:
+    """``seconds`` as the whole milliseconds the kernel checks, rounded toward zero, so a duration under a
+    millisecond is ``0`` and refused. A value that is no finite number of seconds, or whose count the
+    kernel's signed 64-bit milliseconds cannot carry, is the terminal :class:`~edax.errors.BadHandle`, named
+    by ``name``."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds):
+        raise BadHandle(f"{name} must be a finite number of seconds, got {seconds!r}")
+    millis = int(seconds * 1000)
+    # Past the i64 range the value would fail to cross into the kernel as a `CodecError`, not as wiring.
+    if abs(millis) > I64_MAX:
+        raise BadHandle(f"{name} is too large for the kernel's milliseconds, got {seconds!r}")
+    return millis
+
+
+def _check_durations(**seconds: float) -> None:
+    """Refuse, as the kernel refuses, each duration in ``seconds``, named by its ``*_s`` setting, that is not
+    at least a whole millisecond: the terminal :class:`~edax.errors.BadHandle`, raised at wiring."""
+    _native.kafka_check_config(
+        **{name.removesuffix("_s") + "_ms": _whole_ms(name, value) for name, value in seconds.items()}
+    )
+
+
+@contextmanager
+def _classified() -> Iterator[None]:
+    """Re-raise a broker error from a client call inside as the kernel classifies its Kafka protocol error
+    code (aiokafka's ``errno``): one record the broker refuses as the terminal
+    :class:`~edax.errors.CodecError`, so it is dead-lettered; a client the broker refuses (authorization,
+    an invalid topic, an unsupported version) as the fatal :class:`~edax.errors.BadHandle`, which stops the
+    relay or the consumer; any other code as a transient :class:`~edax.errors.StoreError`. A failure with
+    no protocol code (a client-side timeout, a lost connection) passes unchanged and stays unclassified,
+    which is transient. aiokafka's own ``retriable`` flag is not read: it calls a client timeout final."""
     try:
-        await asyncio.wait_for(_place_and_send(client, topic, record), timeout_s)
-    except asyncio.TimeoutError as e:
-        raise TimeoutError(
-            f"kafka send to {topic!r}: no ack within {timeout_s}s; the record may still land, so a retry "
-            "may write it twice"
-        ) from e
+        yield
+    except OSError:
+        raise  # its errno is the operating system's, not a Kafka protocol error code
+    except Exception as e:
+        error_code = getattr(e, "errno", None)
+        if not is_int(error_code):
+            raise
+        raise errors.from_wire(_native.kafka_broker_error(error_code, str(e))) from e
+
+
+async def _send(client: ProducerClient, topic: str, record: KafkaRecord, timeout_s: float) -> None:
+    """Send ``record`` to ``topic`` and wait for the ack, raising the transient
+    :class:`~edax.errors.StoreError` after ``timeout_s``. With ``enable_idempotence=True`` aiokafka never
+    expires a batch, so without this bound a send to a broker that stopped answering waits forever. A send
+    cut off at the deadline may still land: the batch stays in the client, so the caller's retry can write
+    a second copy, which consumers dedup by ``msg.id``."""
+    await within(
+        _place_and_send(client, topic, record),
+        timeout_s,
+        f"kafka send to {topic!r}",
+        after="the record may still land, so a retry may write it twice",
+    )
 
 
 async def _place_and_send(client: ProducerClient, topic: str, record: KafkaRecord) -> None:
     """Send ``record`` to ``topic`` on the kernel's partition for its key: Java's default partitioner over
     the final key and the topic's partition count from the client's metadata. One placement for the
     producer and the dead-letter sink."""
-    partitions = await client.partitions_for(topic)
+    with _classified():
+        partitions = await client.partitions_for(topic)
     key = record.key  # each read of a native field copies it
-    with mapped():  # a topic reported with no partitions is the kernel's terminal `codec:` error
-        partition = _edax.kafka_partition_for(key, len(partitions))
-    await client.send_and_wait(
-        topic,
-        value=record.value,
-        key=key,
-        partition=partition,
-        headers=[(h.key, h.value) for h in record.headers],
-    )
+    # A topic reported with no partitions is the kernel's terminal `codec:` error.
+    partition = _native.kafka_partition_for(key, len(partitions))
+    with _classified():
+        await client.send_and_wait(
+            topic,
+            value=record.value,
+            key=key,
+            partition=partition,
+            headers=[(h.key, h.value) for h in record.headers],
+        )
 
 
 @dataclass(frozen=True)
 class KafkaFetched:
     """A record as :class:`KafkaConsumer` fetched it, and where it sat. It is the record before any
     middleware, so a republish runs through the middleware again. Carried as
-    :attr:`~edax.dispatcher.Delivery.origin`, for a dead-letter sink. A null key, value or header value is
+    :attr:`~edax.delivery.Delivery.origin`, for a dead-letter sink. A null key, value or header value is
     empty bytes here, the kernel's rule.
 
     ``timestamp`` is the record's broker timestamp in Unix milliseconds, as the client reports it, and
@@ -220,9 +285,14 @@ class KafkaFetched:
     def dead_letter(self, error: BaseException) -> KafkaRecord:
         """The record a dead-letter topic gets: this one verbatim, plus the ``edax-dlq-*`` headers naming
         its topic, partition, offset and ``error``. The coordinates are its identity, so a sink that sees
-        the same offset twice after a redelivery can dedup on them."""
-        return _edax.kafka_dead_letter_record(
-            self.record(), self.topic, self.partition, self.offset, f"{error_type(error)}: {error}"
+        the same offset twice after a redelivery can dedup on them. The kernel renders ``edax-dlq-error``
+        from the code ``error`` carries (``unclassified`` when it carries none) and its message, which names
+        a host exception's class, so every SDK writes one form."""
+        code = errors.code_of(error)
+        message = str(error) if code is not None else f"{error_type(error)}: {error}"
+        # A code is the kernel's own, so the refusal of an unknown one cannot fire.
+        return _native.kafka_dead_letter_record(
+            self.record(), self.topic, self.partition, self.offset, message, code
         )
 
 
@@ -230,23 +300,41 @@ class KafkaDeadLetterSink:
     """An ``on_dead`` sink that publishes a dead delivery's record to a dead-letter topic through a
     caller-owned, started ``AIOKafkaProducer``: the record as fetched, plus where it came from and why
     (:meth:`KafkaFetched.dead_letter`), on the kernel's partition for its key. A raise (the topic is
-    down) nacks the delivery for another try. A delivery that did not come from a
-    :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`.
-    ``publish_timeout_s`` bounds each send, as on :class:`KafkaProducer`."""
+    down) nacks the delivery for another try. A dead-letter topic that refuses the record itself (too
+    large: the terminal :class:`~edax.errors.CodecError`) gets the kernel's stub instead, the value dropped
+    and the coordinates kept as the pointer to it, so the source partition moves on rather than hand the
+    record back forever. A delivery that did not come from a :class:`KafkaConsumer` carries no record to
+    republish: a wiring mistake, refused with :class:`~edax.errors.BadHandle`.
+    ``publish_timeout_s`` bounds each send, as on :class:`KafkaProducer`, and is refused the same way."""
 
     def __init__(
         self, client: ProducerClient, topic: str, *, publish_timeout_s: float = _PUBLISH_TIMEOUT_S
     ) -> None:
+        _check_durations(publish_timeout_s=publish_timeout_s)
         _check_producer(client)
         self._client = client
         self._topic = topic
         self._publish_timeout_s = publish_timeout_s
 
-    async def __call__(self, delivery: Delivery, error: BaseException) -> None:
-        fetched = delivery.origin
+    async def __call__(self, dead: DeadLetter[Any]) -> None:
+        fetched = dead.origin
         if not isinstance(fetched, KafkaFetched):
-            raise TypeError(f"delivery {delivery.message.id} carries no Kafka record to dead-letter")
-        await _send(self._client, self._topic, fetched.dead_letter(error), self._publish_timeout_s)
+            raise BadHandle(f"dead letter of {dead.message!r} carries no Kafka record to republish")
+        record = fetched.dead_letter(dead.failure)
+        try:
+            await _send(self._client, self._topic, record, self._publish_timeout_s)
+        except CodecError:
+            logger.warning(
+                "edax kafka: %s refused the dead letter of %s/%d/%d; sending it without its value",
+                self._topic,
+                fetched.topic,
+                fetched.partition,
+                fetched.offset,
+                exc_info=True,
+            )
+            await _send(
+                self._client, self._topic, _native.kafka_dead_letter_stub(record), self._publish_timeout_s
+            )
 
 
 class RecordMiddleware(Protocol):
@@ -257,24 +345,27 @@ class RecordMiddleware(Protocol):
     middlewares wraps the record like an onion. Use one to compress or encrypt the value. Trace context
     needs none: it rides in the message's ``extensions``, inside the value. Rewrite ``content-type`` on the
     way out and restore it on the way in, so the consumer still routes to the serializer that wrote the
-    bytes. A :class:`~edax.errors.CodecError` raised on poll marks the message poison; any other exception
-    propagates as transient, so the message redelivers."""
+    bytes. On poll, a terminal error (:class:`~edax.errors.CodecError`, or a host exception that declares
+    ``terminal = True``) marks the message poison, so it is dead-lettered; a fatal one
+    (:class:`~edax.errors.BadHandle`) ends :meth:`KafkaConsumer.run`; any other exception is transient, so
+    the message is handed back and polled again after a backoff step."""
 
     def on_publish(self, record: KafkaRecord) -> KafkaRecord: ...
     def on_poll(self, record: KafkaRecord) -> KafkaRecord: ...
 
 
 def _check_kind(serializer: Serializer, kind: MessageKind, role: str) -> Serializer:
-    """``serializer``, if it encodes ``kind``; a :class:`ValueError` at wiring otherwise."""
+    """``serializer``, if it encodes ``kind``; the fatal :class:`~edax.errors.BadHandle` at wiring
+    otherwise."""
     if serializer.kind != kind:
-        raise ValueError(f"{role} must be a {kind} serializer, got one of kind {serializer.kind!r}")
+        raise BadHandle(f"{role} must be a {kind} serializer, got one of kind {serializer.kind!r}")
     return serializer
 
 
 class KafkaProducer:
     """Publishes events and commands to a Kafka topic through a caller-owned, started ``AIOKafkaProducer``.
-    ``serializer`` encodes an :class:`~edax.aggregate.EventMessage` and ``command_serializer`` a
-    :class:`~edax.aggregate.CommandMessage` (default: the kernel's JSON of each kind). A serializer supplies
+    ``serializer`` encodes an :class:`~edax.message.EventMessage` and ``command_serializer`` a
+    :class:`~edax.message.CommandMessage` (default: the kernel's JSON of each kind). A serializer supplies
     the value bytes and the media type that names them; the kernel builds the record around both, so the
     key rule and the header set stay the same in every SDK.
 
@@ -284,7 +375,7 @@ class KafkaProducer:
     Kafka Connect or a Rust edax shell does, whatever partitioner the client library defaults to.
 
     ``tenancy`` is how the deployment separates tenants, fixed here as it is on a
-    :class:`~edax.store.Repository`. The kernel keys the record. Under :attr:`~edax.tenancy.Tenancy.POOL`
+    :class:`~edax.repository.Repository`. The kernel keys the record. Under :attr:`~edax.tenancy.Tenancy.POOL`
     the key is the message's ordering key composed with its ``tenant``, so two tenants' same-named
     aggregates take different partitions. Every SDK producing to the topic places one aggregate on one
     partition (``testdata/golden/kafka_record.json``). A pooled message with no tenant raises
@@ -297,8 +388,15 @@ class KafkaProducer:
 
     ``publish_timeout_s`` bounds each :meth:`publish`, metadata lookup and ack included, because an
     idempotent aiokafka producer never stops retrying a send to a broker that stopped answering. At the
-    deadline :meth:`publish` raises a transient :class:`TimeoutError`. The record may still land, so the
-    relay's retry can publish it twice. Consumers already dedup that second copy by ``msg.id``."""
+    deadline :meth:`publish` raises the transient :class:`~edax.errors.StoreError`, as every edax backend
+    does. The record may still land, so the relay's retry can publish it twice. Consumers already dedup
+    that second copy by ``msg.id``. A deadline
+    under a millisecond, or one that is no finite number, raises :class:`~edax.errors.BadHandle` here.
+
+    A broker error is classified by its Kafka protocol error code: a record the broker refuses (too large,
+    corrupt) raises the terminal :class:`~edax.errors.CodecError`, which the relay dead-letters; a refused
+    client (authorization, an invalid topic) raises the fatal :class:`~edax.errors.BadHandle`, which ends
+    :meth:`~edax.outbox.Relay.run`; anything else stays transient."""
 
     def __init__(
         self,
@@ -312,6 +410,7 @@ class KafkaProducer:
         tenancy: Tenancy = Tenancy.SILO,
         publish_timeout_s: float = _PUBLISH_TIMEOUT_S,
     ) -> None:
+        _check_durations(publish_timeout_s=publish_timeout_s)
         _check_producer(client)
         self._client = client
         self._topic = topic
@@ -325,49 +424,182 @@ class KafkaProducer:
         self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
 
     async def publish(self, msg: EventMessage | CommandMessage) -> None:
-        serializer = self._serializer if message_kind(msg) == "event" else self._commands
+        # The kind is read once and picks both the serializer and the record rule. `message_kind` refuses a
+        # non-message with TypeError, so each cast names the type it checked.
+        event = message_kind(msg) == "event"
+        serializer = self._serializer if event else self._commands
         value = serializer.encode(msg)
-        # Host code, so outside `mapped()`: its own TypeError stays a transient failure.
+        # Host code: its own TypeError stays a transient failure.
         key = self._key(msg) if self._key else None
         # The kernel keys the record: the override, else the ordering key under this producer's tenancy.
         tenancy, media_type = self._tenancy.value, serializer.media_type
-        with mapped():
-            if isinstance(msg, EventMessage):
-                record = _edax.kafka_event_record(tenancy, msg, value, media_type, key)
-            else:
-                record = _edax.kafka_command_record(tenancy, msg, value, media_type, key)
+        record = (
+            _native.kafka_event_record(tenancy, cast(EventMessage, msg), value, media_type, key)
+            if event
+            else _native.kafka_command_record(tenancy, cast(CommandMessage, msg), value, media_type, key)
+        )
         for m in self._middleware:
             record = m.on_publish(record)
         await _send(self._client, self._topic, record, self._publish_timeout_s)
 
 
-class KafkaConsumer(_ConsumerLoop):
+class _OffsetCommitter:
+    """The consumer's offset bookkeeping and its commits. The kernel's tracker books every fetched offset
+    and settles it; a flush commits the watermarks it says are due, in one call, under the commit
+    deadline."""
+
+    def __init__(self, client: ConsumerClient, commit_timeout_s: float) -> None:
+        self._client = client
+        self._commit_timeout_s = commit_timeout_s
+        # Built by its first use, on the thread that runs the consumer, which need not be the one building it.
+        self.tracker = ThreadBound.lazy(_native.offset_tracker, "KafkaConsumer")
+
+    # Neither builds the tracker: a gauge scraped on another thread before the first poll would bind it
+    # to that thread, and the consumer's own poll would then refuse it. Unbuilt, it has booked nothing.
+    def stats(self) -> dict[TopicPartition, PartitionStats]:
+        tracker = self.tracker.peek()
+        rows = () if tracker is None else tracker.stats()
+        return {_topic_partition(row.topic, row.partition): row for row in rows}
+
+    def reset(self, tp: TopicPartition) -> None:
+        tracker = self.tracker.peek()
+        if tracker is not None:
+            tracker.reset(tp.topic, tp.partition)
+
+    def revoke(self, revoked: Collection[TopicPartition]) -> list[_native.KafkaDue]:
+        """Give up ``revoked``: each partition's last due watermark, its bookkeeping dropped in the same
+        kernel step, so nothing settles between the read and the drop."""
+        tracker = self.tracker.get()
+        return [due for tp in revoked if (due := tracker.revoke(tp.topic, tp.partition)) is not None]
+
+    async def flush(self) -> None:
+        await self.commit(self.tracker.get().due())
+
+    async def commit(self, due: Sequence[_native.KafkaDue]) -> None:
+        """Commit ``due`` in one call, under the commit deadline, and report each row back. A row of a
+        partition given up already reports nothing: the kernel tracks it no more."""
+        if not due:
+            return
+        offsets = {_topic_partition(d.topic, d.partition): d.offset for d in due}
+        # The deadline bounds aiokafka's own retry loop, which waits for a coordinator without end.
+        with _classified():
+            await within(self._client.commit(offsets), self._commit_timeout_s, "kafka commit")
+        for d in due:
+            self.tracker.get().committed(d.topic, d.partition, d.offset)
+
+
+@dataclass(frozen=True)
+class _Poison:
+    """A fetched record no handler may see, and why: it is dead-lettered, never retried."""
+
+    cause: BaseException
+
+
+class _RecordDecoder:
+    """Turns a fetched record into a message: the middleware rewrites it, the kernel routes it by its
+    ``content-type`` header, and the chosen serializer decodes it. A record that fails the same way on
+    every redelivery comes back as :class:`_Poison`."""
+
+    def __init__(
+        self,
+        serializer: Serializer | None,
+        serializers: Sequence[Serializer],
+        middleware: Sequence[RecordMiddleware],
+    ) -> None:
+        # The default decodes a record that carries no `content-type` header at all, and claims its
+        # own media type in the registry like every other serializer. A header-less record is read as
+        # an event only: a command always names its kind.
+        self._default: Serializer = serializer or KernelSerializer("json")
+        self._serializers: list[Serializer] = [self._default, *serializers]
+        for registered in self._serializers:
+            # The kernel routes every record by the default's kind, and a delivery carries what a serializer
+            # decoded: an unknown kind would fail each poll after its offset is booked, pinning the partition.
+            if registered.kind not in get_args(MessageKind):
+                raise BadHandle(f"a consumer serializer must be of a message kind, got {registered.kind!r}")
+        self._media_types: list[str] = [s.media_type for s in self._serializers]
+        # A media type claimed twice is the kernel's `already_registered:` refusal.
+        _native.kafka_check_media_types(self._media_types)
+        self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
+
+    def __call__(self, fetched: KafkaFetched) -> EventMessage | CommandMessage | _Poison:
+        """The message ``fetched`` carries, or why it is poison."""
+        rewritten = self._rewrite(fetched)
+        return rewritten if isinstance(rewritten, _Poison) else self._decode(*rewritten)
+
+    def _rewrite(self, fetched: KafkaFetched) -> tuple[bytes, list[KafkaHeader]] | _Poison:
+        """The record's value and headers after the middleware. A middleware failure is read as the kernel
+        reads its code: a terminal one fails alike on every redelivery, so the record is poison; a fatal
+        one (a hook wired wrong) and a transient one (a key service that is down) propagate."""
+        if not self._middleware:
+            return fetched.value, [KafkaHeader(k, v) for k, v in fetched.headers]
+        # The kernel record exists for the middleware to rewrite; building one with no middleware to
+        # run would copy the payload across the binding for nothing.
+        record = fetched.record()
+        try:
+            for m in reversed(self._middleware):
+                record = m.on_poll(record)
+        except Exception as e:
+            if errors.failure_kind(e) == "terminal":
+                return _Poison(e)
+            raise
+        return record.value, record.headers
+
+    def _decode(self, value: bytes, headers: list[KafkaHeader]) -> EventMessage | CommandMessage | _Poison:
+        # The default's kind is checked at build, so the kernel's `codec:` refusal cannot fire.
+        route = _native.kafka_route(headers, self._media_types, self._default.kind)
+        if route.registered is not None:
+            serializer = self._serializers[route.registered]
+        elif route.unknown is not None:
+            # Never fall back to the default: decoding msgpack bytes as the host's own format is how a
+            # wrong message reaches a handler instead of the dead-letter sink.
+            return _Poison(CodecError(f"no serializer for content type {route.unknown!r}"))
+        elif route.headerless:
+            return _Poison(
+                CodecError("the record has no readable content-type header, and a command always names one")
+            )
+        else:
+            serializer = self._default
+        try:
+            return serializer.decode(value)
+        except Exception as e:  # noqa: BLE001 - every failure of a pure decode is terminal
+            # A third-party serializer raises its own error types, and a decode that fails once fails
+            # the same way on every redelivery, so the record is poison whatever it raised.
+            return _Poison(e)
+
+
+class KafkaConsumer:
     """Consumes a Kafka topic through a caller-owned, subscribed ``AIOKafkaConsumer``.
 
     ``serializer`` is the default (the kernel's JSON events unless given): it claims its own media type in
     the registry, and an event serializer also decodes a record that carries no ``content-type`` header.
     ``serializers`` extends the registry with one entry per media type, of either kind. The kernel routes
     each record by its header, and the delivery carries what the chosen serializer decoded, an
-    :class:`~edax.aggregate.EventMessage` or a :class:`~edax.aggregate.CommandMessage`. A record of a media
+    :class:`~edax.message.EventMessage` or a :class:`~edax.message.CommandMessage`. A record of a media
     type nobody registered is poison. So is a header-less record when the default decodes commands: a
     command always names its kind, so a command consumer takes ``serializer=KernelSerializer("json",
     "command")``. ``middleware`` rewrites each record on the way in, in reverse
     order. See ``docs/backends/kafka.md``.
 
-    The client must not auto-commit and must have a group, or this raises :class:`ValueError`. :meth:`run`
-    needs a dispatcher with ``on_dead``: on Kafka a nack rewinds the partition, so a message that fails for
-    good with nowhere to go stalls its partition forever. A nack seeks the partition back to its lowest
-    unsettled offset and retires the deliveries of it already queued, so a key keeps its order.
+    The client must not auto-commit and must have a group, and every serializer's ``kind`` must be a message
+    kind, or this raises :class:`~edax.errors.BadHandle`.
+    :meth:`run` needs a dispatcher with ``on_dead``: on Kafka a nack rewinds the partition, so a message that
+    fails for good with nowhere to go stalls its partition forever. A nack seeks the partition back to its
+    lowest unsettled offset and retires the deliveries of it already queued, so a key keeps its order.
 
     Acks never wait on the broker. :meth:`run` commits what the kernel says is due every
     ``commit_interval_s`` seconds in one call, under a ``commit_timeout_s`` deadline, and once more when it
     ends; :meth:`flush` commits on demand. A rebalance needs :meth:`rebalance_listener` passed to
-    ``subscribe``: it commits, resets the revoked partitions, and waits for their running handlers.
-    :meth:`run` refuses a subscribed client without a listener.
+    ``subscribe``: it commits each revoked partition's last watermark as it drops the partition, and waits
+    for the running handlers.
+    :meth:`run` refuses a subscribed client without a listener. Each duration must be at least a millisecond
+    and finite, or it raises :class:`~edax.errors.BadHandle` at build.
 
-    The offset bookkeeping is native state bound to the thread that built the consumer. Build it on
-    the thread that runs it: a call from any other thread raises the terminal
-    :class:`~edax.errors.BadHandle`."""
+    A broker error on a fetch or a commit is classified by its Kafka protocol error code. A refused client
+    (authorization, an invalid topic) is the fatal :class:`~edax.errors.BadHandle`: :meth:`run` ends on it,
+    from the poll as from the commit loop.
+
+    The offset bookkeeping is native state bound to the thread that first uses it, the one that runs the
+    consumer: a call from any other thread raises the terminal :class:`~edax.errors.BadHandle`."""
 
     def __init__(
         self,
@@ -376,101 +608,105 @@ class KafkaConsumer(_ConsumerLoop):
         serializer: Serializer | None = None,
         serializers: Sequence[Serializer] = (),
         middleware: Sequence[RecordMiddleware] = (),
-        commit_interval_s: float = 1.0,
-        commit_timeout_s: float = 10.0,
+        commit_interval_s: float = _COMMIT_INTERVAL_S,
+        commit_timeout_s: float = _COMMIT_TIMEOUT_S,
     ) -> None:
+        _check_durations(commit_interval_s=commit_interval_s, commit_timeout_s=commit_timeout_s)
         _check_consumer(client)
         self._client = client
-        # The default decodes a record that carries no `content-type` header at all, and claims its
-        # own media type in the registry like every other serializer. A header-less record is read as
-        # an event only: a command always names its kind.
-        self._default: Serializer = serializer or KernelSerializer("json")
-        self._serializers: list[Serializer] = [self._default, *serializers]
-        self._media_types: list[str] = [s.media_type for s in self._serializers]
-        with mapped():  # a media type claimed twice is the kernel's `already_registered:` refusal
-            _edax.kafka_check_media_types(self._media_types)
-        self._middleware: tuple[RecordMiddleware, ...] = tuple(middleware)
-        self._tracker = ThreadBound(_edax.offset_tracker(), "KafkaConsumer")
+        self._decoder = _RecordDecoder(serializer, serializers, middleware)
+        self._offsets = _OffsetCommitter(client, commit_timeout_s)
         self._commit_interval_s = commit_interval_s
-        self._commit_timeout_s = commit_timeout_s
         # The dispatcher `run` feeds, so a rebalance drain can wait for its running handlers too.
-        self._dispatcher: KeyOrderedDispatcher | None = None
+        self._dispatcher: KeyOrderedDispatcher[Any] | None = None
 
     def stats(self) -> dict[TopicPartition, PartitionStats]:
         """A snapshot of the bookkeeping, keyed by ``TopicPartition``, for a health check or a gauge."""
-        return {_topic_partition(row.topic, row.partition): row for row in self._tracker.get().stats()}
+        return self._offsets.stats()
 
     def reset(self, tp: TopicPartition) -> None:
         """Drop the bookkeeping for a revoked partition and retire its deliveries, so the dispatcher skips
         the ones still queued. Its unsettled offsets are the new owner's to redeliver from the last
         committed watermark, and a stale watermark here would otherwise refuse a lower, correct commit if
-        the partition is assigned back. :meth:`rebalance_listener` calls it after committing."""
-        self._tracker.get().reset(tp.topic, tp.partition)
+        the partition is assigned back. :meth:`rebalance_listener` calls it for every assigned partition, in
+        case a revoke was never announced; a revoke itself drops a partition with its commit."""
+        self._offsets.reset(tp)
 
     async def flush(self) -> None:
         """Commit every partition whose watermark moved, in one call, under the commit deadline. Raises
-        what the commit raised, or :class:`TimeoutError` at the deadline; nothing is recorded then, so the
-        same watermarks are due again. Call it after ``dispatcher.stop()`` to commit the drained work
-        before closing the client."""
-        due = self._tracker.get().due()
-        if not due:
-            return
-        offsets = {_topic_partition(d.topic, d.partition): d.offset for d in due}
-        # The deadline bounds aiokafka's own retry loop, which waits for a coordinator without end.
-        await asyncio.wait_for(self._client.commit(offsets), self._commit_timeout_s)
-        for d in due:
-            self._tracker.get().committed(d.topic, d.partition, d.offset)
+        what the commit raised, or the transient :class:`~edax.errors.StoreError` at the deadline; nothing
+        is recorded then, so the same watermarks are due again. Call it after ``dispatcher.stop()`` to
+        commit the drained work before closing the client."""
+        await self._offsets.flush()
 
-    async def _flush_quietly(self) -> None:
+    async def _flush_quietly(self) -> Exception | None:
         """Flush, and log a failure rather than raise it: the commit is retried at the next interval, and a
-        lost commit only means redelivery after a restart."""
+        lost commit only means redelivery after a restart. Returns the failure, ``None`` once it landed."""
+        return await self._quietly(self.flush())
+
+    async def _quietly(self, commit: Awaitable[None]) -> Exception | None:
+        """Await ``commit``, and log and observe a failure rather than raise it. Returns the failure,
+        ``None`` once it landed."""
         try:
-            await self.flush()
+            await commit
         except Exception as e:
             logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=True)
             # Absent for a flush called outside `run`, whose failure the log line carries.
             if self._dispatcher is not None:
                 self._dispatcher.observer.commit_failed(e)
+            return e
+        return None
 
     async def _commit_loop(self) -> None:
+        """Commit on the interval until cancelled. A fatal commit failure ends the loop, raised: every later
+        commit would fail alike, and :meth:`run` stops on it."""
         while True:
             await asyncio.sleep(self._commit_interval_s)
-            await self._flush_quietly()
+            failure = await self._flush_quietly()
+            if failure is not None and errors.is_fatal(failure):
+                raise failure
 
-    async def run(self, dispatcher: KeyOrderedDispatcher) -> None:
+    async def run(self, dispatcher: KeyOrderedDispatcher[Any]) -> None:
         """Poll and submit until cancelled or the client stops, committing on the interval. Refuses a
         dispatcher without ``on_dead``, and a client subscribed without :meth:`rebalance_listener`, with
-        :class:`ValueError`, before it polls anything. It checks the listener here rather than at build,
-        because the client subscribes with this consumer's listener after the consumer is built."""
-        if dispatcher.on_dead is None:
-            raise ValueError(
-                "KafkaConsumer.run needs a dispatcher with on_dead: a nack rewinds the partition, so a "
-                "message that fails for good with no sink stalls its partition forever. Wire a "
-                "KafkaDeadLetterSink or another sink."
-            )
+        :class:`~edax.errors.BadHandle`, before it polls anything. It checks the listener here rather than at
+        build, because the client subscribes with this consumer's listener after the consumer is built."""
+        _native.kafka_check_dead_sink(dispatcher.on_dead is not None)
         _check_listener(self._client)
         self._dispatcher = dispatcher
         committer = asyncio.create_task(self._commit_loop())
+        polling = asyncio.ensure_future(consume(self, dispatcher))
         try:
-            await super().run(dispatcher)
+            done, _ = await asyncio.wait({polling, committer}, return_when=asyncio.FIRST_COMPLETED)
+            if polling not in done:
+                # The commit loop ends only on a fatal commit failure: stop polling and raise it.
+                polling.cancel()
+                await asyncio.gather(polling, return_exceptions=True)
+                committer.result()
+            polling.result()
         finally:
-            committer.cancel()
-            await asyncio.gather(committer, return_exceptions=True)
+            for task in (polling, committer):
+                task.cancel()
+            await asyncio.gather(polling, committer, return_exceptions=True)
             try:
                 # Still attached, so a failed last commit reaches the observer, not only the log.
                 await asyncio.shield(self._flush_quietly())
             finally:
                 self._dispatcher = None
 
-    def rebalance_listener(self, drain_timeout_s: float = 30.0) -> ConsumerRebalanceListener:
-        """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke it commits
-        what is due and resets the revoked partitions, so the deliveries still queued are skipped rather
-        than drained. It then waits, up to ``drain_timeout_s``, until no handler of the dispatcher
-        :meth:`run` feeds is running, so no key is handled by two members at once. The new owner starts
+    def rebalance_listener(self, drain_timeout_s: float = _DRAIN_TIMEOUT_S) -> ConsumerRebalanceListener:
+        """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke the kernel
+        hands back each revoked partition's last due watermark as it drops the partition, and it commits
+        them, so the deliveries still queued are skipped rather than drained. It then waits, up to
+        ``drain_timeout_s``, until no handler of the dispatcher :meth:`run` feeds is running, so no key is
+        handled by two members at once. The new owner starts
         from the commit, so the skipped work and the handlers that were still running run again there:
         at-least-once. A handler still running at the deadline overlaps the new owner, so keep the
         deadline above the slowest handler and below the client's ``max_poll_interval_ms``. On assign it
-        resets the assigned partitions, in case a revoke was never announced."""
+        resets the assigned partitions, in case a revoke was never announced. A deadline under a millisecond,
+        or one that is no finite number, raises :class:`~edax.errors.BadHandle`: with no wait, every revoke
+        would hand a running key to the new owner."""
+        _check_durations(drain_timeout_s=drain_timeout_s)
         from aiokafka import ConsumerRebalanceListener
 
         consumer = self
@@ -486,122 +722,108 @@ class KafkaConsumer(_ConsumerLoop):
         return _Listener()
 
     async def _revoke(self, revoked: Collection[TopicPartition], timeout: float) -> None:
-        # Commit what has settled while the partitions are still ours.
-        await self._flush_quietly()
-        # Retire everything of the revoked partitions at once: the queued deliveries are skipped rather
-        # than drained, so a deep queue cannot outlast the rebalance. The new owner fetches them again
-        # from the commit.
-        for tp in revoked:
-            self.reset(tp)
+        # The kernel hands back each revoked partition's last watermark and retires everything of it at
+        # once: the queued deliveries are skipped rather than drained, so a deep queue cannot outlast the
+        # rebalance. The new owner fetches them again from the commit, made while the partitions are
+        # still ours. A failed commit only means more redelivery there.
+        await self._quietly(self._offsets.commit(self._offsets.revoke(revoked)))
         # A handler already running finishes, and its ack settles nothing. Wait for it, so the new owner
-        # never runs a key this member is still running. Polled rather than signalled: a retired handler
-        # finishing settles nothing, so no settlement would announce it.
+        # never runs a key this member is still running.
         dispatcher = self._dispatcher
         if dispatcher is None:
             return
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while running := dispatcher.stats().handling:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                logger.warning(
-                    "edax kafka: %d handler(s) still running %ss after a revoke; the new owner may overlap",
-                    running,
-                    timeout,
-                )
-                dispatcher.observer.revoke_overrun(running)
-                return
-            await asyncio.sleep(min(_DRAIN_POLL_S, remaining))
+        running = await dispatcher.wait_handlers(timeout)
+        if running:
+            logger.warning(
+                "edax kafka: %d handler(s) still running %ss after a revoke; the new owner may overlap",
+                running,
+                timeout,
+            )
+            dispatcher.observer.revoke_overrun(running)
 
-    async def poll(self) -> Delivery | None:
+    async def poll(self) -> Delivery[EventMessage | CommandMessage] | Undecodable | None:
         try:
-            msg = await self._client.getone()
+            with _classified():
+                msg = await self._client.getone()
         except Exception as e:
             if _consumer_stopped(e):
                 return None
             raise
-        # `ack` and `nack` settle long after this frame returns; they capture these, never `msg`.
-        topic, partition, offset = msg.topic, msg.partition, msg.offset
         # Book the offset before decoding: an undecodable payload still has to be settled, and an unbooked
         # offset is either committed past by the next ack or replayed into the same failure forever. Booked
-        # before the next await, so a nack's rewind retires it if it lands later.
-        with mapped():  # a negative offset is the kernel's terminal `codec:` refusal
-            token = self._tracker.get().book(topic, partition, offset)
-        # A null key, value or header value crosses as empty bytes: the kernel record's rule, which also
-        # routes a null content-type like an empty one.
-        fetched = KafkaFetched(
-            topic,
-            partition,
-            offset,
-            msg.key or b"",
-            msg.value or b"",
-            tuple((k, v or b"") for k, v in (msg.headers or ())),
-            getattr(msg, "timestamp", None),
-            getattr(msg, "timestamp_type", None),
-        )
-
-        def live() -> bool:
-            return self._tracker.get().is_live(token)
-
-        def ack() -> None:
-            # A stale ack settles nothing, by the kernel's token rule; the committer commits what is due.
-            self._tracker.get().ack(token)
-
-        def nack() -> None:
-            # The kernel rewinds the partition to its lowest unsettled offset and retires every delivery
-            # of it already handed out; seek() sets the partition's one fetch position.
-            target = self._tracker.get().nack(token).seek
-            if target is not None:
-                self._client.seek(_topic_partition(topic, partition), target)
-
-        def poison(cause: BaseException) -> UndecodableDelivery:
-            """The fetched bytes as a dead-letterable delivery, settled by the offset already booked."""
-            # Topic, partition and offset together are the only identity a poison message has. The offset
-            # alone repeats on every partition, so two poison messages would share one id and a
-            # dead-letter queue keyed on it would keep the first and reject the second.
-            poison_id = _edax.kafka_poison_id(topic, partition, offset)
-            error = CodecError(f"kafka {poison_id} did not decode: {cause}")
-            error.__cause__ = cause  # `raise ... from e` is unavailable: the error is carried, not raised
-            return UndecodableDelivery(fetched.value, poison_id, ack, nack, error, live=live, origin=fetched)
-
-        if self._middleware:
-            # The kernel record exists for the middleware to rewrite; building one with no middleware to
-            # run would copy the payload across the binding for nothing.
-            record = fetched.record()
-            try:
-                for m in reversed(self._middleware):
-                    record = m.on_poll(record)
-            except CodecError as e:
-                # Only a codec failure is poison here. A hook whose key service is down fails
-                # transiently, so anything else propagates and the message redelivers.
-                return poison(e)
-            except Exception:
-                # The offset is already booked. Left unsettled it pins the partition watermark, and the
-                # fetch position has moved past the record, so it would never come back. Nack seeks back
-                # to it; the consumer loop waits a backoff step before it polls again.
-                nack()
-                raise
-            value, headers = record.value, record.headers
-        else:
-            value, headers = fetched.value, [KafkaHeader(k, v) for k, v in fetched.headers]
-
-        route = _edax.kafka_route(headers, self._media_types, self._default.kind)
-        if route.registered is not None:
-            serializer = self._serializers[route.registered]
-        elif route.unknown is not None:
-            # Never fall back to the default: decoding msgpack bytes as the host's own format is how a
-            # wrong message reaches a handler instead of the dead-letter sink.
-            return poison(CodecError(f"no serializer for content type {route.unknown!r}"))
-        elif route.headerless:
-            return poison(
-                CodecError("the record has no readable content-type header, and a command always names one")
-            )
-        else:
-            serializer = self._default
+        # before the next await, so a nack's rewind retires it if it lands later. A negative offset is the
+        # kernel's terminal `codec:` refusal.
+        booked = _Booked(self._client, self._offsets.tracker, msg.topic, msg.partition, msg.offset)
         try:
-            decoded = serializer.decode(value)
-        except Exception as e:  # noqa: BLE001 - every failure of a pure decode is terminal
-            # A third-party serializer raises its own error types, and a decode that fails once fails
-            # the same way on every redelivery, so the record is poison whatever it raised.
-            return poison(e)
-        return Delivery(decoded, ack, nack, live=live, origin=fetched)
+            # A null key, value or header value crosses as empty bytes: the kernel record's rule, which also
+            # routes a null content-type like an empty one.
+            fetched = KafkaFetched(
+                msg.topic,
+                msg.partition,
+                msg.offset,
+                msg.key or b"",
+                msg.value or b"",
+                tuple((k, v or b"") for k, v in (msg.headers or ())),
+                msg.timestamp,
+                msg.timestamp_type,
+            )
+            decoded = self._decoder(fetched)
+            if isinstance(decoded, _Poison):
+                return booked.poison(fetched, decoded.cause)
+            return Delivery(decoded, booked.ack, booked.nack, live=booked.live, origin=fetched)
+        except Exception:
+            # The offset is already booked. Left unsettled it pins the partition watermark, and the
+            # fetch position has moved past the record, so it would never come back. Nack seeks back
+            # to it; the consumer loop waits a backoff step before it polls again. A failure before the
+            # book would instead let the next ack commit past the record, so everything that can fail
+            # runs after it, here.
+            booked.nack()
+            raise
+
+
+class _Booked:
+    """One fetched record's booked offset and the handles that settle it. They run long after the poll
+    returned, so they hold the record's coordinates and token, never the record."""
+
+    def __init__(
+        self,
+        client: ConsumerClient,
+        tracker: ThreadBound[_native.OffsetTracker],
+        topic: str,
+        partition: int,
+        offset: int,
+    ) -> None:
+        self._client = client
+        self._tracker = tracker
+        self._topic, self._partition, self._offset = topic, partition, offset
+        self._token = self._tracker.get().book(topic, partition, offset)
+
+    def live(self) -> bool:
+        return self._tracker.get().is_live(self._token)
+
+    # A stale token (a rewind or a rebalance retired it) settles nothing, by the kernel's token rule,
+    # and loses nothing: the redelivered copy settles the offset. Logged at debug, as the memory
+    # broker does, since rebalances make it routine.
+    def ack(self) -> None:
+        # The committer commits what is due.
+        if not self._tracker.get().ack(self._token):
+            logger.debug("edax kafka: ack of a settled or retired delivery %d", self._token)
+
+    def nack(self) -> None:
+        # The kernel rewinds the partition to its lowest unsettled offset and retires every delivery
+        # of it already handed out; seek() sets the partition's one fetch position.
+        target = self._tracker.get().nack(self._token).seek
+        if target is None:
+            logger.debug("edax kafka: nack of a settled or retired delivery %d", self._token)
+            return
+        self._client.seek(_topic_partition(self._topic, self._partition), target)
+
+    def poison(self, fetched: KafkaFetched, cause: BaseException) -> Undecodable:
+        """The fetched bytes as a dead-letterable record, settled by the offset already booked."""
+        # Topic, partition and offset together are the only identity a poison message has. The offset
+        # alone repeats on every partition, so two poison messages would share one id and a
+        # dead-letter queue keyed on it would keep the first and reject the second.
+        poison_id = _native.kafka_poison_id(self._topic, self._partition, self._offset)
+        error = CodecError(f"kafka {poison_id} did not decode: {cause}")
+        error.__cause__ = cause  # `raise ... from e` is unavailable: the error is carried, not raised
+        return Undecodable(poison_id, fetched.value, error, self.ack, self.nack, origin=fetched)

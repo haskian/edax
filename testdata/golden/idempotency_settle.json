@@ -1,46 +1,88 @@
 [
   {
-    "cache": null,
-    "code": null
+    "code": null,
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
-    "cache": null,
-    "code": "concurrency"
+    "code": "concurrency",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
-    "cache": "codec",
-    "code": "codec"
+    "code": "codec",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+    }
   },
   {
-    "cache": null,
-    "code": "store"
+    "code": "store",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
-    "cache": "payload_mismatch",
-    "code": "payload_mismatch"
+    "code": "payload_mismatch",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"payload_mismatch\",\"pending\":false}"
+    }
   },
   {
-    "cache": null,
-    "code": "in_progress"
+    "code": "in_progress",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
-    "cache": "cached_failure",
-    "code": "cached_failure"
+    "code": "cached_failure",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"cached_failure\",\"pending\":false}"
+    }
   },
   {
-    "cache": "handler_not_found",
-    "code": "handler_not_found"
+    "code": "handler_not_found",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"handler_not_found\",\"pending\":false}"
+    }
   },
   {
-    "cache": "already_registered",
-    "code": "already_registered"
+    "code": "already_registered",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"already_registered\",\"pending\":false}"
+    }
   },
   {
-    "cache": "bad_handle",
-    "code": "bad_handle"
+    "code": "bad_handle",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
-    "cache": "rejected",
-    "code": "rejected"
+    "code": "rejected",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"rejected\",\"pending\":false}"
+    }
+  },
+  {
+    "code": "codec",
+    "message": "",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
+    }
   }
 ]

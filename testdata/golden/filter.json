@@ -3,7 +3,7 @@
     "document": {
       "status": "open"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -18,7 +18,7 @@
     "document": {
       "status": "closed"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -33,7 +33,7 @@
     "document": {
       "status": "open"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -46,7 +46,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -59,7 +59,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "not": {
@@ -76,7 +76,7 @@
     "document": {
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -91,7 +91,7 @@
     "document": {
       "total": 100
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -106,7 +106,7 @@
     "document": {
       "total": "5000"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -121,7 +121,7 @@
     "document": {
       "n": 1
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -136,7 +136,7 @@
     "document": {
       "n": 9007199254740992
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -151,7 +151,7 @@
     "document": {
       "n": 9007199254740993
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -166,7 +166,7 @@
     "document": {
       "status": "open"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "in": {
@@ -183,7 +183,7 @@
     "document": {
       "status": "open"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "in": {
@@ -197,7 +197,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "in": {
@@ -213,7 +213,7 @@
     "document": {
       "status": "open"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "in": {
@@ -227,7 +227,7 @@
     "document": {
       "p": 1
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "exists": {
@@ -241,7 +241,7 @@
     "document": {
       "p": null
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "exists": {
@@ -253,7 +253,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "exists": {
@@ -265,7 +265,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "not": {
@@ -283,7 +283,7 @@
         "city": "NYC"
       }
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -300,7 +300,7 @@
         "city": "NYC"
       }
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -315,7 +315,7 @@
     "document": {
       "a": 5
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -332,7 +332,7 @@
         "eu"
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -349,7 +349,7 @@
         "0": "eu"
       }
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -365,7 +365,7 @@
       "status": "open",
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "and": [
@@ -392,7 +392,7 @@
       "status": "open",
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "and": [
@@ -419,7 +419,7 @@
       "status": "open",
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "or": [
@@ -445,7 +445,7 @@
     "document": {
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -460,7 +460,7 @@
     "document": {
       "total": 5000
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -475,7 +475,7 @@
     "document": {
       "name": "m"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -490,7 +490,7 @@
     "document": {
       "s": "Z"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -505,7 +505,7 @@
     "document": {
       "s": "ｱ"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -520,7 +520,7 @@
     "document": {
       "s": "café"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -535,7 +535,7 @@
     "document": {
       "t": "2024-01-01T00:00:00.500000Z"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -550,7 +550,7 @@
     "document": {
       "t": "2024-01-01T00:30:00+01:00"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -565,7 +565,7 @@
     "document": {
       "t": "2024-01-01T00:00:00.000000Z"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -580,7 +580,7 @@
     "document": {
       "p": "9.5"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -595,7 +595,7 @@
     "document": {
       "p": "9.5"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -611,7 +611,7 @@
     "document": {
       "p": "10"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -627,7 +627,7 @@
     "document": {
       "p": "9.50"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -643,7 +643,7 @@
     "document": {
       "p": "100"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -659,7 +659,7 @@
     "document": {
       "p": "9.50"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -675,7 +675,7 @@
     "document": {
       "p": "9.5"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -691,7 +691,7 @@
     "document": {
       "p": "0.000"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -707,7 +707,7 @@
     "document": {
       "p": "-10"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -723,7 +723,7 @@
     "document": {
       "p": "12345678901234567890.10000000001"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -739,7 +739,7 @@
     "document": {
       "p": "9.50"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "in": {
@@ -757,7 +757,7 @@
     "document": {
       "p": "9.50"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "in": {
@@ -774,7 +774,7 @@
     "document": {
       "p": "n/a"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -790,7 +790,7 @@
     "document": {
       "p": "n/a"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -806,7 +806,7 @@
     "document": {
       "p": "n/a"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -822,7 +822,7 @@
     "document": {
       "p": 5
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -838,7 +838,7 @@
     "document": {
       "p": "NaN"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -854,7 +854,7 @@
     "document": {
       "sku": "INV-2024-01"
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -869,7 +869,7 @@
     "document": {
       "sku": "INV-2024-01"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -884,7 +884,7 @@
     "document": {
       "n": 5
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -902,7 +902,7 @@
         "eu"
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "contains": {
@@ -919,7 +919,7 @@
         "eu"
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "contains": {
@@ -933,7 +933,7 @@
     "document": {
       "tags": "eu"
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "contains": {
@@ -949,7 +949,7 @@
         1
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "contains": {
@@ -966,7 +966,7 @@
         null
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "contains": {
@@ -982,7 +982,7 @@
         1
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -1003,7 +1003,7 @@
         ]
       }
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -1024,7 +1024,7 @@
         1
       ]
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -1042,7 +1042,7 @@
     "document": {
       "b": true
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -1057,7 +1057,7 @@
     "document": {
       "b": false
     },
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "compare": {
@@ -1072,7 +1072,7 @@
     "document": {
       "b": true
     },
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "compare": {
@@ -1085,7 +1085,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": true,
     "filter": {
       "and": []
@@ -1094,7 +1094,7 @@
   },
   {
     "document": {},
-    "error_code": null,
+    "error": null,
     "expected": false,
     "filter": {
       "or": []
@@ -1105,7 +1105,7 @@
     "document": {
       "p": null
     },
-    "error_code": "codec",
+    "error": "codec: a null comparand at \"p\" matches nothing; use exists(\"p\", false) for a missing or null path",
     "expected": null,
     "filter": {
       "compare": {
@@ -1120,7 +1120,7 @@
     "document": {
       "p": 1
     },
-    "error_code": "codec",
+    "error": "codec: a null comparand at \"p\" matches nothing; use exists(\"p\", false) for a missing or null path",
     "expected": null,
     "filter": {
       "in": {
@@ -1135,7 +1135,7 @@
   },
   {
     "document": {},
-    "error_code": "codec",
+    "error": "codec: path \"\" has an empty segment",
     "expected": null,
     "filter": {
       "exists": {
@@ -1153,7 +1153,7 @@
         }
       }
     },
-    "error_code": "codec",
+    "error": "codec: path \"a..b\" has an empty segment",
     "expected": null,
     "filter": {
       "compare": {
@@ -1168,7 +1168,7 @@
     "document": {
       "p": 1
     },
-    "error_code": "codec",
+    "error": "codec: unknown field `vlaue`, expected one of `path`, `op`, `value`, `collation` at line 1 column 40",
     "expected": null,
     "filter": {
       "compare": {
@@ -1183,7 +1183,7 @@
     "document": {
       "p": 1
     },
-    "error_code": "codec",
+    "error": "codec: unknown variant `near`, expected one of `compare`, `in`, `contains`, `exists`, `and`, `or`, `not` at line 1 column 7",
     "expected": null,
     "filter": {
       "near": {
@@ -1196,7 +1196,7 @@
     "document": {
       "p": "11"
     },
-    "error_code": "codec",
+    "error": "codec: the decimal collation at \"p\" needs decimal text as the comparand, not \"ten\"",
     "expected": null,
     "filter": {
       "compare": {
@@ -1212,7 +1212,7 @@
     "document": {
       "p": "11"
     },
-    "error_code": "codec",
+    "error": "codec: the decimal collation at \"p\" needs decimal text as the comparand, not 10",
     "expected": null,
     "filter": {
       "compare": {
@@ -1228,7 +1228,7 @@
     "document": {
       "p": "1"
     },
-    "error_code": "codec",
+    "error": "codec: the decimal collation at \"p\" needs decimal text as the comparand, not \"Infinity\"",
     "expected": null,
     "filter": {
       "in": {
@@ -1244,9 +1244,24 @@
   },
   {
     "document": {
+      "sku": "5"
+    },
+    "error": "codec: starts_with at \"sku\" needs a text prefix, not 5",
+    "expected": null,
+    "filter": {
+      "compare": {
+        "op": "starts_with",
+        "path": "sku",
+        "value": 5
+      }
+    },
+    "name": "refused_starts_with_a_number_prefix"
+  },
+  {
+    "document": {
       "p": "11"
     },
-    "error_code": "codec",
+    "error": "codec: starts_with at \"p\" tests text, so it takes no collation",
     "expected": null,
     "filter": {
       "compare": {
@@ -1262,7 +1277,7 @@
     "document": {
       "p": "0"
     },
-    "error_code": "codec",
+    "error": "codec: unknown variant `natural`, expected `decimal` at line 1 column 33",
     "expected": null,
     "filter": {
       "compare": {

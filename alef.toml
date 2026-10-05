@@ -28,7 +28,20 @@ alef_version = "0.103.12"
 [[crates]]
 name = "edax-abi"
 core_import = "edax_abi"
-sources = ["crates/edax-abi/src/lib.rs"]
+# Every module of the ABI crate, not only its root: alef follows `mod` + `pub use` from `lib.rs`
+# either way, but it fingerprints only the files listed here, so a module left out would let the
+# generation record go stale unnoticed.
+sources = [
+  "crates/edax-abi/src/lib.rs",
+  "crates/edax-abi/src/primitives.rs",
+  "crates/edax-abi/src/event.rs",
+  "crates/edax-abi/src/retry.rs",
+  "crates/edax-abi/src/saga.rs",
+  "crates/edax-abi/src/cqrs.rs",
+  "crates/edax-abi/src/memory.rs",
+  "crates/edax-abi/src/kafka.rs",
+  "crates/edax-abi/src/redis.rs",
+]
 version_from = "crates/edax-abi/Cargo.toml"
 
 [crates.output]

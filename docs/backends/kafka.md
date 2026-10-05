@@ -60,14 +60,20 @@ consumer.rebalance_listener(drain_timeout_s=30.0)
 protocols in `edax.backend.kafka` list them. A serializer encodes one kind of message. On the
 producer, `serializer` encodes events and `command_serializer` commands. They default to
 `edax.KernelSerializer("json")` and `edax.KernelSerializer("json", "command")`, and a serializer of the
-other kind raises `ValueError` at wiring. On the consumer, `serializer` defaults to the JSON event
+other kind raises the fatal `BadHandle` at wiring. On the consumer, `serializer` defaults to the JSON event
 serializer. It is also the default for a record that carries no `content-type` header.
 Everything after the `*` is keyword-only, so adding an argument later cannot shift a positional one.
 
-Building an adapter checks the client's settings that lose data. A consumer that auto-commits, or
-has no `group_id`, raises `ValueError`. So does `run` over a client subscribed without
-`rebalance_listener()`. A producer that acks on the leader alone warns. The probes
+Building an adapter checks the client's settings that lose data, by the kernel's rules
+(`edax_kafka::check_consumer`, `check_dead_sink`, `acks_warning`). A consumer that auto-commits, or has no `group_id`,
+raises the fatal `BadHandle`. So does `run` over a client subscribed without
+`rebalance_listener()`, or with a dispatcher that has no `on_dead`. A producer that acks on the leader alone warns. The probes
 read private `aiokafka` attributes, so a client of another library is not judged.
+
+The kernel checks every duration when the adapter is built (`edax_kafka::check_config`). One under a
+millisecond, or one that is no finite number of seconds, raises the terminal `BadHandle` naming it. A
+zero `commit_interval_s` would spin the event loop. A zero deadline would fail every send or commit.
+A zero `drain_timeout_s` would hand a running key to the new owner on every revoke.
 
 ```python
 import edax
@@ -147,7 +153,7 @@ of your own with record middleware, below. The name is exported as
 
 | Promise | What it means |
 |---|---|
-| `poll` returns the next `Delivery`, or `None` at end of stream | `Delivery.attempt` is the broker's own redelivery count if it keeps one, else `0` |
+| `poll` returns the next `Delivery`, an `Undecodable` for a record that will not decode, or `None` at end of stream | `Delivery.attempt` is the broker's own redelivery count if it keeps one, else `0` |
 | Per-key order | messages for one ordering key arrive in publish order. Across keys, any order. |
 | `ack` means exactly this message | the dispatcher acks out of order, so an offset broker must track a per-partition watermark |
 | `nack` rewinds the partition | the nacked message and every later one of its partition come back, in order, acked or not. The deliveries already handed out are retired (`Delivery.live` is `False`), so the dispatcher skips them and a key never runs ahead of itself |
@@ -155,10 +161,12 @@ of your own with record middleware, below. The name is exported as
 | nothing comes back on its own | a delivery left unsettled is never redelivered while the consumer lives, so the loop settles every one |
 | overall semantics are at-least-once | a crash after the handler runs but before the commit redelivers. Handlers must be idempotent. |
 
-Read the `Consumer` seam in `edax.broker`. `run` submits deliveries to the dispatcher until
-cancelled or `poll` returns `None`; the `_ConsumerLoop` mixin provides it, so an adapter only writes
-`poll`. A poll that raises a transient error does not end the loop: it waits one backoff step and
-polls again. A terminal one ends it. `KafkaConsumer.run` also refuses a dispatcher without `on_dead`.
+Read the `Consumer` seam in `edax.broker`. `consume(consumer, dispatcher)` submits deliveries to the
+dispatcher until cancelled or `poll` returns `None`, so an adapter only writes `poll`.
+`KafkaConsumer.run` runs it beside the commit loop. A poll that raises does not end the loop: it waits one backoff step and polls again. The
+kernel counts the failed polls in a row (`Streak`), so the step grows while the broker stays down. A
+fatal error (`is_fatal`, a wiring fault such as a refused credential) ends the loop, as it ends a
+relay. `KafkaConsumer.run` also refuses a dispatcher without `on_dead`.
 On Kafka a nack rewinds, so a message that fails for good with nowhere to go would stall its
 partition forever. It ends when the client is stopped, and commits what settled on the way out.
 
@@ -199,7 +207,7 @@ extra ones. Four rules follow, and each one has a failure behind it.
   says why. A command consumer passes `serializer=edax.KernelSerializer("json", "command")`.
 - **The delivery carries what the serializer decoded.** It is an `EventMessage` or a
   `CommandMessage`. A command consumer's handler passes it on with
-  `bus.dispatch_message(msg, codec)`; see [commands](../sdk/commands.md).
+  `bus.dispatch_message(msg)`, decoded by the bus's codec; see [commands](../sdk/commands.md).
 
 The rule is the kernel's `route`, given the headers, the registered media types and the default
 serializer's kind. So every SDK sends one record to the same serializer.
@@ -237,9 +245,11 @@ compresses or encrypts the value on the way out unwraps it on the way in. Rewrit
 serializer that wrote the bytes. A middleware may also rewrite the key; the producer places the
 record by the key it ends with.
 
-Failures split the way the rest of the SDK splits them. A middleware that raises `CodecError` on
-poll marks the message poison, so it dead-letters. Any other exception is transient: the poll seeks
-back to the record and raises, and the loop waits one backoff step and polls again. Hooks are
+Failures split the way the rest of the SDK splits them, by the kernel's reading of the error's code.
+A middleware that raises a terminal error on poll (`CodecError`, `Rejected`, or a host exception that
+declares `terminal = True`) marks the message poison, so it dead-letters. A fatal one (`BadHandle`)
+ends `run`. Any other exception is transient: the poll seeks back to the record and raises, and the
+loop waits one backoff step and polls again. Hooks are
 synchronous, so a hook cannot await a key-management call.
 
 Trace context needs no middleware. A `traceparent` rides in the message's `extensions`, inside the
@@ -275,9 +285,9 @@ Two properties follow from that shape.
 
 **Settlement is by token.** `book` returns a token naming one delivery, and `ack` and `nack` take
 that token, not a `(partition, offset)` pair. A token retires when its delivery settles, when a
-redelivery re-books the same offset, when a nack rewinds its partition, and when `reset` drops its
-partition. That closes the stale-settle hole coordinates leave open. Revoke a partition, call `reset(tp)` from your rebalance
-listener, get the partition assigned back, and re-book offset 5. The pre-revoke ack for 5 then
+redelivery re-books the same offset, when a nack rewinds its partition, and when `revoke` or `reset`
+drops its partition. That closes the stale-settle hole coordinates leave open. Revoke a partition from
+your rebalance listener, get the partition assigned back, and re-book offset 5. The pre-revoke ack for 5 then
 arrives and settles nothing, so it cannot discard the fresh booking.
 
 **Commits are batched, off the ack path.** An ack only settles. One committer task, started by `run`,
@@ -393,19 +403,38 @@ It leaves the rest to the host:
   send. With `enable_idempotence=True`, `aiokafka` never expires a batch and never raises
   `RequestTimedOutError`, so a send to a broker that stopped answering waits forever. The adapter
   bounds each send with `publish_timeout_s`. At the deadline the producer and the dead-letter sink
-  raise a transient `TimeoutError`. The outcome of that send is unknown. The batch stays in the
-  client and may still land, so the retry can write a second copy, which consumers dedup by
-  `msg.id`. The client does not bound a commit either, so the adapter bounds it with
-  `commit_timeout_s`.
+  raise the transient `StoreError` ("no reply within N ms"), the one timeout error every edax backend
+  raises. The outcome of that send is unknown. The batch stays in the client and may still land, so
+  the retry can write a second copy, which consumers dedup by `msg.id`. The client does not bound a
+  commit either, so the adapter bounds it with `commit_timeout_s`, and a commit past it raises the same
+  `StoreError`.
+- **Broker errors.** The kernel's `broker_error` classifies every client call by its Kafka protocol
+  error code (`errno`): the send, the metadata lookup, the fetch and the commit. A record the broker
+  refuses (too large, invalid) raises the terminal `CodecError`, so the relay dead-letters that row
+  and the next one goes out. A client the broker refuses raises the fatal `BadHandle`. That is an
+  authorization or SASL failure, an invalid topic, an unsupported version or format, a fenced producer
+  epoch, or a refused timestamp. edax sets no record timestamp, so the broker refuses one only
+  when the producer host's clock is skewed, which fails every record. `Relay.run` and
+  `KafkaConsumer.run` end on it rather than dead-letter every message after it. A refused commit ends
+  the run too. Any other code is a transient `StoreError`, a corrupt message (a checksum failure in
+  transit) among them. A failure with no protocol code, `KafkaTimeoutError` or a lost connection,
+  stays unclassified, which is transient. aiokafka's own `retriable` flag is not read: it calls its own
+  timeout final.
+- **Codes aiokafka does not know.** aiokafka maps a broker code it has no error class for to
+  `UnknownError`, whose `errno` is `-1`. `INVALID_RECORD` (87) and `PRODUCER_FENCED` (90) are two of
+  them. The adapter can only pass `-1` on, so the kernel answers the transient `StoreError`. So under
+  aiokafka a record the broker refuses as invalid is retried on its key. A client that reports 87
+  dead-letters it instead. This is a client limit, not an edax rule.
 - **Rebalance.** The watermark bookkeeping holds only while the partition is assigned. Pass
-  `consumer.rebalance_listener()` to `subscribe`. On revoke it commits what is due, resets the
-  revoked partitions so the queued deliveries are skipped, and waits for the handlers still running,
+  `consumer.rebalance_listener()` to `subscribe`. On revoke the kernel's `revoke` hands back each
+  revoked partition's last due watermark as it drops the partition, so the queued deliveries are
+  skipped. The listener commits those watermarks and waits for the handlers still running,
   up to `drain_timeout_s`. No key is then handled by two members at once. The new owner starts from
   the commit, so the skipped work runs there: at-least-once. Keep `drain_timeout_s` above the slowest
   handler and below the client's `max_poll_interval_ms`. Without the listener, a revoked partition
   keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark
   is due, the client refuses every commit that names it, so no partition commits again. `run`
-  therefore raises `ValueError` for an `AIOKafkaConsumer` subscribed to topics with no listener. A
+  therefore raises `BadHandle` for an `AIOKafkaConsumer` subscribed to topics with no listener. A
   client assigned its partitions by hand (`assign`) has no rebalance and needs none.
 - **Threads.** `KafkaConsumer` keeps its offset bookkeeping in native state bound to the thread that
   built it. Build the consumer on the thread that runs its event loop. A consumer built on the main
@@ -413,7 +442,7 @@ It leaves the rest to the host:
   its first booking.
 - **Topics and partitions.** Naming, partition count and retention are yours. Partition count bounds
   real parallelism; `workers` on the dispatcher is local parallelism only.
-- **The wire format.** Pass any `edax.aggregate.Serializer`. `edax.KernelSerializer(fmt, kind)` is
+- **The wire format.** Pass any `edax.serializer.Serializer`. `edax.KernelSerializer(fmt, kind)` is
   the kernel's message format, `"json"` or `"msgpack"`, for `"event"` or `"command"`. The value bytes are the serializer's. The key, the partition, the
   header and the media type in `content-type` stay the kernel's, so a custom format keeps the same
   record shape. Two serializers claiming one media type are refused with `AlreadyRegistered`: one
@@ -421,8 +450,9 @@ It leaves the rest to the host:
 - **Dead-lettering.** `KeyOrderedDispatcher`'s `max_attempts` and `on_dead` own that, and
   `KafkaConsumer.run` requires `on_dead`. `KafkaDeadLetterSink(producer, topic)` is a ready sink. It
   publishes the record as it was fetched, before any middleware: key, value and every header
-  verbatim, plus `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and `edax-dlq-error`. A
-  republish to the source topic after the fix then routes and decodes as the original did. The record
+  verbatim, plus `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and `edax-dlq-error`. The
+  kernel renders `edax-dlq-error` from the failure's code, `"codec: ..."`, or `"unclassified: ..."` for
+  a host exception that carries none, with its class in the message. A republish to the source topic after the fix then routes and decodes as the original did. The record
   rides on `Delivery.origin` as a `KafkaFetched`, so a sink of your own calls
   `delivery.origin.dead_letter(error)` for it. `KafkaFetched` also carries the broker facts a
   message never holds: `timestamp`, in Unix milliseconds, and `timestamp_type`, `0` for the
@@ -431,7 +461,11 @@ It leaves the rest to the host:
   `dead_letter_source` reads the coordinates back. A payload that will not decode reaches the
   sink with the stand-in id `topic/partition/offset`. A sink that raises nacks the message after one
   backoff step, so the redelivery gives it another try. If the sink then sees one offset twice, the
-  coordinates are the dedup key.
+  coordinates are the dedup key. The four headers can push a record past the dead-letter topic's size
+  limit. The sink then sends the kernel's stub instead (`dead_letter_stub`). The stub drops the value,
+  keeps every header, and adds `edax-dlq-dropped` naming how many bytes went. The coordinates point at the
+  value, which the source topic holds until its retention passes. Without it the sink would raise on
+  every try and the partition would rewind to that record forever.
 
 ## Testing it
 

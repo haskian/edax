@@ -11,11 +11,12 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import SCOPE, build_command, build_message, event_claimed, golden
+from conftest import SCOPE, build_command, build_message, event_claimed, golden, handling, wire_of
 from edax import _edax
 from edax._async import maybe_await
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger
-from edax.command import Won, _payload_hash
+from edax.command import _payload_hash
+from edax.idempotency import Won
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -33,7 +34,7 @@ def test_python_reaches_the_rust_canonical_bytes(case: dict[str, Any]) -> None:
         with pytest.raises(RuntimeError) as caught:
             _edax.canonical_json(case["input"].encode())
         assert str(caught.value) == case["error"]
-        with pytest.raises(edax.CodecError), edax.errors.mapped():
+        with pytest.raises(edax.CodecError):
             edax.payload_hash_json(case["input"].encode())
 
 
@@ -103,12 +104,19 @@ def test_the_event_guard_claims_the_kernels_key_and_hash(case: dict[str, Any]) -
         metadata=case["metadata"],
         recorded_at=case["recorded_at"],
     )
+    tenancy = edax.Tenancy(case["tenancy"])
     if case["error"] is None:
         rule = _edax.event_idempotency(env, case["tenancy"], case["scope"])
         assert (rule.key, rule.payload_hash) == (case["key"], case["payload_hash"])
+        # `forget_event` deletes under this key, from the id alone: the one the guard claimed.
+        got = edax.event_claim_key(case["scope"], case["id"], tenancy=tenancy, tenant=case["tenant"])
+        assert got == case["key"]
         return
     with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
         _edax.event_idempotency(env, case["tenancy"], case["scope"])
+    assert str(caught.value) == case["error"].removeprefix("codec: ")
+    with pytest.raises(edax.CodecError) as caught:
+        edax.event_claim_key(case["scope"], case["id"], tenancy=tenancy, tenant=case["tenant"])
     assert str(caught.value) == case["error"].removeprefix("codec: ")
 
 
@@ -140,7 +148,7 @@ def test_a_message_orders_by_the_kernels_key(case: dict[str, Any]) -> None:
     dispatcher picks its worker by it, so a Python and a Rust consumer serialize the same messages."""
     assert _edax.ordering_key(case["id"], case["aggregate_id"]) == case["expected"]
     command = build_command("Deposit", id=case["id"], aggregate_id=case["aggregate_id"])
-    dispatcher = edax.KeyOrderedDispatcher(64, lambda msg: None)
+    dispatcher = edax.KeyOrderedDispatcher(64, handling(lambda msg: None))
     assert dispatcher._worker_index(command) == edax.partition(case["expected"], 64)
 
 
@@ -160,13 +168,13 @@ def test_an_extension_key_follows_the_kernels_rule(case: dict[str, Any]) -> None
     another SDK refuses to read."""
     extensions = {case["key"]: "v"}
     message = build_message("acct-1", "Deposited", 1, extensions=extensions)
-    if case["valid"]:
+    if case["error"] is None:
         assert _edax.check_extensions(extensions) is None
         assert edax.KernelSerializer("json").encode(message)
         return
     with pytest.raises(edax.CodecError) as refused, edax.errors.mapped():
         _edax.check_extensions(extensions)
-    assert refused.value.code == case["error_code"]
+    assert wire_of(refused.value) == case["error"]
     with pytest.raises(edax.CodecError):
         edax.KernelSerializer("msgpack").encode(message)
 
@@ -211,18 +219,22 @@ def test_the_default_pacing_draws_fresh_entropy() -> None:
 
 
 @pytest.mark.parametrize(
-    "branch, base, cap",
+    "branch, base, cap, want",
     [
-        ("negative_base", -1, 100),
-        ("negative_cap", 100, -1),
-        ("base_past_u64", 2**64, 100),
-        ("cap_past_u64", 1, 2**64),
+        ("negative_base", -1, 100, "base_millis must be an unsigned 64-bit integer, got -1"),
+        ("negative_cap", 100, -1, "cap_millis must be an unsigned 64-bit integer, got -1"),
+        ("base_past_u64", 2**64, 100, "base_millis must be an unsigned 64-bit integer"),
+        ("cap_past_u64", 1, 2**64, "cap_millis must be an unsigned 64-bit integer"),
+        # A float passed the old range check and failed only on the first retry's wait.
+        ("base_not_an_int", 100.0, 1_000, "base_millis must be an int, got 100.0"),
+        ("cap_a_bool", 100, True, "cap_millis must be an int, got True"),
     ],
 )
 def test_a_policy_outside_the_kernels_range_is_refused_at_construction(
-    branch: str, base: int, cap: int
+    branch: str, base: Any, cap: Any, want: str
 ) -> None:
-    with pytest.raises(ValueError, match=r"must be within 0 \.\. 2"):
+    """A wiring mistake, so the terminal BadHandle every other wiring check raises."""
+    with pytest.raises(edax.BadHandle, match=want):
         edax.Backoff(base, cap)
 
 
@@ -250,7 +262,7 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     ledger = MemoryIdempotencyStore()
     won = await ledger.claim(event_claimed("evt-1"), rust.payload_hash)
     assert isinstance(won, edax.Won)
-    await ledger.complete(event_claimed("evt-1"), won.handle, edax.command.decode_record(rust.stored))
+    await ledger.complete(event_claimed("evt-1"), won.handle, edax.idempotency.decode_record(rust.stored))
     runs = 0
 
     async def handler(env: edax.EventMessage) -> None:
@@ -261,8 +273,8 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 
-    async def on_dead(delivery: edax.Delivery, error: BaseException) -> None:
-        dead.append(error)
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append(letter.failure)
 
     dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
     dispatcher.start()
@@ -296,7 +308,7 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
         await maybe_await(guarded(env))
     prior = await ledger.claim(event_claimed("evt-1"), rust.payload_hash)
     assert not isinstance(prior, Won)
-    assert edax.command.encode_record(prior) == rust.stored
+    assert edax.idempotency.encode_record(prior) == rust.stored
 
 
 async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cached_failure() -> None:
@@ -317,8 +329,8 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 
-    async def on_dead(delivery: edax.Delivery, error: BaseException) -> None:
-        dead.append(error)
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append(letter.failure)
 
     dispatcher = edax.KeyOrderedDispatcher(1, router.dispatch, on_dead=on_dead, max_attempts=5)
     dispatcher.start()
@@ -332,4 +344,4 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
     assert settled == ["ack"] and len(dead) == 1, "dead-lettered on the first attempt"
     [error] = dead
     assert isinstance(error, edax.CachedFailure) and error.terminal and error.original_code == "codec"
-    assert f"{error.code}: {error}" == case["replay"], "the replay text both SDKs show"
+    assert f"{error.code}: {error}" == case["replay_error"], "the replay text both SDKs show"

@@ -67,7 +67,9 @@ flowchart LR
   lost event.
 - Two relays on a non-leasing `unpublished` double-publish. Overlapping drains of one relay take
   turns.
-- A row whose publish fails stops the batch; the rows before it are marked.
+- Order is per key, the row's tenant and aggregate. A row whose publish fails holds back the rows
+  behind it of its own key; the other keys go on, and every row the drain settled is marked. A second
+  transient failure with no publish between them stops the batch: the broker is likely down.
 - A poison row goes to `on_dead` (terminal, or at `max_attempts`) instead of stalling the outbox.
   Any other failure is handed back after a growing backoff step.
 - A saga's commands ride the same relay from the saga outbox. They are written with the step's

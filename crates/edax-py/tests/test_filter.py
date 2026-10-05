@@ -6,7 +6,7 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import golden
+from conftest import golden, wire_of
 from edax import filter as F
 
 # One realistic read-model row, shared by every case; each case overrides only the path it probes.
@@ -25,10 +25,10 @@ def test_golden_filter() -> None:
     """The match decision per row, and the refusals: a ``None`` comparand, an empty path segment, a typo
     or an unknown node is the terminal ``CodecError``, never a filter that silently matches nothing."""
     for c in golden("filter.json"):
-        if c["error_code"] is not None:
+        if c["error"] is not None:
             with pytest.raises(edax.CodecError) as caught:
                 F.matches(c["filter"], c["document"])
-            assert caught.value.code == c["error_code"], c["name"]
+            assert wire_of(caught.value) == c["error"], c["name"]
             continue
         assert F.matches(c["filter"], c["document"]) == c["expected"], c["name"]
 
@@ -79,7 +79,9 @@ def test_golden_filter() -> None:
         ("or_no_arms_matches_nothing", F.or_(), {"or": []}, False),
     ],
 )  # fmt: skip
-def test_constructor_canonical_form(branch: str, built: dict, want_canonical: dict, want_match: bool) -> None:
+def test_constructor_canonical_form(
+    branch: str, built: F.Filter, want_canonical: dict, want_match: bool
+) -> None:
     assert built == want_canonical
     assert F.matches(built, ACCOUNT) is want_match  # the kernel accepts what we built
 

@@ -1,9 +1,19 @@
 # edax-core
 
-The primitives the other kernels build on: Fowler-Noll-Vo 1a (FNV-1a) hashing, the retry backoff
-schedule, the clock, id generation and the error taxonomy. Two runtime primitives the adapters share
-sit here too: a poison-tolerant lock and a settlement-token mint. The query filter is not here: it lives in
-`edax-cqrs`, beside the query that evaluates it ([filter.md](./filter.md)).
+The primitives the other kernels build on. Each is a cross-language contract.
+
+- `hash`: Fowler-Noll-Vo 1a (FNV-1a) hashing, and the payload hash both idempotency guards bind.
+- `key`: a key under a scope and a tenant, and the guard key.
+- `backoff`: the retry backoff schedule.
+- `clock` and `guid`: the clock and id generation.
+- `version`: the next version of a versioned row.
+- `error`: the error taxonomy.
+
+Two Rust-only runtime helpers the adapters share sit here too: a poison-tolerant lock (`sync`) and a
+settlement-token mint (`token`). No binding crosses
+them and no golden vector pins them; they keep two Rust state machines from drifting. The table below
+is the one complete list of this crate's scope. The query filter is not here: it lives in `edax-cqrs`,
+beside the query that evaluates it ([filter.md](./filter.md)).
 
 Everything here is a pure function of its arguments except `guid` and `current_timestamp`. The
 crate's whole dependency set is `uuid`
@@ -12,14 +22,16 @@ crate's whole dependency set is `uuid`
 
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
-| `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not on the ABI; only its callers are |
-| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key. `guard_key(mode, tenant, kind, scope, key)`: the ledger key an idempotency guard claims, `"edax:{kind}:"` and the scoped key, with the tenant outermost | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `event_idempotency.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `check_tenant`, `tenant_max` on the ABI; `Tenancy`, `tenant_key`, `check_tenant` and `TENANT_MAX` re-exported from `edax` |
+| `hash` | FNV-1a 32 and 64 over bytes, and `payload_hash`: the hash an idempotency record binds its key to, for the command guard and the event guard alike | yes | `testdata/golden/payload_hash.json`, and indirectly `partition.json` | `payload_hash` on the ABI; `fnv1a32` and `fnv1a64` only through their callers |
+| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key. `guard_key(mode, tenant, kind, scope, key)`: the ledger key an idempotency guard of a `GuardKind` (`cmd` or `evt`) claims, `"edax:{kind}:"` and the scoped key, with the tenant outermost | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `event_idempotency.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `tenancy_modes`, `check_tenant`, `tenant_max` on the ABI; `Tenancy`, `tenant_key`, `check_tenant` and `TENANT_MAX` re-exported from `edax` |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
-| `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_code_is_terminal`, `error_verdict`, `split_error` |
+| `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_verdict`, `split_error` |
+| `names` | `closed_names!`: a unit enum, its `ALL` list and its `as_str` names from one row list, so a binding's import check against `ALL` sees every variant, and a name spelled twice fails the build | yes | indirectly, wherever a set crosses (`tenancy.json`, `saga.json`, `retries.json`, `retry_failure.json`, `relay_drain.json`, `idempotency_fence.json`) | every closed set of names in the kernels; the lists reach the ABI as `tenancy_modes`, `retry_failures` and their kin |
 | `sync` | `lock`: a poisoned mutex hands back its state instead of panicking again | yes | none | the native handles in `edax-abi`, `edax-memory`, `edax-kafka` |
 | `token` | `TokenMint` and `NO_TOKEN`: one live token per delivery or transaction, `0` never issued | yes | none — the guarantee is uniqueness | the Kafka `OffsetTracker`, the memory idempotency claims and transactions |
+| `version` | `next_version(what, current)`: the version a write at `current` commits, and the `codec` refusal at the last `u64` version, worded once for every versioned row | yes | indirectly, via `saga.json` | `edax-event` `saga_write`, and the memory projection and saga stores |
 
 ## `backoff`
 
@@ -71,7 +83,12 @@ two jobs:
 | `fnv1a32` | `0x811c9dc5` | `0x01000193` | `partition` — `fnv1a32(aggregate_id) % n` |
 | `fnv1a64` | `0xcbf29ce484222325` | `0x00000100000001b3` | `payload_hash` |
 
-Neither function is on the ABI surface. Only its users are: `partition`, `payload_hash` and
+`payload_hash` is the one hash both idempotency guards bind a key to: `edax-cqrs`'s `command_hash`
+hashes a command's canonical JSON with it, and `edax-event`'s `event_idempotency` hashes an event's raw
+`data`. One function, so the two guards cannot drift apart. `edax-cqrs` re-exports it.
+`testdata/golden/payload_hash.json` pins it.
+
+Neither FNV function is on the ABI surface. Only its users are: `partition`, `payload_hash` and
 `payload_hash_json`. So a host cannot hash the wrong bytes by reaching past the decision that chose
 them.
 
@@ -136,7 +153,10 @@ Two limits. The high-water mark is per process — it spans neither a restart no
 it is not a cross-service ordering primitive. And `i64` nanoseconds run out in the year 2262, where
 the value saturates.
 
-## `sync` and `token`
+## `sync` and `token` — Rust-only runtime helpers
+
+Neither is a cross-language contract: no binding crosses them, and an SDK in another language keeps its
+own lock and its own tokens.
 
 `lock(&Mutex<T>)` recovers a poisoned lock instead of panicking. A panic inside a native call
 surfaces in Python as `PanicException`, a `BaseException` the SDK's `except Exception` arms never
@@ -191,8 +211,8 @@ cached failure stores the same bytes in every SDK. A name the taxonomy does not 
 `codec` error (`"timeout".parse::<ErrorCode>()`), because the same name fails the same way every
 time.
 
-**The unclassified default is the kernel's too.** `verdict(None)` and `verdict_of_wire(wire)` give the
-verdict for a failure with no code the kernel knows. Such a failure is a host's own exception, or a
+**The unclassified default is the kernel's too.** `is_terminal(None)` gives the verdict for a failure with
+no code the kernel knows, and `Error::from_wire(wire).is_terminal()` gives the same for a wire string. Such a failure is a host's own exception, or a
 wire string with an unknown code, no separator, an uppercase code, or nothing at all. It is a `store`
 failure (`Error::from_wire` reads such a string as one), so it is transient. A wrongly transient
 failure is redelivered loudly and the work survives, while a wrongly terminal one is cached under its
@@ -202,17 +222,16 @@ SDK states this default for itself.
 What *branches* on the verdict — the exception hierarchy, `is_terminal`, the retry middleware, the
 idempotency guards, the dead-letter path — belongs to the SDK and is documented in
 [../sdk/errors.md](../sdk/errors.md). The short version: nothing above the kernel states its own
-verdict. Both SDKs read the code off the error and ask the kernel: Python through
-`error_code_is_terminal`, with the unclassified default from `error_verdict`; Rust through
-`edax_core::verdict`.
+verdict. Both SDKs read the code off the error and ask the kernel `edax_core::is_terminal`: Python through
+`error_verdict(code)`, which takes `None` for a failure with no code; Rust directly.
 
 ## See also
 
 - [README.md](./README.md) — what each kernel owns and why the boundary sits there.
 - [event.md](./event.md) — `edax-event`, which reuses `fnv1a32` for local fan-out and owns
   `Retries`.
-- [cqrs.md](./cqrs.md) — `edax-cqrs`, which reuses `fnv1a64` as `payload_hash` and owns the
-  read side (filter and query).
+- [cqrs.md](./cqrs.md) — `edax-cqrs`, which hashes a command with `payload_hash` and owns the read
+  side (filter and query).
 - [kafka.md](./kafka.md) — `edax-kafka`, whose `OffsetTracker` mints its tokens with `TokenMint`.
 - [golden-vectors.md](./golden-vectors.md) — how `backoff.json`, `error_taxonomy.json` and
   `error_wire.json` are generated and asserted.

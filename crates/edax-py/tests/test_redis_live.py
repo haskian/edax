@@ -19,8 +19,10 @@ import edax
 import pytest
 import redis.asyncio
 from conftest import REDIS_URL, Charge, claimed, fresh_prefix, ledger_key
+from edax import _edax
 from edax.backend.redis import CLAIM_SCRIPT, COMPLETE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
-from edax.command import CommandBus, Record, Won, idempotent
+from edax.command import CommandBus, idempotent
+from edax.idempotency import Record, Won
 
 if REDIS_URL is None:
     pytest.skip("EDAX_REDIS_URL is not set: no live Redis", allow_module_level=True)
@@ -122,7 +124,7 @@ async def test_a_reply_dropped_on_the_wire_is_resent_by_redis_py_and_runs_the_ha
         via_proxy = redis.asyncio.Redis(host="127.0.0.1", port=port)
         store = RedisIdempotencyStore(AsyncRedisClient(via_proxy), prefix)
         bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-        bus.register(Charge.type, handler)
+        bus.register(Charge, handler)
         proxy.marker = hashlib.sha1(body.encode()).hexdigest().encode()
         assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
         assert proxy.dropped == 1, "the proxy dropped one reply"
@@ -156,12 +158,12 @@ async def test_a_heartbeat_holds_a_claim_past_its_ttl_and_without_it_the_key_is_
                 break
         if heartbeat:
             assert taken is None, "the renewed claim was never free"
-            await holder.complete(key, won.handle, Record(HASH, result="holder"))
-            assert await rival.claim(key, HASH) == Record(HASH, result="holder")
+            await holder.complete(key, won.handle, Record.done(HASH, "holder"))
+            assert await rival.claim(key, HASH) == Record.done(HASH, "holder")
         else:
             assert taken is not None, "the unrenewed claim lapsed and was taken over"
             with pytest.raises(edax.StoreError, match="taken over"):
-                await holder.complete(key, won.handle, Record(HASH, result="holder"))
+                await holder.complete(key, won.handle, Record.done(HASH, "holder"))
             assert await direct.get(ledger_key(prefix, key)) == taken
 
 
@@ -193,7 +195,7 @@ async def test_a_server_frozen_past_the_claim_ttl_refuses_the_late_complete(dire
         return "charged"
 
     bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register(Charge.type, handler)
+    bus.register(Charge, handler)
     with pytest.raises(edax.StoreError, match="taken over"):
         await bus.dispatch(Charge("req-1"), idempotency_key="req-1")
     assert await direct.get(ledger_key(prefix, claimed("req-1"))) is None
@@ -215,14 +217,14 @@ async def test_settlement_sent_into_a_frozen_server_never_loses_a_landed_record(
     assert isinstance(won, Won)
     with frozen(CONTAINER):
         with pytest.raises(edax.StoreError, match="no reply within 300 ms"):
-            await store.complete("req-1", won.handle, Record(HASH, result="charged"))
+            await store.complete("req-1", won.handle, Record.done(HASH, "charged"))
         with pytest.raises(edax.StoreError, match="no reply within 300 ms"):
             await store.release("req-1", won.handle)
     await asyncio.sleep(0.3)  # the buffered commands run once the server resumes
     held = await direct.get(ledger_key(prefix, "req-1"))
-    settled = edax._edax.redis_settled_value(
-        won.handle, edax.command.encode_record(Record(HASH, result="charged"))
+    settled = _edax.redis_settled_value(
+        won.handle, edax.idempotency.encode_record(Record.done(HASH, "charged"))
     )
     assert held in (None, settled), f"the key holds neither nothing nor the outcome: {held!r}"
     replay = await store.claim("req-1", HASH)
-    assert isinstance(replay, Won) or replay == Record(HASH, result="charged")
+    assert isinstance(replay, Won) or replay == Record.done(HASH, "charged")

@@ -44,7 +44,10 @@ mod tests {
     fn the_simple_form_is_32_lowercase_hex_digits() {
         let a = guid_simple();
         assert_eq!(a.len(), 32); // the width a fence compares
-        assert!(a.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{a} is not lowercase hex");
+        assert!(
+            a.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{a} is not lowercase hex"
+        );
         assert_ne!(a, guid_simple()); // the shared counter -> distinct ids
         assert_eq!(Uuid::parse_str(&a).unwrap().get_version_num(), 7);
     }
@@ -55,7 +58,11 @@ mod tests {
     fn ids_minted_in_one_process_are_strictly_increasing() {
         let mut previous = guid_simple();
         for i in 0..50_000 {
-            let next = if i % 2 == 0 { guid().replace('-', "") } else { guid_simple() };
+            let next = if i % 2 == 0 {
+                guid().replace('-', "")
+            } else {
+                guid_simple()
+            };
             assert!(next > previous, "{next} did not sort after {previous}");
             previous = next;
         }

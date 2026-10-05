@@ -32,6 +32,13 @@ jobs:
       - name: Test
         run: mise exec -- cargo test --workspace
 
+      # Every public item states what it promises, so a broken intra-doc link (an item a split moved
+      # out of scope, or one since removed) fails the job like a compile error.
+      - name: Docs
+        run: mise exec -- cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # The canonical form (idempotency hashes, cursors) must not depend on serde_json features an
       # adopter's build can switch on. This crate replays the golden vectors with them enabled; it is
       # its own workspace, so the features never reach the build above.

@@ -71,7 +71,7 @@ classDiagram
     class ProjectionStore {
         +get(id, tx)
         +save(entity, tx)
-        +get_many(*, filter, sort, offset, limit, after, tx)
+        +get_many(query, *, tx)
     }
     class SagaStore {
         +load(id, tx)

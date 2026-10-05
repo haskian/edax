@@ -1,0 +1,92 @@
+[
+  {
+    "id": "user-1",
+    "json": "{\"email\":\"ada@example.com\",\"age\":36,\"tags\":[\"eu\",\"paid\"]}",
+    "name": "an_object_is_kept",
+    "want": {
+      "keyed": {
+        "age": 36,
+        "email": "ada@example.com",
+        "id": "user-1",
+        "tags": [
+          "eu",
+          "paid"
+        ]
+      },
+      "ok": {
+        "age": 36,
+        "email": "ada@example.com",
+        "tags": [
+          "eu",
+          "paid"
+        ]
+      }
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "{}",
+    "name": "an_empty_object_is_kept",
+    "want": {
+      "keyed": {
+        "id": "user-1"
+      },
+      "ok": {}
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "{\"id\":\"stale\",\"age\":36}",
+    "name": "the_row_key_overwrites_an_id_field",
+    "want": {
+      "keyed": {
+        "age": 36,
+        "id": "user-1"
+      },
+      "ok": {
+        "age": 36,
+        "id": "stale"
+      }
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "[\"ada@example.com\"]",
+    "name": "an_array_is_refused",
+    "want": {
+      "error": "codec: projection user-1 is not a JSON object: the query reads each row's key from its `id` field"
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "36",
+    "name": "a_scalar_is_refused",
+    "want": {
+      "error": "codec: projection user-1 is not a JSON object: the query reads each row's key from its `id` field"
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "null",
+    "name": "null_is_refused",
+    "want": {
+      "error": "codec: projection user-1 is not a JSON object: the query reads each row's key from its `id` field"
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "{\"balance\":18446744073709551616}",
+    "name": "an_integer_past_64_bits_is_refused",
+    "want": {
+      "error": "codec: integer at byte 11 is outside the 64-bit range"
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "{\"email\":",
+    "name": "text_that_is_not_json_is_refused",
+    "want": {
+      "error": "codec: projection user-1 is not JSON: EOF while parsing a value at line 1 column 9"
+    }
+  }
+]

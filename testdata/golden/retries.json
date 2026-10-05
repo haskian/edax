@@ -43,8 +43,12 @@
         }
       },
       {
+        "attempt": 3,
+        "code": null,
         "id": "evt-1",
-        "op": "dead_lettered"
+        "op": "sunk",
+        "taken": true,
+        "want": null
       },
       {
         "op": "tracked",
@@ -70,8 +74,12 @@
         }
       },
       {
+        "attempt": 1,
+        "code": null,
         "id": "evt-1",
-        "op": "dead_lettered"
+        "op": "sunk",
+        "taken": true,
+        "want": null
       },
       {
         "op": "tracked",
@@ -374,8 +382,10 @@
       },
       {
         "attempt": 2,
+        "code": "store",
         "id": "evt-1",
-        "op": "sink_failed",
+        "op": "sunk",
+        "taken": false,
         "want": 1
       },
       {
@@ -394,8 +404,12 @@
         }
       },
       {
+        "attempt": 3,
+        "code": null,
         "id": "evt-1",
-        "op": "dead_lettered"
+        "op": "sunk",
+        "taken": true,
+        "want": null
       },
       {
         "op": "tracked",
@@ -406,6 +420,130 @@
       }
     ],
     "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "a_fatal_sink_failure_stops_and_keeps_no_attempt",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "codec",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": "bad_handle",
+        "id": "evt-1",
+        "op": "sunk",
+        "taken": false,
+        "want": null
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 1
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "a_fatal_failure_stops_and_never_counts",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "nack": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "bad_handle",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "bad_handle",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "id": "evt-1",
+        "op": "attempt",
+        "want": 2
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 0
+        }
+      },
+      {
+        "broker_attempt": 0,
+        "code": "store",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "dead": 2
+        }
+      },
+      {
+        "attempt": 2,
+        "code": null,
+        "id": "evt-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "with_no_sink_a_fatal_failure_still_stops",
+    "ops": [
+      {
+        "broker_attempt": 0,
+        "code": "bad_handle",
+        "id": "evt-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": false
   },
   {
     "max_attempts": 2,

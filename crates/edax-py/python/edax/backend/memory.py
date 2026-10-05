@@ -12,23 +12,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 
-from .. import _edax, _json, errors
+from .. import _json, _native
 from .._owned import ThreadBound
-from ..aggregate import CommandMessage, EventDraft, EventMessage, message_kind
-from ..broker import _ConsumerLoop
-from ..command import Claimed, Record, Won, decode_prior, encode_record
-from ..dispatcher import Delivery
-from ..errors import BadHandle, ConcurrencyError
-from ..filter import Filter
+from ..broker import consume
+from ..delivery import Delivery
+from ..dispatcher import KeyOrderedDispatcher
+from ..errors import BadHandle
+from ..idempotency import Claimed, Record, decode_claim, encode_record
+from ..message import CommandMessage, EventDraft, EventMessage, message_kind
 from ..projection import Entity
-from ..query import Page, SortKey, build_spec
-from ..saga import SagaInstance
-from ..store import Snapshot, Tx, current_tx
+from ..query import Page, Query
+from ..saga import CompletedInstance, RunningInstance, SagaInstance
+from ..store import Snapshot
+from ..tenancy import Tenancy
+from ..unit_of_work import Tx, current_tx
 
 __all__ = [
     "MemoryBroker",
@@ -44,9 +47,12 @@ __all__ = [
 
 logger = logging.getLogger("edax.backend.memory")
 
+#: The row an outbox view reads: an event or a command.
+R = TypeVar("R", EventMessage, CommandMessage)
+
 # The token that names no transaction: a write under it lands at once, a read under it sees
 # committed state only. Read from the native binding, not restated, so the value has one owner.
-_NO_TX: int = _edax.no_tx()
+_NO_TX: int = _native.no_tx()
 
 
 @dataclass(frozen=True)
@@ -59,46 +65,49 @@ class MemoryTx:
 
 
 class MemoryTransactor:
-    """:class:`~edax.store.Transactor` over the native in-memory database. ``async with transaction(t) as tx``
-    opens a unit of work: every store built over this transactor stages its writes under ``tx``, reads its
-    own staged writes back, and nobody else sees them until the block exits cleanly. An exception rolls them
-    all back. Isolation is by exclusion, not by blocking: a key one open transaction wrote is held until it
-    ends, and a second writer gets :class:`~edax.errors.ConcurrencyError` at once, because an in-memory
+    """:class:`~edax.unit_of_work.Transactor` over the native in-memory database. ``async with transaction(t)
+    as tx`` opens a unit of work: every store built over this transactor stages its writes under ``tx``, reads
+    its own staged writes back, and nobody else sees them until the block exits cleanly. An exception rolls
+    them all back. Isolation is by exclusion, not by blocking: a key one open transaction wrote is held until
+    it ends, and a second writer gets :class:`~edax.errors.ConcurrencyError` at once, because an in-memory
     store driven from one event loop cannot park a task on a row lock. An idempotency claim on a held key
     loses and reads the holder's record as pending."""
 
     def __init__(self) -> None:
-        self._native = ThreadBound(_edax.memory_transactor(), "MemoryTransactor")
+        self._native = ThreadBound(_native.memory_transactor(), "MemoryTransactor")
+
+    def _database(self) -> _native.MemoryTransactor:
+        """The native database, on the thread that built it: what this module's store views call."""
+        return self._native.get()
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[MemoryTx]:
-        token = self._native.get().begin()
+        token = self._database().begin()
         try:
             yield MemoryTx(self, token)
         except BaseException:
             # A cancelled task (a wait_for timeout, shutdown) is a rollback too: nothing of the
             # unit of work may land. A false return means the token was already closed, which
             # only a handle kept past its block could cause; there is nothing left to drop.
-            self._native.get().rollback(token)
+            self._database().rollback(token)
             raise
-        with errors.mapped():
-            self._native.get().commit(token)
+        self._database().commit(token)
 
     def open_count(self) -> int:
         """How many transactions are open on this database. A leak diagnostic: a token that is
         neither committed nor rolled back holds every key it staged as a conflict for the process
         lifetime. A count that never returns to its idle level names a unit of work that escaped its
         ``async with``."""
-        return self._native.get().open_count()
+        return self._database().open_count()
 
     def auto_commit(self) -> MemoryTx:
         """An explicit no-transaction handle: a call made with it lands at once and sees committed
-        state only, whatever the ambient :func:`~edax.store.current_tx` is. For a reader that must
+        state only, whatever the ambient :func:`~edax.unit_of_work.current_tx` is. For a reader that must
         look past an open unit of work, such as a test probing what has landed."""
         return MemoryTx(self, _NO_TX)
 
     def token(self, tx: Tx | None) -> int:
-        """The native token for ``tx``, else for the ambient :func:`~edax.store.current_tx` of this
+        """The native token for ``tx``, else for the ambient :func:`~edax.unit_of_work.current_tx` of this
         database, else the auto-commit token. A handle of another transactor is refused: a store cannot
         enlist in a unit of work its database knows nothing about, and going on would silently drop the
         atomicity the caller asked for."""
@@ -128,81 +137,95 @@ class _StoreView:
         """The transactor this store enlists with; build the other stores over it to share it."""
         return self._transactor
 
-    def _db(self) -> _edax.MemoryTransactor:
+    def _db(self) -> _native.MemoryTransactor:
         """The native database, on the thread that built it."""
-        return self._transactor._native.get()
+        return self._transactor._database()
 
     def _token(self, tx: Tx | None) -> int:
         """The native token a call under ``tx`` runs with: see :meth:`MemoryTransactor.token`."""
         return self._transactor.token(tx)
 
 
-class MemoryEventStore(_StoreView):
+class _NativeOutbox(Protocol[R]):
+    """The outbox read side a native seam has: the event store's, and the command outbox's."""
+
+    def unpublished(self, limit: int) -> list[R]: ...
+    def mark_published(self, ids: list[str]) -> None: ...
+    def unpublished_count(self) -> int: ...
+
+
+class _OutboxView(_StoreView, Generic[R]):
+    """The :class:`~edax.outbox.Outbox` read side over a native seam, which the event store and the command
+    outbox share."""
+
+    def _seam(self) -> _NativeOutbox[R]:
+        raise NotImplementedError
+
+    async def unpublished(self, limit: int) -> list[R]:
+        # A negative limit cannot cross the unsigned boundary: CodecError.
+        return self._seam().unpublished(limit)
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        self._seam().mark_published(list(ids))
+
+    async def unpublished_count(self) -> int:
+        """How many committed unmarked outbox rows are waiting, counted without paging them."""
+        return self._seam().unpublished_count()
+
+
+class MemoryEventStore(_OutboxView[EventMessage]):
     """:class:`~edax.store.EventStore` over the native store: events + snapshots + outbox. Drafts go in as
-    the native :class:`~edax.aggregate.EventDraft` and come back as :class:`~edax.aggregate.EventMessage`.
+    the native :class:`~edax.message.EventDraft` and come back as :class:`~edax.message.EventMessage`.
     ``now`` is the store's clock: ``append`` stamps every draft's ``recorded_at`` with one reading of it
-    (default: the kernel clock, Unix nanoseconds). An ``EventStore`` is a :class:`~edax.store.Transactor`:
-    ``begin()`` is the :class:`MemoryTransactor`'s, so ``async with transaction(store)`` opens the
-    database's unit of work. The outbox is read by the relay outside any transaction and holds committed
-    rows only."""
+    (default: the kernel clock, Unix nanoseconds). An ``EventStore`` is a
+    :class:`~edax.unit_of_work.Transactor`: ``begin()`` is the :class:`MemoryTransactor`'s, so ``async with
+    transaction(store)`` opens the database's unit of work. The outbox is read by the relay outside any
+    transaction and holds committed rows only."""
 
     def __init__(
         self, transactor: MemoryTransactor | None = None, *, now: Callable[[], int] | None = None
     ) -> None:
         super().__init__(transactor)
         # The native store cannot call back into Python, so the view reads the clock and hands it in.
-        self._now = now or _edax.current_timestamp
+        self._now = now or _native.current_timestamp
+
+    def _seam(self) -> _native.MemoryEventStore:
+        """The native event store of this view's database, on the thread that built it."""
+        return _native.handle(self._db().event_store())
 
     def begin(self) -> AbstractAsyncContextManager[MemoryTx]:
         return self._transactor.begin()
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
-        with errors.mapped():
-            return self._db().load_events(self._token(tx), aggregate_id, after)
+        return self._seam().load(self._token(tx), aggregate_id, after)
 
     async def load_snapshot(self, tx: Tx, aggregate_id: str) -> Snapshot | None:
-        with errors.mapped():
-            r = self._db().load_snapshot(self._token(tx), aggregate_id)
+        r = self._seam().load_snapshot(self._token(tx), aggregate_id)
         return None if r is None else Snapshot(aggregate_id, r.type_name, r.version, r.data)
 
     async def save_snapshot(self, tx: Tx, snapshot: Snapshot) -> None:
-        with errors.mapped():
-            self._db().save_snapshot(
-                self._token(tx),
-                snapshot.aggregate_id,
-                snapshot.type_name,
-                snapshot.version,
-                snapshot.data,
-            )
+        self._seam().save_snapshot(
+            self._token(tx),
+            snapshot.aggregate_id,
+            snapshot.type_name,
+            snapshot.version,
+            snapshot.data,
+        )
 
     async def append(
         self, tx: Tx, aggregate_id: str, expected_version: int, drafts: Sequence[EventDraft]
     ) -> list[EventMessage]:
         recorded_at = self._now()
-        with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            return self._db().append_events(
-                self._token(tx), aggregate_id, expected_version, list(drafts), recorded_at
-            )
-
-    async def unpublished(self, limit: int = 100) -> list[EventMessage]:
-        with errors.mapped():  # a negative limit cannot cross the unsigned boundary: CodecError
-            return self._db().unpublished(limit)
-
-    async def mark_published(self, ids: Sequence[str]) -> None:
-        with errors.mapped():
-            self._db().mark_published(list(ids))
-
-    async def unpublished_count(self) -> int:
-        """How many committed unmarked outbox rows are waiting, counted without paging them."""
-        return self._db().unpublished_count()
+        # Native `concurrency:` is ConcurrencyError, anything else StoreError.
+        return self._seam().append(self._token(tx), aggregate_id, expected_version, list(drafts), recorded_at)
 
 
 class MemoryIdempotencyStore(_StoreView):
-    """:class:`~edax.command.IdempotencyStore` over the native atomic claim, sharing the transactor's
-    database. Records cross as JSON. With ``tx`` given, or :func:`~edax.store.current_tx` of its transactor
-    set, the claim and the terminal record are staged in that unit of work: a rollback releases the key, so
-    the next dispatch runs the handler again instead of replaying an outcome that never landed. For the
-    ordering of a ledger on its own database (Redis), use :class:`MemoryLedger`.
+    """:class:`~edax.idempotency.IdempotencyStore` over the native atomic claim, sharing the transactor's
+    database. Records cross as JSON. With ``tx`` given, or :func:`~edax.unit_of_work.current_tx` of its
+    transactor set, the claim and the terminal record are staged in that unit of work: a rollback releases the
+    key, so the next dispatch runs the handler again instead of replaying an outcome that never landed. For
+    the ordering of a ledger on its own database (Redis), use :class:`MemoryLedger`.
 
     ``complete`` and ``release`` are fenced on the handle ``claim`` returned, as the Redis ledger fences on
     the claim value, and :meth:`expire` lapses a key the way a claim TTL does: a test rehearses a takeover,
@@ -213,116 +236,128 @@ class MemoryIdempotencyStore(_StoreView):
     # a foreign unit of work would leave a `done` record for writes that rolled back.
     joins_transaction: ClassVar[bool] = True
 
+    def _seam(self) -> _native.MemoryIdempotencyStore:
+        """The native idempotency store of this view's database, on the thread that built it."""
+        return _native.handle(self._db().idempotency_store())
+
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
-        with errors.mapped():
-            claimed = self._db().claim(self._token(tx), key, payload_hash)
-        # A record that will not decode is the kernel's terminal codec failure, replayed as cached.
-        return Won(claimed.handle) if claimed.won else decode_prior(claimed.prior, payload_hash)
+        claimed = self._seam().claim(self._token(tx), key, payload_hash)
+        return decode_claim(claimed, payload_hash)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
-        with errors.mapped():  # a handle that names no claim on `key` any more: the fence's StoreError
-            self._db().complete(self._token(tx), key, handle, encode_record(record))
+        # A handle that names no claim on `key` any more: the fence's StoreError.
+        self._seam().complete(self._token(tx), key, handle, encode_record(record))
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
-        with errors.mapped():
-            self._db().release(self._token(tx), key, handle)
+        self._seam().release(self._token(tx), key, handle)
 
     async def forget(self, key: str, tx: Tx | None = None) -> None:
         # The native store reads the record with the kernel: a pending claim, or a key another open unit
         # of work holds, is `in_progress:`, raised as InProgress.
-        with errors.mapped():
-            self._db().forget(self._token(tx), key)
+        self._seam().forget(self._token(tx), key)
 
     def expire(self, key: str) -> bool:
         """Lapse whatever ``key`` holds in committed state, as a claim or record TTL running out would: the
         next claim wins, and the old claim's handle settles nothing. A test hook; ``False`` when nothing was
         held. A claim staged by an open unit of work is not committed, so it does not lapse."""
-        return self._db().expire_claim(key)
+        return self._seam().expire(key)
 
     def put_raw(self, key: str, raw: str) -> None:
         """Store ``raw`` as ``key``'s settled record in committed state, readable or not. A test hook that
         rehearses a record another writer left behind (a torn write, another layout, a hand edit); the next
         claim reads it as the kernel does. A key an open unit of work holds raises the transient
         :class:`~edax.errors.ConcurrencyError` and is left alone."""
-        db = self._db()
-        db.expire_claim(key)
-        with errors.mapped():
-            claimed = db.claim(_NO_TX, key, 0)
-        if not claimed.won:
-            raise ConcurrencyError(f"idempotency key {key} is held by an open transaction")
-        with errors.mapped():
-            db.complete(_NO_TX, key, claimed.handle, raw)
+        self._seam().put_raw(key, raw)
 
 
-class MemoryLedger(MemoryIdempotencyStore):
-    """:class:`~edax.command.IdempotencyStore` on a database of its own: the ordering a Redis ledger has.
-    It takes ``tx`` and ignores it, every call lands at once, and it declares no ``joins_transaction``, so
+class MemoryLedger:
+    """:class:`~edax.idempotency.IdempotencyStore` on a database of its own: the ordering a Redis ledger has.
+    It takes ``tx`` and ignores it, every call lands at once, and it declares ``joins_transaction`` false, so
     the guard runs ``claim; begin; run; commit; complete`` with hand compensation, caches a terminal
     failure (a redelivery raises :class:`~edax.errors.CachedFailure`), and can leave a claim over work that
-    landed when the record's reply is lost. :meth:`~MemoryIdempotencyStore.expire` lapses a claim as the
-    Redis claim TTL does, so a takeover and a stale owner's refused late ``complete`` can be rehearsed. Test
-    on the ordering you deploy: this one for a Redis ledger, :class:`MemoryIdempotencyStore` for a ledger
-    in your database."""
+    landed when the record's reply is lost. :meth:`expire` lapses a claim as the Redis claim TTL does, so a
+    takeover and a stale owner's refused late ``complete`` can be rehearsed. Test on the ordering you
+    deploy: this one for a Redis ledger, :class:`MemoryIdempotencyStore` for a ledger in your database.
+
+    ``store`` is the claim store the ledger runs outside any ``tx`` (default: one on a new database). It
+    has no transactor of its own to share, so no store can join its writes."""
 
     joins_transaction: ClassVar[bool] = False
 
-    def __init__(self) -> None:
-        super().__init__(MemoryTransactor())
+    def __init__(self, store: MemoryIdempotencyStore | None = None) -> None:
+        self._store = store if store is not None else MemoryIdempotencyStore()
+        # Every call runs under the store's no-transaction handle, whatever `tx` or ambient tx is given.
+        self._no_tx = self._store.transactor.auto_commit()
 
-    def _token(self, tx: Tx | None) -> int:
-        return _NO_TX
+    async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
+        return await self._store.claim(key, payload_hash, self._no_tx)
+
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
+        await self._store.complete(key, handle, record, self._no_tx)
+
+    async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
+        await self._store.release(key, handle, self._no_tx)
+
+    async def forget(self, key: str, tx: Tx | None = None) -> None:
+        await self._store.forget(key, self._no_tx)
+
+    def expire(self, key: str) -> bool:
+        """:meth:`MemoryIdempotencyStore.expire`: lapse ``key`` as the Redis claim TTL running out does."""
+        return self._store.expire(key)
+
+    def put_raw(self, key: str, raw: str) -> None:
+        """:meth:`MemoryIdempotencyStore.put_raw`: store ``raw`` as ``key``'s settled record, unchecked."""
+        self._store.put_raw(key, raw)
 
 
 class MemoryProjectionStore(_StoreView):
-    """:class:`~edax.projection.ProjectionStore` over the native store; ``get_many`` runs the
-    kernel query, so it is the reference for how a durable backend must page. Documents cross as
-    JSON. A save under ``tx`` (or the ambient :func:`~edax.store.current_tx`) is staged until the
-    transactor commits."""
+    """:class:`~edax.projection.ProjectionQuery` over the native store; ``get_many`` runs the kernel query,
+    so it is the reference for how a durable backend must page. Documents cross as JSON, and every read
+    carries its row key as ``"id"``. A save under ``tx`` (or the ambient
+    :func:`~edax.unit_of_work.current_tx`) is staged until the transactor commits."""
+
+    def _seam(self) -> _native.MemoryProjectionStore:
+        """The native projection store of this view's database, on the thread that built it."""
+        return _native.handle(self._db().projection_store())
 
     async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
-        with errors.mapped():
-            row = self._db().get_projection(self._token(tx), id)
+        row = self._seam().get(self._token(tx), id)
         return None if row is None else Entity(id, row.version, _json.decode(row.document_json))
 
-    async def save(self, entity: Entity, tx: Tx | None = None) -> None:
-        with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            entity.version = self._db().save_projection(
-                self._token(tx), entity.id, entity.version, _json.encode(entity.document)
-            )
+    async def save(self, entity: Entity, tx: Tx | None = None) -> int:
+        # Native `concurrency:` is ConcurrencyError, anything else StoreError.
+        return self._seam().save(self._token(tx), entity.id, entity.version, _json.encode(entity.document))
 
-    async def get_many(
-        self,
-        *,
-        filter: Filter | None = None,
-        sort: list[SortKey] | None = None,
-        offset: int = 0,
-        limit: int | None = None,
-        after: str | None = None,
-        tx: Tx | None = None,
-    ) -> Page:
-        spec = build_spec(filter=filter, sort=sort, offset=offset, limit=limit, after=after)
-        with errors.mapped():  # a malformed spec/cursor is tagged `codec:` -> terminal
-            page = self._db().query_projections(self._token(tx), _json.encode(spec))
+    async def get_many(self, query: Query = Query(), *, tx: Tx | None = None) -> Page:
+        # A malformed spec/cursor is tagged `codec:`: terminal.
+        page = self._seam().get_many(self._token(tx), query.to_json())
         return Page.from_kernel(page)
 
 
 class MemorySagaStore(_StoreView):
     """:class:`~edax.saga.SagaStore` over the native store, so the saga rule (a stale ``save`` or
     ``complete`` raises :class:`~edax.errors.ConcurrencyError`, a completed instance takes no write, the
-    step's commands commit with its state) is the one every SDK runs. State crosses as JSON, so it must be
-    JSON-serializable and comes back as a copy, never the object that was saved; commands cross as the
-    native :class:`~edax.aggregate.CommandMessage`. A write under ``tx`` (or the ambient
-    :func:`~edax.store.current_tx`) is staged until the transactor commits. Not durable."""
+    step's commands commit with its state, each saga's rows and commands are its own) is the one every SDK
+    runs. State crosses as JSON, so it must be JSON-serializable and comes back as a copy, never the object
+    that was saved; commands cross as the native :class:`~edax.message.CommandMessage`. A write under
+    ``tx`` (or the ambient :func:`~edax.unit_of_work.current_tx`) is staged until the transactor commits. Not
+    durable."""
 
-    async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None:
-        with errors.mapped():
-            row = self._db().load_saga(self._token(tx), id)
+    def _seam(self) -> _native.MemorySagaStore:
+        """The native saga store of this view's database, on the thread that built it."""
+        return _native.handle(self._db().saga_store())
+
+    async def load(self, saga: str, id: str, tx: Tx | None = None) -> SagaInstance | None:
+        row = self._seam().load(self._token(tx), saga, id)
         if row is None:
             return None
-        return SagaInstance(_json.decode(row.state_json), row.version, row.completed, row.folded)
+        if row.completed:
+            return CompletedInstance(row.version)
+        return RunningInstance(_json.decode(row.state_json), row.version, row.folded)
 
     async def save(
         self,
+        saga: str,
         id: str,
         state: Any,
         version: int,
@@ -330,69 +365,69 @@ class MemorySagaStore(_StoreView):
         commands: Sequence[CommandMessage],
         tx: Tx | None = None,
     ) -> int:
-        with errors.mapped():  # native `concurrency:` -> ConcurrencyError, else StoreError
-            return self._db().save_saga(
-                self._token(tx), id, version, _json.encode(state), folded, list(commands)
-            )
+        # Native `concurrency:` is ConcurrencyError, anything else StoreError.
+        return self._seam().save(
+            self._token(tx), saga, id, version, _json.encode(state), folded, list(commands)
+        )
 
     async def complete(
-        self, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None
+        self, saga: str, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None
     ) -> int:
-        with errors.mapped():
-            return self._db().complete_saga(self._token(tx), id, version, list(commands))
+        return self._seam().complete(self._token(tx), saga, id, version, list(commands))
 
-    async def unpublished(self, limit: int = 100) -> list[CommandMessage]:
-        with errors.mapped():
-            return self._db().unpublished_saga_commands(limit)
+    async def unpublished(self, saga: str, limit: int) -> list[CommandMessage]:
+        # A negative limit cannot cross the unsigned boundary: CodecError.
+        return self._seam().unpublished(saga, limit)
 
-    async def mark_published(self, ids: Sequence[str]) -> None:
-        with errors.mapped():
-            self._db().mark_saga_commands_published(list(ids))
+    async def mark_published(self, saga: str, ids: Sequence[str]) -> None:
+        self._seam().mark_published(saga, list(ids))
+
+    async def unpublished_count(self, saga: str) -> int:
+        """How many of ``saga``'s committed unsent commands are waiting, counted without paging them."""
+        return self._seam().unpublished_count(saga)
 
 
-class MemoryCommandOutbox(_StoreView):
-    """A command outbox over the native store: the :class:`~edax.store.CommandOutbox` a
-    :class:`~edax.store.Repository` writes, and the :class:`~edax.store.Outbox` a
-    :class:`~edax.store.Relay` drains. Build it over the event store's transactor, so ``enqueue`` under the
+class MemoryCommandOutbox(_OutboxView[CommandMessage]):
+    """A command outbox over the native store: the :class:`~edax.outbox.CommandOutbox` a
+    :class:`~edax.repository.Repository` writes, and the :class:`~edax.outbox.Outbox` a
+    :class:`~edax.outbox.Relay` drains. Build it over the event store's transactor, so ``enqueue`` under the
     save's ``tx`` commits or rolls back with the events. ``unpublished`` returns committed rows only, oldest
     first. A ``tx`` of another transactor raises :class:`~edax.errors.BadHandle`. Not durable."""
 
+    def _seam(self) -> _native.MemoryCommandOutbox:
+        """The native command outbox of this view's database, on the thread that built it."""
+        return _native.handle(self._db().command_outbox())
+
     async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
-        with errors.mapped():
-            self._db().enqueue_commands(self._token(tx), list(commands))
-
-    async def unpublished(self, limit: int = 100) -> list[CommandMessage]:
-        with errors.mapped():  # a negative limit cannot cross the unsigned boundary: CodecError
-            return self._db().unpublished_commands(limit)
-
-    async def mark_published(self, ids: Sequence[str]) -> None:
-        with errors.mapped():
-            self._db().mark_commands_published(list(ids))
-
-    async def unpublished_count(self) -> int:
-        """How many committed unmarked command rows are waiting, counted without paging them."""
-        return self._db().unpublished_command_count()
+        self._seam().enqueue(self._token(tx), list(commands))
 
 
 class _Log:
     """The native log every view of one broker shares, and the wakeup of every view parked on it: a
     message, a rewind or a crash in one group can make a message fetchable for any view."""
 
-    def __init__(self, partitions: int) -> None:
-        with errors.mapped():  # zero partitions is the kernel's `codec:` refusal
-            self.native = ThreadBound(_edax.memory_broker(partitions), "MemoryBroker")
-        self.wakeups: list[asyncio.Event] = []
+    def __init__(self, partitions: int, tenancy: Tenancy) -> None:
+        # Zero partitions is the kernel's `codec:` refusal.
+        self.native = ThreadBound(_native.memory_broker(partitions, tenancy.value), "MemoryBroker")
+        # Weak, so a group view nobody holds any more drops its wakeup instead of keeping it forever.
+        self.wakeups: weakref.WeakSet[asyncio.Event] = weakref.WeakSet()
+        # Strong, while a poll waits on it: the parked task is reachable only through its event's waiter,
+        # so a run task the host kept no reference to would otherwise be collected mid-wait.
+        self.parked: set[asyncio.Event] = set()
 
     def wake(self) -> None:
         for event in self.wakeups:
             event.set()
 
 
-class MemoryBroker(_ConsumerLoop):
+class MemoryBroker:
     """Both :class:`~edax.broker.Producer` and :class:`~edax.broker.Consumer` over the native log, so
     ``Relay(store, broker.publish)`` and ``broker.run(dispatcher)`` talk without a broker. ``publish``
-    takes an event or a command and returns once it is in the log, keyed by the kernel's ordering key.
-    Nothing survives the process, and nothing is ever deleted.
+    takes an event or a command and returns once it is in the log, keyed as
+    :class:`~edax.backend.kafka.KafkaProducer` keys it under ``tenancy``: the kernel's ordering key, composed
+    with the message's tenant where the mode composes keys. A pooled message with no tenant raises
+    :class:`~edax.errors.CodecError`, as on Kafka. Nothing survives the process, and nothing is ever
+    deleted.
 
     It behaves like a Kafka topic, so a handler that only survives a queue fails here first:
 
@@ -403,65 +438,79 @@ class MemoryBroker(_ConsumerLoop):
       watermark, the way a consumer restart or a rebalance does;
     * :meth:`group` reads the same log as another consumer group, which gets every message: a projection
       and a saga each get their own;
-    * with ``partitions`` above 1, order holds per key, not across keys.
+    * with ``partitions`` above 1, order holds per key, not across keys, and a key lands on the partition
+      Kafka gives it, so two tenants' same-named aggregates under a pool take Kafka's partitions too.
 
     The log, the settlement and the commits are the native machine's, shared with every SDK, so
     :meth:`empty` reports the same "nothing left to do" a durable broker does. Only the waiting is
     Python's, because the native poll never blocks: :meth:`poll` loops over it and parks on an
     :class:`asyncio.Event` between empty peeks."""
 
-    def __init__(self, partitions: int = 1) -> None:
-        self._attach(_Log(partitions), "default")
-
-    def _attach(self, log: _Log, group: str) -> None:
-        self._log = log
-        self._group = group
+    def __init__(
+        self,
+        partitions: int = 1,
+        *,
+        tenancy: Tenancy = Tenancy.SILO,
+        _view_of: tuple[_Log, str] | None = None,
+    ) -> None:
+        # `_view_of` is :meth:`group`'s: the shared log and the group a view reads it as.
+        self._log, self._group = _view_of if _view_of is not None else (_Log(partitions, tenancy), "default")
         self._queued = asyncio.Event()
-        log.wakeups.append(self._queued)
+        self._log.wakeups.add(self._queued)
 
     def group(self, name: str) -> MemoryBroker:
         """The same log, read as consumer group ``name``: it gets every message, settles on its own, and
         starts at the beginning of the log."""
-        view = MemoryBroker.__new__(MemoryBroker)
-        view._attach(self._log, name)
-        return view
+        return MemoryBroker(_view_of=(self._log, name))
 
     async def publish(self, msg: EventMessage | CommandMessage) -> None:
         native = self._log.native.get()
-        # `message_kind` refuses a non-message with TypeError, so each cast names the type it checked.
+        # `message_kind` refuses a non-message with TypeError, so each cast names the type it checked. A
+        # pooled message with no tenant is the key rule's `codec:` refusal.
         if message_kind(msg) == "event":
             native.publish_event(cast(EventMessage, msg))
         else:
             native.publish_command(cast(CommandMessage, msg))
         self._log.wake()
 
-    async def poll(self) -> Delivery | None:
+    async def run(self, dispatcher: KeyOrderedDispatcher[Any]) -> None:
+        """:func:`~edax.broker.consume` this broker into ``dispatcher``: it has no work of its own around the
+        loop."""
+        await consume(self, dispatcher)
+
+    async def poll(self) -> Delivery[EventMessage | CommandMessage] | None:
         while True:
             # Clear before the peek, never after: a publish that lands after the peek sets the
             # flag, and clearing then would erase the wakeup the peek missed.
             self._queued.clear()
-            with errors.mapped():
-                polled = self._log.native.get().try_poll(self._group)
+            polled = self._log.native.get().try_poll(self._group)
             if polled is not None:
                 # The native poll fills exactly one of the two.
                 msg: EventMessage | CommandMessage | None = polled.event or polled.command
                 if msg is None:
                     raise BadHandle(f"memory broker poll {polled.token} carried no message")
                 return self._delivery(polled.token, msg)
-            await self._queued.wait()
+            self._log.parked.add(self._queued)
+            try:
+                await self._queued.wait()
+            finally:
+                self._log.parked.discard(self._queued)
 
-    def _delivery(self, token: int, msg: EventMessage | CommandMessage) -> Delivery:
+    def _delivery(
+        self, token: int, msg: EventMessage | CommandMessage
+    ) -> Delivery[EventMessage | CommandMessage]:
         native, group = self._log.native, self._group
 
         # The machine refuses a second settlement of a token, and one a rewind or a crash retired, and
-        # says so with `False`. The refusal is logged, not raised: nothing is lost either way.
+        # says so with `False`. The refusal is logged at debug, not raised: nothing is lost either way,
+        # and rewinds and rebalances make it routine. The Kafka consumer logs it alike.
         async def ack() -> None:
             if not native.get().ack(group, token):
-                logger.warning("edax memory broker: ack of a settled or retired delivery %d", token)
+                logger.debug("edax memory broker: ack of a settled or retired delivery %d", token)
 
         async def nack() -> None:
             if not native.get().nack(group, token):
-                logger.warning("edax memory broker: nack of a settled or retired delivery %d", token)
+                logger.debug("edax memory broker: nack of a settled or retired delivery %d", token)
                 return
             self._log.wake()  # the rewind made messages fetchable for a parked poller
 

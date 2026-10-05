@@ -6,47 +6,53 @@ and :func:`idempotent_by_id` is the consume-path middleware. See ``docs/sdk/cons
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
-from . import _edax, errors
-from ._async import MaybeAwaitable, maybe_await
-from .aggregate import EventMessage
+from . import _native
+from ._chain import Registry, require_async
+from ._observer import wrap
+from ._wiring import wiring_str
 from .causation import caused_by
-from .command import IdempotencyStore, _compose, _Guard, _guarded
-from .errors import AlreadyRegistered
-from .observe import Observer, _wrap
-from .store import Transactor
+from .idempotency import Guard, IdempotencyStore, guarded
+from .message import EventMessage
+from .observe import Observer
 from .tenancy import Tenancy
+from .unit_of_work import Transactor, TxT
 
 __all__ = [
     "EventHandler",
     "EventMiddleware",
     "EventRouter",
+    "event_claim_key",
+    "forget_event",
     "idempotent_by_id",
 ]
 
 
-EventHandler = Callable[[EventMessage], MaybeAwaitable[None]]
+#: An event handler: a coroutine function, as a command handler is, so no blocking call hides in the loop.
+EventHandler = Callable[[EventMessage], Awaitable[None]]
 EventMiddleware = Callable[[EventHandler], EventHandler]
 
 
 class EventRouter:
     """Register handlers by event name; dispatch decoded event messages to them. ``middleware`` wraps every
     handler at :meth:`register` time, first middleware outermost. An event with no registered handler goes to
-    ``on_unhandled``, also wrapped, or is ignored if that is unset; an ignored event runs no middleware."""
+    ``on_unhandled``, also wrapped, or is ignored if that is unset; an ignored event runs no middleware.
+    Every handler is a coroutine function, as on :class:`~edax.command.CommandBus`: a sync one raises
+    :class:`TypeError` when it is wired, not when the first event reaches it."""
 
     def __init__(self, *middleware: EventMiddleware, on_unhandled: EventHandler | None = None) -> None:
-        self._handlers: dict[str, EventHandler] = {}
-        self._middleware = middleware
-        self._on_unhandled = self._wrap(on_unhandled) if on_unhandled is not None else None
-
-    def _wrap(self, handler: EventHandler) -> EventHandler:
-        return _compose(self._middleware, handler)
+        self._handlers: Registry[EventHandler] = Registry(middleware)
+        if on_unhandled is not None:
+            require_async(on_unhandled, "on_unhandled")
+        self._on_unhandled = self._handlers.wrap(on_unhandled) if on_unhandled is not None else None
 
     def register(self, name: str, handler: EventHandler) -> None:
-        if name in self._handlers:
-            raise AlreadyRegistered(f"event handler already registered for {name!r}")
-        self._handlers[name] = self._wrap(handler)
+        """Install ``handler`` for events named ``name``, wrapped in the middleware. A second handler for
+        one name raises the terminal :class:`~edax.errors.AlreadyRegistered`, and a handler that is not a
+        coroutine function :class:`TypeError`."""
+        require_async(handler, f"event handler for {name!r}")
+        self._handlers.register(name, handler)
 
     def on(self, name: str) -> Callable[[EventHandler], EventHandler]:
         """Decorator form of :meth:`register`. Returns the bare handler, not the wrapped one."""
@@ -60,15 +66,17 @@ class EventRouter:
     async def dispatch(self, msg: EventMessage) -> None:
         """Route ``msg`` to the handler for ``msg.name``. The handler runs under the ambient lineage
         :func:`~edax.causation.propagate` of ``msg``, so an event it saves continues the flow."""
-        handler = self._handlers.get(msg.name, self._on_unhandled)
+        handler = self._handlers.get(msg.name)
+        if handler is None:
+            handler = self._on_unhandled
         if handler is not None:
             with caused_by(msg):
-                await maybe_await(handler(msg))
+                await handler(msg)
 
 
 def idempotent_by_id(
-    store: IdempotencyStore,
-    unit_of_work: Transactor | None = None,
+    store: IdempotencyStore[TxT],
+    unit_of_work: Transactor[TxT] | None = None,
     *,
     scope: str,
     tenancy: Tenancy,
@@ -86,7 +94,7 @@ def idempotent_by_id(
     :attr:`~edax.tenancy.Tenancy.POOL` the key carries the event's ``tenant``. Under a pool or a bridge,
     an event that names no tenant raises :class:`~edax.errors.CodecError` before any claim.
 
-    Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.store.current_tx`, which
+    Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.unit_of_work.current_tx`, which
     exists only if the host opened it outside this guard: a dispatcher worker has none. ``unit_of_work``
     closes that gap, so a failure of the commit releases the claim.
 
@@ -99,19 +107,42 @@ def idempotent_by_id(
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
     :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
-    if not isinstance(scope, str):
-        raise TypeError(
-            f"idempotent_by_id(scope=...) names the consumer and must be a str, got {type(scope).__name__}"
-        )
-    observe = _wrap(observer)
+    wiring_str(scope, "idempotent_by_id(scope=...), which names the consumer,")
+    observe = wrap(observer)
 
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(msg: EventMessage) -> None:
-            with errors.mapped():
-                rule = _edax.event_idempotency(msg, tenancy.value, scope)
-            guard = _Guard(store, msg.name, rule.key, rule.payload_hash, observe)
-            await _guarded(guard, lambda: maybe_await(next_(msg)), unit_of_work)
+            rule = _native.event_idempotency(msg, tenancy.value, scope)
+            guard = Guard(store, msg.name, rule.key, rule.payload_hash, observe)
+            await guarded(guard, lambda: next_(msg), unit_of_work)
 
         return handler
 
     return mw
+
+
+def event_claim_key(scope: str, event_id: str, *, tenancy: Tenancy, tenant: str | None = None) -> str:
+    """The ledger key the :func:`idempotent_by_id` guard named ``scope`` claims for the event ``event_id``,
+    in a deployment that separates tenants by ``tenancy``. Under :attr:`~edax.tenancy.Tenancy.POOL` the key
+    carries the event's ``tenant``. Under a mode that requires a tenant, a call that names none raises
+    :class:`~edax.errors.CodecError`. The composition is the kernel's, the same key the guard claims
+    (``testdata/golden/event_idempotency.json``)."""
+    return _native.event_claim_key(tenancy.value, scope, event_id, tenant)
+
+
+async def forget_event(
+    store: IdempotencyStore[TxT],
+    scope: str,
+    event_id: str,
+    *,
+    tenancy: Tenancy,
+    tenant: str | None = None,
+    tx: TxT | None = None,
+) -> None:
+    """Delete the record the :func:`idempotent_by_id` guard named ``scope`` keeps for the event ``event_id``,
+    so a redelivery of that event runs its handler again. Use it to re-drive a dead-lettered event whose
+    terminal failure was cached. Pass the guard's ``tenancy`` and the event's ``tenant``: the record lives
+    under the key :func:`event_claim_key` composes from them. ``tenancy`` has no default, as on
+    :func:`~edax.idempotency.forget`. The *Forget* clause of :class:`~edax.idempotency.IdempotencyStore` says
+    what happens to a claim still in flight and to a key with no record."""
+    await store.forget(event_claim_key(scope, event_id, tenancy=tenancy, tenant=tenant), tx)

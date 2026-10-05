@@ -33,14 +33,16 @@ The outbox avoids it. There is only one commit, because the to-publish row is a 
 written by the same store, in the same transaction, as the state it announces.
 
 `Outbox` (a Python `Protocol`, a Rust trait) is only the read side a `Relay` drains: `unpublished`
-and `mark_published`. A row needs only an `id` to be marked by. Every outbox is written in the same
-transaction as the state it announces:
+and `mark_published`. It is a port of its own, never a member of a write port. Every write port stages
+its outbox rows in the caller's `tx`, and one object may implement both, as the memory stores do. A row
+needs only an `id` to be marked by. Every outbox is written in the same transaction as the state it
+announces:
 
-| Outbox | Rows | Written by |
-|---|---|---|
-| an `EventStore` | `EventMessage`s | `append` |
-| a `SagaStore` | `CommandMessage`s | the saga step's `save` or `complete` |
-| a `CommandOutbox`, optional | `CommandMessage`s | `Repository.save(..., commands=[...])`, through `enqueue` under the save's `tx` |
+| Outbox | Rows | Written by | Read through |
+|---|---|---|---|
+| the event outbox | `EventMessage`s | an `EventStore`'s `append` | the store's own `Outbox`, where it implements one |
+| a saga's command outbox, one per saga name | `CommandMessage`s | the saga step's `save` or `complete` | `runner.outbox()`, a `SagaOutbox` |
+| a command outbox, optional | `CommandMessage`s | `Repository.save(..., commands=[...])`, through `CommandOutbox.enqueue` under the save's `tx` | the backend's `Outbox` |
 
 So no backend can split the state write and the to-publish write across two systems by accident. A
 command outbox enforces it; see [its refusals](../backends/README.md#commandoutbox). See [commands](./commands.md#three-routes-for-a-command) for when to send a command
@@ -75,7 +77,7 @@ erDiagram
     OUTBOX_ROW {
         string id PK "the same event id"
         string aggregate_id "the broker message key"
-        bytes message "the wire form"
+        bytes message "the message, serialized by the store; decoded back whole"
         int published_at "null until mark_published"
     }
     SNAPSHOT_ROW {
@@ -86,7 +88,9 @@ erDiagram
     }
 ```
 
-`EVENT_ROW` and `SNAPSHOT_ROW` mirror `EventMessage` and `Snapshot`. The store stamps
+`EVENT_ROW` and `SNAPSHOT_ROW` mirror `EventMessage` and `Snapshot`. `OUTBOX_ROW.message` is the
+message in whatever form the store keeps it, not the broker's wire form. `unpublished` hands back the
+structured message, every field intact, and the producer encodes it at publish time. The store stamps
 `recorded_at` with its own clock when it appends, and `load` and `unpublished` return that value. The
 outbox row's primary key is the same event id as the event row's; that shared id is what a consumer deduplicates on
 after a redelivery. The id is unique store-wide: an `append` carrying an id the store already holds
@@ -149,7 +153,7 @@ second mark is caught by idempotence here.
 sequenceDiagram
     participant L as relay loop
     participant R as Relay
-    participant K as the kernel's retry policy
+    participant K as the kernel's drain rule
     participant S as Outbox seam
     participant P as Producer, a broker
 
@@ -157,24 +161,27 @@ sequenceDiagram
     activate R
     R->>S: unpublished limit equals batch
     S-->>R: committed rows not yet marked, oldest first
-    loop each row, in order
+    R->>K: begin, with the batch's rows
+    loop each row, in order, that the kernel admits
         R->>P: publish row
         alt the broker durably accepted it
             P-->>R: ok
         else publish raised
             P-->>R: error
-            R->>K: failed row id, terminal or transient
+            R->>K: failed row id, with the error's code
             alt dead: terminal, or max_attempts reached, and on_dead is set
                 R->>R: on_dead row, then go on with the next row
             else handed back
-                Note over R: stop the batch: the rows behind it may be its aggregate's later events
+                Note over R: hold back the rest of its key: they may be its aggregate's later events
+            else fatal, or a second transient failure in a row
+                Note over R: stop the batch
             end
         end
     end
     R->>S: mark_published every row settled, published or dead-lettered
     Note over R,S: the window between a publish and mark_published<br/>is where a crash causes a re-publish
     alt a row was handed back
-        R->>R: wait the row's backoff step, then raise its error
+        R->>R: wait the largest backoff step, then raise the first one's error
     else
         R-->>L: how many rows were settled
     end
@@ -185,8 +192,10 @@ sequenceDiagram
 published = await edax.Relay(store, events.publish).drain()
 ```
 
-`examples/py/07_outbox_relay.py` drains this way. `drain` publishes one batch and returns how many
-rows it settled. To keep draining, run the relay's own loop rather than writing one:
+`examples/py/07_outbox_relay.py` drains this way. `drain` publishes one batch, of
+`edax.outbox.DEFAULT_BATCH` rows unless you pass `batch`, and returns how many rows it settled.
+`unpublished(limit)` takes its page size from the relay, never from a default of its own. The Python
+`Relay` is generic in its row type, `Relay[EventMessage]` or `Relay[CommandMessage]`, as Rust's is. To keep draining, run the relay's own loop rather than writing one:
 
 ```python
 stop = asyncio.Event()
@@ -195,10 +204,13 @@ task = asyncio.create_task(relay.run(idle_s=1.0, stop=stop))  # set `stop` (or c
 
 `run` drains back to back while rows flow. After a drain that settled nothing, it waits `idle_s` or
 until `stop`. After a failed drain it goes again: that drain already waited its own backoff step and
-reported to the observer. So one bad row never ends the relay. Rust's `Relay::drain(batch, publish)`
+reported to the observer. So one bad row never ends the relay. A fatal failure does
+(`edax.is_fatal`: a refused credential or topic, the `bad_handle` code). The row goes back uncounted
+and never to `on_dead`, and `run` raises the error, because every row would fail alike. A Rust host
+looping on `drain` stops on `edax::is_fatal` the same way. Rust's `Relay::drain(batch, publish)`
 takes the publish closure per call instead of at construction. `publish` there is synchronous, so
 wrap it in your async runtime for a network transport. Both relays drain any `Outbox`: the event
-store's, a command outbox, and a saga store's command outbox (see [sagas.md](./sagas.md)).
+store's, a command outbox, and one saga's command outbox, `runner.outbox()` (see [sagas.md](./sagas.md)).
 
 **What `drain` needs from the store**
 
@@ -223,24 +235,55 @@ not be thread-safe or reentrant.
 
 ### A row that fails
 
-A drain marks every row it settled, also when a later row fails, so the published prefix is not
-published again. The failing row stops the batch. Whether it is handed back or dead-lettered is the
-kernel's retry policy (`edax_event::Retries`, pinned by `testdata/golden/retries.json`), the same one
-the `KeyOrderedDispatcher` runs, keyed by row id:
+The relay promises order per key, and only per key. A row's key is its tenant and its
+[ordering key](../kernels/event.md#the-ordering-key): an event's aggregate, or a command's aggregate or
+own id. That is the order a broker that partitions by key delivers in, and the order the
+[delivery guarantees](../guides/delivery-guarantees.md) promise. A drain promises no order between keys.
+
+A drain marks every row it settled, also when a later row fails, so a row that went out is not
+published again. A failing row holds back the rows behind it of its own key for the rest of the drain,
+because they may be its aggregate's later events. Every other key goes on. Which rows a drain
+publishes is the kernel's drain rule (`edax_event::Drain`, pinned by
+`testdata/golden/relay_drain.json`), the same in both SDKs. Whether a failed row is handed back or
+dead-lettered is the retry policy inside it (`edax_event::Retries`), the one the `KeyOrderedDispatcher`
+runs, keyed by row id:
 
 | The publish failure | `on_dead` set | Result |
 |---|---|---|
-| terminal (an over-size message, a codec error) | yes | dead-lettered and marked; the rows behind it go out in the same drain |
+| terminal (an over-size message, a codec error) | yes | dead-lettered and marked; its key's later rows go out in the same drain |
 | transient, at the `max_attempts`-th failure of that row | yes | dead-lettered and marked |
-| transient, below the ceiling (or `max_attempts=0`) | either | handed back; the drain waits the row's backoff step, then raises |
-| terminal | no | handed back with a growing wait, on every drain |
-| `InProgress` (a guarded command another dispatcher holds) | either | handed back without spending an attempt |
-| `on_dead` itself raises | either | handed back; the next drain gives the sink another try |
+| transient, below the ceiling (or `max_attempts=0`) | either | handed back with its key; the other keys go on |
+| a second transient failure, with no successful publish since the first | either | handed back (or dead-lettered at the ceiling), and the drain stops: the broker is likely down. It waits that row's step and raises its error even when the sink took every failed row |
+| terminal | no | handed back with its key and a growing wait, on every drain |
+| `InProgress` (a guarded command another dispatcher holds) | either | handed back with its key, without spending an attempt |
+| fatal (`edax.is_fatal`) | either | handed back uncounted; the drain stops and raises at once, with no wait |
+| `on_dead` itself raises | either | handed back with its key; the next drain gives the sink another try |
 
-So one poison row cannot stall the outbox once `on_dead` is wired: it moves aside. Without a sink the
-relay still cannot skip it, because publishing the rows behind it would reorder its aggregate. The
-growing wait keeps a host's drain loop from spinning on it. `relay.last.dead_lettered` counts the
-rows a drain moved aside.
+A drain that handed rows back waits the largest backoff step among them, then raises the first
+one's error. So one poison row cannot stall the outbox: without a sink it holds back its own key
+only, and with `on_dead` wired it moves aside. The growing wait keeps a host's drain loop from
+spinning on it. `relay.last.dead_lettered` counts the rows a drain moved aside.
+
+**The sink takes a `DeadLetter`.** It carries the row as `message`, the `attempt` that killed it and
+the publish error as `failure`, the same value a `KeyOrderedDispatcher` sink takes. In Rust a relay sink borrows
+them, `DeadLetter<&R, &HandlerError>`.
+
+**The sink is at-least-once too.** A drain marks a dead-lettered row with the rows it published. When
+that `mark_published` fails, the next drain reads the row again and hands it to `on_dead` again. A
+sink deduplicates by row id, as a downstream consumer does.
+
+**Why a second transient failure stops the drain.** A transient failure is usually the transport's,
+not the row's: the broker is down for every key. Publishing the rest of the batch would spend each
+row an attempt, dead-letter the whole batch after `max_attempts` drains, and wait a send timeout per
+row. Two in a row, with no publish between them, read as that outage. Contention, a terminal
+failure and a dead letter the sink took are the row's own, so they neither count nor reset that pair.
+The stop always waits and raises, so `Relay.run` reports the outage and paces its loop, even with
+`max_attempts=1`, where the sink takes every failed row.
+
+**What per-key order does not cover.** `unpublished` returns the oldest rows first. When one held-back
+key fills a whole batch, no other key gets a turn until it clears or moves aside. Wire `on_dead`, or
+raise the batch size. Two keys that share one broker key, such as a coarser key function, can reorder
+relative to each other, and nothing promises their relative order.
 
 ### A store that fails
 
@@ -331,23 +374,23 @@ no count.
 | concurrency | one relay per store, unless `unpublished` leases rows | whatever your CDC client supports |
 | row retention | handled by `mark_published` | yours |
 
-Use one of the two; the `EventStore` contract names both.
+Use one of the two. A store fed to change data capture implements no `Outbox` at all, and still meets
+the `EventStore` contract.
 
 ## How deep is the backlog
 
 `Relay.last` is the lag of the drain that finished. It stands still when the relay does, so a dead
 relay and an idle system read the same from outside. The number that separates them is the depth of
-the outbox, and a store may offer it:
+the outbox, and an outbox may offer it as a `CountedOutbox`:
 
 ```python
 async def unpublished_count(self) -> int:
     """Committed unmarked rows waiting, outside any transaction."""
 ```
 
-This method is optional and not declared on the `EventStore` Protocol. Read it with
-`getattr(store, "unpublished_count", None)`, and
-set `supports_unpublished_count = True` on your `EventStoreContract` subclass to run the clause that
-checks it. `MemoryEventStore` implements it.
+It is optional. Check it with `isinstance(outbox, CountedOutbox)`. `OutboxContract` runs the clause
+that checks it for an outbox that is one, with no flag to set. `MemoryEventStore` and
+`MemoryCommandOutbox` implement it.
 
 In SQL it is `SELECT count(*) FROM outbox WHERE published_at IS NULL`. On a large table prefer an
 estimate or a partial index over an exact scan on every scrape: the alert reads a trend, not a

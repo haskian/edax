@@ -14,7 +14,7 @@ import asyncio
 from edax import CodecError, Entity
 from edax.backend.memory import MemoryProjectionStore
 from edax.filter import and_, eq, gte
-from edax.query import Document, sort_key
+from edax.query import Document, Query, sort_key
 
 ACCOUNTS: list[Document] = [
     {"id": "a1", "owner": "Ann", "balance": 300, "status": "active"},
@@ -27,7 +27,7 @@ ACCOUNTS: list[Document] = [
 
 
 async def main() -> None:
-    # 1. Save one document per account. Every document needs a unique "id".
+    # 1. Save one document per account, keyed by its id. Every row reads back with that key as "id".
     store = MemoryProjectionStore()
     for account in ACCOUNTS:
         await store.save(Entity(account["id"], 0, account))
@@ -40,7 +40,7 @@ async def main() -> None:
     pages: list[list[str]] = []
     after: str | None = None
     while True:
-        page = await store.get_many(filter=only, sort=order, limit=2, after=after)
+        page = await store.get_many(Query(filter=only, sort=order, limit=2, after=after))
         pages.append([row["id"] for row in page.rows])
         print(f"page {len(pages)}: {[(row['owner'], row['balance']) for row in page.rows]}")
         if page.next is None:
@@ -48,9 +48,9 @@ async def main() -> None:
         after = page.next
 
     # 4. A cursor belongs to its sort. Under another sort it is refused, not misread.
-    first_page = await store.get_many(filter=only, sort=order, limit=2)
+    first_page = await store.get_many(Query(filter=only, sort=order, limit=2))
     try:
-        await store.get_many(filter=only, sort=[sort_key("id")], after=first_page.next)
+        await store.get_many(Query(filter=only, sort=[sort_key("id")], after=first_page.next))
         raise AssertionError("expected CodecError")
     except CodecError:
         print("a cursor under another sort -> CodecError")

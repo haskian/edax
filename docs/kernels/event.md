@@ -3,30 +3,32 @@
 The event-sourcing consistency kernel: the routing, byte, ordering and lineage decisions every
 service must agree on bit-for-bit.
 
-`edax-event` is pure and synchronous — no I/O, no threads, no callbacks. It decides; the software
+`edax-event` is sans-IO — no I/O, no threads, no callbacks. `Retries` and `Drain` keep state, which the
+host owns and holds per consumer or relay. It decides; the software
 development kits (SDKs) wire. Every decision below is pinned by a file in `testdata/golden/`, so a
 Python service and a Rust service cannot drift.
 
 | Module | Owns | Golden vector |
 |---|---|---|
-| `domain` | the event and command message shapes, the extension key rule, the ordering key, a received command's key | `envelopes.json`, `extensions.json`, `ordering_key.json`, `command_received_key.json` |
+| `message` | the event and command message shapes and the `Payload` each carries, the extension key rule, the ordering key, the tenant of a command a save sends | `envelopes.json`, `extensions.json`, `ordering_key.json`, `command_owner.json` |
 | `partition` | which local worker runs an ordering key (never broker placement) | `partition.json` |
 | `codec` | the reproducible wire bytes for both kinds of message, their media types, and how they evolve | `envelopes.json`, `envelope_decode.json` |
 | `upcast` | which `v -> v+1` steps run, in which order | `upcast.json` |
 | `causation` | the lineage of a message: `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
-| `dedup` | the key and hash an event's idempotency guard claims | `event_idempotency.json` |
-| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; when a save writes a snapshot | `sequence_batch.json`, `snapshot_due.json` |
-| `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json` |
+| `idempotency` | the key and hash an event's idempotency guard claims; the record it claims is `edax-cqrs`'s | `event_idempotency.json` |
+| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
+| `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json`, `retry_step.json` |
+| `drain` | which rows an outbox relay's drain publishes, and what a failed row does to the rows behind it | `relay_drain.json` |
 | `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing) and the command messages it sends | `saga.json` |
 
 Host code reaches the kernel through an SDK. The SDKs reach it through the flat application binary
 interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
 
-## `domain` — the messages
+## `message` — the messages
 
 Two messages cross a process boundary: `EventMessage` and `CommandMessage`, both in
-`crates/edax-event/src/domain.rs`. Both are flat: identity, payload, lineage, time, then two string
+`crates/edax-event/src/message.rs`. Both are flat: identity, payload, lineage, time, then two string
 maps. Nothing nests. A `Kind` enum names the two, `Event` and `Command`. It is exhaustive on purpose,
 so a new kind is a compile error in every SDK rather than a silent default.
 
@@ -48,8 +50,10 @@ so a new kind is a compile error in every SDK rather than a silent default.
 | `extensions` | `Extensions` | `Extensions` | edax extensions, such as trace context |
 | `metadata` | `Metadata` | `Metadata` | nothing: the application's |
 
-Two more shapes sit beside the messages. `Event` is a codec's output: `name`, `version` and `data`.
-An aggregate holds its pending events in that shape. `EventDraft` is an event as a repository hands
+Two more shapes sit beside the messages. `Payload` is a codec's output, an event's or a command's:
+`name`, `version` and `data`. An aggregate holds its pending events in that shape, and a saga hands
+the commands it sends over in it. Each message gives its own back the same two ways: `payload()`
+copies it, and `into_payload()` moves it out. `EventDraft` is an event as a repository hands
 it to the store: every field of an `EventMessage` but `recorded_at`. The store stamps that field, and
 `EventDraft::record(recorded_at)` makes the message.
 
@@ -101,10 +105,8 @@ is still an aggregate id. The Kafka record key (composed with the tenant under a
 broker's partition and the dispatcher's worker all start from it.
 `testdata/golden/ordering_key.json` pins it.
 
-`received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
-client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
-same message, and both copies carry one id, so the id still deduplicates a redelivery. An empty key
-is still a key. `testdata/golden/command_received_key.json` pins it.
+The key a guard claims for a received command is `edax-cqrs`'s `received_key`, beside the command
+guard's other keys ([cqrs.md](./cqrs.md)).
 
 ```python
 import edax
@@ -148,6 +150,13 @@ In Python each shape is a native class, not a parallel dataclass. It compares, h
 value, and its maps iterate in key order, the wire's. The type stub `_edax.pyi` lists the field
 types. The constructor order differs from Rust: the binding generator moves optional parameters,
 such as `sequence` and `occurred_at`, to the end.
+
+### The tenant of a command a save sends
+
+`own_command(command, tenant)` is a command as a save of an aggregate of `tenant` sends it. One that
+names no tenant takes the aggregate's, so the relay keys it and the bus claims it inside that tenant.
+One that names another tenant is a `codec` error: a save cannot move a command across tenants its load
+never named. `command_owner.json` pins every branch.
 
 ## `codec` — reproducible message bytes
 
@@ -200,6 +209,16 @@ positional array, and buys forward compatibility in both formats. Each decode ro
 a wire value and encoded in both formats, so the two cannot follow different rules. The vector pins
 only the error code for a refusal: the message is the parser's own text, which a second SDK's parser
 words differently.
+
+A domain payload inside `data` meets the same format rules through `Format::encode_payload` and
+`Format::decode_payload`, which the Rust SDK's codecs call. A struct reads from a map only, at every
+depth, as Python's msgspec reads it. serde's derive would also read a struct from a positional
+array, so the kernel wraps the format's deserializer in `StructsFromMaps`. The adapter asks for each
+struct as a map and passes every other shape through, so a string payload still reads as a string.
+Its one limit: a value serde buffers before it picks a type (an untagged or internally tagged enum,
+a `#[serde(flatten)]` field) reads its inner structs from that buffer. Trailing bytes are refused
+as for a message. `testdata/golden/event_codec.json` pins an array refused for a struct, at the top
+and nested, in both formats and both SDKs.
 
 Reproducible bytes matter because two services in different languages hash, compare and store the
 same logical message. Suppose Python sorted `metadata` by insertion and Rust by key. One event
@@ -316,14 +335,14 @@ assert_eq!(edax_event::upcast_target(Some(&[1, 2]))?, 3);    // the name writes 
 assert!(edax_event::upcast_target(Some(&[1, 3])).is_err());  // a hole: no target
 ```
 
-Both SDKs wire this into their event codecs. Python's `RegistryEventCodec` and Rust's `RegistryCodec`
+Both SDKs wire this into their event codecs. Python's `RegistryCodec` and Rust's `RegistryCodec`
 / `SerdeCodec` ask `upcast_target` for each name when they are built, and stamp that version on
 marshal. On unmarshal they ask `upcast_plan` before decoding, with the name's `Upcaster` steps or
 `None`, and no host-side version comparison. Every failure is deterministic, so each is a `codec`
 error: a broken chain fails the codec's construction, and a bad payload dead-letters on the first
 attempt instead of nacking forever. `Upcaster.step` (both SDKs) refuses a second transform for one
 version as `already_registered`. A schema version is a `u32`. In Python, a negative or oversized step
-is refused at wiring: `Upcaster.step` raises `ValueError`, before any message is stamped.
+is refused at wiring: `Upcaster.step` raises `BadHandle`, before any message is stamped.
 
 ## `retry` — when a failed message dies
 
@@ -332,41 +351,91 @@ The host builds it with `Retries::new(max_attempts, sink)`, where `sink` is whet
 sink is wired. The host runs the handler, the sink, the wait and the ack or nack. It asks
 `failed(id, broker_attempt, failure)` what to do, with `failure = Failure::of(code)`. `code` is the
 failure's error code, `None` for one no code classifies. `in_progress` reads as `Contended`: another
-consumer holds the message's idempotency claim. A terminal code reads as `Terminal`, anything else as
-`Transient`. The ABI takes the code itself, so no SDK maps an error to a kind. The answer:
+consumer holds the message's idempotency claim. `bad_handle` reads as `Fatal`: a wiring fault, such as
+a refused credential or topic, that fails every message alike. Another terminal code reads as
+`Terminal`, anything else as `Transient`. The ABI takes the code itself, so no SDK maps an error to a
+kind; `retry_failure(code)` names the kind for a host loop that must stop on a fatal one. The answer,
+`Nack { step }`, `Dead { attempt }` or `Stop`, crosses with its name (`VerdictKind`, `retry_actions()`):
 
 | Rule | Detail |
 |---|---|
+| it stops | a `Fatal` failure, with or without a sink: handed back uncounted, never dead-lettered, and the host stops consuming or draining on it |
 | the attempt | `max(broker_attempt, recorded) + 1`, saturating |
 | it dies | a `Terminal` failure, or `0 < max_attempts <= attempt`, and only with a sink |
 | it is handed back | everything else, after backoff step `attempt - 1`; the attempt is recorded, so the wait grows |
 | contention | its own growing step; never counts toward `max_attempts` |
-| the sink fails | `sink_failed(id, attempt)` keeps the attempt and answers the step; the redelivery dies again |
-| it succeeds | `succeeded` / `dead_lettered` forget its counts |
+| the sink answers | `sunk(id, attempt, refusal)` is one call for either answer. A taken message (`refusal` is `None`) is forgotten and answers no step. A refused one keeps the attempt and answers the step; the redelivery dies again. A `Fatal` refusal answers no step either: the sink's wiring fails every dead message alike, so the host stops on it as on a fatal handler failure |
+| it succeeds | `succeeded` forgets its counts |
 
 Two SDKs consuming one topic agree on when a message dies, so a poison message is not dead-lettered
-by one service and retried forever by the other. Both `KeyOrderedDispatcher`s and both `Relay`s run
-it, the relays keyed by outbox row id. `retries.json` holds operation scripts, each op with the
-answer the kernel gave; both suites replay them. `retry_failure.json` pins `Failure::of` for every
+by one service and retried forever by the other. Both `KeyOrderedDispatcher`s run it, and both
+`Relay`s through `Drain`, keyed by outbox row id. `retries.json` holds operation scripts, each op with
+the answer the kernel gave; both suites replay them. `retry_failure.json` pins `Failure::of` for every
 code and for none.
+
+### `retry_step` — an in-process retry
+
+A command's `retry` middleware has a caller waiting, so it runs its own rule. `retry_step(attempts,
+failed, failure)` answers the backoff step before the next run, or `None` to stop. It stops on a
+`Terminal` or `Fatal` failure, and on the `attempts`-th failure; the wait is step `failed`, the
+failures so far. Contention spends an attempt here, unlike in `Retries`: a winner that never finishes
+must not hold a waiting caller forever. It keeps no state. `retry_attempts(0)` is the terminal
+`bad_handle`, since no attempt at all is not a policy. `retry_step.json` pins every branch.
+
+## `drain` — the outbox relay's drain
+
+`Drain` is a relay's rule over one batch, built with `Drain::new(max_attempts, sink)` and kept across
+drains. The host reads the batch and calls `begin(rows)`. It publishes each row the drain `admits`,
+and reports `published(id)` or `failed(id, failure)`. When the answer is `DeadLetter`, it runs the sink
+and reports the sink's answer with `sunk(id, attempt, refusal)`. A taken row is settled, and the answer
+is `None`. A refused row answers `HandBack`, and a fatal refusal answers `Stop`:
+the drain publishes nothing more and raises the sink's failure for that row. Then `finish()` says what to mark, what to wait and which row's
+failure to raise. A store failure asks `store_failed()` for its step; a drain whose store calls all
+succeeded calls `store_answered()`.
+
+| Rule | Detail |
+|---|---|
+| the key | a row's tenant and `ordering_key`, exact under every tenancy mode |
+| a failed row | handed back, dead-lettered or stopped as `Retries` answers; a hand-back holds back the rest of its key |
+| other keys | go on: order is promised per key only |
+| a sink takes it | the row is settled, and its key goes on |
+| an outage | a second `Transient` failure with no publish between them stops the drain; `Contended` and `Terminal` neither count nor reset |
+| a fatal failure | stops the drain at once, and `finish` asks for no wait |
+| the wait | the largest step among the rows handed back; the first of them is raised, or the fatal one |
+| the store | one growing step per consecutive store failure, back to step 0 once the store answers |
+
+`relay_drain.json` holds operation scripts like `retries.json`, and both suites replay them.
 
 ## `saga` — the write a saga step makes
 
-`saga_admit(completed, folded, msg)` answers whether a runner folds `msg` at all. A completed
+Both calls of a step read what the runner loaded as one `Loaded`: `Absent`, `Active { version }` or
+`Completed { version }`, the tombstone. A tombstone is never an absent instance plus a flag. A store
+or a binding that holds the row as flat fields reads it with `Loaded::from_row(completed, version)`,
+which refuses a tombstone with no version as `codec`: no store writes one.
+
+`saga_admit(saga, loaded, folded, msg)` answers whether a runner of the saga named `saga` folds `msg`
+at all. A completed
 instance (a tombstone) folds nothing: `Completed`, so a late or redelivered event cannot start a
 finished workflow again. `folded` is the text the instance's last write saved, empty for a new
 instance. It holds one mark per source aggregate, with two ids kept apart. One is the id of the
 event at the highest sequence folded from it. The other is the id of the last unsequenced event
 folded from it. An unsequenced event never overwrites the sequenced id, so a crash replay of an
-aggregate that mixes both is skipped whole. A `SagaCommandFailed` event is kept apart again: the
-mark holds the id of every failure folded, one per dead command at most. So when two commands die
-and a relay that lost its mark replays the first, it is still a repeat. The answers:
+aggregate that mixes both is skipped whole. The failure of one of the instance's own commands is kept
+apart again: the mark holds the id of every failure folded, one per dead command at most. So when two
+commands die and a relay that lost its mark replays the first, it is still a repeat. The kernel knows
+such a failure by the whole shape `saga_command_failed` builds, not by its name alone. It is named
+`SagaCommandFailed`, its id is its cause's plus `:failed`, and its cause is a `saga_command_id` of this
+saga and the instance. The name is not reserved, so a host event under it is an ordinary unsequenced event, and it
+cannot grow the mark. The answers:
 
 | The event | Answer |
 |---|---|
 | its id is one of its aggregate's two ids, or a failure folded before | `Repeat`: a redelivery, or a replay after a crash |
 | its sequence is below its aggregate's highest | `BelowMark`: assumed folded, see below |
 | anything else | `Fold { folded }`: the marks to save with the step |
+
+Each answer has a name a binding branches on: `SagaAdmit::kind()` is a `SagaAdmitKind` with `as_str`
+(`completed`, `repeat`, `below_mark`, `fold`), and `SagaAdmitKind::ALL` lists them.
 
 The runner folds nothing on `Completed`, `Repeat` or `BelowMark`, so a step whose ack was lost does
 not decide its commands again. An unsequenced event other than a failure is a repeat only of the
@@ -396,8 +465,9 @@ fold the event into the instance the row names, so the saga can compensate:
 
 A row that names no instance is a `codec` error.
 
-`saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. The
-loaded instance is absent or running, since `saga_admit` skips a completed one:
+`saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. A
+`Completed` tombstone takes no write: a `codec` error, which `saga_admit` makes unreachable, since it
+skips every event that finds one. For an absent or running instance:
 
 | Loaded, and the fold | Write |
 |---|---|
@@ -405,19 +475,21 @@ loaded instance is absent or running, since `saga_admit` skips a completed one:
 | anything else, keeping state | `Save { expected, version }`: `expected` is the loaded version (`0` when absent) |
 | anything else, completing | `Complete { expected, version }`: `expected` is the loaded version |
 
-`version` is the version the write commits, `expected + 1`. The runner stamps the step's command ids
+`SagaWrite::kind()` names the write as a `SagaWriteKind` (`nothing`, `save`, `complete`), with
+`SagaWriteKind::ALL` listing them. `version` is the version the write commits, `expected + 1`. The runner stamps the step's command ids
 with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no next version, so
 `saga_write` returns a `codec` error.
 
 The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
-index, tenant, command, cause_id, cause_correlation_id, issued_at)` builds each one as a
-`CommandMessage`, so both SDKs write the same row. `saga` is the saga's name. `tenant`,
-`cause_id` and `cause_correlation_id` are the folded event's `tenant`, `id` and `correlation_id`:
+index, cause, payload, issued_at)` builds each one as a `CommandMessage`, so both SDKs write the same
+row. `saga` is the saga's name. `cause` is a `Cause`: the folded event's `id`, `correlation_id` and
+`tenant`, built with `Cause::from(&event)`. The ABI takes the three flat, so a host builds no native
+object for them:
 
 | Field | Value | Why |
 |---|---|---|
-| `id` | `saga_command_id(instance_id, version, index)` = `"{instance_id}:{version}:{index}"` | unique per committed transition; a re-sent row keeps it |
-| `idempotency_key` | `scoped(saga, id)` = `"{len(saga)}:{saga}:{id}"`, with `len` in UTF-8 bytes | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
+| `id` | `saga_command_id(saga, instance_id, version, index)` = `scoped(saga, "{instance_id}:{version}:{index}")` = `"{len(saga)}:{saga}:{instance_id}:{version}:{index}"`, with `len` in UTF-8 bytes | unique per committed transition and across sagas, so a consumer that dedups or counts retries by message id never merges two sagas' commands; a re-sent row keeps it |
+| `idempotency_key` | the `id` | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
 | `aggregate_id` | the instance id | one instance's commands keep their order on every transport, and a store can find its rows |
 | `tenant` | the folded event's | the command inherits the tenant of the event that caused it, so the bus that runs it claims inside that tenant |
 | `correlation_id` | the folded event's | the command stays in the event's flow, not the instance's |
@@ -534,8 +606,10 @@ not older. `is_stale(5, 5)` is false, so the event applies again. That makes it 
 its own for a replayed batch. A replay with the ordinal check as its only dedup skips every stale
 event, but applies each key's newest event twice, because its sequence equals the stored one. Put
 `idempotent_by_id` in front of the handler when the effect is not itself idempotent. The key that
-guard claims is the kernel's too: `event_idempotency(msg, mode, scope)` in `dedup`, the event id
+guard claims is the kernel's too: `event_idempotency(msg, mode, scope)` in `idempotency`, the event id
 under the consumer's scope, so two consumers sharing a ledger keep separate records.
+`event_claim_key(mode, tenant, scope, event_id)` composes the same key from the id alone, so an operator
+can forget a dead-lettered event's record and re-drive it.
 
 The ordering also assumes the consumer itself does not reorder. Say a nack seeks back while later
 copies of the same aggregate are already queued, and a worker runs them. The older event then
@@ -580,6 +654,15 @@ Versions and sequences are one `u64` space end to end, so the comparison is exac
 A batch that would run past `u64::MAX` is refused rather than clamped, since a clamp would let two
 events share the ceiling. A negative version from a host is refused at the boundary as a `codec`
 error. `testdata/golden/sequence_batch.json` pins every branch, the ceiling cases included.
+
+`check_batch` returns the stream version after the batch, so a replay reads its version from the kernel
+rather than counting.
+
+`draft_batch` builds the drafts a save appends, one per payload. Each is sequenced from `initial + 1`
+and named by its id. Each carries the batch's tenant, lineage, extensions, metadata and valid time. It answers
+the version after the batch and whether the save writes a snapshot there. It refuses, before anything
+is written, an id count that is not the payload count (`bad_handle`), and a bad extension key, a bad
+tenant or a batch past `u64::MAX` (`codec`). `draft_batch.json` pins every branch.
 
 `snapshot_due(every, initial, current)` answers whether a save from version `initial` to `current`
 writes a snapshot: when it crosses a multiple of `every`. `1` snapshots on every save that appends,

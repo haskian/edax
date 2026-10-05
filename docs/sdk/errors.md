@@ -13,7 +13,7 @@ verdict. One then caches a failure the other would release. That is a durable re
 flowchart LR
     Table["kernel: ErrorCode table, one row per code with its verdict, and the default for no code"]
     Table --> Rust["Rust SDK: edax::Error is the kernel's Error { code, message }"]
-    Table --> Abi["flat ABI: error_codes, error_code_is_terminal, error_verdict, split_error"]
+    Table --> Abi["flat ABI: error_codes, error_verdict, split_error"]
     Abi --> Py["Python SDK: EdaxError subclasses, terminal read at class definition"]
     Rust --> Retry["retry: re-raise or retry"]
     Rust --> Guard["guard: cache a failed record or release the claim"]
@@ -67,9 +67,10 @@ Every row is a code of the kernel; the second column names the constructor where
 - in Python, an argument the binding cannot convert: a negative or too-wide integer (`OverflowError`),
   a value of the wrong type (`TypeError`), a `str` holding a lone surrogate (`UnicodeError`).
   `errors.mapped()` turns each into `CodecError`, because each fails the same way on every retry.
-- a Python Kafka payload that will not decode; the consumer returns an `UndecodableDelivery` for it.
+- a Python Kafka payload that will not decode; the consumer returns an `Undecodable` for it.
 
-An `UndecodableDelivery` carries the terminal error and never reaches a handler. With a dead-letter
+An `Undecodable` carries the raw bytes and the terminal error, and no message, so it never reaches a
+handler. With a dead-letter
 sink wired the dispatcher routes it there and acks it, so a payload that will not decode is never
 lost and never crash-loops. Without a sink it nacks after a backoff step and comes back, as every
 dead delivery does; see [consuming.md](./consuming.md). A sink that raises nacks it the same way,
@@ -89,9 +90,9 @@ verdict. The table is a macro, so the variant list, `ErrorCode::ALL`, `ErrorCode
 compile error in every downstream `match`, never a wildcard's silent default.
 
 **Rust.** An `edax::Error` carries its code as a field, so there is no mapping to keep in step.
-`command::is_terminal` classifies any boxed handler error by its code: an `edax::Error`'s own,
-`rejected` for an `edax::Terminal`, and none for anything else. It then asks the kernel,
-`edax_core::verdict(code)`, which also owns the answer for no code. One function serves `retry`,
+The crate-private `failure::code_of` classifies any boxed handler error by its code: an `edax::Error`'s own,
+`rejected` for an `edax::Terminal`, and none for anything else. The SDK then asks the kernel,
+`edax_core::is_terminal(code)`, which also owns the answer for no code. One function serves `retry`,
 both idempotency guards and the dispatcher, so a verdict has one source. Event handlers return the
 same `HandlerError` as command handlers, so a saga that dispatches a command returns the command's
 error with `?` and the verdict reaches the dispatcher unchanged.
@@ -103,7 +104,7 @@ defined:
 cls.code = code
 # Raises for a code the kernel does not know: the import fails instead of a class carrying
 # a verdict the kernel never pinned.
-cls.terminal = _edax.error_code_is_terminal(code)
+cls.terminal = _edax.error_verdict(code)
 ```
 
 The check runs in both directions. A class naming a code the kernel does not know fails at class
@@ -111,32 +112,51 @@ definition; a kernel code with no class fails the import through
 `_check_every_kernel_code_has_a_class()`. Neither direction can silently land on the transient
 default.
 
-`errors.is_terminal(e)` then mirrors Rust's `command::is_terminal`. It takes the code the failure
+`errors.is_terminal(e)` then mirrors Rust's `code_of` followed by `edax_core::is_terminal`. It takes the code the failure
 carries and asks the kernel for that code's verdict:
 
 ```python
-UNCLASSIFIED_IS_TERMINAL: bool = _edax.error_verdict("")
+UNCLASSIFIED_IS_TERMINAL: bool = _edax.error_verdict(None)
 
 
 def is_terminal(e: BaseException) -> bool:
-    code = _carried_code(e)
-    return UNCLASSIFIED_IS_TERMINAL if code is None else _edax.error_code_is_terminal(code)
+    return _edax.error_verdict(code_of(e))
 ```
 
-The carried code is an edax error's own, `rejected` for any other exception that declares
-`terminal = True`, and none otherwise. `retry`, the guard, the dispatcher and the relay all start
-from that one code, so no two of them can disagree. `errors.code_of(e)` is the code a terminal
-failure is cached under.
+`_edax.error_verdict(code)` is `edax_core::is_terminal` itself: `None` gets the kernel's default, so no SDK
+writes that branch a second time.
+
+The carried code, `errors.code_of(e)` as Rust's `command::code_of`, is an edax error's own,
+`rejected` for any other exception that declares `terminal = True`, and none otherwise. `retry`, the
+guard, the dispatcher and the relay all start from that one code, so no two of them can disagree. The
+guard caches the failed record `_edax.idempotency_settle_failure` builds from that code, the kernel's
+settle of it.
+
+### `is_fatal`: the failures that stop a consumer
+
+One terminal code is more than terminal. `bad_handle` is a wiring fault: a refused credential or
+topic, a store that refuses its own settings, a handle used on the wrong thread. It fails every
+message alike, not one. The kernel's retry policy reads it as `Fatal` (`edax_event::Failure::of`), so
+a dispatcher and a relay stop on it rather than dead-letter every message after it.
+`edax.is_fatal(e)` (Rust `edax::is_fatal`) asks the kernel for that kind, through
+`_edax.retry_failure(code_of(e))`. Every fatal failure is terminal. A host loop around `relay.drain`
+or `dispatcher.submit` stops on one; `Relay.run` and `consumer.run` already do. See
+[consuming.md](./consuming.md#retry-and-dead-letter).
+
+A setting an SDK refuses at wiring is `BadHandle` too: a `max_attempts` or a Redis TTL that is not an
+`int`, a Kafka duration under a millisecond. The same setting would fail every message it reaches.
 
 A host subclass that names no code inherits its parent's code and verdict. It does not enter the
-code table. The parent stays what a native code maps to. A subclass cannot restate `terminal`:
+code table. The parent stays what a native code maps to. A class that names a code another class
+already owns, as in `class InsufficientFunds(edax.Rejected, code="rejected")`, raises `TypeError` when it
+is defined. It would replace the kernel's class in `from_wire` for the whole process. A subclass cannot restate `terminal`:
 `class FlakyCodec(edax.CodecError): terminal = False` raises `TypeError` when it is defined. The
 code decides, so a restated verdict would be silently ignored. Subclass `Rejected` for a terminal
 failure, or raise your own exception for a transient one.
 
 ### Why an unknown code defaults to transient
 
-The default is the kernel's (`edax_core::verdict(None)`, `_edax.error_verdict`).
+The default is the kernel's (`edax_core::is_terminal(None)`, `_edax.error_verdict(None)`).
 `testdata/golden/error_wire.json` pins it with every negative case: an unknown code, no separator, a
 colon without a space, an uppercase code, the empty string. No SDK states it for itself. The kernel
 reads a string with no code it knows as a `store` failure (`Error::from_wire`). So the class and the
@@ -205,7 +225,9 @@ only delays the real outcome.
 
 **The guard.** Here the verdict is durable. A terminal failure is cached, its code beside its
 message. Every later claimant replays it as `CachedFailure`, whose message is the original wire form
-(`codec: bad payload`). A transient one releases the claim. Three special cases apply. A Python
+(`codec: bad payload`). A transient one releases the claim, and so does a fatal one (`bad_handle`):
+the wiring failed, not the work, so the message must run again once the host fixes it. Three more
+special cases apply. A Python
 cancellation, a `BaseException`, always releases, because nobody is left to complete that claim. A
 Rust panic also releases and keeps unwinding, because a panic is not a value a record can replay
 faithfully. When the ledger shares the guard's transaction, a terminal failure is not cached at all,
@@ -277,7 +299,7 @@ It pins three things:
 3. The `"<code>: <message>"` framing every binding parses, with a realistic message per code.
 
 It is generated from `ErrorCode::ALL` and checked from three sides. The flat application binary
-interface (ABI) asserts that `error_codes()` and `error_code_is_terminal` are the kernel's own. The
+interface (ABI) asserts that `error_codes()` and `error_verdict` are the kernel's own. The
 Python suite asserts the committed rows match the kernel's code list. It asserts each class carries
 the golden's verdict. It asserts each golden `wire` string parses back to that class, with the code
 stripped off the message. The Rust SDK asserts every code, a `Terminal` and an unclassified host error
@@ -285,7 +307,7 @@ land on the side the table says.
 
 `testdata/golden/error_wire.json` is its companion: any wire string, the negative cases included, with
 the code the kernel finds (`store` when it finds none), the message, and the verdict. Python asserts
-`split_error`, `error_verdict` and `from_wire` against every row.
+`split_error` and `from_wire` against every row.
 
 Regenerate after an intentional change:
 

@@ -45,10 +45,34 @@ mod tests {
             ("nothing_stored_first_event", None, Some(0), false, Some(0)),
             ("unsequenced_keeps_the_mark", Some(5), None, false, Some(5)),
             ("newer_advances", Some(5), Some(6), false, Some(6)),
-            ("equal_is_not_stale_and_keeps_the_mark", Some(5), Some(5), false, Some(5)),
-            ("older_is_stale_and_never_lowers_the_mark", Some(5), Some(4), true, Some(5)),
-            ("at_the_u64_ceiling", Some(u64::MAX - 1), Some(u64::MAX), false, Some(u64::MAX)),
-            ("stale_at_the_u64_ceiling", Some(u64::MAX), Some(u64::MAX - 1), true, Some(u64::MAX)),
+            (
+                "equal_is_not_stale_and_keeps_the_mark",
+                Some(5),
+                Some(5),
+                false,
+                Some(5),
+            ),
+            (
+                "older_is_stale_and_never_lowers_the_mark",
+                Some(5),
+                Some(4),
+                true,
+                Some(5),
+            ),
+            (
+                "at_the_u64_ceiling",
+                Some(u64::MAX - 1),
+                Some(u64::MAX),
+                false,
+                Some(u64::MAX),
+            ),
+            (
+                "stale_at_the_u64_ceiling",
+                Some(u64::MAX),
+                Some(u64::MAX - 1),
+                true,
+                Some(u64::MAX),
+            ),
         ];
         for (name, stored, incoming, stale, advanced) in cases {
             assert_eq!(is_stale(stored, incoming), stale, "{name}: is_stale");

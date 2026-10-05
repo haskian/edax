@@ -11,7 +11,7 @@ it and the time to live (TTL) values it was configured with.
 
 | Module | Owns | Golden vectors |
 |---|---|---|
-| `ledger` | the key, the refused settings, the stored value's layout, the claim handle, the claim outcome, the forget outcome | `redis_value.json`, `redis_ledger.json` |
+| `ledger` | the key, the refused settings, the heartbeat schedule, the stored value's layout, the claim handle, the claim, complete and forget outcomes | `redis_value.json`, `redis_ledger.json` |
 | `scripts` | the five Lua bodies, and the verdict on a Redis error reply | `redis_scripts.json`, `redis_fence.json`, `redis_ledger.json` |
 
 ## The key
@@ -33,9 +33,15 @@ The heartbeat sends a renewal every third of the TTL, timed from the claim's sen
 clock, so a slow reply never delays the next beat. A renewal sent at `S` that lands holds the lease
 to at least `S + claim_ttl_ms`. If the next one stalls, the one after is sent at
 `S + 2 * claim_ttl_ms / 3` and lands within `op_timeout_ms`. It must land before the lease lapses,
-or a second worker wins a key the first still runs. Redis
+or a second worker wins a key the first still runs. The bound holds only on that schedule, so the
+schedule is the kernel's too. `heartbeat_due_ms(sent_at_ms, claim_ttl_ms, beat)` is when beat `beat`
+is due: `sent_at_ms + beat * claim_ttl_ms / 3`, rounded down so a beat is never late. Redis
 refuses a zero or negative TTL on every write, so a store checks its settings when it is built. Every refusal is a terminal
 `bad_handle` error.
+
+The defaults a store takes when its host sets none are the kernel's too: `DEFAULT_TTL_MS` (a day),
+`DEFAULT_CLAIM_TTL_MS` (five minutes) and `DEFAULT_OP_TIMEOUT_MS` (five seconds). Two SDKs on one
+ledger left at their defaults then agree on its windows.
 
 ## The value
 
@@ -61,14 +67,16 @@ refuses it as layout version `'0'`.
 | `split_value(raw)` | a stored value read back apart into `(owner, record)` |
 
 The record half has exactly one author. `claim_value` asks `edax-cqrs` for the pending record's
-bytes, and `settled_value` passes the caller's bytes through untouched. A host that already holds a
+bytes, and `settled_value` passes the caller's bytes through untouched, once
+`edax_cqrs::check_settled` has refused a pending record as `bad_handle`. A pending record would hold
+the key as a claim nobody runs, for the whole record TTL. A host that already holds a
 record's bytes must not re-encode them here, or the result would round-trip through a second
 serializer on its way to the ledger. `testdata/golden/idempotency_record.json` keeps pinning that
 record's wire shape.
 
 ## The owner token and the claim handle
 
-`new_owner()` mints a universally unique identifier (UUID) version 7 in its simple form: 32
+`new_claim` mints the owner token as a universally unique identifier (UUID) version 7 in its simple form: 32
 lowercase hexadecimal characters, no hyphens. Version 7 rather than random bytes, so tokens sort by
 mint time and a ledger dump reads in order. A 42-bit counter shared within a process and 32 random
 bits are what make two claimants distinguishable (see [core.md](./core.md)).
@@ -123,6 +131,13 @@ The second row is why the outcome is a kernel decision. redis-py re-sends a comm
 lost by default. A store that read its own claim as someone else's would report `InProgress` with no
 handler running, until the claim lapsed.
 
+## The complete outcome
+
+`complete_outcome(key, written)` reads the complete script's reply. `1` is `Ok`. `0` means the key
+held neither this claim nor this settled value: the claim lapsed and was taken over, or the key settled
+with another record. That is `edax_cqrs::lapsed_claim(key)`, a `store` error, the same text the memory
+store's fence refuses with. The outcome was not recorded, so the caller must not report success.
+
 ## The forget outcome
 
 A forget deletes a settled record, so a re-driven message runs its handler again. The store reads the
@@ -138,7 +153,7 @@ key, then asks `forget_outcome(key, held)` what to do with the value it read:
 On `Delete` the store runs `FORGET_SCRIPT` with the value it read. The script deletes the key only
 while it still holds that exact value. A record that lapsed between the read and the script, and a
 claim that took the key over, both survive. Then the store reads the key again, at most `FORGET_READS`
-times, before it gives up as transient. The record half's verdict is `edax_cqrs::forget`, so the
+times, before it gives up with `forget_exhausted(key)`, a transient `store` error. The record half's verdict is `edax_cqrs::forget`, so the
 memory store and the Redis ledger refuse the same keys with the same text.
 
 ## The scripts
@@ -172,6 +187,13 @@ TTL after. The generator writes the expectations out by hand rather than computi
 Rust code re-implements the scripts. Each SDK replays the rows against a server that runs Lua. Python runs them against fakeredis
 and, given `EDAX_REDIS_URL`, against a live Redis.
 
+**Which write the fence lets through is backend-neutral.** `edax_cqrs::complete_fence` and
+`release_fence` decide from what the key holds: the caller's claim, another claim, the same settled
+record, another record, or nothing. The memory store calls them. Lua cannot call Rust, so
+`testdata/golden/idempotency_fence.json` pins the same table, and the Python suite replays it against
+these scripts: one fence in every ledger. `redis_fence.json` adds what is Redis's own: the TTLs, the
+claim and extend scripts, and handles compared byte for byte.
+
 ## The reply verdict
 
 `reply_error(reply)` turns a Redis error reply, prefix included, into the kernel's error:
@@ -191,7 +213,7 @@ The kernel owns every decision two SDKs must make the same way. Each SDK keeps o
 output (I/O):
 
 - the two TTL values, for a pending claim and for a settled record, and their defaults.
-- the per-call deadline, and the heartbeat that schedules `EXTEND_SCRIPT`.
+- the per-call deadline, and the heartbeat task that sends `EXTEND_SCRIPT` when `heartbeat_due_ms` says.
 - the connection seam, `RedisConn` in Python, and the client it adapts.
 
 ## The golden vectors
@@ -199,7 +221,7 @@ output (I/O):
 | File | Case shape | What it pins |
 |---|---|---|
 | `redis_value.json` | `name`, `op`, the operands, `value` or `want` | `claim`, `settled` and `split`: a pending claim, a hash at both `u64` ends, a cached success and failure, a non-ASCII result, and every `split_value` branch |
-| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `config`, `handle`, `outcome`, `forget` and `reply`: every refusal and every outcome row above |
+| `redis_ledger.json` | `name`, `op`, the operands, `want` or `error` | `key`, `config`, `handle`, `outcome`, `forget`, `settle`, `complete_outcome`, `forget_exhausted`, `heartbeat_due` and `reply`: every refusal and every outcome row above |
 | `redis_scripts.json` | `name`, `body` | the five Lua bodies verbatim, so every SDK's `EVALSHA` digest matches |
 | `redis_fence.json` | `name`, `initial`, `script`, `args`, `want_reply`, `want_value`, `want_ttl_ms` | what each script does to a key, including a lost reply re-sent, a takeover, malformed handles, and a forget after a takeover |
 
@@ -212,11 +234,13 @@ values in the old layout, and clients already cache the old digests.
 | | Rust | Python |
 |---|---|---|
 | the key | `ledger_key` | `_edax.redis_ledger_key` |
-| the settings | `check_config` | `_edax.redis_check_config`, `_edax.redis_heartbeats_per_ttl` |
+| the settings | `check_config`, `DEFAULT_TTL_MS`, `DEFAULT_CLAIM_TTL_MS`, `DEFAULT_OP_TIMEOUT_MS` | `_edax.redis_check_config`, `_edax.redis_defaults()` |
+| the heartbeat | `heartbeat_due_ms` | `_edax.redis_heartbeat_due_ms` |
 | a claim value | `new_claim`, `claim_value` (fixed owner, a test hook) | `_edax.redis_new_claim` |
 | a settled value | `settled_value`, `check_claim` | `_edax.redis_settled_value`, `_edax.redis_check_claim` |
-| read one back | `split_value`, `claim_outcome` | `_edax.redis_claim_outcome` |
-| a forget | `forget_outcome`, `FORGET_READS` | `_edax.redis_forget_outcome`, `_edax.redis_forget_reads` |
+| read one back | `split_value`, `claim_outcome` (an `edax_cqrs::Claimed`) | `_edax.redis_claim_outcome`, one `ClaimResult` shape with the memory store's claim |
+| a complete's reply | `complete_outcome` | `_edax.redis_complete_outcome` |
+| a forget | `forget_outcome`, `FORGET_READS`, `forget_exhausted` | `_edax.redis_forget_outcome`, `_edax.redis_forget_reads`, `_edax.redis_forget_exhausted` |
 | the scripts | `CLAIM_SCRIPT`, `COMPLETE_SCRIPT`, `RELEASE_SCRIPT`, `FORGET_SCRIPT`, `EXTEND_SCRIPT` | `_edax.redis_scripts()`, one field each |
 | a reply error | `reply_error` | `_edax.redis_reply_error` |
 

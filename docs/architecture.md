@@ -23,9 +23,9 @@ flowchart TB
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>command hash, claim key<br/>idempotency decision<br/>filter, query"]
-        D["edax-event<br/>message shapes, codec, lineage<br/>partition, ordering key, sequence<br/>upcast, dedup, retry policy, saga step"]
-        E["edax-core<br/>hashing, backoff<br/>clock, guid, error codes"]
+        C["edax-cqrs<br/>canonical_json, command_hash, claim_key<br/>record, Decimal, Instant<br/>filter, query"]
+        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga"]
+        E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, error"]
     end
 
     A -->|"implements the seams"| B
@@ -101,14 +101,17 @@ flowchart LR
     rust -.-> golden
 ```
 
+Each kernel row lists its crate's modules; the table at the top of its page under `docs/kernels/` says
+what each one owns.
+
 | Crate | What |
 |---|---|
-| `edax-core` | hashing, backoff, the error taxonomy, `guid`, `current_timestamp`, a poison-tolerant lock, settlement tokens |
-| `edax-event` | the event and command message shapes, the extension key rule, the codec and its media types, lineage (causation), the ordering key, partition, upcast, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
-| `edax-cqrs` | canonical JSON, payload hash, command hash, the claim key, the idempotency record and decision, the forget decision, the filter, sort and cursor rules |
+| `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
+| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
+| `edax-cqrs` | `canonical_json`, `payload_hash`, `command_hash`, `claim_key`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query` |
 | `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by both SDKs |
-| `edax-kafka` | the Kafka record: the key rule, the `content-type` header, broker placement (Java murmur2), the media types, the poison id, and the token-settled offset watermark |
-| `edax-redis` | the Redis ledger: the stored value layout, the owner token that fences it, and the five Lua scripts that compare the stored value before they write |
+| `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`) |
+| `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
@@ -131,7 +134,7 @@ The Python native module is generated. The Python package is not.
 
 ```mermaid
 flowchart LR
-    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis"] --> ABI["crates/edax-abi/src/lib.rs<br/>hand-written flat surface"]
+    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis"] --> ABI["crates/edax-abi/src/<br/>hand-written flat surface"]
     ABI -->|"alef generate --lang python --clean"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
     ABI -->|"alef"| STUB["python/edax/_edax.pyi<br/>generated type stub, shipped"]
     GEN -->|"maturin develop"| SO["_edax native module"]
@@ -140,7 +143,7 @@ flowchart LR
 ```
 
 - `crates/edax-py/src/lib.rs`, `crates/edax-py/python/edax/_edax.pyi` and everything under
-  `crates/edax-py/.alef/` are generated. Never edit them. Change `crates/edax-abi/src/lib.rs` and run
+  `crates/edax-py/.alef/` are generated. Never edit them. Change `crates/edax-abi/src/` and run
   `scripts/regenerate_binding.sh`. It runs `alef generate` with `--clean`, because a plain incremental
   run deletes the generated files (the comment at the top of `alef.toml` explains why).
 - `crates/edax-py/python/edax/` is hand-written and is yours to edit.

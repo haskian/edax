@@ -1,5 +1,6 @@
 //! FNV-1a hashing. Fully specified and dependency-free, so every binding computes the same hash.
-//! Used by the event kernel's partitioner (32-bit) and the CQRS kernel's payload binding (64-bit).
+//! Used by the event kernel's partitioner (32-bit) and by [`payload_hash`] (64-bit), the hash every
+//! idempotency guard binds its key to.
 
 const FNV32_OFFSET_BASIS: u32 = 0x811c_9dc5;
 const FNV32_PRIME: u32 = 0x0100_0193;
@@ -24,6 +25,14 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(FNV64_PRIME);
     }
     hash
+}
+
+/// The payload hash an idempotency record binds its key to: FNV-1a 64-bit over `bytes`. One function for
+/// both guards, so a command's and an event's hash cannot drift apart. A command guard hashes its
+/// canonical JSON (`edax_cqrs::command_hash`), an event guard the raw `data` bytes
+/// (`edax_event::event_idempotency`). Pinned by `testdata/golden/payload_hash.json`.
+pub fn payload_hash(bytes: &[u8]) -> u64 {
+    fnv1a64(bytes)
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from edax import ConcurrencyError, Entity, Tx
+from edax.projection import check_document, keyed_document
 from edax.testing import ProjectionStoreContract
 
 
@@ -32,16 +33,19 @@ class DictProjectionStore:
         if id not in self._rows:
             return None
         version, document = self._rows[id]
-        return Entity(id, version, copy.deepcopy(document))
+        # The kernel's read rule: the row key comes back as the document's "id".
+        return Entity(id, version, keyed_document(id, document))
 
-    async def save(self, entity: Entity, tx: Tx | None = None) -> None:
+    async def save(self, entity: Entity, tx: Tx | None = None) -> int:
+        # The kernel's document rule: a JSON object, which the query can key.
+        check_document(entity.id, entity.document)
         # Compare-and-set on the version. A database does this in one statement, never as a read
         # followed by a write. A dict in one event loop gets away with it: nothing runs in between.
         stored_version = self._rows[entity.id][0] if entity.id in self._rows else 0
         if stored_version != entity.version:
             raise ConcurrencyError(f"{entity.id}: stored version {stored_version}, not {entity.version}")
         self._rows[entity.id] = (entity.version + 1, copy.deepcopy(entity.document))
-        entity.version += 1
+        return entity.version + 1
 
 
 class TestDictProjectionStore(ProjectionStoreContract):

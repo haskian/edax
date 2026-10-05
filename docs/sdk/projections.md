@@ -4,8 +4,13 @@ The read side: a read model stored as one document per id, written with a versio
 with semantics the kernel decides.
 
 The event-sourced side replays events to rebuild an aggregate. A read model is the other shape: a
-current document you save and query directly. `ProjectionStore` is that seam. No durable store
-ships with edax; you bring one.
+current document you save and query directly. `ProjectionStore` is that seam: a versioned document
+store, one document per id under an optimistic version check. `ProjectionQuery` is its query side,
+which a store implements beside it to page the documents by the kernel's rules. It is not a projector. It keeps no
+record of which events a row has folded, so it cannot skip a redelivered one by itself. Deduplication
+comes from the consume-path guard, [`idempotent_by_id`](./consuming.md#idempotent_by_id), in front of
+the handler. A projector that folds events and keeps per-row marks is a deferred feature. No durable
+store ships with edax; you bring one.
 
 ```mermaid
 flowchart LR
@@ -15,7 +20,7 @@ flowchart LR
     H -->|"fold the event into document"| N["Entity: id, version, document"]
     N --> S["ProjectionStore.save"]
     S -->|"compare-and-set on version"| D[("read model rows")]
-    D -->|"get_many: filter, sort, after"| Q["Page: rows and next"]
+    D -->|"ProjectionQuery.get_many: filter, sort, after"| Q["Page: rows and next"]
 ```
 
 ## `Entity`
@@ -32,18 +37,17 @@ Three fields, and the third carries the whole concurrency rule.
 `version + 1` only if the stored version still equals `version`. A writer that loaded version 1,
 held it while another writer advanced the row to 2, and then saved, loses: it gets
 `ConcurrencyError` and writes nothing. The stale writer's document never lands on top of the newer
-one. On success the store advances `entity.version` in place, so the same object can be folded and
-saved again without a reload.
+one. An `Entity` is a value: on success `save` returns the new version and leaves the entity as it
+was. Build the next one with that version, or reload with `get`.
 
 The Rust software development kit (SDK) pins both halves of that rule. `save_versions_then_get`
-asserts `e.version == 1` after the first save. `stale_version_conflicts` asserts
-`Error::concurrency(1, 2)` for the writer whose version is stale. Python asserts the same through
-`pytest.raises(ConcurrencyError)`.
+asserts that the first save returns `1`. `stale_version_conflicts` asserts `Error::concurrency(1, 2)`
+for the writer whose version is stale. Python's `ProjectionStoreContract` asserts the same.
 
 ```mermaid
 flowchart TB
     A["save entity loaded at version v"] --> B{"stored version equals v"}
-    B -->|"yes"| C["write at v plus 1 and advance entity.version"]
+    B -->|"yes"| C["write at v plus 1 and return v plus 1"]
     B -->|"no"| D["ConcurrencyError and nothing written"]
     D --> E["reload with get, fold again, save again"]
     E --> A
@@ -56,8 +60,11 @@ classDiagram
     class ProjectionStore {
         <<Protocol>>
         +get(id, tx)
-        +save(entity, tx)
-        +get_many(filter, sort, offset, limit, after, tx)
+        +save(entity, tx) int
+    }
+    class ProjectionQuery {
+        <<Protocol>>
+        +get_many(query, tx)
     }
     class Entity {
         +str id
@@ -70,23 +77,34 @@ classDiagram
     }
     class MemoryProjectionStore {
         +get(id, tx)
-        +save(entity, tx)
-        +get_many(filter, sort, offset, limit, after, tx)
+        +save(entity, tx) int
+        +get_many(query, tx)
     }
     ProjectionStore ..> Entity : reads and writes
     ProjectionStore <|.. YourBackend : you implement
     ProjectionStore <|.. MemoryProjectionStore : ships for dev and tests
+    ProjectionQuery <|.. MemoryProjectionStore : pages by the kernel
 ```
 
-Nothing in the SDK calls this store. Only your handlers do. That is why `get_many` is optional: a
-store you never page through is a valid backend without it. `get` and `save` are what a projection
-handler needs.
+Nothing in the SDK calls these ports. Only your handlers do. That is why the query side is a port of
+its own: a store you never page through implements `ProjectionStore` alone. `get` and `save` are what
+a projection handler needs.
 
 | Method | Must guarantee |
 |---|---|
-| `get(id, tx=None)` | returns the current committed row plus the `tx`'s own staged writes, or `None` |
-| `save(entity, tx=None)` | compare-and-set on `entity.version`; on success advance `entity.version`, on mismatch raise `ConcurrencyError` and write nothing |
-| `get_many(...)` | optional; returns a `Page` (`rows`, `next`) paged by the kernel's filter / sort / keyset rules, with `next` minted by `encode_cursor` and `after` read by `decode_cursor` |
+| `get(id, tx=None)` | returns the current committed row plus the `tx`'s own staged writes, or `None`; the document carries the row key as `"id"` |
+| `save(entity, tx=None)` | refuse a document that is not a JSON object with `CodecError`; then compare-and-set on `entity.version`; on success return the new version, on mismatch raise `ConcurrencyError` and write nothing |
+| `ProjectionQuery.get_many(query, tx=None)` | refuse a spec `edax.query.check_query` refuses with `CodecError`; then return a `Page` (`rows`, `next`) paged by the kernel's filter / sort / keyset rules, each row carrying its row key as `"id"`, with `next` minted by `encode_cursor` and `after` read by `decode_cursor` |
+
+*The document is an object.* A read carries each row's key in its `id` field, so a list or a scalar
+could be saved and never found. Call `edax.projection.check_document(id, document)` before the
+write: it is the kernel's rule (`edax_cqrs::document`), the one the memory stores apply, and it also
+refuses an integer wider than 64 bits. `ProjectionStoreContract` holds a store to it.
+
+*The row key is the `id`.* `get` and `get_many` return each document with its row key under `"id"`,
+overwriting any `"id"` the saved document carries. Call `edax.projection.keyed_document(id, document)`
+in `get`, or select the key into the document in your `get_many` query. It is the kernel's rule
+(`edax_cqrs::keyed_document`), pinned by `testdata/golden/projection_document.json`.
 
 Two points a backend author gets wrong first.
 
@@ -104,13 +122,15 @@ transaction; with neither, it auto-commits. That is what lets a projection write
 | | Rust (`crates/edax/src/projection.rs`) | Python (`crates/edax-py/python/edax/projection.py`) |
 |---|---|---|
 | seam | `trait ProjectionStore` with associated `type Tx` | `Protocol ProjectionStore`, `tx` keyword argument |
-| query shape | `edax_cqrs::Query`, re-exported not re-declared | a `dict` built by `edax.query.build_spec` |
-| optional method | none: a trait has no optional items | `get_many` |
+| query side | `trait ProjectionQuery: ProjectionStore` | `Protocol ProjectionQuery`, `runtime_checkable`, beside `ProjectionStore` |
+| query shape | `edax_cqrs::Query`, re-exported not re-declared | `edax.query.Query`, a frozen value that writes the spec |
+| save | `save(tx, &entity) -> Result<u64, Error>` | `await save(entity, tx=None) -> int` |
 | conflict | `Error::concurrency(expected, stored)`, code `concurrency` | `ConcurrencyError` |
 
 Rust re-exports the kernel's `Query` rather than declaring its own, so the spec the SDK serializes
-is by construction the one the kernel parses. Python builds the same JSON through `build_spec`,
-which is shared by `edax.query.query` and by every backend's `get_many` so the two cannot drift.
+is by construction the one the kernel parses. Python mirrors it as the `Query` value. Its
+`to_json()` is the one spec writer, shared by `edax.query.query` and every backend's `get_many`, so
+the two cannot drift.
 
 ## Keeping a projection up to date
 
@@ -120,23 +140,30 @@ An event handler folds an event message into an `Entity`. This is the handler fr
 ```python
 @router.on("Deposited")
 async def add_deposit(msg: EventMessage) -> None:
-    row = await balances.get(msg.aggregate_id)
-    if row is None:
-        row = Entity(msg.aggregate_id, 0, {"balance": 0})
-    row.document["balance"] += json.loads(msg.data)["amount"]
-    await balances.save(row)  # joins the guard's transaction
+    row = await balances.get(msg.aggregate_id) or Entity(msg.aggregate_id, 0, {"balance": 0})
+    deposit: Deposited = events.unmarshal(msg)  # the writer's codec: upcasts, refuses a newer writer
+    balance = row.document["balance"] + deposit.amount
+    await balances.save(replace(row, document={"balance": balance}))  # joins the guard's transaction
 ```
 
 Read it in four steps. Load the entity by aggregate id. Seed version `0` when the row does not
-exist, so the first `save` is an insert. Fold the event into the document. Save, with no explicit
-`tx`, so the store picks up the ambient transaction the guard opened.
+exist, so the first `save` is an insert. Decode the payload with the writer's codec
+([consuming](./consuming.md#decoding-the-payload)) and fold it into a new document. Save the new
+entity at the loaded version, with no explicit `tx`, so the store picks up the ambient transaction the
+guard opened.
 
 That fold is `balance + amount`, which is not idempotent: a redelivered event applied twice
-double-counts. The guard is what stops it, and what the guard is worth depends on whether the claim
-and this `save` commit together. `examples/py/10_idempotent_events.py` shares one unit of work and
-asserts each deposit counted once. `examples/py/19_fault_injection.py` puts the ledger in a database
-of its own. There a lost commit reply runs the handler twice, so its fold records the deposits it
-applied. See [idempotency](./idempotency.md).
+double-counts. The guard, `idempotent_by_id`, is what stops it, and what the guard is worth depends on
+whether the claim and this `save` commit together. `examples/py/10_idempotent_events.py` shares one
+unit of work and asserts each deposit counted once. `examples/py/19_fault_injection.py` puts the outer
+guard's ledger in a database of its own. There a lost commit reply runs the handler twice, so a second
+`idempotent_by_id`, whose ledger shares the read model's database, absorbs the rerun. See
+[idempotency](./idempotency.md).
+
+**Rebuilding by broker replay needs a fresh `scope`.** The guard keeps a record per event id under its
+`scope`. Replay the topic into an emptied store under the same `scope`, and the guard skips every
+event it has already seen, so the store stays empty. Rebuild under a new `scope`, such as
+`"balances-v2"`, or clear that scope's records first.
 
 ## Querying
 
@@ -227,7 +254,7 @@ values = decode_cursor(spec["after"], spec["sort"])  # one value per key in `key
 
 All three are pinned by `testdata/golden/cursor.json` and `query.json`, which every binding's suite
 reads. A backend that decodes differently fails a test instead of paging wrong in production.
-`ProjectionStoreContract` holds a backend that declares `supports_kernel_queries` to the same rules.
+`ProjectionStoreContract` holds a backend that is a `ProjectionQuery` to the same rules.
 Every row arrives once while other writers insert or delete rows between pages. `next` is the
 kernel's cursor. A cursor under another sort is refused.
 
@@ -244,9 +271,9 @@ Arrays and objects compare by type alone. Rows tied on every other key would tie
 too, and paging past them would drop the rest of the tie. An empty sort takes no tiebreak and no
 cursor.
 
-`MemoryProjectionStore` injects the row key as `"id"` before querying. That injected value is
-authoritative and overwrites any `"id"` already in the document. A durable backend must do the
-equivalent.
+Every read carries the row key as `"id"` (`keyed_document`), so the tiebreak is the row key. That
+value is authoritative and overwrites any `"id"` already in the document. A durable backend must do
+the equivalent in `get` and in `get_many`.
 
 ### A strict spec
 
@@ -268,14 +295,14 @@ Built from `examples/py/11_projection_query.py`, which runs this loop and assert
 
 ```python
 from edax.filter import and_, eq, gte
-from edax.query import sort_key
+from edax.query import Query, sort_key
 
 only = and_(gte("balance", 100), eq("status", "active"))
 order = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as the tiebreak
 
 after = None
 while True:
-    page = await store.get_many(filter=only, sort=order, limit=2, after=after)
+    page = await store.get_many(Query(filter=only, sort=order, limit=2, after=after))
     for doc in page.rows:
         ...  # handle the row
     if page.next is None:
@@ -316,17 +343,16 @@ The kernel's `query_json` is the reference applier, and a backend that pages dow
 assert against it. Two services then page the same read model identically, and a cursor generated by
 one binding is understood byte-for-byte by another.
 
-A backend may instead read the spec as its own query dialect. The seam docstring allows it, but
-then cursors are not portable across services, and you own that.
+A backend may instead read the spec as its own query dialect. It is then no `ProjectionQuery`: its
+cursors are not portable across services, and you own that.
 
 `MemoryProjectionStore.get_many` defers to the kernel, which makes it the reference for how a
 durable backend must behave.
 
 ### Query a list without a store
 
-`edax.query.query(documents, ...)` applies the same pipeline to a plain list in process, with
-`get_many`'s keyword arguments minus `tx`, and returns the same `Page`. Use it to test a spec, or to
-page a set you already hold.
+`edax.query.query(documents, query)` applies the same pipeline to a plain list in process, and
+returns the same `Page`. Use it to test a `Query`, or to page a set you already hold.
 
 ## Errors
 
@@ -340,9 +366,9 @@ A corrupt cursor tagged as a store failure would look transient, and the handler
 would be redelivered forever. `test_get_many_rejects_a_bad_spec_as_terminal`
 asserts `caught.value.terminal is True` for each refusal above.
 
-A scalar or array document is rejected at `save`, not at the query. It has nowhere for the store to
-inject the row key as `"id"`. Such a row could be written and then never paged. The memory adapter
-raises `CodecError` while the caller can still fix it, and leaves the entity's version alone.
+A scalar or array document is rejected at `save`, not at the query. It has nowhere for a read to
+carry the row key as `"id"`. Such a row could be written and then never paged. The memory adapter
+raises `CodecError` while the caller can still fix it.
 
 A document holding an integer wider than 64 bits is rejected at `save` too, and by `query`. The filter
 and the sort would read it as the nearest float, and `get` would return it rounded. Store such a

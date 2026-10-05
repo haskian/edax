@@ -1,7 +1,7 @@
 """Saga / process manager: react to committed events, keep per-instance state, emit commands. Where an
 aggregate decides one entity's next state, a saga coordinates a workflow across several. Each event it cares
 about is routed to one running instance, folded into that instance's state, and may emit commands.
-:class:`SagaRunner` folds an event and persists the step; a :class:`~edax.store.Relay` over the store sends
+:class:`SagaRunner` folds an event and persists the step; a :class:`~edax.outbox.Relay` over the store sends
 the commands. See ``docs/sdk/sagas.md``.
 
 The runner never sends a command itself. It saves the new state *and* the commands the fold decided in one
@@ -9,7 +9,8 @@ versioned write, the saga outbox, and the relay sends them once that write has c
 the version race sends nothing: its commands roll back with its state, and the redelivery folds the winner's
 state. A crash after the commit re-sends from the outbox instead of losing the command, so a command is sent
 at least once per committed step, and its consumer deduplicates it by the command's idempotency key,
-which is the row's ``saga_command_id`` under the saga's name.
+which is the row's ``saga_command_id``. That id names the saga, so two sagas sharing an instance id never
+share a command id.
 Completion writes a tombstone: a late or redelivered event finds the instance completed and is ignored, and
 a writer that loaded the instance before it completed conflicts. A running instance remembers what it
 folded, so an event redelivered after its step committed (a lost ack, a crash before the offset commit) is
@@ -24,29 +25,44 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Final, Protocol, TypedDict, cast
+from typing import Any, Final, Generic, Literal, Protocol, TypeAlias, TypedDict, get_args
 
-from . import _edax, errors
-from .aggregate import CommandMessage, EventMessage
+from . import _names, _native
+from ._observer import wrap
+from .aggregate import PayloadCodec
 from .causation import caused_by
 from .command import CommandBus
-from .errors import _carried_code
-from .observe import Observer, SagaSkip, _wrap
-from .pacing import Pacing
-from .store import EventCodec, Relay, RelaySink, Tx
+from .delivery import DeadLetter
+from .errors import BadHandle, code_of
+from .message import CommandMessage, EventMessage
+from .observe import Observer, SagaSkip
+from .outbox import Publish
+from .unit_of_work import TxT, TxT_contra
 
 __all__ = [
     "SAGA_COMMAND_FAILED",
     "Completed",
+    "CompletedInstance",
+    "RunningInstance",
     "Saga",
     "SagaCommandFailed",
     "SagaInstance",
+    "SagaOutbox",
     "SagaRunner",
     "SagaStore",
 ]
 
 #: The name of the event :meth:`SagaRunner.command_failed` folds when a command the saga sent died.
-SAGA_COMMAND_FAILED: Final[str] = _edax.saga_command_failed_name()
+SAGA_COMMAND_FAILED: Final[str] = _native.saga_command_failed_name()
+
+#: The kernel's answers to whether a step folds an event: ``fold``, or one of the skips an observer hears.
+_SagaAdmit = Literal["fold", SagaSkip]
+_SAGA_ADMITS: tuple[_SagaAdmit, ...] = get_args(_SagaAdmit)
+#: The kernel's writes for a step that folded.
+_SagaWrite = Literal["nothing", "save", "complete"]
+_SAGA_WRITES: tuple[_SagaWrite, ...] = get_args(_SagaWrite)
+_names.check(_SAGA_ADMITS, _native.saga_admit_actions(), "saga admit actions")
+_names.check(_SAGA_WRITES, _native.saga_write_actions(), "saga write actions")
 
 
 class SagaCommandFailed(TypedDict):
@@ -73,21 +89,31 @@ class _Completed(Enum):
 Completed = _Completed.COMPLETED
 
 
-@dataclass
-class SagaInstance:
-    """A stored saga instance: its accumulated ``state`` and the ``version`` a write is conditional on.
-    ``completed`` marks a tombstone: the workflow has finished, ``state`` is ``None``, and no write lands on
-    it again. ``folded`` is the kernel's record of the events the instance folded (``saga_admit``), opaque
-    text the store keeps as the last ``save`` wrote it, empty for a tombstone."""
+@dataclass(frozen=True)
+class RunningInstance:
+    """A stored running saga instance: its accumulated ``state`` and the ``version`` a write is conditional
+    on. ``folded`` is the kernel's record of the events the instance folded (``saga_admit``), opaque text the
+    store keeps as the last ``save`` wrote it."""
 
     state: Any
-    version: int = 0
-    completed: bool = False
+    version: int
     folded: str = ""
 
 
+@dataclass(frozen=True)
+class CompletedInstance:
+    """A stored completed saga instance: a tombstone that keeps its ``version``, so no write lands on it
+    again. It has no state: the workflow has finished."""
+
+    version: int
+
+
+#: A stored saga instance, running or completed: the Rust SDK's ``SagaInstance`` enum.
+SagaInstance: TypeAlias = RunningInstance | CompletedInstance
+
+
 class Saga(Protocol):
-    """Parameters are positional-only for the same reason as :class:`~edax.store.AggregateCodec`'s: the
+    """Parameters are positional-only for the same reason as :class:`~edax.aggregate.AggregateCodec`'s: the
     runner calls them positionally, so an implementation may name them after its own workflow."""
 
     # A read-only property, as `Command.type` is: a `ClassVar[str]` or a plain attribute satisfies it.
@@ -111,54 +137,90 @@ class Saga(Protocol):
         ...
 
 
-class SagaStore(Protocol):
-    """Per-instance state, under optimistic concurrency, and the saga outbox. What a backend
-    must guarantee:
+class SagaStore(Protocol[TxT_contra]):
+    """Per-instance state, under optimistic concurrency, and the saga outbox, both keyed by the saga's
+    name. What a backend must guarantee:
 
-    * ``load`` returns the stored :class:`SagaInstance` (a tombstone has ``completed=True``) or ``None``.
+    * Every row and every outbox command belongs to the saga ``saga`` names: key both by ``(saga, id)``.
+      Two sagas over one database, as they must be for their writes to join the events' unit of work,
+      then never fold into each other's instance under one instance id, nor send each other's commands.
+    * ``load`` returns the stored instance, a :class:`RunningInstance` or the :class:`CompletedInstance`
+      tombstone, or ``None``.
     * ``save`` and ``complete`` write at ``version + 1`` only if the store is still at ``version`` (an absent
       instance is at version 0), and return the new version; otherwise they raise
       :class:`~edax.errors.ConcurrencyError` and write nothing. A completed instance takes no write at all.
     * The step's ``commands`` are written in the same write as the state, so they commit or roll back
-      together. Each is the kernel's :class:`~edax.aggregate.CommandMessage` for that write, with the id
-      ``saga_command_id(id, version + 1, index)`` and the instance id as its ``aggregate_id``; a store may
-      key its outbox on the id.
+      together. Each is the kernel's :class:`~edax.message.CommandMessage` for that write, with the id
+      ``saga_command_id(saga, id, version + 1, index)`` and the instance id as its ``aggregate_id``; a store
+      may key its outbox on the id.
     * ``save`` keeps ``folded`` as it is, and ``load`` returns it unchanged as
-      :attr:`SagaInstance.folded`: the runner skips an event it already folded by it. A store that drops
+      :attr:`RunningInstance.folded`: the runner skips an event it already folded by it. A store that drops
       it repeats a step on every redelivery.
     * ``complete`` keeps the row as a tombstone at its new version rather than deleting it, so a stale
       writer conflicts and a late event cannot start the workflow again. A durable store purges tombstones by
       retention, longer than any redelivery window.
-    * ``unpublished`` returns committed unsent commands, oldest commit first; ``mark_published`` prunes
-      them by id, idempotently. Both run outside any ``tx``, as :class:`~edax.store.Relay` calls them.
-    * With ``tx`` given, or :func:`~edax.store.current_tx` set, a durable backend enlists the write in that
+    * ``unpublished`` returns the saga's committed unsent commands, oldest commit first;
+      ``mark_published`` prunes them by id, idempotently, and ``unpublished_count`` counts them without
+      paging. All three run outside any ``tx``, as a :class:`~edax.outbox.Relay` over :class:`SagaOutbox`
+      calls them.
+    * With ``tx`` given, or :func:`~edax.unit_of_work.current_tx` set, a durable backend enlists the write in
+      that
       unit of work.
 
     A saga whose ``instance_id`` is the aggregate id has no concurrent writer, because the dispatcher
     serializes same-``aggregate_id`` events; the version is what lets a cross-aggregate correlation catch
     one. ``SagaStoreContract`` in :mod:`edax.testing` holds a backend to every clause."""
 
-    async def load(self, id: str, tx: Tx | None = None) -> SagaInstance | None: ...
+    async def load(self, saga: str, id: str, tx: TxT_contra | None = None) -> SagaInstance | None: ...
     async def save(
         self,
+        saga: str,
         id: str,
         state: Any,
         version: int,
         folded: str,
         commands: Sequence[CommandMessage],
-        tx: Tx | None = None,
+        tx: TxT_contra | None = None,
     ) -> int: ...
     async def complete(
-        self, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None
+        self,
+        saga: str,
+        id: str,
+        version: int,
+        commands: Sequence[CommandMessage],
+        tx: TxT_contra | None = None,
     ) -> int: ...
-    async def unpublished(self, limit: int = 100) -> list[CommandMessage]: ...
-    async def mark_published(self, ids: Sequence[str]) -> None: ...
+    async def unpublished(self, saga: str, limit: int) -> list[CommandMessage]: ...
+    async def mark_published(self, saga: str, ids: Sequence[str]) -> None: ...
+    async def unpublished_count(self, saga: str) -> int: ...
 
 
-class SagaRunner:
+class SagaOutbox:
+    """One saga's command outbox over its store: the :class:`~edax.outbox.Outbox` a
+    :class:`~edax.outbox.Relay` drains. :meth:`SagaRunner.outbox` builds it, so the relay reads the rows of
+    the saga the runner writes and no other."""
+
+    def __init__(self, store: SagaStore[Any], saga: str) -> None:
+        self._store = store
+        self._saga = saga
+
+    async def unpublished(self, limit: int) -> list[CommandMessage]:
+        return await self._store.unpublished(self._saga, limit)
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        await self._store.mark_published(self._saga, ids)
+
+    async def unpublished_count(self) -> int:
+        """How many of the saga's committed commands wait to be sent: a
+        :class:`~edax.outbox.CountedOutbox`."""
+        return await self._store.unpublished_count(self._saga)
+
+
+class SagaRunner(Generic[TxT]):
     """Drives a :class:`Saga` over committed events: route to an instance, fold, and persist the step,
     state and commands in one write at the loaded version. Pass :meth:`on_event` to an ``EventRouter`` or
-    ``KeyOrderedDispatcher``, and send the commands with :meth:`relay`. ``commands`` marshals the saga's
+    ``KeyOrderedDispatcher``, and send the commands with a :class:`~edax.outbox.Relay` over :meth:`outbox`
+    that publishes through :meth:`publish_to`. ``commands`` marshals the saga's
     command objects into the outbox and back, like an event codec: ``json_codec({"Fulfill": Fulfill})``.
     ``now`` stamps each command's ``issued_at`` (default: the kernel clock).
 
@@ -174,8 +236,8 @@ class SagaRunner:
     def __init__(
         self,
         saga: Saga,
-        store: SagaStore,
-        commands: EventCodec,
+        store: SagaStore[TxT],
+        commands: PayloadCodec,
         *,
         now: Callable[[], int] | None = None,
         observer: Observer | None = None,
@@ -183,13 +245,13 @@ class SagaRunner:
         self._saga = saga
         self._store = store
         self._commands = commands
-        self._now = now or _edax.current_timestamp
-        self._observer = _wrap(observer)
+        self._now = now or _native.current_timestamp
+        self._observer = wrap(observer)
 
-    async def on_event(self, msg: EventMessage, tx: Tx | None = None) -> None:
+    async def on_event(self, msg: EventMessage, tx: TxT | None = None) -> None:
         """Handle one committed event: load its instance, fold the event, and write the new
         state (or the tombstone) with the commands the fold emitted. ``tx`` goes through as given: the store
-        falls back to the ambient :func:`~edax.store.current_tx` itself. A
+        falls back to the ambient :func:`~edax.unit_of_work.current_tx` itself. A
         :class:`~edax.errors.ConcurrencyError` means another worker advanced the instance first; it is
         transient, so the event is redelivered and folds the winner's state, and nothing this fold decided
         is ever sent. An event the instance already folded (redelivered after its step committed) is
@@ -204,9 +266,9 @@ class SagaRunner:
             if instance_id is not None:
                 await self._fold(instance_id, msg, tx)
 
-    async def command_failed(self, row: CommandMessage, error: BaseException, tx: Tx | None = None) -> None:
+    async def command_failed(self, dead: DeadLetter[CommandMessage], tx: TxT | None = None) -> None:
         """The ``on_dead`` sink for this runner's command relay: fold the :data:`SAGA_COMMAND_FAILED` event
-        for the dead ``row`` into the instance that sent it, so the saga can compensate. The event's
+        for the dead row into the instance that sent it, so the saga can compensate. The event's
         payload is :class:`SagaCommandFailed`: the command's id and name, and the failure's code and
         message. Its ``aggregate_id`` is the instance, its ``causation_id`` the command, and it is
         unsequenced; the kernel builds it (``saga_command_failed``).
@@ -215,32 +277,63 @@ class SagaRunner:
         that compensates stays open until its commands have run. A sink that runs twice for one row folds
         once, whatever folded between them: the instance keeps every failure it folded. A failed fold
         raises, so the relay hands the row back and the sink runs again."""
-        with errors.mapped():
-            failed = _edax.saga_command_failed(row, str(error), self._now(), _carried_code(error))
+        failed = _native.saga_command_failed(
+            dead.message, str(dead.failure), self._now(), code_of(dead.failure)
+        )
         with caused_by(failed):
             await self._fold(failed.aggregate_id, failed, tx)
 
-    async def _fold(self, instance_id: str, msg: EventMessage, tx: Tx | None) -> None:
-        instance = await self._store.load(instance_id, tx)
-        completed, folded = (False, "") if instance is None else (instance.completed, instance.folded)
-        with errors.mapped():
-            admit = _edax.saga_admit(completed, folded, msg)
-        if admit.action != "fold":
-            # A tombstone, an event folded already, or one below the mark: no step for it. Pinned by
-            # `testdata/golden/saga.json`.
-            self._observer.saga_skipped(self._saga.name, cast("SagaSkip", admit.action), msg.id)
-            return
-        new_state, commands = self._saga.handle(None if instance is None else instance.state, msg)
-        loaded = None if instance is None else instance.version
-        with errors.mapped():
-            write = _edax.saga_write(new_state is Completed, bool(commands), loaded)
-        if write.action == "nothing":
-            return
-        rows = self._rows(instance_id, write.version, commands, msg)
-        if write.action == "save":
-            await self._store.save(instance_id, new_state, write.expected, admit.folded, rows, tx)
-        else:
-            await self._store.complete(instance_id, write.expected, rows, tx)
+    async def _fold(self, instance_id: str, msg: EventMessage, tx: TxT | None) -> None:
+        saga = self._saga.name
+        instance = await self._store.load(saga, instance_id, tx)
+        # What was loaded crosses flat, and the kernel builds one `Loaded` of it for both calls below.
+        state: Any = None
+        match instance:
+            case None:
+                loaded, completed, folded = None, False, ""
+            case CompletedInstance(version=version):
+                loaded, completed, folded = version, True, ""
+            case RunningInstance(state=state, version=version, folded=folded):
+                loaded, completed = version, False
+            case _:
+                _names.unreachable(instance)
+        admit = _native.saga_admit(saga, completed, folded, msg, loaded)
+        # Every kernel decision is named, so a variant this SDK does not know fails loudly instead of
+        # landing in a neighbouring arm. Pinned by `testdata/golden/saga.json`.
+        action = _names.named(admit.action, _SAGA_ADMITS, "saga admit action")
+        match action:
+            case "fold":
+                pass
+            case "completed" | "repeat" | "below_mark":
+                # A tombstone, an event folded already, or one below the mark: no step for it.
+                self._observer.saga_skipped(saga, action, msg.id)
+                return
+            case _:
+                _names.unreachable(action)
+        new_state, commands = self._saga.handle(state, msg)
+        write = _native.saga_write(new_state is Completed, bool(commands), completed, loaded)
+        written = _names.named(write.action, _SAGA_WRITES, "saga write action")
+        match written:
+            case "nothing":
+                return
+            case "save":
+                expected, rows = self._written(write, instance_id, commands, msg)
+                folded_marks = _names.given(admit.folded, "folded marks")
+                await self._store.save(saga, instance_id, new_state, expected, folded_marks, rows, tx)
+            case "complete":
+                expected, rows = self._written(write, instance_id, commands, msg)
+                await self._store.complete(saga, instance_id, expected, rows, tx)
+            case _:
+                _names.unreachable(written)
+
+    def _written(
+        self, write: _native.SagaWrite, instance_id: str, commands: Sequence[Any], cause: EventMessage
+    ) -> tuple[int, list[CommandMessage]]:
+        """What a ``save`` or ``complete`` write passes its store: the version it expects, and the outbox
+        rows of the commands it sends at the version it writes."""
+        expected = _names.given(write.expected, "expected version")
+        version = _names.given(write.version, "version")
+        return expected, self._rows(instance_id, version, commands, cause)
 
     def _rows(
         self, instance_id: str, version: int, commands: Sequence[Any], cause: EventMessage
@@ -250,51 +343,49 @@ class SagaRunner:
         issued_at = self._now()
         payloads = [self._commands.marshal(command) for command in commands]
         saga, cause_id, cause_correlation_id = self._saga.name, cause.id, cause.correlation_id
-        with errors.mapped():
-            return [
-                _edax.saga_command(
-                    saga,
-                    instance_id,
-                    version,
-                    index,
-                    payload,
-                    cause_id,
-                    cause_correlation_id,
-                    issued_at,
-                    cause.tenant,
-                )
-                for index, payload in enumerate(payloads)
-            ]
+        return [
+            _native.saga_command(
+                saga,
+                instance_id,
+                version,
+                index,
+                payload,
+                cause_id,
+                cause_correlation_id,
+                issued_at,
+                cause.tenant,
+            )
+            for index, payload in enumerate(payloads)
+        ]
 
     def command(self, row: CommandMessage) -> Any:
         """Decode an outbox row back into the command the saga emitted."""
         return self._commands.unmarshal(row)
 
-    def relay(
-        self,
-        bus: CommandBus,
-        *,
-        on_dead: RelaySink | None = None,
-        max_attempts: int = 0,
-        pacing: Pacing | None = None,
-        observer: Observer | None = None,
-    ) -> Relay:
-        """A :class:`~edax.store.Relay` over this runner's command outbox that runs each row on ``bus`` with
-        :meth:`~edax.command.CommandBus.dispatch_message`, decoded by this runner's codec. Each row's
-        ``idempotency_key`` is its ``saga_command_id`` under the saga's name, so an
+    def outbox(self) -> SagaOutbox:
+        """This saga's command outbox: the rows its steps committed, for a :class:`~edax.outbox.Relay`."""
+        return SagaOutbox(self._store, self._saga.name)
+
+    def publish_to(self, bus: CommandBus) -> Publish[CommandMessage]:
+        """The ``publish`` of a :class:`~edax.outbox.Relay` over :meth:`outbox` that runs each row on ``bus``
+        with :meth:`~edax.command.CommandBus.dispatch_message`, decoded by the bus's codec:
+        ``Relay(runner.outbox(), runner.publish_to(bus), on_dead=runner.command_failed)``. A bus built with no
+        codec raises the terminal :class:`~edax.errors.BadHandle` here, at wiring. Each row's
+        ``idempotency_key`` is its ``saga_command_id``, which names the saga, so an
         :func:`~edax.command.idempotent` guard on ``bus`` replays a row the relay sends again after a crash
-        instead of running its handler twice. The
-        handler runs under the ambient lineage :func:`~edax.causation.propagate` of the row, so the events
-        it saves stay in the saga's flow. To send the rows to a broker instead, use ``Relay(store,
-        producer.publish)`` and run them with ``dispatch_message`` on the consumer. Pass ``on_dead``: a
-        terminal command failure then dead-letters the row through it, while without a sink the row is
-        handed back on every drain and holds up the rows behind it. A terminal failure saves no event, so
-        :meth:`command_failed` is the sink that tells the instance: ``runner.relay(bus,
-        on_dead=runner.command_failed)``. See :class:`~edax.store.Relay` for the rest of the policy."""
+        instead of running its handler twice. The handler runs under the ambient lineage
+        :func:`~edax.causation.propagate` of the row, so the events it saves stay in the saga's flow. To send
+        the rows to a broker instead, use ``Relay(runner.outbox(), producer.publish)`` and run them with
+        ``dispatch_message`` on the consumer. Pass the relay an ``on_dead``: a terminal command failure then
+        dead-letters the row through it, while without a sink the row is handed back on every drain and
+        holds up its instance's rows behind it. A terminal failure saves no event, so :meth:`command_failed`
+        is the sink that tells the instance."""
+        if bus.codec is None:
+            raise BadHandle(
+                "publish_to runs each row on the bus's codec: build it with CommandBus(codec=...)"
+            )
 
         async def publish(row: CommandMessage) -> None:
-            await bus.dispatch_message(row, self._commands)
+            await bus.dispatch_message(row)
 
-        return Relay(
-            self._store, publish, observer=observer, on_dead=on_dead, max_attempts=max_attempts, pacing=pacing
-        )
+        return publish

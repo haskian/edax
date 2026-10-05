@@ -1,0 +1,37 @@
+[
+  {
+    "command_tenant": "acme",
+    "id": "cmd-1",
+    "name": "the_same_tenant_is_kept",
+    "tenant": "acme",
+    "want": "acme"
+  },
+  {
+    "command_tenant": null,
+    "id": "cmd-1",
+    "name": "a_command_with_no_tenant_takes_the_aggregates",
+    "tenant": "acme",
+    "want": "acme"
+  },
+  {
+    "command_tenant": "globex",
+    "error": "codec: command cmd-1 names tenant \"globex\", but it is saved with an aggregate of tenant \"acme\"",
+    "id": "cmd-1",
+    "name": "another_tenant_is_refused",
+    "tenant": "acme"
+  },
+  {
+    "command_tenant": "acme",
+    "error": "codec: command cmd-1 names tenant \"acme\", but it is saved with an aggregate of no tenant",
+    "id": "cmd-1",
+    "name": "a_tenant_under_a_tenantless_aggregate_is_refused",
+    "tenant": null
+  },
+  {
+    "command_tenant": null,
+    "id": "cmd-1",
+    "name": "neither_names_one",
+    "tenant": null,
+    "want": null
+  }
+]

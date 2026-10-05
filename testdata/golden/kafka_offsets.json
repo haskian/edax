@@ -877,6 +877,154 @@
     ]
   },
   {
+    "name": "a_revoke_hands_back_the_last_watermark_and_drops_the_partition",
+    "steps": [
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "offset": 1,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "offset": 2,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "offset": 4,
+        "op": "book",
+        "partition": 1,
+        "topic": "t",
+        "want": {
+          "token": 4
+        }
+      },
+      {
+        "offset": 0,
+        "op": "book",
+        "partition": 2,
+        "topic": "t",
+        "want": {
+          "token": 5
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "ack",
+        "token": 5,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "offset": 1,
+        "op": "committed",
+        "partition": 2,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "op": "revoke",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "due": {
+            "offset": 2,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "is_live",
+        "token": 3,
+        "want": {
+          "live": false
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "decision": "stale"
+        }
+      },
+      {
+        "op": "revoke",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "due": null
+        }
+      },
+      {
+        "op": "revoke",
+        "partition": 1,
+        "topic": "t",
+        "want": {
+          "due": null
+        }
+      },
+      {
+        "op": "revoke",
+        "partition": 2,
+        "topic": "t",
+        "want": {
+          "due": null
+        }
+      },
+      {
+        "op": "revoke",
+        "partition": 0,
+        "topic": "u",
+        "want": {
+          "due": null
+        }
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": []
+        }
+      }
+    ]
+  },
+  {
     "name": "a_token_no_booking_issued_settles_nothing",
     "steps": [
       {

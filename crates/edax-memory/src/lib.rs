@@ -19,21 +19,26 @@
 //! as Redis fences on the claim value, and [`MemoryIdempotencyStore::expire`] lapses one, so a test can
 //! rehearse a takeover. Bring a durable store to production; the cross-process ledger is `edax-redis`.
 
+// Shared by both SDKs, so every public item states what it promises.
+#![warn(missing_docs)]
 
 mod broker;
 mod event;
 mod idempotency;
 mod outbox;
+mod outbox_rows;
 mod projection;
 mod saga;
-mod tx;
 #[cfg(test)]
 mod testkit;
+mod tx;
+mod versioned;
 
-pub use broker::{MemoryBroker, Message, PolledDelivery};
+pub use broker::{LogMessage, MemoryBroker, PolledDelivery};
 pub use event::{MemoryEventStore, Snapshot};
-pub use idempotency::{Claimed, MemoryIdempotencyStore};
+pub use idempotency::MemoryIdempotencyStore;
 pub use outbox::MemoryCommandOutbox;
-pub use projection::{MemoryProjectionStore, Versioned};
+pub use projection::{Document, MemoryProjectionStore};
 pub use saga::{MemorySagaStore, SagaRow};
-pub use tx::{Document, MemoryTransactor, NO_TX};
+pub use tx::{MemoryTransactor, Tx};
+pub use versioned::Versioned;

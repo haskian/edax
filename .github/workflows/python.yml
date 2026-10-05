@@ -19,7 +19,7 @@ jobs:
   # Lint and type-check need no native extension, so they run beside the test job rather than
   # gating it — a style error should not wait on a release build of the Rust kernel.
   lint:
-    name: ruff + ty
+    name: ruff + ty + mypy
     runs-on: ${{ inputs.runs-on }}
     env:
       VIRTUAL_ENV: ${{ github.workspace }}/crates/edax-py/.venv
@@ -33,7 +33,7 @@ jobs:
         working-directory: crates/edax-py
         run: |
           mise exec -- uv venv --python ${{ inputs.python-version }}
-          mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
+          mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis mypy "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
 
       - name: Lint
         run: mise exec -- ruff check .
@@ -45,6 +45,13 @@ jobs:
 
       - name: Type-check
         run: mise exec -- ty check
+
+      # The package itself is held to `mypy --strict` too, at the floor it supports: every argument and return
+      # annotated, no implicit `Any`, every `Literal` comparison checked. ty covers the tests and examples.
+      # `_edax`'s types come from the committed stub, so no native build is needed.
+      - name: Type-check the SDK strictly
+        working-directory: crates/edax-py
+        run: .venv/bin/python -m mypy --strict --python-version 3.10 python/edax
 
       # Documentation regressions: long sentences, crates/...:NNN citations, banned idioms.
       - name: Lint the documentation

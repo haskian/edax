@@ -28,8 +28,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use edax::{
-    CommandMessage, Error, EventMessage, JsonRegistryCodec, MemorySagaStore, MemoryTx, Outbox, Pacing, Relay,
-    Saga, SagaInstance, SagaRunner, SagaStore, Transactor,
+    CommandMessage, Error, EventMessage, JsonRegistryCodec, MemorySagaStore, MemoryTx, Outbox, Pacing, Relay, Saga,
+    SagaInstance, SagaRunner, SagaStore, Transactor,
 };
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -64,7 +64,10 @@ impl Saga for CountSaga {
 
     fn handle(&self, state: Option<u32>, env: &EventMessage) -> (Option<u32>, Vec<CountCommand>) {
         let step = state.unwrap_or(0) + 1;
-        let did = CountCommand::Did(Did { step, event: env.id.clone() });
+        let did = CountCommand::Did(Did {
+            step,
+            event: env.id.clone(),
+        });
         match env.name.as_str() {
             "Finish" => (None, vec![did]),
             _ => (Some(step), vec![did]),
@@ -85,29 +88,48 @@ struct StaleRead {
     loaded: Option<SagaInstance<u32>>,
 }
 
-impl Outbox<CommandMessage> for StaleRead {
-    fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
-        self.inner.unpublished(limit)
-    }
-    fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
-        self.inner.mark_published(ids)
-    }
-}
-
 impl SagaStore for StaleRead {
     type State = u32;
     type Tx = MemoryTx;
 
-    fn load(&self, _: &mut MemoryTx, _: &str) -> Result<Option<SagaInstance<u32>>, Error> {
+    fn load(&self, _: &mut MemoryTx, _: &str, _: &str) -> Result<Option<SagaInstance<u32>>, Error> {
         Ok(self.loaded.clone())
     }
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &u32, version: u64, folded: &str, commands: &[CommandMessage]) -> Result<u64, Error> {
-        self.inner.save(tx, id, state, version, folded, commands)
+    fn save(
+        &self,
+        tx: &mut MemoryTx,
+        saga: &str,
+        id: &str,
+        state: &u32,
+        version: u64,
+        folded: &str,
+        commands: &[CommandMessage],
+    ) -> Result<u64, Error> {
+        self.inner.save(tx, saga, id, state, version, folded, commands)
     }
-    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[CommandMessage]) -> Result<u64, Error> {
-        self.inner.complete(tx, id, version, commands)
+    fn complete(
+        &self,
+        tx: &mut MemoryTx,
+        saga: &str,
+        id: &str,
+        version: u64,
+        commands: &[CommandMessage],
+    ) -> Result<u64, Error> {
+        self.inner.complete(tx, saga, id, version, commands)
+    }
+    fn unpublished(&self, saga: &str, limit: usize) -> Result<Vec<CommandMessage>, Error> {
+        self.inner.unpublished(saga, limit)
+    }
+    fn mark_published(&self, saga: &str, ids: &[String]) -> Result<(), Error> {
+        self.inner.mark_published(saga, ids)
+    }
+    fn unpublished_count(&self, saga: &str) -> Result<usize, Error> {
+        self.inner.unpublished_count(saga)
     }
 }
+
+/// The saga's name: the store keys its rows and its outbox by it.
+const SAGA: &str = "count";
 
 /// The outbox, whose `mark_published` fails while `crash` is set: the relay died after it sent.
 struct CrashingMark {
@@ -117,13 +139,13 @@ struct CrashingMark {
 
 impl Outbox<CommandMessage> for CrashingMark {
     fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
-        self.inner.unpublished(limit)
+        self.inner.unpublished(SAGA, limit)
     }
     fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
         if self.crash.get() {
             return Err(Error::store("relay crashed before the mark"));
         }
-        self.inner.mark_published(ids)
+        self.inner.mark_published(SAGA, ids)
     }
 }
 
@@ -144,7 +166,8 @@ fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
         (0..2usize).prop_map(Op::Load),
         (0..2usize, prop::bool::weighted(0.2)).prop_map(|(w, crash)| Op::Write { w, crash }),
-        (prop::option::weighted(0.2, 0..3u8), prop::bool::weighted(0.2)).prop_map(|(fail_at, crash_mark)| Op::Drain { fail_at, crash_mark }),
+        (prop::option::weighted(0.2, 0..3u8), prop::bool::weighted(0.2))
+            .prop_map(|(fail_at, crash_mark)| Op::Drain { fail_at, crash_mark }),
         (0..4usize).prop_map(|from| Op::Redeliver { from }),
     ]
 }
@@ -178,7 +201,11 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let mut pending: VecDeque<EventMessage> = ["Step", "Step", "Finish"].iter().enumerate().map(|(i, n)| event(i, n)).collect();
+        let mut pending: VecDeque<EventMessage> = ["Step", "Step", "Finish"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| event(i, n))
+            .collect();
         // A late event, delivered after `Finish`: it must find the tombstone.
         pending.push_back(event(9, "Step"));
         Self {
@@ -196,11 +223,19 @@ impl World {
     }
 
     fn unsent(&self) -> BTreeSet<String> {
-        self.store.unpublished(1000).unwrap().into_iter().map(|c| c.id).collect()
+        self.store
+            .unpublished(SAGA, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
     }
 
     fn completed(&self) -> bool {
-        matches!(self.store.load(&mut MemoryTx::auto_commit(), "flow-1").unwrap(), Some(SagaInstance::Completed { .. }))
+        matches!(
+            self.store.load(&mut MemoryTx::auto_commit(), SAGA, "flow-1").unwrap(),
+            Some(SagaInstance::Completed { .. })
+        )
     }
 
     fn load(&mut self, w: usize) {
@@ -208,15 +243,24 @@ impl World {
             return;
         }
         let Some(env) = self.pending.pop_front() else { return };
-        let loaded = self.store.load(&mut MemoryTx::auto_commit(), "flow-1").unwrap();
+        let loaded = self.store.load(&mut MemoryTx::auto_commit(), SAGA, "flow-1").unwrap();
         self.workers[w].taken = Some((env, loaded));
     }
 
     fn write(&mut self, w: usize, crash: bool) {
-        let Some((env, loaded)) = self.workers[w].taken.take() else { return };
+        let Some((env, loaded)) = self.workers[w].taken.take() else {
+            return;
+        };
         let was_completed = self.completed();
         let before = self.unsent();
-        let runner = SagaRunner::new(CountSaga, StaleRead { inner: self.store.clone(), loaded }, JsonRegistryCodec::new().unwrap());
+        let runner = SagaRunner::new(
+            CountSaga,
+            StaleRead {
+                inner: self.store.clone(),
+                loaded,
+            },
+            JsonRegistryCodec::new().unwrap(),
+        );
         let tr = self.store.transactor();
         let mut tx = tr.begin().unwrap();
         let out = runner.run(&mut tx, &env);
@@ -235,7 +279,13 @@ impl World {
             self.landed_events.push(env.id.clone());
             self.redeliverable.push(env.clone());
         }
-        for row in self.store.unpublished(1000).unwrap().into_iter().filter(|row| landed.contains(&row.id)) {
+        for row in self
+            .store
+            .unpublished(SAGA, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|row| landed.contains(&row.id))
+        {
             let CountCommand::Did(did) = runner.command(&row).unwrap();
             self.steps.push(did.step);
         }
@@ -243,7 +293,10 @@ impl World {
     }
 
     fn drain(&mut self, fail_at: Option<u8>, crash_mark: bool) -> Result<(), TestCaseError> {
-        let outbox = CrashingMark { inner: self.store.clone(), crash: Cell::new(crash_mark) };
+        let outbox = CrashingMark {
+            inner: self.store.clone(),
+            crash: Cell::new(crash_mark),
+        };
         let relay = Relay::<_, CommandMessage>::new(outbox).pacing(Pacing::instant());
         let mut index = 0u8;
         let mut sent: Vec<String> = Vec::new();
@@ -257,11 +310,17 @@ impl World {
             Ok(())
         });
         for id in sent {
-            prop_assert!(self.committed.contains(&id), "sent {id}, which no committed step decided");
+            prop_assert!(
+                self.committed.contains(&id),
+                "sent {id}, which no committed step decided"
+            );
             let sends = self.sends.entry(id.clone()).or_insert(0);
             *sends += 1;
             let allowed = self.resends_allowed.get(&id).copied().unwrap_or(0);
-            prop_assert!(*sends <= 1 + allowed, "{id} was sent {sends} times with {allowed} lost marks");
+            prop_assert!(
+                *sends <= 1 + allowed,
+                "{id} was sent {sends} times with {allowed} lost marks"
+            );
             if crash_mark {
                 *self.resends_allowed.entry(id).or_insert(0) += 1;
             }
@@ -305,7 +364,11 @@ fn check(history: Vec<Op>) -> Result<(), TestCaseError> {
             Op::Drain { fail_at, crash_mark } => world.drain(fail_at, crash_mark)?,
             Op::Redeliver { from } => world.redeliver(from),
         }
-        prop_assert_eq!(world.after_completion, 0, "a commit landed after the instance completed");
+        prop_assert_eq!(
+            world.after_completion,
+            0,
+            "a commit landed after the instance completed"
+        );
     }
     world.settle()?;
     prop_assert!(world.unsent().is_empty(), "the outbox drains");
@@ -316,7 +379,11 @@ fn check(history: Vec<Op>) -> Result<(), TestCaseError> {
     prop_assert_eq!(&applied, &world.committed, "every committed command sent, nothing else");
     // One command per committed transition, and no event's step committed twice.
     let events: BTreeSet<&String> = world.landed_events.iter().collect();
-    prop_assert_eq!(events.len(), world.landed_events.len(), "an event's step committed twice");
+    prop_assert_eq!(
+        events.len(),
+        world.landed_events.len(),
+        "an event's step committed twice"
+    );
     prop_assert_eq!(world.committed.len(), world.landed_events.len());
     // Every fold read the state the previous commit left: the steps run 1, 2, 3, ... without a repeat.
     let want: Vec<u32> = (1..=u32::try_from(world.steps.len()).unwrap()).collect();
@@ -363,8 +430,14 @@ fn the_reviewers_race_is_one_of_the_histories() {
         Op::Load(1),
         Op::Write { w: 0, crash: false },
         Op::Write { w: 1, crash: false },
-        Op::Drain { fail_at: None, crash_mark: true },
-        Op::Drain { fail_at: None, crash_mark: false },
+        Op::Drain {
+            fail_at: None,
+            crash_mark: true,
+        },
+        Op::Drain {
+            fail_at: None,
+            crash_mark: false,
+        },
     ])
     .unwrap();
 }

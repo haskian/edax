@@ -41,7 +41,7 @@ async def main() -> None:
             await worker_a_may_finish.wait()  # worker A is slow
         return f"charged by run {run}"
 
-    bus.register("ChargeCard", charge)
+    bus.register(ChargeCard, charge)
     command = ChargeCard("pay-1", 40)
 
     # 1. Worker A claims pay-1 and starts charging.

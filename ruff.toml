@@ -36,6 +36,10 @@ ignore = [
 # match the Rust side's names. `filter` likewise names the kernel's query filter.
 builtins-ignorelist = ["id", "type", "filter"]
 
+[lint.flake8-bugbear]
+# A frozen dataclass, so one default instance is shared safely as an argument default.
+extend-immutable-calls = ["edax.query.Query"]
+
 [lint.per-file-ignores]
 # Tests reach for private helpers to pin internal contracts, and assert on them. E501 is off
 # here because the suites are table-driven over realistic payloads: a case is one row. The

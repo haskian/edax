@@ -215,8 +215,14 @@ before you rely on it:
   gets two more clauses. A claim staged in an open transaction is never won by another. A release with
   nothing committed leaves a concurrent winner's record. These clauses need an async driver, because one
   that blocks the event loop deadlocks any asyncio code.
-- **Its payloads are real.** Drafts carry a `guid()` id, a full lineage and a JSON body, as the SDK
-  writes them. The store stamps `recorded_at` itself, and the suite checks it did. A store with an `id uuid` column then passes or fails for the right reason.
+- **Its payloads are real.** Every clause starts from one rich base, `edax.testing.draft` or
+  `edax.testing.command`. Each carries a `guid()` id, a full lineage, a tenant, a trace parent and a JSON
+  body with a non-ASCII memo, as the SDK writes them. A case changes only the field under test. The store
+  stamps `recorded_at` itself, and the suite checks it did. A store with an `id uuid` column then passes or
+  fails for the right reason.
+- **One branch, one row.** The clauses of one rule form one table over one base fixture, a row per
+  branch. The append verdicts, snapshot saves, settled records and unreadable records are such tables.
+  An unreadable record must read as `decode_prior` reads it, so the suite never restates the kernel's text.
 - **The discrimination test is strict.** `test_contract_discriminates.py` is one table, a row per
   mistake. A row counts as caught only when the clause fails with its own verdict: an assertion, a
   `pytest.raises` that did not fire, or a seam's typed error. The race and isolation rows also name the
@@ -225,24 +231,29 @@ before you rely on it:
 
 ### Fault wrappers
 
-`edax.testing.faults` wraps any store by delegation, so the same fault lands on Postgres, Redis or memory:
+`edax.testing.faults` wraps any store by delegation, so the same fault lands on Postgres, Redis or memory.
+`edax.testing` re-exports each wrapper:
 
 | Wrapper | Fault |
 |---|---|
 | `LostResponse(store)` | `arm("append")` lands the next `append`, then raises `StoreError`: a reply lost after the write. `arm("commit")` loses the reply of the next unit of work after it committed. Arming a method the store lacks raises `AttributeError` instead of never firing. |
 | `Refusing(store, "complete", "release")` | refuses the named calls outright, writing nothing, and counts them in `refusals` |
 | `BrokenCommit(transactor, arm)` | a commit that fails with nothing landed (`"nothing_landed"`) or after it landed (`"lost_response"`); its `transactor` is the wrapped one, so the stores over it join the units of work it opens |
-| `LostReply(conn, script, resend)` | the Redis `eval` seam losing the reply to one script, with or without redis-py's re-send |
+| `Delegating(store)` | the base of each: forwards every call, so a subclass overrides the one method it breaks |
+| `edax.testing.redis.LostReply(conn, script, resend)` | the Redis `eval` seam losing the reply to one script, with or without redis-py's re-send |
 
 The in-tree suites use these and nothing else; `tests/test_faults.py` proves each one fires once where
 armed. `MemoryLedger.expire(key)` and `MemoryIdempotencyStore.expire(key)` are the memory side of a TTL
 running out, for takeover tests. `examples/py/15_lease_takeover.py` rehearses that takeover, and
 `examples/py/19_fault_injection.py` drives a handler through `BrokenCommit(db, "lost_response")`.
 
-Three builders make the messages a test needs. `edax.testing.event(aggregate_id, name, sequence)`
-returns an `EventMessage` with realistic defaults: its own id as its lineage, empty maps. `drafted(msg)`
-turns a message back into the `EventDraft` a store receives, and `recorded(draft, at)` stamps a draft as
-a store would.
+Builders make the messages a test needs. `draft(aggregate_id, sequence)`, `message(aggregate_id,
+sequence)` and `command(aggregate_id)` are the rich bases the suites write, with fresh ids.
+`event(aggregate_id, name, sequence)` returns an `EventMessage` with stable ids and plain defaults: the
+kernel's `originate` lineage, so its own id is its correlation, and empty maps. `drafted(msg)` turns a
+message back into the `EventDraft` a store receives, and `recorded(draft, at)` stamps a draft as a store
+would. `delivery(msg)` wraps a message in a `Delivery` whose ack and nack do nothing. A
+`KeyOrderedDispatcher` takes a delivery only, so a test that watches the handler submits one.
 
 ## Contract suites a host can reuse
 

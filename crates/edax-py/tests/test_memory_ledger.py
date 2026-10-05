@@ -22,7 +22,8 @@ from conftest import TTL_MS, claimed, fresh_prefix, ledger_key
 from edax import _edax
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
-from edax.command import CommandBus, Record, Won, idempotent
+from edax.command import CommandBus, idempotent
+from edax.idempotency import Done, Pending, Record, Won
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -91,7 +92,7 @@ async def test_a_terminal_failure_is_cached_and_replayed_on_redelivery(rig: Rig)
     bus = CommandBus(
         idempotent(rig.store, unit_of_work=MemoryTransactor(), scope="test", tenancy=edax.Tenancy.SILO)
     )
-    bus.register("Debit", handler)
+    bus.register(Debit, handler)
     with pytest.raises(InsufficientFunds):
         await bus.dispatch(debit(), idempotency_key="req-1")
     with pytest.raises(edax.CachedFailure, match="balance 100, debit 500") as replay:
@@ -114,7 +115,7 @@ async def test_a_terminal_failure_on_the_joining_store_is_not_cached() -> None:
     bus = CommandBus(
         idempotent(MemoryIdempotencyStore(db), unit_of_work=db, scope="test", tenancy=edax.Tenancy.SILO)
     )
-    bus.register("Debit", handler)
+    bus.register(Debit, handler)
     for _ in range(2):
         with pytest.raises(InsufficientFunds):
             await bus.dispatch(debit(), idempotency_key="req-1")
@@ -141,7 +142,7 @@ async def test_a_claim_lapsed_mid_handler_is_taken_over_and_its_stale_owner_sett
         return {"debited_by": worker}
 
     bus = CommandBus(idempotent(rig.store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("Debit", handler)
+    bus.register(Debit, handler)
 
     async def worker_a() -> Any:
         try:
@@ -164,7 +165,7 @@ async def test_a_claim_lapsed_mid_handler_is_taken_over_and_its_stale_owner_sett
     assert b_result == {"debited_by": "B"}, f"{rig.name}: the worker that took the key over settled it"
     assert ran == ["A", "B"], rig.name
     replay = await rig.store.claim(claimed("req-1"), 0)
-    assert not isinstance(replay, Won) and replay.result == {"debited_by": "B"}, (
+    assert isinstance(replay, Record) and replay.state == Done({"debited_by": "B"}), (
         f"{rig.name}: B's outcome alone"
     )
 
@@ -183,7 +184,7 @@ async def test_a_lost_complete_reply_keeps_the_record_and_the_redelivery_replays
         return {"balance": 600}
 
     bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("Debit", handler)
+    bus.register(Debit, handler)
     store.arm("complete")
     with pytest.raises(edax.StoreError):
         await bus.dispatch(debit(), idempotency_key="req-1")
@@ -221,15 +222,15 @@ async def _two_workers(history: list[Step]) -> None:
     claim. A peek reads the key through a rolled-back unit of work, so it changes nothing."""
     from edax.testing.faults import LostResponse
 
-    ledger = MemoryLedger()
-    peek_store = MemoryIdempotencyStore(ledger.transactor)
+    peek_store = MemoryIdempotencyStore()
+    ledger = MemoryLedger(peek_store)
     held: dict[int, bytes] = {}
     ran: set[int] = set()
     landed: set[str] = set()
 
     async def peek() -> Any:
         try:
-            async with ledger.transactor.begin() as tx:
+            async with peek_store.transactor.begin() as tx:
                 seen = await peek_store.claim("k", 7, tx=tx)
                 raise _Peeked(seen)
         except _Peeked as p:
@@ -237,13 +238,13 @@ async def _two_workers(history: list[Step]) -> None:
 
     async def observe() -> None:
         seen = await peek()
-        if isinstance(seen, Record) and not seen.pending:
-            landed.add(str(seen.result))
+        if isinstance(seen, Record) and isinstance(seen.state, Done):
+            landed.add(str(seen.state.result))
         assert len(landed) <= 1, f"two outcomes landed: {landed}"
         if landed:
-            assert isinstance(seen, Record) and str(seen.result) in landed, (
-                f"the record was deleted: {seen!r}"
-            )
+            assert (
+                isinstance(seen, Record) and isinstance(seen.state, Done) and str(seen.state.result) in landed
+            ), f"the record was deleted: {seen!r}"
 
     for s in history:
         w = s.worker
@@ -261,7 +262,7 @@ async def _two_workers(history: list[Step]) -> None:
                 handle = held.pop(w)
                 ran.discard(w)
                 try:
-                    await store.complete("k", handle, Record(7, result=f"worker {w}"))
+                    await store.complete("k", handle, Record.done(7, f"worker {w}"))
                 finally:
                     await observe()
                     await ledger.release("k", handle)  # the guard's compensation, whatever complete did
@@ -270,7 +271,7 @@ async def _two_workers(history: list[Step]) -> None:
                 await store.release("k", held.pop(w))
             elif s.op == "lapse":
                 seen = await peek()
-                if isinstance(seen, Record) and seen.pending:
+                if isinstance(seen, Record) and isinstance(seen.state, Pending):
                     ledger.expire("k")
         except edax.StoreError:
             pass  # a lost reply or a refused complete: the property is about what the ledger holds
@@ -290,5 +291,6 @@ def test_two_workers_on_one_memory_key_never_land_two_outcomes(history: list[Ste
 
 def test_the_memory_fence_is_the_kernels() -> None:
     """The handle is opaque bytes from the native store, never a value the SDK mints."""
-    claimed = _edax.memory_transactor().claim(_edax.no_tx(), "k", 7)
+    claimed = _edax.memory_transactor().idempotency_store().claim(_edax.no_tx(), "k", 7)
     assert claimed.won and isinstance(claimed.handle, bytes) and len(claimed.handle) > 0
+    assert claimed.prior is None, "a won claim reads no prior record"

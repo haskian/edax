@@ -1,10 +1,11 @@
-"""Ready-made event codecs: marshal a domain event to bytes by name, and back.
+"""Ready-made codecs: marshal a domain event or command to bytes by name, and back.
 
-An :class:`~edax.store.EventCodec` is the boundary between your domain event objects and the
-``name``/``version``/``bytes`` the store persists. These two cover the common case, a fixed set of event
+A :class:`~edax.aggregate.PayloadCodec` is the boundary between your domain objects and the
+``name``/``version``/``bytes`` a message carries. These two cover the common case, a fixed set of
 types each serialized whole (``json_codec({"Deposited": Deposited})``). A snapshot (``AggregateCodec``)
 stays hand-written: only you know which fields are state and which are derived. Every failure here raises
-:class:`~edax.errors.CodecError`, which is terminal, so the caller dead-letters instead of redelivering."""
+:class:`~edax.errors.CodecError`, which is terminal, so the caller dead-letters instead of redelivering;
+an upcast step's own edax error keeps its class."""
 
 from __future__ import annotations
 
@@ -14,12 +15,13 @@ from typing import Any
 
 import msgspec
 
-from .aggregate import Event, Payload
-from .errors import AlreadyRegistered, CodecError
+from . import _json
+from .errors import AlreadyRegistered, CodecError, code_of
+from .message import Marshaled, Payload
 from .upcast import Upcaster, target, upcast
 
 __all__ = [
-    "RegistryEventCodec",
+    "RegistryCodec",
     "json_codec",
     "msgpack_codec",
 ]
@@ -27,15 +29,20 @@ __all__ = [
 
 @contextmanager
 def _as_codec_error(what: str) -> Iterator[None]:
-    """Re-raise a marshal/unmarshal failure as the terminal :class:`~edax.errors.CodecError`. An
-    untyped ``KeyError``/``ValueError`` would be classed transient and redelivered forever."""
+    """Re-raise a marshal/unmarshal failure as the terminal :class:`~edax.errors.CodecError`, named by
+    ``what``. An untyped ``KeyError``/``ValueError`` would be classed transient and redelivered forever. A
+    failure that carries another taxonomy code keeps it, as the Rust SDK's upcast step returns its own
+    error: an upcast step whose lookup service is down raises a transient error, and retyping it terminal
+    would dead-letter a payload a retry could read."""
     try:
         yield
     except Exception as e:
+        if code_of(e) not in (None, CodecError.code):
+            raise
         raise CodecError(f"{what}: {e}") from e
 
 
-class RegistryEventCodec:
+class RegistryCodec:
     """Maps event names to types and serializes each whole. Build via :func:`json_codec` /
     :func:`msgpack_codec` rather than directly.
 
@@ -78,16 +85,21 @@ class RegistryEventCodec:
             with _as_codec_error(f"the upcaster for {name!r}"):
                 self._versions[name] = target(self._upcasters.get(name))
 
-    def marshal(self, event: Any) -> Event:
+    def type_of(self, name: str) -> type | None:
+        """The class this codec reads ``name`` as, or ``None`` for a name it does not read: what a
+        :class:`~edax.command.CommandBus` checks a handler's command class against."""
+        return self._by_name.get(name)
+
+    def marshal(self, event: Any) -> Payload:
         name = self._by_type.get(type(event))
         if name is None:
             raise CodecError(f"no event name registered for {type(event).__name__}")
         with _as_codec_error(f"encoding {name}"):
-            return Event(name, self._versions[name], self._encode(event))
+            return Payload(name, self._versions[name], self._encode(event))
 
-    def unmarshal(self, event: Payload) -> Any:
-        """The domain object behind ``event``: an :class:`~edax.aggregate.Event`, an
-        :class:`~edax.aggregate.EventMessage` or a :class:`~edax.aggregate.CommandMessage`."""
+    def unmarshal(self, event: Marshaled) -> Any:
+        """The domain object behind ``event``: a :class:`~edax.message.Payload`, an
+        :class:`~edax.message.EventMessage` or a :class:`~edax.message.CommandMessage`."""
         type_ = self._by_name.get(event.name)
         if type_ is None:
             raise CodecError(f"no type registered for event {event.name!r}")
@@ -101,23 +113,30 @@ class RegistryEventCodec:
             return self._decode(data, type_)
 
 
-def json_codec(
-    events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
-) -> RegistryEventCodec:
-    """An EventCodec that serializes payloads as JSON (via msgspec). A name writes version 1, or one past
+def json_codec(events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None) -> RegistryCodec:
+    """A PayloadCodec that serializes payloads as JSON (via msgspec), through the SDK's one encoder: a
+    ``Decimal`` is written as the kernel's canonical decimal text and a ``datetime`` as its fixed-width UTC
+    text, as the Rust SDK's ``edax::Decimal`` / ``edax::Instant`` write them, and a naive ``datetime`` is
+    refused, on write and on read, as is a ``NaN`` or infinite ``Decimal``. A struct reads from a map only, at
+    every depth. A name writes version 1, or one past
     the highest step of its upcaster in ``upcasters``. The upcaster raises that name's older stored
     payloads on load (see :class:`~edax.upcast.Upcaster`). A hole in a chain raises
     :class:`~edax.errors.CodecError` here, not on the first event."""
-    return RegistryEventCodec(
-        events, msgspec.json.encode, lambda b, t: msgspec.json.decode(b, type=t), upcasters
+    return RegistryCodec(
+        events,
+        _json.encode_bytes,
+        lambda b, t: _json.check_read(msgspec.json.decode(b, type=t), t),
+        upcasters,
     )
 
 
-def msgpack_codec(
-    events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None
-) -> RegistryEventCodec:
-    """An EventCodec that serializes payloads as MessagePack (via msgspec), smaller and binary. Versions and
-    ``upcasters`` work as in :func:`json_codec`."""
-    return RegistryEventCodec(
-        events, msgspec.msgpack.encode, lambda b, t: msgspec.msgpack.decode(b, type=t), upcasters
+def msgpack_codec(events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None) -> RegistryCodec:
+    """A PayloadCodec that serializes payloads as MessagePack (via msgspec), smaller and binary. Host values,
+    versions and ``upcasters`` work as in :func:`json_codec`: a ``datetime`` is the same UTC text, not a
+    MessagePack timestamp, so the Rust SDK reads it. Bytes stay a native byte string."""
+    return RegistryCodec(
+        events,
+        _json.encode_msgpack,
+        lambda b, t: _json.check_read(msgspec.msgpack.decode(b, type=t), t),
+        upcasters,
     )

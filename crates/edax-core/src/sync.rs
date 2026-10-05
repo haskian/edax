@@ -31,8 +31,15 @@ mod tests {
                 })
                 .join()
         });
-        assert!(poisoner.is_err(), "the guarded thread panicked, so the lock is poisoned");
+        assert!(
+            poisoner.is_err(),
+            "the guarded thread panicked, so the lock is poisoned"
+        );
         assert!(state.is_poisoned());
-        assert_eq!(*lock(&state), 9, "the state is taken back, panic-free, with the write that landed");
+        assert_eq!(
+            *lock(&state),
+            9,
+            "the state is taken back, panic-free, with the write that landed"
+        );
     }
 }

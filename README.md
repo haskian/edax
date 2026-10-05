@@ -102,7 +102,7 @@ async def main() -> None:
     # retry sits outside it, so a failed attempt rolls back whole before the next one starts.
     ledger = MemoryIdempotencyStore(db)
     bus = CommandBus(retry(3), idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db))
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     async def submit(cmd: Deposit, request_id: str) -> int:
         # The client's request id is the idempotency key. No transaction around the dispatch:
@@ -146,13 +146,13 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 | Path | What |
 |---|---|
-| `crates/edax-core` | shared primitives: hashing, backoff, the clock, id generation, the error taxonomy, a poison-tolerant lock, settlement tokens |
-| `crates/edax-event` | event-driven kernel: the event and command messages, codec and media types, lineage, the ordering key, local fan-out, upcast, staleness, dedup, sequence, the retry and dead-letter policy, the saga step |
-| `crates/edax-cqrs` | command-and-query kernel: canonical bytes (RFC 8785), payload and command hash, the claim key, the idempotency record, outcome, settle and forget, the filter AST and evaluator, sort and cursor rules |
+| `crates/edax-core` | shared primitives: `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`, `error` (the taxonomy); and two Rust-only runtime helpers, `lock` and `TokenMint`. [Scope](docs/kernels/core.md) |
+| `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`. [Scope](docs/kernels/event.md) |
+| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash`, `command_hash`, `claim_key`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`. [Scope](docs/kernels/cqrs.md) |
 | `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
 | `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
-| `crates/edax-kafka` | Kafka kernel: the record key and header, broker placement, the media-type route, the dead-letter record, the offset watermark |
-| `crates/edax-redis` | Redis kernel: the idempotency ledger's key, value layout and claim handle, its five scripts, and the verdict on a Redis reply |
+| `crates/edax-kafka` | Kafka kernel: `record` (key, header, route, dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`). [Scope](docs/kernels/kafka.md) |
+| `crates/edax-redis` | Redis kernel: `ledger` (the idempotency ledger's key, settings, value layout, claim handle, reply outcomes), `scripts` (the five fence scripts, the reply verdict). [Scope](docs/kernels/redis.md) |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |

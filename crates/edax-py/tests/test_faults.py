@@ -20,10 +20,11 @@ from edax.backend.memory import (
     MemoryTransactor,
 )
 from edax.backend.redis import CLAIM_SCRIPT, RELEASE_SCRIPT, AsyncRedisClient, RedisIdempotencyStore
-from edax.command import Record, Won
+from edax.idempotency import Pending, Record, Won
 from edax.projection import Entity
-from edax.testing.contracts import draft
-from edax.testing.faults import COMMIT, BrokenCommit, CommitFault, LostReply, LostResponse, Refusing
+from edax.testing import BrokenCommit, CommitFault, LostResponse, Refusing, draft
+from edax.testing.faults import COMMIT
+from edax.testing.redis import LostReply
 
 # =========================================================================
 # LostResponse
@@ -74,17 +75,15 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
         assert store.armed == case.arm, "an unfired fault stays armed"
 
 
-async def test_a_lost_save_leaves_the_callers_version_where_it_was() -> None:
-    """The caller never heard the new version, so the in-place bump of a delivered reply does not happen."""
+async def test_a_lost_save_lands_and_withholds_the_new_version() -> None:
+    """The caller never hears the new version: the save raises, and the row landed at it all the same."""
     store = LostResponse(MemoryProjectionStore())
-    entity = Entity("acct-1", 0, {"balance": 100})
     store.arm("save")
     with pytest.raises(edax.StoreError, match="save: the write landed"):
-        await store.save(entity)
-    assert entity.version == 0, "the reply that would have advanced it was lost"
+        await store.save(Entity("acct-1", 0, {"balance": 100}))
     stored = await store.get("acct-1")
     assert stored is not None and stored.version == 1, "and the row landed at version 1"
-    await store.save(Entity("acct-2", 0, {"balance": 1}))  # disarmed: an ordinary save advances in place
+    assert await store.save(Entity("acct-2", 0, {"balance": 1})) == 1, "disarmed: an ordinary save answers"
 
 
 @pytest.mark.parametrize("method", ["unpublished_counts", "claim"], ids=["a_typo", "another_seams_method"])
@@ -117,12 +116,12 @@ async def test_refusing_refuses_the_named_methods_and_lands_nothing() -> None:
     won = await store.claim("req-1", 7)  # an unnamed method reaches the store
     assert isinstance(won, Won)
     with pytest.raises(edax.StoreError, match="complete: refused"):
-        await store.complete("req-1", won.handle, Record(7, result={"balance": 100}))
+        await store.complete("req-1", won.handle, Record.done(7, {"balance": 100}))
     with pytest.raises(edax.StoreError, match="release: refused"):
         await store.release("req-1", won.handle)
     assert store.refusals == 2
     held = await ledger.claim("req-1", 7)
-    assert not isinstance(held, Won) and held.pending, "neither refused write landed"
+    assert not isinstance(held, Won) and isinstance(held.state, Pending), "neither refused write landed"
     assert store.joins_transaction is True, "attributes pass through"
 
 
@@ -180,7 +179,9 @@ async def test_a_lost_reply_runs_the_script_and_loses_its_reply_once() -> None:
         await store.claim("req-1", 7)
     assert conn.armed is False, "one shot"
     held = await store.claim("req-1", 7)
-    assert not isinstance(held, Won) and held.pending, "the claim landed before its reply was lost"
+    assert not isinstance(held, Won) and isinstance(held.state, Pending), (
+        "the claim landed before its reply was lost"
+    )
     await client.aclose()
 
 
@@ -199,7 +200,7 @@ async def test_a_lost_reply_leaves_every_other_script_alone() -> None:
     store = RedisIdempotencyStore(conn, "idem:")
     won = await store.claim("req-1", 7)  # the claim script: not the armed one
     assert isinstance(won, Won) and conn.armed is True
-    await store.complete("req-1", won.handle, Record(7, result={"balance": 100}))
+    await store.complete("req-1", won.handle, Record.done(7, {"balance": 100}))
     await client.aclose()
 
 
@@ -210,4 +211,4 @@ async def test_the_memory_ledger_is_a_ledger_of_its_own() -> None:
     with pytest.raises(edax.StoreError):
         await ledger.claim("req-1", 7)
     held = await ledger.claim("req-1", 7)
-    assert not isinstance(held, Won) and held.pending
+    assert not isinstance(held, Won) and isinstance(held.state, Pending)

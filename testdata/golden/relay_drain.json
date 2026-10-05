@@ -1,0 +1,1411 @@
+[
+  {
+    "max_attempts": 0,
+    "name": "an_empty_batch_settles_nothing",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": null,
+          "settled": [],
+          "wait": null
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "every_row_is_published_and_marked",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "id": "a-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-1",
+        "op": "published"
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "b-1",
+        "op": "published"
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-2",
+        "op": "published"
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 3,
+          "raise": null,
+          "settled": [
+            "a-1",
+            "b-1",
+            "a-2"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_failed_row_blocks_its_key_and_the_other_key_goes_on",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "id": "a-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-1",
+        "op": "published"
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "codec",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-2",
+        "op": "published"
+      },
+      {
+        "id": "b-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 2,
+          "raise": "b-1",
+          "settled": [
+            "a-1",
+            "a-2"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "the_same_row_failing_again_waits_a_longer_step",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      },
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 1
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_sink_takes_a_dead_row_and_its_key_goes_on",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-2",
+        "op": "published"
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 1,
+          "published": 1,
+          "raise": null,
+          "settled": [
+            "a-1",
+            "a-2"
+          ],
+          "wait": null
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_sink_that_refuses_hands_the_row_back_and_blocks_its_key",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": "store",
+        "id": "a-1",
+        "op": "sunk",
+        "taken": false,
+        "want": "hand_back"
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      },
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 2
+        }
+      },
+      {
+        "attempt": 2,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 1,
+          "published": 0,
+          "raise": null,
+          "settled": [
+            "a-1"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_fatal_sink_failure_stops_the_drain",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "codec",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": "bad_handle",
+        "id": "b-1",
+        "op": "sunk",
+        "taken": false,
+        "want": "stop"
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "id": "b-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "b-1",
+          "settled": [],
+          "wait": null
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 1,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 2,
+    "name": "max_attempts_dead_letters_a_row_that_keeps_failing",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      },
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 2
+        }
+      },
+      {
+        "attempt": 2,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 1,
+          "published": 0,
+          "raise": null,
+          "settled": [
+            "a-1"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "two_transient_failures_in_a_row_stop_the_drain",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "store",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "id": "b-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_publish_between_two_transient_failures_resets_the_count",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "b-1",
+        "op": "published"
+      },
+      {
+        "code": "store",
+        "id": "c-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "d-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 1,
+          "raise": "a-1",
+          "settled": [
+            "b-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "contention_blocks_its_key_and_neither_counts_nor_resets",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "code": "in_progress",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "c-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "store",
+        "id": "c-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "d-1",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 2,
+          "contended": 1
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 1,
+    "name": "an_outage_whose_rows_the_sink_took_still_waits_and_raises",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "id": "b-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "store",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "b-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "id": "c-1",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 2,
+          "published": 0,
+          "raise": "b-1",
+          "settled": [
+            "a-1",
+            "b-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_terminal_failure_neither_counts_nor_resets_the_outage",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "code": "codec",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "c-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "store",
+        "id": "c-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "d-1",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_taken_dead_letter_neither_counts_nor_resets_the_outage",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "code": "codec",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "b-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "id": "c-1",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "store",
+        "id": "c-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "d-1",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 1,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [
+            "b-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 1,
+    "name": "a_fatal_failure_stops_at_once_uncounted_and_waits_nothing",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "in_progress",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "code": "bad_handle",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "id": "b-2",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "b-1",
+          "settled": [],
+          "wait": null
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 1
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "max_attempts": 0,
+    "name": "the_key_is_the_tenant_and_the_aggregate",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": "acme"
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": "globex"
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "a-2",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "a_command_without_an_aggregate_is_its_own_key",
+    "ops": [
+      {
+        "kind": "command",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": null,
+            "id": "cmd-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": null,
+            "id": "cmd-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "cmd-3",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "cmd-4",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "cmd-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "cmd-2",
+        "op": "admits",
+        "want": true
+      },
+      {
+        "code": "codec",
+        "id": "cmd-3",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "id": "cmd-4",
+        "op": "admits",
+        "want": false
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "cmd-1",
+          "settled": [],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "max_attempts": 0,
+    "name": "store_failures_grow_a_step_and_an_answer_starts_it_over",
+    "ops": [
+      {
+        "op": "store_failed",
+        "want": 0
+      },
+      {
+        "op": "store_failed",
+        "want": 1
+      },
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-2",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "id": "a-1",
+        "op": "published"
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 1,
+          "raise": null,
+          "settled": [
+            "a-1"
+          ],
+          "wait": null
+        }
+      },
+      {
+        "op": "store_failed",
+        "want": 2
+      },
+      {
+        "op": "store_answered"
+      },
+      {
+        "op": "store_failed",
+        "want": 0
+      }
+    ],
+    "sink": false
+  }
+]

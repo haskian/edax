@@ -26,7 +26,10 @@ pub struct Lineage {
 /// The lineage of a child of the message `parent_id` whose correlation is `parent_correlation_id`:
 /// the child's causation is the parent's id, and it inherits the parent's correlation.
 pub fn propagate(parent_id: &str, parent_correlation_id: &str) -> Lineage {
-    Lineage { correlation_id: parent_correlation_id.to_owned(), causation_id: parent_id.to_owned() }
+    Lineage {
+        correlation_id: parent_correlation_id.to_owned(),
+        causation_id: parent_id.to_owned(),
+    }
 }
 
 /// The lineage of a message with no parent message, given the ids the caller already holds (from an
@@ -46,7 +49,10 @@ pub fn originate(correlation_id: Option<&str>, causation_id: Option<&str>, fresh
     // `causation_id` does not suppress the fresh correlation id.
     let correlation_id = correlation_id.unwrap_or(fresh_id).to_owned();
     let causation_id = causation_id.map_or_else(|| correlation_id.clone(), str::to_owned);
-    Lineage { correlation_id, causation_id }
+    Lineage {
+        correlation_id,
+        causation_id,
+    }
 }
 
 #[cfg(test)]

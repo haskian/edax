@@ -37,7 +37,7 @@ The Kafka suites run on the Kafka-shaped fake in `tests/conftest.py`. Set `EDAX_
 ## Generated code
 
 `crates/edax-py/src/lib.rs` and `crates/edax-py/python/edax/_edax.pyi` are **alef-generated** from
-`edax-abi` — never hand-edit them. Change `crates/edax-abi/src/lib.rs` and run
+`edax-abi` — never hand-edit them. Change `crates/edax-abi/src/` and run
 `scripts/regenerate_binding.sh`: it runs `alef generate --lang python --clean` and refreshes the
 shipped stub. Plain `alef generate` is destructive here — see `alef.toml`. CI regenerates and fails on
 any diff in those two files, and runs `mypy.stubtest` against the built module
@@ -45,6 +45,11 @@ any diff in those two files, and runs `mypy.stubtest` against the built module
 `crates/edax-abi-py/Cargo.toml` at a path it hardcodes; that manifest is not a workspace member and
 is never built. The Python package under `python/edax/` **is** yours to edit; `src/lib.rs`, the stub
 and the `.alef/` scaffold are not.
+
+`edax-abi` has one module per kernel crate (`primitives.rs` for `edax-core`, then `event.rs`, `retry.rs`,
+`saga.rs`, `cqrs.rs`, `memory.rs`, `kafka.rs`, `redis.rs`), each declared with `mod` and re-exported with
+`pub use` from `lib.rs`, which keeps only the shared helpers. alef follows those declarations, but it
+fingerprints only the files `sources` in `alef.toml` lists: list a new module there too.
 
 ## Kernels are the source of truth
 
@@ -61,20 +66,34 @@ EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
 ```
 
-**One kernel crate per concern.** `edax-core` is primitives only — hash, backoff, clock, guid, the
-error taxonomy. `edax-event` is event-driven: local fan-out `partition`, codec, causation, staleness,
-dedup, sequence, upcast, and the orchestration decisions both SDKs make on the consume side: the
-retry and dead-letter policy (`Retries`, which every dispatcher and relay performs) and the saga
-step (`saga_admit`, `saga_write`, `saga_command_id`).
-`edax-cqrs` is both halves of its name: the command side's idempotency decision (the claimant's
-`outcome` and the winner's `settle`) *and* the read
-side's `filter` and `query`. Filter and query live together because the query evaluates the filter
-(`filter::resolve` and `value_cmp` are public for it) — never split them across crates.
+**One kernel crate per concern.** Each kernel's full scope, module by module, is the table at the top
+of its `docs/kernels/<crate>.md`; every other description lists the same module names.
+`edax-core` is primitives only: `hash` (with `payload_hash`, the one hash both idempotency guards bind),
+`key` (tenancy, the tenant key, the guard key), `backoff`,
+`clock`, `guid`, `version` (`next_version`), `names` (`closed_names!`, the one shape of a closed set
+of names) and `error` (the taxonomy). It also holds two Rust-only
+runtime helpers, `lock` and `TokenMint`, which no binding crosses and no golden vector pins.
+`edax-event` is event-driven: `message` (the messages, their `Payload` and the ordering key), `codec`,
+`causation`, `partition` (local fan-out), `staleness`, `idempotency` (the event guard's key and hash),
+`sequence` (and a save's `draft_batch`), `upcast`,
+and the orchestration decisions both SDKs make: `retry` (`Retries`, which every dispatcher performs, and
+`retry_step`), `drain` (the relay's `Drain`) and `saga` (`saga_admit`, `saga_write`, `saga_command_id`).
+`edax-cqrs` is both halves of its name: the command side's `canonical_json`, `command_hash`,
+`received_key`, `claim_key` and the idempotency `record` (the claimant's `outcome` and `replay`, the
+winner's `settle_failure`), the ledger fence every store applies (`complete_fence`, `release_fence`; Redis's
+Lua replays it from `idempotency_fence.json`), the host values `Decimal` and `Instant`, *and* the read side's `filter` and
+`query`. The `record` serves the event guard too: `edax-event` names the key and hash, `edax-cqrs` keeps
+the state machine. Filter and query live together because both read documents through one value model
+and one collation (the crate-private `value` and `collation` modules) — never split them across crates.
 
-**One kernel crate per technology.** A Kafka or Redis decision two SDKs must match (record key,
-header, media type, broker placement `partition_for`, offset watermark, ledger value layout, fence script) belongs in `edax-kafka` or
-`edax-redis` with a golden vector, never in the Python adapter. The adapter is the input and output
-(I/O) shell: it calls the client and the kernel, and decides nothing on its own.
+**One kernel crate per technology.** A Kafka or Redis decision two SDKs must match belongs in
+`edax-kafka` or `edax-redis` with a golden vector, never in the Python adapter. `edax-kafka` owns
+`record` (the record key, header, media-type route and dead-letter record), `partition`
+(`partition_for`), `offsets` (the offset watermark and the revoke) and `client` (`check_config`,
+`check_consumer`, `check_dead_sink`, `acks_warning` and `broker_error`).
+`edax-redis` owns `ledger` (the key, settings and their defaults, value layout, claim handle and reply outcomes) and
+`scripts` (the fence scripts and the reply verdict). The adapter is the input and output (I/O) shell: it
+calls the client and the kernel, and decides nothing on its own.
 
 `#[non_exhaustive]` goes on a kernel enum a host only *reads* — one whose new variant a host may
 refuse at runtime (`Format`, `Operator`). It stays **off** an enum whose every variant a host must
@@ -85,7 +104,7 @@ decide about, so a new one is a compile error in every SDK instead of a wildcard
 bare `String`, never a crate-local error enum — so the code (and with it the terminal / transient
 verdict) is the kernel's, not the caller's. Its `Display` is the wire form `"<code>: <message>"`. The
 Rust SDK re-exports it as `edax::Error`; the default verdict for a failure with no code is
-`edax_core::verdict(None)`, pinned by `error_wire.json`.
+`edax_core::is_terminal(None)`, pinned by `error_wire.json`.
 
 ## Binding responsibilities
 

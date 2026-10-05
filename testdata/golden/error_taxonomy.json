@@ -1,60 +1,70 @@
 [
   {
     "code": "concurrency",
+    "fatal": false,
     "message": "expected 3, stored 4",
     "terminal": false,
     "wire": "concurrency: expected 3, stored 4"
   },
   {
     "code": "codec",
+    "fatal": false,
     "message": "invalid type: string, expected u64",
     "terminal": true,
     "wire": "codec: invalid type: string, expected u64"
   },
   {
     "code": "store",
+    "fatal": false,
     "message": "connection to the event store was reset",
     "terminal": false,
     "wire": "store: connection to the event store was reset"
   },
   {
     "code": "payload_mismatch",
+    "fatal": false,
     "message": "acct-1-3",
     "terminal": true,
     "wire": "payload_mismatch: acct-1-3"
   },
   {
     "code": "in_progress",
+    "fatal": false,
     "message": "acct-1-3",
     "terminal": false,
     "wire": "in_progress: acct-1-3"
   },
   {
     "code": "cached_failure",
+    "fatal": false,
     "message": "codec: invalid type: string, expected u64",
     "terminal": true,
     "wire": "cached_failure: codec: invalid type: string, expected u64"
   },
   {
     "code": "handler_not_found",
+    "fatal": false,
     "message": "Deposit",
     "terminal": true,
     "wire": "handler_not_found: Deposit"
   },
   {
     "code": "already_registered",
+    "fatal": false,
     "message": "Deposit",
     "terminal": true,
     "wire": "already_registered: Deposit"
   },
   {
     "code": "bad_handle",
+    "fatal": true,
     "message": "unknown transaction 7: not begun, or already committed or rolled back",
     "terminal": true,
     "wire": "bad_handle: unknown transaction 7: not begun, or already committed or rolled back"
   },
   {
     "code": "rejected",
+    "fatal": false,
     "message": "insufficient funds: balance 300, withdrawal 500",
     "terminal": true,
     "wire": "rejected: insufficient funds: balance 300, withdrawal 500"
