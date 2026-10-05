@@ -16,6 +16,7 @@ from .command import IdempotencyStore, _compose, _Guard, _guarded
 from .errors import AlreadyRegistered
 from .observe import Observer, _wrap
 from .store import Transactor
+from .tenancy import Tenancy
 
 __all__ = [
     "EventHandler",
@@ -69,12 +70,23 @@ def idempotent_by_id(
     store: IdempotencyStore,
     unit_of_work: Transactor | None = None,
     *,
+    scope: str,
+    tenancy: Tenancy,
     observer: Observer | None = None,
 ) -> EventMiddleware:
     """Run a handler at most once per event ``id``, so a broker redelivery does not repeat its side effect.
     Composes anywhere a handler is accepted. The key and the hash are the kernel's rule
-    (``testdata/golden/event_idempotency.json``): ``msg.id``, and FNV-1a over the raw ``msg.data``
-    bytes. Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.store.current_tx`, which
+    (``testdata/golden/event_idempotency.json``): ``msg.id`` under ``scope``, and FNV-1a over the raw
+    ``msg.data`` bytes.
+
+    ``scope`` names this consumer, usually the read model or the side effect it guards: ``"balances"``,
+    ``"receipts"``. Each consumer keeps its own record of the events it handled, so two consumers guarding
+    over one ledger each run their handler once, instead of the second skipping what the first did.
+    ``tenancy`` is how the deployment separates tenants, as on :func:`~edax.command.idempotent`. Under
+    :attr:`~edax.tenancy.Tenancy.POOL` the key carries the event's ``tenant``. Under a pool or a bridge,
+    an event that names no tenant raises :class:`~edax.errors.CodecError` before any claim.
+
+    Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.store.current_tx`, which
     exists only if the host opened it outside this guard: a dispatcher worker has none. ``unit_of_work``
     closes that gap, so a failure of the commit releases the claim.
 
@@ -87,12 +99,16 @@ def idempotent_by_id(
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
     :meth:`~edax.observe.Observer.settled` for every won one; ``None`` is the no-op observer."""
+    if not isinstance(scope, str):
+        raise TypeError(
+            f"idempotent_by_id(scope=...) names the consumer and must be a str, got {type(scope).__name__}"
+        )
     observe = _wrap(observer)
 
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(msg: EventMessage) -> None:
             with errors.mapped():
-                rule = _edax.event_idempotency(msg)
+                rule = _edax.event_idempotency(msg, tenancy.value, scope)
             guard = _Guard(store, msg.name, rule.key, rule.payload_hash, observe)
             await _guarded(guard, lambda: maybe_await(next_(msg)), unit_of_work)
 

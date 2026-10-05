@@ -36,7 +36,7 @@ async def test_reload_via_snapshot() -> None:
 async def test_load_pure_replay_no_snapshot() -> None:
     store, repo = _repo()
     # Seed events through the real store's append (no snapshot) so load() must pure-replay.
-    async with store.transaction() as tx:
+    async with store.begin() as tx:
         await store.append(
             tx,
             "acct-3",
@@ -149,8 +149,8 @@ class CommitFailsEventStore(MemoryEventStore):
     Stands in for a database that accepted every statement and then lost the transaction."""
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[Any]:
-        async with super().transaction() as tx:
+    async def begin(self) -> AsyncIterator[Any]:
+        async with super().begin() as tx:
             yield tx
             # Raised inside the block, so the real transactor rolls back before this propagates.
             raise edax.StoreError("commit failed; nothing landed")
@@ -183,7 +183,7 @@ async def test_save_in_a_callers_transaction_resets_before_the_caller_commits() 
     agg.apply(Tick(7))
 
     with pytest.raises(edax.StoreError):
-        async with store.transaction() as tx:
+        async with store.begin() as tx:
             await repo.save(agg, tx=tx)
             assert agg.pending == [], "the reset happens as soon as the store accepts the writes"
             raise edax.StoreError("a later write in the same unit of work failed")
@@ -216,7 +216,7 @@ class ScriptedStore:
         self._events = events
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
+    async def begin(self) -> AsyncIterator[None]:
         yield None
 
     async def load_snapshot(self, tx: Any, aggregate_id: str) -> edax.Snapshot | None:
@@ -752,7 +752,7 @@ async def test_a_store_that_fails_backs_the_drain_off_and_a_store_that_recovers_
     failed: list[str] = []
 
     class Failures(edax.Observer):
-        def drain_failed(self, error: BaseException) -> None:
+        def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
             failed.append(str(error))
 
     relay = edax.Relay(store, lambda env: None, observer=Failures())

@@ -133,7 +133,11 @@ async def test_golden_redis_fence(ledger: Ledger) -> None:
         ("ttl_past_the_largest_exact_integer", {"ttl_ms": 2**53}, "from 1 to 9007199254740991"),
         ("zero_deadline", {"op_timeout_ms": 0}, "a deadline must be positive"),
         ("float_deadline", {"op_timeout_ms": 1.5}, "op_timeout_ms must be a whole number"),
-        ("heartbeat_on_a_claim_ttl_too_short_to_divide", {"heartbeat": True, "claim_ttl_ms": 2}, "needs 3"),
+        (
+            "heartbeat_whose_deadline_is_a_third_of_the_claim_ttl",
+            {"heartbeat": True, "claim_ttl_ms": 15_000, "op_timeout_ms": 5_000},
+            "op_timeout_ms is under 1/3 of claim_ttl_ms",
+        ),
     ],
 )
 def test_a_misconfigured_store_is_refused_when_built(
@@ -239,7 +243,7 @@ async def test_claim_of_an_unreadable_value_replays_a_cached_codec_failure(
         nonlocal runs
         runs += 1
 
-    bus = CommandBus(idempotent(ledger.store(), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Charge", handler)
     # `Charge("k1")` hashes to neither 42 nor HASH: a stored hash that reads makes it a reused key.
     replay = edax.PayloadMismatch if want_hash == HASH else edax.CachedFailure
@@ -460,7 +464,7 @@ async def test_two_dispatches_on_one_bus_settle_only_the_live_claim(
                 await a_finished.wait()
         return f"charged by {me}"
 
-    bus = CommandBus(idempotent(store, scope="test"))
+    bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
 
     first = asyncio.create_task(bus.dispatch(Charge("req-1"), idempotency_key="req-1"))
@@ -519,7 +523,7 @@ async def test_a_claim_whose_reply_was_lost_and_resent_is_won(ledger: Ledger) ->
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
     assert runs == ["req-1"] and not conn.armed
@@ -550,7 +554,7 @@ async def test_a_complete_whose_reply_was_lost_keeps_the_record(ledger: Ledger, 
         runs.append(cmd.request_id)
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     if resend:
         assert await bus.dispatch(Charge("req-1"), idempotency_key="req-1") == "charged"
@@ -575,7 +579,7 @@ async def test_a_release_whose_reply_was_lost_still_frees_the_key(ledger: Ledger
             raise RuntimeError("downstream timed out")
         return "charged"
 
-    bus = CommandBus(idempotent(ledger.store(conn), scope="test"))
+    bus = CommandBus(idempotent(ledger.store(conn), scope="test", tenancy=edax.Tenancy.SILO))
     bus.register(Charge.type, handler)
     with pytest.raises(RuntimeError, match="downstream timed out"):
         await bus.dispatch(Charge("req-1"), idempotency_key="req-1")
@@ -702,11 +706,13 @@ async def test_each_script_is_registered_once_and_sent_by_digest(ledger: Ledger)
 
 
 class Beats:
-    """The heartbeat's sleep, stepped by the test: the renewal parks here, and :meth:`beat` lets it run
-    one renewal and waits until it parks again or ends. No wall clock is involved."""
+    """The heartbeat's sleep and clock, stepped by the test: the renewal parks here, and :meth:`beat` lets
+    it run one renewal and waits until it parks again or ends. A sleep moves :attr:`now` by what it
+    asked. No wall clock is involved."""
 
     def __init__(self) -> None:
         self.asked: list[float] = []
+        self.now = 0.0
         self._go = asyncio.Event()
         self._parked = asyncio.Event()
 
@@ -715,6 +721,10 @@ class Beats:
         self._parked.set()
         await self._go.wait()
         self._go.clear()
+        self.now += seconds
+
+    def clock(self) -> float:
+        return self.now
 
     async def beat(self, task: asyncio.Task[None]) -> None:
         await self._parked.wait()
@@ -725,9 +735,15 @@ class Beats:
         parked.cancel()
 
 
-def heartbeat_store(ledger: Ledger, conn: Any | None = None) -> tuple[RedisIdempotencyStore, Beats]:
-    beats = Beats()
-    return ledger.store(conn, heartbeat=True, sleep=beats.sleep), beats
+def heartbeat_store(
+    ledger: Ledger, conn: Any | None = None, beats: Beats | None = None
+) -> tuple[RedisIdempotencyStore, Beats]:
+    beats = beats or Beats()
+    # The kernel refuses a heartbeat whose deadline is a third of the claim TTL or more.
+    store = ledger.store(
+        conn, heartbeat=True, op_timeout_ms=CLAIM_TTL_MS // 4, sleep=beats.sleep, clock=beats.clock
+    )
+    return store, beats
 
 
 async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> None:
@@ -745,22 +761,91 @@ async def test_a_heartbeat_renews_the_claim_until_it_settles(ledger: Ledger) -> 
     assert task.cancelled() and store._renewals == {}, "settling stops the renewal"
 
 
-@pytest.mark.parametrize("settle", ["release", "refused_complete"])
-async def test_every_settlement_stops_the_heartbeat(ledger: Ledger, settle: str) -> None:
-    """A renewal that outlived its settlement would hold a key nobody settles: every settle path stops it,
-    a refused one included."""
-    store, _ = heartbeat_store(ledger)
+class _SlowReply:
+    """A connection whose every reply comes ``delay_s`` late on the test's clock, after the write landed."""
+
+    def __init__(self, inner: AsyncRedisClient, beats: Beats, delay_s: float) -> None:
+        self._inner = inner
+        self._beats = beats
+        self._delay_s = delay_s
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        result = await self._inner.eval(script, keys, args)
+        self._beats.now += self._delay_s
+        return result
+
+
+async def test_a_slow_reply_does_not_delay_the_next_beat(ledger: Ledger) -> None:
+    """Beats keep a fixed cadence from the claim's send: a beat timed from a late reply, followed by one
+    that stalls, would be sent after the lease it renews had lapsed."""
+    beats = Beats()
+    third_s = CLAIM_TTL_MS / 3000
+    store, _ = heartbeat_store(ledger, _SlowReply(ledger.conn(), beats, 0.9 * third_s), beats)
     won = await store.claim("k", HASH)
     assert isinstance(won, Won)
     task = store._renewals[won.handle]
-    if settle == "release":
-        await store.release("k", won.handle)
-    else:
+    for _ in range(2):
+        await beats.beat(task)
+    assert beats.asked == pytest.approx([0.1 * third_s] * 3), "each beat waits only for the rest of its slot"
+    await store.release("k", won.handle)
+
+
+class _LateReply:
+    """A connection whose ``script`` call lands on the server at once and replies only when ``reply`` is
+    set, the way a slow network returns a write that already happened."""
+
+    def __init__(self, inner: AsyncRedisClient, script: str) -> None:
+        self._inner = inner
+        self._script = script
+        self.landed = asyncio.Event()
+        self.reply = asyncio.Event()
+
+    async def eval(self, script: str, keys: Any, args: Any) -> Any:
+        result = await self._inner.eval(script, keys, args)
+        if script == self._script:
+            self.landed.set()
+            await self.reply.wait()
+        return result
+
+
+@pytest.mark.parametrize(
+    "settle, late",
+    [
+        pytest.param("release", False, id="release"),
+        pytest.param("refused_complete", False, id="refused_complete"),
+        pytest.param("complete", True, id="complete_replying_late"),
+        pytest.param("release", True, id="release_replying_late"),
+    ],
+)
+async def test_every_settlement_stops_the_heartbeat(
+    ledger: Ledger, caplog: pytest.LogCaptureFixture, settle: str, late: bool
+) -> None:
+    """A renewal that outlived its settlement would hold a key nobody settles: every settle path stops it,
+    a refused one included. It stops before the settling call, so a beat due while that call's reply is
+    late never finds the settled key and reports a claim lost that was not."""
+    gate = _LateReply(ledger.conn(), SCRIPTS[settle]) if late else None
+    store, beats = heartbeat_store(ledger, gate)
+    won = await store.claim("k", HASH)
+    assert isinstance(won, Won)
+    task = store._renewals[won.handle]
+    if settle == "refused_complete":
         await ledger.lapse("k")
         with pytest.raises(edax.StoreError, match="taken over"):
             await store.complete("k", won.handle, RECORD)
+    else:
+        call = (
+            store.release("k", won.handle) if settle == "release" else store.complete("k", won.handle, RECORD)
+        )
+        settling = asyncio.ensure_future(call)
+        if gate is not None:
+            await gate.landed.wait()
+            with caplog.at_level(logging.WARNING, logger="edax.backend.redis"):
+                await beats.beat(task)  # the beat that comes due while the reply is on its way
+            gate.reply.set()
+        await settling
     await asyncio.sleep(0)
     assert task.cancelled() and store._renewals == {}
+    assert "was lost before it settled" not in caplog.text
 
 
 async def test_a_heartbeat_that_finds_its_claim_taken_over_stops(

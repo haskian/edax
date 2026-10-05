@@ -40,12 +40,12 @@ class ProjectionStore(Protocol):
       auto-commit.
     - *Reads.* ``get`` returns the current committed row plus the ``tx``'s own writes, or ``None``.
     - *Queries (optional).* A conforming ``get_many`` pages identically to the kernel: the filter operators'
-      semantics, the fixed total order over JSON types with stable multi-key sort, keyset resume strictly
-      after the cursor tuple, and a :class:`~edax.query.Page` whose ``next`` is minted with
-      :func:`~edax.query.encode_cursor` from the last row when more rows follow. Read ``after`` with
+      semantics, the decimal collation, the fixed total order over JSON types with stable multi-key sort,
+      keyset resume strictly after the cursor tuple, and a :class:`~edax.query.Page` whose ``next`` is minted
+      with :func:`~edax.query.encode_cursor` from the last row when more rows follow. Read ``after`` with
       :func:`~edax.query.decode_cursor`, which refuses a cursor minted under another sort. Documents need a
-      unique ``"id"`` field. A backend may instead treat the spec as its own dialect, and then cursors are
-      not portable across services.
+      unique ``"id"`` field. A backend may instead treat the spec as its own dialect, and then cursors are not
+      portable across services.
     - *Errors.* :class:`~edax.errors.ConcurrencyError` only for a version mismatch, else ``StoreError``.
     """
 

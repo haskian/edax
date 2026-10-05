@@ -198,7 +198,7 @@
       "sequence": 1
     },
     "want": {
-      "repeat": true
+      "below_mark": true
     }
   },
   {
@@ -229,7 +229,7 @@
     "admit": {
       "aggregate_id": "order-7",
       "completed": false,
-      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-u",
       "sequence": null
     },
@@ -241,12 +241,12 @@
     "admit": {
       "aggregate_id": "order-7",
       "completed": false,
-      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-v",
       "sequence": null
     },
     "want": {
-      "folded": "{\"order-7\":{\"id\":\"evt-v\"}}"
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-v\"}}"
     }
   },
   {
@@ -258,7 +258,31 @@
       "sequence": null
     },
     "want": {
-      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-v\"}}"
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}",
+      "id": "evt-2",
+      "sequence": 2
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"sequence\":2,\"id\":\"evt-2\",\"unsequenced\":\"evt-v\"}}",
+      "id": "evt-v",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
     }
   },
   {
@@ -277,12 +301,12 @@
     "admit": {
       "aggregate_id": "order-7",
       "completed": false,
-      "folded": "{\"order-7\":{\"id\":\"evt-u\"}}",
+      "folded": "{\"order-7\":{\"unsequenced\":\"evt-u\"}}",
       "id": "evt-3",
       "sequence": 3
     },
     "want": {
-      "folded": "{\"order-7\":{\"sequence\":3,\"id\":\"evt-3\"}}"
+      "folded": "{\"order-7\":{\"sequence\":3,\"id\":\"evt-3\",\"unsequenced\":\"evt-u\"}}"
     }
   },
   {
@@ -307,6 +331,58 @@
     },
     "want": {
       "error": "codec: saga folded marks \"[1]\": invalid type: sequence, expected a map at line 1 column 0"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\"]}}",
+      "id": "order-7:2:1:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}"
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"failed\":[\"order-7:2:0:failed\",\"order-7:2:1:failed\"]}}",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
+    }
+  },
+  {
+    "admit": {
+      "aggregate_id": "order-7",
+      "completed": false,
+      "folded": "{\"order-7\":{\"unsequenced\":\"order-7:2:0:failed\"}}",
+      "id": "order-7:2:0:failed",
+      "name": "SagaCommandFailed",
+      "sequence": null
+    },
+    "want": {
+      "repeat": true
     }
   },
   {
@@ -384,6 +460,102 @@
       "name": "Fulfill",
       "tenant": "acme",
       "version": 2
+    }
+  },
+  {
+    "saga_command_failed": {
+      "code": "rejected",
+      "command": {
+        "aggregate_id": "4:acme:order-7",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "extensions": {},
+        "id": "4:acme:order-7:4:1",
+        "idempotency_key": "8:shipping:4:acme:order-7:4:1",
+        "issued_at": 1700000000000000001,
+        "metadata": {},
+        "name": "Fulfill",
+        "tenant": "acme",
+        "version": 2
+      },
+      "error": "out of stock",
+      "recorded_at": 1700000000000000002
+    },
+    "want": {
+      "aggregate_id": "4:acme:order-7",
+      "causation_id": "4:acme:order-7:4:1",
+      "correlation_id": "corr-1",
+      "data": "eyJjb21tYW5kX2lkIjoiNDphY21lOm9yZGVyLTc6NDoxIiwiY29tbWFuZCI6IkZ1bGZpbGwiLCJjb2RlIjoicmVqZWN0ZWQiLCJlcnJvciI6Im91dCBvZiBzdG9jayJ9",
+      "extensions": {},
+      "id": "4:acme:order-7:4:1:failed",
+      "metadata": {},
+      "name": "SagaCommandFailed",
+      "occurred_at": null,
+      "recorded_at": 1700000000000000002,
+      "sequence": null,
+      "tenant": "acme",
+      "version": 1
+    }
+  },
+  {
+    "saga_command_failed": {
+      "code": null,
+      "command": {
+        "aggregate_id": "4:acme:order-7",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "extensions": {},
+        "id": "4:acme:order-7:4:1",
+        "idempotency_key": "8:shipping:4:acme:order-7:4:1",
+        "issued_at": 1700000000000000001,
+        "metadata": {},
+        "name": "Fulfill",
+        "tenant": "acme",
+        "version": 2
+      },
+      "error": "warehouse API timed out",
+      "recorded_at": 1700000000000000002
+    },
+    "want": {
+      "aggregate_id": "4:acme:order-7",
+      "causation_id": "4:acme:order-7:4:1",
+      "correlation_id": "corr-1",
+      "data": "eyJjb21tYW5kX2lkIjoiNDphY21lOm9yZGVyLTc6NDoxIiwiY29tbWFuZCI6IkZ1bGZpbGwiLCJjb2RlIjpudWxsLCJlcnJvciI6IndhcmVob3VzZSBBUEkgdGltZWQgb3V0In0=",
+      "extensions": {},
+      "id": "4:acme:order-7:4:1:failed",
+      "metadata": {},
+      "name": "SagaCommandFailed",
+      "occurred_at": null,
+      "recorded_at": 1700000000000000002,
+      "sequence": null,
+      "tenant": "acme",
+      "version": 1
+    }
+  },
+  {
+    "saga_command_failed": {
+      "code": "rejected",
+      "command": {
+        "aggregate_id": null,
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "extensions": {},
+        "id": "4:acme:order-7:4:1",
+        "idempotency_key": "8:shipping:4:acme:order-7:4:1",
+        "issued_at": 1700000000000000001,
+        "metadata": {},
+        "name": "Fulfill",
+        "tenant": "acme",
+        "version": 2
+      },
+      "error": "out of stock",
+      "recorded_at": 1700000000000000002
+    },
+    "want": {
+      "error": "codec: command \"4:acme:order-7:4:1\" names no saga instance"
     }
   }
 ]

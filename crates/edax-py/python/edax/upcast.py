@@ -12,22 +12,16 @@ from .errors import AlreadyRegistered
 Upcast = Callable[[bytes], bytes]
 
 
-def schema_version(version: int, what: str = "version") -> int:
+def schema_version(version: int, what: str = "schema version") -> int:
     """``version`` if it is a schema version the kernel can carry (an unsigned 32-bit integer). A negative or
     oversized one raises :class:`ValueError`, and a non-integer :class:`TypeError`, at wiring time: the
     same value would fail every message it stamps."""
-    if isinstance(version, bool) or not isinstance(version, int):
-        raise TypeError(f"{what} must be an int schema version, got {type(version).__name__}")
-    try:
-        # The binding's own conversion is the range check, so the width is not restated here.
-        _edax.Event("", version, b"")
-    except OverflowError as e:
-        raise ValueError(f"{what} must be an unsigned 32-bit schema version, got {version}") from e
-    return version
+    return errors._wiring_u32(version, what)
 
 
 class Upcaster:
-    """Registry of ``version -> version+1`` transforms for one event type."""
+    """Registry of ``version -> version+1`` transforms for one event type. The type's schema version is
+    one past its highest step: to bump a type whose shape did not change, register an identity step."""
 
     def __init__(self) -> None:
         self._steps: dict[int, Upcast] = {}
@@ -37,7 +31,7 @@ class Upcaster:
         transform for one version raises :class:`~edax.errors.AlreadyRegistered`: keeping either one
         silently would run a migration nobody chose. A ``version`` that is not a schema version raises
         :class:`ValueError` (negative or too large) or :class:`TypeError` (not an int)."""
-        schema_version(version, "upcast step")
+        schema_version(version, "upcast step version")
         if version in self._steps:
             raise AlreadyRegistered(f"upcast step {version} is registered twice")
         self._steps[version] = fn
@@ -48,6 +42,15 @@ class Upcaster:
         :class:`~edax.errors.CodecError` on a missing step or when ``from_ > to``; both are deterministic,
         so a redelivery must dead-letter rather than retry."""
         return upcast(self, data, from_=from_, to=to)
+
+
+def target(upcaster: Upcaster | None) -> int:
+    """The schema version an event name with ``upcaster`` writes and raises older payloads to: one past
+    its highest step, or the first version (1) when it has none. A hole in the steps raises
+    :class:`~edax.errors.CodecError`, since a payload stored at the missing version could never be
+    raised. Pinned by ``testdata/golden/upcast.json``."""
+    with errors.mapped():
+        return _edax.upcast_target(None if upcaster is None else list(upcaster._steps))
 
 
 def upcast(upcaster: Upcaster | None, data: bytes, *, from_: int, to: int) -> bytes:

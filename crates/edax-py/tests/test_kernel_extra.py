@@ -126,6 +126,13 @@ def test_golden_upcast() -> None:
             assert f"{mapped.value.code}: {mapped.value}" == c["error"], c
         else:
             assert edax.upcast_plan(c["from"], c["to"], c["available"]) == c["plan"], c
+        # The same steps decide the version a codec writes for the name.
+        if c["target_error"] is not None:
+            with pytest.raises(edax.CodecError) as mapped, edax.errors.mapped():
+                edax.upcast_target(c["available"])
+            assert f"{mapped.value.code}: {mapped.value}" == c["target_error"], c
+        else:
+            assert edax.upcast_target(c["available"]) == c["target"], c
 
 
 @pytest.mark.parametrize(
@@ -140,19 +147,16 @@ def test_golden_upcast() -> None:
 def test_a_schema_version_outside_u32_is_refused_at_wiring(
     branch: str, version: Any, want: type[Exception]
 ) -> None:
-    """A schema version is an unsigned 32-bit integer on the wire. A version outside it would fail every
-    event it stamps, so the registration refuses it, not the first marshal as a terminal CodecError."""
+    """A schema version is an unsigned 32-bit integer on the wire. A step outside it would fail every
+    event it raises, so the registration refuses it, not the first unmarshal as a terminal CodecError."""
     with pytest.raises(want):
         upcast.Upcaster().step(version, lambda d: d)
-    with pytest.raises(want):
-        edax.json_codec({"Opened": dict}, version=version)
-    with pytest.raises(want):
-        edax.msgpack_codec({"Opened": dict}, version=version)
 
 
 def test_the_u32_bounds_are_accepted() -> None:
     upcast.Upcaster().step(0, lambda d: d).step(2**32 - 1, lambda d: d)
-    assert edax.json_codec({"Opened": dict}, version=2**32 - 1).marshal({}).version == 2**32 - 1
+    last = {"Opened": upcast.Upcaster().step(2**32 - 2, lambda d: d)}
+    assert edax.json_codec({"Opened": dict}, upcasters=last).marshal({}).version == 2**32 - 1
 
 
 def test_a_second_transform_for_one_step_is_refused() -> None:
@@ -409,26 +413,27 @@ GAPPED_STEP = {"Withdrawn": upcast.Upcaster().step(2, _default_currency)}  # no 
 
 
 @pytest.mark.parametrize(
-    "branch, factory, event, want_error",
+    "branch, factory, event, want_version, want_error",
     [
-        ("registered_type_json", json_codec, DEPOSITED, None),
-        ("registered_type_msgpack", msgpack_codec, WITHDRAWN, None),
+        # Deposited has a one-step upcaster, so it writes v2; Withdrawn has none, so it writes v1.
+        ("registered_type_with_an_upcaster_json", json_codec, DEPOSITED, 2, None),
+        ("registered_type_without_an_upcaster_msgpack", msgpack_codec, WITHDRAWN, 1, None),
         # Terminal, not a bare KeyError: retrying an unregistered type just repeats it.
-        ("unregistered_type", json_codec, Tick(7), "no event name registered for Tick"),
-        ("unencodable_payload", json_codec, Noted("acct-1", object()), "encoding Noted"),
+        ("unregistered_type", json_codec, Tick(7), None, "no event name registered for Tick"),
+        ("unencodable_payload", json_codec, Noted("acct-1", object()), None, "encoding Noted"),
     ],
 )
 def test_marshal_branches(
-    branch: str, factory: Callable[..., Any], event: Any, want_error: str | None
+    branch: str, factory: Callable[..., Any], event: Any, want_version: int | None, want_error: str | None
 ) -> None:
-    codec = factory(REGISTRY, version=3)
+    codec = factory(REGISTRY, upcasters=CURRENCY_STEP)
     if want_error is not None:
         with pytest.raises(edax.CodecError, match=want_error) as caught:
             codec.marshal(event)
         assert caught.value.terminal is True
         return
     marshaled = codec.marshal(event)
-    assert (marshaled.name, marshaled.version) == (type(event).__name__, 3)
+    assert (marshaled.name, marshaled.version) == (type(event).__name__, want_version)
     assert codec.unmarshal(marshaled) == event  # the bytes are the event, whole
 
 
@@ -452,6 +457,21 @@ def test_marshal_branches(
             {"Deposted": upcast.Upcaster().step(1, _default_currency)},
             r"unknown event names: \['Deposted'\]",
         ),
+        # A hole in the chain: a payload stored at v2 could never be raised, so the codec is refused
+        # at startup rather than on the first v2 row.
+        (
+            "upcaster_with_a_hole",
+            REGISTRY,
+            {"Deposited": upcast.Upcaster().step(1, _default_currency).step(3, _default_currency)},
+            "the upcaster for 'Deposited': upcast steps skip v2",
+        ),
+        # The last step's output would have no schema version.
+        (
+            "upcaster_step_at_the_u32_ceiling",
+            REGISTRY,
+            {"Deposited": upcast.Upcaster().step(2**32 - 1, _default_currency)},
+            "upcast step 4294967295 raises past the largest schema version",
+        ),
     ],
 )
 def test_registry_is_validated_at_construction(
@@ -462,10 +482,10 @@ def test_registry_is_validated_at_construction(
 ) -> None:
     if want_error is not None:
         with pytest.raises(edax.EdaxError, match=want_error) as caught:
-            json_codec(events, version=3, upcasters=upcasters)
+            json_codec(events, upcasters=upcasters)
         assert caught.value.terminal is True, "a wiring mistake repeats on every retry"
         return
-    codec = json_codec(events, version=3, upcasters=upcasters)
+    codec = json_codec(events, upcasters=upcasters)
     assert codec.marshal(DEPOSITED).name == "Deposited"
 
 
@@ -492,9 +512,9 @@ def test_registry_is_validated_at_construction(
             Deposited("acct-1", 4200, "EUR", "2024-05-01T12:00:00Z"),
             None,
         ),
-        # No upcaster for this name: an older payload is decoded as-is, which only works while the
-        # shape has not changed.
-        ("older_version_without_upcaster", {}, "Withdrawn", 1, WITHDRAWN_V2, WITHDRAWN, None),
+        # No upcaster for this name, so it is at v1: an older payload is decoded as-is, which only works
+        # while the shape has not changed.
+        ("older_version_without_upcaster", {}, "Withdrawn", 0, WITHDRAWN_V2, WITHDRAWN, None),
         (
             "unknown_event_name",
             CURRENCY_STEP,
@@ -512,7 +532,7 @@ def test_registry_is_validated_at_construction(
             1,
             WITHDRAWN_V2,
             None,
-            "upcasting Withdrawn v1->v2",
+            "upcasting Withdrawn v1->v3",
         ),
         # Written by a newer deployment than this codec knows: the kernel rejects the backwards plan
         # rather than letting an unknown shape decode as if it were current.
@@ -534,7 +554,7 @@ def test_registry_is_validated_at_construction(
             5,
             WITHDRAWN_V2,
             None,
-            "cannot upcast downward: from 5 > to 2",
+            "cannot upcast downward: from 5 > to 1",
         ),
     ],
 )
@@ -547,7 +567,7 @@ def test_unmarshal_branches(
     want: Any,
     want_error: str | None,
 ) -> None:
-    codec = json_codec(REGISTRY, version=2, upcasters=upcasters)
+    codec = json_codec(REGISTRY, upcasters=upcasters)
     event = edax.Event(name, version, data)
     if want_error is not None:
         with pytest.raises(edax.CodecError, match=want_error) as caught:
@@ -555,6 +575,38 @@ def test_unmarshal_branches(
         assert caught.value.terminal is True  # a poison event dead-letters, it never loops
         return
     assert codec.unmarshal(event) == want
+
+
+def _withdrawal_currency(data: bytes) -> bytes:
+    """Withdrawn's own v1 -> v2 step: it gained `currency` later than Deposited did."""
+    d = json.loads(data)
+    d["currency"] = "GBP"
+    return json.dumps(d).encode()
+
+
+# Deposited changed shape at v2. Later only Withdrawn changes, so it gets a step of its own.
+BUMPED = {**CURRENCY_STEP, "Withdrawn": upcast.Upcaster().step(1, _withdrawal_currency)}
+WITHDRAWN_V1 = b'{"account_id":"acct-1","amount_cents":999,"occurred_at":"2024-05-02T09:30:00Z"}'
+
+
+@pytest.mark.parametrize(
+    "branch, name, version, data, want",
+    [
+        ("unchanged_name_reads_its_v2_row", "Deposited", 2, DEPOSITED_V2, Deposited("acct-1", 4200, "USD", "2024-05-01T12:00:00Z")),
+        ("unchanged_name_still_raises_its_v1_row", "Deposited", 1, DEPOSITED_V1, DEPOSITED),
+        ("bumped_name_raises_its_v1_row", "Withdrawn", 1, WITHDRAWN_V1, WITHDRAWN),
+        ("bumped_name_reads_its_v2_row", "Withdrawn", 2, WITHDRAWN_V2, WITHDRAWN),
+        ("name_without_an_upcaster_reads_its_v1_row", "Noted", 1, b'{"account_id":"acct-1","note":"hi"}', Noted("acct-1", "hi")),
+    ],
+)  # fmt: skip
+def test_bumping_one_name_moves_no_other(
+    branch: str, name: str, version: int, data: bytes, want: Any
+) -> None:
+    """Each name has its own schema version. Under one registry version, bumping Withdrawn to v3 made
+    Deposited's upcaster miss step 2, and its v1 and v2 rows failed as terminal CodecErrors."""
+    codec = json_codec(REGISTRY, upcasters=BUMPED)
+    assert [codec.marshal(e).version for e in (DEPOSITED, WITHDRAWN, Noted("acct-1", "hi"))] == [2, 2, 1]
+    assert codec.unmarshal(edax.Event(name, version, data)) == want
 
 
 # =========================================================================
@@ -579,7 +631,9 @@ CURSOR = "W3sicGF0aCI6ImJhbGFuY2VfY2VudHMifV0="
         # limit is tested against None, not truthiness: limit=0 is "an empty page", not "no limit".
         ("limit_zero_is_kept", {"limit": 0}, {"limit": 0}),
         ("after_set", {"sort": SORT, "after": CURSOR}, {"sort": SORT, "after": CURSOR}),
-        ("after_empty_is_omitted", {"after": ""}, {}),
+        # after is tested against None, not truthiness: "" (from `?after=`) reaches the kernel, which
+        # refuses it as it refuses it from every other binding.
+        ("after_empty_is_kept", {"after": ""}, {"after": ""}),
         (
             "every_field_set",
             {"filter": FILTER, "sort": SORT, "offset": 20, "limit": 50, "after": CURSOR},
@@ -742,7 +796,7 @@ def test_mapped_types_native_failures(
         ("lone_surrogate_wire", lambda: _edax.split_error("\ud800")),
         # Kernel refusals of a value's content.
         ("canonical_json_refuses_a_lone_surrogate_escape", lambda: _edax.canonical_json(b'{"s":"\\ud800"}')),
-        ("event_rule_takes_a_message", lambda: _edax.event_idempotency("evt-1")),  # ty: ignore[invalid-argument-type]
+        ("event_rule_takes_a_message", lambda: _edax.event_idempotency("evt-1", "silo", "test")),  # ty: ignore[invalid-argument-type]
     ],
 )
 def test_every_deterministic_boundary_failure_is_terminal(branch: str, call: Callable[[], Any]) -> None:

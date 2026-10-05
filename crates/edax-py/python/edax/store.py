@@ -20,7 +20,17 @@ from typing import Any, Generic, Protocol, TypeVar, cast
 from . import _edax, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._owned import ThreadBound
-from .aggregate import Aggregate, CommandMessage, Event, EventDraft, EventMessage, Lineage, Payload, Version
+from .aggregate import (
+    Aggregate,
+    CommandMessage,
+    Event,
+    EventDraft,
+    EventMessage,
+    Lineage,
+    Payload,
+    Version,
+    _replace,
+)
 from .causation import _stamp
 from .errors import BadHandle, ConcurrencyError, _carried_code
 from .observe import Observer, TransactionOutcome, _wrap
@@ -59,15 +69,18 @@ class Transactor(Protocol):
     :class:`~edax.command.IdempotencyStore`) are pure participants, so any number of them commit together.
     What a backend must guarantee:
 
-    - ``transaction()`` returns an async context manager: a clean exit commits, an exception rolls back and
+    - ``begin()`` returns an async context manager: a clean exit commits, an exception rolls back and
       re-raises, and nothing written through the yielded ``tx`` is visible elsewhere before commit.
+    - ``begin()`` is the backend's hook, which :func:`transaction` calls. A host opens every unit of work
+      with :func:`transaction`. A raw ``begin()`` publishes no :func:`current_tx`, so a participant given no
+      tx inside it would commit on its own, and the nesting guard below would not see it.
     - The yielded ``tx`` is one backend handle every participant store accepts, atomic as a set.
     - A participant handed the same ``tx`` reads its own uncommitted writes.
     - The SDK never nests: stores join the ambient :func:`current_tx` of their own transactor rather than
       open a second unit of work, so no savepoints are needed. A second :func:`transaction` on the same
       transactor raises :class:`~edax.errors.BadHandle` rather than opening one; a transactor over another
       database nests, and each store still sees only its own database's tx.
-    - *Identity.* The ambient tx is keyed by transactor. An object whose ``transaction()`` only delegates to
+    - *Identity.* The ambient tx is keyed by transactor. An object whose ``begin()`` only delegates to
       another transactor (an :class:`EventStore` over a shared pool, say) names that transactor as its
       ``transactor`` attribute, so ``transaction(store)`` and ``transaction(store.transactor)`` open the same
       unit of work and every store over the pool finds it.
@@ -76,8 +89,9 @@ class Transactor(Protocol):
     :class:`~edax.backend.memory.MemoryTransactor` implements it, so a test can assert a raise left
     nothing behind."""
 
-    def transaction(self) -> AbstractAsyncContextManager[Tx]:
-        """A unit of work: commit on clean exit, roll back if the body raises."""
+    def begin(self) -> AbstractAsyncContextManager[Tx]:
+        """The backend's unit of work: commit on clean exit, roll back if the body raises. Open it through
+        :func:`transaction`, never directly."""
         ...
 
 
@@ -142,7 +156,7 @@ async def _transaction(transactor: Transactor, observe: Observer) -> AsyncIterat
     started = perf_counter_ns()
     outcome: TransactionOutcome = "rolled_back"
     try:
-        async with transactor.transaction() as tx:
+        async with transactor.begin() as tx:
             token = _ambient.set({**open_now, database: tx})
             try:
                 yield tx
@@ -223,6 +237,11 @@ class EventStore(Protocol):
     transactional outbox, all under one transaction so state and to-publish rows land together.
     What a backend must guarantee; worked examples in ``docs/backends/README.md``.
 
+    - *Stream key.* ``append``, ``load`` and ``load_snapshot`` name the stream by their ``aggregate_id``
+      argument, and ``save_snapshot`` by the snapshot's ``aggregate_id``: never by a draft's own
+      ``aggregate_id``. Under :attr:`~edax.tenancy.Tenancy.POOL` the repository passes the id composed with
+      the tenant, while every draft keeps the bare id. A store keying its rows by the draft merges two
+      tenants' same-named aggregates into one stream.
     - *Versions.* An aggregate's version is the ``sequence`` of its last stored event, ``0`` for an empty
       stream. ``Repository`` assigns ``sequence = expected_version + 1 .. + n``; a store never renumbers.
     - *Optimistic concurrency.* ``append`` succeeds only if the stored version equals ``expected_version``,
@@ -261,8 +280,8 @@ class EventStore(Protocol):
       :class:`~edax.errors.StoreError`, or :class:`~edax.errors.CodecError` for a marshal failure. Called
       from one asyncio loop; no thread safety required."""
 
-    def transaction(self) -> AbstractAsyncContextManager[Tx]:
-        """A unit of work: commit on clean exit, roll back if the body raises."""
+    def begin(self) -> AbstractAsyncContextManager[Tx]:
+        """The :class:`Transactor` hook: open units of work through :func:`transaction`."""
         ...
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
@@ -469,7 +488,9 @@ class Repository(Generic[A]):
         ``commands`` go to the repository's :class:`CommandOutbox` in the same transaction as the events,
         so a command is sent only if the events it follows from landed. Build each with
         :func:`~edax.command.command_message`. A repository built without an outbox raises
-        :class:`TypeError` before anything is written.
+        :class:`TypeError` before anything is written. Each command belongs to the aggregate's tenant, as
+        its events do: one that names no tenant is stored with the aggregate's, and one that names another
+        raises :class:`~edax.errors.CodecError` before anything is written.
 
         Every event of one save shares one ``lineage``: the one given, else the ambient
         :func:`~edax.causation.current_lineage` of the message being handled, else a new flow.
@@ -510,16 +531,33 @@ class Repository(Generic[A]):
                 )
                 for i, event in enumerate(events, start=1)
             ]
+        owned = [_owned_by(command, tenant) for command in commands or ()]
         async with self._enlist(tx) as tx:
             stored = await self._store.append(tx, key, initial, drafts)
-            if commands and self._commands is not None:
-                await self._commands.enqueue(tx, commands)
+            if owned and self._commands is not None:
+                await self._commands.enqueue(tx, owned)
             if _edax.snapshot_due(self._snapshot_every, initial, current):
                 snapshot = Snapshot(key, self._aggregates.type, current, self._aggregates.dump(aggregate))
                 await self._store.save_snapshot(tx, snapshot)
         aggregate.pending.clear()
         aggregate.version = Version(current)
         return stored
+
+
+def _owned_by(command: CommandMessage, tenant: str | None) -> CommandMessage:
+    """``command`` as a save of ``tenant``'s aggregate sends it. A command that names no tenant takes the
+    aggregate's, so the relay keys it and the bus claims it inside that tenant, where the events it
+    follows from already are. One that names another tenant is refused: a save cannot move a command
+    across tenants the load never named."""
+    if command.tenant == tenant:
+        return command
+    if command.tenant is None:
+        stamped: CommandMessage = _replace(command, tenant=tenant)
+        return stamped
+    raise errors.CodecError(
+        f"command {command.id} names tenant {command.tenant!r}, "
+        f"but it is saved with an aggregate of tenant {tenant!r}"
+    )
 
 
 Publish = Callable[[Any], MaybeAwaitable[None]]
@@ -565,8 +603,9 @@ class Relay:
     Two relays over one store need ``unpublished`` to lease the rows it returns.
 
     Every completed drain is reported to ``observer`` (:meth:`~edax.observe.Observer.drain`) and kept in
-    :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed` and
-    leaves :attr:`last` as it was."""
+    :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed`, with
+    the rows it published and dead-lettered before the failure, and leaves :attr:`last` as it was.
+    A ``max_attempts`` the kernel cannot carry raises :class:`ValueError` at construction."""
 
     def __init__(
         self,
@@ -583,9 +622,7 @@ class Relay:
         self._observer = _wrap(observer)
         self._on_dead = on_dead
         self._pacing = pacing or Pacing()
-        # The kernel's retry policy, built on first use on the loop's thread: the native handle is bound
-        # to the thread that builds it, and a relay may be built on another.
-        self._retries = ThreadBound.lazy(lambda: _edax.retries(max_attempts, on_dead is not None), "Relay")
+        self._retries = _retry_policy(max_attempts, on_dead is not None, "Relay")
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
@@ -600,6 +637,8 @@ class Relay:
         on one relay are serialized, not overlapped."""
         async with self._draining:
             started = perf_counter_ns()
+            # What the drain did before a store failure, so `drain_failed` loses none of it.
+            published = dead = 0
             try:
                 rows = await self._store.unpublished(batch)
                 settled, published, dead, failure = await self._publish_in_order(rows)
@@ -608,19 +647,19 @@ class Relay:
             except Exception as e:
                 # The store failed, not a row. Reported so a stuck relay is a counter, not only a log line
                 # at the caller, and waited out with a step that grows while the store stays down.
-                self._observer.drain_failed(e)
+                self._observer.drain_failed(e, published, dead)
                 await self._pacing.wait(self._store_failures)
                 self._store_failures += 1
                 raise
             self._store_failures = 0
             if failure is not None:
                 step, error = failure
-                self._observer.drain_failed(error)
+                self._observer.drain_failed(error, published, dead)
                 await self._pacing.wait(step)
                 raise error
             oldest = min((t for row in rows if (t := _written_at(row)) is not None), default=None)
-            self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
-            self._observer.drain(self.last.published, self.last.duration_ns, self.last.oldest_timestamp)
+            last = self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
+            self._observer.drain(last.published, last.dead_lettered, last.duration_ns, last.oldest_timestamp)
             return published + dead
 
     async def run(self, *, idle_s: float = 1.0, stop: asyncio.Event | None = None, batch: int = 100) -> None:
@@ -681,6 +720,17 @@ def _written_at(row: object) -> int | None:
     if isinstance(row, CommandMessage):
         return row.issued_at
     return None
+
+
+def _retry_policy(max_attempts: int, sink: bool, what: str) -> ThreadBound[_edax.Retries]:
+    """The kernel's retry and dead-letter policy of a :class:`Relay` or a
+    :class:`~edax.dispatcher.KeyOrderedDispatcher`, built on first use on the loop's thread: the native
+    handle is bound to the thread that builds it, and its owner may be built on another. A
+    ``max_attempts`` the kernel cannot carry raises :class:`ValueError` (negative or too large) or
+    :class:`TypeError` (not an int) here, at wiring time. Built lazily, it would fail the first message
+    and leave it unsettled, which pins a log partition."""
+    errors._wiring_u32(max_attempts, f"{what} max_attempts")
+    return ThreadBound.lazy(lambda: _edax.retries(max_attempts, sink), what)
 
 
 async def _dead_letter(

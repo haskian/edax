@@ -51,7 +51,7 @@ package pulls in no broker or database library. See [backends](../backends/READM
 ```mermaid
 classDiagram
     class Transactor {
-        +transaction() context
+        +begin() context
     }
     class EventStore {
         +load(tx, aggregate_id, after)

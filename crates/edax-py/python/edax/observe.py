@@ -16,11 +16,13 @@ terminality); this module only names the labels. When the Rust SDK grows a secon
 table moves verbatim to a data-only golden file.
 
 **Cardinality rule.** A metric adapter must label only by ``name`` / ``outcome`` / ``verdict`` /
-``how`` / ``error_type``. ``name`` is the command type or the event name a handler is registered
-under: the closed set the bus and the router know, so it is safe. Never label by ``key``,
-``event_id``, ``message_id`` or ``aggregate_id``: per-message ids are unbounded and belong on spans
-and logs only. The ``*_id`` arguments the :class:`Observer` receives exist for the log line, not the
-label set."""
+``how`` / ``error_type``. On the command bus ``name`` is the command type a handler is registered
+under: the closed set the bus knows. On the consume path it is the ``msg.name`` the producer wrote,
+read before any routing, so an unhandled name reaches the observer too. An adapter maps every name
+its router does not register to one fixed value. Never label by ``key``, ``event_id``,
+``message_id``, ``correlation_id`` or ``aggregate_id``: per-message ids are unbounded and belong on
+spans and logs only. The ``*_id`` arguments the :class:`Observer` receives exist for the log line,
+not the label set."""
 
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from time import perf_counter_ns
 from typing import Any, Final, Literal, get_args
 
 from ._async import MaybeAwaitable, maybe_await
+from .errors import EdaxError
 
 __all__ = [
     "CLAIM_VERDICTS",
@@ -46,7 +49,9 @@ __all__ = [
     "METRIC_PROCESS_DURATION",
     "METRIC_SENT_MESSAGES",
     "Observer",
+    "SAGA_SKIPS",
     "SETTLEMENTS",
+    "SagaSkip",
     "Settlement",
     "TRANSACTIONS",
     "TimingRecorder",
@@ -102,12 +107,13 @@ CLAIM_VERDICTS: Final[tuple[ClaimVerdict, ...]] = get_args(ClaimVerdict)
 #: same key will find:
 #:
 #: - ``completed``: the handler returned and the ledger holds its result. A replay finds ``succeeded``.
-#: - ``released``: the handler failed transiently, or the unit of work rolled back. The record is
-#:   gone; the next dispatch runs the handler again.
+#: - ``released``: the handler failed transiently, the unit of work rolled back, or ``complete``
+#:   raised and the fallback ``release`` landed. The record is gone; the next dispatch runs the
+#:   handler again.
 #: - ``cached``: the handler failed terminally and the failure is the record. A replay finds ``failed``.
-#: - ``refused``: the ledger would not take the compensating write (``complete`` or ``release``
-#:   raised). The record is stale until the ledger's retention drops it; a replay may find
-#:   ``in_progress`` until then. Worth an alert.
+#: - ``refused``: the ledger would not take the write that ends the claim: ``release`` raised, after a
+#:   failed ``complete`` or on its own. The record is stale until the ledger's retention drops it; a
+#:   replay may find ``in_progress`` until then. Worth an alert.
 Settlement = Literal["completed", "released", "cached", "refused"]
 SETTLEMENTS: Final[tuple[Settlement, ...]] = get_args(Settlement)
 #: ``Observer.delivery`` outcomes, one per arm of the dispatcher's settlement:
@@ -126,9 +132,14 @@ SETTLEMENTS: Final[tuple[Settlement, ...]] = get_args(Settlement)
 #:   the partition away) before or while the handler ran. Not settled; the transport fetches the
 #:   message again. ``attempt`` is the one this delivery would have been, ``duration_ns`` is ``0`` when
 #:   the handler never ran.
-#: - ``unsettled``: the ack or the nack itself raised. Neither landed; on a log-based broker the
-#:   message comes back only after a rebalance or a restart.
-DeliveryOutcome = Literal["ack", "nack", "dead", "in_progress", "sink_failed", "stale", "unsettled"]
+#: - ``stopped``: :meth:`~edax.dispatcher.KeyOrderedDispatcher.stop` cancelled the worker before the
+#:   delivery settled (in the handler, the sink or a backoff wait), or the delivery was still queued.
+#:   Nacked at once; the broker redelivers. ``error_type`` is set when the handler had already raised.
+#: - ``unsettled``: the ack or the nack itself raised, or a stop cut it short. Neither is known to have
+#:   landed; on a log-based broker the message comes back only after a rebalance or a restart.
+DeliveryOutcome = Literal[
+    "ack", "nack", "dead", "in_progress", "sink_failed", "stale", "stopped", "unsettled"
+]
 DELIVERY_OUTCOMES: Final[tuple[DeliveryOutcome, ...]] = get_args(DeliveryOutcome)
 #: ``Observer.transaction`` outcomes: how a ``transaction`` unit of work ended.
 #:
@@ -139,12 +150,25 @@ TRANSACTIONS: Final[tuple[TransactionOutcome, ...]] = get_args(TransactionOutcom
 #: ``timing`` outcomes: ``ok`` when the handler returned, ``error`` when it raised.
 HandlerOutcome = Literal["ok", "error"]
 HANDLER_OUTCOMES: Final[tuple[HandlerOutcome, ...]] = get_args(HandlerOutcome)
+#: ``Observer.saga_skipped`` reasons: why a :class:`~edax.saga.SagaRunner` did not fold an event. The
+#: kernel's ``saga_admit`` answer, verbatim:
+#:
+#: - ``completed``: the instance is a tombstone. A late or redelivered event, normal after completion.
+#: - ``repeat``: the instance folded this very event id. A redelivery, or a replay after a crash.
+#: - ``below_mark``: the event's sequence is below the highest one the instance folded from its
+#:   aggregate. A replay after a crash looks like this, but so does a dead-lettered event re-driven after a
+#:   later one folded, which is then never folded. Worth a look when it follows a re-drive.
+SagaSkip = Literal["completed", "repeat", "below_mark"]
+SAGA_SKIPS: Final[tuple[SagaSkip, ...]] = get_args(SagaSkip)
 
 
 def error_type(e: BaseException) -> str:
     """The low-cardinality ``error.type`` label for ``e``: the kernel's wire code for an edax error,
-    else the qualified class name (the OTel recommendation for a host exception)."""
-    return getattr(e, "code", None) or f"{type(e).__module__}.{type(e).__qualname__}"
+    else the qualified class name (the OTel recommendation for a host exception). A host exception's
+    own ``code`` is never read: it may be an int, or a method whose text holds the error details."""
+    if isinstance(e, EdaxError) and e.code is not None:
+        return e.code
+    return f"{type(e).__module__}.{type(e).__qualname__}"
 
 
 # --- the seam ----------------------------------------------------------------------------------
@@ -157,7 +181,8 @@ class Observer:
 
     Wire an instance explicitly (``observer=``) on :class:`~edax.dispatcher.KeyOrderedDispatcher`,
     :class:`~edax.store.Relay`, :class:`~edax.store.Repository`, :func:`~edax.store.transaction`,
-    :func:`~edax.command.idempotent` and :func:`~edax.router.idempotent_by_id`; there is no default
+    :func:`~edax.command.idempotent`, :func:`~edax.router.idempotent_by_id` and
+    :class:`~edax.saga.SagaRunner`; there is no default
     global. Every call is guarded by the SDK: an observer that raises is logged and never fails a
     dispatch, a drain, a transaction or a settlement. Metric labels follow the cardinality rule in
     the module docstring."""
@@ -193,14 +218,24 @@ class Observer:
         reports both here and through :meth:`delivery`, one for the claim and one for the broker."""
 
     def delivery(
-        self, name: str, outcome: DeliveryOutcome, attempt: int, duration_ns: int, error_type: str | None
+        self,
+        name: str,
+        message_id: str,
+        correlation_id: str,
+        outcome: DeliveryOutcome,
+        attempt: int,
+        duration_ns: int,
+        error_type: str | None,
     ) -> None:
         """A :class:`~edax.dispatcher.KeyOrderedDispatcher` worker ran the handler for one broker
         delivery and settled it. Fires exactly once per :class:`~edax.dispatcher.Delivery`, after the
-        ack, the nack or the dead-letter, even if that settlement raised.
+        ack, the nack or the dead-letter, even if that settlement raised. A delivery that
+        :meth:`~edax.dispatcher.KeyOrderedDispatcher.stop` hands back reports ``stopped``.
 
         ``name`` is the name of the delivered message, ``msg.name``, so every delivery signal breaks down
-        per handler.
+        per handler; on the consume path it is whatever the producer wrote (see the cardinality rule).
+        ``message_id`` and ``correlation_id`` are the message's own, for the log line that ties a ``nack``
+        or a ``dead`` to its trace; never labels.
         ``outcome`` is one of :data:`DELIVERY_OUTCOMES`: which settlement arm ran. ``attempt`` is the
         attempt this delivery was, from ``1``, so a nack at the ceiling is told from a first nack;
         bucket it in a histogram, do not label by it. ``duration_ns`` is the handler alone, never the
@@ -235,13 +270,14 @@ class Observer:
         Not fired for a call that joined an ambient transaction; the ``transaction`` that opened it reports
         once for all participants."""
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
         """A :class:`~edax.store.Relay` drained one outbox batch to completion: every row published (or
         dead-lettered) and the batch marked. Fires once per completed drain, an empty batch included.
 
-        ``published`` is the count of rows published, ``0`` for an empty outbox; the rows moved to
-        ``on_dead`` are :attr:`~edax.store.DrainStats.dead_lettered` on :attr:`~edax.store.Relay.last`.
-        ``duration_ns`` is read to mark.
+        ``published`` is the count of rows published, ``0`` for an empty outbox. ``dead_lettered`` is
+        the count of rows handed to ``on_dead`` instead. ``duration_ns`` is read to mark.
         ``oldest_timestamp`` is when the oldest row in the batch was written, its ``recorded_at`` (an event)
         or ``issued_at`` (a command), Unix nanoseconds from the clock of the store or saga runner that
         stamped it; ``None`` for an empty batch.
@@ -250,14 +286,28 @@ class Observer:
 
         Not fired for a drain that raised: that is :meth:`drain_failed`."""
 
-    def drain_failed(self, error: BaseException) -> None:
+    def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
         """A :class:`~edax.store.Relay` drain raised: ``unpublished``, ``publish`` or ``mark_published``
         failed. The rows published before the failure are marked; the failing row and the rows behind it
         come back on the next drain, so delivery stays at-least-once. Fires once per failed drain, before
         the backoff wait and before the error re-raises to the caller.
 
+        ``published`` and ``dead_lettered`` count what the drain did before it failed, so the sent and
+        dead-letter counters lose no row. Both are ``0`` when ``unpublished`` failed. When
+        ``mark_published`` failed they count rows the next drain sends again (at-least-once).
         Label by :func:`error_type` of ``error``. Read a sustained rate as a relay that is stuck, and
         pair it with the ``oldest_timestamp`` gauge going stale."""
+
+    def saga_skipped(self, name: str, reason: SagaSkip, event_id: str) -> None:
+        """A :class:`~edax.saga.SagaRunner` routed an event to an instance and did not fold it: no fold,
+        no write, no command. Fires once per skipped event, before ``on_event`` returns.
+
+        ``name`` is the saga's name, a closed set. ``reason`` is one of :data:`SAGA_SKIPS`, the kernel's
+        answer. ``event_id`` is for the log line, never a label. Read ``repeat`` as the redelivery rate,
+        and a ``below_mark`` after a dead-lettered event was re-driven as that event lost: the instance
+        moved past it.
+
+        Not fired for an event the saga's ``instance_id`` ignores: no instance was asked."""
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         """A consumer polled a message whose payload the serializer rejected: a poison message. No
@@ -271,6 +321,31 @@ class Observer:
         problem.
 
         Not a :meth:`delivery`: the message never reached the dispatcher."""
+
+    def poll_failed(self, error: BaseException) -> None:
+        """A consumer loop's ``poll`` raised. A transient error waits one backoff step and polls again;
+        a terminal one ends the loop and re-raises to the caller. Fires once per failed poll, from the
+        loop, for any ``Consumer``, through the observer of the dispatcher it feeds.
+
+        Label by :func:`error_type` of ``error``. Read a sustained rate as a broker, or a record
+        middleware's dependency, that is down: nothing is consumed meanwhile."""
+
+    def commit_failed(self, error: BaseException) -> None:
+        """A :class:`~edax.backend.kafka.KafkaConsumer` offset commit raised or passed its deadline,
+        on the interval or before a revoke. The watermarks stay due, and the next interval tries again.
+        Fires once per failed commit while the consumer runs.
+
+        Label by :func:`error_type` of ``error``. Read a sustained rate as a consumer whose progress is
+        not saved: a restart or a rebalance redelivers everything since the last commit that landed."""
+
+    def revoke_overrun(self, handling: int) -> None:
+        """A :class:`~edax.backend.kafka.KafkaConsumer` rebalance revoke passed its drain deadline with
+        handlers still running. The new owner of the revoked partitions may run one of their keys
+        while this member still does: per-key order is broken for that window. Fires once per
+        overrunning revoke.
+
+        ``handling`` is how many handlers of the dispatcher were still running. Any count is worth an
+        alert: raise the drain deadline above the slowest handler."""
 
 
 def _safely(call: Callable[..., object], *args: Any) -> None:

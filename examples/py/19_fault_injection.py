@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from edax import Entity, EventMessage, EventRouter, StoreError, idempotent_by_id, testing
+from edax import Entity, EventMessage, EventRouter, StoreError, Tenancy, idempotent_by_id, testing
 from edax.backend.memory import MemoryLedger, MemoryProjectionStore, MemoryTransactor
 from edax.testing.faults import BrokenCommit
 
@@ -30,7 +30,9 @@ async def main() -> None:
     db = MemoryTransactor()
     balances = MemoryProjectionStore(db)
     unit = BrokenCommit(db, arm="lost_response")  # the next commit lands, then raises
-    router = EventRouter(idempotent_by_id(MemoryLedger(), unit_of_work=unit))
+    router = EventRouter(
+        idempotent_by_id(MemoryLedger(), unit_of_work=unit, scope="balances", tenancy=Tenancy.SILO)
+    )
     runs: list[str] = []
 
     # 2. An idempotent handler: it skips a deposit it has already applied.

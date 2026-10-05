@@ -37,6 +37,7 @@ from ._edax import (
     payload_hash,
     payload_hash_json,
     upcast_plan,
+    upcast_target,
 )
 from .aggregate import (
     Aggregate,
@@ -87,7 +88,7 @@ from .pacing import DEFAULT_BACKOFF, Backoff, Pacing
 from .projection import Entity, ProjectionStore
 from .query import Page
 from .router import EventRouter, idempotent_by_id
-from .saga import Completed, Saga, SagaInstance, SagaRunner, SagaStore
+from .saga import SAGA_COMMAND_FAILED, Completed, Saga, SagaCommandFailed, SagaInstance, SagaRunner, SagaStore
 from .store import (
     AggregateCodec,
     CommandOutbox,
@@ -138,6 +139,7 @@ __all__ = [
     "payload_hash",
     "payload_hash_json",
     "upcast_plan",
+    "upcast_target",
     # causation (edax.causation wrappers over the kernel rules, and the ambient lineage)
     "Lineage",
     "caused_by",
@@ -223,8 +225,10 @@ __all__ = [
     "error_type",
     "timing",
     # sagas
+    "SAGA_COMMAND_FAILED",
     "Completed",
     "Saga",
+    "SagaCommandFailed",
     "SagaInstance",
     "SagaRunner",
     "SagaStore",

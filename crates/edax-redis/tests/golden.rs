@@ -197,13 +197,13 @@ fn config_cases() -> Vec<Value> {
     [
         ("accepted", "idem:", 86_400_000, 300_000, 5_000, false),
         ("the_largest_exact_integer", "idem:", MAX_TTL_MS, MAX_TTL_MS, 1, false),
-        ("a_heartbeat_over_three_milliseconds", "idem:", 1, 3, 1, true),
+        ("a_heartbeat_with_the_deadline_under_a_third_of_the_claim_ttl", "idem:", 1, 4, 1, true),
         ("an_empty_prefix_is_refused", "", 86_400_000, 300_000, 5_000, false),
         ("a_zero_ttl_is_refused", "idem:", 0, 300_000, 5_000, false),
         ("a_negative_claim_ttl_is_refused", "idem:", 86_400_000, -5, 5_000, false),
         ("past_the_largest_exact_integer_is_refused", "idem:", MAX_TTL_MS + 1, 300_000, 5_000, false),
         ("a_zero_deadline_is_refused", "idem:", 86_400_000, 300_000, 0, false),
-        ("a_heartbeat_over_two_milliseconds_is_refused", "idem:", 86_400_000, 2, 5_000, true),
+        ("a_heartbeat_whose_deadline_is_a_third_of_the_claim_ttl_is_refused", "idem:", 86_400_000, 15_000, 5_000, true),
     ]
     .into_iter()
     .map(|(name, prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)| {

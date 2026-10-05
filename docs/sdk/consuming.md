@@ -95,7 +95,8 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-Submitting a bare message instead of a `Delivery` runs the handler and settles nothing: the
+In both SDKs, submitting a bare message instead of a `Delivery` runs the handler and nothing else.
+A failure waits no backoff step, reaches no `on_dead` and is not counted. This is the
 fire-and-forget path.
 
 **Lineage.** The Python worker runs each handler under `propagate` of the message it delivers, so a
@@ -114,8 +115,8 @@ can still end that way there and the health check shows it.
 **Shutdown.** Pass the deadline to `stop(timeout=...)` rather than wrapping `stop()` in
 `asyncio.wait_for`. Either way `stop` returns only once no worker is left, so a later `start()` never
 puts two workers on one queue. Past the deadline it cancels the workers, nacks the delivery each one
-held and every delivery still queued, and so leaves nothing submitted unsettled. After `stop`,
-`submit` raises `RuntimeError` until the next `start`.
+held and every delivery still queued, and so leaves nothing submitted unsettled. Each of them
+reaches the observer once, as `stopped`. After `stop`, `submit` raises `RuntimeError` until the next `start`.
 
 ## Settlement
 
@@ -197,7 +198,9 @@ sequenceDiagram
 By default a raising handler nacks and the broker redelivers forever. Two settings bound that:
 `max_attempts` and `on_dead`. The rule below is the kernel's (`edax_event::Retries`, pinned by
 `testdata/golden/retries.json`). Both SDKs' dispatchers, and both `Relay`s, perform its answers, so
-two services consuming one topic dead-letter the same message at the same attempt.
+two services consuming one topic dead-letter the same message at the same attempt. `max_attempts` is
+an unsigned 32-bit count; the Python dispatcher and `Relay` refuse any other value with `ValueError`
+when they are built.
 
 An attempt is one handler run of a delivery, counted as
 
@@ -218,8 +221,8 @@ ceiling survive a restart. Neither in-tree backend reads one from its client, so
 | `max_attempts` is `0` | the ceiling is disabled; only terminal errors dead-letter | sleep one backoff step, then nack, forever |
 | Raised `InProgress` | sleep one backoff step, then nack; the budget is untouched | same |
 
-Terminal versus transient is the kernel's verdict, read through `err.terminal`. See
-[errors.md](./errors.md).
+Terminal versus transient is the kernel's verdict for the code the error carries, read through
+`edax.is_terminal(err)`. See [errors.md](./errors.md).
 `examples/py/09_dead_letters.py` runs the rows that have a sink: a terminal error, a transient one
 that passes, and one that reaches `max_attempts`.
 
@@ -269,10 +272,12 @@ pool.
 
 Both attempt maps grow by one entry per failing message id and shrink when that id is acked or
 dead-lettered. The attempt count is kept whatever `max_attempts` says, including `0`, so the backoff
-grows across redeliveries instead of repeating a flat first step. Entries for nacked messages that
-never come back stay until the id is seen again. Bound them with a time to live (TTL) or a least
-recently used (LRU) cache. That matters when a broker-side dead-letter queue steals them under
-sustained failure.
+grows across redeliveries instead of repeating a flat first step. An entry for a nacked message
+that never comes back stays for the life of the dispatcher. That happens when a broker-side
+dead-letter queue takes the message, or when a rebalance moves its partition to another consumer.
+Neither SDK bounds the maps today. Python reports their size as
+`stats().attempts_tracked` and `stats().contended_tracked`, and steady growth there is this case. A
+bare message is never counted, because nothing settles it.
 
 ## Commands off a broker
 
@@ -297,7 +302,9 @@ event is already decided by its ordering key. The router runs each handler under
 event, so an event a handler saves continues the flow.
 
 ```python
-router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
+router = edax.EventRouter(
+    idempotent_by_id(MemoryIdempotencyStore(), scope="balances", tenancy=edax.Tenancy.SILO)
+)
 
 
 @router.on("Deposited")
@@ -329,8 +336,11 @@ Python takes it in the constructor; Rust takes it through the builder `EventRout
 ### idempotent_by_id
 
 The consume-path guard. It runs a handler at most once per event `id`, so a broker redelivery does
-not repeat its side effect. The key is `msg.id`, raw and unscoped, and the hash is the kernel's
-`payload_hash` over the raw `msg.data` bytes.
+not repeat its side effect. The key is the kernel's `event_idempotency`: `msg.id` under the required
+`scope`, which names this consumer, composed with the message's `tenant` under `tenancy=Tenancy.POOL`.
+The hash is the kernel's `payload_hash` over the raw `msg.data` bytes. Two consumers guarding over one
+ledger therefore keep separate records: the second runs its own handler instead of skipping on the
+first's record. Under a pool or a bridge an event with no tenant raises `CodecError` before the claim.
 
 | Redelivery meets | Result |
 |---|---|
@@ -340,14 +350,16 @@ not repeat its side effect. The key is `msg.id`, raw and unscoped, and the hash 
 | a cached terminal failure | `CachedFailure`, itself terminal, so the dispatcher dead-letters the redelivery too |
 | the same id with a different body | `PayloadMismatch`: an integrity error, not a duplicate |
 
-Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`. Pinned end to end by
+Pinned as a branch table by `test_router.py::test_idempotent_by_id_branches`, and the key by
+`test_router.py::test_idempotent_by_id_keys_the_claim_by_scope_and_tenant`. Pinned end to end by
 `test_router.py::test_redelivery_through_the_dispatcher_is_skipped_and_acked`.
 
 **A worker has no ambient transaction to inherit.** The Python dispatcher clears the ambient
 transaction per worker, and Rust has no ambient transaction at all. A handler that opens one
 internally opens it after the claim was already taken. So `unit_of_work=` is the only way the guard gets a
 transaction. It opens the transaction itself, in the right place. The claim then commits with the
-handler's writes, and a rollback drops both. Rust's form is `idempotent_by_id_in(store, current)`,
+handler's writes, and a rollback drops both. Rust's form is
+`idempotent_by_id_in(store, scope, tenancy, current)`,
 where `current` hands each worker thread its own live handle.
 
 [Idempotency](./idempotency.md) covers what each mode guarantees, and

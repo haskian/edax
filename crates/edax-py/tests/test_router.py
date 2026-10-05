@@ -13,7 +13,7 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import build_message, delivered
+from conftest import SCOPE, build_message, delivered, event_claimed
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker, MemoryIdempotencyStore
 from edax.command import Claimed, Record, Won
@@ -166,9 +166,11 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
 
     # A sync handler raises while the middleware is *building* the awaitable, so the guard has to
     # call it inside its own try or the claim is left pending and the failure never cached.
-    guarded = idempotent_by_id(store)(run if case.sync else async_handler)
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(
+        run if case.sync else async_handler
+    )
     if case.held:
-        assert isinstance(await store.claim(deposited().id, edax.payload_hash(DEPOSITED)), Won)
+        assert isinstance(await store.claim(event_claimed(deposited().id), edax.payload_hash(DEPOSITED)), Won)
         store.claims = 0
 
     for env, raises in zip([deposited(), deposited(case.redelivered)], case.raises, strict=True):
@@ -179,6 +181,79 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
                 await maybe_await(guarded(env))
     assert calls == case.calls
     assert (store.claims, store.releases) == (case.claims, case.releases)
+
+
+#: One delivery of :func:`deposited` through a guard of its own: the guard's scope and tenancy, and the
+#: tenant the event names.
+Guarded = tuple[str, edax.Tenancy, str | None]
+
+
+@pytest.mark.parametrize(
+    "deliveries, want_runs, want_keys, want_error",
+    [
+        pytest.param(
+            [("balances", edax.Tenancy.SILO, None), ("receipts", edax.Tenancy.SILO, None)],
+            [1, 1],
+            ["edax:evt:8:balances:acct-1-3", "edax:evt:8:receipts:acct-1-3"],
+            None,
+            id="two_consumers_on_one_ledger_each_run_their_handler",
+        ),
+        pytest.param(
+            [("balances", edax.Tenancy.SILO, None), ("balances", edax.Tenancy.SILO, None)],
+            [1, 0],
+            ["edax:evt:8:balances:acct-1-3"],
+            None,
+            id="one_consumer_skips_its_own_redelivery",
+        ),
+        pytest.param(
+            [("balances", edax.Tenancy.POOL, "acme"), ("balances", edax.Tenancy.POOL, "globex")],
+            [1, 1],
+            ["4:acme:edax:evt:8:balances:acct-1-3", "6:globex:edax:evt:8:balances:acct-1-3"],
+            None,
+            id="a_pool_keeps_two_tenants_events_apart",
+        ),
+        pytest.param(
+            [("balances", edax.Tenancy.BRIDGE, "acme"), ("balances", edax.Tenancy.BRIDGE, "globex")],
+            [1, 0],
+            ["edax:evt:8:balances:acct-1-3"],
+            None,
+            id="a_bridge_keeps_the_key_bare",
+        ),
+        pytest.param(
+            [("balances", edax.Tenancy.POOL, None), ("balances", edax.Tenancy.POOL, None)],
+            [0, 0],
+            [],
+            edax.CodecError,
+            id="a_pool_refuses_an_event_without_a_tenant_before_the_claim",
+        ),
+    ],
+)
+async def test_idempotent_by_id_keys_the_claim_by_scope_and_tenant(
+    deliveries: list[Guarded],
+    want_runs: list[int],
+    want_keys: list[str],
+    want_error: type[Exception] | None,
+) -> None:
+    """Two deliveries of one event id over one shared ledger, each through a guard of its own. The scope,
+    the tenancy and the tenant decide whether the second finds the first's record."""
+    ledger = CountingStore()
+    runs: list[int] = []
+    for scope, tenancy, tenant in deliveries:
+        calls: list[str] = []
+        guarded = idempotent_by_id(ledger, scope=scope, tenancy=tenancy)(
+            lambda env, ran=calls: ran.append(env.id)
+        )
+        env = build_message("acct-1", "Deposited", 3, id="acct-1-3", data=DEPOSITED, tenant=tenant)
+        if want_error is None:
+            await maybe_await(guarded(env))
+        else:
+            with pytest.raises(want_error):
+                await maybe_await(guarded(env))
+        runs.append(len(calls))
+    assert runs == want_runs
+    assert ledger.claims == (0 if want_error else len(deliveries)), "a refused event claims nothing"
+    for key in want_keys:
+        assert not isinstance(await ledger.claim(key, 0), Won), f"{key} holds the record"
 
 
 # =========================================================================
@@ -196,7 +271,7 @@ class TxIdempotencyStore:
     staged: dict[str, dict[str, Record | None]] = field(default_factory=dict)  # tx -> key -> record
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[str]:
+    async def begin(self) -> AsyncIterator[str]:
         tx = f"tx-{len(self.staged) + 1}"
         self.staged[tx] = {}
         try:
@@ -250,17 +325,17 @@ async def test_claim_enlists_in_the_ambient_tx(
         nonlocal calls
         calls += 1
 
-    guarded = idempotent_by_id(store)(handler)
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(handler)
     env = deposited()
     try:
         async with transaction(store):
             await maybe_await(guarded(env))  # no tx threaded: the store reads current_tx(itself)
-            assert env.id not in store.records  # staged, not landed
+            assert event_claimed(env.id) not in store.records  # staged, not landed
             if body_raises:
                 raise RuntimeError("a later write in the same unit of work failed")
     except RuntimeError:
         assert body_raises
-    assert (env.id in store.records) is not body_raises
+    assert (event_claimed(env.id) in store.records) is not body_raises
     await maybe_await(guarded(env))  # redelivery outside any tx
     assert calls == calls_after_redelivery
 
@@ -292,7 +367,9 @@ async def test_redelivery_through_the_dispatcher_is_skipped_and_acked() -> None:
         nonlocal calls
         calls += 1
 
-    router = edax.EventRouter(idempotent_by_id(MemoryIdempotencyStore()))
+    router = edax.EventRouter(
+        idempotent_by_id(MemoryIdempotencyStore(), scope=SCOPE, tenancy=edax.Tenancy.SILO)
+    )
     router.register("Deposited", handler)
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=router.dispatch)
     dispatcher.start()

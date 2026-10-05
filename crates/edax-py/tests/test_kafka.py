@@ -243,6 +243,34 @@ async def test_a_topic_reported_with_no_partitions_is_refused_and_sends_nothing(
     assert client.sent == []
 
 
+class _FrozenBroker(SpyProducerClient):
+    """A broker that stopped answering, as an idempotent ``AIOKafkaProducer`` sees it: it never expires
+    the batch, so the send waits forever."""
+
+    async def send_and_wait(self, *args: Any, **kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("side", ["producer", "dead_letter_sink"])
+async def test_a_send_to_a_frozen_broker_times_out_as_transient(side: str) -> None:
+    """Both senders bound the send, so a relay or a dispatcher stuck on a frozen broker gets a failure to
+    retry instead of a hang. The failure is transient, because the next try may find the broker back."""
+    client = _FrozenBroker(3)
+    msg = build_message("acct-1", "Deposited", 1)
+    if side == "producer":
+        send = KafkaProducer(client, "orders", publish_timeout_s=0.01).publish(msg)
+    else:
+        fetched = KafkaFetched(
+            "orders", 2, 41, b"acct-1", b'{"id":"x"}', ((CONTENT_TYPE, b"application/json"),)
+        )
+        delivery = edax.Delivery(msg, lambda: None, lambda: None, origin=fetched)
+        sink = KafkaDeadLetterSink(client, "orders.dlq", publish_timeout_s=0.01)
+        send = sink(delivery, edax.CodecError("bad"))
+    with pytest.raises(TimeoutError, match=r"no ack within 0\.01s; the record may still land") as raised:
+        await send
+    assert not edax.errors.is_terminal(raised.value)
+
+
 def test_two_serializers_for_one_media_type_are_refused() -> None:
     """One topic, one decoder per media type: a second claimant would decode typed records one way and
     header-less records another."""
@@ -862,14 +890,53 @@ async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept:
     assert client.commits == []
 
 
-async def test_run_refuses_a_dispatcher_without_a_sink() -> None:
-    """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its
-    partition forever. The run refuses before it polls anything."""
-    client, consumer = await kafka_consumer(1)
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None)
-    with pytest.raises(ValueError, match="on_dead"):
-        await consumer.run(dispatcher)
-    assert client.cursor == 0, "nothing was polled"
+@pytest.mark.parametrize(
+    ("wiring", "on_dead", "raises"),
+    [
+        pytest.param("subscribed_with_a_listener", None, "on_dead", id="a_dispatcher_without_a_sink"),
+        pytest.param(
+            "subscribed_without_a_listener",
+            sink_ok,
+            "without a rebalance listener",
+            id="a_client_subscribed_without_a_listener",
+        ),
+        pytest.param(
+            "assigned_by_hand", sink_ok, None, id="a_client_assigned_by_hand_without_a_listener_runs"
+        ),
+    ],
+)
+async def test_run_refuses_only_a_wiring_that_stalls(
+    wiring: str,
+    on_dead: Callable[[edax.Delivery, BaseException], Awaitable[None]] | None,
+    raises: str | None,
+) -> None:
+    """On Kafka a nack rewinds, so a message that fails for good with no sink stalls its partition
+    forever. A client the group assigns partitions to, with no listener, keeps a revoked partition's
+    bookkeeping, and the client then refuses every commit that names it. The run refuses both before
+    it polls anything. A client that took its partitions by hand has no group to revoke them, so it
+    runs without a listener."""
+    cluster = FakeKafkaCluster()
+    client = FakeKafkaClient(cluster)
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
+    consumer = KafkaConsumer(client, serializer=IdSerializer())
+    if wiring == "assigned_by_hand":
+        client.assign([TP0])
+    else:
+        listener = consumer.rebalance_listener() if wiring == "subscribed_with_a_listener" else None
+        client.subscribe(["t"], listener=listener)
+        await cluster.join(client)
+    handled: list[str] = []
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=on_dead
+    )
+    if raises is not None:
+        with pytest.raises(ValueError, match=raises):
+            await consumer.run(dispatcher)
+        assert client.cursor == 0, "nothing was polled"
+        return
+    run = await _drive(consumer, dispatcher, lambda: handled == ["0"])
+    assert handled == ["0"], wiring
+    assert run.cancelled(), "the run was stopped by the test, not refused"
 
 
 class _FlakyKeyService:
@@ -980,21 +1047,42 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     # The run keeps consuming while every commit times out, and its own stop is not held hostage.
     await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="3")])
     handled: list[str] = []
+    observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
-        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok, observer=observer
     )
     run_consumer = KafkaConsumer(
         client, serializer=IdSerializer(), commit_interval_s=0.01, commit_timeout_s=0.05
     )
     started = loop.time()
-    await _drive(run_consumer, dispatcher, lambda: handled == ["3"])
+    await _drive(run_consumer, dispatcher, lambda: handled == ["3"] and bool(observer.commit_failures))
     assert handled == ["3"], "the client's fetch position is past 0..2, so only the new record comes"
     assert loop.time() - started < 2, "a paused broker hung the run"
     assert client.commits == []
+    # A consumer whose progress is not saved is a counter, not only a log line.
+    assert observer.commit_failures and set(observer.commit_failures) == {asyncio.TimeoutError}
 
     client.cluster.resume_commits()
     await consumer.flush()
     assert client.commits == [3] and consumer.stats()[TP0].committed == 3
+
+
+async def test_the_last_commit_after_run_ends_reaches_the_observer() -> None:
+    """The interval never fires here, so the one commit attempted is the flush ``run`` does on its way
+    out. Its failure is a counter too, not only a log line."""
+    client = FakeKafkaClient()
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
+    client.cluster.pause_commits()
+    handled: list[str] = []
+    observer = Recording()
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: handled.append(env.id), on_dead=sink_ok, observer=observer
+    )
+    consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_interval_s=60, commit_timeout_s=0.05)
+    await _drive(consumer, dispatcher, lambda: handled == ["0"])
+    assert handled == ["0"]
+    assert client.commits == []
+    assert observer.commit_failures == [asyncio.TimeoutError]
 
 
 async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(slept: list[int]) -> None:
@@ -1002,7 +1090,8 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     Its replacement starts at the group's commit, so every offset from 10 runs again and none below it."""
     cluster = FakeKafkaCluster()
     first = FakeKafkaClient(cluster)
-    first.subscribe(["t"])
+    first_consumer = KafkaConsumer(first, serializer=IdSerializer(), commit_interval_s=0.001)
+    first.subscribe(["t"], listener=first_consumer.rebalance_listener())
     await cluster.join(first)
     await publish_all(
         first, "t", IdSerializer(), [build_message(f"k{i % 3}", "Tick", 1, id=str(i)) for i in range(20)]
@@ -1017,7 +1106,6 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
             await stuck.wait()  # mid-batch: this one never finishes before the crash
 
     first_dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=first_handler, on_dead=sink_ok)
-    first_consumer = KafkaConsumer(first, serializer=IdSerializer(), commit_interval_s=0.001)
     first_dispatcher.start()
     first_run = asyncio.create_task(first_consumer.run(first_dispatcher))
     while cluster.committed.get(TP0, 0) < 10:
@@ -1030,14 +1118,14 @@ async def test_a_killed_consumer_redelivers_from_the_commit_and_never_below_it(s
     assert cluster.committed[TP0] == committed, "a dead member's commit landed"
 
     second = FakeKafkaClient(cluster)
-    second.subscribe(["t"])
+    second_consumer = KafkaConsumer(second, serializer=IdSerializer(), commit_interval_s=0.001)
+    second.subscribe(["t"], listener=second_consumer.rebalance_listener())
     await cluster.join(second)
 
     async def second_handler(env: edax.EventMessage) -> None:
         handled.append(("second", int(env.id)))
 
     second_dispatcher = edax.KeyOrderedDispatcher(workers=3, handler=second_handler, on_dead=sink_ok)
-    second_consumer = KafkaConsumer(second, serializer=IdSerializer(), commit_interval_s=0.001)
     await _drive(second_consumer, second_dispatcher, lambda: cluster.committed.get(TP0) == 20)
 
     redone = sorted(offset for who, offset in handled if who == "second")
@@ -1129,7 +1217,8 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
         if env.id == "0":
             await release.wait()  # running when the revoke comes
 
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink_ok)
+    observer = Recording()
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, on_dead=sink_ok, observer=observer)
     dispatcher.start()
     run = asyncio.create_task(consumer.run(dispatcher))
     while dispatcher.stats().queue_depth != [4] or dispatcher.stats().handling != 1:
@@ -1142,6 +1231,9 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
         "the revoke did not wait for, or did not give up on, the handler"
     )
     assert consumer.stats() == {}, "the revoked partition was not reset"
+    assert observer.revoke_overruns == [1], (
+        "an overrun lets two members run one key: a counter, not a log line"
+    )
     release.set()
     await asyncio.sleep(0.01)
     assert handled == ["0"], "a queued delivery of the revoked partition ran"
@@ -1192,7 +1284,8 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
     middleware), plus where it came from and why, on the kernel's partition for its key."""
     cluster = FakeKafkaCluster(partitions=3)
     client = FakeKafkaClient(cluster)
-    client.subscribe(["t"])
+    consumer = KafkaConsumer(client, serializer=_SchemaSerializer(), commit_interval_s=0.001)
+    client.subscribe(["t"], listener=consumer.rebalance_listener())
     await cluster.join(client)
     producer = KafkaProducer(client, "t", serializer=_SchemaSerializer(), middleware=[_TraceHeader()])
     await producer.publish(build_message("acct-9", "Tick", 1, id="BAD" if cause == "poison" else "7"))
@@ -1203,7 +1296,6 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=handler, on_dead=KafkaDeadLetterSink(client, "t.dlq")
     )
-    consumer = KafkaConsumer(client, serializer=_SchemaSerializer(), commit_interval_s=0.001)
     source_tp = next(TopicPartition("t", p) for p in range(3) if cluster.logs[("t", p)])
     await _drive(consumer, dispatcher, lambda: any(cluster.logs[("t.dlq", p)] for p in range(3)))
 

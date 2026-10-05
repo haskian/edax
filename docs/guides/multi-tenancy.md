@@ -46,16 +46,19 @@ Pass `tenancy=` once, where you build the thing:
 ```python
 repo = Repository(store, events, aggregates, tenancy=Tenancy.POOL)
 bus = CommandBus(idempotent(ledger, scope="api", tenancy=Tenancy.POOL))
+router = EventRouter(idempotent_by_id(ledger, scope="balances", tenancy=Tenancy.POOL))
 producer = KafkaProducer(client, "events", tenancy=Tenancy.POOL)
 ```
 
 | Seam | What the tenant keys | How it travels |
 |---|---|---|
 | `Repository.load(id, tenant=...)` | the event stream and the snapshot | the aggregate carries it, so the save that follows cannot name another |
-| `Repository.save` | every event's `tenant` field | stamped by the repository, from the aggregate |
+| `Repository.save` | every event's `tenant` field, and every saved command's | stamped by the repository, from the aggregate; a command naming another tenant is refused |
 | `idempotent(..., tenancy=...)` | the ledger claim, inside its `scope` | read off the command message |
+| `forget(..., tenancy=..., tenant=...)` | the ledger record a re-drive deletes | passed by the operator, from the dead-lettered message |
+| `idempotent_by_id(..., tenancy=...)` | the event claim, inside its `scope` | read off the event message |
 | `CommandBus.dispatch(..., tenant=...)` | the message it builds | a typed field of the message |
-| `KafkaProducer` | the record key, and so the partition | read off the message |
+| `KafkaProducer` | the record key, and so the partition: the kernel's `edax_kafka::record_key` | read off the message |
 | `SagaRunner` | the instance, through the saga's own `instance_id` | inherited by every command a step emits |
 | `ProjectionStore` | the entity id, and a query predicate | yours to compose: a read model's id is yours |
 
@@ -92,8 +95,9 @@ Variations, from strictest down:
   starts a dedicated data plane per tenant. The data plane is a silo; the control plane is a pool, so
   it takes the pool rules.
 
-**In edax.** `Tenancy.SILO`, the default. A tenant is optional and no key carries one. Stamp one
-anyway if the data may ever move into a pool: the field travels, costs almost nothing, and gives you
+**In edax.** `Tenancy.SILO`, the default of a repository and a producer. The idempotency guards,
+`claim_key` and `forget` have no default, so pass the mode to each of them. A tenant is optional
+and no key carries one. Stamp one anyway if the data may ever move into a pool: the field travels, costs almost nothing, and gives you
 an audit trail.
 
 ## 2. Fully shared, the pool model
@@ -119,6 +123,9 @@ account = await repo.load("order-1", tenant=tenant)  # 4:acme:order-1 in the sto
 account.apply(Deposited(100))
 await repo.save(account)  # every event stamped with the tenant it was loaded for
 ```
+
+A new aggregate starts the same way: `repo.load(id, tenant=...)` returns it empty at version 0 with the
+tenant set. One built with its constructor carries no tenant, and its save raises `CodecError`.
 
 ## 3. Hybrid, the bridge model
 
@@ -189,10 +196,12 @@ The same shape covers a Pub/Sub topic path, an SNS topic ARN, or one Kafka topic
 tenant you cannot place to a parking destination rather than raising, because a row whose tenant is
 unknown fails the same way on every attempt.
 
-On a shared topic, `tenancy=Tenancy.POOL` makes the record key the composed key. Two tenants'
-same-named aggregates then take different partitions, and a consumer reads the tenant off the key
-without decoding the value. A subscription that filters on attributes instead, such as SNS to SQS, needs the
-tenant as an attribute, and the adapter you write is what adds it.
+On a shared topic, `tenancy=Tenancy.POOL` makes the record key the composed key. The kernel decides
+it (`edax_kafka::record_key`, pinned by `kafka_record.json`), so every SDK producing to the topic
+places one aggregate on one partition. Two tenants' same-named aggregates then take different
+partitions, and a consumer reads the tenant off the key without decoding the value. A subscription
+that filters on attributes instead, such as SNS to SQS, needs the tenant as an attribute, and the
+adapter you write is what adds it.
 
 ### One shared outbox, one shared queue
 
@@ -223,16 +232,18 @@ One consumer can serve many topics, and many consumers can feed one dispatcher.
 - **The topic does not reach the handler.** A delivery carries the message, its settle handles and
   its origin record. A handler reads `msg.tenant`, never the topic it arrived on.
 - **A shared dispatcher shares its blast radius.** A handler retrying with backoff holds its worker,
-  and every key that hashes to it waits. One consumer and one dispatcher per tenant is the isolating
-  arrangement.
+  and every key that hashes to it waits. The worker hashes the bare ordering key, not the composed
+  one, so two tenants' aggregates with one id always share a worker. One consumer and one dispatcher
+  per tenant is the isolating arrangement.
 - **A poison message is confined** to the topic or partition it arrives on. Wire `on_dead` so it is
   dead-lettered and acked, or it redelivers and pins the position behind it.
 
 ## Moving an existing deployment into a pool
 
 Turning `SILO` into `POOL` changes every key: the stream, the snapshot, the claim and the record key
-all gain their tenant. Two placements follow the record key, the Kafka partition and the dispatcher
-worker, so both move with it. Per-aggregate order holds on each side of the change and not across it.
+all gain their tenant. The Kafka partition follows the record key, so it moves with it. The
+dispatcher worker hashes the bare ordering key, so it stays where it was. Per-aggregate order holds on
+each side of the change and not across it.
 
 Do it before there is production data, or copy each tenant's streams into their composed keys while
 nothing writes.

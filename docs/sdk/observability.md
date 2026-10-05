@@ -12,14 +12,16 @@ flowchart LR
     H["handler"] --> MW["middleware: timing(), a host tracer"]
     MW -->|"(name, outcome, error_type, duration_ns)"| REC["recorder: latency, spans"]
     G["idempotent, idempotent_by_id"] -->|"claim(name, verdict), settled(name, how, duration_ns)"| OBS["Observer"]
-    D["KeyOrderedDispatcher"] -->|"delivery(name, outcome, attempt, duration_ns, error_type), settlement_failed"| OBS
+    D["KeyOrderedDispatcher"] -->|"delivery(name, message_id, correlation_id, outcome, ...), settlement_failed"| OBS
     T["transaction, Repository, the guards"] -->|"transaction(outcome, duration_ns)"| OBS
-    R["Relay"] -->|"drain(published, duration_ns, oldest_timestamp), drain_failed(error)"| OBS
-    L["consumer loop, any Consumer"] -->|"undecodable(message_id, error)"| OBS
+    R["Relay"] -->|"drain(published, dead_lettered, ...), drain_failed(error, published, dead_lettered)"| OBS
+    L["consumer loop, any Consumer"] -->|"undecodable(message_id, error), poll_failed(error)"| OBS
+    K["KafkaConsumer"] -->|"commit_failed(error), revoke_overrun(handling)"| OBS
+    SR["SagaRunner"] -->|"saga_skipped(name, reason, event_id)"| OBS
     OBS --> EXP["host adapter: OpenTelemetry, a dict"]
     D -->|"stats(), idle()"| PULL["health check"]
     R -->|"last"| PULL
-    K["KafkaConsumer"] -->|"stats()"| PULL
+    K -->|"stats()"| PULL
 ```
 
 ## Two seams, and why
@@ -41,7 +43,7 @@ published.
 
 ## The Observer
 
-`edax.Observer` is a class of eight no-op methods. Subclass it and override what you export. Every
+`edax.Observer` is a class of twelve no-op methods. Subclass it and override what you export. Every
 argument is a plain value. Where an exception is passed, it is for the log line; a metric adapter
 labels it with `error_type(error)`, never with its message.
 
@@ -49,18 +51,22 @@ labels it with `error_type(error)`, never with its message.
 |---|---|---|---|
 | `claim(name, verdict)` | `idempotent`, `idempotent_by_id` | `CLAIM_VERDICTS`: `succeeded`, `in_progress`, `payload_mismatch`, `failed` | a dispatch lost the claim to a prior record |
 | `settled(name, how, duration_ns)` | `idempotent`, `idempotent_by_id` | `SETTLEMENTS`: `completed`, `released`, `cached`, `refused` | the winner's claim reached its terminal state |
-| `delivery(name, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `sink_failed`, `stale`, `unsettled` | the dispatcher settled a delivery |
+| `delivery(name, message_id, correlation_id, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `sink_failed`, `stale`, `stopped`, `unsettled` | the dispatcher settled a delivery |
 | `settlement_failed(name, event_id, error)` | `KeyOrderedDispatcher` | none | an ack or a nack raised after the handler ran |
 | `transaction(outcome, duration_ns)` | `transaction`, `Repository`, the guards given a `unit_of_work` | `TRANSACTIONS`: `committed`, `rolled_back` | a unit of work ended |
-| `drain(published, duration_ns, oldest_timestamp)` | `Relay` | none | a drain completed |
-| `drain_failed(error)` | `Relay` | none | a drain raised |
+| `drain(published, dead_lettered, duration_ns, oldest_timestamp)` | `Relay` | none | a drain completed |
+| `drain_failed(error, published, dead_lettered)` | `Relay` | none | a drain raised |
 | `undecodable(message_id, error)` | the consumer loop, for any `Consumer` | none | a poison message: a polled payload the serializer rejected |
+| `poll_failed(error)` | the consumer loop, for any `Consumer` | none | a poll raised |
+| `commit_failed(error)` | `KafkaConsumer` | none | an offset commit raised or passed its deadline |
+| `revoke_overrun(handling)` | `KafkaConsumer` | none | a rebalance revoke passed its drain deadline with handlers running |
+| `saga_skipped(name, reason, event_id)` | `SagaRunner` | `SAGA_SKIPS`: `completed`, `repeat`, `below_mark` | a saga instance did not fold an event routed to it |
 
 ### Method by method
 
 Each entry says when the method fires, what its arguments mean, what to read from it, and what it
 is not. Each outcome set is also a `Literal` type: `ClaimVerdict`, `Settlement`, `DeliveryOutcome`,
-`TransactionOutcome`, `HandlerOutcome`. The hooks are annotated with it, and the tuple is `get_args`
+`TransactionOutcome`, `HandlerOutcome`, `SagaSkip`. The hooks are annotated with it, and the tuple is `get_args`
 of it, so a type checker catches a branch on a string the SDK never sends.
 
 Hooks are synchronous. An `async def` hook returns a coroutine nobody awaits, so its metric would
@@ -68,9 +74,13 @@ vanish. The SDK closes that coroutine and logs an error naming the hook, and the
 carries on. Hand the value to a task or queue of your own instead.
 
 The four methods that happen inside a handler take `name` first. It is the command type,
-`cmd.type`, on the command bus, and the event name, `msg.name`, on the consume path. That is
-the closed set the bus and the router register handlers under, so it is safe as a label.
-`transaction`, `drain`, `drain_failed` and `undecodable` have no handler to name.
+`cmd.type`, on the command bus: the closed set the bus registers handlers under. On the consume
+path it is the event name, `msg.name`, as the producer wrote it. The dispatcher reads it before any
+routing, and the router runs its middleware for a name it has no handler for, so an unregistered
+name reaches the observer too. Map every name your router does not register to one fixed value, such
+as `other`, before you label by it. `transaction`, `drain`, `drain_failed`, `undecodable`,
+`poll_failed`, `commit_failed` and `revoke_overrun` have no handler to name. `saga_skipped`
+takes the saga's `name`, a closed set.
 
 #### `claim(name, verdict)`: a dispatch lost the idempotency claim
 
@@ -104,9 +114,9 @@ the next dispatch of the same key will find.
 | `how` | What happened | What the next dispatch finds |
 |---|---|---|
 | `completed` | the handler returned; the ledger holds its result | `succeeded` |
-| `released` | the handler failed transiently, or the unit of work rolled back; the record is gone | no record; it runs the handler again |
+| `released` | the handler failed transiently, the unit of work rolled back, or `complete` raised and the fallback `release` landed; the record is gone | no record; it runs the handler again |
 | `cached` | the handler failed terminally; the failure is the record | `failed` |
-| `refused` | the ledger would not take the compensating write (`complete` or `release` raised) | a stale record, `in_progress`, until the ledger's retention drops it |
+| `refused` | the ledger would not take the write that ends the claim: `release` raised, after a failed `complete` or on its own | a stale record, `in_progress`, until the ledger's retention drops it |
 
 `duration_ns` is how long the claim was held: winning it to settling it, handler and ledger writes
 included. Read `released` as the transient failure rate and `cached` as the terminal one. Alert on
@@ -115,10 +125,12 @@ any `refused`: it is ledger trouble, and it blocks the key until retention.
 Handler latency is `timing()` on the bus, which covers the replayed dispatches too. A guarded event
 handler reports here and through `delivery`, one row for the claim and one for the broker.
 
-#### `delivery(name, outcome, attempt, duration_ns, error_type)`: a broker delivery was settled
+#### `delivery(name, message_id, correlation_id, outcome, attempt, duration_ns, error_type)`: a broker delivery was settled
 
 A `KeyOrderedDispatcher` worker ran the handler for one delivery and settled it. This fires once
-per `Delivery`, after the ack, the nack or the dead-letter, even if that settlement raised.
+per `Delivery`, after the ack, the nack or the dead-letter, even if that settlement raised. A
+delivery that `stop()` hands back fires once too, as `stopped`, whether a worker held it or it was
+still queued.
 
 | `outcome` | What happened | What the broker does |
 |---|---|---|
@@ -128,12 +140,19 @@ per `Delivery`, after the ack, the nack or the dead-letter, even if that settlem
 | `in_progress` | the handler raised `InProgress`: another worker holds the claim; nacked after one backoff step, no attempt spent | redelivers it |
 | `sink_failed` | `on_dead` raised; nacked after one backoff step, the attempt recorded | redelivers it, and the sink gets another try |
 | `stale` | the transport retired it (a nack rewound its partition, or a rebalance took the partition) before or while the handler ran; not settled | redelivers it behind the earlier event of its key |
-| `unsettled` | the ack or the nack itself raised; neither landed | a log broker brings it back after a rebalance or a restart |
+| `stopped` | `stop()` cancelled the worker in the handler, the sink or a backoff wait, or the delivery was still queued; nacked at once | redelivers it |
+| `unsettled` | the ack or the nack itself raised, or a stop cut it short; neither is known to have landed | a log broker brings it back after a rebalance or a restart |
 
 `nack` is a transient error below the `max_attempts` ceiling, or any error when no `on_dead` is
 wired. `dead` is a terminal error on any attempt, or a transient one at the ceiling. A `stale` rate
 follows the nack rate on a log broker: each nack retires the partition's queued copies. Its
 `duration_ns` is `0` when the handler never ran.
+
+A `stopped` delivery carries the `error_type` of the handler when the handler had already raised,
+and its `duration_ns` is the handler up to the cancel, `0` for one still queued.
+
+`message_id` and `correlation_id` are the message's own, for the log line that ties a `nack` or a
+`dead` to its trace. Never label by them.
 
 `attempt` is which attempt this delivery was, from `1`, so a nack at the ceiling is told from a
 first nack. Bucket it in a histogram at `1, 2, 3, 5, 10`; never label by it. `duration_ns` is the
@@ -174,25 +193,29 @@ guard given a `unit_of_work`.
 A call that joined an ambient transaction fires nothing. The `transaction` that opened it reports
 once for every participant, so one commit is one row.
 
-#### `drain(published, duration_ns, oldest_timestamp)`: an outbox batch was published
+#### `drain(published, dead_lettered, duration_ns, oldest_timestamp)`: an outbox batch was published
 
 A `Relay` drained one batch to completion: every row published or dead-lettered, and the batch
 marked. This fires once per completed drain, an empty batch included.
 
-`published` is the count of rows published, `0` for an empty outbox. The rows handed to `on_dead`
-are `Relay.last.dead_lettered`. `duration_ns` is read to mark. `oldest_timestamp` is when the oldest
+`published` is the count of rows published, `0` for an empty outbox. `dead_lettered` is the count
+of rows handed to `on_dead` instead. `duration_ns` is read to mark. `oldest_timestamp` is when the oldest
 row in the batch was written, in Unix nanoseconds: an event's `recorded_at`, a command's `issued_at`.
 It is `None` for an empty batch. Export it as a gauge and compute the lag at query time, your clock minus the value.
 A batch that stays old is a relay that cannot keep up.
 
 A drain that raised fires `drain_failed` instead.
 
-#### `drain_failed(error)`: a drain raised before marking
+#### `drain_failed(error, published, dead_lettered)`: a drain raised before marking
 
 A `Relay` drain raised in `unpublished`, `publish` or `mark_published`. When a row failed, the rows
 before it are marked; the failing row and the rows behind it come back on the next drain, and
 delivery stays at-least-once. This fires once per failed drain, before the drain waits its backoff
 step and re-raises to the caller.
+
+`published` and `dead_lettered` count what the drain did before it failed, so add them to the same
+counters `drain` feeds and no row goes missing. Both are `0` when `unpublished` failed. When
+`mark_published` failed, they count rows the next drain sends again: at-least-once, as ever.
 
 Label by `error_type(error)`. Read a sustained rate as a relay that is stuck, and pair it with the
 `oldest_timestamp` gauge going stale.
@@ -207,6 +230,43 @@ the sink raises. This fires once per poisoned delivery, from the loop, for any `
 `error` is the decode failure; label by `error_type(error)`. Read any count as a producer
 publishing a shape this consumer cannot read: a contract problem, not a retry problem. The message
 never reached a worker, so no `delivery` reports it.
+
+#### `poll_failed(error)`: a poll raised
+
+A consumer loop's `poll` raised. A transient error waits one backoff step and polls again. A
+terminal one ends the loop and re-raises to the caller of `run`. This fires once per failed poll,
+for any `Consumer`, through the observer of the dispatcher the loop feeds. Label by
+`error_type(error)`. Read a sustained rate as a broker, or a record middleware's dependency, that is
+down: nothing is consumed meanwhile.
+
+#### `commit_failed(error)`: an offset commit failed
+
+A `KafkaConsumer` commit raised or passed its deadline, on the interval or before a revoke. The
+watermarks stay due, and the next interval tries again. This fires once per failed commit while
+`run` feeds a dispatcher, the last flush on its way out included. Label by `error_type(error)`.
+Read a sustained rate as a consumer whose progress is not saved: a restart or a rebalance
+redelivers everything since the last commit that landed.
+
+#### `revoke_overrun(handling)`: a revoke outlasted its deadline
+
+A `KafkaConsumer` revoke waited its `drain_timeout_s` and handlers were still running. The new owner
+of the revoked partitions may run one of their keys while this member still does, so per-key order
+is broken for that window. `handling` is how many handlers were still running. Alert on any count,
+and raise the deadline above the slowest handler.
+
+#### `saga_skipped(name, reason, event_id)`: an event a saga instance did not fold
+
+A `SagaRunner` routed an event to an instance, and the kernel's `saga_admit` answered that the
+instance does not fold it: no fold, no write, no command. This fires once per skipped event, before
+`on_event` returns, and also for the failure event `command_failed` folds.
+
+`name` is the saga's name. `reason` is one of `SAGA_SKIPS`, the kernel's answer. `completed` is a
+tombstone, and `repeat` an event id the instance folded. `below_mark` is a sequence below the highest
+one the instance folded from its aggregate. `event_id` is for the log line, never a label.
+
+Read `repeat` as the redelivery rate. Read a `below_mark` that follows a re-drive of a
+dead-lettered event as that event lost: the instance moved past it ([sagas](./sagas.md#sagastore)).
+An event the saga's `instance_id` ignores never reaches an instance, so it is not reported.
 
 #### `timing()` rows: handler latency
 
@@ -228,11 +288,14 @@ it.
 | How often does a failure retry, and how often does it give up? | `delivery` with `nack` and `dead`, by `error_type` |
 | How many attempts does a message need? | the `attempt` histogram on `delivery` |
 | Is the broker or the commit failing after the work is done? | `settlement_failed`, and `delivery` with `unsettled` |
+| Is the consumer polling, and is its progress saved? | `poll_failed`, `commit_failed` |
+| Did a rebalance let two members run one key? | `revoke_overrun` |
 | Is the dead-letter route down? | `delivery` with `sink_failed` |
 | Is the ledger healthy? | `settled` with `refused` |
 | How long do we hold a database connection? | `transaction` |
 | Is the outbox falling behind? | `drain` with `oldest_timestamp`, and `drain_failed` |
 | Is a producer publishing something we cannot read? | `undecodable` |
+| Did a saga skip an event it should have folded? | `saga_skipped` with `below_mark` |
 | Are the workers keeping up right now? | `stats().queue_depth` and `in_flight`, below |
 
 ### Wiring
@@ -247,6 +310,8 @@ from edax import (
     KeyOrderedDispatcher,
     Relay,
     Repository,
+    SagaRunner,
+    Tenancy,
     idempotent,
     idempotent_by_id,
     transaction,
@@ -255,10 +320,13 @@ from edax import (
 observer = OtelObserver()  # yours; see the adapter below
 
 repo = Repository(store, events, aggregates, observer=observer)
-bus = CommandBus(idempotent(ledger, scope="accounts", observer=observer))
-router = EventRouter(idempotent_by_id(ledger, unit_of_work=db, observer=observer))
+bus = CommandBus(idempotent(ledger, scope="accounts", tenancy=Tenancy.SILO, observer=observer))
+router = EventRouter(
+    idempotent_by_id(ledger, unit_of_work=db, scope="balances", tenancy=Tenancy.SILO, observer=observer)
+)
 dispatcher = KeyOrderedDispatcher(4, router.dispatch, on_dead=sink, observer=observer)
 relay = Relay(store, producer.publish, observer=observer)
+runner = SagaRunner(saga, saga_store, commands, observer=observer)
 
 async with transaction(db, observer=observer):  # a unit of work you open yourself
     ...
@@ -273,9 +341,11 @@ not. A broken exporter never fails the work it measures.
 
 ## The cardinality rule
 
-A metric adapter labels only by `name`, `verdict`, `how`, `outcome` and `error_type`. `name` is
-the handler's registered command type or event name, a closed set. It never labels by `event_id`,
-`message_id`, `key` or `aggregate_id`.
+A metric adapter labels only by `name`, `verdict`, `how`, `outcome` and `error_type`. On the bus
+`name` is the handler's registered command type, a closed set. On the consume path it is the event
+name a producer wrote, which the adapter maps to one fixed value when the router does not register
+it. It never labels by
+`event_id`, `message_id`, `correlation_id`, `key` or `aggregate_id`.
 
 Every distinct label set is one time series in the metrics database. Each outcome set is a handful
 of fixed strings. Event ids are one per message, forever. A counter labelled by event id creates a
@@ -294,10 +364,14 @@ kernel's wire code: `concurrency`, `store`, `codec`, `payload_mismatch`, `in_pro
 `cached_failure`, `handler_not_found`, `already_registered`, `bad_handle`, `rejected`. For any other
 exception it is the qualified class name, `builtins.ValueError` or
 `asyncpg.exceptions.DeadlockDetectedError`, which is the OTel recommendation for a host exception.
+`error_type` never reads a host exception's own `code` attribute: `HTTPError.code` is an int, and gRPC's
+`RpcError.code` is a method whose text holds the error details.
 
 ```python
 def error_type(e: BaseException) -> str:
-    return getattr(e, "code", None) or f"{type(e).__module__}.{type(e).__qualname__}"
+    if isinstance(e, EdaxError) and e.code is not None:
+        return e.code
+    return f"{type(e).__module__}.{type(e).__qualname__}"
 ```
 
 Terminal versus transient is not a telemetry concern. The kernel decides it, `is_terminal` reads it,
@@ -307,8 +381,11 @@ and the `cached` settlement already carry that verdict. See [errors.md](./errors
 ## The pull surface
 
 Four objects expose a snapshot for a health check or a gauge callback. The dispatcher, the relay
-and the Kafka consumer answer from memory, on the loop's thread, with no locking.
-`unpublished_count` queries the store.
+and the Kafka consumer answer from memory, with no locking. `stats()`, `idle()` and `Relay.last`
+read plain values. An observable gauge whose callback runs on the exporter's thread may read them;
+off the loop, a reading may be one settlement behind. `KafkaConsumer.stats()` reads native
+state bound to the loop's thread and raises `BadHandle` on any other, so publish its snapshot from
+the loop. `unpublished_count` queries the store.
 
 | Read | Type | Fields |
 |---|---|---|
@@ -369,7 +446,8 @@ Everything else about the request goes beside the payload, on the message.
 |---|---|---|
 | the client's `Idempotency-Key` | `dispatch(cmd, idempotency_key=...)` | the message's `idempotency_key`, which the guard claims. The client sends one key per intent, so a retry repeats it |
 | `traceparent` | `extensions` | edax context a reader acts on; fresh per attempt, so it would change the hash |
-| an application value, such as a tenant or an actor | `metadata` | the application's own; edax never reads it |
+| the tenant | `dispatch(cmd, tenant=...)` | the message's typed `tenant`, which a pooled guard claims inside and a pooled repository keys by |
+| an application value, such as an actor | `metadata` | the application's own; edax never reads it |
 | a server-minted request id | `originate(correlation_id=...)` | it roots the flow; every message the request causes carries it |
 | the causing event's id and correlation, on a saga-emitted command | the command message | the kernel sets both when the saga runner writes the outbox row |
 
@@ -428,18 +506,34 @@ time of writing and are kept in `observe.py` rather than a golden file for that 
 | edax signal | OTel instrument | Attributes |
 |---|---|---|
 | command handler latency (`timing` on the bus) | `INTERNAL` span; a host histogram if wanted | `edax.command.type`, `error.type`; no `messaging.*` |
-| event handler latency (`timing` on the router) | `messaging.process.duration`, and a `process` span from `msg.extensions` | `messaging.system`, `messaging.operation.type=process`, `error.type` |
-| `delivery(name, outcome, ..., error_type)` | `messaging.client.consumed.messages` counter, `messaging.process.duration` histogram | `messaging.destination.name=name`, `messaging.operation.type=process`, `edax.outcome`, `error.type` |
-| `delivery(..., attempt, ...)` | histogram, `edax.delivery.attempt`, buckets `1, 2, 3, 5, 10` | `messaging.destination.name`, `edax.outcome` |
-| `settlement_failed(name, ...)` | counter, `edax.settlement.failed` | `messaging.destination.name`, `error.type` |
+| event handler latency (`timing` on the router) | a `process` span from `msg.extensions` | `messaging.system`, `messaging.operation.name=process`, `messaging.operation.type=process`, `messaging.destination.name`, `messaging.message.id`, `messaging.message.conversation_id`, `error.type` |
+| `delivery(name, ..., outcome, ..., error_type)` | `messaging.client.consumed.messages` counter, `messaging.process.duration` histogram | `messaging.system`, `messaging.operation.name` (`receive` on the counter, `process` on the histogram), `messaging.destination.name=` the topic or queue, `edax.handler=name`, `edax.outcome`, `error.type` |
+| `delivery(..., attempt, ...)` | histogram, `edax.delivery.attempt`, buckets `1, 2, 3, 5, 10` | `edax.handler`, `edax.outcome` |
+| `settlement_failed(name, ...)` | counter, `edax.settlement.failed` | `messaging.destination.name`, `edax.handler`, `error.type` |
 | `claim(name, verdict)` | counter, `edax.claim.lost` | `edax.handler=name`, `edax.verdict` |
 | `settled(name, how, ...)` | histogram, `edax.claim.held` | `edax.handler=name`, `edax.settlement` |
 | `transaction(outcome, ...)` | histogram, `db.client.operation.duration`, or `edax.transaction` if the store is not a database | `edax.outcome` |
-| `drain(published, duration_ns, ...)` | `messaging.client.sent.messages` counter, `messaging.client.operation.duration` histogram | `messaging.operation.type=send` |
+| `drain(published, ...)`, `drain_failed(..., published, ...)` | `messaging.client.sent.messages` counter | `messaging.system`, `messaging.operation.name=send`, `messaging.destination.name=` the topic |
+| `drain(..., duration_ns, ...)` | `messaging.client.operation.duration` histogram | `messaging.system`, `messaging.operation.name=send`, `messaging.operation.type=send` |
+| `drain(..., dead_lettered, ...)`, `drain_failed(..., dead_lettered)` | counter, `edax.outbox.dead_lettered` | — |
 | `drain(..., oldest_timestamp)` | gauge, `edax.outbox.oldest`, the timestamp in seconds; the lag is `now - value` at query time | — |
 | `drain_failed` | counter, `edax.drain.failed` | `error.type` |
 | `undecodable` | counter, `edax.undecodable` | `error.type` |
+| `poll_failed` | counter, `edax.poll.failed` | `error.type` |
+| `commit_failed` | counter, `edax.commit.failed` | `error.type` |
+| `revoke_overrun(handling)` | counter, `edax.revoke.overrun` | — |
+| `saga_skipped(name, reason, ...)` | counter, `edax.saga.skipped` | `edax.saga=name`, `edax.reason` |
 | `stats().queue_depth` | observable gauge, `edax.dispatcher.queue_depth` | — |
+
+`messaging.destination.name` is the topic or queue, never the event name: OTel reserves it for the
+broker entity, and requires `messaging.operation.name` on every messaging metric and span. The
+`Observer` never sees the topic, so the adapter takes it from the consumer or producer it is wired
+beside. The handler goes in `edax.handler`.
+
+OTel counts `consumed.messages` when a message is received. The dispatcher reports once per
+delivery when it settles. So the counter lags the poll by the handler's time, and a delivery still
+in a worker at a crash is never counted. `client.operation.duration` from `drain` covers one whole
+batch, the outbox read and the mark included, not one send.
 
 Commands are not messaging. A dispatch on the bus is an in-process call, and the messaging
 conventions require a `messaging.system` value that has no honest answer for one. Use an `INTERNAL`
@@ -479,6 +573,15 @@ from edax.observe import (
 meter = metrics.get_meter("edax")
 BUCKETS = list(DURATION_BUCKETS)
 SYSTEM = {"messaging.system": "kafka"}  # yours
+CONSUMED_FROM = {**SYSTEM, "messaging.destination.name": "accounts"}  # the topic you consume; yours
+SENT_TO = {**SYSTEM, "messaging.destination.name": "accounts"}  # the topic the relay publishes to
+HANDLED = {"Deposited", "Withdrawn"}  # the event names your router registers
+
+
+def handler_label(name: str) -> str:
+    """`name` on the consume path is what the producer wrote: bound it to the registered set."""
+    return name if name in HANDLED else "other"
+
 
 consumed = meter.create_counter(METRIC_CONSUMED_MESSAGES)
 process = meter.create_histogram(
@@ -500,8 +603,13 @@ transactions = meter.create_histogram(
     "edax.transaction", unit=DURATION_UNIT, explicit_bucket_boundaries_advisory=BUCKETS
 )
 outbox_oldest = meter.create_gauge("edax.outbox.oldest", unit=DURATION_UNIT)
+outbox_dead = meter.create_counter("edax.outbox.dead_lettered")
 drain_failed = meter.create_counter("edax.drain.failed")
 undecodable = meter.create_counter("edax.undecodable")
+poll_failed = meter.create_counter("edax.poll.failed")
+commit_failed = meter.create_counter("edax.commit.failed")
+revoke_overrun = meter.create_counter("edax.revoke.overrun")
+saga_skipped = meter.create_counter("edax.saga.skipped")
 
 
 class OtelObserver(Observer):
@@ -512,40 +620,61 @@ class OtelObserver(Observer):
         claim_held.record(duration_ns / 1e9, {"edax.handler": name, "edax.settlement": how})
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
+        self,
+        name: str,
+        message_id: str,
+        correlation_id: str,
+        outcome: str,
+        attempt: int,
+        duration_ns: int,
+        error_type: str | None,
     ) -> None:
-        attrs = {
-            **SYSTEM,
-            "messaging.destination.name": name,
-            "messaging.operation.type": "process",
-            "edax.outcome": outcome,
-        }
+        attrs = {**CONSUMED_FROM, "edax.handler": handler_label(name), "edax.outcome": outcome}
         if error_type is not None:
             attrs["error.type"] = error_type
-        consumed.add(1, attrs)
-        process.record(duration_ns / 1e9, attrs)
-        attempts.record(attempt, {"messaging.destination.name": name, "edax.outcome": outcome})
+        consumed.add(1, {**attrs, "messaging.operation.name": "receive"})
+        process.record(duration_ns / 1e9, {**attrs, "messaging.operation.name": "process"})
+        attempts.record(attempt, {"edax.handler": handler_label(name), "edax.outcome": outcome})
 
     def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
         settlement_failed.add(
-            1, {**SYSTEM, "messaging.destination.name": name, "error.type": error_type(error)}
+            1, {**CONSUMED_FROM, "edax.handler": handler_label(name), "error.type": error_type(error)}
         )
 
     def transaction(self, outcome: str, duration_ns: int) -> None:
         transactions.record(duration_ns / 1e9, {"edax.outcome": outcome})
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        attrs = {**SYSTEM, "messaging.operation.type": "send"}
-        sent.add(published, attrs)
-        drains.record(duration_ns / 1e9, attrs)
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
+        sent.add(published, {**SENT_TO, "messaging.operation.name": "send"})
+        outbox_dead.add(dead_lettered)
+        drains.record(
+            duration_ns / 1e9,
+            {**SYSTEM, "messaging.operation.name": "send", "messaging.operation.type": "send"},
+        )
         if oldest_timestamp is not None:
             outbox_oldest.set(oldest_timestamp / 1e9)
 
-    def drain_failed(self, error: BaseException) -> None:
+    def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
+        sent.add(published, {**SENT_TO, "messaging.operation.name": "send"})
+        outbox_dead.add(dead_lettered)
         drain_failed.add(1, {**SYSTEM, "error.type": error_type(error)})
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         undecodable.add(1, {**SYSTEM, "error.type": error_type(error)})
+
+    def poll_failed(self, error: BaseException) -> None:
+        poll_failed.add(1, {**SYSTEM, "error.type": error_type(error)})
+
+    def commit_failed(self, error: BaseException) -> None:
+        commit_failed.add(1, {**SYSTEM, "error.type": error_type(error)})
+
+    def revoke_overrun(self, handling: int) -> None:
+        revoke_overrun.add(1, SYSTEM)
+
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        saga_skipped.add(1, {"edax.saga": name, "edax.reason": reason})
 ```
 
 ### Tracing middleware
@@ -568,12 +697,24 @@ from edax.router import EventHandler
 tracer = trace.get_tracer("edax")
 
 
+TOPIC = "accounts"  # the topic you consume; yours
+
+
 def traced(next_: EventHandler) -> EventHandler:
     async def handler(msg: EventMessage) -> None:
         parent = propagate.extract(msg.extensions)  # the `traceparent` saved with the event
-        attrs = {"messaging.system": "kafka", "messaging.operation.type": "process"}
+        attrs = {
+            "messaging.system": "kafka",
+            "messaging.operation.name": "process",
+            "messaging.operation.type": "process",
+            "messaging.destination.name": TOPIC,
+            "edax.handler": msg.name,
+            "messaging.message.id": msg.id,  # a span may carry the per-message ids a metric may not
+            "messaging.message.conversation_id": msg.correlation_id,
+        }
+        # OTel names a process span `{operation} {destination}`: the topic, never the event name.
         with tracer.start_as_current_span(
-            f"process {msg.name}", context=parent, kind=SpanKind.CONSUMER, attributes=attrs
+            f"process {TOPIC}", context=parent, kind=SpanKind.CONSUMER, attributes=attrs
         ) as span:
             try:
                 result = next_(msg)  # sync or async, as any EventHandler may be

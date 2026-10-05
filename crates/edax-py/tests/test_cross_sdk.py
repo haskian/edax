@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import build_command, build_message, golden
+from conftest import SCOPE, build_command, build_message, event_claimed, golden
 from edax import _edax
 from edax._async import maybe_await
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger
@@ -97,25 +97,41 @@ def test_the_event_guard_claims_the_kernels_key_and_hash(case: dict[str, Any]) -
         "Deposited",
         3,
         id=case["id"],
+        tenant=case["tenant"],
         data=bytes.fromhex(case["data_hex"]),
         extensions=case["extensions"],
         metadata=case["metadata"],
         recorded_at=case["recorded_at"],
     )
-    rule = _edax.event_idempotency(env)
-    assert (rule.key, rule.payload_hash) == (case["key"], case["payload_hash"])
+    if case["error"] is None:
+        rule = _edax.event_idempotency(env, case["tenancy"], case["scope"])
+        assert (rule.key, rule.payload_hash) == (case["key"], case["payload_hash"])
+        return
+    with pytest.raises(edax.CodecError) as caught, edax.errors.mapped():
+        _edax.event_idempotency(env, case["tenancy"], case["scope"])
+    assert str(caught.value) == case["error"].removeprefix("codec: ")
 
 
 # ---- the command claim key, the ordering key, the extension key rule ------------------------
 
 
 @pytest.mark.parametrize(
-    "case", golden("claim_key.json"), ids=lambda c: f"{c['scope']}|{c['idempotency_key']}"
+    "case",
+    golden("claim_key.json"),
+    ids=lambda c: f"{c['tenancy']}|{c['tenant']}|{c['scope']}|{c['idempotency_key']}",
 )
 def test_a_command_claims_the_kernels_scoped_key(case: dict[str, Any]) -> None:
     """The ledger key a guarded command claims: the scope's length keeps a scope holding the separator
-    from colliding with another scope and key."""
-    assert edax.claim_key(case["scope"], case["idempotency_key"]) == case["expected"]
+    from colliding with another scope and key, and a pool composes the tenant outermost. Read through the
+    SDK's own wrapper, which the guard and ``forget`` both call."""
+    tenancy = edax.Tenancy(case["tenancy"])
+    if case["error"] is None:
+        got = edax.claim_key(case["scope"], case["idempotency_key"], tenancy=tenancy, tenant=case["tenant"])
+        assert got == case["expected"]
+        return
+    with pytest.raises(edax.CodecError) as caught:
+        edax.claim_key(case["scope"], case["idempotency_key"], tenancy=tenancy, tenant=case["tenant"])
+    assert str(caught.value) == case["error"].removeprefix("codec: ")
 
 
 @pytest.mark.parametrize("case", golden("ordering_key.json"), ids=lambda c: f"{c['id']}|{c['aggregate_id']}")
@@ -232,16 +248,16 @@ async def test_a_failure_rust_cached_replays_in_python_with_its_code() -> None:
     code survives, and the dispatcher dead-letters the event on its first attempt."""
     rust = _rust_rejection()
     ledger = MemoryIdempotencyStore()
-    won = await ledger.claim("evt-1", rust.payload_hash)
+    won = await ledger.claim(event_claimed("evt-1"), rust.payload_hash)
     assert isinstance(won, edax.Won)
-    await ledger.complete("evt-1", won.handle, edax.command.decode_record(rust.stored))
+    await ledger.complete(event_claimed("evt-1"), won.handle, edax.command.decode_record(rust.stored))
     runs = 0
 
     async def handler(env: edax.EventMessage) -> None:
         nonlocal runs
         runs += 1
 
-    router = edax.EventRouter(edax.idempotent_by_id(ledger))
+    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO))
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 
@@ -274,11 +290,11 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
     async def handler(env: edax.EventMessage) -> None:
         raise edax.Rejected("insufficient funds: balance 300, withdrawal 500")
 
-    guarded = edax.idempotent_by_id(ledger)(handler)
+    guarded = edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO)(handler)
     env = build_message("acct-1", "Deposited", 1, id="evt-1", data=b"cmd-a")
     with pytest.raises(edax.Rejected):
         await maybe_await(guarded(env))
-    prior = await ledger.claim("evt-1", rust.payload_hash)
+    prior = await ledger.claim(event_claimed("evt-1"), rust.payload_hash)
     assert not isinstance(prior, Won)
     assert edax.command.encode_record(prior) == rust.stored
 
@@ -290,14 +306,14 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
     on its first attempt, instead of redelivering it until the record's retention ends."""
     [case] = [c for c in golden("idempotency_record.json") if c["name"] == "torn_write_from_rust"]
     ledger = MemoryLedger()
-    ledger.put_raw("evt-1", case["stored"])
+    ledger.put_raw(event_claimed("evt-1"), case["stored"])
     runs = 0
 
     async def handler(env: edax.EventMessage) -> None:
         nonlocal runs
         runs += 1
 
-    router = edax.EventRouter(edax.idempotent_by_id(ledger))
+    router = edax.EventRouter(edax.idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO))
     router.register("Deposited", handler)
     dead: list[BaseException] = []
 

@@ -13,16 +13,18 @@ from typing import Any
 
 import edax
 import pytest
-from conftest import SpyProducerClient
+from conftest import SpyProducerClient, build_command
 from edax import Aggregate, CommandBus, Repository, Tenancy, Version, json_codec, tenant_key
+from edax.aggregate import _replace
 from edax.backend.kafka import KafkaProducer
 from edax.backend.memory import (
+    MemoryCommandOutbox,
     MemoryEventStore,
     MemoryIdempotencyStore,
     MemorySagaStore,
     MemoryTransactor,
 )
-from edax.command import idempotent
+from edax.command import command_message, idempotent
 from edax.errors import CodecError
 from edax.saga import SagaRunner
 from edax.testing import event
@@ -211,7 +213,7 @@ async def test_a_save_cannot_name_a_tenant_the_load_did_not() -> None:
     account.apply(Deposited(10))
     with pytest.raises(CodecError):
         await repository(Tenancy.POOL, store).save(account)
-    async with store.transaction() as tx:
+    async with store.begin() as tx:
         assert await store.load(tx, "order-1") == [], "and wrote nothing"
 
 
@@ -229,6 +231,50 @@ async def test_a_bridge_leaves_the_keys_bare() -> None:
     assert globex.balance == 10, "one store, one stream: a bridge separates by store, not by key"
 
 
+@dataclass
+class Ship:
+    order_id: str
+
+    type = "Ship"
+
+
+@pytest.mark.parametrize(
+    "name, mode, loaded_for, named, want",
+    [
+        ("a command naming no tenant takes the aggregate's", Tenancy.POOL, "acme", None, "acme"),
+        ("a command naming the aggregate's tenant is kept", Tenancy.POOL, "acme", "acme", "acme"),
+        ("a bridge stamps it too", Tenancy.BRIDGE, "acme", None, "acme"),
+        ("a silo aggregate with no tenant sends none", Tenancy.SILO, None, None, None),
+        ("a command naming another tenant is refused", Tenancy.POOL, "acme", "globex", CodecError),
+        ("a silo aggregate cannot send one into a tenant", Tenancy.SILO, None, "acme", CodecError),
+    ],
+)
+async def test_a_saved_command_belongs_to_the_aggregates_tenant(
+    name: str, mode: Tenancy, loaded_for: str | None, named: str | None, want: str | type[Exception] | None
+) -> None:
+    """A command saved beside a tenant's events is that tenant's too. Left without one, a pool relay
+    could not key it and a pool bus could not claim it, and the failure would surface only at publish,
+    long after the save committed."""
+    db = MemoryTransactor()
+    store, outbox = MemoryEventStore(db), MemoryCommandOutbox(db)
+    events = json_codec({"Deposited": Deposited})
+    repo = Repository(store, events, AccountCodec(), commands=outbox, tenancy=mode)
+    account = await repo.load("order-1", tenant=loaded_for)
+    account.apply(Deposited(10))
+    ship = command_message(Ship("order-1"), aggregate_id="order-1", tenant=named)
+    if want is CodecError:
+        with pytest.raises(CodecError):
+            await repo.save(account, commands=[ship])
+        assert await outbox.unpublished(10) == [], f"{name}: no command was written"
+        assert await store.unpublished(10) == [], f"{name}: and no event"
+        return
+    stored = await repo.save(account, commands=[ship])
+    rows = await outbox.unpublished(10)
+    assert [row.tenant for row in rows] == [want], name
+    assert [row.tenant for row in stored] == [want], f"{name}: the same tenant as the events"
+    assert rows == [_replace(ship, tenant=want)], f"{name}: every other field as built"
+
+
 # ---- the command side ----------------------------------------------------
 
 
@@ -239,32 +285,120 @@ class OpenAccount:
     type = "OpenAccount"
 
 
+class KeyLog(MemoryIdempotencyStore):
+    """A ledger that records every key a guard claims, so a case can assert the exact composed row."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.claimed: list[str] = []
+
+    async def claim(self, key: str, payload_hash: int, tx: Any = None) -> edax.command.Claimed:
+        self.claimed.append(key)
+        return await super().claim(key, payload_hash, tx)
+
+
 @pytest.mark.parametrize(
-    "name, mode, want_runs",
+    "mode, tenants, want_runs, want_claimed, want_error",
     [
-        ("a pool separates two tenants' claims", Tenancy.POOL, 2),
-        ("a silo reads one request id once", Tenancy.SILO, 1),
+        pytest.param(
+            Tenancy.POOL,
+            TENANTS,
+            2,
+            ["4:acme:edax:cmd:3:api:req-1", "6:globex:edax:cmd:3:api:req-1"],
+            None,
+            id="a_pool_separates_two_tenants_claims",
+        ),
+        pytest.param(
+            Tenancy.SILO,
+            TENANTS,
+            1,
+            ["edax:cmd:3:api:req-1", "edax:cmd:3:api:req-1"],
+            None,
+            id="a_silo_reads_one_request_id_once",
+        ),
+        pytest.param(
+            Tenancy.BRIDGE,
+            TENANTS,
+            1,
+            ["edax:cmd:3:api:req-1", "edax:cmd:3:api:req-1"],
+            None,
+            id="bridge_keeps_the_key_bare",
+        ),
+        pytest.param(
+            Tenancy.POOL, (None,), 0, [], CodecError, id="pool_without_tenant_refuses_before_the_claim"
+        ),
+        pytest.param(
+            Tenancy.BRIDGE, (None,), 0, [], CodecError, id="bridge_without_tenant_refuses_before_the_claim"
+        ),
     ],
 )
 async def test_an_idempotency_claim_is_keyed_by_tenant_in_a_pool(
-    name: str, mode: Tenancy, want_runs: int
+    mode: Tenancy,
+    tenants: tuple[str | None, ...],
+    want_runs: int,
+    want_claimed: list[str],
+    want_error: type[Exception] | None,
 ) -> None:
-    """Two tenants, one shared ledger, the same client request id and the same payload: only the tenant
-    differs. In a pool each tenant claims its own row and the handler runs twice; without the
-    composition the second tenant replays the first's cached result, which is the leak."""
+    """Tenants share one ledger, the same client request id and the same payload: only the tenant
+    differs. In a pool each tenant claims its own row and the handler runs once per tenant; without the
+    composition the second tenant replays the first's cached result, which is the leak. A mode that
+    requires a tenant refuses a message without one before it touches the ledger."""
     runs: list[str | None] = []
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="api", tenancy=mode))
+    ledger = KeyLog()
+    bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
 
     @bus.on("OpenAccount")
     async def open_account(cmd: OpenAccount) -> str:
         runs.append(cmd.owner)
         return f"account:{cmd.owner}"
 
-    results = [
-        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant) for tenant in TENANTS
-    ]
-    assert results == ["account:ada", "account:ada"], "the same request, so the same answer"
-    assert len(runs) == want_runs, name
+    for tenant in tenants:
+        if want_error is None:
+            result = await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+            assert result == "account:ada", "the same request, so the same answer"
+        else:
+            with pytest.raises(want_error):
+                await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    assert len(runs) == want_runs
+    assert ledger.claimed == want_claimed
+
+
+@pytest.mark.parametrize(
+    "mode, forget_tenant, want_runs, want_error",
+    [
+        pytest.param(Tenancy.POOL, "acme", 2, None, id="forget_under_pool_reruns_the_handler"),
+        pytest.param(Tenancy.SILO, None, 2, None, id="forget_under_silo_reruns_the_handler"),
+        pytest.param(Tenancy.POOL, None, 1, CodecError, id="forget_under_pool_without_tenant_refuses"),
+    ],
+)
+async def test_forget_deletes_the_row_the_guard_wrote(
+    mode: Tenancy, forget_tenant: str | None, want_runs: int, want_error: type[Exception] | None
+) -> None:
+    """A re-drive of a cached failure: ``forget`` composes the guard's key, so the next dispatch runs the
+    handler again. Under a pool a ``forget`` that names no tenant refuses rather than delete nothing,
+    and the cached failure stays."""
+    runs = 0
+    ledger = MemoryIdempotencyStore()
+    bus = CommandBus(idempotent(ledger, scope="api", tenancy=mode))
+    tenant = "acme" if mode is Tenancy.POOL else None
+
+    @bus.on("OpenAccount")
+    async def open_account(cmd: OpenAccount) -> str:
+        nonlocal runs
+        runs += 1
+        raise edax.Rejected("owner is blocked")
+
+    with pytest.raises(edax.Rejected):
+        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    if want_error is None:
+        await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+    else:
+        with pytest.raises(want_error):
+            await edax.command.forget(ledger, "api", "req-1", tenancy=mode, tenant=forget_tenant)
+    with pytest.raises((edax.Rejected, edax.CachedFailure)) as redriven:
+        await bus.dispatch(OpenAccount("ada"), idempotency_key="req-1", tenant=tenant)
+    assert runs == want_runs
+    assert isinstance(redriven.value, edax.CachedFailure) is (want_error is not None)
 
 
 # ---- sagas ---------------------------------------------------------------
@@ -315,24 +449,61 @@ async def test_a_saga_command_inherits_the_folded_events_tenant() -> None:
 # ---- the broker ----------------------------------------------------------
 
 
+def _shard_key(msg: Any) -> str:
+    """A host key function with a host bug: ``None + str`` for a message with no ``shard``."""
+    shard: str = msg.metadata.get("shard") + "-k"
+    return shard
+
+
+_ACME_EVENT = event("order-1", "Deposited", 1, tenant="acme")
+_ACME_COMMAND = _replace(build_command("Ship", aggregate_id="order-1"), tenant="acme")
+
+
 @pytest.mark.parametrize(
-    "name, mode, key_fn, want_key",
+    "name, mode, key_fn, msg, want",
     [
-        ("a pool keys by the composed key", Tenancy.POOL, None, b"4:acme:order-1"),
-        ("a silo keys by the ordering key", Tenancy.SILO, None, b"order-1"),
-        ("a bridge keys bare: its topic is the tenant's", Tenancy.BRIDGE, None, b"order-1"),
-        ("an explicit key wins outright", Tenancy.POOL, lambda msg: msg.tenant or "", b"acme"),
+        ("a pool keys by the composed key", Tenancy.POOL, None, _ACME_EVENT, b"4:acme:order-1"),
+        (
+            "a pool keys a command by its composed aggregate",
+            Tenancy.POOL,
+            None,
+            _ACME_COMMAND,
+            b"4:acme:order-1",
+        ),
+        ("a silo keys by the ordering key", Tenancy.SILO, None, _ACME_EVENT, b"order-1"),
+        ("a bridge keys bare: its topic is the tenant's", Tenancy.BRIDGE, None, _ACME_EVENT, b"order-1"),
+        ("an explicit key wins outright", Tenancy.POOL, lambda msg: msg.tenant or "", _ACME_EVENT, b"acme"),
+        (
+            "a pool refuses a message with no tenant",
+            Tenancy.POOL,
+            None,
+            event("order-1", "Deposited", 1),
+            CodecError,
+        ),
+        # Host code, not the kernel's boundary: its own error stays transient and redelivers.
+        ("a key function's own error propagates unchanged", Tenancy.POOL, _shard_key, _ACME_EVENT, TypeError),
     ],
 )
 async def test_the_record_key_follows_the_producers_tenancy(
-    name: str, mode: Tenancy, key_fn: Any, want_key: bytes
+    name: str,
+    mode: Tenancy,
+    key_fn: Any,
+    msg: edax.EventMessage | edax.CommandMessage,
+    want: bytes | type[Exception],
 ) -> None:
     """Two tenants' same-named aggregates must not share a key, or they share a partition and a
-    key-ordered consumer serializes them together."""
+    key-ordered consumer serializes them together. The kernel decides the key, pinned by
+    ``kafka_record.json``; this proves the producer hands it the tenancy and the override."""
     client = SpyProducerClient()
     producer = KafkaProducer(client, "events", key=key_fn, tenancy=mode)
-    await producer.publish(event("order-1", "Deposited", 1, tenant="acme"))
-    assert client.sent[0][2] == want_key, name
+    if isinstance(want, bytes):
+        await producer.publish(msg)
+        assert client.sent[0][2] == want, name
+        return
+    with pytest.raises(want) as raised:
+        await producer.publish(msg)
+    assert type(raised.value) is want, f"{name}: {raised.value!r}"
+    assert client.sent == [], f"{name}: nothing was sent"
 
 
 # ---- the wire ------------------------------------------------------------

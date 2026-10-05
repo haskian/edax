@@ -89,8 +89,9 @@ pub enum HandlerFailure {
 #[derive(Debug)]
 pub struct DeadLetter {
     pub event: EventMessage,
-    /// The failed attempt that killed it: `1` for a terminal error on first delivery, the
-    /// configured `max_attempts` for an exhausted transient one.
+    /// The failed attempt that killed it, as the kernel counts it: `max(Delivery::attempt, in-process
+    /// count) + 1`. `1` for a terminal error on first delivery. At least `max_attempts` for an exhausted
+    /// transient one, and more when the broker's own count is higher or a sink failed on an earlier try.
     pub attempt: u32,
     pub failure: HandlerFailure,
 }
@@ -117,21 +118,45 @@ pub struct KeyOrderedDispatcher {
     workers: Vec<JoinHandle<()>>,
 }
 
+/// What a worker's inbox carries: a delivery to settle, or a bare event from
+/// [`KeyOrderedDispatcher::submit`] that is run and never settled.
+enum Item {
+    Delivery(Delivery),
+    Bare(EventMessage),
+}
+
+impl Item {
+    fn event(&self) -> &EventMessage {
+        match self {
+            Item::Delivery(delivery) => &delivery.event,
+            Item::Bare(event) => event,
+        }
+    }
+
+    /// No worker will take the item: nack a delivery so the broker redelivers it. A bare event has
+    /// nobody to tell.
+    fn abandon(self) {
+        if let Item::Delivery(delivery) = self {
+            delivery.nack();
+        }
+    }
+}
+
 /// One worker's inbox. Bounded by default; unbounded only when the host asks for it, which is why
 /// this is not one `SyncSender` — `sync_channel(0)` is a rendezvous, not "no limit".
 enum Queue {
-    Bounded(SyncSender<Delivery>),
-    Unbounded(Sender<Delivery>),
+    Bounded(SyncSender<Item>),
+    Unbounded(Sender<Item>),
 }
 
 impl Queue {
-    /// Blocks while a bounded queue is full. The error hands the delivery back so the caller can
-    /// nack it, which is the whole point of returning it by value.
+    /// Blocks while a bounded queue is full. The error hands the item back by value, so the caller
+    /// can abandon it.
     #[allow(clippy::result_large_err)]
-    fn send(&self, delivery: Delivery) -> Result<(), SendError<Delivery>> {
+    fn send(&self, item: Item) -> Result<(), SendError<Item>> {
         match self {
-            Queue::Bounded(sender) => sender.send(delivery),
-            Queue::Unbounded(sender) => sender.send(delivery),
+            Queue::Bounded(sender) => sender.send(item),
+            Queue::Unbounded(sender) => sender.send(item),
         }
     }
 }
@@ -219,11 +244,11 @@ impl DispatcherBuilder {
         for i in 0..n {
             let (sender, receiver) = match self.queue_depth {
                 0 => {
-                    let (sender, receiver) = channel::<Delivery>();
+                    let (sender, receiver) = channel::<Item>();
                     (Queue::Unbounded(sender), receiver)
                 }
                 depth => {
-                    let (sender, receiver) = sync_channel::<Delivery>(depth);
+                    let (sender, receiver) = sync_channel::<Item>(depth);
                     (Queue::Bounded(sender), receiver)
                 }
             };
@@ -283,11 +308,12 @@ impl KeyOrderedDispatcher {
         }
     }
 
-    /// Submit a bare event, fire-and-forget (no acknowledgement). Routed to its worker by its
-    /// ordering key; events for one aggregate keep FIFO order.
+    /// Submit a bare event, fire-and-forget: the worker runs the handler and nothing else. A failure
+    /// is dropped: with nothing to settle it never waits a backoff step, never reaches `on_dead` and
+    /// is never counted. Routed to its worker by its ordering key; events for one aggregate keep FIFO
+    /// order. Blocks while that worker's queue is full.
     pub fn submit(&self, event: EventMessage) {
-        // No-op settlers; ZST closures don't allocate, so this stays as cheap as a bare send.
-        self.deliver(Delivery::new(event, || {}, || {}));
+        self.route(Item::Bare(event));
     }
 
     /// Submit a [`Delivery`]: the worker acks it when the handler returns, nacks it (for the broker
@@ -295,17 +321,21 @@ impl KeyOrderedDispatcher {
     /// policy. Same ordering-key routing and FIFO ordering. Blocks while that worker's queue is
     /// full (see [`DispatcherBuilder::queue_depth`]).
     pub fn deliver(&self, delivery: Delivery) {
+        self.route(Item::Delivery(delivery));
+    }
+
+    fn route(&self, item: Item) {
         let workers = u32::try_from(self.senders.len()).unwrap_or(u32::MAX);
-        let idx = usize::try_from(partition(delivery.event.ordering_key(), workers)).unwrap_or(usize::MAX);
+        let idx = usize::try_from(partition(item.event().ordering_key(), workers)).unwrap_or(usize::MAX);
         // The worker loop never unwinds, so the receiver lives until stop() consumes self. If it is
         // gone anyway — or the partition names no queue, which `partition`'s range rules out — nack
-        // rather than strand the delivery.
+        // rather than strand a delivery.
         let Some(queue) = self.senders.get(idx) else {
-            delivery.nack();
+            item.abandon();
             return;
         };
-        if let Err(SendError(delivery)) = queue.send(delivery) {
-            delivery.nack();
+        if let Err(SendError(item)) = queue.send(item) {
+            item.abandon();
         }
     }
 
@@ -321,9 +351,9 @@ impl KeyOrderedDispatcher {
 
 /// One worker thread's state. The retry policy is per worker and unlocked: an event id always
 /// carries the same aggregate id, and the aggregate routes to exactly one worker for the life of
-/// the dispatcher, so no other thread ever reads or writes its entry. Entries for nacked messages
-/// that never come back stay until the id is seen again; bound with a TTL or LRU if a broker-side
-/// DLQ steals them under sustained failure.
+/// the dispatcher, so no other thread ever reads or writes its entry. An entry for a nacked message
+/// that never comes back (a broker-side dead-letter queue took it, or a rebalance moved its
+/// partition) stays for the life of the dispatcher: the map has no bound.
 struct Worker {
     handler: Arc<Handler>,
     on_dead: Option<Arc<DeadLetterHook>>,
@@ -335,10 +365,14 @@ struct Worker {
 }
 
 impl Worker {
-    fn run(mut self, receiver: Receiver<Delivery>) {
+    fn run(mut self, receiver: Receiver<Item>) {
         // Loop ends when all senders are dropped (channel disconnected) on stop().
-        for delivery in receiver {
-            self.settle(delivery);
+        for item in receiver {
+            match item {
+                Item::Delivery(delivery) => self.settle(delivery),
+                // Fire-and-forget: the retry policy decides how a delivery settles, and this settles nothing.
+                Item::Bare(event) => drop(self.run_handler(&event)),
+            }
         }
     }
 
@@ -930,6 +964,56 @@ mod tests {
             assert_eq!(*dead.lock().unwrap(), c.want_dead, "{}: on_dead attempts", c.name);
             let want_slept: Vec<Duration> = c.want_slept.iter().map(|&step| kernel_wait(step)).collect();
             assert_eq!(*slept.lock().unwrap(), want_slept, "{}: backoff steps", c.name);
+        }
+    }
+
+    #[test]
+    fn submit_runs_the_handler_only_branches() {
+        // A bare event is fire-and-forget, as in Python: whatever the handler does, nothing settles it,
+        // so no backoff blocks the worker, nothing reaches the sink, and the third run of one id past
+        // `max_attempts(2)` is still just a run. Each case submits the same event three times.
+        #[derive(Clone, Copy)]
+        enum Outcome {
+            Ok,
+            Transient,
+            Terminal,
+            Panic,
+        }
+        let cases = [
+            ("a handler that succeeds runs", Outcome::Ok),
+            ("a transient failure is dropped, never backed off or dead-lettered", Outcome::Transient),
+            ("a terminal failure is dropped, never dead-lettered", Outcome::Terminal),
+            ("a panic is dropped and the worker keeps running", Outcome::Panic),
+        ];
+        for (name, outcome) in cases {
+            let runs = Arc::new(Mutex::new(0usize));
+            let dead: Arc<Mutex<Vec<u32>>> = Arc::default();
+            let (h_runs, sink) = (Arc::clone(&runs), Arc::clone(&dead));
+            let (pacing, slept) = Pacing::recording();
+            let consumer = KeyOrderedDispatcher::builder(1, move |_: &EventMessage| {
+                *h_runs.lock().unwrap() += 1;
+                match outcome {
+                    Outcome::Ok => Ok(()),
+                    Outcome::Transient => Err(Error::store("projection unavailable").into()),
+                    Outcome::Terminal => Err(Error::codec("bad bytes").into()),
+                    Outcome::Panic => panic!("handler bug"),
+                }
+            })
+            .max_attempts(2)
+            .on_dead(move |letter: DeadLetter| {
+                sink.lock().unwrap().push(letter.attempt);
+                Ok(())
+            })
+            .pacing(pacing)
+            .build()
+            .expect("the dispatcher's workers spawn");
+            for _ in 0..3 {
+                consumer.submit(event("a", "Tick", 1));
+            }
+            consumer.stop();
+            assert_eq!(*runs.lock().unwrap(), 3, "{name}: every submit runs the handler once");
+            assert!(dead.lock().unwrap().is_empty(), "{name}: nothing reaches on_dead");
+            assert!(slept.lock().unwrap().is_empty(), "{name}: no backoff step blocks the worker");
         }
     }
 

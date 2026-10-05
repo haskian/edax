@@ -13,11 +13,11 @@ object is the `Transactor`.
 classDiagram
     class Transactor {
         <<seam>>
-        +transaction() AsyncContextManager
+        +begin() AsyncContextManager
     }
     class EventStore {
         <<seam>>
-        +transaction()
+        +begin()
         +load(tx, aggregate_id, after)
         +append(tx, aggregate_id, expected_version, drafts) messages
         +load_snapshot(tx, aggregate_id)
@@ -43,7 +43,7 @@ classDiagram
     }
     class MemoryTransactor {
         <<backend>>
-        +transaction()
+        +begin()
         +auto_commit() MemoryTx
         +token(tx) int
     }
@@ -61,12 +61,13 @@ The `Transactor` Protocol has one method, and its docstring is the specification
 
 | Clause | What a backend must guarantee |
 |---|---|
-| scope | `transaction()` returns an async context manager. A clean exit commits; an exception rolls back and re-raises. |
+| scope | `begin()` returns an async context manager. A clean exit commits; an exception rolls back and re-raises. |
+| one opener | `begin()` is the backend's hook. A host opens every unit of work with `edax.transaction(t)`, which calls it. A raw `begin()` publishes no `current_tx`, so a `Repository.save` given no tx inside it would commit on its own and the nesting guard would not see it. |
 | isolation | Nothing written through the yielded `tx` is visible to other transactions before commit. |
 | one handle | The yielded `tx` is one backend handle that every participant store accepts. Writes through it are atomic as a set: all commit or none. |
 | read-your-writes | A participant handed the same `tx` reads its own uncommitted writes. `Repository.load` after `Repository.save` in one `transaction` sees the appended events. |
 | no nesting | The software development kit (SDK) never nests. `Repository` and the stores join the ambient `current_tx` of their own transactor instead of opening a second one, so no savepoint support is needed. A second `transaction` on the same transactor raises `BadHandle`; one over another database nests, and each database's stores see only its own unit of work. |
-| identity | An object whose `transaction()` only delegates to another transactor names that transactor as its `transactor` attribute, so `transaction(store)` and `transaction(store.transactor)` open the same unit of work and every store over the database finds it. |
+| identity | An object whose `begin()` only delegates to another transactor names that transactor as its `transactor` attribute, so `transaction(store)` and `transaction(store.transactor)` open the same unit of work and every store over the database finds it. |
 | threading | The handle is used from one asyncio task at a time; no thread safety required. |
 
 Rust states the same boundary as a trait. `identity` and `transaction` have default bodies:
@@ -114,7 +115,7 @@ publishes the open handle in a `contextvars.ContextVar`, keyed by the database i
 
 ```python
 database = id(_database(transactor))  # follows `.transactor` to the transactor that owns the database
-async with transactor.transaction() as tx:
+async with transactor.begin() as tx:
     token = _ambient.set({**_ambient.get(), database: tx})
     try:
         yield tx
@@ -129,8 +130,9 @@ each store asks for its own database's tx. So two databases nest, and each commi
 its own.
 `test_transactor.py::test_two_databases_nest_and_each_store_joins_its_own` runs all four outcomes.
 
-The function and the `Transactor` method share the name on purpose: `async with edax.transaction(store):`
-opens the store's own unit of work and publishes it. `transaction(transactor, observer=...)` reports
+The hook and the opener have different names on purpose. `async with edax.transaction(store):` opens
+the store's own unit of work through `store.begin()` and publishes it. No method named `transaction`
+opens one unpublished, so a host cannot call the wrong one. `transaction(transactor, observer=...)` reports
 each unit of work as `committed` or `rolled_back` with its duration. See
 [observability.md](./observability.md).
 

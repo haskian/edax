@@ -1,6 +1,7 @@
 //! Read-side event router. [`EventRouter`] dispatches an event to the handler registered for its name,
 //! through a middleware chain, and plugs into a [`crate::dispatcher::KeyOrderedDispatcher`].
-//! [`idempotent_by_id`] claims the event id, making a handler's side effect effectively-once.
+//! [`idempotent_by_id`] claims the event id under the consumer's scope, so a handler's side effect is
+//! effectively-once.
 
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use edax_event::{event_idempotency, EventMessage};
 
 use crate::chain::Chain;
 use crate::command::{guarded, HandlerError, IdempotencyStore};
-use crate::Error;
+use crate::{Error, Tenancy};
 
 /// Handles one committed event. `Send + Sync` so a router can sit behind a worker pool. It fails with
 /// the same [`HandlerError`] a command handler does, so a saga that dispatches a command returns the
@@ -66,15 +67,22 @@ impl EventRouter {
 }
 
 /// Run a handler at most once per event id, so a broker redelivery does not repeat its side effect. The key and
-/// hash are the kernel's ([`edax_event::event_idempotency`]): `event.id`, and FNV-1a over the raw `event.data`
-/// bytes; the `()` result is stored as `null`. A redelivery of a completed event returns `Ok(())`. A claim
-/// another worker holds gives the transient `in_progress` error, which the dispatcher nacks. A transient
-/// handler failure, or a panic, releases the claim; a terminal one is cached with its code and replays as the
-/// terminal `cached_failure`. Two events sharing an id with different bodies give the terminal
-/// `payload_mismatch`. The default handle gives at-least-once; [`idempotent_by_id_in`] commits the claim with
-/// the writes. See `docs/sdk/idempotency.md`.
-pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(store: EventIdempotencyStore<T>) -> EventMiddleware {
-    idempotent_by_id_in(store, |_| T::default())
+/// hash are the kernel's ([`edax_event::event_idempotency`]): `event.id` under `scope`, composed with the
+/// event's tenant under [`Tenancy::Pool`], and FNV-1a over the raw `event.data` bytes; the `()` result is stored
+/// as `null`. `scope` names this consumer, so two consumers guarding over one store each run their handler
+/// once. Under a pool or a bridge an event that names no tenant is the terminal `codec` error, before any
+/// claim. A redelivery of a completed event returns `Ok(())`. A claim another worker holds gives the
+/// transient `in_progress` error, which the dispatcher nacks. A transient handler failure, or a panic,
+/// releases the claim; a terminal one is cached with its code and replays as the terminal `cached_failure`.
+/// Two events sharing an id with different bodies give the terminal `payload_mismatch`. The default handle
+/// gives at-least-once; [`idempotent_by_id_in`] commits the claim with the writes. See
+/// `docs/sdk/idempotency.md`.
+pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(
+    store: EventIdempotencyStore<T>,
+    scope: impl Into<String>,
+    tenancy: Tenancy,
+) -> EventMiddleware {
+    idempotent_by_id_in(store, scope, tenancy, |_| T::default())
 }
 
 /// [`idempotent_by_id`] over the host's transaction. `current` is called once per guarded event, with that event,
@@ -84,17 +92,21 @@ pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(store: EventIdempote
 /// worker threads, so it must be `Send + Sync`, and it takes the event: one slot every worker reads is a race.
 pub fn idempotent_by_id_in<T: Send + Sync + 'static>(
     store: EventIdempotencyStore<T>,
+    scope: impl Into<String>,
+    tenancy: Tenancy,
     current: impl Fn(&EventMessage) -> T + Send + Sync + 'static,
 ) -> EventMiddleware {
     // The middleware closure runs once per registered handler; the reference counts give each a cheap clone.
+    let scope: Arc<str> = Arc::from(scope.into());
     let current = Arc::new(current);
     Box::new(move |next: EventHandler| {
         let store = Arc::clone(&store);
+        let scope = Arc::clone(&scope);
         let current = Arc::clone(&current);
         Box::new(move |event: &EventMessage| -> Result<(), HandlerError> {
-            let rule = event_idempotency(event);
+            let rule = event_idempotency(event, tenancy, &scope)?;
             let mut tx = current(event);
-            guarded(&*store, &mut tx, rule.key, rule.payload_hash, || next(event))
+            guarded(&*store, &mut tx, &rule.key, rule.payload_hash, || next(event))
         })
     })
 }
@@ -114,6 +126,10 @@ mod tests {
 
     const DEPOSITED: &[u8] =
         br#"{"account_id":"acct-1","amount_cents":4200,"currency":"USD","occurred_at":"2024-05-01T12:00:00Z"}"#;
+    /// The consumer every guard here is, unless a case names another.
+    const SCOPE: &str = "balances";
+    /// The ledger key that consumer claims for [`deposited`] (`event_idempotency.json`).
+    const KEY: &str = "edax:evt:8:balances:acct-1-3";
 
     /// One committed event; every case redelivers this exact event (or one sharing its id).
     fn deposited(data: &[u8]) -> EventMessage {
@@ -341,7 +357,7 @@ mod tests {
             Case {
                 name: "claim held by another worker fails with InProgress",
                 errors: &[],
-                want: [Some(Error::new(ErrorCode::InProgress, "acct-1-3")), Some(Error::new(ErrorCode::InProgress, "acct-1-3"))],
+                want: [Some(Error::new(ErrorCode::InProgress, KEY)), Some(Error::new(ErrorCode::InProgress, KEY))],
                 held: true,
                 redelivered: DEPOSITED,
                 want_calls: 0,
@@ -371,7 +387,7 @@ mod tests {
             Case {
                 name: "same id with a different body fails with PayloadMismatch",
                 errors: &[None],
-                want: [None, Some(Error::new(ErrorCode::PayloadMismatch, "acct-1-3"))],
+                want: [None, Some(Error::new(ErrorCode::PayloadMismatch, KEY))],
                 held: false,
                 redelivered: br#"{"account_id":"acct-1","amount_cents":9900,"currency":"USD"}"#,
                 want_calls: 1,
@@ -391,10 +407,10 @@ mod tests {
                     None => Ok(()),
                 }
             });
-            let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>)(handler);
+            let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, SCOPE, Tenancy::Silo)(handler);
             if c.held {
                 let hash = edax_cqrs::payload_hash(DEPOSITED);
-                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), "acct-1-3", hash), Ok(Claim::Won(_))), "{}", c.name);
+                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), KEY, hash), Ok(Claim::Won(_))), "{}", c.name);
                 store.claims.store(0, Ordering::SeqCst);
             }
 
@@ -413,6 +429,78 @@ mod tests {
     }
 
     #[test]
+    fn the_claim_is_keyed_by_scope_and_tenant() {
+        // Two deliveries of one event id over one shared store, each through a guard of its own: the
+        // scope, tenancy and tenant decide whether the second finds the first's record.
+        type Delivery = (&'static str, Tenancy, Option<&'static str>);
+        struct Case {
+            name: &'static str,
+            deliveries: [Delivery; 2],
+            want_runs: [usize; 2],
+            want_claims: usize,
+            want_error: Option<ErrorCode>,
+        }
+        let (silo, pool, bridge) = (Tenancy::Silo, Tenancy::Pool, Tenancy::Bridge);
+        let cases = [
+            Case {
+                name: "two consumers on one store each run their handler",
+                deliveries: [("balances", silo, None), ("receipts", silo, None)],
+                want_runs: [1, 1],
+                want_claims: 2,
+                want_error: None,
+            },
+            Case {
+                name: "one consumer skips its own redelivery",
+                deliveries: [("balances", silo, None), ("balances", silo, None)],
+                want_runs: [1, 0],
+                want_claims: 2,
+                want_error: None,
+            },
+            Case {
+                name: "a pool keeps two tenants' events apart",
+                deliveries: [("balances", pool, Some("acme")), ("balances", pool, Some("globex"))],
+                want_runs: [1, 1],
+                want_claims: 2,
+                want_error: None,
+            },
+            Case {
+                name: "a bridge keeps the key bare",
+                deliveries: [("balances", bridge, Some("acme")), ("balances", bridge, Some("globex"))],
+                want_runs: [1, 0],
+                want_claims: 2,
+                want_error: None,
+            },
+            Case {
+                name: "a pool refuses an event without a tenant before the claim",
+                deliveries: [("balances", pool, None), ("balances", pool, None)],
+                want_runs: [0, 0],
+                want_claims: 0,
+                want_error: Some(ErrorCode::Codec),
+            },
+        ];
+        for c in cases {
+            let store = CountingStore::new();
+            let mut runs = Vec::new();
+            for (scope, mode, tenant) in c.deliveries {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let counted = Arc::clone(&calls);
+                let handler: EventHandler = Box::new(move |_: &EventMessage| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                });
+                let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, scope, mode)(handler);
+                let mut env = deposited(DEPOSITED);
+                env.tenant = tenant.map(ToOwned::to_owned);
+                let code = guarded(&env).err().and_then(|e| e.downcast_ref::<Error>().map(|e| e.code));
+                assert_eq!(code, c.want_error, "{}", c.name);
+                runs.push(calls.load(Ordering::SeqCst));
+            }
+            assert_eq!(runs, c.want_runs, "{}: handler runs", c.name);
+            assert_eq!(store.claims.load(Ordering::SeqCst), c.want_claims, "{}: claims", c.name);
+        }
+    }
+
+    #[test]
     fn a_panicking_handler_releases_the_claim() {
         // The dispatcher swallows a handler panic and nacks, so a claim leaked by the unwind would
         // make every redelivery read a pending record: `InProgress` forever, no progress possible.
@@ -425,7 +513,7 @@ mod tests {
             }
             Ok(())
         });
-        let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>)(handler);
+        let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, SCOPE, Tenancy::Silo)(handler);
         let env = deposited(DEPOSITED);
 
         assert!(catch_unwind(AssertUnwindSafe(|| guarded(&env))).is_err(), "the panic reaches the dispatcher");
@@ -465,7 +553,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let settled: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
         let store: EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::new());
-        let mut router = EventRouter::new().with(idempotent_by_id(store));
+        let mut router = EventRouter::new().with(idempotent_by_id(store, SCOPE, Tenancy::Silo));
         let c = Arc::clone(&calls);
         router
             .register("Deposited", Box::new(move |_: &EventMessage| {
@@ -512,7 +600,7 @@ mod tests {
             Ok(())
         });
         let published = Arc::clone(&open);
-        let guarded = Arc::new(idempotent_by_id_in(store, move |env: &EventMessage| {
+        let guarded = Arc::new(idempotent_by_id_in(store, SCOPE, Tenancy::Silo, move |env: &EventMessage| {
             published.lock().expect("no worker panics").get(&env.id).copied().unwrap_or_else(MemoryTx::auto_commit)
         })(handler));
 
@@ -568,14 +656,15 @@ mod tests {
         let message = row["error"].as_str().expect("a failed row has a message").to_owned();
         let store: EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::new());
         let handler: EventHandler = Box::new(move |_: &EventMessage| Err(crate::Terminal::new(message.clone()).into()));
-        let guarded = idempotent_by_id(Arc::clone(&store))(handler);
+        let guarded = idempotent_by_id(Arc::clone(&store), SCOPE, Tenancy::Silo)(handler);
         let mut env = event("acct-1", "Deposited", 1);
         env.id = "evt-1".into();
         env.data = b"cmd-a".to_vec();
         let err = guarded(&env).expect_err("the handler rejects");
         assert!(err.downcast_ref::<crate::Terminal>().is_some(), "the caller sees its own rejection");
 
-        let stored = match store.claim(&mut MemoryTx::auto_commit(), "evt-1", 0).unwrap() {
+        let key = event_idempotency(&env, Tenancy::Silo, SCOPE).unwrap().key;
+        let stored = match store.claim(&mut MemoryTx::auto_commit(), &key, 0).unwrap() {
             Claim::Prior(record) => record,
             Claim::Won(_) => panic!("nothing was cached"),
         };

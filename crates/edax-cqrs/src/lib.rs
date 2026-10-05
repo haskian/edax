@@ -9,11 +9,13 @@
 //!
 //! - [`canonical_json`] — re-emit JSON in the RFC 8785 canonical form so the same logical command
 //!   serializes identically regardless of how the host produced it, or which `serde_json` features a
-//!   build turned on. An integer literal past 2^53, which that form would round, is refused.
+//!   build turned on. An integer literal outside `-(2^53-1)..=2^53-1`, which that form would round,
+//!   is refused.
 //! - [`payload_hash`] — a stable hash of bytes, for idempotency-key payload binding.
 //! - [`command_hash`] — *which* bytes a command's idempotency hash covers: its name and the whole
 //!   command value, serialized, canonicalized, hashed. The input rule is the kernel's, not the host's.
-//! - [`claim_key`] — the ledger key a command's idempotency guard claims, scoped by the guard.
+//! - [`claim_key`] — the ledger key a command's idempotency guard claims, scoped by the guard and,
+//!   in a pool, by the tenant.
 //! - [`Record`] / [`outcome`] — the stored idempotency record's wire shape, its reading order, and
 //!   the verdict a losing claimant reaches from it (in flight, cached failure, cached success).
 //!
@@ -21,6 +23,13 @@
 //!
 //! - [`filter`] — the backend-neutral filter AST and its evaluator, whose match decision must be
 //!   identical in every language.
+//! - [`canonical_decimal`] — the one text an exact decimal travels as, in a document, a filter or a
+//!   command, and the value order the decimal [`Collation`] gives a filter and a sort.
+//! - [`canonical_timestamp`] — the one text an instant travels as: fixed-width UTC, so string order
+//!   is instant order.
+//!
+//! The two host-value forms live here because both halves read them: the command hash sees one value
+//! per decimal and per instant, and the filter and the sort order them.
 //! - [`mod@query`] — sort and pagination semantics over the documents a filter selects, including
 //!   the keyset cursor a page boundary is minted as, bound to the sort it was minted under.
 //!
@@ -32,14 +41,18 @@
 #![warn(missing_docs)]
 
 mod canonical;
+mod decimal;
 pub mod filter;
 pub mod query;
 pub mod record;
+mod timestamp;
 
 pub use canonical::canonical_json;
+pub use decimal::{canonical_decimal, MAX_DECIMAL_DIGITS};
+pub use timestamp::canonical_timestamp;
 use edax_core::Error;
 
-pub use filter::{eval, eval_json, Filter, Operator};
+pub use filter::{eval, eval_json, Collation, Filter, Operator};
 // The whole query surface, so no binding reaches into `query::` and makes a module path an
 // external contract.
 pub use query::{
@@ -66,8 +79,9 @@ pub fn payload_hash(bytes: &[u8]) -> u64 {
 /// encoder (Python: `msgspec.json.encode`) and hands the kernel the JSON — that is what
 /// [`command_hash_json`] is. Both paths land on the same bytes because canonicalization removes
 /// everything an encoder is free to choose: key order, whitespace, string escaping, and how a number
-/// is spelled (`2` and `2.0` are one number). A command holding an integer past 2^53 is refused, since
-/// the canonical form's doubles would round it onto its neighbour.
+/// is spelled (`2` and `2.0` are one number). A command holding an integer outside
+/// `-(2^53-1)..=2^53-1` is refused, since the canonical form's doubles would round it onto its
+/// neighbour.
 ///
 /// What the value *contains* is its wire shape — the field names and which fields exist — and
 /// that belongs to the host, as it does for events: two services that share an idempotency store
@@ -111,15 +125,19 @@ fn hash_canonical(json: &[u8]) -> Result<u64, Error> {
 }
 
 /// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
-/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
+/// `scope`, in a deployment that separates tenants by `mode`:
+/// `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`, composed with the command's `tenant` under
+/// [`Tenancy::Pool`](edax_core::Tenancy::Pool) (`"4:acme:edax:cmd:..."`).
 ///
 /// The scope names the guard (a service, or a stage within one), so an ingress guard and a consumer
 /// guard sharing one ledger never replay each other's outcome for the same key. The scope's byte
 /// length makes the key injective: no scope and key pair spells another's. The `edax:cmd:` prefix
-/// keeps command claims apart from event claims, whose key is the event id (a guid by default).
-/// Pinned by `testdata/golden/claim_key.json`.
-pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
-    format!("edax:cmd:{}", edax_core::scoped(scope, idempotency_key))
+/// keeps command claims apart from event claims. The tenant keeps one request id reused by two
+/// tenants of a pool on two rows. A mode that requires a tenant and a command that names none is a
+/// `codec` error, so a pool never claims a shared row. Both guards and every `forget` spell the key
+/// here ([`edax_core::guard_key`]). Pinned by `testdata/golden/claim_key.json`.
+pub fn claim_key(mode: edax_core::Tenancy, tenant: Option<&str>, scope: &str, idempotency_key: &str) -> Result<String, Error> {
+    edax_core::guard_key(mode, tenant, "cmd", scope, idempotency_key)
 }
 
 #[cfg(test)]

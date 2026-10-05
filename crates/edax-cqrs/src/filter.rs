@@ -22,11 +22,17 @@
 //!   side's sort gives each pair. Any other pairing (mismatched types, arrays, objects) is not
 //!   ordered and yields `false`.
 //!
+//! - **The decimal collation** (`"collation": "decimal"` on `Compare` or `In`) reads both sides as
+//!   decimal text ([`crate::canonical_decimal`]) and compares them by exact value: `"9.5" < "10"`
+//!   and `"9.50" == "9.5"`, at any precision. Under it, a document value that is not decimal text
+//!   (a number, a bool, a string such as `"n/a"`) compares like a mismatched type: `Eq`, ordering
+//!   and `In` are `false`, and `Ne` is `true`.
+//!
 //! Dates and timestamps need no operator of their own, but string order is chronological only for
-//! one fixed-width form in one zone: store them as UTC with a `Z` suffix and a fixed fraction width
-//! (`2024-01-01T00:00:00.000000Z`), or as epoch integers. A form that omits a zero fraction
-//! (`...00Z` sorts after `...00.500000Z`) or keeps an offset (`+01:00` sorts by wall time, not by
-//! instant) orders wrongly, silently.
+//! one fixed-width form in one zone: UTC with a `Z` suffix and six fraction digits
+//! (`2024-01-01T00:00:00.000000Z`), the form every SDK writes a host timestamp in, or epoch integers.
+//! A form that omits a zero fraction (`...00Z` sorts after `...00.500000Z`) or keeps an offset
+//! (`+01:00` sorts by wall time, not by instant) orders wrongly, silently.
 //!
 //! `StartsWith` is a string-prefix test (both operands must be strings, else `false`). `Contains`
 //! is the mirror of `In`: `In` tests a scalar path against a given set, `Contains` tests whether
@@ -38,7 +44,9 @@
 //!   `Exists` for a missing or null path instead;
 //! - a path with an empty segment (`""`, `"a."`, `"a..b"`). A path is dot-delimited object keys:
 //!   a key containing `.` cannot be addressed, and a numeric segment is a key, never an array index;
-//! - an integer literal wider than 64 bits, which would otherwise be compared as the nearest float.
+//! - an integer literal wider than 64 bits, which would otherwise be compared as the nearest float;
+//! - under the decimal collation, a comparand that is not decimal text, and `StartsWith`, which tests
+//!   text and not a value.
 
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
@@ -67,6 +75,16 @@ pub enum Operator {
     StartsWith,
 }
 
+/// How a filter or a sort reads the values it compares, when plain JSON order is not what they
+/// mean. Unset, numbers compare as numbers and strings by code point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Collation {
+    /// Strings holding decimal text, compared by exact value (see [`crate::canonical_decimal`]).
+    Decimal,
+}
+
 /// A sealed filter AST. Each variant serializes to an externally-tagged JSON object, e.g.
 /// `{"compare": {"path": "...", "op": "eq", "value": ...}}`, `{"and": [...]}`, `{"not": {...}}`.
 /// The bindings produce this exact shape, so a filter built in any language is identical.
@@ -81,6 +99,9 @@ pub enum Filter {
         op: Operator,
         /// The value to compare against.
         value: Value,
+        /// How both sides are read; unset compares plain JSON values.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collation: Option<Collation>,
     },
     /// Set membership: matches iff the value at `path` equals one of `values`.
     In {
@@ -88,6 +109,9 @@ pub enum Filter {
         path: String,
         /// The set the document value must belong to.
         values: Vec<Value>,
+        /// How the document value and each member are read; unset compares plain JSON values.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collation: Option<Collation>,
     },
     /// Array membership: matches iff the path resolves to an array that contains `value`. The
     /// mirror of `In` (which tests a scalar path against a given set).
@@ -115,69 +139,100 @@ pub enum Filter {
 
 // --- constructors (ergonomic; the bindings mirror these) ---
 
-/// The value at `path` equals `value`.
-pub fn eq(path: impl Into<String>, value: Value) -> Filter {
+fn compare(path: impl Into<String>, op: Operator, value: Value) -> Filter {
     Filter::Compare {
         path: path.into(),
-        op: Operator::Eq,
+        op,
         value,
+        collation: None,
     }
+}
+
+/// The value at `path` equals `value`.
+pub fn eq(path: impl Into<String>, value: Value) -> Filter {
+    compare(path, Operator::Eq, value)
 }
 /// The value at `path` differs from `value`.
 pub fn ne(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::Ne,
-        value,
-    }
+    compare(path, Operator::Ne, value)
 }
 /// The value at `path` is greater than `value`.
 pub fn gt(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::Gt,
-        value,
-    }
+    compare(path, Operator::Gt, value)
 }
 /// The value at `path` is greater than or equal to `value`.
 pub fn gte(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::Gte,
-        value,
-    }
+    compare(path, Operator::Gte, value)
 }
 /// The value at `path` is less than `value`.
 pub fn lt(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::Lt,
-        value,
-    }
+    compare(path, Operator::Lt, value)
 }
 /// The value at `path` is less than or equal to `value`.
 pub fn lte(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::Lte,
-        value,
-    }
+    compare(path, Operator::Lte, value)
 }
 /// The value at `path` is one of `values`.
 pub fn is_in(path: impl Into<String>, values: Vec<Value>) -> Filter {
     Filter::In {
         path: path.into(),
         values,
+        collation: None,
     }
 }
 /// The string at `path` starts with the string `value`.
 pub fn starts_with(path: impl Into<String>, value: Value) -> Filter {
-    Filter::Compare {
-        path: path.into(),
-        op: Operator::StartsWith,
-        value,
+    compare(path, Operator::StartsWith, value)
+}
+/// Constructors under [`Collation::Decimal`]: the value at `path` and `value` are decimal text, and
+/// compare by exact value (`decimal::lt("price", "10")` matches `"9.5"`).
+pub mod decimal {
+    use super::{Collation, Filter, Operator};
+    use serde_json::Value;
+
+    fn compare(path: impl Into<String>, op: Operator, value: impl Into<String>) -> Filter {
+        Filter::Compare {
+            path: path.into(),
+            op,
+            value: Value::String(value.into()),
+            collation: Some(Collation::Decimal),
+        }
+    }
+
+    /// The decimal at `path` equals `value`.
+    pub fn eq(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Eq, value)
+    }
+    /// The decimal at `path` differs from `value`.
+    pub fn ne(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Ne, value)
+    }
+    /// The decimal at `path` is greater than `value`.
+    pub fn gt(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Gt, value)
+    }
+    /// The decimal at `path` is greater than or equal to `value`.
+    pub fn gte(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Gte, value)
+    }
+    /// The decimal at `path` is less than `value`.
+    pub fn lt(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Lt, value)
+    }
+    /// The decimal at `path` is less than or equal to `value`.
+    pub fn lte(path: impl Into<String>, value: impl Into<String>) -> Filter {
+        compare(path, Operator::Lte, value)
+    }
+    /// The decimal at `path` equals one of `values`.
+    pub fn is_in<V: Into<String>>(path: impl Into<String>, values: impl IntoIterator<Item = V>) -> Filter {
+        Filter::In {
+            path: path.into(),
+            values: values.into_iter().map(|value| Value::String(value.into())).collect(),
+            collation: Some(Collation::Decimal),
+        }
     }
 }
+
 /// The array at `path` contains `value`.
 pub fn contains(path: impl Into<String>, value: Value) -> Filter {
     Filter::Contains {
@@ -292,21 +347,36 @@ pub fn value_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
+/// [`value_cmp`] under a collation. Under [`Collation::Decimal`] two decimal texts order by value,
+/// and any other pair is unordered (`None`), as a mismatched type is.
+pub fn collated_cmp(collation: Option<Collation>, a: &Value, b: &Value) -> Option<Ordering> {
+    match collation {
+        None => value_cmp(a, b),
+        Some(Collation::Decimal) => match (a, b) {
+            (Value::String(x), Value::String(y)) => crate::decimal::decimal_cmp(x, y),
+            _ => None,
+        },
+    }
+}
+
+/// Equality under a collation: [`value_eq`] unset, equal decimal values under [`Collation::Decimal`].
+fn collated_eq(collation: Option<Collation>, a: &Value, b: &Value) -> bool {
+    match collation {
+        None => value_eq(a, b),
+        Some(_) => collated_cmp(collation, a, b) == Some(Ordering::Equal),
+    }
+}
+
 /// Apply an operator to a present, non-null document value and the filter's value.
-fn apply(op: Operator, doc_value: &Value, filter_value: &Value) -> bool {
+fn apply(op: Operator, collation: Option<Collation>, doc_value: &Value, filter_value: &Value) -> bool {
+    let order = || collated_cmp(collation, doc_value, filter_value);
     match op {
-        Operator::Eq => value_eq(doc_value, filter_value),
-        Operator::Ne => !value_eq(doc_value, filter_value),
-        Operator::Gt => value_cmp(doc_value, filter_value) == Some(Ordering::Greater),
-        Operator::Gte => matches!(
-            value_cmp(doc_value, filter_value),
-            Some(Ordering::Greater | Ordering::Equal)
-        ),
-        Operator::Lt => value_cmp(doc_value, filter_value) == Some(Ordering::Less),
-        Operator::Lte => matches!(
-            value_cmp(doc_value, filter_value),
-            Some(Ordering::Less | Ordering::Equal)
-        ),
+        Operator::Eq => collated_eq(collation, doc_value, filter_value),
+        Operator::Ne => !collated_eq(collation, doc_value, filter_value),
+        Operator::Gt => order() == Some(Ordering::Greater),
+        Operator::Gte => matches!(order(), Some(Ordering::Greater | Ordering::Equal)),
+        Operator::Lt => order() == Some(Ordering::Less),
+        Operator::Lte => matches!(order(), Some(Ordering::Less | Ordering::Equal)),
         Operator::StartsWith => match (doc_value.as_str(), filter_value.as_str()) {
             (Some(s), Some(prefix)) => s.starts_with(prefix),
             _ => false,
@@ -325,8 +395,10 @@ fn present<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
 /// Evaluate a filter against a document.
 pub fn eval(filter: &Filter, doc: &Value) -> bool {
     match filter {
-        Filter::Compare { path, op, value } => present(doc, path).is_some_and(|v| apply(*op, v, value)),
-        Filter::In { path, values } => present(doc, path).is_some_and(|v| values.iter().any(|x| value_eq(v, x))),
+        Filter::Compare { path, op, value, collation } => present(doc, path).is_some_and(|v| apply(*op, *collation, v, value)),
+        Filter::In { path, values, collation } => {
+            present(doc, path).is_some_and(|v| values.iter().any(|x| collated_eq(*collation, v, x)))
+        }
         Filter::Contains { path, value } => match present(doc, path) {
             Some(Value::Array(items)) => items.iter().any(|x| value_eq(x, value)),
             _ => false,
@@ -344,13 +416,22 @@ impl Filter {
     /// `Not` is found too.
     pub fn validate(&self) -> Result<(), Error> {
         match self {
-            Filter::Compare { path, value, .. } => {
+            Filter::Compare { path, op, value, collation } => {
                 check_path(path)?;
-                check_comparand(path, value)
+                check_comparand(path, value)?;
+                if collation.is_some() && *op == Operator::StartsWith {
+                    return Err(Error::codec(format_args!(
+                        "starts_with at {path:?} tests text, so it takes no collation"
+                    )));
+                }
+                check_collated(path, *collation, value)
             }
-            Filter::In { path, values } => {
+            Filter::In { path, values, collation } => {
                 check_path(path)?;
-                values.iter().try_for_each(|value| check_comparand(path, value))
+                values.iter().try_for_each(|value| {
+                    check_comparand(path, value)?;
+                    check_collated(path, *collation, value)
+                })
             }
             Filter::Contains { path, .. } | Filter::Exists { path, .. } => check_path(path),
             Filter::And(filters) | Filter::Or(filters) => filters.iter().try_for_each(Filter::validate),
@@ -376,6 +457,17 @@ fn check_comparand(path: &str, value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
+/// Refuse a comparand the collation cannot read, which no document value could equal or order against.
+fn check_collated(path: &str, collation: Option<Collation>, value: &Value) -> Result<(), Error> {
+    match (collation, value) {
+        (None, _) => Ok(()),
+        (Some(Collation::Decimal), Value::String(text)) if crate::decimal::is_decimal(text) => Ok(()),
+        (Some(Collation::Decimal), _) => Err(Error::codec(format_args!(
+            "the decimal collation at {path:?} needs decimal text as the comparand, not {value}"
+        ))),
+    }
+}
+
 /// Parse `json` as `T` under the strict reading every query spec gets: integer literals within 64
 /// bits, unknown fields refused by `T`'s own attributes. Shared with the read side's query parse.
 pub(crate) fn parse_spec<T: serde::de::DeserializeOwned>(json: &[u8]) -> Result<T, Error> {
@@ -383,11 +475,22 @@ pub(crate) fn parse_spec<T: serde::de::DeserializeOwned>(json: &[u8]) -> Result<
     serde_json::from_slice(json).map_err(Error::codec)
 }
 
+/// Refuse a document the filter and the sort could not compare exactly: one holding an integer
+/// literal wider than 64 bits, which `serde_json` reads as the nearest float, so it would come back
+/// rounded and match or sort as its neighbour. The query spec refuses the same literals. A `codec`
+/// error. Every boundary that reads a document from text runs it, a projection store's save among
+/// them, so such a document is refused where it is written rather than read back changed.
+pub fn check_document(json: &[u8]) -> Result<(), Error> {
+    crate::canonical::reject_wide_integers(json)
+}
+
 /// JSON boundary for the bindings: parse a filter and a document, return the match decision. A
-/// filter the kernel refuses (see [`Filter::validate`]) or JSON it cannot read is a `codec` error.
+/// filter the kernel refuses (see [`Filter::validate`]), a document [`check_document`] refuses, or
+/// JSON it cannot read is a `codec` error.
 pub fn eval_json(filter_json: &[u8], doc_json: &[u8]) -> Result<bool, Error> {
     let filter: Filter = parse_spec(filter_json)?;
     filter.validate()?;
+    check_document(doc_json)?;
     let doc: Value = serde_json::from_slice(doc_json).map_err(Error::codec)?;
     Ok(eval(&filter, &doc))
 }
@@ -413,6 +516,9 @@ mod tests {
             "paid": true,
             "amounts": [1, 2.5],
             "totals": {"net": 100, "tax": 20},
+            "price": "9.50",
+            "debt": "-12.5",
+            "exact": "12345678901234567890.12",
         })
     }
 
@@ -510,6 +616,23 @@ mod tests {
             ("gte_bool_at_the_boundary", gte("paid", json!(true)), true),
             ("bool_against_a_number_is_unordered", gt("paid", json!(0)), false),
             ("arrays_are_unordered", gt("amounts", json!([0])), false),
+            // The decimal collation: exact value order, where code point order puts "10" first.
+            ("decimal_lt_by_value", decimal::lt("price", "10"), true),
+            ("decimal_gt_by_value", decimal::gt("price", "10"), false),
+            ("text_order_is_not_value_order", lt("price", json!("10")), false),
+            ("decimal_eq_ignores_trailing_zeros", decimal::eq("price", "9.5"), true),
+            ("decimal_ne_on_an_equal_value", decimal::ne("price", "9.5"), false),
+            ("decimal_gte_at_the_boundary", decimal::gte("price", "9.5000"), true),
+            ("decimal_lte_below", decimal::lte("price", "9.49"), false),
+            ("decimal_negatives_order_by_value", decimal::lt("debt", "-9.5"), true),
+            ("decimal_past_17_digits_is_exact", decimal::gt("exact", "12345678901234567890.119"), true),
+            ("decimal_in_by_value", decimal::is_in("price", ["1", "9.5"]), true),
+            ("decimal_in_misses", decimal::is_in("price", ["9.51"]), false),
+            ("decimal_against_text_is_unordered", decimal::lt("sku", "10"), false),
+            ("decimal_eq_against_text_is_false", decimal::eq("sku", "10"), false),
+            ("decimal_ne_against_text_is_true", decimal::ne("sku", "10"), true),
+            ("decimal_against_a_number_is_unordered", decimal::gt("total", "1"), false),
+            ("decimal_on_a_missing_path_is_false", decimal::ne("missing", "1"), false),
         ];
         for (name, filter, want) in cases {
             assert_eq!(eval(&filter, &doc()), want, "{name}");
@@ -538,6 +661,22 @@ mod tests {
             ("or_finds_a_bad_leaf", or(vec![exists("a.", true)]), Err("empty segment")),
             ("not_finds_a_bad_leaf", not(eq("b", json!(null))), Err("null comparand")),
             ("empty_and_or", and(vec![or(vec![])]), ok),
+            ("decimal_compare_with_decimal_text", decimal::gt("price", "1E+2"), ok),
+            ("decimal_compare_with_other_text", decimal::gt("price", "ten"), Err("needs decimal text")),
+            ("decimal_compare_with_nan", decimal::eq("price", "NaN"), Err("needs decimal text")),
+            (
+                "decimal_compare_with_a_number",
+                Filter::Compare { path: "price".into(), op: Operator::Lt, value: json!(10), collation: Some(Collation::Decimal) },
+                Err("needs decimal text"),
+            ),
+            (
+                "decimal_starts_with",
+                Filter::Compare { path: "price".into(), op: Operator::StartsWith, value: json!("9"), collation: Some(Collation::Decimal) },
+                Err("takes no collation"),
+            ),
+            ("decimal_in_with_decimal_text", decimal::is_in("price", ["1", "2.5"]), ok),
+            ("decimal_in_with_other_text", decimal::is_in("price", ["1", "x"]), Err("needs decimal text")),
+            ("decimal_in_with_a_null", Filter::In { path: "p".into(), values: vec![json!(null)], collation: Some(Collation::Decimal) }, Err("null comparand")),
         ];
         for (name, filter, want) in cases {
             match (filter.validate(), want) {
@@ -556,17 +695,20 @@ mod tests {
     #[test]
     fn eval_json_refusals() {
         let document = serde_json::to_vec(&doc()).unwrap();
-        let cases: [(&str, &str); 7] = [
-            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#),
-            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#),
-            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#),
-            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#),
-            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#),
-            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#),
-            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#),
+        let wide_document = br#"{"big": 18446744073709551617}"#;
+        let cases: [(&str, &str, &[u8]); 8] = [
+            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#, &document),
+            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#, &document),
+            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#, &document),
+            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#, &document),
+            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#, &document),
+            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#, &document),
+            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#, &document),
+            // Read as the nearest float, the document would match `eq(big, 2^64)`.
+            ("a_document_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1}}"#, wide_document),
         ];
-        for (name, filter) in cases {
-            let error = eval_json(filter.as_bytes(), &document).expect_err(name);
+        for (name, filter, document) in cases {
+            let error = eval_json(filter.as_bytes(), document).expect_err(name);
             assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
         }
         // The widest integers that fit are exact, and a wide number written as a float is a float.
@@ -654,6 +796,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(not(exists("p", true))).unwrap(),
             json!({"not": {"exists": {"path": "p", "exists": true}}})
+        );
+        assert_eq!(
+            serde_json::to_value(decimal::is_in("p", ["1"])).unwrap(),
+            json!({"in": {"path": "p", "values": ["1"], "collation": "decimal"}})
         );
     }
 }

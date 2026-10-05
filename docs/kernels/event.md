@@ -61,7 +61,7 @@ Every key in a message has one owner.
 |---|---|---|
 | a typed field | edax: a kernel or an SDK decision reads it | its own type, pinned by the codec goldens |
 | `extensions` | edax extensions: trace context, request origin | keys match `[a-z0-9][a-z0-9._-]{0,63}`; values are opaque strings |
-| `metadata` | the application | opaque to edax; tenancy lives here |
+| `metadata` | the application | opaque to edax; the tenant has its own typed field |
 
 `check_extensions` is the key rule: 1 to 64 bytes of lowercase ASCII letters, digits, `.`, `_` and
 `-`, starting with a letter or a digit. A dot namespaces keys per extension, as in `http.origin_ip`.
@@ -97,8 +97,9 @@ callable clock. None of these times orders anything: order on `sequence`.
 `ordering_key(aggregate_id, id)` is the key that orders a message against others. An event's is its
 aggregate id. A command's is its target aggregate, or its own id when it names none. A command
 without a target then spreads by id, instead of piling onto one empty key. An empty aggregate id
-is still an aggregate id. The Kafka record key, the memory broker's partition and the dispatcher's
-worker all start from it. `testdata/golden/ordering_key.json` pins it.
+is still an aggregate id. The Kafka record key (composed with the tenant under a pool), the memory
+broker's partition and the dispatcher's worker all start from it.
+`testdata/golden/ordering_key.json` pins it.
 
 `received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
 client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
@@ -129,6 +130,7 @@ use edax_event::{EventMessage, Extensions, Metadata};
 let msg = EventMessage {
     id: "evt-1".into(),
     aggregate_id: "agg-1".into(),
+    tenant: None,
     sequence: Some(7),
     name: "InvoiceIssued".into(),
     version: 1,
@@ -165,15 +167,15 @@ by it. A decode of the wrong kind then fails on the kind, not on whichever field
 
 | | `data` on the wire | Shape | Golden `base` event size |
 |---|---|---|---|
-| `Format::Json` | base64 string | field-named object | 323 bytes |
-| `Format::Msgpack` | native bytes | field-named map | 258 bytes |
+| `Format::Json` | base64 string | field-named object | 337 bytes |
+| `Format::Msgpack` | native bytes | field-named map | 266 bytes |
 
 Determinism rests on two things. Sorted map keys: `Extensions` and `Metadata` are `BTreeMap`, so
 whatever order a host filled them in, the encoding sorts them by UTF-8 bytes. That puts `"Z"` before
 `"a"`, and U+FF71 after U+1F980, although JavaScript, Java and C# sort that pair the other way by
 UTF-16 code units. Field order is fixed. Both formats write a message as a map keyed by field name.
-The golden `msgpack_hex` of the `base` event starts `8c`, a 12-entry map, then `a2 6964`, the key
-`id`. A command starts `8b`, an 11-entry map.
+The golden `msgpack_hex` of the `base` event starts `8d`, a 13-entry map, then `a2 6964`, the key
+`id`. A command starts `8c`, a 12-entry map.
 
 ### Evolution: one rule for both formats and both kinds
 
@@ -183,10 +185,11 @@ both formats follow one rule, pinned by `testdata/golden/envelope_decode.json`:
 | Input | JSON | MessagePack |
 |---|---|---|
 | a field the reader does not know | ignored | ignored |
-| an optional field missing or `null`: `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
+| an optional field missing or `null`: `tenant`, `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
 | any other field missing, the `extensions` map included | `codec` error | `codec` error |
 | a negative `version` | `codec` error | `codec` error |
 | an `extensions` key outside the key rule | `codec` error | `codec` error |
+| a `tenant` outside `check_tenant`: empty, or over `TENANT_MAX` (64) bytes, counted in bytes and not characters | `codec` error | `codec` error |
 | a field repeated | `codec` error | `codec` error |
 | a key repeated inside `extensions` or `metadata` | the last wins | the last wins |
 | the message as a positional array | `codec` error | `codec` error |
@@ -224,14 +227,15 @@ back = events.decode(wire)  # CodecError on bad bytes — terminal, dead-letter 
 ```rust
 use edax_event::Format;
 
-let wire = Format::Msgpack.encode(&msg)?; // refuses a bad extension key
+let wire = Format::Msgpack.encode(&msg)?; // refuses a bad extension key or tenant
 let back: edax_event::EventMessage = Format::Msgpack.decode(&wire)?;
 ```
 
-Encoding fails only on an extension key outside the rule. A message holds nothing else that can fail
-to serialize. Decoding fails on any bytes the rule above refuses. The binding tags both failures
-with the `codec` error code. The host then raises a terminal `CodecError` instead of retrying a
-poison message forever.
+Encoding fails only on an extension key or a tenant outside its rule. A message holds nothing else
+that can fail to serialize. Decoding fails on any bytes the rule above refuses, a bad tenant
+included. So the decoder checks a tenant another service minted before any key is composed from it.
+The binding tags both failures with the `codec` error code. The host then raises a terminal
+`CodecError` instead of retrying a poison message forever.
 
 ## `upcast` — planning a version chain
 
@@ -275,6 +279,26 @@ one. The vector also pins that `available` is a set: unsorted and repeated entri
 span of 2^32 versions fails at its second step without walking the span, and an identity span is an
 empty plan. Every error row carries the kernel's exact message, and both SDK suites compare it.
 
+### Each event name has its own version
+
+`upcast_target(available)` is the schema version a codec writes for one event name, and the `to` it
+raises that name's older payloads to. It is one past the highest step, or `FIRST_VERSION` (1) when
+`available` is `None` or empty. The steps are the version's only source. A codec has no separate
+version setting that could disagree with them, and raising one name's version never moves another's.
+To bump a name whose shape did not change, register an identity step.
+
+| `available` | Result |
+|---|---|
+| `None` or `[]` | 1 |
+| `[1, 2]`, in any order, repeats collapsed | 3 |
+| `[2, 3]`, a chain that starts above 1 | 4; its older versions are retired, so a v1 payload is refused at load |
+| a hole, such as `[1, 3]` | error naming the first missing version: a v2 payload could never be raised |
+| a step at `u32::MAX` | error: its output has no schema version |
+
+A codec asks once per name, when it is built, so a broken chain fails at startup and not on the first
+old row. Every row of `upcast.json` pins `target` (or `target_error`) for its `available` beside the
+plan, so a third SDK derives the same version for the same steps.
+
 ```python
 from edax.upcast import Upcaster
 
@@ -288,15 +312,18 @@ upcaster.to(b"x", from_=1, to=4)  # raises CodecError: missing upcast step 3
 let plan = edax_event::upcast_plan(1, 3, Some(&[1, 2]))?;    // [1, 2]
 assert!(edax_event::upcast_plan(1, 3, Some(&[1])).is_err()); // missing step 2
 assert!(edax_event::upcast_plan(5, 1, None).is_err());       // a newer writer, no upcaster
+assert_eq!(edax_event::upcast_target(Some(&[1, 2]))?, 3);    // the name writes v3
+assert!(edax_event::upcast_target(Some(&[1, 3])).is_err());  // a hole: no target
 ```
 
-Both SDKs wire this into their event codecs. Python's `RegistryEventCodec.unmarshal` and Rust's
-`RegistryCodec` / `SerdeCodec::unmarshal` ask the kernel before decoding, with the name's `Upcaster`
-steps or `None`, and no host-side version comparison. Both failures are deterministic, so they are
-`codec` errors and the dispatcher dead-letters on the first attempt instead of nacking forever.
-`Upcaster.step` (both SDKs) refuses a second transform for one version as `already_registered`.
-A schema version is a `u32`. In Python, a negative or oversized version is refused at wiring:
-`Upcaster.step` and a codec's `version` raise `ValueError`, before any message is stamped.
+Both SDKs wire this into their event codecs. Python's `RegistryEventCodec` and Rust's `RegistryCodec`
+/ `SerdeCodec` ask `upcast_target` for each name when they are built, and stamp that version on
+marshal. On unmarshal they ask `upcast_plan` before decoding, with the name's `Upcaster` steps or
+`None`, and no host-side version comparison. Every failure is deterministic, so each is a `codec`
+error: a broken chain fails the codec's construction, and a bad payload dead-letters on the first
+attempt instead of nacking forever. `Upcaster.step` (both SDKs) refuses a second transform for one
+version as `already_registered`. A schema version is a `u32`. In Python, a negative or oversized step
+is refused at wiring: `Upcaster.step` raises `ValueError`, before any message is stamped.
 
 ## `retry` — when a failed message dies
 
@@ -328,12 +355,46 @@ code and for none.
 `saga_admit(completed, folded, msg)` answers whether a runner folds `msg` at all. A completed
 instance (a tombstone) folds nothing: `Completed`, so a late or redelivered event cannot start a
 finished workflow again. `folded` is the text the instance's last write saved, empty for a new
-instance. It holds one mark per source aggregate: the highest sequence and the last event id folded
-from it. A redelivered event is a `Repeat` when its id is its aggregate's mark or its sequence is
-below it. The runner skips a repeat, so a step whose ack was lost does not decide its commands
-again. Anything else is `Fold { folded }`, the marks to save with the step. An unsequenced event is
-a repeat only of the last one folded from its aggregate. Marks the function did not write are a
-`codec` error.
+instance. It holds one mark per source aggregate, with two ids kept apart. One is the id of the
+event at the highest sequence folded from it. The other is the id of the last unsequenced event
+folded from it. An unsequenced event never overwrites the sequenced id, so a crash replay of an
+aggregate that mixes both is skipped whole. A `SagaCommandFailed` event is kept apart again: the
+mark holds the id of every failure folded, one per dead command at most. So when two commands die
+and a relay that lost its mark replays the first, it is still a repeat. The answers:
+
+| The event | Answer |
+|---|---|
+| its id is one of its aggregate's two ids, or a failure folded before | `Repeat`: a redelivery, or a replay after a crash |
+| its sequence is below its aggregate's highest | `BelowMark`: assumed folded, see below |
+| anything else | `Fold { folded }`: the marks to save with the step |
+
+The runner folds nothing on `Completed`, `Repeat` or `BelowMark`, so a step whose ack was lost does
+not decide its commands again. An unsequenced event other than a failure is a repeat only of the
+last unsequenced one folded from its aggregate. Marks the function did not write are a `codec` error.
+
+`BelowMark` rests on order: a dispatcher hands one aggregate's events over in order, so a lower
+sequence was folded before. A dead letter breaks that. If the dispatcher dead-letters sequence 4 and
+then sequence 5 folds, a re-drive of sequence 4 is below the mark and never folds. The kernel cannot
+tell it from a crash replay, so it answers `BelowMark` apart from `Repeat`, and the Python runner
+reports it (`Observer.saga_skipped`). A host must re-drive a dead-lettered saga event before any
+later event of its aggregate reaches the saga, or repair the instance by hand.
+
+`saga_command_failed(command, code, error, recorded_at)` builds the event a saga folds when a
+command its outbox sent died. The event replaces the reply a participant that rejected the
+command never sends. Both runners call it from their relay's dead-letter sink (`command_failed`) and
+fold the event into the instance the row names, so the saga can compensate:
+
+| Field | Value | Why |
+|---|---|---|
+| `id` | `"{command.id}:failed"` | a sink that runs twice for one row builds the same event; the instance skips the second, whatever folded between |
+| `aggregate_id` | the command's: the instance | the runner folds it there, without the saga's `instance_id` |
+| `sequence` | `None` | the failure has no place in an aggregate's order |
+| `name` | `SagaCommandFailed` | the saga's `handle` branches on it |
+| `data` | JSON `{"command_id", "command", "code", "error"}` | the dead command, the failure's taxonomy code (`null` when none classifies it) and its message |
+| `tenant`, lineage | the command's tenant; the command's child | the failure stays in the command's tenant and flow |
+| `recorded_at` | the runner's clock | as a command's `issued_at` |
+
+A row that names no instance is a `codec` error.
 
 `saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. The
 loaded instance is absent or running, since `saga_admit` skips a completed one:
@@ -349,15 +410,16 @@ with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no ne
 `saga_write` returns a `codec` error.
 
 The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
-index, command, cause_id, cause_correlation_id, issued_at)` builds each one as a `CommandMessage`, so
-both SDKs write the same row. `saga` is the saga's name. `cause_id` and `cause_correlation_id` are the
-folded event's `id` and `correlation_id`:
+index, tenant, command, cause_id, cause_correlation_id, issued_at)` builds each one as a
+`CommandMessage`, so both SDKs write the same row. `saga` is the saga's name. `tenant`,
+`cause_id` and `cause_correlation_id` are the folded event's `tenant`, `id` and `correlation_id`:
 
 | Field | Value | Why |
 |---|---|---|
 | `id` | `saga_command_id(instance_id, version, index)` = `"{instance_id}:{version}:{index}"` | unique per committed transition; a re-sent row keeps it |
 | `idempotency_key` | `scoped(saga, id)` = `"{len(saga)}:{saga}:{id}"`, with `len` in UTF-8 bytes | a re-sent row keeps it, so the consuming bus deduplicates it; two sagas that share an instance id and a bus never claim one key |
 | `aggregate_id` | the instance id | one instance's commands keep their order on every transport, and a store can find its rows |
+| `tenant` | the folded event's | the command inherits the tenant of the event that caused it, so the bus that runs it claims inside that tenant |
 | `correlation_id` | the folded event's | the command stays in the event's flow, not the instance's |
 | `causation_id` | the folded event's id | the event caused the command |
 | `name`, `version`, `data` | the saga's command, marshaled by the runner's codec | — |
@@ -472,7 +534,8 @@ not older. `is_stale(5, 5)` is false, so the event applies again. That makes it 
 its own for a replayed batch. A replay with the ordinal check as its only dedup skips every stale
 event, but applies each key's newest event twice, because its sequence equals the stored one. Put
 `idempotent_by_id` in front of the handler when the effect is not itself idempotent. The key that
-guard claims is the kernel's too: `event_idempotency(msg)` in `dedup`.
+guard claims is the kernel's too: `event_idempotency(msg, mode, scope)` in `dedup`, the event id
+under the consumer's scope, so two consumers sharing a ledger keep separate records.
 
 The ordering also assumes the consumer itself does not reorder. Say a nack seeks back while later
 copies of the same aggregate are already queued, and a worker runs them. The older event then

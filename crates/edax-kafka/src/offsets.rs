@@ -70,7 +70,7 @@ pub struct Due {
     pub offset: i64,
 }
 
-/// One partition's bookkeeping, for a health check, a gauge or a rebalance drain.
+/// One partition's bookkeeping, for a health check or a gauge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartitionStats {
     /// The topic this partition belongs to.
@@ -79,8 +79,8 @@ pub struct PartitionStats {
     pub partition: i32,
     /// Offsets delivered but not yet settled, retired ones included: the watermark waits for each.
     pub unsettled: u64,
-    /// Unsettled offsets whose token is still live: work a handler may still settle. A rebalance
-    /// drain waits for this to reach zero; a retired offset waits for a fetch instead.
+    /// Unsettled offsets whose token is still live: work a handler may still settle. A retired
+    /// offset waits for a fetch instead.
     pub live: u64,
     /// The highest offset booked. A partition is reported only once an offset was booked on it.
     pub max_delivered: i64,
@@ -155,9 +155,13 @@ impl Inner {
 /// another's.
 ///
 /// The bookkeeping holds only while the partition is assigned. A revoked partition's unsettled
-/// offsets are the new owner's to redeliver from the last committed watermark — at-least-once — so a
-/// rebalance listener waits for the partition's [`live`](PartitionStats::live) work to settle,
-/// commits what is [`due`](Self::due), then calls [`reset`](Self::reset) for it.
+/// offsets are the new owner's to redeliver from the last committed watermark (at-least-once). So on
+/// revoke a rebalance listener first commits what is [`due`](Self::due), while the partition is still
+/// this member's, then calls [`reset`](Self::reset) for it, which retires every delivery of it still
+/// queued. It may then wait, under its own deadline, for the handlers still running, so the new
+/// owner never runs a key this member is running. It does not drain the queue before the commit: a
+/// deep queue could outlast the rebalance, and the new owner fetches that work again from the
+/// commit. A handler that finishes during the wait settles nothing, so its work runs again there.
 #[derive(Default)]
 pub struct OffsetTracker {
     state: Mutex<Inner>,

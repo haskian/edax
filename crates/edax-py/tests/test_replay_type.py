@@ -46,6 +46,14 @@ class InvoiceStruct(msgspec.Struct):
 
 
 ISSUED_AT = datetime.datetime(2026, 10, 3, 9, 30, tzinfo=datetime.timezone.utc)
+# The invoice as the SDK's encoder writes it: canonical decimal text, so `50.00` replays as `50`, and the
+# fixed-width UTC timestamp.
+INVOICE_JSON: dict[str, Any] = {
+    "invoice_id": "01a10285-7d7c-71a1-8fb8-3caf0732bb67",
+    "order_id": "order-7",
+    "total": "50",
+    "issued_at": "2026-10-03T09:30:00.000000Z",
+}
 
 
 def command() -> IssueInvoice:
@@ -103,17 +111,12 @@ CASES = [
         "no_annotation_replays_plain_json",
         issue_untyped,
         None,
-        {
-            "invoice_id": "01a10285-7d7c-71a1-8fb8-3caf0732bb67",
-            "order_id": "order-7",
-            "total": "50.00",
-            "issued_at": "2026-10-03T09:30:00Z",
-        },
+        INVOICE_JSON,
         dict,
     ),
     Case("an_object_annotation_replays_plain_json", issue_object, None, {"invoice_id": "inv-7"}, dict),
     Case("an_any_annotation_replays_plain_json", issue_any, None, {"invoice_id": "inv-7"}, dict),
-    Case("an_explicit_any_opts_out", issue, Any, msgspec.to_builtins(invoice()), dict),
+    Case("an_explicit_any_opts_out", issue, Any, INVOICE_JSON, dict),
     Case(
         "an_unresolvable_annotation_replays_plain_json",
         issue_forward_ref,
@@ -127,7 +130,9 @@ CASES = [
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 async def test_a_replay_is_the_type_the_handler_declares(case: Case) -> None:
     ledger = MemoryIdempotencyStore()
-    bus = CommandBus(idempotent(ledger, result_type=case.result_type, scope="test"))
+    bus = CommandBus(
+        idempotent(ledger, result_type=case.result_type, scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("IssueInvoice", case.handler)
     first = await bus.dispatch(command(), idempotency_key="req-7")
     replay = await bus.dispatch(command(), idempotency_key="req-7")
@@ -151,7 +156,9 @@ async def issue_opaque(cmd: IssueInvoice) -> Opaque:
     ids=["an_inferred_type_msgspec_cannot_convert", "an_explicit_type_msgspec_cannot_convert"],
 )
 def test_a_type_with_no_conversion_is_refused_at_wiring(handler: Any, result_type: Any) -> None:
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), result_type=result_type, scope="test"))
+    bus = CommandBus(
+        idempotent(MemoryIdempotencyStore(), result_type=result_type, scope="test", tenancy=edax.Tenancy.SILO)
+    )
     with pytest.raises(TypeError, match="cannot be replayed as"):
         bus.register("IssueInvoice", handler)
 
@@ -162,7 +169,7 @@ async def test_a_cached_result_that_does_not_convert_replays_as_a_cached_codec_f
     as ``CachedFailure`` on every redelivery, so the handler never runs and a dispatcher dead-letters it.
     The observer hears ``failed``, the verdict the replay carries."""
     ledger = MemoryIdempotencyStore()
-    writer = CommandBus(idempotent(ledger, result_type=Any, scope="test"))
+    writer = CommandBus(idempotent(ledger, result_type=Any, scope="test", tenancy=edax.Tenancy.SILO))
 
     async def old_shape(cmd: IssueInvoice) -> dict[str, str]:
         return {"invoice": "inv-7"}
@@ -170,7 +177,7 @@ async def test_a_cached_result_that_does_not_convert_replays_as_a_cached_codec_f
     writer.register("IssueInvoice", old_shape)
     await writer.dispatch(command(), idempotency_key="req-7")
     observer = Recording()
-    reader = CommandBus(idempotent(ledger, observer=observer, scope="test"))
+    reader = CommandBus(idempotent(ledger, observer=observer, scope="test", tenancy=edax.Tenancy.SILO))
     reader.register("IssueInvoice", issue)
     for attempt in ("first delivery", "redelivery"):
         with pytest.raises(
@@ -214,7 +221,7 @@ async def test_a_redelivery_after_a_crash_replays_the_declared_type(
 
     def process() -> CommandBus:
         store, unit = ledger_factory()
-        bus = CommandBus(idempotent(store, unit_of_work=unit, scope="test"))
+        bus = CommandBus(idempotent(store, unit_of_work=unit, scope="test", tenancy=edax.Tenancy.SILO))
         bus.register("IssueInvoice", handler)
         return bus
 

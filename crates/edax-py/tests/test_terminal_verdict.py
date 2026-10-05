@@ -50,6 +50,17 @@ def _raise(error: BaseException) -> Callable[[], None]:
     return fail
 
 
+class MalformedOrder(edax.CodecError):
+    """A host subclass of a coded error: it inherits the code, and the verdict with it."""
+
+
+def _claiming(error: edax.EdaxError, terminal: bool) -> edax.EdaxError:
+    """An edax error whose instance attribute contradicts its code's verdict. A class cannot restate it, but an
+    instance can, so every consumer must decide from the code and ignore the attribute."""
+    error.terminal = terminal  # ty: ignore[invalid-attribute-access]
+    return error
+
+
 @dataclass
 class Source:
     name: str
@@ -66,7 +77,17 @@ SOURCES = [
     Source("host_rejection", _raise(edax.Rejected("insufficient funds")), True, "rejected"),
     Source("host_exception_declaring_terminal", _raise(DeclaredTerminal("shipped")), True, "rejected"),
     Source("payload_mismatch", _raise(edax.PayloadMismatch("req-1")), True, "payload_mismatch"),
+    Source("codec_subclass", _raise(MalformedOrder("no line items")), True, "codec"),
+    Source(
+        "codec_error_claiming_transient", _raise(_claiming(edax.CodecError("retry me"), False)), True, "codec"
+    ),
     Source("store_hiccup", _raise(edax.StoreError("connection reset")), False, None),
+    Source(
+        "store_error_claiming_terminal",
+        _raise(_claiming(edax.StoreError("down for good"), True)),
+        False,
+        None,
+    ),
     Source("unclassified_host_error", _raise(ValueError("a host bug")), False, None),
 ]
 
@@ -116,7 +137,7 @@ async def _through_the_guard(source: Source) -> Outcome:
         source.fail()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Withdraw", handler)
     seen: list[str] = []
     for _ in range(2):
@@ -194,7 +215,9 @@ async def _through_the_saga_relay(source: Source) -> Outcome:
         source.fail()
 
     db = MemoryTransactor()
-    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(db), scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(MemoryIdempotencyStore(db), scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("Withdraw", command)
     store = MemorySagaStore(db)
     runner = edax.SagaRunner(_WithdrawSaga(), store, edax.json_codec({"Withdraw": Withdraw}))
@@ -265,6 +288,20 @@ async def test_a_terminal_failure_is_never_retried_or_redelivered(consumer: str,
     assert await _run(consumer, source) == _want(consumer, source)
 
 
+@pytest.mark.parametrize(
+    ("parent", "restated"),
+    [
+        pytest.param(edax.StoreError, True, id="store_subclass_declaring_terminal"),
+        pytest.param(edax.CodecError, False, id="codec_subclass_declaring_transient"),
+    ],
+)
+def test_a_subclass_cannot_restate_its_codes_verdict(parent: type[edax.EdaxError], restated: bool) -> None:
+    """The verdict is the code's: a subclass that restates it is refused when it is defined, so no consumer
+    can read one verdict while another reads the code's."""
+    with pytest.raises(TypeError, match="restates `terminal`"):
+        type("Restated", (parent,), {"terminal": restated})
+
+
 async def test_a_cancel_is_never_cached() -> None:
     """A cancel is not a verdict: the guard releases, so the next dispatch runs the handler again."""
     runs = 0
@@ -277,7 +314,7 @@ async def test_a_cancel_is_never_cached() -> None:
             await gate.wait()
 
     ledger = MemoryIdempotencyStore()
-    bus = edax.CommandBus(edax.idempotent(ledger, scope="test"))
+    bus = edax.CommandBus(edax.idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Withdraw", handler)
     task = asyncio.ensure_future(bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id))
     await asyncio.sleep(0)

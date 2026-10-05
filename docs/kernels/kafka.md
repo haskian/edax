@@ -22,20 +22,25 @@ per kind of message.
 
 | Layer | Functions | Value bytes | Used by |
 |---|---|---|---|
-| primitive | `record`, `keyed_record` (the key already chosen), `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
+| primitive | `record`, `record_key`, `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
 | composed | `encode_record` / `decode_record`, generic over the kind | the kernel codec's, through `Format::encode` | a Rust host, and the golden vectors |
 
-The composed encode is fallible: it refuses an `extensions` key outside the kernel's rule as a
-`codec` error. A producer then never publishes a record every consumer would refuse.
+Both build functions take the deployment's `Tenancy` and are fallible: a mode that requires a tenant
+and a message that names none is a `codec` error. The composed encode also refuses an `extensions`
+key or a tenant outside the kernel's rules. A producer then never publishes a record every consumer
+would refuse.
 
 Both layers write the same key and the same header, so a host serializer changes the bytes and
 never the contract around them.
 
 ### The key
 
-The key is the message's [ordering key](./event.md#the-ordering-key), or the override the caller
-passes. It crosses as UTF-8 bytes. A command and the events of the aggregate it targets then share a
-partition.
+The key is the override the caller passes, verbatim, or else `record_key(tenancy, msg)`. That is the
+message's [ordering key](./event.md#the-ordering-key), composed with its tenant where the mode
+composes keys: `4:acme:agg-1` under `Tenancy::Pool`. It crosses as UTF-8 bytes. A
+command and the events of the aggregate it targets then share a partition, and two tenants'
+same-named aggregates do not. The rule is the kernel's and `kafka_record.json` pins it per mode, so
+two SDKs producing to one topic place one aggregate on one partition.
 
 Kafka orders within a partition, and the key chooses the partition through `partition_for` below.
 One aggregate's messages therefore stay on one partition and arrive in the order they were
@@ -283,7 +288,7 @@ diff before committing it.
 
 | | Rust | Python |
 |---|---|---|
-| record | `edax_kafka::encode_record` / `decode_record`, `keyed_record` | `_edax.kafka_record` under the key the host chose (its `key=` override, else `_edax.ordering_key`), `_edax.kafka_content_type_header` |
+| record | `edax_kafka::encode_record` / `decode_record`, `record`, `record_key` | `_edax.kafka_event_record` / `_edax.kafka_command_record` under the producer's `tenancy` and the host's `key=` override, if any; `_edax.kafka_content_type_header` |
 | route | `edax_kafka::route` | `_edax.kafka_route`, which `KafkaConsumer` calls on every record |
 | dead letter | `edax_kafka::dead_letter_record` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, behind `KafkaFetched.dead_letter`; the reader is Rust's alone |
 | placement | `edax_kafka::partition_for` | `_edax.kafka_partition_for`, which `KafkaProducer` passes as `partition=` |

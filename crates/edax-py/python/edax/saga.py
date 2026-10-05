@@ -13,24 +13,51 @@ which is the row's ``saga_command_id`` under the saga's name.
 Completion writes a tombstone: a late or redelivered event finds the instance completed and is ignored, and
 a writer that loaded the instance before it completed conflicts. A running instance remembers what it
 folded, so an event redelivered after its step committed (a lost ack, a crash before the offset commit) is
-skipped instead of folded again under new command ids."""
+skipped instead of folded again under new command ids.
+
+A command that dies in the relay (its handler raises :class:`~edax.errors.Rejected`) saves no event, so
+nothing would tell the instance. Wire :meth:`SagaRunner.command_failed` as the relay's ``on_dead``: it folds
+a :data:`SAGA_COMMAND_FAILED` event into the instance that sent the command, and the saga compensates."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Final, Protocol, TypedDict, cast
 
 from . import _edax, errors
 from .aggregate import CommandMessage, EventMessage
 from .causation import caused_by
 from .command import CommandBus
-from .observe import Observer
+from .errors import _carried_code
+from .observe import Observer, SagaSkip, _wrap
 from .pacing import Pacing
 from .store import EventCodec, Relay, RelaySink, Tx
 
-__all__ = ["Completed", "Saga", "SagaInstance", "SagaRunner", "SagaStore"]
+__all__ = [
+    "SAGA_COMMAND_FAILED",
+    "Completed",
+    "Saga",
+    "SagaCommandFailed",
+    "SagaInstance",
+    "SagaRunner",
+    "SagaStore",
+]
+
+#: The name of the event :meth:`SagaRunner.command_failed` folds when a command the saga sent died.
+SAGA_COMMAND_FAILED: Final[str] = _edax.saga_command_failed_name()
+
+
+class SagaCommandFailed(TypedDict):
+    """The JSON payload of a :data:`SAGA_COMMAND_FAILED` event: ``json.loads(msg.data)``. ``command_id`` is
+    the dead command's outbox id, ``command`` its name, ``code`` the failure's taxonomy code (``"rejected"``
+    for a business rejection, ``None`` when no code classifies it), and ``error`` its message."""
+
+    command_id: str
+    command: str
+    code: str | None
+    error: str
 
 
 class _Completed(Enum):
@@ -139,7 +166,10 @@ class SagaRunner:
     :meth:`Saga.instance_id`, with :func:`~edax.tenancy.tenant_key`: two tenants' instances of one saga
     would otherwise fold into each other. The runner keys by what that returns, so a row's id and the
     instance key stay one string. Every command a step emits inherits the folded event's ``tenant``,
-    which is what keeps the claim its bus makes inside the same tenant."""
+    which is what keeps the claim its bus makes inside the same tenant.
+
+    Every event the runner routes to an instance and does not fold is reported to ``observer``
+    (:meth:`~edax.observe.Observer.saga_skipped`)."""
 
     def __init__(
         self,
@@ -148,11 +178,13 @@ class SagaRunner:
         commands: EventCodec,
         *,
         now: Callable[[], int] | None = None,
+        observer: Observer | None = None,
     ) -> None:
         self._saga = saga
         self._store = store
         self._commands = commands
         self._now = now or _edax.current_timestamp
+        self._observer = _wrap(observer)
 
     async def on_event(self, msg: EventMessage, tx: Tx | None = None) -> None:
         """Handle one committed event: load its instance, fold the event, and write the new
@@ -161,26 +193,42 @@ class SagaRunner:
         :class:`~edax.errors.ConcurrencyError` means another worker advanced the instance first; it is
         transient, so the event is redelivered and folds the winner's state, and nothing this fold decided
         is ever sent. An event the instance already folded (redelivered after its step committed) is
-        skipped: no fold, no write, no command.
+        skipped: no fold, no write, no command. So is an event whose sequence is below the one the instance
+        folded from its aggregate. Under in-order delivery that event folded before. A dead-lettered event
+        re-driven after a later one lands there too, and never folds. The observer hears every skip.
 
         Each command is a child of ``msg``: it carries the event's ``correlation_id``, and the event's id
         as its ``causation_id``. The fold runs under the ambient lineage of ``msg`` too."""
         with caused_by(msg):
-            await self._on_event(msg, tx)
+            instance_id = self._saga.instance_id(msg)
+            if instance_id is not None:
+                await self._fold(instance_id, msg, tx)
 
-    async def _on_event(self, msg: EventMessage, tx: Tx | None) -> None:
-        instance_id = self._saga.instance_id(msg)
-        if instance_id is None:
-            return
-        instance = await self._store.load(instance_id, tx)
+    async def command_failed(self, row: CommandMessage, error: BaseException, tx: Tx | None = None) -> None:
+        """The ``on_dead`` sink for this runner's command relay: fold the :data:`SAGA_COMMAND_FAILED` event
+        for the dead ``row`` into the instance that sent it, so the saga can compensate. The event's
+        payload is :class:`SagaCommandFailed`: the command's id and name, and the failure's code and
+        message. Its ``aggregate_id`` is the instance, its ``causation_id`` the command, and it is
+        unsequenced; the kernel builds it (``saga_command_failed``).
+
+        The fold skips the event as :meth:`on_event` would: a completed instance folds nothing, so a saga
+        that compensates stays open until its commands have run. A sink that runs twice for one row folds
+        once, whatever folded between them: the instance keeps every failure it folded. A failed fold
+        raises, so the relay hands the row back and the sink runs again."""
         with errors.mapped():
-            if instance is None:
-                folded = _edax.saga_admit(False, "", msg)
-            else:
-                folded = _edax.saga_admit(instance.completed, instance.folded, msg)
-        if folded is None:
-            # A tombstone, or an event folded already: its step committed, and its commands are in
-            # the outbox. Pinned by `testdata/golden/saga.json`.
+            failed = _edax.saga_command_failed(row, str(error), self._now(), _carried_code(error))
+        with caused_by(failed):
+            await self._fold(failed.aggregate_id, failed, tx)
+
+    async def _fold(self, instance_id: str, msg: EventMessage, tx: Tx | None) -> None:
+        instance = await self._store.load(instance_id, tx)
+        completed, folded = (False, "") if instance is None else (instance.completed, instance.folded)
+        with errors.mapped():
+            admit = _edax.saga_admit(completed, folded, msg)
+        if admit.action != "fold":
+            # A tombstone, an event folded already, or one below the mark: no step for it. Pinned by
+            # `testdata/golden/saga.json`.
+            self._observer.saga_skipped(self._saga.name, cast("SagaSkip", admit.action), msg.id)
             return
         new_state, commands = self._saga.handle(None if instance is None else instance.state, msg)
         loaded = None if instance is None else instance.version
@@ -190,7 +238,7 @@ class SagaRunner:
             return
         rows = self._rows(instance_id, write.version, commands, msg)
         if write.action == "save":
-            await self._store.save(instance_id, new_state, write.expected, folded, rows, tx)
+            await self._store.save(instance_id, new_state, write.expected, admit.folded, rows, tx)
         else:
             await self._store.complete(instance_id, write.expected, rows, tx)
 
@@ -240,8 +288,9 @@ class SagaRunner:
         it saves stay in the saga's flow. To send the rows to a broker instead, use ``Relay(store,
         producer.publish)`` and run them with ``dispatch_message`` on the consumer. Pass ``on_dead``: a
         terminal command failure then dead-letters the row through it, while without a sink the row is
-        handed back on every drain and holds up the rows behind it. See :class:`~edax.store.Relay` for the
-        rest of the policy."""
+        handed back on every drain and holds up the rows behind it. A terminal failure saves no event, so
+        :meth:`command_failed` is the sink that tells the instance: ``runner.relay(bus,
+        on_dead=runner.command_failed)``. See :class:`~edax.store.Relay` for the rest of the policy."""
 
         async def publish(row: CommandMessage) -> None:
             await bus.dispatch_message(row, self._commands)

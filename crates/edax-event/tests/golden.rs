@@ -14,9 +14,9 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
-use edax_core::ErrorCode;
+use edax_core::{ErrorCode, Tenancy};
 use edax_event::testkit::{base_command, base_event, map};
-use edax_event::{CommandMessage, EventMessage, Extensions, Format, Message, Metadata};
+use edax_event::{CommandMessage, EventMessage, Extensions, Format, Kind, Message, Metadata};
 use edax_golden::{hex, write_or_check};
 use serde_json::{json, Value};
 
@@ -36,8 +36,9 @@ fn partition_cases() -> Vec<Value> {
 
 fn upcast_cases() -> Vec<Value> {
     // `available: None` is a name with no transforms registered: every step is the identity, so only
-    // the downgrade rule (a payload from a newer writer) can refuse it.
-    let cases: [(u32, u32, Option<&[u32]>); 17] = [
+    // the downgrade rule (a payload from a newer writer) can refuse it. Every row also pins the version a
+    // codec built with `available` writes, `upcast_target`, so a third SDK derives the same per-name version.
+    let cases: [(u32, u32, Option<&[u32]>); 19] = [
         (1, 1, Some(&[])),          // no-op
         (1, 3, Some(&[1, 2])),      // contiguous
         (1, 3, Some(&[1])),         // gap at 2 (missing middle step) -> error
@@ -55,17 +56,22 @@ fn upcast_cases() -> Vec<Value> {
         (1, 3, None),               // no transforms, older payload: identity, nothing to run
         (5, 1, None),               // no transforms, newer writer: refused, never decoded silently
         (0, u32::MAX, None),        // identity over a 2^32 - 1 span is still an empty plan, not a walk
+        (1, 2, Some(&[1, 3])),      // the plan needs only step 1, but the hole at 2 has no target
+        (u32::MAX, u32::MAX, Some(&[u32::MAX])), // a step at the ceiling raises past every schema version
     ];
     cases
         .into_iter()
         .map(|(from, to, available)| {
             let result = edax_event::upcast_plan(from, to, available);
+            let target = edax_event::upcast_target(available);
             json!({
                 "from": from,
                 "to": to,
                 "available": available,
                 "plan": result.as_ref().ok(),
                 "error": result.as_ref().err().map(ToString::to_string),
+                "target": target.as_ref().ok(),
+                "target_error": target.as_ref().err().map(ToString::to_string),
             })
         })
         .collect()
@@ -303,6 +309,8 @@ fn extensions_cases() -> Vec<Value> {
 /// says the same thing in JSON and MessagePack; a map is a list of pairs so a case can repeat a key.
 enum W {
     Str(&'static str),
+    /// A string built at run time, for a case whose length is the point.
+    Text(String),
     Int(i64),
     Bytes(&'static [u8]),
     Null,
@@ -315,6 +323,7 @@ impl serde::Serialize for W {
         use serde::ser::{SerializeMap, SerializeSeq};
         match self {
             W::Str(v) => s.serialize_str(v),
+            W::Text(v) => s.serialize_str(v),
             W::Int(v) => s.serialize_i64(*v),
             W::Bytes(v) if s.is_human_readable() => {
                 use base64::Engine;
@@ -340,7 +349,8 @@ impl serde::Serialize for W {
     }
 }
 
-/// The base event as wire fields, in the order a case edits them.
+/// The base event as wire fields, in the order a case edits them. It names no tenant, the single-tenant
+/// default.
 fn wire_fields() -> Vec<(&'static str, W)> {
     vec![
         ("id", W::Str("evt-1")),
@@ -358,6 +368,24 @@ fn wire_fields() -> Vec<(&'static str, W)> {
     ]
 }
 
+/// The base command as wire fields: every optional field set, so a case that drops one is a change.
+fn command_wire_fields() -> Vec<(&'static str, W)> {
+    vec![
+        ("id", W::Str("cmd-1")),
+        ("idempotency_key", W::Str("req-1")),
+        ("aggregate_id", W::Str("agg-1")),
+        ("tenant", W::Str("acme")),
+        ("name", W::Str("IssueInvoice")),
+        ("version", W::Int(1)),
+        ("data", W::Bytes(br#"{"total":5000}"#)),
+        ("correlation_id", W::Str("corr-1")),
+        ("causation_id", W::Str("corr-1")),
+        ("issued_at", W::Int(1_700_000_000_000_000_001)),
+        ("extensions", W::Map(vec![("traceparent", W::Str("00-a-b-01"))])),
+        ("metadata", W::Map(vec![("trace", W::Str("abc-123"))])),
+    ]
+}
+
 fn without(field: &str) -> Vec<(&'static str, W)> {
     wire_fields().into_iter().filter(|(k, _)| *k != field).collect()
 }
@@ -367,38 +395,85 @@ fn replacing(field: &str, value: W) -> Vec<(&'static str, W)> {
     wire_fields().into_iter().map(|(k, v)| if k == field { (k, value.take().unwrap()) } else { (k, v) }).collect()
 }
 
-/// The evolution rule: what a reader of each format accepts, ignores and refuses. Each case is
+/// The base event with one field the base leaves out.
+fn with(field: &'static str, value: W) -> Vec<(&'static str, W)> {
+    wire_fields().into_iter().chain([(field, value)]).collect()
+}
+
+fn command_without(field: &str) -> Vec<(&'static str, W)> {
+    command_wire_fields().into_iter().filter(|(k, _)| *k != field).collect()
+}
+
+fn command_replacing(field: &str, value: W) -> Vec<(&'static str, W)> {
+    let mut value = Some(value);
+    command_wire_fields().into_iter().map(|(k, v)| if k == field { (k, value.take().unwrap()) } else { (k, v) }).collect()
+}
+
+/// `bytes` decoded as a message of `kind` in `format`: the message, or the error's code. The code is the
+/// contract; the message is the parser's own text, which a second SDK's parser words differently.
+fn decoded_as(kind: Kind, format: Format, bytes: &[u8]) -> Value {
+    let message = match kind {
+        Kind::Event => format.decode::<EventMessage>(bytes).map(|msg| serde_json::to_value(&msg).unwrap()),
+        Kind::Command => format.decode::<CommandMessage>(bytes).map(|msg| serde_json::to_value(&msg).unwrap()),
+    };
+    match message {
+        Ok(message) => json!({ "message": message }),
+        Err(error) => json!({ "error_code": error.code.as_str() }),
+    }
+}
+
+/// The evolution rule: what a reader of each format and kind accepts, ignores and refuses. Each case is
 /// encoded in both formats from one wire value, so the two formats are held to the same rule.
 fn envelope_decode_cases() -> Vec<Value> {
+    use Kind::{Command, Event};
     let positional = || W::Arr(wire_fields().into_iter().map(|(_, v)| v).collect());
-    let cases: Vec<(&str, W, &[u8])> = vec![
-        ("the_base_message", W::Map(wire_fields()), b""),
+    // The tenant rule counts bytes: 32 two-byte characters are at the limit, 33 are past it.
+    let tenant = |text: &str, times: usize| W::Text(text.repeat(times));
+    let cases: Vec<(&str, Kind, W, &[u8])> = vec![
+        ("the_base_message", Event, W::Map(wire_fields()), b""),
         // A newer writer's field: ignored, so adding a field is forward compatible.
-        ("an_unknown_field_is_ignored", W::Map(wire_fields().into_iter().chain([("priority", W::Str("high"))]).collect()), b""),
-        ("a_missing_sequence_reads_as_none", W::Map(without("sequence")), b""),
-        ("a_null_sequence_reads_as_none", W::Map(replacing("sequence", W::Null)), b""),
-        ("a_missing_occurred_at_reads_as_none", W::Map(without("occurred_at")), b""),
-        ("a_set_occurred_at_reads_back", W::Map(replacing("occurred_at", W::Int(1_600_000_000_000_000_000))), b""),
-        ("a_missing_required_field_is_refused", W::Map(without("recorded_at")), b""),
-        ("a_missing_extensions_map_is_refused", W::Map(without("extensions")), b""),
-        ("a_negative_version_is_refused", W::Map(replacing("version", W::Int(-1))), b""),
-        ("a_bad_extension_key_is_refused", W::Map(replacing("extensions", W::Map(vec![("Traceparent", W::Str("x"))]))), b""),
-        ("a_repeated_field_is_refused", W::Map(wire_fields().into_iter().chain([("id", W::Str("evt-2"))]).collect()), b""),
-        ("a_repeated_metadata_key_keeps_the_last", W::Map(replacing(
+        ("an_unknown_field_is_ignored", Event, W::Map(wire_fields().into_iter().chain([("priority", W::Str("high"))]).collect()), b""),
+        ("a_missing_sequence_reads_as_none", Event, W::Map(without("sequence")), b""),
+        ("a_null_sequence_reads_as_none", Event, W::Map(replacing("sequence", W::Null)), b""),
+        ("a_missing_occurred_at_reads_as_none", Event, W::Map(without("occurred_at")), b""),
+        ("a_set_occurred_at_reads_back", Event, W::Map(replacing("occurred_at", W::Int(1_600_000_000_000_000_000))), b""),
+        ("a_missing_required_field_is_refused", Event, W::Map(without("recorded_at")), b""),
+        ("a_missing_extensions_map_is_refused", Event, W::Map(without("extensions")), b""),
+        ("a_negative_version_is_refused", Event, W::Map(replacing("version", W::Int(-1))), b""),
+        ("a_bad_extension_key_is_refused", Event, W::Map(replacing("extensions", W::Map(vec![("Traceparent", W::Str("x"))]))), b""),
+        // The wire is a trust boundary: a tenant another service minted is held to the key rule
+        // before any key is composed from it.
+        ("a_tenant_reads_back", Event, W::Map(with("tenant", W::Str("acme"))), b""),
+        ("a_null_tenant_reads_as_none", Event, W::Map(with("tenant", W::Null)), b""),
+        ("an_empty_tenant_is_refused", Event, W::Map(with("tenant", W::Str(""))), b""),
+        ("a_tenant_of_64_bytes_reads_back", Event, W::Map(with("tenant", tenant("é", 32))), b""),
+        ("an_over_long_tenant_is_refused", Event, W::Map(with("tenant", tenant("a", 65))), b""),
+        ("a_tenant_of_33_characters_and_66_bytes_is_refused", Event, W::Map(with("tenant", tenant("é", 33))), b""),
+        ("a_repeated_field_is_refused", Event, W::Map(wire_fields().into_iter().chain([("id", W::Str("evt-2"))]).collect()), b""),
+        ("a_repeated_metadata_key_keeps_the_last", Event, W::Map(replacing(
             "metadata",
             W::Map(vec![("trace", W::Str("first")), ("trace", W::Str("last"))]),
         )), b""),
         // The positional form, of the base length and with one element more, is refused either way.
-        ("a_positional_message_is_refused", positional(), b""),
-        ("a_positional_message_with_an_extra_element_is_refused", W::Arr(
+        ("a_positional_message_is_refused", Event, positional(), b""),
+        ("a_positional_message_with_an_extra_element_is_refused", Event, W::Arr(
             wire_fields().into_iter().map(|(_, v)| v).chain([W::Str("extra")]).collect(),
         ), b""),
-        ("trailing_bytes_are_refused", W::Map(wire_fields()), b"\x00"),
-        ("not_a_map_at_all", W::Str("evt-1"), b""),
+        ("trailing_bytes_are_refused", Event, W::Map(wire_fields()), b"\x00"),
+        ("not_a_map_at_all", Event, W::Str("evt-1"), b""),
+        // A command's optional fields read as `None` when missing, so an older or a single-tenant
+        // producer's command still decodes; its required fields and its tenant are held as an event's.
+        ("the_base_command", Command, W::Map(command_wire_fields()), b""),
+        ("a_command_missing_its_tenant_reads_as_none", Command, W::Map(command_without("tenant")), b""),
+        ("a_command_missing_its_idempotency_key_reads_as_none", Command, W::Map(command_without("idempotency_key")), b""),
+        ("a_command_missing_its_aggregate_id_reads_as_none", Command, W::Map(command_without("aggregate_id")), b""),
+        ("a_command_with_an_empty_tenant_is_refused", Command, W::Map(command_replacing("tenant", W::Str(""))), b""),
+        ("a_command_with_an_over_long_tenant_is_refused", Command, W::Map(command_replacing("tenant", tenant("a", 65))), b""),
+        ("a_command_missing_issued_at_is_refused", Command, W::Map(command_without("issued_at")), b""),
     ];
     cases
         .into_iter()
-        .map(|(name, wire, trailing)| {
+        .map(|(name, kind, wire, trailing)| {
             let encode = |format: Format| -> Vec<u8> {
                 let mut bytes = match format {
                     Format::Json => serde_json::to_vec(&wire).unwrap(),
@@ -407,18 +482,12 @@ fn envelope_decode_cases() -> Vec<Value> {
                 bytes.extend_from_slice(trailing);
                 bytes
             };
-            let decoded = |format: Format| -> Value {
-                match format.decode::<EventMessage>(&encode(format)) {
-                    Ok(env) => json!({ "message": serde_json::to_value(&env).unwrap() }),
-                    // The code is the contract; the message is the parser's own text, which a second
-                    // SDK's parser words differently.
-                    Err(error) => json!({ "error_code": error.code.as_str() }),
-                }
-            };
-            let (json, msgpack) = (decoded(Format::Json), decoded(Format::Msgpack));
+            let json = decoded_as(kind, Format::Json, &encode(Format::Json));
+            let msgpack = decoded_as(kind, Format::Msgpack, &encode(Format::Msgpack));
             assert_eq!(json, msgpack, "{name}: the two formats must follow one rule");
             json!({
                 "name": name,
+                "kind": kind.name(),
                 "json_hex": hex(&encode(Format::Json)),
                 "msgpack_hex": hex(&encode(Format::Msgpack)),
                 "want": json,
@@ -509,9 +578,11 @@ fn snapshot_due_cases() -> Vec<Value> {
         .collect()
 }
 
-/// The event guard's input rule: the message id is the key, the raw `data` bytes are hashed. The
-/// message's other fields take no part, so two deliveries of one event differing only in metadata,
-/// extensions or time claim the same key with the same hash.
+/// The event guard's input rule: the message id under the guard's scope is the key, composed with the
+/// tenant under a pool, and the raw `data` bytes are hashed. The message's other fields take no part,
+/// so two deliveries of one event differing only in metadata, extensions or time claim the same key
+/// with the same hash. Two scopes are two keys for one event: that is what lets two consumers share a
+/// ledger. A mode that wants a tenant and an event that names none is the `codec` error.
 fn event_idempotency_cases() -> Vec<Value> {
     let base = EventMessage {
         id: "acct-1-3".to_owned(),
@@ -533,31 +604,51 @@ fn event_idempotency_cases() -> Vec<Value> {
         edit(&mut env);
         env
     };
+    let tenant = |tenant: &str| {
+        let mut env = base.clone();
+        env.tenant = Some(tenant.to_owned());
+        env
+    };
+    let (silo, pool, bridge) = (Tenancy::Silo, Tenancy::Pool, Tenancy::Bridge);
     let cases = [
-        ("deposit", base.clone()),
+        ("deposit", silo, "balances", base.clone()),
+        // The same event under another consumer's scope: its own key, so neither skips the other.
+        ("another_scope_is_another_key", silo, "receipts", base.clone()),
+        // A separator in the scope spells no other scope's key.
+        ("separator_in_the_scope", silo, "a:b", base.clone()),
         // Same bytes reordered: raw, not canonical, so a different hash under the same key.
-        ("raw_bytes_not_canonical", with(|e| e.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
-        ("metadata_and_time_take_no_part", with(|e| {
+        ("raw_bytes_not_canonical", silo, "balances", with(|e| e.data = br#"{"currency":"USD","account_id":"acct-1","amount_cents":4200}"#.to_vec())),
+        ("metadata_and_time_take_no_part", silo, "balances", with(|e| {
             e.metadata.insert("retry".to_owned(), "2".to_owned());
             e.extensions.insert("traceparent".to_owned(), "00-a-b-01".to_owned());
             e.recorded_at += 1;
         })),
-        ("empty_body", with(|e| e.data = Vec::new())),
-        ("non_utf8_body", with(|e| e.data = vec![0xde, 0xad, 0xbe, 0xef])),
+        ("empty_body", silo, "balances", with(|e| e.data = Vec::new())),
+        ("non_utf8_body", silo, "balances", with(|e| e.data = vec![0xde, 0xad, 0xbe, 0xef])),
+        ("a_silo_never_keys_by_the_tenant", silo, "balances", tenant("acme")),
+        ("a_pool_composes_the_tenant_outermost", pool, "balances", tenant("acme")),
+        ("separator_in_the_tenant", pool, "balances", tenant("a:b")),
+        ("a_pool_refuses_an_event_without_a_tenant", pool, "balances", base.clone()),
+        ("a_bridge_keeps_the_key_bare", bridge, "balances", tenant("acme")),
+        ("a_bridge_refuses_an_event_without_a_tenant", bridge, "balances", base.clone()),
     ];
     cases
         .into_iter()
-        .map(|(name, env)| {
-            let rule = edax_event::event_idempotency(&env);
+        .map(|(name, mode, scope, env)| {
+            let rule = edax_event::event_idempotency(&env, mode, scope);
             json!({
                 "name": name,
+                "tenancy": mode.name(),
+                "scope": scope,
                 "id": env.id,
+                "tenant": env.tenant,
                 "data_hex": hex(&env.data),
                 "metadata": env.metadata,
                 "extensions": env.extensions,
                 "recorded_at": env.recorded_at,
-                "key": rule.key,
-                "payload_hash": rule.payload_hash,
+                "key": rule.as_ref().ok().map(|rule| &rule.key),
+                "payload_hash": rule.as_ref().ok().map(|rule| rule.payload_hash),
+                "error": rule.as_ref().err().map(ToString::to_string),
             })
         })
         .collect()
@@ -718,8 +809,10 @@ fn saga_cases() -> Vec<Value> {
     // per branch of `saga_admit`. A tombstone folds nothing, even under marks no runner wrote.
     let one = r#"{"order-7":{"sequence":1,"id":"evt-1"}}"#;
     let two = r#"{"order-7":{"sequence":2,"id":"evt-2"}}"#;
-    let unsequenced = r#"{"order-7":{"id":"evt-u"}}"#;
-    let admits: [(bool, &str, &str, Option<u64>, &str); 14] = [
+    let unsequenced = r#"{"order-7":{"unsequenced":"evt-u"}}"#;
+    // One aggregate's sequenced and unsequenced events folded, then replayed after a crash: both repeat.
+    let mixed = r#"{"order-7":{"sequence":2,"id":"evt-2","unsequenced":"evt-v"}}"#;
+    let admits: [(bool, &str, &str, Option<u64>, &str); 16] = [
         (true, "", "order-7", Some(1), "evt-1"),
         (true, "[1]", "order-7", Some(1), "evt-1"),
         (false, "", "order-7", Some(1), "evt-1"),
@@ -730,20 +823,40 @@ fn saga_cases() -> Vec<Value> {
         (false, unsequenced, "order-7", None, "evt-u"),
         (false, unsequenced, "order-7", None, "evt-v"),
         (false, two, "order-7", None, "evt-v"),
+        (false, mixed, "order-7", Some(2), "evt-2"),
+        (false, mixed, "order-7", None, "evt-v"),
         (false, one, "order-7", Some(1), "evt-x"),
         (false, unsequenced, "order-7", Some(3), "evt-3"),
         (false, r#"{"café":{"sequence":18446744073709551615,"id":"évt"}}"#, "café", Some(u64::MAX), "évt"),
         (false, "[1]", "order-7", Some(1), "evt-1"),
     ];
+    let admit_json = |completed: bool, folded: &str, env: &EventMessage| match edax_event::saga_admit(completed, folded, env) {
+        Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
+        Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
+        Ok(edax_event::SagaAdmit::BelowMark) => json!({ "below_mark": true }),
+        Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
+        Err(e) => json!({ "error": e.to_string() }),
+    };
     for (completed, folded, aggregate_id, sequence, id) in admits {
         let env = EventMessage { id: id.to_owned(), aggregate_id: aggregate_id.to_owned(), sequence, ..base_event() };
-        let want = match edax_event::saga_admit(completed, folded, &env) {
-            Ok(edax_event::SagaAdmit::Completed) => json!({ "completed": true }),
-            Ok(edax_event::SagaAdmit::Repeat) => json!({ "repeat": true }),
-            Ok(edax_event::SagaAdmit::Fold { folded }) => json!({ "folded": folded }),
-            Err(e) => json!({ "error": e.to_string() }),
-        };
+        let want = admit_json(completed, folded, &env);
         cases.push(json!({ "admit": { "completed": completed, "folded": folded, "aggregate_id": aggregate_id, "sequence": sequence, "id": id }, "want": want }));
+    }
+    // Two of the instance's commands die and the relay, its mark lost, replays the first: each failure
+    // folds once. A failure kept as the last unsequenced id, before the failed set, is a repeat still.
+    let first = r#"{"order-7":{"failed":["order-7:2:0:failed"]}}"#;
+    let both = r#"{"order-7":{"failed":["order-7:2:0:failed","order-7:2:1:failed"]}}"#;
+    let failures: [(&str, &str); 4] = [
+        ("", "order-7:2:0:failed"),
+        (first, "order-7:2:1:failed"),
+        (both, "order-7:2:0:failed"),
+        (r#"{"order-7":{"unsequenced":"order-7:2:0:failed"}}"#, "order-7:2:0:failed"),
+    ];
+    for (folded, id) in failures {
+        let name = edax_event::SAGA_COMMAND_FAILED;
+        let env = EventMessage { id: id.to_owned(), aggregate_id: "order-7".to_owned(), sequence: None, name: name.to_owned(), ..base_event() };
+        let want = admit_json(false, folded, &env);
+        cases.push(json!({ "admit": { "completed": false, "folded": folded, "aggregate_id": "order-7", "sequence": null, "id": id, "name": name }, "want": want }));
     }
     for (instance_id, version, index) in [("order-7", 1u64, 0u64), ("order-7", 2, 1), ("a:1", 2, 0), ("", 1, 0), ("café", u64::MAX, u64::MAX)] {
         cases.push(json!({
@@ -767,6 +880,28 @@ fn saga_cases() -> Vec<Value> {
         },
         "want": serde_json::to_value(&command).unwrap(),
     }));
+    // The event a dead saga command folds back into its instance, and a row that names no instance.
+    let stray = edax_event::CommandMessage { aggregate_id: None, ..command.clone() };
+    let failures = [
+        (command.clone(), Some(edax_core::ErrorCode::Rejected), "out of stock"),
+        (command, None, "warehouse API timed out"),
+        (stray, Some(edax_core::ErrorCode::Rejected), "out of stock"),
+    ];
+    for (row, code, error) in failures {
+        let want = match edax_event::saga_command_failed(&row, code, error, 1_700_000_000_000_000_002) {
+            Ok(event) => serde_json::to_value(&event).unwrap(),
+            Err(e) => json!({ "error": e.to_string() }),
+        };
+        cases.push(json!({
+            "saga_command_failed": {
+                "command": serde_json::to_value(&row).unwrap(),
+                "code": code.map(edax_core::ErrorCode::as_str),
+                "error": error,
+                "recorded_at": 1_700_000_000_000_000_002_i64,
+            },
+            "want": want,
+        }));
+    }
     cases
 }
 

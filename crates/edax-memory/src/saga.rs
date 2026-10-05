@@ -403,7 +403,7 @@ mod tests {
 
         // Any JSON value is a state: a saga that keeps `null` is distinct from a completed one.
         // The folded marks come back as they were written.
-        let folded = r#"{"order-2":{"sequence":1,"id":"evt-1"}}"#.to_owned();
+        let folded = r#"{"order-2":{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}"#.to_owned();
         store.save(NO_TX, "order-2", 0, Value::Null, folded.clone(), vec![]).unwrap();
         assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active { state: Value::Null, folded } }));
         store.complete(NO_TX, "order-2", 1, vec![]).unwrap();

@@ -24,7 +24,8 @@ implement, and trust it over this page wherever the two differ.
 
 Specification: `edax.store.Transactor`.
 
-- `transaction()` is an async context manager.
+- `begin()` is an async context manager. The SDK calls it from `edax.transaction(t)`; a host never
+  calls it directly.
 - A clean exit commits. An exception rolls back and re-raises.
 - One handle every participant store accepts, atomic as a set.
 - A participant handed the same handle reads its own uncommitted writes.
@@ -35,6 +36,10 @@ Specification: `edax.store.Transactor`.
 
 Specification: `edax.store.EventStore`.
 
+- The `aggregate_id` argument of `append`, `load` and `load_snapshot` names the stream. For
+  `save_snapshot`, the snapshot's `aggregate_id` names it. A draft's own `aggregate_id` never does.
+  Under `Tenancy.POOL` the argument is the id composed with the tenant, while the drafts keep the
+  bare id.
 - `append` is a compare-and-set on the version, enforced in the database.
 - On a mismatch it raises `ConcurrencyError` and writes nothing.
 - Event rows and outbox rows commit together in the caller's `tx`.
@@ -184,7 +189,7 @@ The Rust SDK declares the same store seams as traits. A Rust store names its han
 classDiagram
     class Transactor {
         <<Protocol>>
-        +transaction()
+        +begin()
     }
     class EventStore {
         <<Protocol>>
@@ -402,9 +407,10 @@ Name the subclass `Test...` so pytest collects it; the `*Contract` bases are not
 
 | Contract | Fixture | Covers |
 |---|---|---|
-| `EventStoreContract` | `event_store` | versions from an empty stream, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
+| `EventStoreContract` | `event_store` | versions from an empty stream, the stream named by the key `append` and `load` are called with rather than the draft's aggregate id, compare-and-set in both directions, a refused append writing nothing, `load` reading its own transaction's appends, rollback, snapshots that never lead the stream, and the outbox: committed rows only, an idempotent `mark_published`, a `limit` that decides the page, the backlog count when `supports_unpublished_count` is on, two writers at one version landing exactly one append, and a staged append invisible to another transaction |
 | `ProjectionStoreContract` | `projection_store`, plus `transactor` unless `supports_transactions = False` | round trip, compare-and-set on `version`, the version advancing in place on success and not advancing on a conflict, independence per id, a save with no `tx` joining the ambient transaction, two writers at one version landing exactly one save, a staged row invisible to another transaction, and, when `supports_kernel_queries` is on, kernel paging plus the row key coming back as each document's `id` |
-| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown instance reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
+| `SagaStoreContract` | `saga_store`, plus `transactor` unless `supports_transactions = False` | an unknown instance reading `None`, state round trip, the `folded` marks round trip, compare-and-set on concurrent folds, the completion tombstone, the step's commands committing with its state and every field, the tenant included, a save with no `tx` joining the ambient transaction, two steps at one version landing exactly one write, and a staged step invisible to another transaction |
+| `CommandOutboxContract` | `command_outbox`, plus `event_store` on the same transactor | commands committing and rolling back with the events and coming back whole, the tenant included, a `tx` of another database refused with `BadHandle`, an id already waiting refused with `CodecError`, `unpublished` oldest commit first under its `limit`, and an idempotent `mark_published` |
 | `IdempotencyStoreContract` | `idempotency_store`, plus `event_store` on the same transactor when the store declares `joins_transaction = True` | a free key won, a second claim losing and reading the winner's record, eight concurrent claims with exactly one winner, a completed result and a cached failure replaying, release freeing the key, releasing an absent key (a retry then wins it), the payload hash surviving as unsigned 64-bit, and, when the ledger joins, a rollback freeing the claim whether the claim was given `tx` or joined the ambient one, a claim staged in an open transaction never won by another, and a release with nothing committed leaving a concurrent winner's record, a handle of another database refused with `BadHandle`, and a key another open transaction holds never settled over. With `claims_expire` and an `expire_claim` hook: a lapsed claim's handle settling nothing after a takeover, a release after `complete` keeping the record, and a lapsed record freeing the key. With `stores_raw_records` and a `put_raw_record` hook: a record no reader can decode read as the kernel's cached `codec` failure, keeping the stored hash where it reads |
 
 Backends differ legitimately, so each contract carries capability flags and skips the clauses that

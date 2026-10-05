@@ -9,6 +9,7 @@ the dead-letter queue.
 
 import asyncio
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from unittest import mock
@@ -25,7 +26,7 @@ from conftest import (
     sequence_of,
 )
 from edax._async import maybe_await
-from edax.backend.memory import MemoryBroker
+from edax.backend.memory import MemoryBroker, MemoryEventStore
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -423,17 +424,35 @@ class StopCase:
     stop_with_deadline: bool  # stop(timeout=...) rather than a host's wait_for around stop()
     nack_raises: bool
     want_settlement_failures: int
+    #: (outcome, error_type) the observer hears for the held delivery, then the queued one.
+    want_reported: list[tuple[str, str | None]]
+    handler_fails: bool = False  # the held one's handler raises, and the worker waits out its backoff
 
 
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(StopCase(True, False, 0), id="a_deadline_cancels_the_worker_and_nacks_what_it_held"),
-        pytest.param(StopCase(False, False, 0), id="a_cancelled_stop_still_reaps_the_workers"),
-        pytest.param(StopCase(True, True, 2), id="a_nack_failing_on_shutdown_is_reported_not_raised"),
+        pytest.param(
+            StopCase(True, False, 0, [("stopped", None), ("stopped", None)]),
+            id="a_deadline_cancels_the_worker_and_nacks_what_it_held",
+        ),
+        pytest.param(
+            StopCase(False, False, 0, [("stopped", None), ("stopped", None)]),
+            id="a_cancelled_stop_still_reaps_the_workers",
+        ),
+        pytest.param(
+            StopCase(True, True, 2, [("unsettled", None), ("unsettled", None)]),
+            id="a_nack_failing_on_shutdown_is_reported_not_raised",
+        ),
+        pytest.param(
+            StopCase(True, False, 0, [("stopped", "store"), ("stopped", None)], handler_fails=True),
+            id="a_delivery_stopped_in_its_backoff_wait_reports_stopped_with_its_cause",
+        ),
     ],
 )
-async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(case: StopCase) -> None:
+async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(
+    case: StopCase, caplog: pytest.LogCaptureFixture
+) -> None:
     """A deadline on ``stop()`` must not orphan the workers. An orphan runs on while ``stats().running``
     reads ``False``, a restart puts a second worker on its queue, and two handlers run one aggregate at
     once. The held delivery and the queued one would never be settled."""
@@ -446,13 +465,21 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
         concurrent += 1
         peak = max(peak, concurrent)
         try:
+            if case.handler_fails and env.sequence == 1:
+                raise edax.StoreError("downstream reset")
             entered.set()
             await asyncio.Event().wait()  # stuck: only a cancel gets the worker out
         finally:
             concurrent -= 1
 
+    async def backoff(seconds: float) -> None:
+        entered.set()
+        await asyncio.Event().wait()  # stuck in the backoff wait: only a cancel gets the worker out
+
     observer = mock.Mock(spec=edax.Observer)
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, observer=observer)
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=handler, observer=observer, pacing=edax.Pacing(sleep=backoff)
+    )
     settlements = Settlements(case.nack_raises)
     dispatcher.start()
     held, queued = settlements.delivery(1), settlements.delivery(2)
@@ -462,7 +489,10 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
     workers = list(dispatcher._tasks)
 
     if case.stop_with_deadline:
-        await dispatcher.stop(timeout=0.01)
+        with caplog.at_level("WARNING", logger="edax.dispatcher"):
+            await dispatcher.stop(timeout=0.01)
+        # `wait` cancels nothing at the deadline, so the count is the worker still running.
+        assert_logged(caplog, "edax.dispatcher", ["stop() passed its 0.01s deadline; cancelling 1 worker(s)"])
     else:
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(dispatcher.stop(), 0.01)
@@ -471,6 +501,14 @@ async def test_stop_past_its_deadline_leaves_no_worker_and_nothing_unsettled(cas
     assert dispatcher.stats().running is False and dispatcher.stats().workers_alive == 0
     assert settlements.calls == {held.message.id: ["nack"], queued.message.id: ["nack"]}
     assert observer.settlement_failed.call_count == case.want_settlement_failures
+    # Every delivery `stop` hands back is reported once, held or queued, by the arm that settled it.
+    reported = [(c.args[1], c.args[3], c.args[4], c.args[6]) for c in observer.delivery.call_args_list]
+    assert reported == [
+        (d.message.id, outcome, 1, cause)
+        for d, (outcome, cause) in zip([held, queued], case.want_reported, strict=True)
+    ]
+    assert observer.delivery.call_args_list[1].args[5] == 0, "the queued one never ran"
+    observer.delivery.reset_mock()
     with pytest.raises(RuntimeError, match="dispatcher is stopped"):
         await dispatcher.submit(settlements.delivery(3))
 
@@ -844,6 +882,34 @@ def test_a_dispatcher_refuses_fewer_than_one_worker(workers: int) -> None:
     """A count below one is a wiring typo; clamping it to one worker would hide it."""
     with pytest.raises(ValueError, match=f"at least one worker, got {workers}"):
         edax.KeyOrderedDispatcher(workers=workers, handler=lambda env: None)
+
+
+@pytest.mark.parametrize(
+    "max_attempts, want",
+    [
+        pytest.param(-1, ValueError, id="negative"),
+        pytest.param(2**32, ValueError, id="past_u32"),
+        pytest.param("3", TypeError, id="not_an_int"),
+        pytest.param(True, TypeError, id="a_bool"),
+        pytest.param(0, None, id="zero_is_no_ceiling"),
+        pytest.param(2**32 - 1, None, id="the_u32_bound"),
+    ],
+)
+def test_max_attempts_outside_u32_is_refused_at_wiring(
+    max_attempts: Any, want: type[Exception] | None
+) -> None:
+    """Built lazily, an out-of-range policy failed the first delivery and left it neither acked nor
+    nacked, pinning a log partition; the dispatcher and the relay refuse it when they are built."""
+    wirings: list[Callable[[], object]] = [
+        lambda: edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, max_attempts=max_attempts),
+        lambda: edax.Relay(MemoryEventStore(), lambda row: None, max_attempts=max_attempts),
+    ]
+    for wire in wirings:
+        if want is None:
+            wire()
+        else:
+            with pytest.raises(want, match="max_attempts"):
+                wire()
 
 
 async def test_a_handler_runs_under_the_lineage_of_its_message() -> None:

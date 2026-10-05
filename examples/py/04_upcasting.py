@@ -69,9 +69,10 @@ async def main() -> None:
         [old] = await store.append(tx, "acct-1", 0, [draft])
     print(f"stored by v1: {old.name} v{old.version} {old.data.decode()}")
 
-    # 2. Today's codec writes version 2 and knows how to raise version 1 to it.
+    # 2. Today's codec knows how to raise version 1 to 2, so it writes `Deposited` as version 2. Each
+    #    event name has its own version: a name with no upcaster stays at version 1.
     upcasters = {"Deposited": Upcaster().step(1, add_currency)}
-    events = json_codec({"Deposited": Deposited}, version=2, upcasters=upcasters)
+    events = json_codec({"Deposited": Deposited}, upcasters=upcasters)
     repo = Repository(store, events, AccountCodec(), snapshot_every=0)  # 0: every load replays
 
     # 3. Load: the old event is upcast on the way in.

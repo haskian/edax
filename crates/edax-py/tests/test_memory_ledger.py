@@ -88,7 +88,9 @@ async def test_a_terminal_failure_is_cached_and_replayed_on_redelivery(rig: Rig)
         runs += 1
         raise InsufficientFunds("balance 100, debit 500")
 
-    bus = CommandBus(idempotent(rig.store, unit_of_work=MemoryTransactor(), scope="test"))
+    bus = CommandBus(
+        idempotent(rig.store, unit_of_work=MemoryTransactor(), scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("Debit", handler)
     with pytest.raises(InsufficientFunds):
         await bus.dispatch(debit(), idempotency_key="req-1")
@@ -109,7 +111,9 @@ async def test_a_terminal_failure_on_the_joining_store_is_not_cached() -> None:
         runs += 1
         raise InsufficientFunds("balance 100, debit 500")
 
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(db), unit_of_work=db, scope="test"))
+    bus = CommandBus(
+        idempotent(MemoryIdempotencyStore(db), unit_of_work=db, scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("Debit", handler)
     for _ in range(2):
         with pytest.raises(InsufficientFunds):
@@ -136,7 +140,7 @@ async def test_a_claim_lapsed_mid_handler_is_taken_over_and_its_stale_owner_sett
             await a_may_finish.wait()
         return {"debited_by": worker}
 
-    bus = CommandBus(idempotent(rig.store, scope="test"))
+    bus = CommandBus(idempotent(rig.store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Debit", handler)
 
     async def worker_a() -> Any:
@@ -178,7 +182,7 @@ async def test_a_lost_complete_reply_keeps_the_record_and_the_redelivery_replays
         runs += 1
         return {"balance": 600}
 
-    bus = CommandBus(idempotent(store, scope="test"))
+    bus = CommandBus(idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
     bus.register("Debit", handler)
     store.arm("complete")
     with pytest.raises(edax.StoreError):
@@ -225,7 +229,7 @@ async def _two_workers(history: list[Step]) -> None:
 
     async def peek() -> Any:
         try:
-            async with ledger.transactor.transaction() as tx:
+            async with ledger.transactor.begin() as tx:
                 seen = await peek_store.claim("k", 7, tx=tx)
                 raise _Peeked(seen)
         except _Peeked as p:

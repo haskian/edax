@@ -78,19 +78,37 @@ events = json_codec({"Deposited": Deposited, "Withdrawn": Withdrawn})
 ```
 
 `json_codec` lives in `edax.codec`. `msgpack_codec` takes the same arguments and writes the smaller,
-binary MessagePack instead. Both accept `version=` and `upcasters=`, so an older stored payload is
-raised to the current shape on load. Every unmarshal asks the kernel's `upcast_plan`, with or without
-an upcaster for the name. A payload from a **newer** writer than the codec's `version` raises
-`CodecError` instead of decoding silently under the older schema. A name with no upcaster reads an
-older payload as it is. `Upcaster.step` refuses a second transform for one version
-(`AlreadyRegistered`). `examples/py/04_upcasting.py` reads a version 1 event as version 2.
+binary MessagePack instead. Both accept `upcasters=`, so an older stored payload is raised to the
+current shape on load.
 
-Rust's `JsonRegistryCodec::<AccountEvent>::new(version)` is the same registry: one event name per
-variant of the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
-`.upcaster(name, Upcaster)` per name. It writes the same name and bytes as Python's `json_codec` for
-the same event, pinned by `testdata/golden/event_codec.json`, so a stream reads the same from either
-SDK. `JsonCodec::<T>::new(name, version)` remains for one event type under one name, and asks the
-kernel the same way.
+Each event name has its own schema version, and its upcaster is the only place it is set. A name with
+no upcaster writes version 1. A name with one writes one past its highest step, as the kernel's
+[`upcast_target`](../kernels/event.md#each-event-name-has-its-own-version) decides. When one event's
+shape changes, add a step to that name's upcaster; every other name keeps its version and keeps
+reading its stored rows. To bump a name whose shape did not change, register an identity step
+(`Upcaster().step(1, lambda d: d)`). A hole in a chain (`step(1)` and `step(3)`, no `step(2)`)
+raises `CodecError` when the codec is built.
+
+```python
+events = json_codec(
+    {"Deposited": Deposited, "Withdrawn": Withdrawn},
+    upcasters={"Deposited": Upcaster().step(1, add_currency)},  # Deposited v2, Withdrawn v1
+)
+```
+
+Every unmarshal asks the kernel's `upcast_plan`, with or without an upcaster for the name. A payload
+from a **newer** writer than the name's version raises `CodecError` instead of decoding silently under
+the older schema. A name with no upcaster reads an older payload as it is. `Upcaster.step` refuses a
+second transform for one version (`AlreadyRegistered`). `examples/py/04_upcasting.py` reads a version
+1 event as version 2.
+
+Rust's `JsonRegistryCodec::<AccountEvent>::new()` is the same registry. It has one event name per variant of
+the event enum (`Deposited(Deposited)`), the variant's own value as the payload, and
+`.upcaster(name, Upcaster)` per name. The upcaster sets that name's version the same way. The
+registry writes the same name and bytes as Python's `json_codec` for the same event, pinned by
+`testdata/golden/event_codec.json`, so a stream reads the same from either SDK.
+`JsonCodec::<T>::new(name)` remains for one event type under one name. Its
+`.with_upcaster(Upcaster)` sets the version, and it asks the kernel the same way.
 
 The snapshot codec:
 
@@ -349,7 +367,9 @@ there, not in a command payload, so they never perturb an idempotency hash.
 
 `commands` stages command messages in the repository's command outbox, in the same transaction as
 the events. Build the repository with `commands=` a `CommandOutbox` first; without one, a save with
-commands raises `TypeError`. See [commands](./commands.md#three-routes-for-a-command).
+commands raises `TypeError`. Each command belongs to the aggregate's tenant, as its events do. One
+that names no tenant takes the aggregate's, and one that names another raises `CodecError` before
+anything is written. See [commands](./commands.md#three-routes-for-a-command).
 
 An event's `occurred_at` is its valid time: when the fact happened. `save(occurred_at=...)` sets it
 on every event of the batch, for facts that happened before they are recorded, such as an import. Left

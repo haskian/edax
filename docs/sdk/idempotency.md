@@ -9,10 +9,10 @@ covers both cases.
 
 | Guard (Rust) | Path | Keys on | Hashes | Python equivalent |
 |---|---|---|---|---|
-| `idempotent(store, scope, key)` | command | `claim_key(scope, key(&cmd))`; `None` bypasses | the name and the whole command value, canonicalized | `edax.command.idempotent(store, scope=...)`, keyed by the message's `idempotency_key` |
-| `idempotent_in(store, scope, key, current)` | command | same, plus a `Fn(&C) -> Tx` handle provider | same | `edax.command.idempotent(store, scope=..., unit_of_work=)` |
-| `idempotent_by_id(store)` | consume | `msg.id`, raw | the raw `msg.data` bytes | `edax.router.idempotent_by_id(store)` |
-| `idempotent_by_id_in(store, current)` | consume | same, plus a `Fn(&EventMessage) -> Tx` handle provider | same | `edax.router.idempotent_by_id(store, unit_of_work=)` |
+| `idempotent(store, scope, tenancy, key)` | command | `claim_key(tenancy, tenant, scope, key)` of what `key(&cmd)` returns; `None` bypasses | the name and the whole command value, canonicalized | `edax.command.idempotent(store, scope=..., tenancy=...)`, keyed by the message's `idempotency_key` and `tenant` |
+| `idempotent_in(store, scope, tenancy, key, current)` | command | same, plus a `Fn(&C) -> Tx` handle provider | same | `edax.command.idempotent(store, scope=..., unit_of_work=)` |
+| `idempotent_by_id(store, scope, tenancy)` | consume | `msg.id` under `scope`, and the message's `tenant` under a pool | the raw `msg.data` bytes | `edax.router.idempotent_by_id(store, scope=..., tenancy=...)` |
+| `idempotent_by_id_in(store, scope, tenancy, current)` | consume | same, plus a `Fn(&EventMessage) -> Tx` handle provider | same | `edax.router.idempotent_by_id(store, unit_of_work=, scope=...)` |
 
 The Rust guards live in `edax::command` and `edax::router`. The Python guards live in `edax.command`
 and `edax.router`.
@@ -25,15 +25,22 @@ does with the result.
 
 **Command path.** The key is the client's intent. In Python it is the `idempotency_key` of the
 command message: given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
-own `id` when it carries none. A Rust host still reads it with a key closure. `None` makes no claim,
-and the handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes
-on one ledger never replay each other's outcome. The hash covers the command name and the whole
+own `id` when it carries none. A Rust host still reads it, and the tenant, with a key closure that
+returns an `IdempotencyKey` (a plain `String` is a key with no tenant). `None` makes no claim, and the
+handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes on one
+ledger never replay each other's outcome. Under a pool the key carries the tenant. Under a pool or a
+bridge the guard refuses a command with no tenant as `codec` before the claim. The hash covers the
+command name and the whole
 command value, every instance field. The kernel serializes, canonicalizes and hashes it in
 `edax_cqrs::command_hash`. A Python command declares its name as `type: ClassVar[str]`. A Rust
 command implements `command_type()`. Reusing a key with another command, or another name, is a
 `PayloadMismatch`.
 
-**Consume path.** The key is `msg.id`, the raw event id, with no scope. The hash is the kernel's
+**Consume path.** The key is `msg.id` under the guard's `scope`, which names the consumer:
+`edax:evt:{len(scope)}:{scope}:{id}`, composed with the message's `tenant` under a pool as a command
+claim is. Each consumer keeps its own record, so two consumers guarding over one ledger (two read
+models in one database, say) each run their handler once. A ledger keyed by the bare id would let the
+second find the first's record and skip its own work without an error. The hash is the kernel's
 `payload_hash`, Fowler-Noll-Vo 1a (FNV-1a) 64, over the raw `msg.data` bytes. Extensions, metadata
 and time take no part. Those bytes are host-serialized, so they are not
 canonicalized as JSON. Two events sharing an `id` with different bodies raise `PayloadMismatch`: an
@@ -150,7 +157,9 @@ runs the own-ledger mode through the commit-lands-reply-lost window, with `Broke
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
 db = MemoryTransactor()
 balances = MemoryProjectionStore(db)
-router = EventRouter(idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db))
+router = EventRouter(
+    idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
+)
 ```
 
 ## The record lifecycle
@@ -188,8 +197,8 @@ That is why `failed` is unreachable there: `_guarded_in_one_commit` never writes
 written anyway would roll back with the failure that produced it.
 
 **Forget.** `IdempotencyStore.forget(key)` deletes a settled record, so a re-driven message runs
-its handler again. `edax.command.forget(store, scope, key)` forgets what a command guard of that
-scope stored. Use it when an operator re-drives a dead-lettered message after fixing its cause. The
+its handler again. `edax.command.forget(store, scope, key, tenancy=..., tenant=...)` forgets what a
+command guard of that scope stored, under the same composed key the guard claimed. Use it when an operator re-drives a dead-lettered message after fixing its cause. The
 kernel's [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records
 it deletes. See [commands](./commands.md#forget-re-driving-a-dead-lettered-command) for the call.
 
@@ -314,7 +323,7 @@ Windows outside that table, each pinned elsewhere:
 | `complete` fails after a success | nothing: `_complete_or_release` releases instead | re-runs the handler | `test_idempotent_branches[success_with_failing_complete_releases_the_claim]` |
 | `complete` lands, its reply is lost (every in-tree ledger fences: Redis and both memory stores) | `done`: the release carries the claim's handle and finds the settled record, so it deletes nothing | replays the cached result | `test_redis.py::test_a_complete_whose_reply_was_lost_keeps_the_record` |
 | `complete` fails after a terminal failure | nothing: released, and the caller sees the handler's error, not the store's | re-runs the handler | `test_idempotent_branches[terminal_failure_with_failing_complete_shows_the_handlers_verdict]` |
-| the handler's result will not serialize | nothing: terminal and released | re-runs the handler | `test_unserializable_result_is_terminal_and_releases_the_claim` |
+| the handler's result will not serialize | `failed` of code `codec`: the guard encodes the result before the work commits, so the work rolls back | raises `CachedFailure`; the handler does not run | `test_unserializable_result_is_terminal_and_cached`, `split_unencodable_result_rolls_back_and_is_cached_as_a_codec_failure` |
 | the dispatch is cancelled mid-handler | nothing: the `BaseException` branch releases | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_handler_releases_the_claim]` |
 | the dispatch is cancelled mid-`complete` | nothing: released | re-runs the handler | `test_cancellation_never_strands_a_pending_claim[cancelled_complete_releases_the_claim]` |
 | a Rust handler panics | nothing: released, and the panic keeps unwinding | re-runs the handler | `a_panicking_handler_releases_the_claim` |
@@ -359,7 +368,9 @@ both. So `retry` refuses to run while any `transaction` is open, and goes outsid
 
 ```python
 # examples/py/05_idempotent_commands.py: retry outermost, the guard owns the unit of work.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
+bus = CommandBus(
+    retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
+)
 ```
 
 **Store contract clauses for a claim taken inside a transaction**:

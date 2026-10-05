@@ -474,7 +474,7 @@ class BusReplay:
         self.model: dict[int, Record] = {}
         # The handle of each pending claim a SeedPending took, so a Release can name it.
         self.seeded: dict[int, bytes] = {}
-        self.bus = C.CommandBus(C.idempotent(store, scope="test"))
+        self.bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
         self.bus.register("A", self.handler)
         self.bus.register("B", self.handler)
 
@@ -826,7 +826,7 @@ class RepoReplay:
         # has no snapshot at all and load again.
         fresh = MemoryEventStore()
         events = await self.store.load(self.tx, agg_id(op.agg), 0)
-        async with fresh.transaction() as ftx:
+        async with fresh.begin() as ftx:
             await fresh.append(ftx, agg_id(op.agg), 0, [drafted(e) for e in events])
             replayed = await counter_repo(fresh, self.ids).load(agg_id(op.agg), tx=ftx)
         assert replayed.n == want

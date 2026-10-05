@@ -72,7 +72,7 @@ impl MemoryEventStore {
     /// event id must be new to the whole store (stored, staged by any open transaction, or earlier in
     /// the batch), else a codec error is returned and nothing is written. A stream another open
     /// transaction has appended to is held until that transaction ends: the conflict reports the
-    /// version it would commit.
+    /// committed version, not the holder's, because the holder may yet roll back.
     ///
     /// The id rule is what makes [`mark_published`](Self::mark_published) by id safe: with two rows
     /// under one id, publishing the first would prune the second unpublished. A durable store gets it

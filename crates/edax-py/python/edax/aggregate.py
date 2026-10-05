@@ -286,9 +286,12 @@ class Aggregate:
         self.version = Version(initial)
         self.pending: list[Any] = []
         #: The tenant this instance belongs to, set by the :class:`~edax.store.Repository` that
-        #: loaded it and stamped onto every event it saves. ``None`` outside a multi-tenant
+        #: loaded it and stamped onto every event and command it saves. ``None`` outside a multi-tenant
         #: deployment. A host never assigns it: the repository fills it from the call that loaded the
-        #: aggregate, which is what keeps a load and the save that follows on one tenant.
+        #: aggregate, which is what keeps a load and the save that follows on one tenant. So under
+        #: ``POOL`` or ``BRIDGE`` a new aggregate starts from ``repo.load(id, tenant=...)``, which returns
+        #: it empty at version 0 with the tenant set. One built with this constructor has none, and its
+        #: save raises :class:`~edax.errors.CodecError`.
         self.tenant: str | None = None
 
     def transition(self, event: Any) -> None:  # pragma: no cover - overridden

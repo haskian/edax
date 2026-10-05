@@ -3,6 +3,7 @@ how a received message is run again, how a record is forgotten, and the optional
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -17,6 +18,7 @@ from edax import (
     current_command,
     forget,
     idempotent,
+    idempotent_by_id,
     json_codec,
     msgpack_codec,
 )
@@ -47,7 +49,10 @@ ORDER_JSON = (
     b'"lines":[{"sku":"sku-1","quantity":2,"price_cents":2100}]}'
 )
 FLOW = Lineage("01a10285-7d7c-71a1-8fb8-3caf0732bb67", "01a10285-7d7c-71a1-8fb8-3caf0732bb68")
-ORDERS = json_codec({"order.place": PlaceOrder}, version=2)
+# PlaceOrder is at v2 with its v1 shape: the identity step is the bump.
+ORDERS = json_codec(
+    {"order.place": PlaceOrder}, upcasters={"order.place": edax.Upcaster().step(1, lambda d: d)}
+)
 
 
 @dataclass
@@ -83,7 +88,7 @@ def _carrier_unknown(data: bytes) -> bytes:
 
 
 SHIPMENTS = json_codec(
-    {"order.ship": Ship}, version=2, upcasters={"order.ship": edax.Upcaster().step(1, _carrier_unknown)}
+    {"order.ship": Ship}, upcasters={"order.ship": edax.Upcaster().step(1, _carrier_unknown)}
 )
 
 
@@ -245,7 +250,7 @@ async def test_an_ingress_and_a_consumer_guard_on_one_ledger_both_run() -> None:
             runs.append(stage)
             return f"{stage}:{cmd.order_id}"
 
-        bus = edax.CommandBus(idempotent(ledger, scope=stage))
+        bus = edax.CommandBus(idempotent(ledger, scope=stage, tenancy=edax.Tenancy.SILO))
         bus.register("order.place", place)
         return bus
 
@@ -259,10 +264,19 @@ async def test_an_ingress_and_a_consumer_guard_on_one_ledger_both_run() -> None:
         assert not isinstance(record, edax.Won) and record.result == f"{stage}:ord-7f3c"
 
 
-def test_a_scope_that_is_not_a_str_is_refused_at_wiring() -> None:
-    with pytest.raises(TypeError, match="must be a str"):
-        not_a_str: Any = None
-        idempotent(MemoryIdempotencyStore(), scope=not_a_str)
+@pytest.mark.parametrize(
+    "guard, match",
+    [
+        pytest.param(idempotent, r"idempotent\(scope=\.\.\.\) names the guard", id="command_guard"),
+        pytest.param(
+            idempotent_by_id, r"idempotent_by_id\(scope=\.\.\.\) names the consumer", id="event_guard"
+        ),
+    ],
+)
+def test_a_scope_that_is_not_a_str_is_refused_at_wiring(guard: Callable[..., Any], match: str) -> None:
+    not_a_str: Any = None
+    with pytest.raises(TypeError, match=match):
+        guard(MemoryIdempotencyStore(), scope=not_a_str, tenancy=edax.Tenancy.SILO)
 
 
 # =========================================================================
@@ -282,7 +296,9 @@ async def test_a_redelivered_message_runs_its_handler_once(key: str | None, want
         runs.append(current_command())
         return cmd.order_id
 
-    bus = edax.CommandBus(idempotent(MemoryIdempotencyStore(), scope="orders-worker"))
+    bus = edax.CommandBus(
+        idempotent(MemoryIdempotencyStore(), scope="orders-worker", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("order.place", place)
     msg = command_message(ORDER, codec=ORDERS, idempotency_key=key, lineage=FLOW)
     assert await bus.dispatch_message(msg, ORDERS) == "ord-7f3c"
@@ -346,7 +362,9 @@ async def test_an_upcast_message_hashes_as_its_current_version() -> None:
         runs.append(cmd)
         return cmd.carrier
 
-    bus = edax.CommandBus(idempotent(MemoryIdempotencyStore(), scope="orders-worker"))
+    bus = edax.CommandBus(
+        idempotent(MemoryIdempotencyStore(), scope="orders-worker", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("order.ship", ship)
     v1 = command_message(ShipV1("ord-7f3c"), idempotency_key="ship-ord-7f3c")
     assert v1.version == 1
@@ -371,7 +389,7 @@ async def test_forget_lets_a_cached_failure_run_again() -> None:
             raise edax.Rejected("the warehouse is closed")
         return "placed"
 
-    bus = edax.CommandBus(idempotent(ledger, scope="orders-worker"))
+    bus = edax.CommandBus(idempotent(ledger, scope="orders-worker", tenancy=edax.Tenancy.SILO))
     bus.register("order.place", place)
     with pytest.raises(edax.Rejected):
         await bus.dispatch(ORDER, idempotency_key="req-7")
@@ -379,7 +397,7 @@ async def test_forget_lets_a_cached_failure_run_again() -> None:
         await bus.dispatch(ORDER, idempotency_key="req-7")
     assert runs == 1, "the cached failure replays without a run"
 
-    await forget(ledger, "orders-worker", "req-7")
+    await forget(ledger, "orders-worker", "req-7", tenancy=edax.Tenancy.SILO)
     assert await bus.dispatch(ORDER, idempotency_key="req-7") == "placed"
     assert runs == 2, "the re-driven command ran again"
 
@@ -442,7 +460,7 @@ async def test_save_with_commands_needs_an_outbox() -> None:
 
 async def test_an_outbox_over_another_database_is_refused() -> None:
     outbox = MemoryCommandOutbox()
-    async with MemoryTransactor().transaction() as foreign:
+    async with MemoryTransactor().begin() as foreign:
         with pytest.raises(edax.BadHandle):
             await outbox.enqueue(foreign, [command_message(ORDER)])
     assert await outbox.unpublished_count() == 0

@@ -22,6 +22,7 @@ from edax import (
     EventDraft,
     Observer,
     Relay,
+    Tenancy,
     current_timestamp,
     idempotent,
     timing,
@@ -49,8 +50,10 @@ class PrintingObserver(Observer):
     def transaction(self, outcome: str, duration_ns: int) -> None:
         self.emit(f"transaction {outcome}")
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        self.emit(f"drain published={published}")
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
+        self.emit(f"drain published={published} dead_lettered={dead_lettered}")
 
 
 @dataclass
@@ -71,7 +74,7 @@ async def main() -> None:
 
     # 1. timing() outermost, so it times every dispatch, the replayed ones too.
     ledger = MemoryIdempotencyStore(db)
-    guard = idempotent(ledger, db, scope="accounts-api", observer=observer)
+    guard = idempotent(ledger, db, scope="accounts-api", observer=observer, tenancy=Tenancy.SILO)
     bus = CommandBus(timing(record_latency, lambda cmd: cmd.type), guard)
 
     async def deposit(cmd: Deposit) -> int:
@@ -116,7 +119,7 @@ async def main() -> None:
         "claim Deposit succeeded",  # dispatch 2: the repeat found the first outcome
         "transaction committed",  # dispatch 2
         "transaction committed",  # the unit of work opened by hand
-        "drain published=1",
+        "drain published=1 dead_lettered=0",
     ], observer.signals
     print("\nok: every dispatch was timed; claims, transactions and the drain were observed")
 

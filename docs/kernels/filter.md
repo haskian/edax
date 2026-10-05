@@ -15,10 +15,12 @@ classDiagram
         +String path
         +Operator op
         +Value value
+        +Option~Collation~ collation
     }
     class In {
         +String path
         +Vec~Value~ values
+        +Option~Collation~ collation
     }
     class Contains {
         +String path
@@ -41,6 +43,10 @@ classDiagram
         Lte
         StartsWith
     }
+    class Collation {
+        <<enumeration>>
+        Decimal
+    }
 
     Filter <|-- Compare : leaf
     Filter <|-- In : leaf
@@ -50,6 +56,8 @@ classDiagram
     Filter <|-- Or : branch
     Filter <|-- Not : branch
     Compare --> Operator : selects with op
+    Compare --> Collation : reads values with
+    In --> Collation : reads values with
     And --> Filter : holds arms
     Or --> Filter : holds arms
     Not --> Filter : holds one inner
@@ -60,8 +68,8 @@ wire contract between the software development kits (SDKs), and a unit test pins
 
 | Variant | Wire form | Matches when |
 |---|---|---|
-| `Compare` | `{"compare": {"path", "op", "value"}}` | the path is present, non-null, and the operator holds |
-| `In` | `{"in": {"path", "values"}}` | the path is present, non-null, and equals one of `values` |
+| `Compare` | `{"compare": {"path", "op", "value", "collation"?}}` | the path is present, non-null, and the operator holds |
+| `In` | `{"in": {"path", "values", "collation"?}}` | the path is present, non-null, and equals one of `values` |
 | `Contains` | `{"contains": {"path", "value"}}` | the path resolves to an **array** that contains `value` |
 | `Exists` | `{"exists": {"path", "exists"}}` | presence of the path equals the `exists` flag |
 | `And` | `{"and": [...]}` | every arm matches. `And([])` is **true** |
@@ -71,9 +79,11 @@ wire contract between the software development kits (SDKs), and a unit test pins
 `Contains` is the mirror of `In`: `In` tests a scalar path against a given set, `Contains` tests
 whether the array at a path includes a given value.
 
-`Operator` is `#[non_exhaustive]`, so a new operator is additive. `Filter` is not. A `match` over
-its variants must stay exhaustive. A new variant is then a compile error rather than a wildcard's
-silent default.
+`collation` is optional and left out of the wire form when unset (see [Decimals](#decimals)).
+
+`Operator` and `Collation` are `#[non_exhaustive]`, so a new operator or collation is additive.
+`Filter` is not. A `match` over its variants must stay exhaustive. A new variant is then a compile
+error rather than a wildcard's silent default.
 
 ## Operators
 
@@ -89,23 +99,78 @@ two integers compare exactly, with no `f64` promotion above 2^53. Strings compar
 point, which is UTF-8 byte order. `"Z"` sorts before `"a"`, and U+FF71 sorts after U+1F980.
 JavaScript, Java and C# order that last pair the other way, by UTF-16 code units. Strings are not
 normalized, so the NFC and NFD spellings of `café` are unequal. Bools order `false < true`, the rank
-the read side's sort gives them, so a sort and a range filter agree on every orderable pair.
+the read side's sort gives them, so a sort and a range filter agree on every orderable pair. Under
+the decimal collation, two decimal texts order by value instead (see [Decimals](#decimals)).
 
 Equality is numeric at every depth, the same rule as at the top level: `eq(p, [1.0])` matches
 `[1]`, and `eq(p, {"x": 2.0})` matches `{"x": 2}`. `In` and `Contains` use the same equality.
 
-**Timestamps.** No special operator is needed, but string order is chronological only for one
-fixed-width form in one zone. Store timestamps as UTC with a `Z` suffix and a fixed fraction width
-(`2024-01-01T00:00:00.000000Z`), or as epoch integers. Two common forms order wrongly, silently:
+## Decimals
 
-- A form that omits a zero fraction. msgspec, which the Python SDK encodes with, writes
-  `2024-01-01T00:00:00Z` for a whole second and `2024-01-01T00:00:00.500000Z` otherwise, and the
-  first sorts *after* the second because `Z` follows `.`.
+JSON numbers are doubles to most readers, so an exact amount travels as **decimal text**: a JSON
+string such as `"9.5"`. Strings compare by code point, though, and that puts `"10"` before `"9.5"`.
+The **decimal collation** fixes this. A `Compare` or `In` node with `"collation": "decimal"` reads
+both sides as decimal text and compares them by exact value, at any precision:
+
+```json
+{"compare": {"path": "price", "op": "lt", "value": "10", "collation": "decimal"}}
+```
+
+Under it, `"9.5"` is below `"10"`, and `"9.50"` equals `"9.5"`. The rules:
+
+- `Eq`, `Ne`, the four orderings and `In` compare by value.
+- A document value that is not decimal text compares as a mismatched type does. That covers a number,
+  a bool, and a string such as `"n/a"`. `Eq`, the orderings and `In` are then `false`, and `Ne` is
+  `true`.
+- The comparand must be decimal text, or the kernel refuses the filter. `StartsWith` takes no
+  collation, since it tests text.
+- `Contains` takes no collation and compares the text.
+
+Decimal text is an optional sign, digits with at most one `.`, and an optional exponent (`1E+2`).
+`NaN` and `Infinity` are not decimal text. The text is at most 2000 bytes long. Its digits, less
+the leading zeros of the integer and the trailing zeros of the fraction, number at most 1000, and
+so do the digits of its plain notation. The kernel checks the length and the digits before it
+parses, so a filter over untrusted text costs bounded time per comparison.
+`canonical_decimal` writes the one canonical form: `9.50` becomes `9.5`, `1E+2` becomes `100`, and
+`-0.0` becomes `0`. `bigdecimal` does the parsing and the comparison.
+
+The Python SDK sets the collation for you. A `Decimal` comparand to `eq`, `ne`, `gt`, `gte`, `lt`,
+`lte` or `in_` adds it. The Rust constructors are `filter::decimal::{eq, ne, gt, gte, lt, lte,
+is_in}`, which take the decimal text.
+
+## Timestamps
+
+No special operator is needed, because string order is chronological for one fixed-width form:
+UTC, six fraction digits and a `Z` (`2024-01-01T00:00:00.000000Z`). `canonical_timestamp` writes
+an RFC 3339 timestamp in it. It converts the offset to UTC and pads the fraction. Every SDK writes a
+host timestamp through it, so documents and comparands share the form. Epoch integers order
+correctly too.
+
+Two other forms order wrongly, silently, if they reach a document as plain strings:
+
+- A form that omits a zero fraction. `2024-01-01T00:00:00Z` sorts *after*
+  `2024-01-01T00:00:00.500000Z`, because `Z` follows `.`.
 - A form with an offset. `2024-01-01T00:30:00+01:00` sorts by wall time, after `2024-01-01T00:00:00Z`,
   although that instant is 23:30Z the day before.
 
-Normalize to the fixed UTC form before a value reaches a document or a filter.
-`testdata/golden/filter.json` pins both wrong orderings.
+`testdata/golden/filter.json` pins both wrong orderings, and the fixed form's right one.
+
+## Host values every SDK writes alike
+
+A document, a filter and a command hash agree across languages only when every SDK writes a host
+value as the same JSON. Two host types have no JSON form of their own, so the kernel fixes one.
+A Rust SDK, or a third one, must emit exactly this:
+
+| Host type | JSON | Kernel function | Refused, as `codec` |
+|---|---|---|---|
+| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
+| instant (Python aware `datetime`) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
+| calendar date (Python `date`) | ISO `"YYYY-MM-DD"`, already one width | — | — |
+
+A time without an offset is refused rather than read as UTC: its instant is unknown.
+`testdata/golden/host_values.json` pins every row, and the Python suite replays it with real
+`Decimal` and `datetime` values. The decimal text orders by value only under the decimal collation.
+So a range filter or a sort over a decimal field must set it.
 
 ## What the kernel refuses
 
@@ -118,6 +183,8 @@ terminal `codec` error, never a filter that silently means something else:
 | a `null` comparand for `Compare` or inside `In` | no present value equals it, so the leaf matches nothing; ask `Exists(path, false)` for a missing or null path |
 | a path with an empty segment: `""`, `"a."`, `".a"`, `"a..b"` | a backend translating paths to SQL has no rule for one |
 | an integer literal wider than 64 bits | it would be compared as the nearest float, so `eq(x, 2**70)` would match `2**70 + 1` |
+| under the decimal collation, a comparand that is not decimal text | no document value could equal or order against it |
+| the decimal collation on `StartsWith` | a prefix test reads text, not a value |
 
 `Contains(path, null)` stays valid: it asks whether the array holds a `null` element. A path is
 dot-delimited object keys, so a key containing `.` cannot be addressed. A numeric segment is a key,
@@ -217,6 +284,7 @@ it.
 |---|---|---|
 | Filter type | the typed `Filter` enum | `Filter = dict[str, Any]`, the kernel's canonical form |
 | Comparisons | `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `starts_with` | same names |
+| Decimal comparisons | `decimal::{eq, ne, gt, gte, lt, lte, is_in}`, over decimal text | the same constructors, with a `Decimal` value |
 | Set membership | `is_in(path, vec![...])` | `in_(path, *values)` |
 | Array membership | `contains(path, value)` | `contains(path, value)` |
 | Presence | `exists(path, bool)` — flag required | `exists(path, present=True)` — flag defaults to `True` |
@@ -224,7 +292,7 @@ it.
 | Evaluate | `eval(&Filter, &Value) -> bool` | `matches(filter, document) -> bool` |
 | JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, Error>` | used internally by `matches` |
 | Validation | `Filter::validate()` | through `matches` |
-| Path helpers | `resolve`, `value_cmp` (public, shared with the `query` module next door) | not exposed |
+| Path helpers | `resolve`, `value_cmp`, `collated_cmp` (public, shared with the `query` module next door) | not exposed |
 
 ```rust
 use edax_cqrs::filter::{and, eq, eval, gt};

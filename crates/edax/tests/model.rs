@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use edax::command::{Claim, State};
+use edax::Tenancy;
 use edax::{
     idempotent, propagate, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
     EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher,
@@ -332,7 +333,7 @@ fn cmd_hash(kind: u8, payload: u8) -> u64 {
 
 /// The ledger key the guard claims for model key `key`.
 fn claimed(key: u8) -> String {
-    claim_key(SCOPE, &key.to_string())
+    claim_key(Tenancy::Silo, None, SCOPE, &key.to_string()).unwrap()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,7 +378,7 @@ proptest! {
         let mut bus = CommandBus::new();
         for (kind, name) in [(0u8, "A"), (1u8, "B")] {
             let counter = Arc::clone(&calls[kind as usize]);
-            let guard = idempotent(Arc::clone(&store), SCOPE, |c: &Cmd| Some(c.key.to_string()));
+            let guard = idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Cmd| Some(c.key.to_string()));
             let handler: edax::Handler<Cmd, u8> = Box::new(move |cmd: &Cmd| {
                 counter.set(counter.get() + 1);
                 match cmd.outcome {
@@ -613,7 +614,7 @@ impl AggregateCodec for CounterCodec {
 type CounterRepo = Repository<MemoryEventStore, JsonCodec<Tick>, CounterCodec>;
 
 fn counter_repo(store: MemoryEventStore) -> CounterRepo {
-    Repository::new(store, JsonCodec::<Tick>::new("Tick", 1), CounterCodec).with_ids(next_id)
+    Repository::new(store, JsonCodec::<Tick>::new("Tick"), CounterCodec).with_ids(next_id)
 }
 
 #[derive(Debug, Clone)]
@@ -786,15 +787,15 @@ proptest! {
 
     #[test]
     fn codecs_roundtrip(event in payload_strategy()) {
-        let json = JsonCodec::<Payload>::new("Payload", 3);
+        let json = JsonCodec::<Payload>::new("Payload");
         let raw = json.marshal(&event).unwrap();
         prop_assert_eq!(&raw.name, "Payload");
-        prop_assert_eq!(raw.version, 3);
+        prop_assert_eq!(raw.version, 1);
         prop_assert_eq!(json.unmarshal(&raw).unwrap(), event.clone());
 
         #[cfg(feature = "msgpack")]
         {
-            let mp = edax::MsgpackCodec::<Payload>::new("Payload", 3);
+            let mp = edax::MsgpackCodec::<Payload>::new("Payload");
             let raw = mp.marshal(&event).unwrap();
             prop_assert_eq!(&raw.name, "Payload");
             prop_assert_eq!(mp.unmarshal(&raw).unwrap(), event);
@@ -803,14 +804,14 @@ proptest! {
 
     #[test]
     fn codecs_reject_garbage(bytes in prop::collection::vec(any::<u8>(), 1..16)) {
-        let raw = Event { name: "Payload".into(), version: 3, data: bytes };
+        let raw = Event { name: "Payload".into(), version: 1, data: bytes };
         // Whatever the bytes are, a codec either decodes them or returns Error::codec — never panics.
-        let json = JsonCodec::<Payload>::new("Payload", 3);
+        let json = JsonCodec::<Payload>::new("Payload");
         if let Err(e) = json.unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
         #[cfg(feature = "msgpack")]
-        if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload", 3).unmarshal(&raw) {
+        if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload").unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
     }
@@ -895,10 +896,7 @@ where
                     .get_many(
                         &mut tx,
                         &Query {
-                            sort: vec![SortKey {
-                                path: "id".into(),
-                                desc,
-                            }],
+                            sort: vec![SortKey::new("id", desc)],
                             offset,
                             limit,
                             ..Default::default()

@@ -157,7 +157,7 @@ pub fn query(query: &str, docs: &str) -> Result<String, String> {
 }
 
 /// Mint the keyset cursor that resumes after a document (JSON string) under sort keys (JSON string),
-/// for a backend that pages natively. A row without a non-null `id` is a `codec:` error.
+/// for a backend that pages natively. A row whose `id` is not a string or a number is a `codec:` error.
 pub fn encode_cursor(doc: &str, sort: &str) -> Result<String, String> {
     edax_cqrs::encode_cursor_json(doc.as_bytes(), sort.as_bytes()).map_err(wire)
 }
@@ -186,6 +186,14 @@ pub fn effective_sort(sort: &str) -> Result<String, String> {
 /// A codec asks on every unmarshal. See [`edax_event::upcast_plan`].
 pub fn upcast_plan(from_version: u32, to: u32, available: Option<Vec<u32>>) -> Result<Vec<u32>, String> {
     edax_event::upcast_plan(from_version, to, available.as_deref()).map_err(wire)
+}
+
+/// The schema version a codec writes for one event name: one past the highest of its `available`
+/// steps, or the first version (1) for `None` or none. A hole in the steps, or a step at the `u32`
+/// ceiling, is the kernel's `codec` error. A codec asks once per name when it is built. See
+/// [`edax_event::upcast_target`].
+pub fn upcast_target(available: Option<Vec<u32>>) -> Result<u32, String> {
+    edax_event::upcast_target(available.as_deref()).map_err(wire)
 }
 
 /// The two ids that place a message in its flow. See [`edax_event::Lineage`].
@@ -239,8 +247,17 @@ pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), Strin
     edax_event::check_extensions(&ordered(extensions)).map_err(wire)
 }
 
-/// Refuse a tenant id that breaks the rule, as a `codec:` error. A tenant id is 1 to 64 bytes; the
-/// charset is open, because `tenant_key` is injective over any bytes. See [`edax_core::check_tenant`].
+/// The longest tenant id the key rule allows, in bytes. It is a function because the generator binds
+/// functions, not constants. A host reads the limit from here instead of restating it. See
+/// [`edax_core::TENANT_MAX`].
+pub fn tenant_max() -> u32 {
+    // 64 by definition, so the conversion never saturates.
+    u32::try_from(edax_core::TENANT_MAX).unwrap_or(u32::MAX)
+}
+
+/// Refuse a tenant id that breaks the rule, as a `codec:` error. A tenant id is 1 to [`tenant_max`]
+/// bytes; the charset is open, because `tenant_key` is injective over any bytes. See
+/// [`edax_core::check_tenant`].
 pub fn check_tenant(tenant: &str) -> Result<(), String> {
     edax_core::check_tenant(tenant).map_err(wire)
 }
@@ -280,8 +297,8 @@ pub fn payload_hash(payload: &[u8]) -> u64 {
 
 /// Canonicalize a UTF-8 JSON payload (RFC 8785) and hash it. Canonicalization lives in the kernel,
 /// so every binding gets the same hash; don't canonicalize on the host side. A command's guard uses
-/// [`command_hash_json`], which also binds the command name. An integer literal past 2^53 is a
-/// `codec` error.
+/// [`command_hash_json`], which also binds the command name. An integer literal outside
+/// `-(2^53-1)..=2^53-1` is a `codec` error.
 pub fn payload_hash_json(payload: &[u8]) -> Result<u64, String> {
     let canonical = edax_cqrs::canonical_json(payload).map_err(wire)?;
     Ok(edax_cqrs::payload_hash(&canonical))
@@ -295,36 +312,58 @@ pub fn canonical_json(payload: &[u8]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&canonical).into_owned())
 }
 
+/// The canonical text of decimal text (`"9.50"` → `"9.5"`, `"1E+2"` → `"100"`): the one string a host
+/// writes an exact decimal as, so equality and the command hash see one value. `NaN`, an infinity,
+/// text that is not a decimal, or one past the digit bound is a `codec:` error. See
+/// [`edax_cqrs::canonical_decimal`].
+pub fn canonical_decimal(text: &str) -> Result<String, String> {
+    edax_cqrs::canonical_decimal(text).map_err(wire)
+}
+
+/// The fixed-width UTC text of an RFC 3339 timestamp (`"2024-01-01T01:30:00+01:00"` →
+/// `"2024-01-01T00:30:00.000000Z"`): the one string a host writes an instant as, so string order is
+/// instant order. Text without an offset, a fraction finer than a microsecond, or a year outside
+/// 0000 to 9999 is a `codec:` error. See [`edax_cqrs::canonical_timestamp`].
+pub fn canonical_timestamp(text: &str) -> Result<String, String> {
+    edax_cqrs::canonical_timestamp(text).map_err(wire)
+}
+
 /// The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
 /// `{"name": name, "payload": payload}`. `payload` is the command value as UTF-8 JSON, in the shape
 /// the handler receives (after upcast). The kernel canonicalizes, so every binding agrees. An integer
-/// literal past 2^53 is a `codec` error. See [`edax_cqrs::command_hash_json`].
+/// literal outside `-(2^53-1)..=2^53-1` is a `codec` error. See [`edax_cqrs::command_hash_json`].
 pub fn command_hash_json(name: &str, payload: &[u8]) -> Result<u64, String> {
     edax_cqrs::command_hash_json(name, payload).map_err(wire)
 }
 
 /// The ledger key a command's idempotency guard claims for `idempotency_key` under the guard's
-/// `scope`: `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`. Two guards with different scopes
-/// never share a key. See [`edax_cqrs::claim_key`].
-pub fn claim_key(scope: &str, idempotency_key: &str) -> String {
-    edax_cqrs::claim_key(scope, idempotency_key)
+/// `scope`, in a deployment of tenancy `mode` (`"silo"`, `"pool"` or `"bridge"`):
+/// `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`, composed with `tenant` under a pool. Two
+/// guards with different scopes never share a key. A mode that requires a tenant and a call that
+/// names none is a `codec:` error. Pinned by `testdata/golden/claim_key.json`. See
+/// [`edax_cqrs::claim_key`].
+pub fn claim_key(mode: &str, scope: &str, idempotency_key: &str, tenant: Option<String>) -> Result<String, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    edax_cqrs::claim_key(mode, tenant.as_deref(), scope, idempotency_key).map_err(wire)
 }
 
 /// What an event's idempotency guard claims: the key and the payload hash. See
 /// [`edax_event::event_idempotency`].
 pub struct EventIdempotency {
-    /// The event id.
+    /// The event id under the guard's scope, composed with the event's tenant under a pool.
     pub key: String,
     /// FNV-1a over the raw `data` bytes.
     pub payload_hash: u64,
 }
 
-/// The key and hash an event's idempotency guard claims for `message`: the kernel's rule, pinned by
-/// `testdata/golden/event_idempotency.json`, so two SDKs consuming one stream bind alike.
-pub fn event_idempotency(message: EventMessage) -> EventIdempotency {
-    let msg = kernel_event_message(message);
-    let rule = edax_event::event_idempotency(&msg);
-    EventIdempotency { key: rule.key.to_owned(), payload_hash: rule.payload_hash }
+/// The key and hash the event idempotency guard named `scope` claims for `message`, in a deployment
+/// of tenancy `mode`: the kernel's rule, pinned by `testdata/golden/event_idempotency.json`, so two
+/// SDKs consuming one stream bind alike. A mode that requires a tenant and a message that names none
+/// is a `codec:` error.
+pub fn event_idempotency(message: EventMessage, mode: &str, scope: &str) -> Result<EventIdempotency, String> {
+    let mode = edax_core::Tenancy::from_name(mode).map_err(wire)?;
+    let rule = edax_event::event_idempotency(&kernel_event_message(message), mode, scope).map_err(wire)?;
+    Ok(EventIdempotency { key: rule.key, payload_hash: rule.payload_hash })
 }
 
 // ---- idempotency record --------------------------------------------------
@@ -772,22 +811,57 @@ pub fn saga_write(completes: bool, has_commands: bool, version: Option<u64>) -> 
     Ok(SagaWrite { action: action.to_owned(), expected, version })
 }
 
+/// Whether a saga step folds an event: `action` is `"fold"`, with the marks to save with the step in
+/// `folded`, or a skip (write nothing, `folded` empty): `"completed"` (a tombstone), `"repeat"` (an
+/// event the instance folded), or `"below_mark"` (a sequence below the one the instance folded from
+/// its aggregate, assumed folded). See [`edax_event::SagaAdmit`].
+pub struct SagaAdmit {
+    pub action: String,
+    pub folded: String,
+}
+
 /// Whether an instance that saved the marks `folded` (empty for a new instance), or is `completed`
-/// (a tombstone), folds `message`: `None` when it does not (a tombstone, or a redelivery of an event
-/// it folded: skip it, write nothing), else the marks to save with the step. Marks this function did
-/// not write are a `codec:` error. See [`edax_event::saga_admit`].
-pub fn saga_admit(completed: bool, folded: &str, message: EventMessage) -> Result<Option<String>, String> {
+/// (a tombstone), folds `message`. Marks this function did not write are a `codec:` error. See
+/// [`edax_event::saga_admit`].
+pub fn saga_admit(completed: bool, folded: &str, message: EventMessage) -> Result<SagaAdmit, String> {
     let msg = kernel_event_message(message);
-    Ok(match edax_event::saga_admit(completed, folded, &msg).map_err(wire)? {
-        edax_event::SagaAdmit::Completed | edax_event::SagaAdmit::Repeat => None,
-        edax_event::SagaAdmit::Fold { folded } => Some(folded),
-    })
+    let (action, folded) = match edax_event::saga_admit(completed, folded, &msg).map_err(wire)? {
+        edax_event::SagaAdmit::Completed => ("completed", String::new()),
+        edax_event::SagaAdmit::Repeat => ("repeat", String::new()),
+        edax_event::SagaAdmit::BelowMark => ("below_mark", String::new()),
+        edax_event::SagaAdmit::Fold { folded } => ("fold", folded),
+    };
+    Ok(SagaAdmit { action: action.to_owned(), folded })
 }
 
 /// The id of the `index`-th command a saga step committed at `version`:
 /// `"{instance_id}:{version}:{index}"`. See [`edax_event::saga_command_id`].
 pub fn saga_command_id(instance_id: &str, version: u64, index: u64) -> String {
     edax_event::saga_command_id(instance_id, version, index)
+}
+
+/// The name of the event [`saga_command_failed`] builds: `"SagaCommandFailed"`. See
+/// [`edax_event::SAGA_COMMAND_FAILED`].
+pub fn saga_command_failed_name() -> String {
+    edax_event::SAGA_COMMAND_FAILED.to_owned()
+}
+
+/// The event a saga folds when `command`, a row its outbox sent, died of the failure `error` with the
+/// taxonomy `code` (`None` when no code classifies it): named `"SagaCommandFailed"`, for the instance
+/// the row names, with the JSON payload `command_id`, `command`, `code` and `error`. `recorded_at` is
+/// the caller's clock. An unknown code, or a row that names no instance, is a `codec:` error. Pinned
+/// by `testdata/golden/saga.json`. See [`edax_event::saga_command_failed`].
+// `code` is optional, so it trails: alef moves optional parameters to the end of the signature.
+pub fn saga_command_failed(
+    command: CommandMessage,
+    error: &str,
+    recorded_at: i64,
+    code: Option<String>,
+) -> Result<EventMessage, String> {
+    let code = code.map(|code| code.parse::<edax_core::ErrorCode>()).transpose().map_err(wire)?;
+    edax_event::saga_command_failed(&kernel_command_message(command), code, error, recorded_at)
+        .map(record_event_message)
+        .map_err(wire)
 }
 
 /// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
@@ -1052,8 +1126,10 @@ impl MemoryTransactor {
     /// Persist `document_json` under `tx` at `version + 1` if the stored version still equals
     /// `version`; returns the new version. A document that is not a JSON object is a `codec:` error:
     /// the query injects the row key as its `"id"`, so a scalar or an array could be saved and never
-    /// queried.
+    /// queried. So is one the kernel's [`edax_cqrs::filter::check_document`] refuses, an integer wider
+    /// than 64 bits, which would be stored as the nearest float.
     pub fn save_projection(&self, tx: i64, id: &str, version: u64, document_json: &str) -> Result<u64, String> {
+        edax_cqrs::filter::check_document(document_json.as_bytes()).map_err(wire)?;
         let document: edax_memory::Document = parse_json("a projection document is a JSON object", document_json)?;
         self.inner.projection_store().save(tx, id, version, document).map_err(wire)
     }
@@ -1282,11 +1358,36 @@ fn record_from_kafka_record(record: edax_kafka::KafkaRecord) -> KafkaRecord {
     }
 }
 
-/// Build the record for value bytes the host already encoded, under `key`. `content_type` names the
-/// format and kind of `value`. The key is the host's choice made: its override, or the message's
-/// [`ordering_key`]. See [`edax_kafka::keyed_record`].
-pub fn kafka_record(key: &str, value: Vec<u8>, content_type: &str) -> KafkaRecord {
-    record_from_kafka_record(edax_kafka::keyed_record(key, value, content_type))
+/// Build the record for an event whose value bytes the host already encoded. `content_type` names the
+/// format and kind of `value`. The key is `key`, the host's override, or else the kernel's: the
+/// event's aggregate composed with its tenant where the `tenancy` mode (`"silo"`, `"pool"` or
+/// `"bridge"`) composes keys. A mode that requires a tenant and an event that names none is a
+/// `codec:` error. See [`edax_kafka::record`].
+// `key` is optional, so it trails: alef moves optional parameters to the end.
+pub fn kafka_event_record(
+    tenancy: &str,
+    message: EventMessage,
+    value: Vec<u8>,
+    content_type: &str,
+    key: Option<String>,
+) -> Result<KafkaRecord, String> {
+    let tenancy = edax_core::Tenancy::from_name(tenancy).map_err(wire)?;
+    let message = kernel_event_message(message);
+    edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type).map(record_from_kafka_record).map_err(wire)
+}
+
+/// [`kafka_event_record`] for a command: its key is the target aggregate, or else its own id, under
+/// the same tenancy rule. See [`edax_kafka::record`].
+pub fn kafka_command_record(
+    tenancy: &str,
+    message: CommandMessage,
+    value: Vec<u8>,
+    content_type: &str,
+    key: Option<String>,
+) -> Result<KafkaRecord, String> {
+    let tenancy = edax_core::Tenancy::from_name(tenancy).map_err(wire)?;
+    let message = kernel_command_message(message);
+    edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type).map(record_from_kafka_record).map_err(wire)
 }
 
 /// Where a fetched record goes by its `content-type`: flattened from [`edax_kafka::Route`]. No field
@@ -1376,7 +1477,7 @@ pub struct KafkaDue {
     pub offset: i64,
 }
 
-/// One partition's bookkeeping, for a health check, a gauge or a rebalance drain.
+/// One partition's bookkeeping, for a health check or a gauge.
 pub struct PartitionStats {
     /// The topic this partition belongs to.
     pub topic: String,
@@ -1384,8 +1485,8 @@ pub struct PartitionStats {
     pub partition: i32,
     /// Offsets delivered but not yet settled, retired ones included.
     pub unsettled: u64,
-    /// Unsettled offsets whose token is still live: work a handler may still settle. A rebalance
-    /// drain waits for this to reach zero.
+    /// Unsettled offsets whose token is still live: work a handler may still settle. A retired
+    /// offset waits for a fetch instead.
     pub live: u64,
     /// The highest offset booked.
     pub max_delivered: i64,
@@ -1636,8 +1737,8 @@ mod tests {
     /// derives on the generated twin), and a whole-record assert is what proves nothing is dropped at
     /// the boundary.
     fn assert_same_event(got: &EventMessage, want: &EventMessage, case: &str) {
-        assert_eq!((&got.id, &got.aggregate_id, got.sequence), (&want.id, &want.aggregate_id, want.sequence), "{case}");
-        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.id, &got.aggregate_id, &got.tenant), (&want.id, &want.aggregate_id, &want.tenant), "{case}");
+        assert_eq!((got.sequence, &got.name, got.version, &got.data), (want.sequence, &want.name, want.version, &want.data), "{case}");
         assert_eq!((&got.correlation_id, &got.causation_id), (&want.correlation_id, &want.causation_id), "{case}");
         assert_eq!((got.occurred_at, got.recorded_at), (want.occurred_at, want.recorded_at), "{case}");
         assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
@@ -1646,7 +1747,7 @@ mod tests {
     /// Field-by-field command equality, for the reason [`assert_same_event`] gives.
     fn assert_same_command(got: &CommandMessage, want: &CommandMessage, case: &str) {
         assert_eq!((&got.id, &got.idempotency_key, &got.aggregate_id), (&want.id, &want.idempotency_key, &want.aggregate_id), "{case}");
-        assert_eq!((&got.name, got.version, &got.data), (&want.name, want.version, &want.data), "{case}");
+        assert_eq!((&got.tenant, &got.name, got.version, &got.data), (&want.tenant, &want.name, want.version, &want.data), "{case}");
         assert_eq!((&got.correlation_id, &got.causation_id, got.issued_at), (&want.correlation_id, &want.causation_id, want.issued_at), "{case}");
         assert_eq!((&got.extensions, &got.metadata), (&want.extensions, &want.metadata), "{case}");
     }
@@ -1799,6 +1900,17 @@ mod tests {
     }
 
     #[test]
+    fn upcast_target_branches() {
+        assert_eq!(upcast_target(None).unwrap(), 1, "no upcaster: the first version");
+        assert_eq!(upcast_target(Some(vec![2, 1])).unwrap(), 3, "one past the highest step");
+        // A wiring mistake fails the same way every time, so it carries the terminal `codec` code.
+        assert_eq!(
+            upcast_target(Some(vec![1, 3])).unwrap_err(),
+            "codec: upcast steps skip v2: a payload stored at v2 could never be raised"
+        );
+    }
+
+    #[test]
     fn retries_cross_their_decisions_structurally() {
         let code = |c: &str| Some(c.to_owned());
         let policy = retries(2, true);
@@ -1822,12 +1934,18 @@ mod tests {
 
     #[test]
     fn saga_admit_crosses_the_marks_as_text() {
-        let env = |id: &str| event_message(id, Some(1));
-        let folded = saga_admit(false, "", env("evt-1")).unwrap().expect("a new instance folds");
-        assert_eq!(saga_admit(false, &folded, env("evt-1")).unwrap(), None, "a redelivery is skipped");
-        assert_eq!(saga_admit(true, &folded, env("evt-2")).unwrap(), None, "a tombstone folds nothing");
-        assert!(saga_admit(false, &folded, env("evt-2")).unwrap().is_some(), "the next event folds");
-        assert!(saga_admit(false, "[1]", env("evt-1")).unwrap_err().starts_with("codec: saga folded marks"));
+        let env = |id: &str, sequence: u64| event_message(id, Some(sequence));
+        let first = saga_admit(false, "", env("evt-1", 2)).unwrap();
+        assert_eq!(first.action, "fold", "a new instance folds");
+        let answer = |completed: bool, event: EventMessage| {
+            let admit = saga_admit(completed, &first.folded, event).unwrap();
+            (admit.action, admit.folded.is_empty())
+        };
+        assert_eq!(answer(false, env("evt-1", 2)), ("repeat".to_owned(), true), "a redelivery is skipped");
+        assert_eq!(answer(false, env("evt-0", 1)), ("below_mark".to_owned(), true), "an older sequence is skipped apart");
+        assert_eq!(answer(true, env("evt-2", 3)), ("completed".to_owned(), true), "a tombstone folds nothing");
+        assert_eq!(answer(false, env("evt-2", 3)), ("fold".to_owned(), false), "the next event folds");
+        assert!(saga_admit(false, "[1]", env("evt-1", 1)).err().is_some_and(|e| e.starts_with("codec: saga folded marks")));
     }
 
     #[test]
@@ -1878,10 +1996,16 @@ mod tests {
 
     #[test]
     fn idempotency_inputs_cross_in_argument_order() {
-        // The event guard's key and hash cross as two fields: the event id, and the hash of the body.
-        let rule = event_idempotency(event_message("evt-1", Some(1)));
-        assert_eq!(rule.key, "evt-1");
+        // The event guard's key and hash cross as two fields: the scoped event id, and the hash of the
+        // body. The mode crosses by name, and an unknown one is the kernel's `codec` refusal.
+        let rule = event_idempotency(event_message("evt-1", Some(1)), "silo", "balances").unwrap();
+        assert_eq!(rule.key, "edax:evt:8:balances:evt-1");
         assert_eq!(rule.payload_hash, payload_hash(&event_message("evt-1", Some(1)).data));
+        assert!(event_idempotency(event_message("evt-1", Some(1)), "shard", "balances").is_err_and(|e| e.starts_with("codec:")));
+
+        // (mode, scope, key, tenant): the tenant reaches the key only under a pool.
+        assert_eq!(claim_key("pool", "api", "req-1", Some("acme".to_owned())), Ok("4:acme:edax:cmd:3:api:req-1".to_owned()));
+        assert!(claim_key("pool", "api", "req-1", None).is_err_and(|e| e.starts_with("codec:")));
 
         // (name, payload): the name reaches the hash, so another name over one payload is another hash.
         let payload = br#"{"invoice_id":"invoice-7","total":5000}"#;
@@ -2073,16 +2197,29 @@ mod tests {
 
     #[test]
     fn messages_round_trip_through_every_format() {
+        // The tenant crosses every record conversion: the draft's, the event's both ways, the command's
+        // both ways. `event` takes the draft path, and each case checks the tenant against the literal,
+        // so a conversion that drops it fails here.
+        let event = |sequence: Option<u64>, tenant: Option<&str>| {
+            record_event(EventDraft { tenant: tenant.map(str::to_owned), ..draft("evt-1", sequence) }, RECORDED_AT)
+        };
+        let command = |aggregate_id: Option<&str>, tenant: Option<&str>| CommandMessage {
+            tenant: tenant.map(str::to_owned),
+            ..command_message(aggregate_id)
+        };
         for format in ["json", "msgpack"] {
-            for sequence in [Some(7), None] {
-                let wire = encode_event(format, event_message("evt-1", sequence)).unwrap();
+            for (sequence, tenant) in [(Some(7), None), (None, None), (Some(7), Some("acme"))] {
+                let wire = encode_event(format, event(sequence, tenant)).unwrap();
                 let back = decode_event(format, &wire).unwrap();
-                assert_same_event(&back, &event_message("evt-1", sequence), &format!("{format} sequence={sequence:?}"));
+                let case = format!("{format} sequence={sequence:?} tenant={tenant:?}");
+                assert_eq!(back.tenant.as_deref(), tenant, "{case}");
+                assert_same_event(&back, &event(sequence, tenant), &case);
             }
-            for aggregate_id in [Some("invoice-7"), None] {
-                let wire = encode_command(format, command_message(aggregate_id)).unwrap();
+            for (aggregate_id, tenant) in [(Some("invoice-7"), None), (None, None), (Some("invoice-7"), Some("acme"))] {
+                let wire = encode_command(format, command(aggregate_id, tenant)).unwrap();
                 let back = decode_command(format, &wire).unwrap();
-                assert_same_command(&back, &command_message(aggregate_id), &format!("{format} aggregate={aggregate_id:?}"));
+                let case = format!("{format} aggregate={aggregate_id:?} tenant={tenant:?}");
+                assert_same_command(&back, &command(aggregate_id, tenant), &case);
             }
             // (format, kind) in that order.
             for kind in ["event", "command"] {
@@ -2316,7 +2453,7 @@ mod tests {
         let store = memory_transactor();
         assert!(store.load_saga(NO_TX, "order-1").unwrap().is_none());
 
-        let folded = r#"{"order-1":{"sequence":1,"id":"evt-1"}}"#;
+        let folded = r#"{"order-1":{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}"#;
         assert_eq!(store.save_saga(NO_TX, "order-1", 0, r#"{"status":"awaiting_payment"}"#, folded, vec![]).unwrap(), 1);
         let row = store.load_saga(NO_TX, "order-1").unwrap().expect("saved");
         assert_eq!((row.version, row.completed, row.folded.as_str()), (1, false, folded), "the marks cross as they were saved");
@@ -2466,8 +2603,9 @@ mod tests {
     /// `testdata/golden/kafka_record.json`.
     #[test]
     fn kafka_record_crosses_the_record_structurally() {
-        let record = kafka_record("invoice-7", b"<invoice/>".to_vec(), "application/xml");
-        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the host's key, untouched");
+        let tenanted = || EventMessage { tenant: Some("acme".to_owned()), ..event_message("evt-1", Some(1)) };
+        let record = kafka_event_record("silo", tenanted(), b"<invoice/>".to_vec(), "application/xml", None).unwrap();
+        assert_eq!(record.key.as_slice(), b"invoice-7".as_slice(), "the aggregate, bare outside a pool");
         assert_eq!(record.value.as_slice(), b"<invoice/>".as_slice(), "the host's own bytes, untouched");
         let headers: Vec<(&str, &[u8])> =
             record.headers.iter().map(|h| (h.key.as_str(), h.value.as_slice())).collect();
@@ -2490,6 +2628,35 @@ mod tests {
         let headerless = kafka_route(Vec::new(), Vec::new(), "command").unwrap();
         assert!(headerless.headerless, "no header under a command default is poison");
         assert!(kafka_route(Vec::new(), Vec::new(), "query").is_err(), "an unknown kind is refused");
+
+        // The key crosses as the kernel decides it: `(tenancy, message, ..., key)`, each argument
+        // reaching its own place. The rule itself is pinned by `kafka_record.json`.
+        let command = || CommandMessage { tenant: Some("acme".to_owned()), ..command_message(None) };
+        let keys = [
+            ("pool_composes_the_aggregate", kafka_event_record("pool", tenanted(), Vec::new(), "x", None), Ok("4:acme:invoice-7")),
+            ("pool_composes_a_commands_own_id", kafka_command_record("pool", command(), Vec::new(), "x", None), Ok("4:acme:cmd-1")),
+            ("override_wins_outright", kafka_event_record("pool", tenanted(), Vec::new(), "x", Some("k".to_owned())), Ok("k")),
+            (
+                "pool_without_a_tenant_is_refused",
+                kafka_event_record("pool", event_message("evt-1", Some(1)), Vec::new(), "x", None),
+                Err("codec: tenancy pool requires a tenant, and none was given"),
+            ),
+            (
+                "bridge_without_a_tenant_is_refused",
+                kafka_command_record("bridge", command_message(None), Vec::new(), "x", None),
+                Err("codec: tenancy bridge requires a tenant, and none was given"),
+            ),
+            (
+                "unknown_mode_is_refused",
+                kafka_event_record("shard", tenanted(), Vec::new(), "x", None),
+                Err("codec: unknown tenancy mode: shard"),
+            ),
+        ];
+        for (name, got, want) in keys {
+            let got = got.map(|record| String::from_utf8(record.key).unwrap());
+            assert_eq!(got, want.map(str::to_owned).map_err(str::to_owned), "{name}");
+        }
+        assert_eq!(tenant_max(), 64, "the kernel's limit, read rather than restated");
 
         // A dead letter keeps the record and appends its source.
         let dead = kafka_dead_letter_record(
@@ -2587,7 +2754,7 @@ mod tests {
     #[test]
     fn redis_refusals_cross_with_the_kernels_codes() {
         assert_eq!(redis_ledger_key("idem:", "k"), Ok(b"idem:k".to_vec()));
-        assert_eq!(redis_check_config("idem:", 1, 3, 1, true), Ok(()));
+        assert_eq!(redis_check_config("idem:", 1, 4, 1, true), Ok(()));
         assert_eq!(redis_heartbeats_per_ttl(), 3);
         assert_eq!(redis_forget_reads(), 3);
         for refused in [

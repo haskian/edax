@@ -1,7 +1,8 @@
 """Structured error taxonomy over the kernel's ``ErrorCode``. The native layer reports failures as strings
 with a stable code prefix (``"codec: ..."``); :func:`from_wire` maps the code to an exception class.
-``terminal`` marks an error that fails the same way on retry. The retry middleware, the idempotency guard and
-the dispatcher decide retry-vs-dead-letter on it, and the guard persists on it: a terminal failure is cached
+:func:`is_terminal` says whether an error fails the same way on retry, from the code it carries. The retry
+middleware, the idempotency guard and the dispatcher decide retry-vs-dead-letter on that one verdict, and the
+guard persists on it: a terminal failure is cached
 under the idempotency key, a transient one releases the claim. The verdict is the kernel's, pinned by
 ``testdata/golden/error_taxonomy.json``, so every SDK sharing a store agrees. These classes cover the whole
 code set, one per code, checked both ways at import. See ``docs/sdk/errors.md``."""
@@ -17,14 +18,20 @@ from . import _edax
 
 class EdaxError(Exception):
     """Base for every edax error. ``code`` is the kernel's wire name for the kind, ``None`` here.
-    ``terminal`` is the kernel's verdict for that code, and the kernel's default for a failure with no
-    code."""
+    ``terminal`` is the kernel's verdict for that code, read once at class definition; a subclass cannot
+    restate it."""
 
     code: ClassVar[str | None] = None
     terminal: ClassVar[bool] = False
 
     def __init_subclass__(cls, code: str | None = None, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
+        if "terminal" in cls.__dict__:
+            # Every consumer asks the kernel by code, so a restated verdict would be silently ignored.
+            raise TypeError(
+                f"{cls.__name__} restates `terminal`: an edax error's verdict is its code's. "
+                "Subclass Rejected for a terminal failure, or raise your own exception for a transient one."
+            )
         if code is None:
             return  # a host subclass inherits its parent's code and verdict
         cls.code = code
@@ -114,20 +121,22 @@ def from_wire(wire: str) -> EdaxError:
     return _BY_CODE[split.code](split.message)
 
 
-def is_terminal(e: BaseException) -> bool:
-    """Whether ``e`` fails the same way on retry: its ``terminal`` attribute, or the kernel's default for a
-    failure with no classification (transient)."""
-    return bool(getattr(e, "terminal", UNCLASSIFIED_IS_TERMINAL))
-
-
 def _carried_code(e: BaseException) -> str | None:
     """The taxonomy code failure ``e`` carries: an edax error's own code, ``rejected`` for any other exception
     that declares itself terminal (a host's business rejection, whatever its own ``code`` attribute holds),
     and ``None`` otherwise. Every kernel decision about a failure starts from this code, as the Rust SDK's
     ``code_of`` does."""
-    if isinstance(e, EdaxError) and e.code in _BY_CODE:
-        return e.code
-    return Rejected.code if is_terminal(e) else None
+    if isinstance(e, EdaxError):
+        return e.code if e.code in _BY_CODE else None
+    return Rejected.code if bool(getattr(e, "terminal", False)) else None
+
+
+def is_terminal(e: BaseException) -> bool:
+    """Whether ``e`` fails the same way on retry: the kernel's verdict for the code ``e`` carries, and the
+    kernel's default (transient) for a failure no code classifies. Every consumer of a failure branches on
+    this one function or on the same code, as the Rust SDK's ``command::is_terminal`` does."""
+    code = _carried_code(e)
+    return UNCLASSIFIED_IS_TERMINAL if code is None else _edax.error_code_is_terminal(code)
 
 
 def code_of(e: BaseException) -> str | None:
@@ -141,6 +150,21 @@ def code_of(e: BaseException) -> str | None:
 #: What a native call raises when an argument does not convert: a negative or too-wide integer, a value of the
 #: wrong type, a ``str`` holding a lone surrogate. Each fails the same way on every retry.
 _ARGUMENT_ERRORS = (OverflowError, TypeError, UnicodeError)
+
+
+def _wiring_u32(value: int, what: str) -> int:
+    """``value`` if the kernel can carry it as an unsigned 32-bit integer. A negative or oversized one raises
+    :class:`ValueError`, and a non-integer :class:`TypeError`, at wiring time: the same value would fail every
+    message it reaches. ``what`` names the setting, for the message."""
+    # A bool is an int to Python, and the binding would convert it silently.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{what} must be an int, got {type(value).__name__}")
+    try:
+        # The binding's own conversion is the range check, so the width is not restated here.
+        _edax.Event("", value, b"")
+    except OverflowError as e:
+        raise ValueError(f"{what} must be an unsigned 32-bit integer, got {value}") from e
+    return value
 
 
 @contextmanager

@@ -13,7 +13,7 @@ crate's whole dependency set is `uuid`
 | Module | Owns the decision | Deterministic | Golden vector | Reached from |
 |---|---|---|---|---|
 | `hash` | FNV-1a 32 and 64 over bytes | yes | indirectly, via `partition.json` / `payload_hash.json` | not on the ABI; only its callers are |
-| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `check_tenant` on the ABI |
+| `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key. `guard_key(mode, tenant, kind, scope, key)`: the ledger key an idempotency guard claims, `"edax:{kind}:"` and the scoped key, with the tenant outermost | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `event_idempotency.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `check_tenant`, `tenant_max` on the ABI; `Tenancy`, `tenant_key`, `check_tenant` and `TENANT_MAX` re-exported from `edax` |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
 | `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
@@ -202,8 +202,9 @@ SDK states this default for itself.
 What *branches* on the verdict — the exception hierarchy, `is_terminal`, the retry middleware, the
 idempotency guards, the dead-letter path — belongs to the SDK and is documented in
 [../sdk/errors.md](../sdk/errors.md). The short version: nothing above the kernel states its own
-verdict. Python reads it at class-definition time and reads the unclassified default from
-`error_verdict`; Rust reads the code off the error and asks `edax_core::verdict`.
+verdict. Both SDKs read the code off the error and ask the kernel: Python through
+`error_code_is_terminal`, with the unclassified default from `error_verdict`; Rust through
+`edax_core::verdict`.
 
 ## See also
 

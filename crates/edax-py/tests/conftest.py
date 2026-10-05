@@ -36,20 +36,26 @@ from edax.backend.memory import (
     MemoryIdempotencyStore,
     MemoryTransactor,
 )
-from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SETTLEMENTS, TRANSACTIONS
+from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SAGA_SKIPS, SETTLEMENTS, TRANSACTIONS
 from edax.testing import event as build_message
 from edax.testing import event_of
 from edax.testing.faults import Refusing
 
 GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
 
-#: The ``scope`` of the ``idempotent`` guard the suites wire.
+#: The ``scope`` of the ``idempotent`` and ``idempotent_by_id`` guards the suites wire.
 SCOPE = "test"
 
 
 def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
     """The ledger key a guard of ``scope`` claims for ``idempotency_key``: the kernel's ``claim_key``."""
-    return _edax.claim_key(scope, idempotency_key)
+    return edax.claim_key(scope, idempotency_key, tenancy=edax.Tenancy.SILO)
+
+
+def event_claimed(event_id: str, scope: str = SCOPE) -> str:
+    """The ledger key the event guard of ``scope`` claims for the event ``event_id``: the kernel's
+    ``event_idempotency`` key. Only the id and the scope reach it, so any event with that id will do."""
+    return _edax.event_idempotency(build_message("agg-1", "Probe", 1, id=event_id), "silo", scope).key
 
 
 _GOLDEN_READ: set[str] = set()
@@ -162,11 +168,16 @@ class Recording(edax.Observer):
         self.claims: list[tuple[str, str]] = []  # (name, verdict)
         self.settlements: list[tuple[str, str, int]] = []  # (name, how, duration_ns)
         self.deliveries: list[tuple[str, str, int, int, str | None]] = []
+        self.delivered_ids: list[tuple[str, str]] = []  # (message_id, correlation_id), per delivery
         self.settlement_failures: list[tuple[str, str, type[BaseException]]] = []
         self.transactions: list[tuple[str, int]] = []
-        self.drains: list[tuple[int, int, int | None]] = []
-        self.drain_failures: list[type[BaseException]] = []
+        self.drains: list[tuple[int, int, int, int | None]] = []  # (published, dead, duration, oldest)
+        self.drain_failures: list[tuple[type[BaseException], int, int]] = []  # (error, published, dead)
         self.undecodables: list[tuple[str, type[BaseException]]] = []
+        self.poll_failures: list[type[BaseException]] = []
+        self.commit_failures: list[type[BaseException]] = []
+        self.revoke_overruns: list[int] = []
+        self.saga_skips: list[tuple[str, str, str]] = []  # (name, reason, event_id)
 
     def claim(self, name: str, verdict: str) -> None:
         assert verdict in CLAIM_VERDICTS, verdict
@@ -177,10 +188,18 @@ class Recording(edax.Observer):
         self.settlements.append((name, how, duration_ns))
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
+        self,
+        name: str,
+        message_id: str,
+        correlation_id: str,
+        outcome: str,
+        attempt: int,
+        duration_ns: int,
+        error_type: str | None,
     ) -> None:
         assert outcome in DELIVERY_OUTCOMES, outcome
         self.deliveries.append((name, outcome, attempt, duration_ns, error_type))
+        self.delivered_ids.append((message_id, correlation_id))
 
     def settlement_failed(self, name: str, event_id: str, error: BaseException) -> None:
         self.settlement_failures.append((name, event_id, type(error)))
@@ -189,14 +208,29 @@ class Recording(edax.Observer):
         assert outcome in TRANSACTIONS, outcome
         self.transactions.append((outcome, duration_ns))
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
-        self.drains.append((published, duration_ns, oldest_timestamp))
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
+        self.drains.append((published, dead_lettered, duration_ns, oldest_timestamp))
 
-    def drain_failed(self, error: BaseException) -> None:
-        self.drain_failures.append(type(error))
+    def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
+        self.drain_failures.append((type(error), published, dead_lettered))
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
         self.undecodables.append((message_id, type(error)))
+
+    def poll_failed(self, error: BaseException) -> None:
+        self.poll_failures.append(type(error))
+
+    def commit_failed(self, error: BaseException) -> None:
+        self.commit_failures.append(type(error))
+
+    def revoke_overrun(self, handling: int) -> None:
+        self.revoke_overruns.append(handling)
+
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
+        assert reason in SAGA_SKIPS, reason
+        self.saga_skips.append((name, reason, event_id))
 
 
 class SeqSerializer:
@@ -530,6 +564,18 @@ class FakeKafkaCluster:
         await self.rebalance()
 
 
+@dataclass(frozen=True)
+class FakeSubscription:
+    """What the adapter reads of aiokafka's ``SubscriptionState``: the rebalance listener it was made with,
+    and whether the group assigns its partitions (a topic subscription) or the caller did (``assign``)."""
+
+    listener: Any
+    auto_assigned: bool = True
+
+    def partitions_auto_assigned(self) -> bool:
+        return self.auto_assigned
+
+
 class FakeKafkaClient:
     """One ``AIOKafkaConsumer`` member and an ``AIOKafkaProducer`` in one object, over a
     :class:`FakeKafkaCluster` (its own one-partition cluster unless given one). A client built without a
@@ -554,7 +600,7 @@ class FakeKafkaClient:
         self._group_id = group_id
         self._enable_auto_commit = enable_auto_commit
         self._sender = types.SimpleNamespace(_acks=acks)
-        self.listener: Any = None
+        self._subscription: FakeSubscription | None = None
         self.assignment: set[TopicPartition] = set()
         self.position: dict[TopicPartition, int] = {}
         self.seek_log: list[tuple[TopicPartition, int]] = []
@@ -591,7 +637,17 @@ class FakeKafkaClient:
     # --- the consumer -----------------------------------------------------------------------------
 
     def subscribe(self, topics: Sequence[str], listener: Any = None) -> None:
-        self.listener = listener
+        self._subscription = FakeSubscription(listener)
+
+    def assign(self, partitions: Sequence[TopicPartition]) -> None:
+        """Take ``partitions`` by hand, as aiokafka's ``assign``: no group, so no listener and no revoke."""
+        self._subscription = FakeSubscription(None, auto_assigned=False)
+        self.assignment = set(partitions)
+        self._changed.set()
+
+    @property
+    def listener(self) -> Any:
+        return None if self._subscription is None else self._subscription.listener
 
     def _held(self) -> list[TopicPartition]:
         return self.cluster.topic_partitions() if self._standalone else sorted(self.assignment)

@@ -8,7 +8,7 @@
     reason = "a golden generator runs only as a test, and its panic is the failure report"
 )]
 
-use edax_core::{tenant_key, Backoff, ErrorCode, Tenancy};
+use edax_core::{tenant_key, Backoff, ErrorCode, Tenancy, TENANT_MAX};
 use edax_golden::write_or_check;
 use serde_json::{json, Value};
 
@@ -114,10 +114,27 @@ fn backoff_cases() -> Vec<Value> {
 /// `(mode, tenant, key) -> the key a seam is called with`, and the error when the mode wants a
 /// tenant and the call has none. Only a pool composes, so a binding that composed in a bridge would
 /// read keys no other service writes. The odd tenants pin the injectivity the length prefix buys:
-/// `a:b` + `c` and `a` + `b:c` must not meet.
+/// `a:b` + `c` and `a` + `b:c` must not meet. The long ones pin the limit in bytes, not characters:
+/// 32 `é` are 64 bytes and pass, 33 are 33 characters and 66 bytes and fail, which a binding that
+/// counts characters would accept.
 fn tenancy_cases() -> Vec<Value> {
     let keys = ["order-1", "", "a:b", "héllo"];
-    let tenants = [None, Some(""), Some("acme"), Some("a:b"), Some("a"), Some("é")];
+    let at_limit = "a".repeat(TENANT_MAX);
+    let over_limit = "a".repeat(TENANT_MAX + 1);
+    let wide_at_limit = "é".repeat(TENANT_MAX / 2);
+    let wide_over_limit = "é".repeat(TENANT_MAX / 2 + 1);
+    let tenants = [
+        None,
+        Some(""),
+        Some("acme"),
+        Some("a:b"),
+        Some("a"),
+        Some("é"),
+        Some(at_limit.as_str()),
+        Some(over_limit.as_str()),
+        Some(wide_at_limit.as_str()),
+        Some(wide_over_limit.as_str()),
+    ];
     let mut cases: Vec<Value> = Vec::new();
     for mode in [Tenancy::Silo, Tenancy::Pool, Tenancy::Bridge] {
         for tenant in tenants {

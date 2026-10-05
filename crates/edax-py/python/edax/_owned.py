@@ -10,6 +10,17 @@ from .errors import BadHandle
 
 T = TypeVar("T")
 
+_this_thread = threading.local()
+
+
+def _thread_token() -> object:
+    """A marker for the calling thread that no other thread ever holds. ``threading.get_ident()`` is not
+    one: Python recycles an ident once its thread exits, so a new thread could pass for a dead owner."""
+    token: object | None = getattr(_this_thread, "token", None)
+    if token is None:
+        token = _this_thread.token = object()
+    return token
+
 
 class ThreadBound(Generic[T]):
     """A native ``_edax`` handle and the thread that built it.
@@ -23,12 +34,12 @@ class ThreadBound(Generic[T]):
     __slots__ = ("_build", "_handle", "_owner", "_what")
     _build: Callable[[], T]
     _handle: T
-    _owner: int | None  # `None` until a lazy handle is built
+    _owner: object | None  # `None` until a lazy handle is built
     _what: str
 
     def __init__(self, handle: T, what: str) -> None:
         self._handle = handle
-        self._owner = threading.get_ident()
+        self._owner = _thread_token()
         self._what = what
 
     @classmethod
@@ -42,8 +53,8 @@ class ThreadBound(Generic[T]):
     def get(self) -> T:
         """The handle, on the thread that built it; :class:`~edax.errors.BadHandle` on any other."""
         if self._owner is None:
-            self._handle, self._owner = self._build(), threading.get_ident()
-        if threading.get_ident() != self._owner:
+            self._handle, self._owner = self._build(), _thread_token()
+        if _thread_token() is not self._owner:
             raise BadHandle(
                 f"{self._what} was built on another thread, and its native state is bound to that "
                 "thread: build it on the thread (and event loop) that uses it"

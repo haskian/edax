@@ -7,19 +7,23 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import threading
+import urllib.error
 import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from email.message import Message
 from typing import Any
 
 import edax
 import pytest
 from conftest import (
+    NO_WAIT,
+    SCOPE,
     CounterCodec,
     CreateUser,
     FakeKafkaClient,
     Recording,
-    RefusingLedger,
     Tick,
     TickEvents,
     TopicPartition,
@@ -42,7 +46,18 @@ from edax.broker import UndecodableDelivery, _ConsumerLoop
 from edax.observe import _wrap, timing
 from edax.store import transaction
 from edax.testing import drafted
-from edax.testing.faults import BrokenCommit
+from edax.testing.faults import BrokenCommit, Refusing
+
+
+class _RpcError(Exception):
+    """Shaped like ``grpc.RpcError``: ``code`` is a method, and its bound text holds the details."""
+
+    def __init__(self, details: str) -> None:
+        super().__init__(details)
+        self.details = details
+
+    def code(self) -> str:
+        return "NOT_FOUND"
 
 
 def _boom(*args: object) -> None:
@@ -60,7 +75,14 @@ class Raising(edax.Observer):
         _boom()
 
     def delivery(
-        self, name: str, outcome: str, attempt: int, duration_ns: int, error_type: str | None
+        self,
+        name: str,
+        message_id: str,
+        correlation_id: str,
+        outcome: str,
+        attempt: int,
+        duration_ns: int,
+        error_type: str | None,
     ) -> None:
         _boom()
 
@@ -70,13 +92,27 @@ class Raising(edax.Observer):
     def transaction(self, outcome: str, duration_ns: int) -> None:
         _boom()
 
-    def drain(self, published: int, duration_ns: int, oldest_timestamp: int | None) -> None:
+    def drain(
+        self, published: int, dead_lettered: int, duration_ns: int, oldest_timestamp: int | None
+    ) -> None:
         _boom()
 
-    def drain_failed(self, error: BaseException) -> None:
+    def drain_failed(self, error: BaseException, published: int, dead_lettered: int) -> None:
         _boom()
 
     def undecodable(self, message_id: str, error: BaseException) -> None:
+        _boom()
+
+    def poll_failed(self, error: BaseException) -> None:
+        _boom()
+
+    def commit_failed(self, error: BaseException) -> None:
+        _boom()
+
+    def revoke_overrun(self, handling: int) -> None:
+        _boom()
+
+    def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         _boom()
 
 
@@ -96,7 +132,7 @@ class ClaimCase:
     want_claims: list[str]
     want_settled: list[str]
     held: bool = False  # another dispatch holds the claim before the first one
-    refusing: bool = False  # the ledger refuses every compensating write
+    refuses: tuple[str, ...] = ()  # the ledger writes it refuses, whatever is asked
     one_commit: bool = False  # `unit_of_work` given and the ledger joins it
     broken_commit: bool = False  # the one-commit unit of work fails at its commit, so nothing lands
     want_transactions: list[str] = field(default_factory=list)  # one per unit of work the guard opened
@@ -138,12 +174,42 @@ class ClaimCase:
             id="transient_failure_settles_released",
         ),
         pytest.param(
-            ClaimCase([RuntimeError("blip")], ["a@b.c"], [RuntimeError], [], ["refused"], refusing=True),
+            ClaimCase(
+                [RuntimeError("blip")],
+                ["a@b.c"],
+                [RuntimeError],
+                [],
+                ["refused"],
+                refuses=("complete", "release"),
+            ),
             id="release_refused_after_a_failed_handler_settles_refused",
         ),
         pytest.param(
-            ClaimCase([None], ["a@b.c"], [edax.StoreError], [], ["refused"], refusing=True),
-            id="complete_refused_after_a_successful_handler_settles_refused",
+            ClaimCase([None], ["a@b.c"], [edax.StoreError], [], ["refused"], refuses=("complete", "release")),
+            id="complete_and_release_refused_after_a_successful_handler_settles_refused",
+        ),
+        pytest.param(
+            # The fallback release landed, so the ledger is clean: the repeat runs the handler again.
+            ClaimCase(
+                [None, None],
+                ["a@b.c", "a@b.c"],
+                [edax.StoreError, edax.StoreError],
+                [],
+                ["released", "released"],
+                refuses=("complete",),
+            ),
+            id="complete_refused_after_a_successful_handler_but_released_settles_released",
+        ),
+        pytest.param(
+            ClaimCase(
+                [edax.CodecError("bad"), edax.CodecError("bad")],
+                ["a@b.c", "a@b.c"],
+                [edax.CodecError, edax.CodecError],
+                [],
+                ["released", "released"],
+                refuses=("complete",),
+            ),
+            id="caching_a_terminal_failure_refused_but_released_settles_released",
         ),
         pytest.param(
             ClaimCase(
@@ -196,7 +262,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
     observer = Recording()
     # With no `unit_of_work` the guard takes the around-the-work path and compensates by hand, so a
     # refusing ledger reaches the `refused` settlement there.
-    ledger = RefusingLedger() if case.refusing else MemoryIdempotencyStore()
+    ledger: Any = (
+        Refusing(MemoryIdempotencyStore(), *case.refuses) if case.refuses else MemoryIdempotencyStore()
+    )
     unit_of_work: Any = ledger.transactor if case.one_commit else None
     if case.broken_commit:
         unit_of_work = BrokenCommit(ledger.transactor, "nothing_landed")
@@ -211,7 +279,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
             raise error
         return f"user:{cmd.email}"
 
-    bus = edax.CommandBus(edax.idempotent(ledger, unit_of_work, observer=observer, scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(ledger, unit_of_work, observer=observer, scope="test", tenancy=edax.Tenancy.SILO)
+    )
     bus.register("user.create", handler)
     if case.held:
         assert isinstance(
@@ -240,7 +310,9 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
 
 async def test_idempotent_by_id_threads_the_observer_through_the_same_guard() -> None:
     observer = Recording()
-    guarded = edax.idempotent_by_id(MemoryIdempotencyStore(), observer=observer)(lambda env: None)
+    guarded = edax.idempotent_by_id(
+        MemoryIdempotencyStore(), observer=observer, scope=SCOPE, tenancy=edax.Tenancy.SILO
+    )(lambda env: None)
     env = build_message("acct-1", "Deposited", 3, data=DEPOSITED)
 
     await maybe_await(guarded(env))
@@ -391,6 +463,7 @@ async def test_dispatcher_reports_every_settlement_arm(
     assert calls == len(case.errors)
     assert [(outcome, attempt, cause) for _, outcome, attempt, _, cause in observer.deliveries] == case.want
     assert all(name == "Deposited" and duration_ns >= 0 for name, _, _, duration_ns, _ in observer.deliveries)
+    assert observer.delivered_ids == [(env.id, env.correlation_id)] * len(case.want), "for the log line"
     assert observer.settlement_failures == [("Deposited", env.id, edax.StoreError)] * case.want_failures
     assert_logged(caplog, "edax.dispatcher", case.want_log)
 
@@ -480,7 +553,9 @@ async def _drain_with(observer: edax.Observer) -> None:
 
 
 async def _guard_with(observer: edax.Observer) -> None:
-    bus = edax.CommandBus(edax.idempotent(MemoryIdempotencyStore(), observer=observer, scope="test"))
+    bus = edax.CommandBus(
+        edax.idempotent(MemoryIdempotencyStore(), observer=observer, scope="test", tenancy=edax.Tenancy.SILO)
+    )
 
     async def handler(cmd: CreateUser) -> str:
         return "ok"
@@ -544,12 +619,16 @@ async def test_a_raising_observer_is_logged_and_the_work_completes(
 _HOOK_ARGS: dict[str, tuple[Any, ...]] = {
     "claim": ("Deposit", "succeeded"),
     "settled": ("Deposit", "completed", 1_200),
-    "delivery": ("Deposited", "nacked", 2, 3_400, "StoreError"),
+    "delivery": ("Deposited", "evt-1", "corr-1", "nack", 2, 3_400, "store"),
     "settlement_failed": ("Deposited", "evt-1", RuntimeError("commit lost")),
     "transaction": ("committed", 5_600),
-    "drain": (3, 7_800, 1_000),
-    "drain_failed": (RuntimeError("broker down"),),
+    "drain": (3, 1, 7_800, 1_000),
+    "drain_failed": (RuntimeError("broker down"), 2, 1),
     "undecodable": ("orders/0/17", ValueError("not msgpack")),
+    "poll_failed": (ConnectionError("broker unreachable"),),
+    "commit_failed": (TimeoutError(),),
+    "revoke_overrun": (2,),
+    "saga_skipped": ("order", "repeat", "evt-1"),
 }
 
 
@@ -633,23 +712,73 @@ async def test_relay_reports_and_keeps_the_last_drain(
     assert relay.last is not None
     assert (relay.last.published, relay.last.oldest_timestamp) == want
     assert relay.last.duration_ns > 0
-    assert observer.drains == [(relay.last.published, relay.last.duration_ns, relay.last.oldest_timestamp)]
+    assert observer.drains == [(relay.last.published, 0, relay.last.duration_ns, relay.last.oldest_timestamp)]
 
 
-async def test_a_raising_publish_reports_drain_failed_and_leaves_last_untouched() -> None:
+@dataclass
+class DrainCase:
+    rows: int  # committed outbox rows, sequences 1..rows
+    failures: dict[int, Exception]  # the sequence of a row whose publish raises, and what it raises
+    refuse: str | None  # the outbox method that is refused, if any
+    want_sent: int  # rows the transport took
+    want_drains: list[tuple[int, int]]  # (published, dead_lettered) per completed drain
+    want_failures: list[tuple[type[BaseException], int, int]]  # (error, published, dead_lettered)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            DrainCase(3, {2: edax.CodecError("cannot encode")}, None, 2, [(2, 1)], []),
+            id="completed_drain_reports_its_dead_letters",
+        ),
+        pytest.param(
+            DrainCase(
+                5,
+                {2: edax.CodecError("cannot encode"), 4: RuntimeError("broker down")},
+                None,
+                2,
+                [],
+                [(RuntimeError, 2, 1)],
+            ),
+            id="row_failure_reports_the_rows_settled_before_it",
+        ),
+        pytest.param(
+            DrainCase(3, {}, "mark_published", 3, [], [(edax.StoreError, 3, 0)]),
+            id="mark_failure_reports_the_rows_already_sent",
+        ),
+        pytest.param(
+            DrainCase(3, {}, "unpublished", 0, [], [(edax.StoreError, 0, 0)]),
+            id="read_failure_reports_nothing_done",
+        ),
+    ],
+)
+async def test_relay_reports_what_each_drain_did(case: DrainCase) -> None:
+    """A drain that fails part way has already sent and dead-lettered rows: ``drain_failed`` carries
+    those counts, so a counter fed from ``drain`` and ``drain_failed`` loses no row."""
     observer = Recording()
     store = MemoryEventStore()
     async with transaction(store) as tx:
-        await store.append(tx, "acct-1", 0, [drafted(build_message("acct-1", "Deposited", 1))])
+        drafts = [drafted(build_message("acct-1", "Deposited", i)) for i in range(1, case.rows + 1)]
+        await store.append(tx, "acct-1", 0, drafts)
+    sent: list[str] = []
 
     def publish(env: edax.EventMessage) -> None:
-        raise edax.StoreError("broker down")
+        if env.sequence in case.failures:
+            raise case.failures[env.sequence]
+        sent.append(env.id)
 
-    relay = edax.Relay(store, publish, observer=observer)
-    with pytest.raises(edax.StoreError):
+    outbox: Any = Refusing(store, case.refuse) if case.refuse else store
+    relay = edax.Relay(outbox, publish, observer=observer, on_dead=lambda row, e: None, pacing=NO_WAIT)
+    if case.want_failures:
+        with pytest.raises(case.want_failures[0][0]):
+            await relay.drain()
+        assert relay.last is None, "a drain that raised is not a completed drain"
+    else:
         await relay.drain()
-    assert relay.last is None, "a drain that did not mark the batch is not a completed drain"
-    assert (observer.drains, observer.drain_failures) == ([], [edax.StoreError])
+    assert len(sent) == case.want_sent
+    assert [(published, dead) for published, dead, _, _ in observer.drains] == case.want_drains
+    assert observer.drain_failures == case.want_failures
 
 
 # =========================================================================
@@ -741,6 +870,36 @@ async def test_dispatcher_stats_count_the_failure_maps(slept: list[int]) -> None
     assert dispatcher.idle(), "a nacked message is the broker's again, not in flight here"
 
 
+async def test_dispatcher_stats_read_from_a_metrics_thread_never_bind_the_native_policy() -> None:
+    """An observable gauge's callback runs on the exporter's thread. Read there before the first
+    delivery, ``stats()`` once built the lazy native retry policy on that thread, and every delivery
+    after failed with ``BadHandle``: never handled, settled or observed."""
+    observer = Recording()
+    handled: list[str] = []
+    acked: list[str] = []
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=lambda env: handled.append(env.id), observer=observer
+    )
+
+    def read_on_a_metrics_thread() -> edax.DispatcherStats:
+        read: list[edax.DispatcherStats] = []
+        thread = threading.Thread(target=lambda: read.append(dispatcher.stats()))
+        thread.start()
+        thread.join()
+        return read[0]
+
+    assert read_on_a_metrics_thread().attempts_tracked == 0
+    dispatcher.start()
+    env = build_message("acct-1", "Deposited", 1)
+    await dispatcher.submit(edax.Delivery(env, lambda: acked.append(env.id), lambda: None))
+    await dispatcher._queues[0].join()
+
+    assert (handled, acked) == ([env.id], [env.id])
+    assert [outcome for _, outcome, _, _, _ in observer.deliveries] == ["ack"]
+    assert read_on_a_metrics_thread().in_flight == 0, "a read after the first delivery works too"
+    await dispatcher.stop()
+
+
 def _stats(consumer: KafkaConsumer) -> dict[Any, tuple[int, int, int | None, int | None]]:
     """``(unsettled, live, max_delivered, committed)`` per partition. ``stats()`` returns the kernel's own
     ``PartitionStats`` rows, which are native objects with no ``__eq__``, so the fields compare."""
@@ -784,9 +943,24 @@ async def test_kafka_consumer_stats_track_inflight_across_ack_and_nack() -> None
     [
         pytest.param(edax.CodecError("x"), "codec", id="edax_error_is_its_kernel_code"),
         pytest.param(ValueError("x"), "builtins.ValueError", id="host_exception_is_its_qualified_name"),
+        pytest.param(
+            urllib.error.HTTPError(
+                "https://api.example.com/v1/users", 503, "Service Unavailable", Message(), None
+            ),
+            "urllib.error.HTTPError",
+            id="host_exception_with_an_int_code_is_its_qualified_name",
+        ),
+        pytest.param(
+            _RpcError("user alice@example.com not found"),
+            "test_observe._RpcError",
+            id="host_exception_with_a_code_method_is_its_qualified_name",
+        ),
+        pytest.param(edax.EdaxError("x"), "edax.errors.EdaxError", id="edax_base_without_a_code_is_its_name"),
     ],
 )
 def test_error_type(error: BaseException, want: str) -> None:
+    """Only an edax error's ``code`` is read: a host's ``code`` may be an int or a method whose text
+    holds the error details, either one an unbounded label."""
     assert edax.error_type(error) == want
 
 

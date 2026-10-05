@@ -31,14 +31,16 @@ flowchart LR
 | `SagaRunner` | `edax.saga`, `edax::saga` | the wiring: load, fold, persist state and commands in one write |
 | `Relay` | `edax.store`, `edax::Relay` | sends the committed commands, the same relay that drains the event outbox |
 | `Completed` | `edax.saga` | the Python sentinel a `handle` returns to finish the instance |
+| `SAGA_COMMAND_FAILED`, `SagaCommandFailed` | `edax.saga`, `edax::saga` | the event a dead command folds back into its instance, and its JSON payload |
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
 to a `KeyOrderedDispatcher`. It takes a command codec, `json_codec({"Fulfill": Fulfill})`, to put the
-commands in the outbox. `runner.relay(bus, on_dead=sink)` sends them through
+commands in the outbox. `runner.relay(bus, on_dead=runner.command_failed)` sends them through
 `bus.dispatch_message` (`examples/py/13_saga.py`). Pass `on_dead`: without a sink, a command that
-fails terminally is handed back on every drain, and the rows behind it wait. In Rust, the codec is a
+fails terminally is handed back on every drain, and the rows behind it wait. `command_failed` is the
+sink that tells the instance; see [compensation](#compensation). In Rust, the codec is a
 `RegistryCodec` over the command enum, and `Relay::<_, CommandMessage>::new(store).on_dead(sink)`
-with `runner.command(row)` sends them.
+with `runner.command(row)` sends them. The sink calls `runner.command_failed(tx, row, error)`.
 
 ### The name
 
@@ -119,13 +121,27 @@ durable store purges tombstones by retention, longer than any redelivery window.
 
 `folded` is the kernel's record of the events the instance has folded (`saga_admit`). It is opaque
 text: the store keeps it in a text column, as `save` wrote it, and `load` returns it. It
-holds one entry per source aggregate: the highest sequence and the last event id folded from it. So
-it grows with the aggregates a workflow touches, not with its events. Before it folds, the runner
-asks the kernel whether the instance has folded the event already. A repeat is skipped: no fold, no
-write, no command. So a redelivered step never decides its commands a second time under the next
-version's ids. The rule relies on the dispatcher handing one aggregate's events over in
-order, as the staleness rule does. An unsequenced event has no order, so only the last one folded from
-its aggregate is recognized.
+holds one entry per source aggregate: the highest sequence folded from it with that event's id, and,
+separately, the id of the last unsequenced event folded from it. It also keeps the id of every
+`SagaCommandFailed` folded, one per dead command. So it grows with the aggregates a workflow touches
+and the commands that died, not with its events. Before it folds, the runner asks the kernel whether the
+instance has folded the event already. A repeat is skipped: no fold, no write, no command. So a
+redelivered step never decides its commands a second time under the next version's ids, even when
+one aggregate mixes sequenced and unsequenced events. An unsequenced event has no order, so only the
+last unsequenced one folded from its aggregate is recognized. A `SagaCommandFailed` is the exception: the
+kernel recognizes every one folded.
+
+The rule relies on the dispatcher handing one aggregate's events over in order, as the staleness
+rule does: an event below its aggregate's highest sequence is assumed folded (`below_mark`). A dead
+letter breaks that assumption. If the dispatcher dead-letters sequence 4 and sequence 5 then folds,
+a re-drive of sequence 4 is below the mark, and the instance never folds it. The runner writes
+nothing and returns normally. The Python runner reports it to its observer as
+`saga_skipped(name, "below_mark", event_id)`. So for an event that feeds a saga:
+
+- Re-drive a dead letter before any later event of its aggregate reaches the saga. A dispatcher with
+  no `on_dead` keeps the key blocked on a failing event instead of moving past it.
+- Once the instance has moved past it, repair it by hand: fold a new event with the same fact, or
+  complete the instance and start a new one.
 
 ## Optimistic concurrency
 
@@ -161,7 +177,7 @@ saga: the decision and the messages it produces are stored in one transaction.
 | the step commits, then the ack is lost, or a crash replays every event above the committed offset | advanced | each redelivered event the instance folded is skipped: its command was committed once and is sent once |
 | crash after the commit, before the relay sends | advanced | the command waits in the outbox; the next drain sends it |
 | crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by the idempotency key, the command id under the saga's name |
-| a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it |
+| a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it. With `on_dead=runner.command_failed`, the instance folds a `SagaCommandFailed` event |
 
 So a command is sent at least once per committed step, and never for a step that did not commit.
 The row's `idempotency_key` is stable across re-sends, so an `idempotent` guard on the bus replays a
@@ -229,6 +245,8 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 | Transaction | `run(tx, msg)` takes the handle explicitly | `on_event(msg, tx=None)` falls back to `current_tx` |
 | Commands | `SagaRunner::new(saga, store, codec)`, the codec a `RegistryCodec` over the command enum | `SagaRunner(saga, store, codec)`, the codec a `json_codec` over the command types |
 | Sending | `Relay::<_, CommandMessage>::new(store)` and `runner.command(row)` | `runner.relay(bus)`, through `bus.dispatch_message` |
+| A dead command | `runner.command_failed(tx, row, error)` inside `on_dead` | `on_dead=runner.command_failed` |
+| A skipped event | not reported: Rust has no `Observer` | `observer=`, `Observer.saga_skipped(name, reason, event_id)` |
 | State type | `Saga::State` and `SagaStore::State`, statically typed | `Any`, serialized as JSON by the in-memory backend |
 
 Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
@@ -250,7 +268,8 @@ persist.
 
 | Concern | Who owns it |
 |---|---|
-| Detecting that a step failed | the host: the saga observes the failure event and folds it |
+| Detecting that a step failed | the participant's own failure event, which the saga folds; or, for a command that dies in the relay, the SDK: `command_failed` folds a `SagaCommandFailed` event |
+| Ending a wait whose reply never comes | the host: no saga timeout exists yet, so schedule a timeout event of your own for the instance |
 | Deciding what undoes a step | the host: `handle` returns the compensating command like any other |
 | Delivering the compensating command | the SDK: the saga outbox and the `Relay`, then the `CommandBus`, with `idempotent` to absorb re-sends |
 | Not repeating a compensation | the SDK: the guard on the bus, keyed by the row's idempotency key |
@@ -258,6 +277,25 @@ persist.
 
 So a compensating action in edax is an ordinary command, emitted by an ordinary `handle` branch, in
 response to an ordinary event.
+
+A command whose handler raises `Rejected` saves no event, so no participant reply exists. The relay
+dead-letters the row, and `runner.command_failed` turns it into the reply: a `SagaCommandFailed`
+event for the instance the row names (its `aggregate_id`). The same runner folds it, without the
+saga's `instance_id`. Its `data` is JSON, `SagaCommandFailed` in both SDKs:
+
+```python
+def handle(self, state: Any, msg: EventMessage, /) -> tuple[Any, list[Any]]:
+    if msg.name == SAGA_COMMAND_FAILED:
+        failure: SagaCommandFailed = json.loads(msg.data)  # command_id, command, code, error
+        return Completed, [Refund(state["order_id"])]
+    ...
+```
+
+A completed instance folds nothing, this event included. So a saga that may compensate keeps its
+instance open until the commands it waits on have run, instead of completing in the step that sends
+them. The event's id is the row's id plus `:failed`, so a sink that runs twice for one row folds it
+once, even when another command's failure folded in between.
+[edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists its fields.
 
 ## See also
 

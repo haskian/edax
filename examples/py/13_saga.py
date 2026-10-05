@@ -23,6 +23,7 @@ from edax import (
     EventMessage,
     Lineage,
     SagaRunner,
+    Tenancy,
     current_lineage,
     idempotent,
     json_codec,
@@ -70,7 +71,7 @@ async def main() -> None:
     #    it runs under: whatever it saves continues the order's flow (step 12).
     shipped: list[ShipOrder] = []
     lineages: list[Lineage | None] = []
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="shipping"))
+    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="shipping", tenancy=Tenancy.SILO))
 
     async def ship(cmd: ShipOrder) -> None:
         shipped.append(cmd)

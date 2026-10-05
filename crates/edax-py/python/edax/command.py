@@ -33,7 +33,7 @@ from .errors import (  # re-exported: the command errors are part of this module
 from .observe import ClaimVerdict, Observer, Settlement, _wrap
 from .pacing import Pacing
 from .store import EventCodec, Transactor, Tx, _in_unit_of_work, _transaction
-from .tenancy import Tenancy, tenant_key
+from .tenancy import Tenancy
 
 __all__ = [
     "AlreadyRegistered",
@@ -417,11 +417,15 @@ class IdempotencyStore(Protocol):
         ...
 
 
-def claim_key(scope: str, idempotency_key: str) -> str:
-    """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``. Two
-    scopes never share a ledger key. Pinned by ``testdata/golden/claim_key.json``."""
+def claim_key(scope: str, idempotency_key: str, *, tenancy: Tenancy, tenant: str | None = None) -> str:
+    """The ledger key the :func:`idempotent` guard named ``scope`` claims for ``idempotency_key``, in a
+    deployment that separates tenants by ``tenancy``. Two scopes never share a ledger key. Under
+    :attr:`~edax.tenancy.Tenancy.POOL` the key carries ``tenant``, so two tenants never share one either.
+    Under a mode that requires a tenant, a call that names none raises :class:`~edax.errors.CodecError`.
+    The composition is the kernel's, pinned by ``testdata/golden/claim_key.json``, so a guard in another
+    binding sharing the ledger claims the same row."""
     with errors.mapped():
-        return _edax.claim_key(scope, idempotency_key)
+        return _edax.claim_key(tenancy.value, scope, idempotency_key, tenant)
 
 
 def received_key(msg: CommandMessage) -> str:
@@ -431,12 +435,23 @@ def received_key(msg: CommandMessage) -> str:
     return _edax.received_key(msg.id, msg.idempotency_key)
 
 
-async def forget(store: IdempotencyStore, scope: str, idempotency_key: str, *, tx: Tx | None = None) -> None:
+async def forget(
+    store: IdempotencyStore,
+    scope: str,
+    idempotency_key: str,
+    *,
+    tenancy: Tenancy,
+    tenant: str | None = None,
+    tx: Tx | None = None,
+) -> None:
     """Delete the record the :func:`idempotent` guard named ``scope`` keeps for ``idempotency_key``, so the
     next dispatch of that key runs its handler again. Use it to re-drive a dead-lettered command whose
-    failure was cached. The *Forget* clause of :class:`IdempotencyStore` says what happens to a claim still
-    in flight and to a key with no record."""
-    await store.forget(claim_key(scope, idempotency_key), tx)
+    failure was cached. Pass the guard's ``tenancy`` and the command's ``tenant``: the record lives under
+    the key :func:`claim_key` composes from them. A mode that requires a tenant raises
+    :class:`~edax.errors.CodecError` without one, instead of deleting nothing. ``tenancy`` has no default:
+    a pooled caller that left it out would compose the silo key and delete nothing. The *Forget* clause of
+    :class:`IdempotencyStore` says what happens to a claim still in flight and to a key with no record."""
+    await store.forget(claim_key(scope, idempotency_key, tenancy=tenancy, tenant=tenant), tx)
 
 
 def _payload_json(cmd: Command) -> bytes:
@@ -512,9 +527,9 @@ def idempotent(
     unit_of_work: Transactor | None = None,
     *,
     scope: str,
+    tenancy: Tenancy,
     result_type: Any = None,
     observer: Observer | None = None,
-    tenancy: Tenancy = Tenancy.SILO,
 ) -> Middleware:
     """Deduplicate dispatches by the ``idempotency_key`` of the :func:`current_command`. A message with no
     key runs unguarded and writes nothing to the ledger. The first dispatch of a key wins the claim and runs
@@ -526,11 +541,12 @@ def idempotent(
     the transaction: each attempt then re-claims in a fresh unit of work.
 
     ``scope`` names this guard, usually the service or the stage it guards: ``"api"`` at ingress,
-    ``"billing-worker"`` on a consumer. The ledger key is the kernel's ``claim_key(scope, idempotency_key)``,
-    so two guards that share a ledger never replay each other's outcome for one key. The kernel hashes the
-    message name with the value the handler receives, so one key reused by another command, or with another
-    payload, raises :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same
-    scope and key. See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
+    ``"billing-worker"`` on a consumer. The ledger key is the kernel's :func:`claim_key` of the scope, the
+    message's ``idempotency_key`` and, under a pool, its ``tenant``. Two guards that share a ledger never
+    replay each other's outcome for one key. The kernel hashes the message name with the value the handler
+    receives, so one key reused by another command, or with another payload, raises
+    :class:`~edax.errors.PayloadMismatch`. :func:`forget` deletes a record by the same scope, tenancy,
+    tenant and key. See ``docs/sdk/commands.md`` and ``docs/sdk/idempotency.md``.
 
     A cached success crosses the store as JSON, so a replay hands back the handler's declared return type,
     not the plain JSON value: ``result_type``, else the return annotation of the handler this guard wraps
@@ -542,9 +558,11 @@ def idempotent(
 
     ``tenancy`` is how the deployment this guard runs in separates tenants, fixed at wiring as it is on a
     :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the ledger key is composed
-    with the message's ``tenant`` (:func:`~edax.tenancy.tenant_key`), so one request id reused by two
-    tenants claims two rows rather than replaying one tenant's result to the other. A message that names
-    no tenant then raises :class:`~edax.errors.CodecError` instead of claiming a shared key.
+    with the message's ``tenant`` (:func:`claim_key`), so one request id reused by two tenants claims two
+    rows rather than replaying one tenant's result to the other. Under a pool or a bridge, a message that
+    names no tenant raises :class:`~edax.errors.CodecError` instead of claiming a shared key. ``tenancy`` has
+    no default, as on :func:`forget`: a pooled deployment that missed one guard would claim outside its
+    tenant.
 
     ``observer`` receives a :meth:`~edax.observe.Observer.transaction` per ``unit_of_work`` the guard opens,
     a :meth:`~edax.observe.Observer.claim` verdict for every lost claim and a
@@ -562,10 +580,7 @@ def idempotent(
             msg = current_command()
             if msg is None or msg.idempotency_key is None:
                 return await next_(cmd)
-            # Scope first, then tenant: the scope names the guard and the tenant separates the
-            # deployment's tenants inside it. Both compositions are the kernel's, so another binding
-            # sharing this ledger spells the same row.
-            key = tenant_key(tenancy, claim_key(scope, msg.idempotency_key), msg.tenant)
+            key = claim_key(scope, msg.idempotency_key, tenancy=tenancy, tenant=msg.tenant)
             guard = _Guard(store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
             return await _guarded(guard, lambda: next_(cmd), unit_of_work)
 
@@ -700,12 +715,16 @@ async def _guarded_around_the_work(
     # Won the claim. From here every exit must settle the record, including a failure of the commit
     # itself. That is why the transaction opens here and not around the caller.
     started = perf_counter_ns()
-    # What a raise out of the completion below means: the store would not take the record.
+    # What a raise out of the completion below means: the store took neither the record nor the release.
     how: Settlement = "refused"
     try:
         try:
             async with _unit(unit_of_work, guard.observe):
                 result = await run()
+                done = Record(payload_hash, result=result)
+                # Encoded before the commit: refused after it, the release would let a retry run work
+                # that already landed. Refused here, the work rolls back and the codec failure is cached.
+                encode_record(done)
         except BaseException as e:
             # The kernel's settle table: a terminal failure is cached with its code; a transient one, or a
             # cancel, releases the claim so a retry or a redelivery can re-run. Shielded in every case: a
@@ -715,7 +734,10 @@ async def _guarded_around_the_work(
             record = None if code is None else Record(payload_hash, error=str(e), error_code=code)
             how = await asyncio.shield(_settle_failure(store, key, handle, record))
             raise
-        await _complete_or_release(store, key, handle, Record(payload_hash, result=result))
+        refusal = await _complete_or_release(store, key, handle, done)
+        if refusal is not None:
+            how = "released"
+            raise refusal
         how = "completed"
         return result
     finally:
@@ -726,9 +748,10 @@ async def _settle_failure(
     store: IdempotencyStore, key: str, handle: bytes, record: Record | None
 ) -> Settlement:
     """Settle the claim after the handler failed: cache ``record``, or release when there is nothing to
-    cache. Never raises; returns how the claim ended: ``cached``, ``released``, or ``refused`` when the
-    store would not take the compensation. The handler's exception is the verdict the caller,
-    :func:`retry` and the dispatcher act on, so a compensation the store refuses must not replace it.
+    cache or the store would not take the record. Never raises; returns how the claim ended: ``cached``,
+    ``released``, or ``refused`` when the store would not take the release. The handler's exception is
+    the verdict the caller, :func:`retry` and the dispatcher act on, so a compensation the store refuses
+    must not replace it.
     Inside the host's transaction that refusal is usually the abort the handler's own failed statement
     caused, and the host's rollback frees the claim; on a ledger of its own the claim stays pending until
     its retention frees it. Either way the claim is settled by something other than this call."""
@@ -736,8 +759,15 @@ async def _settle_failure(
         if record is None:
             await store.release(key, handle)
             return "released"
-        await _complete_or_release(store, key, handle, record)
-        return "cached"
+        refusal = await _complete_or_release(store, key, handle, record)
+        if refusal is None:
+            return "cached"
+        logger.warning(
+            "edax idempotency: caching the failure of %r was refused; the claim is released instead",
+            key,
+            exc_info=refusal,
+        )
+        return "released"
     except Exception:
         # Expected when the ledger shares a transaction the handler already aborted, so it is not news.
         expected = joins_transaction(store) and _in_unit_of_work()
@@ -778,17 +808,22 @@ def _replay(name: str, key: str, payload_hash: int, prior: Record, observe: Obse
     return replayed  # "succeeded": the cached value, `None` included
 
 
-async def _complete_or_release(store: IdempotencyStore, key: str, handle: bytes, record: Record) -> None:
+async def _complete_or_release(
+    store: IdempotencyStore, key: str, handle: bytes, record: Record
+) -> BaseException | None:
     """Overwrite the pending claim with its terminal record; if that write fails, release the
     claim instead of leaving it pending for the store's whole retention. Both carry the claim's handle,
-    so a fenced store deletes nothing when the write did land and only its reply was lost."""
+    so a fenced store deletes nothing when the write did land and only its reply was lost. Returns
+    ``None`` once the record is written. When ``complete`` raises and the release lands, returns that
+    error for the caller to raise or log, and the ledger holds no record. A release that fails too raises."""
     try:
         await store.complete(key, handle, record)
-    except BaseException:  # recording the outcome failed or was cancelled, not the handler
+    except BaseException as e:  # noqa: BLE001 - the record failed or was cancelled, not the handler; returned
         # Shielded for the same reason as the cancellation branch in `_guarded_around_the_work`:
         # a cancel landing mid-release leaves the claim pending for the store's whole retention.
         await asyncio.shield(store.release(key, handle))
-        raise
+        return e
+    return None
 
 
 def _outcome(prior: Record, current: int) -> ClaimVerdict:

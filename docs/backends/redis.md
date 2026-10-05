@@ -66,8 +66,9 @@ Two pitfalls follow from plain concatenation:
 - A `{...}` hash tag in the prefix pins every ledger key to one Redis Cluster slot. That slot's
   shard then serves the whole ledger.
 
-Give each service and environment its own prefix. Within one prefix, the command guard's `scope`
-keeps guards apart: it claims `claim_key(scope, key)`, never the raw key. See
+Give each service and environment its own prefix. Within one prefix, each guard's `scope` keeps
+guards apart: a command guard claims `claim_key(scope, key)` and an event guard the event id under
+its scope, never the raw key. See
 [commands.md](../sdk/commands.md#scope-names-the-guard).
 
 ## Two TTLs
@@ -114,9 +115,13 @@ ledger = RedisIdempotencyStore(conn, prefix="billing:prod:idem:", claim_ttl_ms=3
 ```
 
 With `heartbeat=True` the store renews each won claim every `claim_ttl_ms / 3` through the kernel's
-extend script, until `complete` or `release` settles it. A crashed worker stops renewing, so its key
-frees within `claim_ttl_ms`. `extend(key, handle)` is the same renewal, for a caller that schedules
-its own.
+extend script, until `complete` or `release` settles it. The beats keep a fixed cadence, timed from
+when the claim was sent, so a slow reply never delays the next beat. `op_timeout_ms` must be under
+`claim_ttl_ms / 3`, or the store raises `BadHandle` when built. That way a renewal that stalls for
+the whole deadline still leaves the next one time to land before the claim lapses. With the default
+`op_timeout_ms=5_000`, that means a `claim_ttl_ms` above 15 000. A crashed worker stops renewing,
+so its key frees within `claim_ttl_ms`. `extend(key, handle)` is the same renewal, for a caller that
+schedules its own.
 
 A renewal carries the claim's handle like every other write. Once another worker holds the key, the
 old owner's renewal is refused: the store logs that the claim was lost and stops renewing. A
@@ -272,15 +277,21 @@ the window from opening at all. The fence is the second line, not the first.
 ## Durability
 
 The ledger is only as durable as the Redis behind it. Four things can drop or shorten a claim or a
-record without any error reaching the store.
+record without any error reaching the store: a failover, a restart, eviction and the server clock.
 
 - **Failover.** Redis replicates asynchronously. A claim or a `done` record the primary acknowledged
   can be missing on the replica promoted after it fails. A second worker then wins the key, or a
   redelivery re-runs the handler. Treat failover as one more at-least-once window.
   `test_redis.py::test_an_acknowledged_claim_lost_in_a_failover_is_one_more_at_least_once_window`
-  shows the ledger stays consistent through it.
-- **`WAIT` does not fix that.** Sending `WAIT` after a write makes the loss less likely. It does not
-  make Redis a strongly consistent store, so the store does not send it.
+  shows the ledger stays consistent through it. Sending `WAIT` after a write makes the loss less
+  likely. It does not make Redis a strongly consistent store, so the store does not send it.
+- **Restart.** By default Redis acknowledges a write before it reaches the disk. A restart reloads
+  what was persisted, and the writes after that are gone. With AOF and the default
+  `appendfsync everysec`, that is up to one second of claims and `done` records. With RDB snapshots
+  alone, it is every write since the last snapshot, often minutes. With no persistence, it is the
+  whole ledger. Treat a restart like a failover: one more at-least-once window. `appendfsync always`
+  syncs the file before it replies, so an acknowledged write survives a restart, at a cost in
+  throughput.
 - **Eviction.** Every ledger key carries a TTL, so the `volatile-*` and `allkeys-*` eviction policies
   may evict live claims and records under memory pressure. Dedup is then lost with no error. Run the
   ledger's database with `maxmemory-policy noeviction`, where a full database refuses writes with a

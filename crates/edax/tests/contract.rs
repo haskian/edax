@@ -80,7 +80,7 @@ where
     // `save` keeps the folded marks as written and `load` hands them back: the runner skips an event
     // redelivered after its step committed by them, so a store that drops them repeats the step.
     let store = new();
-    let folded = r#"{"order-3":{"sequence":1,"id":"evt-1"}}"#;
+    let folded = r#"{"order-3":{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}"#;
     store.save(&mut tx(), "order-3", &"open".to_owned(), 0, folded, &[]).unwrap();
     let running = SagaInstance::Running { state: "open".to_owned(), version: 1, folded: folded.to_owned() };
     assert_eq!(store.load(&mut tx(), "order-3").unwrap(), Some(running), "the marks round-trip");

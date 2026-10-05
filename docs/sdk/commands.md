@@ -71,8 +71,9 @@ would not do that. That is one key and two numbers, so a genuine duplicate raise
 A dataclass is read through its declared fields, defaults included. A command may be decoded off a
 queue with a defaulted field left implicit. It hashes as the one its constructor builds. The hashed
 form is RFC 8785, whose numbers are doubles, so an `amount: float` built with `2` and the same command
-decoded as `2.0` bind to one key. A double rounds an integer past 2^53, so a command carrying one
-(a 64-bit id, say) is refused as a terminal `CodecError` before any claim: carry such ids as strings.
+decoded as `2.0` bind to one key. A double rounds an integer past 2^53. So a command carrying an
+integer outside -(2^53 - 1) to 2^53 - 1 (a 64-bit id, say) is refused as a terminal `CodecError`
+before any claim. Carry such ids as strings.
 A command decoded from the wire hashes after its upcast, as the dispatched one does.
 
 In Rust, register each command type as its own struct on the type-erased `CommandBus`. Never route
@@ -110,9 +111,10 @@ result = await bus.dispatch(
     cmd,
     idempotency_key="req-A",  # None (the default): no claim, the handler runs every time
     aggregate_id="acct-1",  # the target, for ordering; optional
+    tenant="acme",  # whose command; a pooled guard claims inside it, and None is refused there
     lineage=None,  # None: the ambient lineage of the message being handled, else a new flow
     extensions={"traceparent": traceparent},  # edax extension keys only
-    metadata={"tenant": "acme"},  # the application's own
+    metadata={"channel": "web"},  # the application's own; edax never reads it
 )
 ```
 
@@ -131,8 +133,9 @@ instead of running twice. The message keeps its lineage, so its handler's events
 ### `command_message`: build one without dispatching
 
 `command_message(cmd, *, codec=None, idempotency_key=None, aggregate_id=None, lineage=None,
-extensions=None, metadata=None)` builds the same `CommandMessage` `dispatch` would, and dispatches
-nothing. Use it to publish a command, or to stage one in the command outbox. A command that does not
+extensions=None, metadata=None, tenant=None)` builds the same `CommandMessage` `dispatch` would, and
+dispatches nothing. Use it to publish a command, or to stage one in the command outbox. A command
+staged by `Repository.save` with no tenant takes the saved aggregate's. A command that does not
 encode, a version outside an unsigned 32-bit integer, or a bad extension key raises the terminal
 `CodecError`.
 
@@ -144,26 +147,29 @@ current. A codec that names the command other than `cmd.type` raises `CodecError
 
 ## Scope names the guard
 
-`idempotent(store, scope="billing")` deduplicates by the message's idempotency key. `scope` is
-required. The guard claims the kernel's
+`idempotent(store, scope="billing", tenancy=Tenancy.SILO)` deduplicates by the message's idempotency
+key. `scope` and `tenancy` are required. The guard claims the kernel's
 [`claim_key(scope, key)`](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims),
 never the raw key, so two guards on one ledger never meet. An ingress guard that takes client
 requests and a consumer guard that takes commands off a topic may see the same key. Each replays
 only its own outcome.
 
 ```python
-ingress = CommandBus(idempotent(ledger, scope="billing.api", unit_of_work=db))
-worker = CommandBus(idempotent(ledger, scope="billing.worker", unit_of_work=db))
+ingress = CommandBus(idempotent(ledger, scope="billing.api", tenancy=Tenancy.SILO, unit_of_work=db))
+worker = CommandBus(idempotent(ledger, scope="billing.worker", tenancy=Tenancy.SILO, unit_of_work=db))
 ```
 
 Name a service, or a stage within one. The
 [claim key](../kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims) section says why
-the scope has no default.
+the scope has no default. The tenancy has none either: a pooled deployment that missed one guard
+would claim outside its tenant without an error.
 
-Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL` as well. The claim is then that
-scoped key composed with the message's `tenant`. One request id reused by two tenants claims two rows
-instead of replaying one tenant's result to the other. See
-[multi-tenancy](../guides/multi-tenancy.md).
+Where one ledger serves every tenant, pass `tenancy=Tenancy.POOL`. The claim is then that
+scoped key composed with the message's `tenant`: `claim_key("billing.api", "req-1", tenancy=POOL,
+tenant="acme")` is `4:acme:edax:cmd:11:billing.api:req-1`. One request id reused by two tenants claims
+two rows instead of replaying one tenant's result to the other. Under a pool or a bridge a message
+with no tenant raises `CodecError` before the claim. The kernel composes the key, so a Rust guard of
+the same scope and tenancy claims the same row. See [multi-tenancy](../guides/multi-tenancy.md).
 
 The ledger keeps its own namespace too. `RedisIdempotencyStore(conn, prefix=...)` requires the
 prefix, with no default. Give each service and environment its own prefix.
@@ -235,13 +241,17 @@ as `CachedFailure`, by design. When an operator fixes the cause and re-drives th
 dead-letter queue, the cached failure must go first.
 
 ```python
+from edax import Tenancy
 from edax.command import forget, received_key
 
-await forget(ledger, "billing.worker", received_key(msg))  # the scope and key the guard claimed
+# The scope, key and tenancy the guard claimed with.
+await forget(ledger, "billing.worker", received_key(msg), tenancy=Tenancy.SILO)
 ```
 
-`forget(store, scope, key, *, tx=None)` deletes the record the guard stored under
-`claim_key(scope, key)`. The kernel's
+`forget(store, scope, key, *, tenancy, tenant=None, tx=None)` deletes the record the
+guard stored under `claim_key(scope, key, tenancy=..., tenant=...)`. Pass the guard's tenancy, which has no
+default, and the message's tenant. A pool's record lives under the composed key. A pool or a bridge refuses a
+`forget` with no tenant as `CodecError` rather than delete nothing. The kernel's
 [forget decision](../kernels/cqrs.md#forget--deleting-a-settled-record) says which records it may
 delete.
 
@@ -425,7 +435,9 @@ The wiring `examples/py/05_idempotent_commands.py` runs, with a `submit` entry p
 ```python
 # retry outermost: each attempt claims, runs and commits in a unit of work of its own, so a failed
 # attempt rolls back whole. retry refuses to run inside an open transaction.
-bus = CommandBus(retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", unit_of_work=db))
+bus = CommandBus(
+    retry(3), idempotent(MemoryIdempotencyStore(db), scope="accounts", tenancy=Tenancy.SILO, unit_of_work=db)
+)
 bus.register("Deposit", deposit)
 
 

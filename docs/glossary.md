@@ -152,11 +152,13 @@ makes no claim. On the consume path it is the event's `id`.
 **Command id** — a command message's `id`: this one message instance. It is the causation id of what
 the command causes, and the key a retry policy counts attempts by. It is not the idempotency key.
 
-**Scope** — the name of one command guard, such as a service or a stage within one. `idempotent`
-requires it, so two guards on one ledger never replay each other's outcome.
+**Scope** — the name of one guard, such as a service, a stage within one, or a read model.
+`idempotent` and `idempotent_by_id` require it, so two guards on one ledger never replay or skip each
+other's outcome.
 
-**Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`. An event guard
-claims the raw event id. See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
+**Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`, composed with the
+tenant under a pool. An event guard claims the event id under its scope the same way (`edax:evt:`).
+See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
 
 **Claim** — the atomic insert-if-absent that reserves an idempotency key. It must be linearizable
 across processes, never a read then a write.
@@ -263,7 +265,9 @@ evaluator that pins the match verdict. A missing or null path makes a leaf false
 **Keyset cursor** — a base64url position token from the kernel's `query`, portable between services. A
 unique `id` tiebreak is appended automatically so paging never drops or repeats tied rows.
 
-**Upcast** — raising a stored event from its written version to the current one. The kernel plans
+**Upcast** — raising a stored event from its written version to the current version of its name.
+That version is one past the highest step of the name's upcaster, or 1 with none. The kernel decides
+that version, plans
 the ordered steps and rejects a gap; your code rewrites the payload.
 
 ## Patterns

@@ -19,6 +19,10 @@ pub struct Root<E> {
     ///
     /// A host never sets it: [`Root::new`] leaves it empty and the repository fills it from the call
     /// that loaded the aggregate, which is what keeps a load and the save that follows on one tenant.
+    /// So under [`Tenancy::Pool`](crate::Tenancy::Pool) or [`Tenancy::Bridge`](crate::Tenancy::Bridge)
+    /// a new aggregate starts from [`Repository::load_for`](crate::Repository::load_for), which returns
+    /// it empty at version 0 with the tenant set; one built with [`Root::new`] has none, and its save is
+    /// a `codec` error.
     pub tenant: Option<String>,
     pending: Vec<E>,
 }

@@ -64,14 +64,17 @@ already treated `2 == 2.0`; the hash agrees with it.
   an exponent: `1e+21`.
 - A number too large for a double (`1e400`) is a `codec` error, never silently infinity.
 
-**The 2^53 rule (the kernel's own).** A double holds every integer up to 2^53 exactly and rounds the
-ones past it. So JCS would write `9007199254740993` as `9007199254740992`, and two ids one apart
-would share a hash. So an **integer literal whose magnitude exceeds 2^53** is a terminal `codec`
-error, at any depth. The kernel reads the input text before `serde_json` parses it, so
-`arbitrary_precision` cannot hide a wide literal. A number written as a float (`9007199254740993.0`,
-`1e20`) is a float, and rounds as one. A payload that carries wider integers (a 64-bit id, a
-snowflake) must carry them as strings. One consequence: the canonical text of a whole float between
-2^53 and `1e21` is an integer literal past 2^53, so canonicalizing it a second time is refused.
+**The safe-integer rule (the kernel's own).** A double rounds the integers past 2^53. So JCS would
+write `9007199254740993` as `9007199254740992`, and two ids one apart would share a hash. 2^53 itself
+is ambiguous too, since `9007199254740993` reads back as it. So an **integer literal outside
+-(2^53 - 1) to 2^53 - 1** is a terminal `codec` error, at any depth. That is the I-JSON safe range
+(RFC 7493) and JavaScript's `Number.MAX_SAFE_INTEGER`. An off-the-shelf JCS library (Python's
+`rfc8785`, say) refuses the same integers, so it reproduces every form the kernel writes. The kernel
+reads the input text before `serde_json` parses it, so `arbitrary_precision` cannot hide a wide
+literal. A number written as a float (`9007199254740993.0`, `1e20`) is a float, and rounds as one. A
+payload that carries wider integers (a 64-bit id, a snowflake) must carry them as strings. One
+consequence: the canonical text of a whole float between 2^53 and `1e21` is an integer literal
+outside the safe range, so canonicalizing it a second time is refused.
 
 ### What is data and what is formatting
 
@@ -85,15 +88,17 @@ snowflake) must carry them as strings. One consequence: the canonical text of a 
 | `{"name":"café"}`, `{"name":"caf\u00e9"}` | raw UTF-8, unescaped | an escape is decoded first: escaping is formatting |
 | `"\b\u0001\"\\"` | `"\b\u0001\"\\"` | `"`, `\` and control characters are escaped, by name where JSON has one |
 | `{"n":[2,2.0,-0.0,1.10]}` | `{"n":[2,2,0,1.1]}` | numbers by value |
-| `{"id":9007199254740993}` | `codec` error | an integer a double would round |
+| `{"id":9007199254740992}` | `codec` error | an integer outside the safe range: a double cannot tell it from `9007199254740993` |
 | `{"email":"a@b.c",}` | `codec` error naming the line and column | the parser does not accept JSON-ish text |
 | `{"total":1e400}` | `codec` error, `out of range` | never coerced to `null`, which would collide |
 | `"\ud800"` | `codec` error | a string must be valid Unicode |
 
 Every row is a case in the kernel's own table-driven test, and `testdata/golden/canonical_json.json`
 carries the input, the canonical text (or the error) and the hash for every SDK to check. A keyset
-cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint, so a sort
-value past 2^53 cannot be minted into a cursor either.
+cursor (`encode_cursor`) is written in the same canonical form, through a sort fingerprint. So a sort
+value that is an integer outside the safe range cannot be minted into a cursor either. A whole float
+past 2^53 can: RFC 8785 writes it as integer digits, so `decode_cursor` reads an integer outside the
+safe range back as the double it was minted from.
 
 ---
 
@@ -142,9 +147,15 @@ encoder. It then hands the kernel the name and the JSON. That is what `command_h
 payload_json)` is for. Both paths land
 on the same bytes because canonicalization removes everything an encoder is free to choose.
 
-Python uses `msgspec.json.encode` rather than `json.dumps` so that `UUID`, `datetime` and `Decimal`
-fields encode deterministically instead of raising `TypeError`, and it does **no** canonicalization
-of its own. The hash is `_edax.command_hash_json(cmd.type, _payload_json(cmd))`.
+Python encodes the command with msgspec rather than `json.dumps`, so that a `UUID` field encodes
+deterministically instead of raising `TypeError`. It does **no** JSON canonicalization of its own.
+The hash is `_edax.command_hash_json(cmd.type, _payload_json(cmd))`.
+
+Canonicalization cannot unify what the host encoder writes as two different strings. So a `Decimal`
+and a `datetime` go through the kernel's own text forms first: `canonical_decimal` and
+`canonical_timestamp`. `Decimal("9.50")` and `Decimal("9.5")` then hash alike, and so do two
+`datetime`s for one instant in two offsets. Every SDK must write these types the same way
+([the host-value table](./filter.md#host-values-every-sdk-writes-alike)).
 
 ### The golden vectors that hold this
 
@@ -164,17 +175,23 @@ Python command carrying `type` as an instance field.
 
 ## `claim_key` — which ledger key a command guard claims
 
-`claim_key(scope, idempotency_key)` is `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`.
-`len(scope)` counts UTF-8 bytes, so `café` is 5.
+`claim_key(mode, tenant, scope, idempotency_key)` is `"edax:cmd:{len(scope)}:{scope}:{idempotency_key}"`,
+composed with the tenant by `tenant_key` (`edax-core`) when the tenancy `mode` is a pool:
+`"4:acme:edax:cmd:7:billing:req-1"`. `len` counts UTF-8 bytes, so `café` is 5. Both guards and every
+`forget` spell the key here, so a Python guard and a Rust guard of one scope claim one row.
 
 | Part | Why |
 |---|---|
 | `scope` | names the guard: a service, or a stage within one. An ingress guard and a consumer guard that share one ledger never replay each other's outcome for the same key |
 | `len(scope)` | makes the key injective: scope `a:b` with key `c` and scope `a` with key `b:c` are two keys |
-| `edax:cmd:` | keeps command claims apart from event claims |
+| `edax:cmd:` | keeps command claims apart from event claims, which start `edax:evt:` |
+| tenant, outermost | under a pool, one request id reused by two tenants claims two rows. Outermost, as on every key `tenant_key` composes, so one tenant's rows share a prefix in every store. A bridge keeps the key bare: its store is the tenant's |
 
-An event guard keeps the raw event id as its key, so no live ledger is re-keyed. An event id is a
-`guid()` by default, which never starts `edax:cmd:`. `testdata/golden/claim_key.json` pins the key.
+A mode that requires a tenant (pool, bridge) and a command that names none is a `codec` error, before
+any claim, so a pool never claims a shared row. The event guard's key follows the same rule with
+`edax:evt:` and the event id (`event_idempotency` in [`edax-event`](event.md)); both call
+`edax_core::guard_key`, so the two cannot compose in different orders.
+`testdata/golden/claim_key.json` pins the key, with a row per mode.
 
 The scope is required in both SDKs. A default would put two services on one ledger under one scope,
 and the second would replay the first one's outcome.
@@ -369,7 +386,8 @@ A caller therefore never restates the sort to build one.
 | Decision | Rule |
 |---|---|
 | total order | number < string < bool < array < object < null; numbers by value (exact for two integers), strings by code point, bools `false < true` |
-| tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends there; `TIEBREAK_PATH` names it |
+| decimal key | a `SortKey` with `"collation": "decimal"` orders decimal text by exact value; other strings sort after it, by code point; the collation is part of the cursor's fingerprint |
+| tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends on that key with no collation (`"7"` and `"07"` tie under the decimal one); `TIEBREAK_PATH` names it |
 | cursor | `base64url_nopad(canonical_json({"s": <fingerprint>, "v": [<sort-key values>]}))`; the fingerprint is the `payload_hash` of the canonical effective sort, as 16 hex digits |
 | replay | `decode_cursor` refuses a cursor whose fingerprint is not the query's sort, a forged arity, and any cursor on an unsorted query, each as `codec` |
 | mint | `encode_cursor` refuses an empty sort and a row whose `id` is missing or `null`, so tied rows can never be dropped silently |

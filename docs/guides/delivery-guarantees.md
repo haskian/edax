@@ -108,8 +108,8 @@ flowchart LR
 - Safe because `save` is a database-enforced compare-and-set on `entity.version`.
 - Last-writer-wins lets a redelivery overwrite a newer document.
 
-The consume path gets its deduplication from `idempotent_by_id`, which claims `msg.id` in the same
-ledger and reaches the same kernel verdict the command bus does.
+The consume path gets its deduplication from `idempotent_by_id`, which claims `msg.id` under the
+consumer's `scope` in the same ledger and reaches the same kernel verdict the command bus does.
 
 The `Relay` hop has a second shape. Change data capture reads the write-ahead log, through logical
 replication or a Debezium outbox router. The outbox row is already written in the same transaction,
@@ -179,7 +179,7 @@ sequenceDiagram
 | `retry` re-runs the handler | the rollback of the failed attempt: its claim and its writes go together, and the next attempt starts from committed state | `retry` outside `idempotent(..., unit_of_work=db)` |
 | two writers race on one aggregate | `append`'s version compare-and-set: the loser gets `ConcurrencyError` and writes nothing | `EventStore.append` |
 | two writers race on one read model | `save`'s version compare-and-set | `ProjectionStore.save` |
-| the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `msg.id` | `edax.router.idempotent_by_id` |
+| the relay re-publishes after a crash | the consumer's dedup: `idempotent_by_id` on `msg.id` under the consumer's scope | `edax.router.idempotent_by_id(store, scope=...)` |
 | the broker redelivers a handled message | the same claim; a `done` record replays and the handler is skipped | the ledger |
 | an out-of-order or stale redelivery | `is_stale(stored, incoming)` on the per-aggregate `sequence`, then `advance(stored, incoming)` for the new watermark | `edax.is_stale` / `edax.advance`, `edax::is_stale` / `edax::advance` |
 
@@ -250,7 +250,7 @@ A host can claim effectively-once for state in one database when all of these ho
 - [ ] The `IdempotencyStore` lives in that same database and declares `joins_transaction:
   ClassVar[bool] = True`.
 - [ ] The guard owns the transaction: `idempotent(..., unit_of_work=db)` or `idempotent_by_id(store,
-  unit_of_work=db)`. On the consume path this is required: a dispatcher worker clears the ambient
+  unit_of_work=db, scope=...)`. On the consume path this is required: a dispatcher worker clears the ambient
   transaction, so a handler that opens one internally opens it after the claim was taken.
 - [ ] `retry` sits outside a guard that owns the transaction, and no transaction encloses the
   dispatch: `retry` refuses to run inside one. See

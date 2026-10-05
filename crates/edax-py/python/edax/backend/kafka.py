@@ -15,7 +15,7 @@ import logging
 import warnings
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from .. import _edax
 from .._owned import ThreadBound
@@ -26,13 +26,12 @@ from ..aggregate import (
     MessageKind,
     Serializer,
     message_kind,
-    ordering_key,
 )
 from ..broker import KeyFn, UndecodableDelivery, _ConsumerLoop
 from ..dispatcher import Delivery, KeyOrderedDispatcher
 from ..errors import CodecError, mapped
 from ..observe import error_type
-from ..tenancy import Tenancy, tenant_key
+from ..tenancy import Tenancy
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
     from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
@@ -55,6 +54,9 @@ logger = logging.getLogger("edax.backend.kafka")
 
 #: How often a revoke looks at the handlers still running.
 _DRAIN_POLL_S = 0.01
+
+#: How long one send may take, by default, on the producer and on the dead-letter sink alike.
+_PUBLISH_TIMEOUT_S: Final = 30.0
 
 # The kernel's record structs, re-exported here so a middleware builds one without importing `_edax`.
 KafkaRecord = _edax.KafkaRecord
@@ -144,7 +146,37 @@ def _check_consumer(client: ConsumerClient) -> None:
         )
 
 
-async def _send(client: ProducerClient, topic: str, record: KafkaRecord) -> None:
+def _check_listener(client: ConsumerClient) -> None:
+    """Refuse a client the group assigns partitions to but that has no rebalance listener. Without one a
+    revoked partition keeps its bookkeeping. Once its watermark is due, every commit names it, the client
+    refuses the whole commit, and no partition commits again until a restart. The probe reads a private
+    attribute of ``AIOKafkaConsumer``; a different client, or one assigned its partitions by hand, is not
+    judged."""
+    subscription = getattr(client, "_subscription", None)
+    if subscription is not None and subscription.partitions_auto_assigned() and subscription.listener is None:
+        raise ValueError(
+            "KafkaConsumer.run: the client is subscribed without a rebalance listener, so a revoked "
+            "partition keeps its bookkeeping and blocks every later commit. Subscribe with "
+            "listener=consumer.rebalance_listener()."
+        )
+
+
+async def _send(client: ProducerClient, topic: str, record: KafkaRecord, timeout_s: float) -> None:
+    """Send ``record`` to ``topic`` and wait for the ack, raising a transient :class:`TimeoutError` after
+    ``timeout_s``. With ``enable_idempotence=True`` aiokafka never expires a batch, so without this bound a
+    send to a broker that stopped answering waits forever. A send cut off at the deadline may still land:
+    the batch stays in the client, so the caller's retry can write a second copy, which consumers dedup by
+    ``msg.id``."""
+    try:
+        await asyncio.wait_for(_place_and_send(client, topic, record), timeout_s)
+    except asyncio.TimeoutError as e:
+        raise TimeoutError(
+            f"kafka send to {topic!r}: no ack within {timeout_s}s; the record may still land, so a retry "
+            "may write it twice"
+        ) from e
+
+
+async def _place_and_send(client: ProducerClient, topic: str, record: KafkaRecord) -> None:
     """Send ``record`` to ``topic`` on the kernel's partition for its key: Java's default partitioner over
     the final key and the topic's partition count from the client's metadata. One placement for the
     producer and the dead-letter sink."""
@@ -199,18 +231,22 @@ class KafkaDeadLetterSink:
     caller-owned, started ``AIOKafkaProducer``: the record as fetched, plus where it came from and why
     (:meth:`KafkaFetched.dead_letter`), on the kernel's partition for its key. A raise (the topic is
     down) nacks the delivery for another try. A delivery that did not come from a
-    :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`."""
+    :class:`KafkaConsumer` carries no record to republish, so it is refused with :class:`TypeError`.
+    ``publish_timeout_s`` bounds each send, as on :class:`KafkaProducer`."""
 
-    def __init__(self, client: ProducerClient, topic: str) -> None:
+    def __init__(
+        self, client: ProducerClient, topic: str, *, publish_timeout_s: float = _PUBLISH_TIMEOUT_S
+    ) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
+        self._publish_timeout_s = publish_timeout_s
 
     async def __call__(self, delivery: Delivery, error: BaseException) -> None:
         fetched = delivery.origin
         if not isinstance(fetched, KafkaFetched):
             raise TypeError(f"delivery {delivery.message.id} carries no Kafka record to dead-letter")
-        await _send(self._client, self._topic, fetched.dead_letter(error))
+        await _send(self._client, self._topic, fetched.dead_letter(error), self._publish_timeout_s)
 
 
 class RecordMiddleware(Protocol):
@@ -248,14 +284,21 @@ class KafkaProducer:
     Kafka Connect or a Rust edax shell does, whatever partitioner the client library defaults to.
 
     ``tenancy`` is how the deployment separates tenants, fixed here as it is on a
-    :class:`~edax.store.Repository`. Under :attr:`~edax.tenancy.Tenancy.POOL` the record key is the
-    kernel's ordering key composed with the message's ``tenant``, so two tenants' same-named aggregates
-    take different partitions and a consumer of a shared topic reads the tenant off the key. An explicit
-    ``key`` replaces that rule outright, and then composing it is the caller's own job.
+    :class:`~edax.store.Repository`. The kernel keys the record. Under :attr:`~edax.tenancy.Tenancy.POOL`
+    the key is the message's ordering key composed with its ``tenant``, so two tenants' same-named
+    aggregates take different partitions. Every SDK producing to the topic places one aggregate on one
+    partition (``testdata/golden/kafka_record.json``). A pooled message with no tenant raises
+    :class:`~edax.errors.CodecError`. An explicit ``key`` replaces that rule outright, and then composing
+    it is the caller's own job. An exception the ``key`` function raises propagates unchanged.
 
     The relay marks an outbox row published once :meth:`publish` returns, so the client must ack on every
     in-sync replica: build it with ``enable_idempotence=True``, which implies ``acks="all"`` and keeps a
-    retried send from writing a duplicate. A client that acks on the leader alone gets a warning here."""
+    retried send from writing a duplicate. A client that acks on the leader alone gets a warning here.
+
+    ``publish_timeout_s`` bounds each :meth:`publish`, metadata lookup and ack included, because an
+    idempotent aiokafka producer never stops retrying a send to a broker that stopped answering. At the
+    deadline :meth:`publish` raises a transient :class:`TimeoutError`. The record may still land, so the
+    relay's retry can publish it twice. Consumers already dedup that second copy by ``msg.id``."""
 
     def __init__(
         self,
@@ -267,10 +310,12 @@ class KafkaProducer:
         key: KeyFn | None = None,
         middleware: Sequence[RecordMiddleware] = (),
         tenancy: Tenancy = Tenancy.SILO,
+        publish_timeout_s: float = _PUBLISH_TIMEOUT_S,
     ) -> None:
         _check_producer(client)
         self._client = client
         self._topic = topic
+        self._publish_timeout_s = publish_timeout_s
         self._serializer = _check_kind(serializer or KernelSerializer("json"), "event", "serializer")
         self._commands = _check_kind(
             command_serializer or KernelSerializer("json", "command"), "command", "command_serializer"
@@ -282,15 +327,18 @@ class KafkaProducer:
     async def publish(self, msg: EventMessage | CommandMessage) -> None:
         serializer = self._serializer if message_kind(msg) == "event" else self._commands
         value = serializer.encode(msg)
-        # The key function's override, else the kernel's ordering key under this producer's tenancy:
-        # the aggregate (or a command's own id), composed with the tenant where the mode composes.
+        # Host code, so outside `mapped()`: its own TypeError stays a transient failure.
+        key = self._key(msg) if self._key else None
+        # The kernel keys the record: the override, else the ordering key under this producer's tenancy.
+        tenancy, media_type = self._tenancy.value, serializer.media_type
         with mapped():
-            key = self._key(msg) if self._key else tenant_key(self._tenancy, ordering_key(msg), msg.tenant)
-        with mapped():
-            record = _edax.kafka_record(key, value, serializer.media_type)
+            if isinstance(msg, EventMessage):
+                record = _edax.kafka_event_record(tenancy, msg, value, media_type, key)
+            else:
+                record = _edax.kafka_command_record(tenancy, msg, value, media_type, key)
         for m in self._middleware:
             record = m.on_publish(record)
-        await _send(self._client, self._topic, record)
+        await _send(self._client, self._topic, record, self._publish_timeout_s)
 
 
 class KafkaConsumer(_ConsumerLoop):
@@ -314,7 +362,8 @@ class KafkaConsumer(_ConsumerLoop):
     Acks never wait on the broker. :meth:`run` commits what the kernel says is due every
     ``commit_interval_s`` seconds in one call, under a ``commit_timeout_s`` deadline, and once more when it
     ends; :meth:`flush` commits on demand. A rebalance needs :meth:`rebalance_listener` passed to
-    ``subscribe``: it drains the revoked partitions, commits, and resets them.
+    ``subscribe``: it commits, resets the revoked partitions, and waits for their running handlers.
+    :meth:`run` refuses a subscribed client without a listener.
 
     The offset bookkeeping is native state bound to the thread that built the consumer. Build it on
     the thread that runs it: a call from any other thread raises the terminal
@@ -355,7 +404,7 @@ class KafkaConsumer(_ConsumerLoop):
         """Drop the bookkeeping for a revoked partition and retire its deliveries, so the dispatcher skips
         the ones still queued. Its unsettled offsets are the new owner's to redeliver from the last
         committed watermark, and a stale watermark here would otherwise refuse a lower, correct commit if
-        the partition is assigned back. :meth:`rebalance_listener` calls it after draining."""
+        the partition is assigned back. :meth:`rebalance_listener` calls it after committing."""
         self._tracker.get().reset(tp.topic, tp.partition)
 
     async def flush(self) -> None:
@@ -377,8 +426,11 @@ class KafkaConsumer(_ConsumerLoop):
         lost commit only means redelivery after a restart."""
         try:
             await self.flush()
-        except Exception:
+        except Exception as e:
             logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=True)
+            # Absent for a flush called outside `run`, whose failure the log line carries.
+            if self._dispatcher is not None:
+                self._dispatcher.observer.commit_failed(e)
 
     async def _commit_loop(self) -> None:
         while True:
@@ -387,22 +439,28 @@ class KafkaConsumer(_ConsumerLoop):
 
     async def run(self, dispatcher: KeyOrderedDispatcher) -> None:
         """Poll and submit until cancelled or the client stops, committing on the interval. Refuses a
-        dispatcher without ``on_dead`` with :class:`ValueError`, before it polls anything."""
+        dispatcher without ``on_dead``, and a client subscribed without :meth:`rebalance_listener`, with
+        :class:`ValueError`, before it polls anything. It checks the listener here rather than at build,
+        because the client subscribes with this consumer's listener after the consumer is built."""
         if dispatcher.on_dead is None:
             raise ValueError(
                 "KafkaConsumer.run needs a dispatcher with on_dead: a nack rewinds the partition, so a "
                 "message that fails for good with no sink stalls its partition forever. Wire a "
                 "KafkaDeadLetterSink or another sink."
             )
+        _check_listener(self._client)
         self._dispatcher = dispatcher
         committer = asyncio.create_task(self._commit_loop())
         try:
             await super().run(dispatcher)
         finally:
-            self._dispatcher = None
             committer.cancel()
             await asyncio.gather(committer, return_exceptions=True)
-            await asyncio.shield(self._flush_quietly())
+            try:
+                # Still attached, so a failed last commit reaches the observer, not only the log.
+                await asyncio.shield(self._flush_quietly())
+            finally:
+                self._dispatcher = None
 
     def rebalance_listener(self, drain_timeout_s: float = 30.0) -> ConsumerRebalanceListener:
         """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke it commits
@@ -451,6 +509,7 @@ class KafkaConsumer(_ConsumerLoop):
                     running,
                     timeout,
                 )
+                dispatcher.observer.revoke_overrun(running)
                 return
             await asyncio.sleep(min(_DRAIN_POLL_S, remaining))
 

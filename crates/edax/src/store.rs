@@ -217,6 +217,12 @@ pub trait Outbox<R> {
 /// `&mut Tx` through these writes, then commit so they land atomically. The outbox's read side is the
 /// [`Outbox`] supertrait. Event ids are unique store-wide: an append carrying an id the store already
 /// holds is refused, or marking one row published would prune the other unpublished.
+///
+/// The stream is named by the `aggregate_id` argument of [`append`](Self::append), [`load`](Self::load)
+/// and [`load_snapshot`](Self::load_snapshot), and by [`Snapshot::aggregate_id`] for
+/// [`save_snapshot`](Self::save_snapshot): never by a draft's own `aggregate_id`. Under
+/// [`Tenancy::Pool`] the repository passes the id composed with the tenant while every draft keeps the
+/// bare id, so a store keying its rows by the draft merges two tenants' same-named aggregates.
 pub trait EventStore: Transactor + Outbox<EventMessage> {
     /// Events for the aggregate with `sequence > after`, in order (`after` skips a snapshot).
     fn load(&self, tx: &mut Self::Tx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error>;
@@ -811,6 +817,85 @@ mod tests {
     }
 
     #[test]
+    fn repository_tenancy_branches() {
+        // One row per mode and per way to name no tenant: the key the stream and the snapshot land
+        // under, the tenant every event is stamped with, or the refusal before any write.
+        const ID: &str = "acct-t";
+        struct Case {
+            name: &'static str,
+            mode: Tenancy,
+            /// The tenant the aggregate is loaded for.
+            tenant: Option<&'static str>,
+            /// Build the aggregate with its constructor instead of loading it, so it carries no tenant.
+            constructed: bool,
+            /// The stream key the events land under, or the code the load or the save fails with.
+            want: Result<&'static str, ErrorCode>,
+        }
+        let cases = [
+            Case { name: "a pool composes the key and stamps the tenant", mode: Tenancy::Pool, tenant: Some("acme"), constructed: false, want: Ok("4:acme:acct-t") },
+            Case { name: "a pool refuses a load with no tenant", mode: Tenancy::Pool, tenant: None, constructed: false, want: Err(ErrorCode::Codec) },
+            Case { name: "a pool refuses to save a constructed aggregate", mode: Tenancy::Pool, tenant: None, constructed: true, want: Err(ErrorCode::Codec) },
+            Case { name: "a bridge keeps the key bare and stamps the tenant", mode: Tenancy::Bridge, tenant: Some("acme"), constructed: false, want: Ok(ID) },
+            Case { name: "a bridge refuses a load with no tenant", mode: Tenancy::Bridge, tenant: None, constructed: false, want: Err(ErrorCode::Codec) },
+            Case { name: "a bridge refuses to save a constructed aggregate", mode: Tenancy::Bridge, tenant: None, constructed: true, want: Err(ErrorCode::Codec) },
+            Case { name: "a silo keeps the key bare and stamps none", mode: Tenancy::Silo, tenant: None, constructed: false, want: Ok(ID) },
+            Case { name: "a silo saves a constructed aggregate", mode: Tenancy::Silo, tenant: None, constructed: true, want: Ok(ID) },
+        ];
+        for c in cases {
+            let store = MemoryEventStore::new();
+            let r = repo(store.clone()).tenancy(c.mode);
+            let loaded = if c.constructed { Ok(Account::open(ID)) } else { r.load_for(c.tenant, ID) };
+            let saved = loaded.and_then(|mut a| {
+                a.apply(AccountEvent::Deposited(10));
+                r.save(&mut a).map(|events| (a, events))
+            });
+            let stream = |key: &str| store.load(&mut MemoryTx::auto_commit(), key, 0).unwrap();
+            match (saved, c.want) {
+                (Ok((a, events)), Ok(key)) => {
+                    assert_eq!(a.root().tenant.as_deref(), c.tenant, "{}: the aggregate carries its tenant", c.name);
+                    assert_eq!(stream(key), events, "{}: the events landed under {key}", c.name);
+                    for e in &events {
+                        assert_eq!((e.aggregate_id.as_str(), e.tenant.as_deref()), (ID, c.tenant), "{}: the id stays bare, the tenant is stamped", c.name);
+                    }
+                    if key != ID {
+                        assert!(stream(ID).is_empty(), "{}: nothing under the bare id", c.name);
+                    }
+                    let snapshot = store.load_snapshot(&mut MemoryTx::auto_commit(), key).unwrap();
+                    assert_eq!(snapshot.map(|s| s.version), Some(1), "{}: the snapshot under the same key", c.name);
+                    let reloaded = r.load_for(c.tenant, ID).unwrap();
+                    assert_eq!((reloaded.balance, reloaded.root().version), (10, 1), "{}: the load reads it back", c.name);
+                }
+                (Err(error), Err(code)) => {
+                    assert_eq!(error.code, code, "{}: {error}", c.name);
+                    assert!(store.unpublished(10).unwrap().is_empty(), "{}: refused before any write", c.name);
+                }
+                (got, want) => panic!("{}: got {:?}, want {want:?}", c.name, got.map(|(_, events)| events)),
+            }
+        }
+    }
+
+    #[test]
+    fn a_pool_keeps_two_tenants_streams_apart_inside_the_callers_transaction() {
+        // One store, one aggregate id, two tenants: two streams, each at its own version, through the
+        // `_in` path a handler takes inside its own unit of work.
+        let store = MemoryEventStore::new();
+        let r = repo(store.clone()).tenancy(Tenancy::Pool);
+        for (tenant, amount) in [("acme", 10), ("globex", 70)] {
+            store
+                .transaction(|tx| {
+                    let mut a = r.load_for_in(tx, Some(tenant), "order-1")?;
+                    a.apply(AccountEvent::Deposited(amount));
+                    r.save_in(tx, &mut a)
+                })
+                .unwrap();
+        }
+        for (tenant, amount) in [("acme", 10), ("globex", 70)] {
+            let a = r.load_for(Some(tenant), "order-1").unwrap();
+            assert_eq!((a.balance, a.root().version, a.root().tenant.as_deref()), (amount, 1, Some(tenant)));
+        }
+    }
+
+    #[test]
     fn snapshot_every_writes_one_where_a_save_crosses_its_interval() {
         // Two saves of one event each: the snapshot left behind, per interval. `1` takes both saves,
         // `2` the second, `3` neither, and `0` never snapshots.
@@ -1099,7 +1184,7 @@ mod tests {
         for (i, c) in cases.into_iter().enumerate() {
             let id = format!("ledger-{i}");
             let store = MemoryEventStore::new();
-            let repo = Repository::new(store.clone(), JsonCodec::<Posted>::new("Posted", 1), LedgerCodec)
+            let repo = Repository::new(store.clone(), JsonCodec::<Posted>::new("Posted"), LedgerCodec)
                 .with_ids(next_id);
             let mut ledger = Ledger {
                 root: Root::new(&id, 0),

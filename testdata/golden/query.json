@@ -465,6 +465,41 @@
     "documents": [
       {
         "id": "a",
+        "n": 5.808820077685227e+16
+      },
+      {
+        "id": "b",
+        "n": 5.808820077685227e+16
+      },
+      {
+        "id": "c"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYiJdfQ",
+      "rows": [
+        {
+          "id": "b",
+          "n": 5.808820077685227e+16
+        }
+      ]
+    },
+    "name": "resume_after_a_whole_number_double_past_2_pow_53",
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYSJdfQ",
+      "limit": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
         "v": 9007199254740993
       },
       {
@@ -657,6 +692,519 @@
   {
     "documents": [
       {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "f",
+          "p": 3
+        },
+        {
+          "id": "d",
+          "p": "-2.25"
+        },
+        {
+          "id": "a",
+          "p": "10"
+        },
+        {
+          "id": "e",
+          "p": "12345678901234567890.1"
+        },
+        {
+          "id": "i",
+          "p": "1E+1"
+        },
+        {
+          "id": "c",
+          "p": "9.5"
+        },
+        {
+          "id": "b",
+          "p": "9.50"
+        },
+        {
+          "id": "g",
+          "p": "n/a"
+        },
+        {
+          "id": "h"
+        }
+      ]
+    },
+    "name": "decimal_text_without_the_collation_sorts_by_code_point",
+    "query": {
+      "sort": [
+        {
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "f",
+          "p": 3
+        },
+        {
+          "id": "d",
+          "p": "-2.25"
+        },
+        {
+          "id": "b",
+          "p": "9.50"
+        },
+        {
+          "id": "c",
+          "p": "9.5"
+        },
+        {
+          "id": "a",
+          "p": "10"
+        },
+        {
+          "id": "i",
+          "p": "1E+1"
+        },
+        {
+          "id": "e",
+          "p": "12345678901234567890.1"
+        },
+        {
+          "id": "g",
+          "p": "n/a"
+        },
+        {
+          "id": "h"
+        }
+      ]
+    },
+    "name": "decimal_sort_by_value",
+    "query": {
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "h"
+        },
+        {
+          "id": "g",
+          "p": "n/a"
+        },
+        {
+          "id": "e",
+          "p": "12345678901234567890.1"
+        },
+        {
+          "id": "a",
+          "p": "10"
+        },
+        {
+          "id": "i",
+          "p": "1E+1"
+        },
+        {
+          "id": "b",
+          "p": "9.50"
+        },
+        {
+          "id": "c",
+          "p": "9.5"
+        },
+        {
+          "id": "d",
+          "p": "-2.25"
+        },
+        {
+          "id": "f",
+          "p": 3
+        }
+      ]
+    },
+    "name": "decimal_sort_descending",
+    "query": {
+      "sort": [
+        {
+          "collation": "decimal",
+          "desc": true,
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiOS41MCIsImIiXX0",
+      "rows": [
+        {
+          "id": "f",
+          "p": 3
+        },
+        {
+          "id": "d",
+          "p": "-2.25"
+        },
+        {
+          "id": "b",
+          "p": "9.50"
+        }
+      ]
+    },
+    "name": "decimal_sort_pages_and_mints_next",
+    "query": {
+      "limit": 3,
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiMTAiLCJhIl19",
+      "rows": [
+        {
+          "id": "c",
+          "p": "9.5"
+        },
+        {
+          "id": "a",
+          "p": "10"
+        }
+      ]
+    },
+    "name": "decimal_sort_resumes_after_a_cursor",
+    "query": {
+      "after": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiOS41MCIsImIiXX0",
+      "limit": 2,
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "b",
+          "p": "9.50"
+        },
+        {
+          "id": "c",
+          "p": "9.5"
+        },
+        {
+          "id": "a",
+          "p": "10"
+        },
+        {
+          "id": "i",
+          "p": "1E+1"
+        },
+        {
+          "id": "e",
+          "p": "12345678901234567890.1"
+        }
+      ]
+    },
+    "name": "decimal_filter_then_decimal_sort",
+    "query": {
+      "filter": {
+        "compare": {
+          "collation": "decimal",
+          "op": "gte",
+          "path": "p",
+          "value": "9.5"
+        }
+      },
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "p"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "8"
+      },
+      {
+        "id": "7"
+      },
+      {
+        "id": "07"
+      }
+    ],
+    "error_code": null,
+    "expected_page": {
+      "next": "eyJzIjoiMDczN2M3NGI1OGU0NThkYiIsInYiOlsiNyIsIjciXX0",
+      "rows": [
+        {
+          "id": "7"
+        }
+      ]
+    },
+    "name": "decimal_id_sort_keeps_the_plain_tiebreak",
+    "query": {
+      "after": "eyJzIjoiMDczN2M3NGI1OGU0NThkYiIsInYiOlsiMDciLCIwNyJdfQ",
+      "limit": 1,
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "id"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
         "id": "r0",
         "n": 1
       },
@@ -769,6 +1317,33 @@
   {
     "documents": [
       {
+        "id": {
+          "n": 0
+        },
+        "k": 1
+      },
+      {
+        "id": {
+          "n": 1
+        },
+        "k": 1
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_next_from_a_row_with_an_object_id",
+    "query": {
+      "limit": 1,
+      "sort": [
+        {
+          "path": "k"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
         "id": "r0",
         "n": 1
       }
@@ -781,6 +1356,56 @@
       "sort": [
         {
           "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "p": "10"
+      },
+      {
+        "id": "b",
+        "p": "9.50"
+      },
+      {
+        "id": "c",
+        "p": "9.5"
+      },
+      {
+        "id": "d",
+        "p": "-2.25"
+      },
+      {
+        "id": "e",
+        "p": "12345678901234567890.1"
+      },
+      {
+        "id": "f",
+        "p": 3
+      },
+      {
+        "id": "g",
+        "p": "n/a"
+      },
+      {
+        "id": "h"
+      },
+      {
+        "id": "i",
+        "p": "1E+1"
+      }
+    ],
+    "error_code": "codec",
+    "expected_page": null,
+    "name": "refused_cursor_under_another_collation",
+    "query": {
+      "after": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiOS41MCIsImIiXX0",
+      "sort": [
+        {
+          "path": "p"
         }
       ]
     }

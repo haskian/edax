@@ -109,6 +109,19 @@ pub fn tenant_key(mode: Tenancy, tenant: Option<&str>, key: &str) -> Result<Stri
     }
 }
 
+/// The ledger key an idempotency guard of `kind` (`cmd` or `evt`) claims for `key`:
+/// `"edax:{kind}:{len(scope)}:{scope}:{key}"`, then composed with the tenant under `mode` by
+/// [`tenant_key`].
+///
+/// The one rule behind the command guard's `claim_key` and the event guard's `event_idempotency`, so
+/// the two never compose in different orders. The kind keeps command claims apart from event claims,
+/// and the scope names the guard, so two guards on one ledger never replay each other's outcome. The
+/// tenant goes outermost, as it does on every key [`tenant_key`] composes, so all of one tenant's rows
+/// in any store share one prefix.
+pub fn guard_key(mode: Tenancy, tenant: Option<&str>, kind: &str, scope: &str, key: &str) -> Result<String, Error> {
+    tenant_key(mode, tenant, &format!("edax:{kind}:{}", scoped(scope, key)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +165,14 @@ mod tests {
         assert_eq!(tenant_key(Tenancy::Bridge, Some("acme"), "order-1"), Ok("order-1".to_owned()));
         assert_eq!(tenant_key(Tenancy::Silo, None, "order-1"), Ok("order-1".to_owned()));
         assert!(tenant_key(Tenancy::Pool, None, "order-1").is_err(), "a pool refuses a bare key");
+    }
+
+    #[test]
+    fn a_guard_key_scopes_the_key_then_composes_the_tenant_outermost() {
+        assert_eq!(guard_key(Tenancy::Silo, None, "cmd", "api", "req-1"), Ok("edax:cmd:3:api:req-1".to_owned()));
+        assert_eq!(guard_key(Tenancy::Pool, Some("acme"), "evt", "api", "e-1"), Ok("4:acme:edax:evt:3:api:e-1".to_owned()));
+        assert_eq!(guard_key(Tenancy::Bridge, Some("acme"), "cmd", "api", "req-1"), Ok("edax:cmd:3:api:req-1".to_owned()));
+        assert!(guard_key(Tenancy::Pool, None, "cmd", "api", "req-1").is_err(), "a pool refuses a bare claim");
     }
 
     #[test]

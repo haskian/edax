@@ -29,3 +29,7 @@ edax-kafka = { path = "crates/edax-kafka" }
 edax-redis = { path = "crates/edax-redis" }
 edax = { path = "crates/edax" }
 serde = { version = "1", features = ["derive"] }
+# Exact decimal text: the canonical form and the value order of the decimal collation (`edax-cqrs`).
+bigdecimal = { version = "0.4.11", default-features = false, features = ["std"] }
+# RFC 3339 timestamps to the fixed-width UTC form (`edax-cqrs`); no time zone database is needed.
+jiff = { version = "0.2.37", default-features = false, features = ["std"] }

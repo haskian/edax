@@ -124,15 +124,16 @@ def test_a_serializer_refuses_the_other_kind() -> None:
 
 
 def test_golden_envelope_decode() -> None:
-    """The message evolution rule, one wire value per case in both formats: an unknown field and a missing
-    optional field read, a positional (array) message, a repeated field and trailing bytes are refused. A
-    newer producer's field therefore never turns a message into poison for this reader."""
+    """The message evolution rule, one wire value per case in both formats and of its kind: an unknown
+    field and a missing optional field read, a positional (array) message, a repeated field, trailing
+    bytes and a tenant outside the key rule are refused. A newer producer's field therefore never turns a
+    message into poison for this reader, and a poisoned tenant never reaches a key."""
     for case in golden("envelope_decode.json"):
         for fmt in ("json", "msgpack"):
             wire = bytes.fromhex(case[f"{fmt}_hex"])
             got: dict[str, Any]
             try:
-                got = {"message": message_as_obj(edax.KernelSerializer(fmt).decode(wire))}
+                got = {"message": message_as_obj(edax.KernelSerializer(fmt, case["kind"]).decode(wire))}
             except edax.CodecError as e:
                 got = {"error_code": e.code}
             assert got == case["want"], (case["name"], fmt)
@@ -144,8 +145,8 @@ def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
 
 def test_golden_kafka_record() -> None:
     """The record a :class:`~edax.backend.kafka.KafkaProducer` sends, through a spy client: the
-    serializer's bytes and media type in the kernel's record. A second SDK writing a different key or
-    header set would split the topic in two."""
+    serializer's bytes and media type in the kernel's record, keyed under the row's tenancy. A second SDK
+    writing a different key or header set would split the topic in two."""
     for c in golden("kafka_record.json"):
         msg, key = message_from_obj(c["message"]), c["key"]
         client = SpyProducerClient()
@@ -155,6 +156,7 @@ def test_golden_kafka_record() -> None:
             serializer=edax.KernelSerializer(c["format"]),
             command_serializer=edax.KernelSerializer(c["format"], "command"),
             key=None if key is None else lambda _, key=key: key,
+            tenancy=edax.Tenancy(c["tenancy"]),
         )
         if c["error"] is not None:
             with pytest.raises(edax.CodecError) as refused:
