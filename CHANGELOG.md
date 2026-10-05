@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.5.0](https://github.com/crtomirmajer/edax/compare/2dbedc0628df4729c75b69e8d913209fa1a98c80..v0.5.0) - 2026-10-05
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) fix the feature review and compare Decimal and datetime by value (#18) - ([2dbedc0](https://github.com/crtomirmajer/edax/commit/2dbedc0628df4729c75b69e8d913209fa1a98c80)) - Črtomir Majer
+
+- - -
+
 ## [v0.4.0](https://github.com/crtomirmajer/edax/compare/66f280b8e56f1b9d15be3432fec22257af45b043..v0.4.0) - 2026-10-04
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) make the tenant a typed field with a kernel key rule (#17) - ([66f280b](https://github.com/crtomirmajer/edax/commit/66f280b8e56f1b9d15be3432fec22257af45b043)) - Črtomir Majer
