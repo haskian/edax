@@ -50,6 +50,16 @@ written against them. Pin a minor in your dependency declaration
   over one database share neither an instance nor a command. A relay drains one saga's outbox:
   `Relay(runner.outbox(), publish)`, not `Relay(store, publish)`. Existing rows need the saga's name
   added to their key.
+- **Drain legacy saga commands before migrating.** Version 0.6 scopes command IDs by saga name;
+  version 0.5 used `instance:version:index`. New runners do not retain every failure of an old-format
+  command, so replay after another failure can repeat compensation.
+  Quiesce new saga inputs and drain all saga command outboxes under 0.5, including commands emitted
+  by compensation. Settle or explicitly resolve old dead letters and pending failure notifications
+  before stopping the old runners. Verify no old commands or failure deliveries remain in brokers,
+  outboxes, or scheduled redrives; then migrate instance keys and deploy 0.6.
+  Preserve saved folded marks and idempotency records. Do not rewrite command IDs to the new format:
+  a changed identity can execute an already-completed command again. If old deliveries remain,
+  postpone the upgrade; adding saga names to storage keys alone is unsafe.
 - **Store refusals.** `IdempotencyStore.complete` refuses a pending record with `BadHandle`, and
   `ProjectionStore.save` refuses a document that is not a JSON object with `CodecError`
   (`edax.projection.check_document`). The contract kit holds a store of your own to both.

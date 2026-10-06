@@ -202,9 +202,11 @@ code. Every client reports the same number: aiokafka's `errno`, librdkafka's `co
 
 | Codes | Verdict | What the consumer side does |
 |---|---|---|
-| `CORRUPT_MESSAGE` 2, `MESSAGE_TOO_LARGE` 10, `RECORD_LIST_TOO_LARGE` 18, `INVALID_TIMESTAMP` 32, `INVALID_RECORD` 87 | terminal `codec`: one record | dead-letters that record; the next may pass |
-| `INVALID_TOPIC_EXCEPTION` 17, `INVALID_REQUIRED_ACKS` 21, `TOPIC_`, `GROUP_`, `CLUSTER_AUTHORIZATION_FAILED` 29 to 31, `UNSUPPORTED_VERSION` 35 | fatal `bad_handle`: the client | stops the relay or the consumer, dead-lettering nothing |
-| any other code | transient `store` | retries |
+| `MESSAGE_TOO_LARGE` 10, `RECORD_LIST_TOO_LARGE` 18, `INVALID_RECORD` 87 | terminal `codec`: one record | dead-letters that record; the next may pass |
+| `INVALID_TOPIC_EXCEPTION` 17, `INVALID_REQUIRED_ACKS` 21, `INVALID_TIMESTAMP` 32, `UNSUPPORTED_VERSION` 35, `UNSUPPORTED_FOR_MESSAGE_FORMAT` 43 | fatal `bad_handle`: client settings or clock | stops the relay or the consumer, dead-lettering nothing |
+| `TOPIC_AUTHORIZATION_FAILED` 29, `GROUP_AUTHORIZATION_FAILED` 30, `CLUSTER_AUTHORIZATION_FAILED` 31, `UNSUPPORTED_SASL_MECHANISM` 33, `ILLEGAL_SASL_STATE` 34, `TRANSACTIONAL_ID_AUTHORIZATION_FAILED` 53, `SASL_AUTHENTICATION_FAILED` 58 | fatal `bad_handle`: authentication or authorization | stops the relay or the consumer, dead-lettering nothing |
+| `INVALID_PRODUCER_EPOCH` 47 | fatal `bad_handle`: fenced producer | stops the relay or the consumer, dead-lettering nothing |
+| `CORRUPT_MESSAGE` 2 and any other code | transient `store` | retries |
 
 `bad_handle` is fatal in the kernel's retry policy ([`Failure::Fatal`](./event.md)). So a topic ACL
 mistake stops the relay, which does not move the outbox into the dead-letter queue one row at a time.

@@ -52,6 +52,20 @@ The remaining gap is the publish itself, which is still a separate step and ther
 at-least-once. That gap is bounded and recoverable: the row is durable, so a redelivery is a
 duplicate, never a loss.
 
+## Choosing public events
+
+Every appended domain event gets an event-outbox row. The host's `publish` callback can select
+which events leave the service and translate them into a public contract. Returning successfully
+without sending deliberately consumes that row when the relay marks it published.
+
+For translated events, keep public IDs and payloads stable across retries. Preserve the tenancy,
+lineage, and ordering promised by the public contract. Await durable publication before returning;
+a mapping or send failure must raise so the relay can apply its failure policy.
+
+Use a separate public event stream or outbox when the public contract needs independent retention
+or a persisted transformation. Publishing domain events directly remains valid when those events
+already form the intended public contract.
+
 ## Stored shapes
 
 ```mermaid

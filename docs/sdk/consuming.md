@@ -60,6 +60,14 @@ worker each.
 
 **Its limits.**
 
+- A successful `on_dead` acknowledges the failed event and lets later events of that key run.
+  This leaves a processing gap. Redriving the dead letter after a sequence watermark advances can
+  make `is_stale` reject it; saga admission reports `below_mark` and skips it.
+  Repair or rebuild affected state when replay would fall below that mark.
+- Kafka requires `on_dead`, but a sink may raise: a transient refusal nacks, while a fatal refusal
+  stops the dispatcher. Neither provides durable per-key parking. A Kafka nack rewinds the whole
+  partition, including other keys. A workflow requiring every event in order must stop before
+  acknowledging a failed event and arrange recovery before resuming.
 - No order across aggregate ids. Two aggregates progress independently, and which finishes first is
   unspecified.
 - The map is modulo the worker count, so several aggregate ids share a worker. A slow handler for
@@ -367,6 +375,22 @@ the writer used, `codec.unmarshal(msg)`. That is the same `json_codec` or `msgpa
 stored reads in today's shape. It raises the terminal `CodecError` for a payload it cannot read, a name
 it does not know, or a version from a newer writer than this codec. The dispatcher then dead-letters
 the message rather than redelivering it forever.
+
+Before enabling a newer writer version, deploy support for that version to every relevant reader.
+This includes consumers, aggregate loaders, and replay jobs. A registry's upcaster chain also sets
+its write version, so a service that reads and writes may need separate codec configurations during
+the rollout. Gate the new writer until all readers are ready.
+
+A compatible field addition can keep its version when old readers ignore the field and new readers
+accept its absence. Preserve meaning as well as shape; unknown-field tolerance alone does not prove
+compatibility. A transient classification would only delay dead-lettering until the retry budget
+expires, so it cannot replace this rollout rule.
+
+If newer-version events already failed, upgrade the readers before redriving them. A standalone or
+separately committed idempotency ledger may have cached the terminal failure. Inspect that record
+and use `forget_event` for the affected event before redrive, once the decoder is fixed.
+A failed guard-owned shared transaction instead rolls its claim back. Also check downstream sequence
+marks: forgetting a guard record cannot make an event below a watermark fold again.
 
 ```python
 events = json_codec({"Deposited": Deposited}, upcasters=upcasters)

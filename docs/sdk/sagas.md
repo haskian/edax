@@ -301,15 +301,37 @@ saga's `instance_id`. Its `data` is JSON, `SagaCommandFailed` in both SDKs:
 def handle(self, state: Any, msg: EventMessage, /) -> tuple[Any, list[Any]]:
     if msg.name == SAGA_COMMAND_FAILED:
         failure: SagaCommandFailed = json.loads(msg.data)  # command_id, command, code, error
-        return Completed, [Refund(state["order_id"])]
-    ...
+        if failure["command"] == "Refund":
+            # Keep the failure durable for an explicit recovery or escalation step.
+            return {**state, "phase": "refund_failed", "failure": failure}, []
+        if state["phase"] == "waiting_for_fulfilment":
+            return {**state, "phase": "refunding"}, [Refund(state["order_id"])]
+    if msg.name == "RefundSucceeded" and state["phase"] in ("refunding", "refund_failed"):
+        return Completed, []
+    return state, []
 ```
+
+Here the host names the command `Refund` and routes its success reply back to this instance.
+A failed refund remains open for a host recovery event or operator action; it does not recursively
+issue another refund for every command failure. Recovery must respect the participant's idempotency
+contract, especially when the refund outcome is uncertain.
 
 A completed instance folds nothing, this event included. So a saga that may compensate keeps its
 instance open until the commands it waits on have run, instead of completing in the step that sends
 them. The event's id is the row's id plus `:failed`, so a sink that runs twice for one row folds it
 once, even when another command's failure folded in between.
 [edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists its fields.
+
+### Host-owned timeouts
+
+Persist each awaited reply's deadline and arrange durable delivery of a correlated timeout event.
+An in-process sleep alone loses the timeout on restart. The host handler decides whether the timeout
+still matches the current phase and deadline, then compensates or escalates. Ignore obsolete timers
+after a reply advances the instance, and make timeout delivery safe to repeat.
+
+edax supplies neither a timer scheduler nor automatic abandonment. Include timeout scheduling and
+recovery in the host's deployment requirements; without them, a missing reply can leave a saga open
+indefinitely.
 
 ## See also
 

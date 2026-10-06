@@ -12,6 +12,17 @@ comes from the consume-path guard, [`idempotent_by_id`](./consuming.md#idempoten
 the handler. A projector that folds events and keeps per-row marks is a deferred feature. No durable
 store ships with edax; you bring one.
 
+A redelivered event can reload the current row version, fold again, and pass the next version check.
+Commit the consume guard and projection write in the same transaction to close that replay window.
+If the host tracks source positions instead, commit those positions with the derived document.
+Keep a position per source when a row combines aggregates or partitions; their sequence numbers are
+not one shared order.
+
+A successful dead-letter sink lets later events pass the failed event. If the projector advances a
+source watermark, a late redrive can be rejected by `is_stale`. The store cannot repair that gap:
+rebuild or reconcile the affected document, or stop consumption before acknowledging the failed event.
+See [consuming](./consuming.md) for the ordering limits and Kafka's partition-wide rewind.
+
 ```mermaid
 flowchart LR
     E["EventMessage"] --> H["event handler"]
