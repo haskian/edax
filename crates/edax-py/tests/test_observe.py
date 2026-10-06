@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import threading
 import urllib.error
 import warnings
 from collections.abc import Awaitable, Callable
@@ -31,10 +30,12 @@ from conftest import (
     build_message,
     claimed,
     delivered,
+    handling,
     kafka_consumer,
+    on_another_thread,
 )
-from edax._async import maybe_await
-from edax.aggregate import _replace
+from edax._observer import wrap
+from edax._values import replace
 from edax.backend.kafka import KafkaConsumer
 from edax.backend.memory import (
     MemoryCommandOutbox,
@@ -42,11 +43,11 @@ from edax.backend.memory import (
     MemoryIdempotencyStore,
     MemoryTransactor,
 )
-from edax.broker import UndecodableDelivery, _ConsumerLoop
-from edax.observe import _wrap, timing
-from edax.store import transaction
-from edax.testing import drafted
+from edax.broker import Polled, consume
+from edax.observe import timing
+from edax.testing import delivery, drafted
 from edax.testing.faults import BrokenCommit, Refusing
+from edax.unit_of_work import transaction
 
 
 class _RpcError(Exception):
@@ -112,6 +113,9 @@ class Raising(edax.Observer):
     def revoke_overrun(self, handling: int) -> None:
         _boom()
 
+    def lease_lost(self, key: str, error: BaseException | None) -> None:
+        _boom()
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         _boom()
 
@@ -120,7 +124,7 @@ DEPOSITED = b'{"account_id":"acct-1","amount_cents":4200,"currency":"USD"}'
 
 
 # =========================================================================
-# claim / settled: one case per branch of `_guarded`
+# claim / settled: one case per branch of `guarded`
 # =========================================================================
 
 
@@ -282,7 +286,7 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
     bus = edax.CommandBus(
         edax.idempotent(ledger, unit_of_work, observer=observer, scope="test", tenancy=edax.Tenancy.SILO)
     )
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     if case.held:
         assert isinstance(
             await ledger.claim(
@@ -308,15 +312,19 @@ async def test_idempotent_reports_claim_verdicts_and_settlements(case: ClaimCase
     assert [outcome for outcome, _ in observer.transactions] == case.want_transactions
 
 
+async def _skip(env: edax.EventMessage) -> None:
+    """An event handler with nothing to do."""
+
+
 async def test_idempotent_by_id_threads_the_observer_through_the_same_guard() -> None:
     observer = Recording()
     guarded = edax.idempotent_by_id(
         MemoryIdempotencyStore(), observer=observer, scope=SCOPE, tenancy=edax.Tenancy.SILO
-    )(lambda env: None)
+    )(_skip)
     env = build_message("acct-1", "Deposited", 3, data=DEPOSITED)
 
-    await maybe_await(guarded(env))
-    await maybe_await(guarded(env))  # a redelivery: skipped silently, but the observer still hears it
+    await guarded(env)
+    await guarded(env)  # a redelivery: skipped silently, but the observer still hears it
     assert observer.claims == [("Deposited", "succeeded")], "named after the event, not the command"
     assert [(name, how) for name, how, _ in observer.settlements] == [("Deposited", "completed")]
 
@@ -414,7 +422,7 @@ class DeliveryCase:
                 [("unsettled", 1, None)],
                 ack_raises=True,
                 want_failures=1,
-                want_log=["after a successful handler"],
+                want_log=["failed; the broker will redeliver it"],
             ),
             id="unsettled_after_a_successful_handler_has_no_error_type",
         ),
@@ -433,7 +441,7 @@ async def test_dispatcher_reports_every_settlement_arm(
         if error is not None:
             raise error
 
-    async def on_dead(d: edax.Delivery, err: BaseException) -> None:
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
         if case.on_dead_raises:
             raise edax.StoreError("sink unavailable")
 
@@ -499,30 +507,30 @@ async def test_delivery_duration_is_the_handler_only_not_the_backoff() -> None:
 # =========================================================================
 
 
-class _Poisoned(_ConsumerLoop):
+class _Poisoned:
     """A consumer whose stream is one poison message, then end of stream."""
 
-    def __init__(self, poison: UndecodableDelivery) -> None:
-        self._items: list[edax.Delivery | None] = [poison, None]
+    def __init__(self, poison: edax.Undecodable) -> None:
+        self._items: list[Polled] = [poison, None]
 
-    async def poll(self) -> edax.Delivery | None:
+    async def poll(self) -> Polled:
         return self._items.pop(0)
 
 
-async def _kafka_poison() -> tuple[FakeKafkaClient, UndecodableDelivery]:
+async def _kafka_poison() -> tuple[FakeKafkaClient, edax.Undecodable]:
     client = FakeKafkaClient()
     await client.send_and_wait("t", b"not a message")
-    poison = delivered(await KafkaConsumer(client, serializer=edax.KernelSerializer()).poll())
-    assert isinstance(poison, UndecodableDelivery)
+    poison = await KafkaConsumer(client, serializer=edax.KernelSerializer()).poll()
+    assert isinstance(poison, edax.Undecodable)
     return client, poison
 
 
 async def test_the_consumer_loop_reports_an_undecodable_message_by_its_partition_id() -> None:
     observer = Recording()
     client, poison = await _kafka_poison()
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, observer=observer)
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None), observer=observer)
 
-    await _Poisoned(poison).run(dispatcher)
+    await consume(_Poisoned(poison), dispatcher)
 
     assert observer.undecodables == [("t/0/0", edax.CodecError)]
     assert client.seeks == [0], "no sink wired: the poison message was nacked, never dropped"
@@ -535,7 +543,7 @@ async def test_the_consumer_loop_reports_an_undecodable_message_by_its_partition
 
 async def _dispatch_with(observer: edax.Observer) -> None:
     acked: list[str] = []
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, observer=observer)
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None), observer=observer)
     dispatcher.start()
     env = build_message("acct-1", "Deposited", 1)
     await dispatcher.submit(edax.Delivery(env, lambda: acked.append(env.id), lambda: None))
@@ -560,7 +568,7 @@ async def _guard_with(observer: edax.Observer) -> None:
     async def handler(cmd: CreateUser) -> str:
         return "ok"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     assert await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") == "ok"
     assert (
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") == "ok"
@@ -569,8 +577,8 @@ async def _guard_with(observer: edax.Observer) -> None:
 
 async def _consume_with(observer: edax.Observer) -> None:
     client, poison = await _kafka_poison()
-    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None, observer=observer)
-    await _Poisoned(poison).run(dispatcher)
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None), observer=observer)
+    await consume(_Poisoned(poison), dispatcher)
     assert client.seeks == [0], "the poison message was not settled"
 
 
@@ -590,7 +598,7 @@ async def _commit_with(observer: edax.Observer) -> None:
     store = MemoryEventStore()
     async with transaction(store, observer=observer) as tx:
         await store.append(tx, "acct-1", 0, [drafted(build_message("acct-1", "Deposited", 1))])
-    assert await store.unpublished() != [], "the unit of work did not commit"
+    assert await store.unpublished(100) != [], "the unit of work did not commit"
 
 
 @pytest.mark.parametrize(
@@ -626,8 +634,9 @@ _HOOK_ARGS: dict[str, tuple[Any, ...]] = {
     "drain_failed": (RuntimeError("broker down"), 2, 1),
     "undecodable": ("orders/0/17", ValueError("not msgpack")),
     "poll_failed": (ConnectionError("broker unreachable"),),
-    "commit_failed": (TimeoutError(),),
+    "commit_failed": (edax.StoreError("kafka commit: no reply within 10000 ms"),),
     "revoke_overrun": (2,),
+    "lease_lost": ("order-7", None),
     "saga_skipped": ("order", "repeat", "evt-1"),
 }
 
@@ -646,8 +655,8 @@ def test_every_observer_hook_is_guarded_and_forwards_its_arguments(caplog: pytes
                 return lambda *args: seen.append((name, args))
             return super().__getattribute__(name)
 
-    guarded = _wrap(Forwarding())
-    raising = _wrap(Raising())
+    guarded = wrap(Forwarding())
+    raising = wrap(Raising())
     with caplog.at_level("ERROR", logger="edax.observe"):
         for hook, args in _HOOK_ARGS.items():
             getattr(guarded, hook)(*args)
@@ -677,7 +686,7 @@ async def _command_rows(timestamps: list[int]) -> edax.Outbox[edax.CommandMessag
     """A command outbox holding one committed command per timestamp, each issued at it."""
     outbox = MemoryCommandOutbox()
     commands = [
-        _replace(edax.command_message(CreateUser(f"user-{t}@example.com")), issued_at=t) for t in timestamps
+        replace(edax.command_message(CreateUser(f"user-{t}@example.com")), issued_at=t) for t in timestamps
     ]
     async with transaction(outbox.transactor) as tx:
         await outbox.enqueue(tx, commands)
@@ -769,7 +778,7 @@ async def test_relay_reports_what_each_drain_did(case: DrainCase) -> None:
         sent.append(env.id)
 
     outbox: Any = Refusing(store, case.refuse) if case.refuse else store
-    relay = edax.Relay(outbox, publish, observer=observer, on_dead=lambda row, e: None, pacing=NO_WAIT)
+    relay = edax.Relay(outbox, publish, observer=observer, on_dead=lambda letter: None, pacing=NO_WAIT)
     if case.want_failures:
         with pytest.raises(case.want_failures[0][0]):
             await relay.drain()
@@ -844,7 +853,7 @@ async def test_dispatcher_stats_and_idle_track_a_delivery_from_submit_to_settlem
     first = build_message("acct-1", "Deposited", 1)
     await dispatcher.submit(edax.Delivery(first, lambda: None, lambda: None))
     await asyncio.sleep(0)  # the worker takes it and parks in the handler
-    await dispatcher.submit(build_message("acct-1", "Deposited", 2))  # same key: queued behind it
+    await dispatcher.submit(delivery(build_message("acct-1", "Deposited", 2)))  # same key: queued behind it
     stats = dispatcher.stats()
     assert (stats.in_flight, sum(stats.queue_depth), stats.running, stats.workers_alive) == (1, 1, True, 2)
     assert not dispatcher.idle(), "an item a worker holds is not idle, even with the queue drained"
@@ -878,14 +887,12 @@ async def test_dispatcher_stats_read_from_a_metrics_thread_never_bind_the_native
     handled: list[str] = []
     acked: list[str] = []
     dispatcher = edax.KeyOrderedDispatcher(
-        workers=1, handler=lambda env: handled.append(env.id), observer=observer
+        workers=1, handler=handling(lambda env: handled.append(env.id)), observer=observer
     )
 
     def read_on_a_metrics_thread() -> edax.DispatcherStats:
         read: list[edax.DispatcherStats] = []
-        thread = threading.Thread(target=lambda: read.append(dispatcher.stats()))
-        thread.start()
-        thread.join()
+        on_another_thread(lambda: read.append(dispatcher.stats()))
         return read[0]
 
     assert read_on_a_metrics_thread().attempts_tracked == 0
@@ -982,7 +989,7 @@ class TimingCase:
         ),
         pytest.param(
             TimingCase("event", ValueError("bad"), ("Deposited", "error", "builtins.ValueError")),
-            id="event_error_from_a_sync_handler",
+            id="event_error",
         ),
         pytest.param(
             TimingCase("command", None, ("user.create", "ok", None), record_raises=True),
@@ -1005,16 +1012,16 @@ async def test_timing_records_the_handler_outcome(case: TimingCase, caplog: pyte
 
     async def dispatch() -> Any:
         if case.bus == "command":
-            bus = edax.CommandBus(timing(record, lambda cmd: cmd.type))
+            bus = edax.CommandBus(timing(record, lambda msg: msg.name))
 
             async def handler(cmd: CreateUser) -> str:
                 return run(cmd)
 
-            bus.register("user.create", handler)
+            bus.register(CreateUser, handler)
             return await bus.dispatch(CreateUser("a@b.c"))
         router = edax.EventRouter(timing(record, lambda env: env.name))
 
-        def event_handler(env: edax.EventMessage) -> None:  # sync: the middleware awaits either shape
+        async def event_handler(env: edax.EventMessage) -> None:
             run(env)
 
         router.register("Deposited", event_handler)

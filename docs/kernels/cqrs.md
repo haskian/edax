@@ -7,7 +7,7 @@ claimant does with a record it did not write, and when a record may be forgotten
 
 The command bus itself is host-local ergonomics: handler registration, typed dispatch and the
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
-(SDKs), not here. The command side is eight decisions and one stored shape.
+(SDKs), not here. The command side is nine decisions and one stored shape.
 
 The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
@@ -16,14 +16,18 @@ and the two travel together because the query evaluates the filter.
 | Symbol | Decision it owns |
 |---|---|
 | `canonical_json` | the one byte form of a JSON value, whatever encoder produced it |
-| `payload_hash` | the stable 64-bit hash of bytes, Fowler-Noll-Vo 1a (FNV-1a) |
+| `payload_hash` | the stable 64-bit hash of bytes, Fowler-Noll-Vo 1a (FNV-1a): `edax-core`'s, re-exported |
 | `command_hash` | *which* bytes a command's hash covers: its name and its whole payload |
+| `received_key` | the idempotency key a received command is claimed under |
 | `claim_key` | the ledger key a command guard claims, scoped by the guard |
-| `Record` / `State` | the stored record's wire shape and reading order |
+| `Record` / `State` | the stored record's wire shape and reading order, for the command guard and the event guard alike |
 | `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
 | `settle` | whether a winner caches its failure or releases the claim |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
+| `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
+| `filter` | the read side's match decision ([filter.md](./filter.md)) |
+| `query` | ordering, keyset cursors and paging over the documents a filter selects, and the `document` rule every stored read-model document meets |
 
 ---
 
@@ -104,7 +108,8 @@ safe range back as the double it was minted from.
 
 ## `payload_hash` and `command_hash` — which bytes are covered
 
-`payload_hash` is FNV-1a over bytes, delegated to `edax_core::fnv1a64`. It is the cheap half. The
+`payload_hash` is FNV-1a over bytes. It lives in `edax-core`, the one hash both guards bind a key to,
+and this crate re-exports it. It is the cheap half. The
 half that carries the contract is `command_hash(name, value)`, which fixes the *input rule*. It
 takes the **command name and the whole command value** as one JSON object, `{"name": name,
 "payload": value}`, then canonicalizes and hashes it.
@@ -117,7 +122,7 @@ Three consequences follow from that rule:
 - **The name is hashed beside the payload.** One idempotency key names one request. The same key
   reused for another command name is a mismatch, not a second request, even when the two payloads
   are equal. The golden pair `the_name_and_the_whole_command` and `another_name_is_another_command`
-  differ by the name alone. A command's name is `command_type()` in Rust and the `type` class
+  differ by the name alone. A command's name is `Command::TYPE` in Rust and the `type` class
   attribute in Python. It is not an instance field, so it enters the hash once, as the name.
 - **The idempotency key is not in the payload.** It travels on the message, as `idempotency_key`,
   beside the payload. A command that also carries the key as a field hashes that field like any
@@ -157,6 +162,12 @@ and a `datetime` go through the kernel's own text forms first: `canonical_decima
 `datetime`s for one instant in two offsets. Every SDK must write these types the same way
 ([the host-value table](./filter.md#host-values-every-sdk-writes-alike)).
 
+The command hash reads the host's serialized value as it is. So in Rust the field's type decides
+the text: a decimal field must be `edax_cqrs::Decimal` and an instant field `edax_cqrs::Instant`
+(both re-exported as `edax::Decimal` and `edax::Instant`). Each canonicalizes when it is built,
+through `FromStr` or `Deserialize`, and refuses what the text function refuses. An `f64`, or a
+`String` that holds `9.50`, hashes as another command than Python's `Decimal`.
+
 ### The golden vectors that hold this
 
 | Vector | Pins |
@@ -168,10 +179,20 @@ and a `datetime` go through the kernel's own text forms first: `canonical_decima
 
 `command_hash.json` is asserted *through the SDK layer*, not against the kernel function. The Rust
 suite rebuilds each case as a `PlaceOrder`, dispatches it through the real `idempotent` middleware,
-and compares the hash the ledger received. The Python suite does the same for three command shapes —
+and compares the hash the ledger received. The `Withdraw` rows wrap a decimal and an instant in a
+marker (`{"$decimal": "9.50"}`, `{"$instant": "2024-01-01T01:30:00+01:00"}`). Each suite builds them
+with its host types: `edax::Decimal` and `edax::Instant`, or `Decimal` and an aware `datetime`. Every
+spelling of one value lands on one hash, and an instant without an offset is refused. The Python suite does the same for three command shapes —
 dataclass, `msgspec.Struct`, plain object. Both suites also assert that two conventions the vector
 replaced cannot reach it. One is a hash of the payload alone, without the name. The other is a
 Python command carrying `type` as an instance field.
+
+## `received_key` — which key a received command is claimed under
+
+`received_key(idempotency_key, id)` is the key a guard claims for a received command. It is the
+client's `idempotency_key`, or the command's own `id` when it carries none. A broker redelivers the
+same message, and both copies carry one id, so the id still deduplicates a redelivery. An empty key
+is still a key. `testdata/golden/command_received_key.json` pins it.
 
 ## `claim_key` — which ledger key a command guard claims
 
@@ -189,8 +210,8 @@ composed with the tenant by `tenant_key` (`edax-core`) when the tenancy `mode` i
 
 A mode that requires a tenant (pool, bridge) and a command that names none is a `codec` error, before
 any claim, so a pool never claims a shared row. The event guard's key follows the same rule with
-`edax:evt:` and the event id (`event_idempotency` in [`edax-event`](event.md)); both call
-`edax_core::guard_key`, so the two cannot compose in different orders.
+`edax:evt:` and the event id (`event_claim_key` in [`edax-event`](event.md)). Both call
+`edax_core::guard_key` with their `GuardKind`, so the two cannot compose in different orders.
 `testdata/golden/claim_key.json` pins the key, with a row per mode.
 
 The scope is required in both SDKs. A default would put two services on one ledger under one scope,
@@ -222,13 +243,14 @@ that predates the field ignores it and still reads the failure, so a shared ledg
 through a rolling deploy. A replay keeps the original code in every SDK. `cached_failure(code,
 message)` is the error a losing claimant raises: terminal, with the original failure's wire form as
 its message (`"cached_failure: codec: bad payload"`). An empty `error` is still a failure; only
-`null` means "not failed". `encode_record_fields` builds the record from flat fields for a binding
-and refuses a code the taxonomy does not know.
+`null` means "not failed". The ABI builds the record from the flat fields a binding holds, through
+`State::from_wire`, and refuses a code the taxonomy does not know.
 
 **Reading order: `pending` wins, then `error`, then `result`**. The precedence is written down in
 exactly one place, `State::from_wire`, so a foreign writer that over-specifies a record cannot make
 two readers disagree. `State` is an enum rather than three optional fields precisely so a decoded
-record cannot be both pending and failed.
+record cannot be both pending and failed. `State::kind()` names it as a `StateKind` (`pending`,
+`failed`, `done`), and `StateKind::ALL` is the list a binding checks the states it branches on against.
 
 On the way in every field but the hash is optional — an older or foreign writer may omit `pending`
 or `result`. Unknown fields are ignored. A record that is not a JSON object is rejected, because the
@@ -296,9 +318,23 @@ stateDiagram-v2
 ```
 
 `encode_record` is the only encoding a ledger may persist; `decode_prior` is how a store reads the
-record that holds a key, and `decode_record` is the strict reader under it. Encoding a result JSON
+record that holds a key, and `decode_record` is the strict reader under it. Both refuse a record holding
+an integer wider than 64 bits as `codec`. A reader without arbitrary precision would take it as the
+nearest double, while a typed reader would refuse it. One record would then replay two ways. A guard
+whose result holds one caches that `codec` failure, and a foreign record that holds one replays as a
+cached `codec` failure. Encoding a result JSON
 cannot express fails loudly rather than silently dropping the record, because
 the claim is already taken and a dropped record would strand the key.
+
+Two rules hold for every store's `complete`, so the memory store and the Redis ledger cannot word
+them apart:
+
+- `check_settled(record)` refuses a record that reads as pending, as `bad_handle`. Its bytes match
+  the claim it would replace, so the key would stay claimed with no run behind it. Bytes that do not
+  decode pass: a reader replays them as a cached failure. `idempotency_record.json` carries the
+  verdict for every row.
+- `lapsed_claim(key)` is the `store` error a `complete` gets when the key no longer holds its
+  claim: it lapsed and was taken over, or the key settled with another record.
 
 ---
 
@@ -312,7 +348,9 @@ that a record stored under `0` mismatches any other command and replays against 
 checks the hash first, so a mismatched payload is rejected even while the winner is still in
 progress. Only then does the record's state decide. The four variants are the whole classification.
 `Outcome` is not `#[non_exhaustive]`, so a fifth variant is a wire-format change that breaks every
-SDK at compile time instead of falling into a catch-all.
+SDK at compile time instead of falling into a catch-all. A binding reads the verdict by name:
+`Outcome::kind()` is an `OutcomeKind`, and the Python SDK checks its `ClaimVerdict` against
+`OutcomeKind::ALL` at import, so a fifth variant fails the import there.
 
 ```mermaid
 flowchart TB
@@ -337,18 +375,27 @@ flowchart TB
 | `failed` | matches | `failed` | `CachedFailure` with the original wire form (`cached_failure`) | terminal |
 | `done` | matches | `succeeded` | the cached result is returned | — |
 
-The mapping is one `match` in Rust and one `if` chain in Python. Neither re-derives the verdict;
-both call the kernel and translate. `testdata/golden/idempotency_record.json` pins every state and
+The error is the kernel's too: `replay(prior, current, key)` answers the cached result, or the error a
+loser fails with, so neither SDK builds one. Rust returns it as it is. Python reads it through
+`_edax.idempotency_replay`, which also names the `outcome` its observer reports, and raises it with
+`errors.from_wire`. `testdata/golden/idempotency_record.json` pins every state and
 verdict. A binding must read with
 `decode_prior` to the same fields, re-emit the same bytes, reach the same verdict and raise the same
 replay.
 
-The winner's half of the table is `settle(code) -> Cache(code) | Release`. After the handler failed,
-a won claim caches the failure under its code when the kernel's verdict for that code is terminal.
-It releases the claim for anything else: a transient code, or no code (a host's own error, a panic,
-a cancellation). Both guards ask it (`edax_cqrs::settle`; Python `errors.code_of` through
-`idempotency_settle`), so two SDKs guarding one ledger cache the same failures.
-`testdata/golden/idempotency_settle.json` pins one row per code and the uncoded failure.
+The winner's half of the table is `settle_failure(payload_hash, code, message) -> Cache(record) |
+Release`. After the handler failed, a won claim completes with the failed record the kernel builds
+when the verdict for the code is terminal. It releases the claim for anything else: a transient code,
+a fatal one, or no code (a host's own error, a panic, a cancellation). A fatal code (`bad_handle`) means
+the wiring failed, so the message must run again once the host fixes it. Both guards ask it with the code the
+failure carries: Rust `edax_cqrs::settle_failure(hash, code_of(e), ..)`, Python
+`_edax.idempotency_settle_failure(hash, str(e), errors.code_of(e))`. So two SDKs guarding one ledger
+cache the same failures, as the same record. `testdata/golden/idempotency_settle.json` pins one row
+per code, the uncoded failure and an empty message.
+
+`testdata/golden/idempotency_guard.json` pins the whole claim, run and settle as scenarios: what one
+dispatch returns or raises, whether the handler ran, and what the key holds after it. Each SDK replays
+every row through its own guard over its memory ledger.
 
 ---
 
@@ -388,6 +435,7 @@ A caller therefore never restates the sort to build one.
 | total order | number < string < bool < array < object < null; numbers by value (exact for two integers), strings by code point, bools `false < true` |
 | decimal key | a `SortKey` with `"collation": "decimal"` orders decimal text by exact value; other strings sort after it, by code point; the collation is part of the cursor's fingerprint |
 | tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends on that key with no collation (`"7"` and `"07"` tie under the decimal one); `TIEBREAK_PATH` names it |
+| document | `document(id, value)` and `document_json(id, json)` refuse a stored document that is not a JSON object as `codec`, since the query reads each row's key from its `id` field; the JSON form also refuses an integer wider than 64 bits. `projection_document.json` pins it |
 | cursor | `base64url_nopad(canonical_json({"s": <fingerprint>, "v": [<sort-key values>]}))`; the fingerprint is the `payload_hash` of the canonical effective sort, as 16 hex digits |
 | replay | `decode_cursor` refuses a cursor whose fingerprint is not the query's sort, a forged arity, and any cursor on an unsorted query, each as `codec` |
 | mint | `encode_cursor` refuses an empty sort and a row whose `id` is missing or `null`, so tied rows can never be dropped silently |
@@ -428,7 +476,7 @@ Every window, both modes and both guards are in [`../sdk/idempotency.md`](../sdk
   window the kernel deliberately does not close.
 - [`./golden-vectors.md`](./golden-vectors.md) — how `command_hash.json` and
   `idempotency_record.json` are generated and asserted.
-- [`./core.md`](./core.md) — `fnv1a64` behind `payload_hash`, backoff, and the error taxonomy
+- [`./core.md`](./core.md) — `payload_hash`, backoff, and the error taxonomy
   `PayloadMismatch` / `InProgress` / `CachedFailure` come from.
 - [`../sdk/commands.md`](../sdk/commands.md) — the `CommandBus` and middleware chain the kernel
   deliberately leaves to the SDKs.

@@ -16,13 +16,15 @@ edax-event.workspace = true
 edax-memory.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rmp-serde = { version = "1", optional = true }
 
 [features]
-default = ["msgpack"]
-msgpack = ["dep:rmp-serde"]
+# `edax::testkit`: the fixtures and the store contract clauses, for an adopter's own store tests.
+testkit = ["edax-event/testkit"]
 
 [dev-dependencies]
+# Itself with `testkit`, so the integration suites run the contract clauses an adopter runs. The unit
+# suites' fixtures start from the kernel's base event, which the feature brings in too.
+edax = { workspace = true, features = ["testkit"] }
 edax-golden.workspace = true
 proptest = "1"
 

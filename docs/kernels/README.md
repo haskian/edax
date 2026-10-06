@@ -22,11 +22,11 @@ flowchart LR
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        CORE["edax-core<br/>hash · backoff · clock · guid<br/>error · lock · token"]
-        EV["edax-event<br/>messages · codec · lineage<br/>ordering key · partition · sequence<br/>upcast · dedup · staleness · retry · saga"]
-        CQ["edax-cqrs<br/>canonical_json · payload_hash · command_hash<br/>claim_key · Record · outcome · forget<br/>filter · query"]
-        KAF["edax-kafka<br/>record · headers · media type<br/>offset watermark"]
-        RED["edax-redis<br/>ledger value · owner token<br/>fence scripts · reply verdict"]
+        CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · error<br/>Rust-only: lock · token"]
+        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga"]
+        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · Decimal · Instant<br/>filter · query"]
+        KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
+        RED["edax-redis<br/>ledger · scripts"]
     end
 
     APP -->|"calls a seam"| RS
@@ -49,6 +49,10 @@ flowchart LR
     RED -->|"reuses the idempotency record"| CQ
     RED --> CORE
 ```
+
+Each node lists its crate's modules. The table at the top of each kernel's page ([core](./core.md),
+[event](./event.md), [cqrs](./cqrs.md), [kafka](./kafka.md), [redis](./redis.md)) is the one complete
+description of what each module owns.
 
 `edax-kafka` and `edax-redis` are the two per-technology kernels. Each one owns the bytes, names and
 state decisions a backend forces two SDKs to share, and each SDK ships only the client calls around
@@ -78,13 +82,23 @@ responsibilities"). That forbids:
 The binding crate does only type conversion, error-to-exception mapping, and idiomatic config and
 builders. Every `edax-abi` function is synchronous, so it has no async runtime to integrate.
 
-Two places in the code follow the rule:
+Three places in the code follow the rule:
 
 - The Python exception classes read their terminal/transient verdict from the kernel at class
-  definition time and never state it themselves: `cls.terminal =
-  _edax.error_code_is_terminal(code)`. A code the kernel does not know fails the import.
+  definition time and never state it themselves: `cls.terminal = _edax.error_verdict(code)`. A code
+  the kernel does not know fails the import.
 - The Rust SDK has no error type of its own. `edax::Error` is a re-export of `edax_core::Error`, so
   the verdict comes off the kernel's `ErrorCode`.
+- Every closed set of names a decision crosses as, the kernel owns: a unit enum with `as_str` and
+  `ALL`. The sets are `Tenancy`, `StateKind`, `OutcomeKind`, `SagaWriteKind`, `SagaAdmitKind`,
+  `Failure`, `VerdictKind`, `RowFailedKind` and `Holder`. `edax_core::closed_names!` writes each enum,
+  its `ALL` and its `as_str` from one row list. So no variant can miss the list, and no name can
+  repeat. The ABI hands over each list a binding branches on: `tenancy_modes`, `idempotency_states`,
+  `idempotency_outcomes`, `saga_write_actions`, `saga_admit_actions`, `retry_failures`,
+  `retry_actions` and `drain_actions`. `Holder` crosses only in `idempotency_fence.json`. Python spells each as a `Literal`, so a type checker proves every branch, and
+  checks it against the kernel's list at import. A name the kernel adds fails the import instead of
+  landing in a neighbouring branch. The names cross as strings, not as alef enums, because alef binds
+  a unit enum as a plain class that no type checker can prove a `match` over.
 
 Three questions decide where a new decision goes.
 
@@ -116,7 +130,7 @@ assert it, and a byte of drift fails the build.
 | How long until retry `n`? | `edax-core` | `backoff.json` | Workers retry on different rhythms; a shared broker sees a herd where the schedule was meant to spread it |
 | Is this failure terminal or transient? | `edax-core` | `error_taxonomy.json` | One SDK caches a failure under the idempotency key that the other would release — a durable replay inconsistency in a shared ledger |
 | Which local worker runs this ordering key? | `edax-event` | `partition.json` | Two dispatchers in one process run one aggregate on two workers, so its events race |
-| Is a failed message retried, after how long, or dead-lettered? | `edax-event` | `retries.json`, `retry_failure.json` | One SDK retries a message the other dead-letters, so the same failure gets a different number of attempts |
+| Is a failed message retried, after how long, dead-lettered, or does the consumer stop? | `edax-event` | `retries.json`, `retry_failure.json` | One SDK retries a message the other dead-letters, so the same failure gets a different number of attempts; or one moves a whole topic into the dead-letter queue over a wiring fault the other stops on |
 | Does a saga step fold this event, and what does it write? | `edax-event` | `saga.json` | A redelivered event folds twice in one SDK, or two SDKs mint different ids for the same outbox command |
 | What bytes does this event or command serialize to? | `edax-event` | `envelopes.json` | A producer writes bytes a consumer in another language cannot decode, or decodes into a different message |
 | What does a reader accept, ignore and refuse in a message? | `edax-event` | `envelope_decode.json` | A newer producer's added field makes every message poison for an older consumer, in one format only |
@@ -134,8 +148,9 @@ assert it, and a byte of drift fails the build.
 | What does the stored record look like, and what verdict does a losing claimant read from it? | `edax-cqrs` | `idempotency_record.json` | A record written by one SDK is unreadable or read with the wrong outcome by another sharing the ledger; a reused key runs twice in one service and replays in another |
 | What key and header does a published event or command become on a topic? | `edax-kafka` | `kafka_record.json` | A consumer in another language cannot route the value to its serializer |
 | Which broker partition does a record key land on? | `edax-kafka` | `kafka_partition.json` | A Python and a Rust (or Java) producer put one aggregate on two partitions, so its order breaks silently |
-| Which format does a fetched record name, and what if nobody knows it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong message reaches a handler |
+| Which serializer does a fetched record name, and what if nobody registered it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong message reaches a handler |
 | Which offset may a consumer commit, and which token settles a delivery? | `edax-kafka` | `kafka_offsets.json` | A commit skips an offset still in flight, so a restart never redelivers it |
+| Is a broker error one record's, the client's, or passing? | `edax-kafka` | `kafka_error.json` | One SDK dead-letters a record the broker refused while the other retries it forever, or one drains the outbox into the dead-letter queue over an ACL mistake |
 | What bytes sit under an idempotency key in Redis? | `edax-redis` | `redis_value.json` | A ledger written by one SDK is unreadable by another sharing it, so both run the same command |
 | Which Lua does a fenced write or a forget run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
 
@@ -152,7 +167,7 @@ Every kernel function is a pure function of its arguments, with three deliberate
 |---|---|---|---|
 | `guid` | `crates/edax-core/src/guid.rs` | Reads the clock and a random source to generate a universally unique identifier (UUID) v7 | Structural only: 8-4-4-4-12 lowercase hyphenated, version 7, RFC4122 variant, time-ordered prefix |
 | `current_timestamp` | `crates/edax-core/src/clock.rs` | Reads the wall clock, then bumps a process-local high-water mark | Strictly greater than every prior return in this process, even across a Network Time Protocol (NTP) step backwards |
-| `new_owner` | `crates/edax-redis/src/ledger.rs` | Mints a fresh UUID v7 fence token from the clock and a random source | Structural only: 32 lowercase hexadecimal characters, version 7, and distinct per call |
+| `new_claim` | `crates/edax-redis/src/ledger.rs` | Mints a fresh UUID v7 owner token for the claim value from the clock and a random source | Structural only: the token is 32 lowercase hexadecimal characters, version 7, and distinct per call |
 
 None of the three carries a golden vector, and each docstring says so. They still belong in a kernel
 because the shape of what they produce is a cross-language contract. A token of the wrong width
@@ -200,9 +215,9 @@ waiting.
   `sync`, `token`.
 - [filter.md](./filter.md) — the filter module of `edax-cqrs`, on its own page.
 - [event.md](./event.md) — `edax-event`: the messages, codec, lineage, ordering key, partition,
-  upcast, staleness, dedup, sequence, retry, saga.
-- [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, payload and command hashes, the claim key, the
-  idempotency decision, record and forget, plus the query side — filter, sort and cursors.
+  upcast, staleness, the event guard's key, sequence, retry, saga.
+- [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, the command hash, the received and claim keys,
+  the idempotency decision, record and forget, plus the query side — filter, sort and cursors.
 - [kafka.md](./kafka.md) — `edax-kafka`: the record key and header per kind, the media types, the poison id,
   and the token-settled offset watermark.
 - [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the five fenced

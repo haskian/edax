@@ -6,69 +6,37 @@ from . import (
     causation,
     codec,
     command,
+    delivery,
     dispatcher,
     errors,
+    idempotency,
+    kernel,
+    message,
     observe,
+    outbox,
     pacing,
     projection,
     query,
+    repository,
     router,
     saga,
+    serializer,
     store,
     tenancy,
+    unit_of_work,
     upcast,
 )
 from . import (
     filter as filter,
 )
-from ._edax import (
-    # The watermark after an event applies: the higher sequence, so an unsequenced event never
-    # erases it. Pair it with `is_stale`. The compiled binding carries no docstring of its own.
-    advance,
-    backoff_millis,
-    # The exact text `payload_hash_json` hashes, for a host that checks bytes and not only hashes.
-    canonical_json,
-    current_timestamp,
-    guid,
-    # Ordering, not dedup: `is_stale(5, 5)` is False, because an ordinal cannot tell a redelivery
-    # from a re-send. `idempotent_by_id` below is the dedup. See `docs/kernels/event.md`.
-    is_stale,
-    partition,
-    payload_hash,
-    payload_hash_json,
-    upcast_plan,
-    upcast_target,
-)
-from .aggregate import (
-    Aggregate,
-    CommandMessage,
-    Event,
-    EventDraft,
-    EventMessage,
-    KernelSerializer,
-    Lineage,
-    Serializer,
-    Version,
-)
+from .aggregate import Aggregate, AggregateCodec, CommandCodec, EventCodec, PayloadCodec, Version
 
 # The wrappers, not the raw kernel functions: one public name per causation rule.
 from .causation import caused_by, current_lineage, originate, propagate, use_lineage
 from .codec import json_codec, msgpack_codec
-from .command import (
-    Claimed,
-    CommandBus,
-    IdempotencyStore,
-    Record,
-    Won,
-    claim_key,
-    command_message,
-    current_command,
-    forget,
-    idempotent,
-    received_key,
-    retry,
-)
-from .dispatcher import DeadLetterFn, Delivery, DispatcherStats, KeyOrderedDispatcher
+from .command import CommandBus, command_message, current_command, idempotent, received_key, retry
+from .delivery import DeadLetter, DeadLetterSink, Delivery, Undecodable
+from .dispatcher import DispatcherStats, DispatcherStopped, KeyOrderedDispatcher
 from .errors import (
     AlreadyRegistered,
     BadHandle,
@@ -81,32 +49,44 @@ from .errors import (
     PayloadMismatch,
     Rejected,
     StoreError,
+    is_fatal,
     is_terminal,
 )
-from .observe import Observer, error_type, timing
-from .pacing import DEFAULT_BACKOFF, Backoff, Pacing
-from .projection import Entity, ProjectionStore
-from .query import Page
-from .router import EventRouter, idempotent_by_id
-from .saga import SAGA_COMMAND_FAILED, Completed, Saga, SagaCommandFailed, SagaInstance, SagaRunner, SagaStore
-from .store import (
-    AggregateCodec,
-    CommandOutbox,
-    DrainStats,
-    EventCodec,
-    EventStore,
-    Outbox,
-    Relay,
-    Repository,
-    Snapshot,
-    Transactor,
-    Tx,
-    check_sequence_batch,
-    current_tx,
-    pump,
-    transaction,
+from .idempotency import Claimed, IdempotencyStore, Record, Won, claim_key, forget
+from .kernel import (
+    advance,
+    canonical_json,
+    current_timestamp,
+    guid,
+    is_stale,
+    partition,
+    payload_hash,
+    payload_hash_json,
 )
+from .message import CommandMessage, EventDraft, EventMessage, Lineage, Payload
+from .observe import Observer, error_type, timing
+from .outbox import CommandOutbox, DrainStats, Outbox, Relay, pump
+from .pacing import DEFAULT_BACKOFF, Backoff, Pacing
+from .projection import Entity, ProjectionQuery, ProjectionStore
+from .query import Page
+from .repository import Repository
+from .router import EventRouter, event_claim_key, forget_event, idempotent_by_id
+from .saga import (
+    SAGA_COMMAND_FAILED,
+    Completed,
+    CompletedInstance,
+    RunningInstance,
+    Saga,
+    SagaCommandFailed,
+    SagaInstance,
+    SagaOutbox,
+    SagaRunner,
+    SagaStore,
+)
+from .serializer import KernelSerializer, Serializer
+from .store import EventStore, Snapshot, check_sequence_batch
 from .tenancy import TENANT_MAX, Tenancy, check_tenant, tenant_key
+from .unit_of_work import Transactor, Tx, current_tx, transaction
 from .upcast import Upcaster
 
 __all__ = [
@@ -117,20 +97,27 @@ __all__ = [
     "causation",
     "codec",
     "command",
+    "delivery",
     "dispatcher",
     "errors",
+    "idempotency",
+    "kernel",
+    "message",
     "observe",
+    "outbox",
     "pacing",
     "projection",
     "query",
+    "repository",
     "router",
     "saga",
+    "serializer",
     "store",
     "tenancy",
+    "unit_of_work",
     "upcast",
-    # kernel functions
+    # kernel functions (edax.kernel wrappers: a failure raises its typed edax error)
     "advance",
-    "backoff_millis",
     "canonical_json",
     "current_timestamp",
     "guid",
@@ -138,8 +125,6 @@ __all__ = [
     "partition",
     "payload_hash",
     "payload_hash_json",
-    "upcast_plan",
-    "upcast_target",
     # causation (edax.causation wrappers over the kernel rules, and the ambient lineage)
     "Lineage",
     "caused_by",
@@ -150,10 +135,12 @@ __all__ = [
     # models and serialization
     "Aggregate",
     "CommandMessage",
-    "Event",
     "EventDraft",
     "EventMessage",
     "KernelSerializer",
+    "CommandCodec",
+    "Payload",
+    "PayloadCodec",
     "Serializer",
     "Version",
     "json_codec",
@@ -171,6 +158,7 @@ __all__ = [
     "PayloadMismatch",
     "Rejected",
     "StoreError",
+    "is_fatal",
     "is_terminal",
     # write side
     "Claimed",
@@ -184,6 +172,8 @@ __all__ = [
     "current_command",
     "forget",
     "idempotent",
+    "event_claim_key",
+    "forget_event",
     "idempotent_by_id",
     "retry",
     # tenancy: the mode a deployment keys by, and the kernel's key rule
@@ -214,12 +204,16 @@ __all__ = [
     # read side
     "Entity",
     "Page",
+    "ProjectionQuery",
     "ProjectionStore",
     "EventRouter",
-    "DeadLetterFn",
+    "DeadLetter",
+    "DeadLetterSink",
     "Delivery",
     "DispatcherStats",
+    "DispatcherStopped",
     "KeyOrderedDispatcher",
+    "Undecodable",
     # observability (the seam, the timing middleware, the `error.type` rule)
     "Observer",
     "error_type",
@@ -227,9 +221,12 @@ __all__ = [
     # sagas
     "SAGA_COMMAND_FAILED",
     "Completed",
+    "CompletedInstance",
+    "RunningInstance",
     "Saga",
     "SagaCommandFailed",
     "SagaInstance",
+    "SagaOutbox",
     "SagaRunner",
     "SagaStore",
 ]

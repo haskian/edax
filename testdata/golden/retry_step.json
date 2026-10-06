@@ -1,0 +1,72 @@
+[
+  {
+    "attempts": 3,
+    "code": "store",
+    "failed": 0,
+    "name": "the_first_transient_failure_waits_step_0",
+    "want": 0
+  },
+  {
+    "attempts": 3,
+    "code": "store",
+    "failed": 1,
+    "name": "a_later_failure_waits_its_count",
+    "want": 1
+  },
+  {
+    "attempts": 3,
+    "code": "store",
+    "failed": 2,
+    "name": "the_last_attempt_stops",
+    "want": null
+  },
+  {
+    "attempts": 3,
+    "code": null,
+    "failed": 0,
+    "name": "an_unclassified_failure_is_transient",
+    "want": 0
+  },
+  {
+    "attempts": 3,
+    "code": "codec",
+    "failed": 0,
+    "name": "a_terminal_failure_stops_at_once",
+    "want": null
+  },
+  {
+    "attempts": 3,
+    "code": "bad_handle",
+    "failed": 0,
+    "name": "a_fatal_failure_stops_at_once",
+    "want": null
+  },
+  {
+    "attempts": 2,
+    "code": "in_progress",
+    "failed": 1,
+    "name": "contention_spends_an_attempt",
+    "want": null
+  },
+  {
+    "attempts": 2,
+    "code": "in_progress",
+    "failed": 0,
+    "name": "contention_below_the_ceiling_retries",
+    "want": 0
+  },
+  {
+    "attempts": 1,
+    "code": "store",
+    "failed": 0,
+    "name": "one_attempt_never_retries",
+    "want": null
+  },
+  {
+    "attempts": 0,
+    "code": "store",
+    "error": "bad_handle: retry needs at least one attempt, got 0",
+    "failed": 0,
+    "name": "zero_attempts_is_no_policy"
+  }
+]

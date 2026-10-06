@@ -1,0 +1,128 @@
+[
+  {
+    "error": "codec: kafka broker error 10: message_too_large from the broker",
+    "error_code": 10,
+    "message": "message_too_large from the broker",
+    "name": "message_too_large"
+  },
+  {
+    "error": "codec: kafka broker error 18: record_list_too_large from the broker",
+    "error_code": 18,
+    "message": "record_list_too_large from the broker",
+    "name": "record_list_too_large"
+  },
+  {
+    "error": "codec: kafka broker error 87: invalid_record from the broker",
+    "error_code": 87,
+    "message": "invalid_record from the broker",
+    "name": "invalid_record"
+  },
+  {
+    "error": "bad_handle: kafka broker error 17: invalid_topic_exception from the broker",
+    "error_code": 17,
+    "message": "invalid_topic_exception from the broker",
+    "name": "invalid_topic_exception"
+  },
+  {
+    "error": "bad_handle: kafka broker error 21: invalid_required_acks from the broker",
+    "error_code": 21,
+    "message": "invalid_required_acks from the broker",
+    "name": "invalid_required_acks"
+  },
+  {
+    "error": "bad_handle: kafka broker error 29: topic_authorization_failed from the broker",
+    "error_code": 29,
+    "message": "topic_authorization_failed from the broker",
+    "name": "topic_authorization_failed"
+  },
+  {
+    "error": "bad_handle: kafka broker error 30: group_authorization_failed from the broker",
+    "error_code": 30,
+    "message": "group_authorization_failed from the broker",
+    "name": "group_authorization_failed"
+  },
+  {
+    "error": "bad_handle: kafka broker error 31: cluster_authorization_failed from the broker",
+    "error_code": 31,
+    "message": "cluster_authorization_failed from the broker",
+    "name": "cluster_authorization_failed"
+  },
+  {
+    "error": "bad_handle: kafka broker error 32: invalid_timestamp from the broker",
+    "error_code": 32,
+    "message": "invalid_timestamp from the broker",
+    "name": "invalid_timestamp"
+  },
+  {
+    "error": "bad_handle: kafka broker error 33: unsupported_sasl_mechanism from the broker",
+    "error_code": 33,
+    "message": "unsupported_sasl_mechanism from the broker",
+    "name": "unsupported_sasl_mechanism"
+  },
+  {
+    "error": "bad_handle: kafka broker error 34: illegal_sasl_state from the broker",
+    "error_code": 34,
+    "message": "illegal_sasl_state from the broker",
+    "name": "illegal_sasl_state"
+  },
+  {
+    "error": "bad_handle: kafka broker error 35: unsupported_version from the broker",
+    "error_code": 35,
+    "message": "unsupported_version from the broker",
+    "name": "unsupported_version"
+  },
+  {
+    "error": "bad_handle: kafka broker error 43: unsupported_for_message_format from the broker",
+    "error_code": 43,
+    "message": "unsupported_for_message_format from the broker",
+    "name": "unsupported_for_message_format"
+  },
+  {
+    "error": "bad_handle: kafka broker error 47: invalid_producer_epoch from the broker",
+    "error_code": 47,
+    "message": "invalid_producer_epoch from the broker",
+    "name": "invalid_producer_epoch"
+  },
+  {
+    "error": "bad_handle: kafka broker error 53: transactional_id_authorization_failed from the broker",
+    "error_code": 53,
+    "message": "transactional_id_authorization_failed from the broker",
+    "name": "transactional_id_authorization_failed"
+  },
+  {
+    "error": "bad_handle: kafka broker error 58: sasl_authentication_failed from the broker",
+    "error_code": 58,
+    "message": "sasl_authentication_failed from the broker",
+    "name": "sasl_authentication_failed"
+  },
+  {
+    "error": "store: kafka broker error 2: corrupt_message from the broker",
+    "error_code": 2,
+    "message": "corrupt_message from the broker",
+    "name": "corrupt_message"
+  },
+  {
+    "error": "store: kafka broker error 3: unknown_topic_or_partition from the broker",
+    "error_code": 3,
+    "message": "unknown_topic_or_partition from the broker",
+    "name": "unknown_topic_or_partition"
+  },
+  {
+    "error": "store: kafka broker error 6: not_leader_or_follower from the broker",
+    "error_code": 6,
+    "message": "not_leader_or_follower from the broker",
+    "name": "not_leader_or_follower"
+  },
+  {
+    "error": "store: kafka broker error -1: unknown_server_error from the broker",
+    "error_code": -1,
+    "message": "unknown_server_error from the broker",
+    "name": "unknown_server_error"
+  },
+  {
+    "error": "store: kafka broker error 999: an_unknown_code from the broker",
+    "error_code": 999,
+    "message": "an_unknown_code from the broker",
+    "name": "an_unknown_code"
+  }
+]

@@ -1,7 +1,8 @@
 # The Kafka kernel — `edax-kafka`
 
 The Kafka protocol kernel: the record a published message becomes, the route a fetched record
-takes, the record a dead-letter sink publishes, and the offset watermark a consumer commits.
+takes, the record a dead-letter sink publishes, and the offset watermark a consumer commits. It also
+says what a shell's client settings and broker errors mean.
 
 `edax-kafka` is pure and synchronous. It links no Kafka client library. Every software
 development kit (SDK) ships its own input and output (I/O) shell over it, `aiokafka` in Python and
@@ -10,28 +11,22 @@ consumer commits the same offsets whatever language runs it.
 
 | Module | Owns | Golden vector |
 |---|---|---|
-| `record` | the key rule, the `content-type` header, the media types, the route by it, the poison id, the dead-letter record | `kafka_record.json`, `kafka_decode.json`, `kafka_route.json`, `kafka_dead_letter.json` |
+| `record` | the key rule, the `content-type` header, the media types, the route by it, the poison id, the dead-letter record and its stub | `kafka_record.json`, `kafka_decode.json`, `kafka_route.json`, `kafka_dead_letter.json` |
+| `client` | the durations a shell refuses at build, and the verdict on a broker's protocol error code | `kafka_config.json`, `kafka_error.json` |
 | `partition` | broker placement: the partition a keyed record lands on | `kafka_partition.json` |
 | `offsets` | the per-partition commit watermark, settled by token, the rewind a nack makes, and what is due | `kafka_offsets.json` |
 
 ## `record` — what a published message becomes
 
 A record has three parts: a key, value bytes, and headers. The kernel owns the key and the headers.
-Who owns the value depends on which of the two layers you call. Each layer has one set of functions
-per kind of message.
+The serializer owns the value: the kernel codec (`Format::encode`, behind `KernelSerializer`) or a
+host's own. `record(msg, tenancy, key, value, content_type)` builds the record around the value bytes
+and the media type that names them, one generic function for both kinds of message. `record_key` is
+its key rule alone.
 
-| Layer | Functions | Value bytes | Used by |
-|---|---|---|---|
-| primitive | `record`, `record_key`, `content_type` | the caller's, with the caller's media type | an SDK whose host supplied a serializer |
-| composed | `encode_record` / `decode_record`, generic over the kind | the kernel codec's, through `Format::encode` | a Rust host, and the golden vectors |
-
-Both build functions take the deployment's `Tenancy` and are fallible: a mode that requires a tenant
-and a message that names none is a `codec` error. The composed encode also refuses an `extensions`
-key or a tenant outside the kernel's rules. A producer then never publishes a record every consumer
-would refuse.
-
-Both layers write the same key and the same header, so a host serializer changes the bytes and
-never the contract around them.
+`record` takes the deployment's `Tenancy` and is fallible: a mode that requires a tenant and a message
+that names none is a `codec` error. A producer then never publishes a record every consumer would
+refuse. A host serializer changes the bytes and never the contract around them.
 
 ### The key
 
@@ -110,10 +105,11 @@ so a record can never decode as the wrong codec. The 0.1 media type
 `route(headers, registered, default_kind)` answers `Default`, `Headerless`, `Registered(index)` or
 `Unknown(media_type)` against the media types the shell registered, in its order. `default_kind` is
 the kind the shell's default serializer reads. Every shell calls it, so two SDKs send one record to
-the same serializer, or both to the dead-letter sink. `decode_record` is `route`
-over the formats this kernel mints. A media type names a format
-and a kind, so a shell registers one serializer per kind it reads. The ABI flattens it to
-`KafkaRoute { registered, unknown, headerless }`; none set means the default.
+the same serializer, or both to the dead-letter sink. It is the kernel's only consume-side rule: the
+serializer the route picks decodes the bytes, and a decode that fails is poison too. A media type
+names a format and a kind, so a shell registers one serializer per kind it reads, and one registry
+may hold both kinds. The ABI flattens it to `KafkaRoute { registered, unknown, headerless }`; none set
+means the default.
 
 ```mermaid
 flowchart TB
@@ -136,17 +132,18 @@ Four rules decide the route.
 - **No readable content type falls back to the default, as an event.** A header-less record still
   decodes, from an older producer or from a client that drops headers. Every such record
   is an event. A command always carries the header. So under a command default the route is
-  `Headerless`, which the shell treats as poison, and `decode_record` of a command refuses the record
-  rather than guess.
-- **The kind must match.** A command media type handed to the event decoder is a `codec` error
-  before the bytes are read, and the reverse too. The refusal names the kind, not a missing field.
+  `Headerless`, which the shell treats as poison rather than guess.
+- **The registry decides the kind.** A consumer of events registers event media types only, so a
+  command record on its topic is `Unknown` and poison, and the reverse too.
 
 A registry that names one media type twice is refused (`check_media_types`, an `already_registered`
 error), because it would decode one topic two ways. A shell checks its registry once, when it is
 built.
 
-`testdata/golden/kafka_route.json` pins the route against a registry and a default kind, and
-`testdata/golden/kafka_decode.json` pins the composed decode for both kinds.
+`testdata/golden/kafka_route.json` pins the route against a registry and a default kind.
+`testdata/golden/kafka_decode.json` pins what a consumer makes of a fetched record. Each row names the
+registry a consumer is built with, kernel serializers only and the default first. It then names the
+message the picked serializer decodes, or why the record is poison.
 
 ### `poison_id` — naming a message that did not decode
 
@@ -158,13 +155,65 @@ share one id and a dead-letter queue keyed on it would keep the first and reject
 
 ### `dead_letter_record` — what a dead-letter sink publishes
 
-`dead_letter_record(record, topic, partition, offset, error)` keeps the fetched record's key, value
-and headers verbatim, and appends four headers: `edax-dlq-topic`, `edax-dlq-partition`,
-`edax-dlq-offset` (both decimal) and `edax-dlq-error`. A republish to the source topic after the fix
+`dead_letter_record(record, topic, partition, offset, code, message)` keeps the fetched record's key,
+value and headers verbatim, and appends four headers: `edax-dlq-topic`, `edax-dlq-partition`,
+`edax-dlq-offset` (both decimal) and `edax-dlq-error`. The kernel renders `edax-dlq-error` from the
+failure's taxonomy `code` and its `message`. A coded failure is its wire form, `"<code>: <message>"`. A
+failure with no code is `"unclassified: <message>"`. So every SDK on one dead-letter topic writes one
+vocabulary, and a republish job groups by the prefix. A republish to the source topic after the fix
 then routes and decodes as the original did: the content type, a middleware's key id and a
 `traceparent` all survive. `dead_letter_source(headers)` is the reader. It takes the last set, the
 most recent dead-lettering, and answers nothing when a coordinate is missing or unreadable.
-`testdata/golden/kafka_dead_letter.json` pins both.
+
+A dead-letter topic may refuse the record itself: the original plus four headers can pass the
+broker's size limit. `dead_letter_stub(dead)` drops the value, keeps the key and every header, and
+appends `edax-dlq-dropped` with the count of dropped bytes. A sink sends the stub once the broker
+refused the full record as a `codec` error. The coordinates are the pointer to the value, which the
+source topic holds until its retention passes. Without the stub, the sink would raise on every try and
+the partition would rewind to the record forever. `testdata/golden/kafka_dead_letter.json` pins the
+record, the stub and the reader.
+
+## `client` — settings and broker errors
+
+`check_config(publish_timeout_ms, commit_interval_ms, commit_timeout_ms, drain_timeout_ms)` refuses a
+duration below one millisecond as a `bad_handle` error naming it. `None` is a setting the call site
+does not take. A shell calls it when it is built, so a misconfigured consumer fails at startup:
+
+| Setting | At zero or below |
+|---|---|
+| `publish_timeout_ms` | every send times out |
+| `commit_interval_ms` | the commit loop sleeps for nothing and spins |
+| `commit_timeout_ms` | no commit ever lands |
+| `drain_timeout_ms` | a revoke hands a running key to the new owner at once |
+
+`check_consumer(auto_commit, has_group)` guards the consumer client. It refuses one that loses or
+never commits offsets, as a `bad_handle` error. An auto-committing client commits its fetch position, which runs
+ahead of the deliveries a dispatcher still holds, so a restart skips them. A client with no group has
+nowhere to commit. The shell reads both facts from its client library, and passes the safe value for a
+fact it cannot read. `check_dead_sink(has_dead_sink)` refuses a consumer run with no dead-letter sink, as a
+`bad_handle` error. A nack rewinds the partition, so a message that fails for good would come back forever.
+The shell calls it when it is handed a dispatcher. `acks_warning(acks)` is the warning a producer earns for any `acks` but all (`-1`, `ACKS_ALL`). The
+outbox marks a row published once the send is acknowledged. So an ack that a failed leader takes with
+it is a lost event. It is a warning, not a refusal: a producer that relays no outbox may choose speed.
+
+`broker_error(error_code, message)` is the kernel error for a broker error, by its Kafka protocol error
+code. Every client reports the same number: aiokafka's `errno`, librdkafka's `code()`, Java's
+`Errors.code()`. The code decides the verdict by blast radius:
+
+| Codes | Verdict | What the consumer side does |
+|---|---|---|
+| `MESSAGE_TOO_LARGE` 10, `RECORD_LIST_TOO_LARGE` 18, `INVALID_RECORD` 87 | terminal `codec`: one record | dead-letters that record; the next may pass |
+| `INVALID_TOPIC_EXCEPTION` 17, `INVALID_REQUIRED_ACKS` 21, `INVALID_TIMESTAMP` 32, `UNSUPPORTED_VERSION` 35, `UNSUPPORTED_FOR_MESSAGE_FORMAT` 43 | fatal `bad_handle`: client settings or clock | stops the relay or the consumer, dead-lettering nothing |
+| `TOPIC_AUTHORIZATION_FAILED` 29, `GROUP_AUTHORIZATION_FAILED` 30, `CLUSTER_AUTHORIZATION_FAILED` 31, `UNSUPPORTED_SASL_MECHANISM` 33, `ILLEGAL_SASL_STATE` 34, `TRANSACTIONAL_ID_AUTHORIZATION_FAILED` 53, `SASL_AUTHENTICATION_FAILED` 58 | fatal `bad_handle`: authentication or authorization | stops the relay or the consumer, dead-lettering nothing |
+| `INVALID_PRODUCER_EPOCH` 47 | fatal `bad_handle`: fenced producer | stops the relay or the consumer, dead-lettering nothing |
+| `CORRUPT_MESSAGE` 2 and any other code | transient `store` | retries |
+
+`bad_handle` is fatal in the kernel's retry policy ([`Failure::Fatal`](./event.md)). So a topic ACL
+mistake stops the relay, which does not move the outbox into the dead-letter queue one row at a time.
+`UNKNOWN_TOPIC_OR_PARTITION` 3 stays transient, as Kafka marks it: a partition move reports it for a
+moment. A client failure with no protocol code, a client-side timeout or a lost connection, is no
+broker error; the shell leaves it unclassified, which is transient. aiokafka's own `retriable` flag is
+not read, because it calls its own `KafkaTimeoutError` final.
 
 ## `partition` — broker placement
 
@@ -207,7 +256,8 @@ instead: the lowest offset still in flight, or one past the highest delivered wh
 | `due()` | one row per partition | `{topic, partition, offset}` for every watermark above both the last commit and the first offset booked, ordered by topic then partition |
 | `committed(topic, partition, offset)` | nothing | the shell reports a commit the client confirmed; max-merge; a no-op for an unknown partition |
 | `nack(token)` | `NackDecision` | `Seek(offset)` to the lowest offset in flight, retiring every token of the partition; `Stale` for a token that settles nothing |
-| `reset(topic, partition)` | nothing | drops a revoked partition's bookkeeping and retires its tokens |
+| `revoke(topic, partition)` | `Option<Due>` | gives up a revoked partition in one step: its last watermark still due, for the shell to commit while the partition is still its own, and the bookkeeping dropped with every token retired |
+| `reset(topic, partition)` | nothing | drops a partition's bookkeeping and retires its tokens, committing nothing: for a partition just assigned, in case a revoke was never announced |
 | `stats()` | one row per partition | `{topic, partition, unsettled, live, max_delivered, committed}`, ordered by topic then partition; `committed` is `None` before the first commit |
 
 The decisions are exhaustive enums and `#[must_use]`, so a new outcome is a compile error in every
@@ -223,7 +273,7 @@ stateDiagram-v2
   [*] --> inflight : book returns a token
   inflight --> settled : ack, so the watermark may advance
   inflight --> retired : nack of any token of the partition, which rewinds it
-  inflight --> retired : reset, because the partition was revoked
+  inflight --> retired : revoke or reset of the partition
   inflight --> retired : book of the same offset again
   settled --> [*]
   retired --> [*] : a stale token decides nothing
@@ -275,9 +325,11 @@ watermark until a rebalance or a restart resets the partition.
 Each section above names the file that pins its rule. [Golden vectors](./golden-vectors.md) lists
 each file's case shape and what it covers.
 
-In `kafka_offsets.json`, a step's `op` is one of `book`, `ack`, `nack`, `is_live`, `due`, `committed`, `reset` and `stats`.
+In `kafka_offsets.json`, each step names its `op`. The ops are `book`, `ack`, `nack`, `is_live`, `due`,
+`committed`, `reset`, `revoke` and `stats`.
 `book` wants a token or an error; `ack` wants `{decision: "settled"}` or `{decision: "stale"}`;
-`nack` wants `{decision: "seek", offset}` or `{decision: "stale"}`; `is_live` wants `{live}`; `due`
+`nack` wants `{decision: "seek", offset}` or `{decision: "stale"}`; `is_live` wants `{live}`. `revoke`
+wants `{due}`, a row or `null`, and `due`
 and `stats` want rows. One replay therefore covers both the decisions and the state they left
 behind.
 
@@ -288,13 +340,14 @@ diff before committing it.
 
 | | Rust | Python |
 |---|---|---|
-| record | `edax_kafka::encode_record` / `decode_record`, `record`, `record_key` | `_edax.kafka_event_record` / `_edax.kafka_command_record` under the producer's `tenancy` and the host's `key=` override, if any; `_edax.kafka_content_type_header` |
+| record | `edax_kafka::record`, `record_key` | `_edax.kafka_event_record` / `_edax.kafka_command_record` under the producer's `tenancy` and the host's `key=` override, if any; `_edax.kafka_content_type_header` |
 | route | `edax_kafka::route` | `_edax.kafka_route`, which `KafkaConsumer` calls on every record |
-| dead letter | `edax_kafka::dead_letter_record` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, behind `KafkaFetched.dead_letter`; the reader is Rust's alone |
+| dead letter | `edax_kafka::dead_letter_record` / `dead_letter_stub` / `dead_letter_source` | `_edax.kafka_dead_letter_record`, behind `KafkaFetched.dead_letter`, and `_edax.kafka_dead_letter_stub`, which `KafkaDeadLetterSink` sends when the topic refuses the record; the reader is Rust's alone |
+| client | `edax_kafka::check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error` | `_edax.kafka_check_config`, which every adapter calls when it is built; `_edax.kafka_check_consumer` and `_edax.kafka_acks_warning` over what the adapter reads off its client; `_edax.kafka_check_dead_sink`, which `KafkaConsumer.run` calls; `_edax.kafka_broker_error`, around every client call |
 | placement | `edax_kafka::partition_for` | `_edax.kafka_partition_for`, which `KafkaProducer` passes as `partition=` |
 | media type | `edax_event::Format::media_type(kind)` | `_edax.media_type(format, kind)`, behind `KernelSerializer.media_type` |
 | poison id | `edax_kafka::poison_id` | `_edax.kafka_poison_id` |
-| offsets | `edax_kafka::OffsetTracker` | `_edax.offset_tracker()` |
+| offsets | `edax_kafka::OffsetTracker` | `_edax.offset_tracker()`; its `revoke` behind the rebalance listener |
 
 The Rust SDK ships the kernel and no client shell. The Kafka adapter lives in the Python SDK:
 `KafkaProducer` and `KafkaConsumer` in `edax.backend.kafka` call the client and these functions, and

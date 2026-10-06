@@ -1,6 +1,6 @@
-"""Redis-backed idempotency store: a cross-process :class:`~edax.command.IdempotencyStore` over a one-method
-async ``RedisConn`` seam that runs the kernel's Lua. The kernel owns every decision: the key, the stored
-value, the scripts, what a reply means. This adds the I/O, the TTLs and a per-call deadline.
+"""Redis-backed idempotency store: a cross-process :class:`~edax.idempotency.IdempotencyStore` over a
+one-method async ``RedisConn`` seam that runs the kernel's Lua. The kernel owns every decision: the key, the
+stored value, the scripts, what a reply means. This adds the I/O, the TTLs and a per-call deadline.
 :class:`AsyncRedisClient` adapts a caller-owned ``redis.asyncio`` client, so edax pulls no redis dependency.
 See ``docs/backends/redis.md``."""
 
@@ -9,44 +9,41 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, get_args
 
-from .. import _edax, errors
-from ..command import Claimed, Record, Won, decode_prior, encode_record
+from .. import _native, errors
+from .._deadline import within
+from .._observer import wrap
+from .._wiring import wiring_int
 from ..errors import BadHandle, CodecError, EdaxError, StoreError
-from ..store import Tx
+from ..idempotency import Claimed, Record, Won, decode_claim, encode_record
+from ..observe import Observer
+from ..unit_of_work import Tx
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis, RedisCluster
 
 logger = logging.getLogger("edax.backend.redis")
 
-# The kernel's scripts, byte for byte, so every SDK's EVALSHA names the same digest.
-_SCRIPTS = _edax.redis_scripts()
-CLAIM_SCRIPT: str = _SCRIPTS.claim
-COMPLETE_SCRIPT: str = _SCRIPTS.complete
-RELEASE_SCRIPT: str = _SCRIPTS.release
-EXTEND_SCRIPT: str = _SCRIPTS.extend
-FORGET_SCRIPT: str = _SCRIPTS.forget
-
-# The script each store operation runs, by the operation's name.
+# The script each store operation runs, by the operation's name: the kernel's, byte for byte, so every
+# SDK's EVALSHA names the same digest. Read off the kernel's struct by field name, so this is the one table.
 _Script = Literal["claim", "complete", "release", "extend", "forget"]
-_SCRIPT_OF: dict[_Script, str] = {
-    "claim": CLAIM_SCRIPT,
-    "complete": COMPLETE_SCRIPT,
-    "release": RELEASE_SCRIPT,
-    "extend": EXTEND_SCRIPT,
-    "forget": FORGET_SCRIPT,
-}
+_SCRIPT_OF: dict[_Script, str] = {name: getattr(_native.redis_scripts(), name) for name in get_args(_Script)}
+CLAIM_SCRIPT: str = _SCRIPT_OF["claim"]
+COMPLETE_SCRIPT: str = _SCRIPT_OF["complete"]
+RELEASE_SCRIPT: str = _SCRIPT_OF["release"]
+EXTEND_SCRIPT: str = _SCRIPT_OF["extend"]
+FORGET_SCRIPT: str = _SCRIPT_OF["forget"]
 #: What the store sends: a kernel script, or the plain read a forget starts with.
 _Op = Literal[_Script, "get"]
 
 # How many times a forget reads the key again after the key changed under it: the kernel's.
-_FORGET_READS: int = _edax.redis_forget_reads()
-
-# How many times per claim TTL the heartbeat renews a held claim: the kernel's, as its check is.
-_HEARTBEATS_PER_TTL: int = _edax.redis_heartbeats_per_ttl()
+_FORGET_READS: int = _native.redis_forget_reads()
+# The settings a store takes when its host overrides none: the kernel's, so two SDKs on one ledger left at
+# their defaults agree on its windows.
+_DEFAULTS = _native.redis_defaults()
 
 #: A script argument: a value's bytes, or a TTL in milliseconds.
 ScriptArg = bytes | int
@@ -73,7 +70,7 @@ class RedisIdempotencyStore:
     caller's unit of work, so :attr:`joins_transaction` is ``False`` and the guard compensates by hand:
     at-least-once over an idempotent handler, never effectively-once.
 
-    ``claim`` returns a :class:`~edax.command.Won` whose handle is the exact value the claim wrote.
+    ``claim`` returns a :class:`~edax.idempotency.Won` whose handle is the exact value the claim wrote.
     ``complete``, ``release`` and :meth:`extend` write only while the key still holds that value, so a
     worker whose claim lapsed and was taken over settles nothing, and a release never deletes a settled
     record. That fences the ledger only: a handler's own side effects need a version check of their own.
@@ -96,11 +93,12 @@ class RedisIdempotencyStore:
         self,
         conn: RedisConn,
         prefix: str,
-        ttl_ms: int = 86_400_000,
-        claim_ttl_ms: int = 300_000,
+        ttl_ms: int = _DEFAULTS.ttl_ms,
+        claim_ttl_ms: int = _DEFAULTS.claim_ttl_ms,
         *,
-        op_timeout_ms: int = 5_000,
+        op_timeout_ms: int = _DEFAULTS.op_timeout_ms,
         heartbeat: bool = False,
+        observer: Observer | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -108,22 +106,25 @@ class RedisIdempotencyStore:
         cosmetic namespace. Two services sharing one Redis under one prefix share a key space, and a
         request id both use is one claim. Name the service and the environment,
         ``"billing:prod:idem:"``. A second SDK's store must use the same prefix to share the ledger.
+        ``observer`` receives :meth:`~edax.observe.Observer.lease_lost` when the heartbeat stops renewing
+        a claim it was meant to hold; ``None`` is the no-op observer.
         ``sleep`` and ``clock`` are how the heartbeat waits and tells time. ``clock`` defaults to the
         running event loop's monotonic ``time()``. A test steps both instead of sleeping."""
+        # The binding would convert a bool silently, and a float is no whole number of milliseconds.
         for name, value in (
             ("ttl_ms", ttl_ms),
             ("claim_ttl_ms", claim_ttl_ms),
             ("op_timeout_ms", op_timeout_ms),
         ):
-            _check_whole_ms(name, value)
-        with errors.mapped():
-            _edax.redis_check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)
+            wiring_int(value, name)
+        _native.redis_check_config(prefix, ttl_ms, claim_ttl_ms, op_timeout_ms, heartbeat)
         self._conn = conn
         self._prefix = prefix
         self._ttl_ms = ttl_ms
         self._claim_ttl_ms = claim_ttl_ms
         self._op_timeout_s = op_timeout_ms / 1000
         self._heartbeat = heartbeat
+        self._observer = wrap(observer)
         # Keyed by claim handle, never by ledger key: two claims on one key in one process are two
         # handles, so one can never stop or replace the other's renewal.
         self._renewals: dict[bytes, asyncio.Task[None]] = {}
@@ -131,8 +132,7 @@ class RedisIdempotencyStore:
         self._clock = clock
 
     def _key(self, key: str) -> bytes:
-        with errors.mapped():
-            return _edax.redis_ledger_key(self._prefix, key)
+        return _native.redis_ledger_key(self._prefix, key)
 
     async def _eval(self, op: _Script, key: str, args: Sequence[ScriptArg]) -> Any:
         """``op``'s script on ``key``'s ledger key, under the store's deadline."""
@@ -140,62 +140,60 @@ class RedisIdempotencyStore:
 
     async def _send(self, op: _Op, key: str, call: Callable[[bytes], Awaitable[Any]]) -> Any:
         """``call`` on ``key``'s ledger key, under the store's deadline. A failure the connection
-        classified keeps its class; any other is the seam contract's transient ``StoreError``. Each names
-        the operation and the key."""
-        try:
-            return await asyncio.wait_for(call(self._key(key)), self._op_timeout_s)
-        except EdaxError as e:
-            raise type(e)(f"redis {op} {key!r}: {e}") from e
-        except asyncio.TimeoutError as e:
-            raise StoreError(f"redis {op} {key!r}: no reply within {self._op_timeout_s * 1000:.0f} ms") from e
-        except Exception as e:
-            raise StoreError(f"redis {op} {key!r}: {e}") from e
+        classified is re-raised as it is; any other, a missed deadline included, is the seam contract's
+        transient ``StoreError``. Each names the operation and the key."""
+        what = f"redis {op} {key!r}"
+
+        async def sent() -> Any:
+            try:
+                return await call(self._key(key))
+            except EdaxError as e:
+                # Re-raised, never rebuilt: a rebuilt error loses what its class carries (a cached
+                # failure's original code), and a subclass may not take a message alone.
+                _add_note(e, what)
+                raise
+            except Exception as e:
+                raise StoreError(f"{what}: {e}") from e
+
+        return await within(sent(), self._op_timeout_s, what)
 
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
-        """Atomically claim ``key`` with a pending record under ``claim_ttl_ms``. :class:`~edax.command.Won`
-        if this caller holds the claim, else the existing :class:`~edax.command.Record`."""
-        with errors.mapped():
-            # Building the value is the kernel's, not the client's: a hash it refuses is a terminal
-            # CodecError, never the transient StoreError an I/O failure gets.
-            claim = _edax.redis_new_claim(payload_hash)
+        """Atomically claim ``key`` with a pending record under ``claim_ttl_ms``.
+        :class:`~edax.idempotency.Won` if this caller holds the claim, else the existing
+        :class:`~edax.idempotency.Record`."""
+        # Building the value is the kernel's, not the client's: a hash it refuses is a terminal
+        # CodecError, never the transient StoreError an I/O failure gets.
+        claim = _native.redis_new_claim(payload_hash)
         # Read before the send: the claim's lease runs from when it lands, never earlier.
         sent_at = self._now()
         reply = await self._eval("claim", key, [claim, self._claim_ttl_ms])
-        with errors.mapped():
-            # A reply equal to this claim is its own first send, landed with its reply lost: won. A value
-            # the kernel cannot read comes back as its unreadable record, a terminal codec failure.
-            prior = _edax.redis_claim_outcome(claim, _reply_bytes(reply))
-        if prior is not None:
-            return decode_prior(prior, payload_hash)  # replayed as cached, never re-run
-        if self._heartbeat:
-            self._renewals[claim] = asyncio.create_task(self._renew(key, claim, sent_at))
-        return Won(claim)
+        # A reply equal to this claim is its own first send, landed with its reply lost: won. A value
+        # the kernel cannot read comes back as its unreadable record, a terminal codec failure.
+        claimed = decode_claim(_native.redis_claim_outcome(claim, _reply_bytes(reply)), payload_hash)
+        if isinstance(claimed, Won) and self._heartbeat:
+            self._renewals[claimed.handle] = asyncio.create_task(self._renew(key, claimed.handle, sent_at))
+        return claimed
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         """Write the terminal record for ``key`` under ``ttl_ms``, replacing the claim ``handle`` names and
         only that one. A claim already taken over is reported, not overwritten: another worker owns it."""
+        # Encoded and framed before any I/O: an unencodable result or a handle the kernel never minted is
+        # a terminal CodecError, and a transient verdict would redeliver it forever. A pending record is
+        # the kernel's BadHandle, refused before the renewal stops, so the claim stays settleable.
+        body = encode_record(record)
+        value = _native.redis_settled_value(handle, body)
         # Stopped before the call, not after it: a beat while the reply is late would find the settled
         # value and report the claim lost.
         self._stop_renewing(handle)
-        # Encoded and framed before any I/O: an unencodable result or a handle the kernel never minted is
-        # a terminal CodecError, and a transient verdict would redeliver it forever.
-        body = encode_record(record)
-        with errors.mapped():
-            value = _edax.redis_settled_value(handle, body)
         written = await self._eval("complete", key, [handle, value, self._ttl_ms])
-        if not written:
-            # Loud on purpose: the outcome was not recorded, so the caller must not report success.
-            raise StoreError(
-                f"redis complete {key!r}: the claim expired and was taken over, "
-                "so the outcome was not recorded"
-            )
+        # Loud on purpose: a refused write recorded no outcome, so the caller must not report success.
+        _native.redis_complete_outcome(key, bool(written))
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         """Delete ``key`` while it still holds the claim ``handle`` names. A release that arrives after the
         claim lapsed, or after its own ``complete`` landed with the reply lost, deletes nothing."""
         self._stop_renewing(handle)  # before the call, as in `complete`
-        with errors.mapped():
-            _edax.redis_check_claim(handle)
+        _native.redis_check_claim(handle)
         await self._eval("release", key, [handle])
 
     async def extend(self, key: str, handle: bytes) -> bool:
@@ -203,8 +201,7 @@ class RedisIdempotencyStore:
         ``False`` means the lease is gone: the claim lapsed, or another worker took the key over. Renewal
         narrows the window in which a paused worker loses its claim; it does not close it, which only a
         check by the downstream resource can do (``docs/backends/redis.md``)."""
-        with errors.mapped():
-            _edax.redis_check_claim(handle)
+        _native.redis_check_claim(handle)
         return bool(await self._eval("extend", key, [handle, self._claim_ttl_ms]))
 
     async def forget(self, key: str, tx: Tx | None = None) -> None:
@@ -217,13 +214,12 @@ class RedisIdempotencyStore:
         :class:`~edax.errors.StoreError` after a few rounds."""
         for _ in range(_FORGET_READS):
             held = _reply_bytes(await self._send("get", key, self._conn.get))
-            with errors.mapped():
-                deletes = _edax.redis_forget_outcome(key, held)
+            deletes = _native.redis_forget_outcome(key, held)
             if not deletes:
                 return
             if await self._eval("forget", key, [cast(bytes, held)]):
                 return
-        raise StoreError(f"redis forget {key!r}: the key changed on every one of {_FORGET_READS} reads")
+        raise errors.from_wire(_native.redis_forget_exhausted(key))
 
     def _now(self) -> float:
         return self._clock() if self._clock is not None else asyncio.get_running_loop().time()
@@ -234,21 +230,26 @@ class RedisIdempotencyStore:
         slow reply never delays the next beat. A beat sent at ``S`` that lands holds the lease to at least
         ``S + claim_ttl``. A transient failure is retried on the next beat, sent at ``S + 2 * claim_ttl / 3``:
         the kernel keeps ``op_timeout_ms`` under a third of the TTL, so it lands before the lease lapses. A
-        terminal failure would fail every beat, so it stops the renewal."""
-        interval_s = self._claim_ttl_ms / _HEARTBEATS_PER_TTL / 1000
-        due = sent_at
+        terminal failure would fail every beat, so it stops the renewal. The kernel times each beat; the
+        send time is floored to a millisecond, so a beat is never late."""
+        sent_at_ms = math.floor(sent_at * 1000)
+        beat = 0
         while True:
-            due += interval_s
+            beat += 1
+            due = _native.redis_heartbeat_due_ms(sent_at_ms, self._claim_ttl_ms, beat) / 1000
             await self._sleep(max(0.0, due - self._now()))
             try:
                 renewed = await self.extend(key, handle)
             except EdaxError as e:
                 logger.warning("edax redis: renewing the claim on %r failed: %s", key, e)
                 if errors.is_terminal(e):
+                    # The lease now runs out on its own while the handler may still be running.
+                    self._observer.lease_lost(key, e)
                     return
                 continue
             if not renewed:
                 logger.warning("edax redis: the claim on %r was lost before it settled; renewal stopped", key)
+                self._observer.lease_lost(key, None)
                 return
 
     def _stop_renewing(self, handle: bytes) -> None:
@@ -257,12 +258,22 @@ class RedisIdempotencyStore:
             task.cancel()
 
 
+def _add_note(error: BaseException, note: str) -> None:
+    """Name the call that raised ``error`` in its traceback, on a Python that has notes (3.11 and later)."""
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        add_note(note)
+
+
 class AsyncRedisClient:
     """A ``RedisConn`` over a caller-owned ``redis.asyncio.Redis`` or ``RedisCluster`` (redis-py 8 or later).
     Each kernel script is registered once, so a call sends its digest, not its source. A Redis error reply
     is classified by the kernel (``WRONGTYPE`` terminal, ``READONLY`` transient); a connection failure or a
-    timeout is left to the store, which types it transient. redis-py re-sends a command whose reply was
-    lost; every kernel script answers the re-send as it answered the first."""
+    timeout is left to the store, which types it transient. redis-py 8 re-sends a command whose reply was
+    lost by default: its ``Retry`` re-sends on a ``ConnectionError`` or a ``TimeoutError``, with jittered
+    exponential backoff, up to 10 times on ``Redis`` and on ``RedisCluster``. Every kernel script answers
+    the re-send as it answered the first, so a client built with another ``retry=``, or none, stays
+    correct: the store's own deadline and the caller's retry cover it."""
 
     def __init__(self, client: Redis | RedisCluster) -> None:
         if not inspect.iscoroutinefunction(getattr(client, "execute_command", None)):
@@ -273,7 +284,8 @@ class AsyncRedisClient:
         self._client = client
         # AuthenticationError is a ConnectionError in redis-py, but a wrong password fails every time.
         self._replies: tuple[type[Exception], ...] = (ResponseError, AuthenticationError)
-        self._scripts: dict[str, Any] = {}
+        # Each registered script is called with its keys and args and answers a reply to await.
+        self._scripts: dict[str, Callable[..., Awaitable[Any]]] = {}
 
     async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[ScriptArg]) -> Any:
         registered = self._scripts.get(script)
@@ -288,17 +300,10 @@ class AsyncRedisClient:
         try:
             return await reply
         except self._replies as e:
-            raise errors.from_wire(_edax.redis_reply_error(_reply_text(e))) from e
+            raise errors.from_wire(_native.redis_reply_error(_reply_text(e))) from e
         except UnicodeDecodeError as e:
             # A client built with `decode_responses=True` cannot decode a value that is not UTF-8.
             raise CodecError(f"redis reply is not UTF-8: {e}") from e
-
-
-def _check_whole_ms(name: str, value: Any) -> None:
-    """Refuse a ``value`` that is not the integer the kernel checks. A float or a bool is a configuration
-    mistake, refused here because the binding would convert a bool silently."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise BadHandle(f"{name} must be a whole number of milliseconds, got {value!r}")
 
 
 def _reply_bytes(reply: Any) -> bytes | None:

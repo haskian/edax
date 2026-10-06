@@ -18,57 +18,108 @@ Subclass a contract, give it a fixture, and the clauses run against your store::
 
     class TestMyLedger(IdempotencyStoreContract):
         # The suite reads `joins_transaction` from the store, as the guard does: a ledger of its
-        # own (Redis) declares none, so the clauses that need a shared rollback skip.
+        # own (Redis) declares none, so the clauses that need a shared rollback skip and it needs
+        # no `transactor` fixture. A ledger that joins one supplies the transactor it joins.
         @pytest.fixture
         async def idempotency_store(self):
             return MyLedger(conn)
 
-A command outbox subclasses :class:`CommandOutboxContract` and supplies ``command_outbox`` plus an
-``event_store`` over the same database: commands commit and roll back with the events.
+Every outbox's read side is held to one :class:`OutboxContract`: committed rows only, oldest commit
+first, the limit, an idempotent mark and, for a :class:`~edax.outbox.CountedOutbox`, the backlog count. A
+seam's outbox suite subclasses it: :class:`EventOutboxContract` supplies ``outbox`` plus the
+``event_store`` that writes it, :class:`SagaOutboxContract` ``outbox`` plus the ``saga_store``, and
+:class:`CommandOutboxContract` ``outbox`` plus the ``command_outbox`` write side and an ``event_store``
+over the same database: commands commit and roll back with the events.
 
 A broker adapter subclasses :class:`BrokerContract` and supplies a ``broker_rig`` (a :class:`BrokerRig`):
 per-key order through a nack, redelivery from the commit after a crash, consumer groups.
 
-Requires ``pytest`` and ``asyncio_mode = "auto"``; install with ``pip install edax[test]``. The
-suites are the same clauses ``edax``'s own backends are held to, so passing them means your store
-and the in-tree ones are interchangeable.
+The suites require ``pytest`` and ``asyncio_mode = "auto"``; install with ``pip install edax[test]``.
+They load on first use, so the message builders below work without pytest. The suites are the same
+clauses ``edax``'s own backends are held to, so passing them means your store and the in-tree ones are
+interchangeable.
 
-:mod:`edax.testing.faults` wraps any store to inject a write that landed and lost its response.
+:mod:`edax.testing.faults` wraps any store to inject a fault: :class:`LostResponse` lands a write and
+loses its response, :class:`Refusing` refuses one and writes nothing, :class:`BrokenCommit` fails a commit
+either way, and :class:`Delegating` is the base to break a store your own way. :mod:`edax.testing.redis`
+holds the Redis backend's own fault.
 
-:func:`event` builds a stored event by hand, to publish with no store behind it. :func:`drafted` and
+:func:`draft`, :func:`message` and :func:`command` build the rich messages the suites write: fresh ids, a
+tenant, a non-ASCII JSON body, a lineage, a trace parent and the application's metadata. :func:`event` builds
+a stored event with stable ids by hand, to publish with no store behind it, and :func:`delivery` wraps a
+message in a delivery whose settlement does nothing, to submit to a dispatcher. :func:`drafted` and
 :func:`recorded` move an event between its two shapes: the draft a repository hands ``append``, and the
 message the store keeps for it. :func:`event_of` narrows a delivered message to the event a test published.
 """
 
 from __future__ import annotations
 
-from .contracts import (
-    BrokerContract,
-    BrokerRig,
-    CommandOutboxContract,
-    EventStoreContract,
-    IdempotencyStoreContract,
-    ProjectionStoreContract,
-    SagaStoreContract,
-    drafted,
-    event,
-    event_of,
-    recorded,
-)
-from .faults import LostResponse, Refusing
+from typing import TYPE_CHECKING
+
+from .faults import BrokenCommit, CommitFault, Delegating, LostResponse, Refusing
+from .messages import command, delivery, draft, drafted, event, event_of, message, recorded
+
+if TYPE_CHECKING:
+    from .contracts import (
+        BrokerContract,
+        BrokerRig,
+        CommandOutboxContract,
+        EventOutboxContract,
+        EventStoreContract,
+        IdempotencyStoreContract,
+        OutboxContract,
+        ProjectionStoreContract,
+        SagaOutboxContract,
+        SagaStoreContract,
+    )
 
 __all__ = [
+    "BrokenCommit",
     "BrokerContract",
     "BrokerRig",
     "CommandOutboxContract",
+    "CommitFault",
+    "Delegating",
+    "EventOutboxContract",
     "EventStoreContract",
     "IdempotencyStoreContract",
     "LostResponse",
+    "OutboxContract",
     "ProjectionStoreContract",
     "Refusing",
+    "SagaOutboxContract",
     "SagaStoreContract",
+    "command",
+    "delivery",
+    "draft",
     "drafted",
     "event",
     "event_of",
+    "message",
     "recorded",
 ]
+
+_CONTRACTS = frozenset(
+    {
+        "BrokerContract",
+        "BrokerRig",
+        "CommandOutboxContract",
+        "EventOutboxContract",
+        "EventStoreContract",
+        "IdempotencyStoreContract",
+        "OutboxContract",
+        "ProjectionStoreContract",
+        "SagaOutboxContract",
+        "SagaStoreContract",
+    }
+)
+
+
+def __getattr__(name: str) -> object:
+    """Load the contract suites on first use: they import pytest, which a test that only builds a message
+    does not need."""
+    if name in _CONTRACTS:
+        from . import contracts
+
+        return getattr(contracts, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

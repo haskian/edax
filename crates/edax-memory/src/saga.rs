@@ -1,5 +1,6 @@
 //! The saga store view: per-instance state with optimistic concurrency, a tombstone on completion,
-//! and the saga outbox the step's commands commit to.
+//! and the saga outbox the step's commands commit to. Rows and outbox are keyed by the saga's name, so
+//! several sagas share one database without sharing an instance or a command.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -8,8 +9,22 @@ use edax_core::{lock, Error, ErrorCode};
 use edax_event::{saga_command_id, CommandMessage};
 use serde_json::Value;
 
-use crate::projection::Versioned;
-use crate::tx::{held_by_other, page, prune, refuse_waiting, store_view, Committed, MemoryState, MemoryTransactor, WriteSet};
+use crate::tx::{store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
+use crate::versioned::{Staged, Versioned};
+
+/// The key of a saga instance: the saga's name, then the instance id. Two sagas that share a database
+/// (as they must, for their writes to join the events' unit of work) and an instance id are two rows.
+pub(crate) type SagaKey = (String, String);
+
+impl Committed {
+    /// Merge a transaction's saga rows and the commands each saga's steps staged.
+    pub(crate) fn apply_sagas(&mut self, rows: Staged<SagaKey, SagaRow>, outbox: HashMap<String, Vec<CommandMessage>>) {
+        self.sagas.apply(rows);
+        for (saga, commands) in outbox {
+            self.saga_outbox.entry(saga).or_default().apply(commands);
+        }
+    }
+}
 
 /// A stored saga instance: running with its state, or completed. A completed instance is a
 /// tombstone that keeps its version, so a stale writer still conflicts and a late event finds it
@@ -33,6 +48,9 @@ pub enum SagaRow {
 /// value (a saga that keeps `null` is legitimate). The rule is written once here, so every SDK's
 /// saga runner is held to the same one:
 ///
+/// - every row and every outbox command belongs to one saga, named by the caller: two sagas over one
+///   database never see each other's instances, even under one instance id, nor drain each other's
+///   commands;
 /// - a `save` or `complete` at a stale version is a conflict, and so is any write to a completed
 ///   instance: completion is final;
 /// - `complete` writes a tombstone at the next version instead of removing the row, so the version
@@ -41,8 +59,8 @@ pub enum SagaRow {
 ///   roll back together. Each is the kernel's `saga_command` row: its id is the kernel's
 ///   [`saga_command_id`] for that write and its `aggregate_id` is the instance, or the write is a
 ///   `codec` error and stages nothing;
-/// - [`unpublished`](Self::unpublished) shows committed commands only, oldest commit first, until
-///   [`mark_published`](Self::mark_published) prunes them.
+/// - [`unpublished`](Self::unpublished) shows a saga's committed commands only, oldest commit first,
+///   until [`mark_published`](Self::mark_published) prunes them.
 ///
 /// A write under an open token is staged until the transactor commits. Not for production: a
 /// durable store enlists the write in the events' transaction and purges tombstones by retention.
@@ -53,34 +71,18 @@ pub struct MemorySagaStore {
 
 store_view!(MemorySagaStore, saga_store);
 
-/// Refuse a write to an instance another open transaction has written: the holder's commit would
-/// overwrite it. The conflict names the committed version, since the holder's own may yet roll back.
-fn refuse_held_saga(committed: &Committed, others: &HashMap<i64, WriteSet>, id: &str, expected: u64) -> Result<(), Error> {
-    match held_by_other(others, |set| set.sagas.get(id)) {
-        Some(_) => Err(Error::concurrency(expected, committed.sagas.get(id).map_or(0, |(v, _)| *v))),
-        None => Ok(()),
-    }
+/// The key of instance `id` of `saga`.
+fn key(saga: &str, id: &str) -> SagaKey {
+    (saga.to_owned(), id.to_owned())
 }
 
-/// The saga row as `tx` sees it: staged in the transaction, else committed.
-fn saga_row<'a>(committed: &'a Committed, own: Option<&'a WriteSet>, id: &str) -> Option<&'a (u64, SagaRow)> {
-    own.and_then(|set| set.sagas.get(id)).or_else(|| committed.sagas.get(id))
-}
-
-/// Refuse a command batch that does not belong to the write at `next`: every id must be the kernel's
-/// for its index, every command must target the instance `id`, and no id may already wait in the
-/// outbox. All three are deterministic, so `codec`. The instance is the command's `aggregate_id`,
-/// so a command without one belongs to no instance and is refused.
-fn check_commands(
-    committed: &Committed,
-    others: &HashMap<i64, WriteSet>,
-    own: &WriteSet,
-    id: &str,
-    version: u64,
-    commands: &[CommandMessage],
-) -> Result<(), Error> {
+/// Refuse a command that does not belong to the write of instance `id` of `saga` at `version`: every id
+/// must be the kernel's for its saga and index, and every command must target the instance.
+/// Deterministic, so `codec`. The instance is the command's `aggregate_id`, so a command without one
+/// belongs to no instance.
+fn check_commands(saga: &str, id: &str, version: u64, commands: &[CommandMessage]) -> Result<(), Error> {
     for (index, command) in (0u64..).zip(commands) {
-        let want = saga_command_id(id, version, index);
+        let want = saga_command_id(saga, id, version, index);
         let instance = command.aggregate_id.as_deref();
         if command.id != want || instance != Some(id) {
             return Err(Error::codec(format_args!(
@@ -89,100 +91,175 @@ fn check_commands(
             )));
         }
     }
-    let staged = own.saga_commands.iter().chain(others.values().flat_map(|set| &set.saga_commands));
-    refuse_waiting(committed.saga_commands.iter().chain(staged), commands, "saga command")
+    Ok(())
+}
+
+/// The refusal of any write to a completed instance: completion is final.
+fn completed(saga: &str, id: &str, version: u64) -> Error {
+    Error::new(
+        ErrorCode::Concurrency,
+        format_args!("saga {saga} instance {id} completed at version {version}: a completed instance takes no write"),
+    )
 }
 
 impl MemorySagaStore {
-    /// The stored instance for `id` and its version as `tx` sees it — running with its state, or the
-    /// tombstone of a completed one — or `None` if there is none.
-    pub fn load(&self, tx: i64, id: &str) -> Result<Option<Versioned<SagaRow>>, Error> {
+    /// The stored instance `id` of `saga` and its version as `tx` sees it — running with its state, or
+    /// the tombstone of a completed one — or `None` if there is none.
+    pub fn load(&self, tx: Tx, saga: &str, id: &str) -> Result<Option<Versioned<SagaRow>>, Error> {
         lock(&self.state).read(tx, |committed, own| {
-            saga_row(committed, own, id).map(|(version, row)| Versioned { version: *version, value: row.clone() })
+            committed.sagas.get(own.map(|set| &set.sagas), &key(saga, id)).cloned()
         })
     }
 
-    /// Persist `state`, the `folded` marks and the step's `commands` at `version + 1` if the version
-    /// `tx` sees still equals `version` (an absent instance is at version 0); returns the new version.
-    /// A version mismatch, a completed instance, or an id another open transaction has written and not
-    /// yet committed is a conflict error; a command that does not belong to this write is a codec error.
-    /// A refused write stages nothing.
-    pub fn save(&self, tx: i64, id: &str, version: u64, state: Value, folded: String, commands: Vec<CommandMessage>) -> Result<u64, Error> {
-        self.write(tx, id, version, SagaRow::Active { state, folded }, commands)
+    /// Persist `state`, the `folded` marks and the step's `commands` for instance `id` of `saga` at
+    /// `version + 1` if the version `tx` sees still equals `version` (an absent instance is at version
+    /// 0); returns the new version. A version mismatch, a completed instance, or an instance another
+    /// open transaction has written and not yet committed is a conflict error; a command that does not
+    /// belong to this write is a codec error. A refused write stages nothing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the port's own arguments: the row's key, its version and its contents"
+    )]
+    pub fn save(
+        &self,
+        tx: Tx,
+        saga: &str,
+        id: &str,
+        version: u64,
+        state: Value,
+        folded: String,
+        commands: Vec<CommandMessage>,
+    ) -> Result<u64, Error> {
+        self.write(tx, saga, id, version, SagaRow::Active { state, folded }, commands)
     }
 
-    /// Complete the instance: write its tombstone and the step's `commands` at `version + 1` under
-    /// the same rules as [`save`](Self::save); returns the tombstone's version.
-    pub fn complete(&self, tx: i64, id: &str, version: u64, commands: Vec<CommandMessage>) -> Result<u64, Error> {
-        self.write(tx, id, version, SagaRow::Completed, commands)
+    /// Complete instance `id` of `saga`: write its tombstone and the step's `commands` at
+    /// `version + 1` under the same rules as [`save`](Self::save); returns the tombstone's version.
+    pub fn complete(
+        &self,
+        tx: Tx,
+        saga: &str,
+        id: &str,
+        version: u64,
+        commands: Vec<CommandMessage>,
+    ) -> Result<u64, Error> {
+        self.write(tx, saga, id, version, SagaRow::Completed, commands)
     }
 
-    fn write(&self, tx: i64, id: &str, version: u64, row: SagaRow, commands: Vec<CommandMessage>) -> Result<u64, Error> {
+    fn write(
+        &self,
+        tx: Tx,
+        saga: &str,
+        id: &str,
+        version: u64,
+        row: SagaRow,
+        commands: Vec<CommandMessage>,
+    ) -> Result<u64, Error> {
         lock(&self.state).write(tx, |committed, others, own| {
-            refuse_held_saga(committed, others, id, version)?;
-            let stored = match saga_row(committed, Some(own), id) {
-                Some((stored, SagaRow::Completed)) => {
-                    return Err(Error::new(
-                        ErrorCode::Concurrency,
-                        format_args!("saga {id} completed at version {stored}: a completed instance takes no write"),
-                    ));
-                }
-                Some((stored, SagaRow::Active { .. })) => *stored,
-                None => 0,
+            let key = key(saga, id);
+            let held = others.values().map(|set| &set.sagas);
+            let admit = |stored: u64, row: &SagaRow| match row {
+                SagaRow::Completed => Err(completed(saga, id, stored)),
+                SagaRow::Active { .. } => Ok(()),
             };
-            if stored != version {
-                return Err(Error::concurrency(version, stored));
-            }
-            let next = version.checked_add(1).ok_or_else(|| Error::codec(format_args!("saga {id} is at the last version")))?;
-            check_commands(committed, others, own, id, next, &commands)?;
-            own.sagas.insert(id.to_owned(), (next, row));
-            own.saga_commands.extend(commands);
+            let next = committed.sagas.next(
+                held,
+                &own.sagas,
+                &key,
+                version,
+                &format!("saga {saga} instance {id}"),
+                admit,
+            )?;
+            check_commands(saga, id, next, &commands)?;
+            stage_commands(committed.saga_outbox.get(saga), others, own, saga, commands)?;
+            own.sagas.insert(
+                key,
+                Versioned {
+                    version: next,
+                    value: row,
+                },
+            );
             Ok(next)
         })
     }
 
-    /// Committed outbox commands not yet sent, oldest commit first, capped at `limit`. The relay
-    /// reads outside any transaction, so there is no token: a staged command is not one to send.
-    pub fn unpublished(&self, limit: usize) -> Vec<CommandMessage> {
-        page(&lock(&self.state).committed.saga_commands, limit)
+    /// `saga`'s committed outbox commands not yet sent, oldest commit first, capped at `limit`. The
+    /// relay reads outside any transaction, so there is no token: a staged command is not one to send.
+    pub fn unpublished(&self, saga: &str, limit: usize) -> Vec<CommandMessage> {
+        lock(&self.state)
+            .committed
+            .saga_outbox
+            .get(saga)
+            .map_or_else(Vec::new, |rows| rows.page(limit))
     }
 
-    /// Mark outbox commands sent by id, pruning them. Idempotent; an unknown id is a no-op.
-    pub fn mark_published(&self, ids: Vec<String>) {
-        prune(&mut lock(&self.state).committed.saga_commands, ids);
+    /// How many of `saga`'s committed outbox commands wait, without paging them.
+    pub fn unpublished_count(&self, saga: &str) -> usize {
+        lock(&self.state)
+            .committed
+            .saga_outbox
+            .get(saga)
+            .map_or(0, |rows| rows.count())
     }
+
+    /// Mark `saga`'s outbox commands sent by id, pruning them. Idempotent; an unknown id is a no-op.
+    pub fn mark_published(&self, saga: &str, ids: &[String]) {
+        if let Some(rows) = lock(&self.state).committed.saga_outbox.get_mut(saga) {
+            rows.prune(ids);
+        }
+    }
+}
+
+/// Stage `commands` in `saga`'s outbox under `own`, refusing an id that already waits there: committed,
+/// or staged by any open transaction. `committed` is that saga's committed outbox, if it has one yet.
+fn stage_commands(
+    committed: Option<&crate::outbox_rows::OutboxRows<CommandMessage>>,
+    others: &HashMap<Tx, WriteSet>,
+    own: &mut WriteSet,
+    saga: &str,
+    commands: Vec<CommandMessage>,
+) -> Result<(), Error> {
+    let empty = crate::outbox_rows::OutboxRows::default();
+    let staged_by_others = others.values().filter_map(|set| set.saga_outbox.get(saga)).flatten();
+    let own_rows = own.saga_outbox.entry(saga.to_owned()).or_default();
+    committed
+        .unwrap_or(&empty)
+        .stage(staged_by_others, own_rows, commands, "saga command")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{event, wire};
-    use crate::tx::NO_TX;
-    use edax_event::{saga_command, Event};
+    use crate::testkit::{ids, wire};
+    use crate::tx::Tx;
+    use edax_event::testkit::saga_command;
     use serde_json::json;
+
+    /// The saga every case writes as.
+    const SAGA: &str = "shipping";
 
     fn open() -> Value {
         json!({"status": "awaiting_payment", "total": 1200})
     }
 
-    /// The `index`-th command a write of instance `id` at `version` sends, as the kernel builds it: a
-    /// real `Fulfill` payload caused by the invoice event the step folded.
+    /// The `index`-th command a write of instance `id` of [`SAGA`] at `version` sends, as the kernel
+    /// builds it.
     fn command(id: &str, version: u64, index: u64) -> CommandMessage {
-        let payload = Event { name: "Fulfill".to_owned(), version: 1, data: format!(r#"{{"order_id":"{id}"}}"#).into_bytes() };
-        let cause = event("evt-1", Some(1));
-        saga_command("shipping", id, version, index, cause.tenant.as_deref(), payload, &cause.id, &cause.correlation_id, 1_714_564_800_000_000_000)
+        saga_command(SAGA, id, version, index)
     }
 
     /// A saga store holding one open instance at version 1.
     fn seeded() -> MemorySagaStore {
         let store = MemorySagaStore::new();
-        store.save(NO_TX, "order-1", 0, open(), String::new(), vec![]).expect("seed saves");
+        store
+            .save(Tx::auto_commit(), SAGA, "order-1", 0, open(), String::new(), vec![])
+            .expect("seed saves");
         store
     }
 
     /// The stored row as `(version, status or "completed")`, or `None`.
     fn row(store: &MemorySagaStore, id: &str) -> Option<(u64, String)> {
-        store.load(NO_TX, id).unwrap().map(|stored| {
+        store.load(Tx::auto_commit(), SAGA, id).unwrap().map(|stored| {
             let status = match stored.value {
                 SagaRow::Completed => "completed".to_owned(),
                 SagaRow::Active { state, .. } => state["status"].as_str().unwrap().to_owned(),
@@ -192,7 +269,7 @@ mod tests {
     }
 
     fn unsent_ids(store: &MemorySagaStore) -> Vec<String> {
-        store.unpublished(100).into_iter().map(|c| c.id).collect()
+        store.unpublished(SAGA, 100).into_iter().map(|c| c.id).collect()
     }
 
     #[derive(Clone, Copy)]
@@ -231,7 +308,7 @@ mod tests {
             Case {
                 name: "save stages the commands with the state",
                 commands: || vec![command("order-1", 2, 0), command("order-1", 2, 1)],
-                want_unsent: &["order-1:2:0", "order-1:2:1"],
+                want_unsent: &["8:shipping:order-1:2:0", "8:shipping:order-1:2:1"],
                 ..base
             },
             Case {
@@ -255,7 +332,7 @@ mod tests {
                 write: Write::Complete,
                 commands: || vec![command("order-1", 2, 0)],
                 want_row: Some((2, "completed")),
-                want_unsent: &["order-1:2:0"],
+                want_unsent: &["8:shipping:order-1:2:0"],
                 ..base
             },
             Case {
@@ -270,7 +347,7 @@ mod tests {
                 // ABA: a writer that loaded the instance before it completed cannot write over the tombstone.
                 name: "a stale writer after completion conflicts",
                 tombstone: true,
-                want: Err("concurrency: saga order-1 completed at version 2: a completed instance takes no write"),
+                want: Err("concurrency: saga shipping instance order-1 completed at version 2: a completed instance takes no write"),
                 want_row: Some((2, "completed")),
                 ..base
             },
@@ -279,7 +356,7 @@ mod tests {
                 name: "a fresh start over a tombstone conflicts",
                 tombstone: true,
                 version: 0,
-                want: Err("concurrency: saga order-1 completed at version 2: a completed instance takes no write"),
+                want: Err("concurrency: saga shipping instance order-1 completed at version 2: a completed instance takes no write"),
                 want_row: Some((2, "completed")),
                 ..base
             },
@@ -288,7 +365,7 @@ mod tests {
                 tombstone: true,
                 version: 2,
                 commands: || vec![command("order-1", 3, 0)],
-                want: Err("concurrency: saga order-1 completed at version 2: a completed instance takes no write"),
+                want: Err("concurrency: saga shipping instance order-1 completed at version 2: a completed instance takes no write"),
                 want_row: Some((2, "completed")),
                 ..base
             },
@@ -297,35 +374,35 @@ mod tests {
                 tombstone: true,
                 version: 2,
                 write: Write::Complete,
-                want: Err("concurrency: saga order-1 completed at version 2: a completed instance takes no write"),
+                want: Err("concurrency: saga shipping instance order-1 completed at version 2: a completed instance takes no write"),
                 want_row: Some((2, "completed")),
                 ..base
             },
             Case {
                 name: "a command id of another version is a codec error",
                 commands: || vec![command("order-1", 1, 0)],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:1:0" for instance Some("order-1"), expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "8:shipping:order-1:1:0" for instance Some("order-1"), expected "8:shipping:order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
             Case {
                 name: "a command of another instance is a codec error",
                 commands: || vec![CommandMessage { aggregate_id: Some("order-2".to_owned()), ..command("order-1", 2, 0) }],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:0" for instance Some("order-2"), expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "8:shipping:order-1:2:0" for instance Some("order-2"), expected "8:shipping:order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
             Case {
                 name: "a command without an instance is a codec error",
                 commands: || vec![CommandMessage { aggregate_id: None, ..command("order-1", 2, 0) }],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:0" for instance None, expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "8:shipping:order-1:2:0" for instance None, expected "8:shipping:order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
             Case {
                 name: "commands out of index order are a codec error",
                 commands: || vec![command("order-1", 2, 1), command("order-1", 2, 0)],
-                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "order-1:2:1" for instance Some("order-1"), expected "order-1:2:0""#),
+                want: Err(r#"codec: saga command 0 of order-1 at version 2 is "8:shipping:order-1:2:1" for instance Some("order-1"), expected "8:shipping:order-1:2:0""#),
                 want_row: Some((1, "awaiting_payment")),
                 ..base
             },
@@ -333,14 +410,32 @@ mod tests {
         for c in cases {
             let store = seeded();
             if c.tombstone {
-                assert_eq!(store.complete(NO_TX, "order-1", 1, vec![]), Ok(2), "{}: tombstone", c.name);
+                assert_eq!(
+                    store.complete(Tx::auto_commit(), SAGA, "order-1", 1, vec![]),
+                    Ok(2),
+                    "{}: tombstone",
+                    c.name
+                );
             }
             let got = match c.write {
-                Write::Save(state) => store.save(NO_TX, c.id, c.version, serde_json::from_str(state).unwrap(), String::new(), (c.commands)()),
-                Write::Complete => store.complete(NO_TX, c.id, c.version, (c.commands)()),
+                Write::Save(state) => store.save(
+                    Tx::auto_commit(),
+                    SAGA,
+                    c.id,
+                    c.version,
+                    serde_json::from_str(state).unwrap(),
+                    String::new(),
+                    (c.commands)(),
+                ),
+                Write::Complete => store.complete(Tx::auto_commit(), SAGA, c.id, c.version, (c.commands)()),
             };
             assert_eq!(wire(got), c.want.map_err(str::to_owned), "{}", c.name);
-            assert_eq!(row(&store, c.id), c.want_row.map(|(v, s)| (v, s.to_owned())), "{}: row", c.name);
+            assert_eq!(
+                row(&store, c.id),
+                c.want_row.map(|(v, s)| (v, s.to_owned())),
+                "{}: row",
+                c.name
+            );
             assert_eq!(unsent_ids(&store), c.want_unsent, "{}: outbox", c.name);
         }
     }
@@ -353,16 +448,27 @@ mod tests {
         let tx = store.transactor().begin();
         let duplicate = vec![command("order-1", 2, 0), command("order-1", 2, 0)];
         assert_eq!(
-            wire(store.save(tx, "order-1", 1, open(), String::new(), duplicate)),
-            Err(r#"codec: saga command 1 of order-1 at version 2 is "order-1:2:0" for instance Some("order-1"), expected "order-1:2:1""#.to_owned())
+            wire(store.save(tx, SAGA, "order-1", 1, open(), String::new(), duplicate)),
+            Err(r#"codec: saga command 1 of order-1 at version 2 is "8:shipping:order-1:2:0" for instance Some("order-1"), expected "8:shipping:order-1:2:1""#.to_owned())
         );
         store.transactor().rollback(tx);
-        let mut state = lock(&store.state);
-        state.committed.saga_commands.push(command("order-1", 2, 0));
-        drop(state);
+        lock(&store.state)
+            .committed
+            .saga_outbox
+            .entry(SAGA.to_owned())
+            .or_default()
+            .apply(vec![command("order-1", 2, 0)]);
         assert_eq!(
-            wire(store.save(NO_TX, "order-1", 1, open(), String::new(), vec![command("order-1", 2, 0)])),
-            Err("codec: saga command order-1:2:0 is already in the outbox".to_owned())
+            wire(store.save(
+                Tx::auto_commit(),
+                SAGA,
+                "order-1",
+                1,
+                open(),
+                String::new(),
+                vec![command("order-1", 2, 0)]
+            )),
+            Err("codec: saga command 8:shipping:order-1:2:0 is already in the outbox".to_owned())
         );
     }
 
@@ -370,44 +476,134 @@ mod tests {
     fn the_outbox_shows_committed_commands_until_marked_sent() {
         let store = seeded();
         let tx = store.transactor().begin();
-        store.save(tx, "order-1", 1, open(), String::new(), vec![command("order-1", 2, 0)]).unwrap();
+        store
+            .save(
+                tx,
+                SAGA,
+                "order-1",
+                1,
+                open(),
+                String::new(),
+                vec![command("order-1", 2, 0)],
+            )
+            .unwrap();
         assert!(unsent_ids(&store).is_empty(), "a staged command is not one to send");
         store.transactor().commit(tx).unwrap();
-        store.complete(NO_TX, "order-1", 2, vec![command("order-1", 3, 0), command("order-1", 3, 1)]).unwrap();
-        assert_eq!(unsent_ids(&store), ["order-1:2:0", "order-1:3:0", "order-1:3:1"], "commit order, then index order");
+        store
+            .complete(
+                Tx::auto_commit(),
+                SAGA,
+                "order-1",
+                2,
+                vec![command("order-1", 3, 0), command("order-1", 3, 1)],
+            )
+            .unwrap();
+        assert_eq!(
+            unsent_ids(&store),
+            [
+                "8:shipping:order-1:2:0",
+                "8:shipping:order-1:3:0",
+                "8:shipping:order-1:3:1"
+            ],
+            "commit order, then index order"
+        );
 
         for (name, limit, want) in [
             ("zero_limit_reads_nothing", 0usize, vec![]),
-            ("limit_below_size_reads_a_prefix", 2, vec!["order-1:2:0", "order-1:3:0"]),
+            (
+                "limit_below_size_reads_a_prefix",
+                2,
+                vec!["8:shipping:order-1:2:0", "8:shipping:order-1:3:0"],
+            ),
         ] {
-            assert_eq!(store.unpublished(limit).into_iter().map(|c| c.id).collect::<Vec<_>>(), want, "{name}");
+            assert_eq!(
+                store
+                    .unpublished(SAGA, limit)
+                    .into_iter()
+                    .map(|c| c.id)
+                    .collect::<Vec<_>>(),
+                want,
+                "{name}"
+            );
         }
-        let first = store.unpublished(1).remove(0);
+        let first = store.unpublished(SAGA, 1).remove(0);
         assert_eq!(first, command("order-1", 2, 0), "the row survives field for field");
 
-        store.mark_published(vec!["order-1:2:0".to_owned(), "never-existed".to_owned()]);
-        store.mark_published(vec!["order-1:2:0".to_owned()]);
-        assert_eq!(unsent_ids(&store), ["order-1:3:0", "order-1:3:1"], "idempotent, unknown ids ignored");
+        store.mark_published(SAGA, &["8:shipping:order-1:2:0".to_owned(), "never-existed".to_owned()]);
+        store.mark_published(SAGA, &["8:shipping:order-1:2:0".to_owned()]);
+        assert_eq!(
+            unsent_ids(&store),
+            ["8:shipping:order-1:3:0", "8:shipping:order-1:3:1"],
+            "idempotent, unknown ids ignored"
+        );
 
         let rolled_back = store.transactor().begin();
-        store.save(rolled_back, "order-9", 0, open(), String::new(), vec![command("order-9", 1, 0)]).unwrap();
+        store
+            .save(
+                rolled_back,
+                SAGA,
+                "order-9",
+                0,
+                open(),
+                String::new(),
+                vec![command("order-9", 1, 0)],
+            )
+            .unwrap();
         store.transactor().rollback(rolled_back);
-        assert_eq!(unsent_ids(&store), ["order-1:3:0", "order-1:3:1"], "a rollback takes its commands with it");
+        assert_eq!(
+            unsent_ids(&store),
+            ["8:shipping:order-1:3:0", "8:shipping:order-1:3:1"],
+            "a rollback takes its commands with it"
+        );
     }
 
     #[test]
     fn load_returns_the_versioned_instance_its_tombstone_or_none() {
         let store = seeded();
-        assert_eq!(store.load(NO_TX, "order-1").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active { state: open(), folded: String::new() } }));
-        assert_eq!(store.load(NO_TX, "order-404").unwrap(), None);
+        assert_eq!(
+            store.load(Tx::auto_commit(), SAGA, "order-1").unwrap(),
+            Some(Versioned {
+                version: 1,
+                value: SagaRow::Active {
+                    state: open(),
+                    folded: String::new()
+                }
+            })
+        );
+        assert_eq!(store.load(Tx::auto_commit(), SAGA, "order-404").unwrap(), None);
 
         // Any JSON value is a state: a saga that keeps `null` is distinct from a completed one.
         // The folded marks come back as they were written.
         let folded = r#"{"order-2":{"sequence":1,"id":"evt-1","unsequenced":"evt-u"}}"#.to_owned();
-        store.save(NO_TX, "order-2", 0, Value::Null, folded.clone(), vec![]).unwrap();
-        assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 1, value: SagaRow::Active { state: Value::Null, folded } }));
-        store.complete(NO_TX, "order-2", 1, vec![]).unwrap();
-        assert_eq!(store.load(NO_TX, "order-2").unwrap(), Some(Versioned { version: 2, value: SagaRow::Completed }));
+        store
+            .save(
+                Tx::auto_commit(),
+                SAGA,
+                "order-2",
+                0,
+                Value::Null,
+                folded.clone(),
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(
+            store.load(Tx::auto_commit(), SAGA, "order-2").unwrap(),
+            Some(Versioned {
+                version: 1,
+                value: SagaRow::Active {
+                    state: Value::Null,
+                    folded
+                }
+            })
+        );
+        store.complete(Tx::auto_commit(), SAGA, "order-2", 1, vec![]).unwrap();
+        assert_eq!(
+            store.load(Tx::auto_commit(), SAGA, "order-2").unwrap(),
+            Some(Versioned {
+                version: 2,
+                value: SagaRow::Completed
+            })
+        );
     }
 
     #[test]
@@ -415,11 +611,107 @@ mod tests {
         let store = seeded();
         let tr = store.transactor();
         let holder = tr.begin();
-        store.save(holder, "order-1", 1, open(), String::new(), vec![]).expect("the holder saves");
-        assert_eq!(wire(store.save(NO_TX, "order-1", 2, open(), String::new(), vec![])), Err("concurrency: expected 2, stored 1".to_owned()));
+        store
+            .save(holder, SAGA, "order-1", 1, open(), String::new(), vec![])
+            .expect("the holder saves");
+        assert_eq!(
+            wire(store.save(Tx::auto_commit(), SAGA, "order-1", 2, open(), String::new(), vec![])),
+            Err("concurrency: expected 2, stored 1".to_owned())
+        );
         assert!(tr.rollback(holder));
 
-        lock(&store.state).committed.sagas.insert("order-9".to_owned(), (u64::MAX, SagaRow::Active { state: open(), folded: String::new() }));
-        assert_eq!(wire(store.save(NO_TX, "order-9", u64::MAX, open(), String::new(), vec![])), Err("codec: saga order-9 is at the last version".to_owned()));
+        lock(&store.state).committed.sagas.seed(
+            key(SAGA, "order-9"),
+            u64::MAX,
+            SagaRow::Active {
+                state: open(),
+                folded: String::new(),
+            },
+        );
+        assert_eq!(
+            wire(store.save(
+                Tx::auto_commit(),
+                SAGA,
+                "order-9",
+                u64::MAX,
+                open(),
+                String::new(),
+                vec![]
+            )),
+            Err("codec: saga shipping instance order-9 at version 18446744073709551615 has no next version".to_owned())
+        );
+    }
+
+    #[test]
+    fn two_sagas_over_one_database_share_neither_an_instance_nor_a_command() {
+        // Both write `order-1` at version 1: under one key the second would conflict. Each saga's
+        // command id names the saga, and each outbox holds its own saga's rows only.
+        let tr = MemoryTransactor::new();
+        let store = tr.saga_store();
+        let sagas = [
+            ("shipping", "awaiting_payment", "8:shipping:order-1:1:0"),
+            ("billing", "invoiced", "7:billing:order-1:1:0"),
+        ];
+        for (saga, status, _) in sagas {
+            let wrote = store.save(
+                Tx::auto_commit(),
+                saga,
+                "order-1",
+                0,
+                json!({"status": status}),
+                String::new(),
+                vec![saga_command(saga, "order-1", 1, 0)],
+            );
+            assert_eq!(wrote, Ok(1), "{saga}: its own instance");
+        }
+        for (saga, status, id) in sagas {
+            let loaded = store
+                .load(Tx::auto_commit(), saga, "order-1")
+                .unwrap()
+                .expect("each saga's own row");
+            assert_eq!(
+                loaded.value,
+                SagaRow::Active {
+                    state: json!({"status": status}),
+                    folded: String::new()
+                },
+                "{saga}"
+            );
+            assert_eq!(
+                (store.unpublished_count(saga), ids(&store.unpublished(saga, 10))),
+                (1, vec![id.to_owned()]),
+                "{saga}: its own outbox"
+            );
+        }
+        let another = wire(store.save(
+            Tx::auto_commit(),
+            "returns",
+            "order-1",
+            0,
+            json!({}),
+            String::new(),
+            vec![command("order-1", 1, 0)],
+        ));
+        assert!(
+            another.is_err_and(|e| e.starts_with("codec: saga command 0 of order-1")),
+            "a saga refuses another saga's command"
+        );
+        store.mark_published("shipping", &["8:shipping:order-1:1:0".to_owned()]);
+        assert_eq!(
+            (store.unpublished_count("shipping"), store.unpublished_count("billing")),
+            (0, 1),
+            "a mark prunes one saga's row"
+        );
+        assert_eq!(
+            store.load(Tx::auto_commit(), "returns", "order-1"),
+            Ok(None),
+            "a saga that never wrote has no instance"
+        );
+        assert_eq!(
+            (store.unpublished("returns", 10), store.unpublished_count("returns")),
+            (vec![], 0),
+            "and no outbox"
+        );
+        store.mark_published("returns", &["8:shipping:order-1:1:0".to_owned()]);
     }
 }

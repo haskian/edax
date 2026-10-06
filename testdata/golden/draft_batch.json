@@ -1,0 +1,622 @@
+[
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "an_empty_batch_drafts_nothing_and_never_snapshots",
+    "occurred_at": null,
+    "payloads": [],
+    "snapshot_every": 1,
+    "tenant": null,
+    "want": {
+      "drafts": [],
+      "snapshot": false,
+      "version": 3
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1"
+    ],
+    "initial": 0,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "one_event_is_sequenced_after_the_version",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": null,
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 1,
+          "tenant": null,
+          "version": 1
+        }
+      ],
+      "snapshot": true,
+      "version": 1
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2",
+      "evt-3"
+    ],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "many_events_run_dense_from_the_version",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3330307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 0,
+    "tenant": null,
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 4,
+          "tenant": null,
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-2",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 5,
+          "tenant": null,
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3330307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-3",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 6,
+          "tenant": null,
+          "version": 1
+        }
+      ],
+      "snapshot": false,
+      "version": 6
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 4,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "a_batch_crossing_the_interval_snapshots",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 5,
+    "tenant": null,
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 5,
+          "tenant": null,
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-2",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 6,
+          "tenant": null,
+          "version": 1
+        }
+      ],
+      "snapshot": true,
+      "version": 6
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 1,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "a_batch_inside_the_interval_does_not",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 5,
+    "tenant": null,
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 2,
+          "tenant": null,
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-2",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 3,
+          "tenant": null,
+          "version": 1
+        }
+      ],
+      "snapshot": false,
+      "version": 3
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "the_tenant_and_the_valid_time_are_on_every_draft",
+    "occurred_at": 1699999999000000000,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": "acme",
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": 1699999999000000000,
+          "sequence": 4,
+          "tenant": "acme",
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-2",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": 1699999999000000000,
+          "sequence": 5,
+          "tenant": "acme",
+          "version": 1
+        }
+      ],
+      "snapshot": true,
+      "version": 5
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 18446744073709551613,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "the_last_sequence_there_is",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": null,
+    "want": {
+      "drafts": [
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-1",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 18446744073709551614,
+          "tenant": null,
+          "version": 1
+        },
+        {
+          "aggregate_id": "acct-1",
+          "causation_id": "cmd-1",
+          "correlation_id": "corr-1",
+          "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+          "extensions": {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          },
+          "id": "evt-2",
+          "metadata": {
+            "trace": "abc-123"
+          },
+          "name": "Deposited",
+          "occurred_at": null,
+          "sequence": 18446744073709551615,
+          "tenant": null,
+          "version": 1
+        }
+      ],
+      "snapshot": true,
+      "version": 18446744073709551615
+    }
+  },
+  {
+    "aggregate_id": "acct-1",
+    "error": "codec: the batch would run the stream past sequence 18446744073709551615",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 18446744073709551614,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "a_batch_past_the_last_sequence_is_refused",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": null
+  },
+  {
+    "aggregate_id": "acct-1",
+    "error": "codec: extension key \"Trace\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "extensions": {
+      "Trace": "x"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "a_bad_extension_key_is_refused",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": null
+  },
+  {
+    "aggregate_id": "acct-1",
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1",
+      "evt-2"
+    ],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "an_empty_tenant_is_refused",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": ""
+  },
+  {
+    "aggregate_id": "acct-1",
+    "error": "bad_handle: 1 event ids for 2 events",
+    "extensions": {
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    "ids": [
+      "evt-1"
+    ],
+    "initial": 3,
+    "lineage": {
+      "causation_id": "cmd-1",
+      "correlation_id": "corr-1"
+    },
+    "metadata": {
+      "trace": "abc-123"
+    },
+    "name": "an_id_count_that_is_not_the_event_count_is_refused",
+    "occurred_at": null,
+    "payloads": [
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3130307d",
+        "name": "Deposited",
+        "version": 1
+      },
+      {
+        "data_hex": "7b22616d6f756e745f63656e7473223a3230307d",
+        "name": "Deposited",
+        "version": 1
+      }
+    ],
+    "snapshot_every": 1,
+    "tenant": null
+  }
+]

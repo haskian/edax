@@ -12,29 +12,31 @@ to be safe under a retry. A suite that tests only clean failures never runs that
   of a whole unit of work, the only place a transactional write can land and still fail.
 - :class:`Refusing` refuses named calls outright and writes nothing.
 - :class:`BrokenCommit` is a transactor whose commit fails, either with nothing landed or after it landed.
-- :class:`LostReply` loses the reply to one Redis script, with or without the client's own re-send.
+- :class:`Delegating` is the base of each: subclass it to break one method of a store your own way.
+
+:class:`~edax.testing.redis.LostReply` loses the reply to one Redis script: a fault of one backend, so it
+lives in a module of its own.
 """
 
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Literal
 
 from ..errors import StoreError
-from ..projection import Entity
 
-__all__ = ["BrokenCommit", "CommitFault", "LostReply", "LostResponse", "Refusing"]
+__all__ = ["BrokenCommit", "CommitFault", "Delegating", "LostResponse", "Refusing"]
 
 #: The seam method name that stands for a unit of work's commit, which no store method is.
 COMMIT = "commit"
 
 
-class _Delegating:
+class Delegating:
     """Forward every attribute the wrapper does not define to the wrapped object, so an unknown or
     optional seam method (``get_many``, a backend's own helper, a ``transactor`` property) still reaches the
-    real store."""
+    real store. A subclass overrides the one method it breaks and reaches the store through ``_inner``."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
@@ -50,14 +52,13 @@ class _Delegating:
             )
 
 
-class LostResponse(_Delegating):
+class LostResponse(Delegating):
     """Let a call land, then raise as though its response was lost in transit.
 
     Arm with the method name; the *next* call to it lands and then raises :class:`~edax.errors.StoreError`.
     One shot, so the retry that follows sees a healthy store and meets the state the lost call actually
     wrote. Arm :data:`COMMIT` to lose the reply of the next unit of work instead: ``begin()`` commits,
-    then raises. A lost ``save`` of an :class:`~edax.projection.Entity` leaves the caller's ``version`` where
-    it was, because the caller never heard the new one.
+    then raises.
 
     ``store = LostResponse(real); store.arm("append")`` then asserts what a redelivery does about an append
     that already succeeded."""
@@ -87,12 +88,7 @@ class LostResponse(_Delegating):
             return target
 
         async def call(*args: Any, **kwargs: Any) -> Any:
-            # What the caller would see of an in-place version bump had the reply come back.
-            entities = [(a, a.version) for a in (*args, *kwargs.values()) if isinstance(a, Entity)]
             result = await target(*args, **kwargs)
-            if self.armed == name:
-                for entity, version in entities:
-                    entity.version = version
             self._trip(name)
             return result
 
@@ -108,7 +104,7 @@ class LostResponse(_Delegating):
         return unit_of_work
 
 
-class Refusing(_Delegating):
+class Refusing(Delegating):
     """Refuse the named methods outright, without letting them land, and count each refusal.
 
     The other half of the pair: :class:`LostResponse` writes and then fails, this one fails and writes
@@ -142,7 +138,7 @@ CommitFault = Literal["nothing_landed", "lost_response"] | None
 
 
 class BrokenCommit:
-    """A :class:`~edax.store.Transactor` whose commit fails, in the two ways that differ.
+    """A :class:`~edax.unit_of_work.Transactor` whose commit fails, in the two ways that differ.
 
     ``"nothing_landed"`` rolls the unit of work back and raises: a plain failed commit.
     ``"lost_response"`` commits and *then* raises. They assert opposite things: the first lets a redelivery
@@ -172,30 +168,3 @@ class BrokenCommit:
             yield tx
         if arm == "lost_response":
             raise StoreError("commit landed; the response was lost")
-
-
-class LostReply:
-    """A Redis connection wrapper (the ``eval`` seam of :class:`~edax.backend.redis.RedisIdempotencyStore`)
-    that loses the reply to the next ``eval`` of ``script``, once: the script runs on the server, then the
-    caller gets a :class:`ConnectionError`. ``resend`` models redis-py's default retry, which sends the same
-    command again on a new connection and returns that reply instead."""
-
-    def __init__(self, inner: Any, script: str, resend: bool) -> None:
-        self._inner = inner
-        self._script = script
-        self._resend = resend
-        #: Whether the fault is still to fire.
-        self.armed = True
-
-    async def eval(self, script: str, keys: Sequence[bytes], args: Sequence[Any]) -> Any:
-        reply = await self._inner.eval(script, keys, args)
-        if self.armed and script == self._script:
-            self.armed = False
-            if self._resend:
-                return await self._inner.eval(script, keys, args)
-            raise ConnectionError("connection reset by peer while reading the reply")
-        return reply
-
-    async def get(self, key: bytes) -> Any:
-        """A read loses nothing, so it passes through."""
-        return await self._inner.get(key)

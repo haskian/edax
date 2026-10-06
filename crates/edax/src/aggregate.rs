@@ -1,40 +1,63 @@
 //! The aggregate contract: an event-sourced entity, its version, and the codecs that bridge it to
 //! the bytes the store persists.
 
-use edax_event::Event;
+use edax_event::Payload;
 
 use crate::Error;
 
-/// State every aggregate carries: its id, the `version` last loaded from storage, and the events
-/// applied since. Embed one and return it from [`Aggregate::root`]/[`Aggregate::root_mut`].
+/// State every aggregate carries: its id, the `version` last loaded from storage, the tenant it belongs
+/// to, and the events applied since. Embed one and return it from [`Aggregate::root`]/[`Aggregate::root_mut`].
 ///
-/// `pending` is private because it *is* the version: `current()` counts it. A host that pushed to
-/// it directly would desync the two, and the snapshot would then lead the log.
+/// Every field is private and read through its getter. The [`Repository`](crate::Repository) that loads
+/// and saves the aggregate is the only writer: `pending` *is* the version (`current()` counts it), and the
+/// version and the tenant are what storage last said. A host that set any of them would desync the
+/// aggregate from its stream, and the snapshot would then lead the log or land under another tenant.
 pub struct Root<E> {
-    pub id: String,
-    /// The version the aggregate was loaded at; the pending events come after it.
-    pub version: u64,
-    /// The tenant this instance belongs to, set by the [`Repository`](crate::Repository) that loaded it
-    /// and stamped onto every event it saves. `None` outside a multi-tenant deployment.
-    ///
-    /// A host never sets it: [`Root::new`] leaves it empty and the repository fills it from the call
-    /// that loaded the aggregate, which is what keeps a load and the save that follows on one tenant.
-    /// So under [`Tenancy::Pool`](crate::Tenancy::Pool) or [`Tenancy::Bridge`](crate::Tenancy::Bridge)
-    /// a new aggregate starts from [`Repository::load_for`](crate::Repository::load_for), which returns
-    /// it empty at version 0 with the tenant set; one built with [`Root::new`] has none, and its save is
-    /// a `codec` error.
-    pub tenant: Option<String>,
+    id: String,
+    version: u64,
+    tenant: Option<String>,
     pending: Vec<E>,
 }
 
 impl<E> Root<E> {
+    /// The root of aggregate `id` at `version`, with no tenant and nothing pending: what an
+    /// [`AggregateCodec::load`] builds.
     pub fn new(id: impl Into<String>, version: u64) -> Self {
-        Self { id: id.into(), version, tenant: None, pending: Vec::new() }
+        Self {
+            id: id.into(),
+            version,
+            tenant: None,
+            pending: Vec::new(),
+        }
+    }
+
+    /// The aggregate's id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The version the aggregate was loaded at; the pending events come after it.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The tenant this instance belongs to, set by the [`Repository`](crate::Repository) that loaded it
+    /// and stamped onto every event it saves. `None` outside a multi-tenant deployment.
+    ///
+    /// [`Root::new`] leaves it empty and the repository fills it from the call that loaded the aggregate,
+    /// which is what keeps a load and the save that follows on one tenant. So under
+    /// [`Tenancy::Pool`](crate::Tenancy::Pool) or [`Tenancy::Bridge`](crate::Tenancy::Bridge) a new
+    /// aggregate starts from [`Repository::load`](crate::Repository::load) with a tenant, which returns it
+    /// empty at version 0 with the tenant set; one built with [`Root::new`] has none, and its save is a
+    /// `codec` error.
+    pub fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
     }
 
     /// The prospective version: the loaded one plus the events not yet persisted.
     pub fn current(&self) -> u64 {
-        self.version.saturating_add(u64::try_from(self.pending.len()).unwrap_or(u64::MAX))
+        self.version
+            .saturating_add(u64::try_from(self.pending.len()).unwrap_or(u64::MAX))
     }
 
     /// The events applied but not yet persisted, in order.
@@ -42,9 +65,15 @@ impl<E> Root<E> {
         &self.pending
     }
 
-    /// Take the pending events, leaving none. The caller now owns persisting them.
-    pub fn take_pending(&mut self) -> Vec<E> {
-        std::mem::take(&mut self.pending)
+    /// Pin the root to what storage holds: the stream is at `version`, and nothing is pending.
+    pub(crate) fn settle(&mut self, version: u64) {
+        self.pending.clear();
+        self.version = version;
+    }
+
+    /// Stamp the tenant the repository loaded the aggregate for.
+    pub(crate) fn set_tenant(&mut self, tenant: Option<&str>) {
+        self.tenant = tenant.map(ToOwned::to_owned);
     }
 }
 
@@ -67,16 +96,20 @@ pub trait Aggregate {
     }
 }
 
-/// Bridges a domain event and its marshaled [`Event`] (name / version / payload bytes).
-pub trait EventCodec {
+/// Bridges a domain value, an event or a command, and its marshaled [`Payload`] (name / version / payload
+/// bytes).
+pub trait PayloadCodec {
     type Domain;
 
     /// Serialization is fallible in both directions, so both directions report it: a payload the
     /// codec cannot write must reach the caller as a `codec` error — terminal, dead-lettered —
     /// instead of panicking inside whichever host thread happened to call [`save`](crate::Repository::save).
-    fn marshal(&self, event: &Self::Domain) -> Result<Event, Error>;
-    fn unmarshal(&self, raw: &Event) -> Result<Self::Domain, Error>;
+    fn marshal(&self, event: &Self::Domain) -> Result<Payload, Error>;
+    fn unmarshal(&self, raw: &Payload) -> Result<Self::Domain, Error>;
 }
+
+/// [`PayloadCodec`] in its event role, as a [`Repository`](crate::Repository) takes it.
+pub use self::PayloadCodec as EventCodec;
 
 /// Bridges an aggregate and its snapshot bytes.
 pub trait AggregateCodec {

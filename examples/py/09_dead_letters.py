@@ -15,7 +15,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
-from edax import Backoff, Delivery, EventMessage, KeyOrderedDispatcher, Pacing, Rejected, testing
+from edax import (
+    Backoff,
+    DeadLetter,
+    EventMessage,
+    KeyOrderedDispatcher,
+    Pacing,
+    Rejected,
+    Undecodable,
+    testing,
+)
 from edax.backend.memory import MemoryBroker
 
 
@@ -42,11 +51,14 @@ async def main() -> None:
         if account_id == "dave":
             raise ConnectionError("ledger timeout")  # transient, but it never passes
 
-    # 2. The dead-letter sink. A real one writes to a dead-letter topic or table.
+    # 2. The dead-letter sink. A real one writes to a dead-letter topic or table. It gets the message, the
+    #    attempt that killed it and the error; a record the consumer could not decode comes as Undecodable.
     dead: list[str] = []
 
-    async def to_dead_letters(delivery: Delivery, error: BaseException) -> None:
-        dead.append(f"{delivery.message.aggregate_id}: {type(error).__name__}")
+    async def to_dead_letters(letter: DeadLetter[EventMessage | Undecodable]) -> None:
+        msg = letter.message
+        who = msg.id if isinstance(msg, Undecodable) else msg.aggregate_id
+        dead.append(f"{who} at attempt {letter.attempt}: {type(letter.failure).__name__}")
 
     # 3. One worker keeps the story in order. Short waits so the example runs fast.
     dispatcher = KeyOrderedDispatcher(
@@ -67,7 +79,7 @@ async def main() -> None:
 
     print(f"dead letters: {dead}")
     assert attempts == {"alice": 1, "bob": 1, "carol": 3, "dave": 3}, attempts
-    assert dead == ["bob: AccountClosed", "dave: ConnectionError"], dead
+    assert dead == ["bob at attempt 1: AccountClosed", "dave at attempt 3: ConnectionError"], dead
     print("\nok: the rejection died at once, the flaky event passed, the broken one died at attempt 3")
 
 

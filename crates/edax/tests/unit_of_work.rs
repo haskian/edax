@@ -33,7 +33,6 @@ use proptest::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-
 /// One guarded dispatch: which key, and how its handler ends.
 #[derive(Debug, Clone, Copy)]
 struct Op {
@@ -51,9 +50,8 @@ struct Deposit {
 }
 
 impl Command for Deposit {
-    fn command_type(&self) -> &str {
-        "Deposit"
-    }
+    const TYPE: &'static str = "Deposit";
+    type Output = i64;
 }
 
 const KEYS: u8 = 3;
@@ -94,27 +92,41 @@ impl History {
             Arc::clone(&ledger) as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
             SCOPE,
             Tenancy::Silo,
-            |cmd: &Deposit| Some(cmd.key.clone()),
-            move |_: &Deposit| current(),
+            move |_: &edax::CommandMessage| current(),
         );
-        let handler: edax::Handler<Deposit, i64> = Box::new(move |cmd: &Deposit| {
-                let mut tx = published.get();
-                let id = doc_id(cmd.key.parse::<u8>().unwrap());
-                let prior = store.get(&mut tx, &id)?;
-                let applied = prior.as_ref().map_or(0, |e| e.document["applied"].as_i64().unwrap_or(0));
-                let version = prior.as_ref().map_or(0, |e| e.version);
-                let mut entity =
-                    Entity { id: id.clone(), version, document: json!({"id": id, "applied": applied + 1}) };
-                store.save(&mut tx, &mut entity)?;
-                match cmd.outcome {
-                    1 => Err(Box::new(Error::store("transient")) as edax::HandlerError),
-                    2 => Err(Box::new(Error::codec("terminal")) as edax::HandlerError),
-                    _ => Ok(applied + 1),
-                }
-            });
-        bus.register("Deposit", edax::wrap(handler, vec![guard])).unwrap();
+        let handler: edax::Handler<Deposit> = Box::new(move |cmd: &Deposit| {
+            let mut tx = published.get();
+            let id = doc_id(cmd.key.parse::<u8>().unwrap());
+            let prior = store.get(&mut tx, &id)?;
+            let applied = prior
+                .as_ref()
+                .map_or(0, |e| e.document["applied"].as_i64().unwrap_or(0));
+            let version = prior.as_ref().map_or(0, |e| e.version);
+            store.save(
+                &mut tx,
+                &Entity {
+                    id: id.clone(),
+                    version,
+                    document: json!({"applied": applied + 1}),
+                },
+            )?;
+            match cmd.outcome {
+                1 => Err(Box::new(Error::store("transient")) as edax::HandlerError),
+                2 => Err(Box::new(Error::codec("terminal")) as edax::HandlerError),
+                _ => Ok(applied + 1),
+            }
+        });
+        bus.register(handler, vec![guard]).unwrap();
 
-        (Self { db, projections, ledger, bus }, handle)
+        (
+            Self {
+                db,
+                projections,
+                ledger,
+                bus,
+            },
+            handle,
+        )
     }
 }
 
@@ -142,12 +154,12 @@ proptest! {
                     // `bus.dispatch` in one must: committing over it would keep writes the
                     // handler made before failing. `commits == false` then stands for a *later*
                     // write in the same unit of work failing after a clean dispatch.
-                    h.bus.dispatch::<_, i64>(&cmd)?;
+                    h.bus.dispatch(&cmd, edax::DispatchOptions::keyed(cmd.key.clone()))?;
                     if op.commits { Ok(()) } else { Err(Error::store("a later write failed").into()) }
                 });
                 handle.set(MemoryTx::auto_commit());
             } else {
-                let _ = h.bus.dispatch::<_, i64>(&cmd);
+                let _ = h.bus.dispatch(&cmd, edax::DispatchOptions::keyed(cmd.key.clone()));
             }
         }
 

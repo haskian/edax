@@ -1,26 +1,43 @@
 import asyncio
 import contextlib
 import datetime
+import functools
 import json
 import re
 import uuid
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, is_dataclass, replace
+from decimal import Decimal
 from typing import Any, ClassVar
 
 import edax
 import msgspec
 import pytest
-from conftest import NO_WAIT, CreateUser, claimed, golden, recording_pacing
+from conftest import NO_WAIT, CreateUser, claimed, golden, host_values, recording_pacing
+from edax import _edax, _json, idempotency
 from edax import command as C
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore, MemoryTransactor
-from edax.command import Claimed, Record, Won
+from edax.idempotency import Claimed, Done, Failed, Guard, Pending, Record, RecordState, Won
 from edax.projection import Entity
-from edax.store import Tx
+from edax.unit_of_work import Tx
+
+#: The store a :class:`Guard` that only replays is built with: ``replay`` reads none, and a native one kept
+#: alive by a caught exception's traceback would be dropped on whichever thread collects it.
+_NO_STORE: Any = None
 
 
 def test_golden_payload_hash() -> None:
     for c in golden("payload_hash.json"):
         assert edax.payload_hash(c["input"].encode()) == c["expected"]
+
+
+class _Verdicts(edax.Observer):
+    """Keeps every claim verdict the guard reports."""
+
+    def __init__(self) -> None:
+        self.heard: list[str] = []
+
+    def claim(self, name: str, verdict: str) -> None:
+        self.heard.append(verdict)
 
 
 def test_golden_idempotency_record() -> None:
@@ -31,25 +48,48 @@ def test_golden_idempotency_record() -> None:
         if "decode_error" in c:
             # A stored value no reader may guess at: the strict reader refuses it with the kernel's text...
             with pytest.raises(edax.CodecError) as caught:
-                C.decode_record(c["stored"])
+                idempotency.decode_record(c["stored"])
             assert f"{caught.value.code}: {caught.value}" == c["decode_error"], c["name"]
         else:
-            assert C.decode_record(c["stored"]) == C.decode_prior(c["stored"], c["current"]), c["name"]
+            assert idempotency.decode_record(c["stored"]) == idempotency.decode_prior(
+                c["stored"], c["current"]
+            ), c["name"]
         # ...and a claimant reads it as the kernel's terminal codec failure, as every SDK does.
-        record = C.decode_prior(c["stored"], c["current"])
-        want = Record(
-            c["payload_hash"], c.get("result"), c.get("error"), c["state"] == "pending", c.get("error_code")
-        )
+        record = idempotency.decode_prior(c["stored"], c["current"])
+        states: dict[str, RecordState] = {
+            "pending": Pending(),
+            "done": Done(c.get("result")),
+            "failed": Failed(c.get("error", ""), c.get("error_code")),
+        }
+        want = Record(c["payload_hash"], states[c["state"]])
         assert record == want, c["name"]
-        assert C.encode_record(record) == c["encoded"], c["name"]
-        assert C._outcome(record, c["current"]) == c["outcome"], c["name"]
-        if c["outcome"] == "failed":
-            # The replay is the kernel's text in both SDKs: Rust renders it whole, Python keeps the code
-            # apart, and the original failure's code survives inside the message.
-            with pytest.raises(edax.CachedFailure) as caught:
-                C._replay("Deposit", "k", c["current"], record, edax.observe._wrap(None), None)
-            assert f"{caught.value.code}: {caught.value}" == c["replay"], c["name"]
-            assert caught.value.original_code == c["error_code"], c["name"]
+        assert idempotency.encode_record(record) == c["encoded"], c["name"]
+        # A losing claimant under `req-1` hears the kernel's verdict and raises the kernel's text in both
+        # SDKs: Rust renders it whole, Python keeps the code apart, and a cached failure's code survives
+        # inside the message.
+        verdicts = _Verdicts()
+        if c["outcome"] == "succeeded":
+            replayed = Guard(_NO_STORE, "Deposit", "req-1", c["current"], verdicts).replay(record)
+            assert replayed == c.get("result"), c["name"]
+        else:
+            with pytest.raises(edax.EdaxError) as caught:
+                Guard(_NO_STORE, "Deposit", "req-1", c["current"], verdicts).replay(record)
+            assert f"{caught.value.code}: {caught.value}" == c["replay_error"], c["name"]
+            if c["outcome"] == "failed":
+                assert isinstance(caught.value, edax.CachedFailure)
+                assert caught.value.original_code == c["error_code"], c["name"]
+        assert verdicts.heard == [c["outcome"]], c["name"]
+        # Whether a store's `complete` takes the bytes as the record that settles a claim: the native
+        # store runs the kernel's `check_settled`, so only a pending record is refused.
+        ledger = _edax.memory_transactor().idempotency_store()
+        claimed = ledger.claim(_edax.no_tx(), c["name"], c["current"])
+        assert claimed.handle is not None, c["name"]
+        try:
+            ledger.complete(_edax.no_tx(), c["name"], claimed.handle, c["stored"])
+            refused = None
+        except RuntimeError as e:
+            refused = str(e)
+        assert refused == c["check_settled"], c["name"]
 
 
 async def test_none_result_is_replayed_as_a_success() -> None:
@@ -63,34 +103,43 @@ async def test_none_result_is_replayed_as_a_success() -> None:
         nonlocal calls
         calls += 1
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     assert await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") is None
     assert await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") is None
     assert calls == 1
 
 
 @pytest.mark.parametrize(
-    "branch, result, want, want_type",
+    "branch, result, refused",
     [
-        ("past_2_53_is_still_an_exact_int", 2**53 + 1, 9007199254740993, int),
-        ("u64_max_is_exact", 2**64 - 1, 18446744073709551615, int),
-        ("2_64_becomes_a_float_equal_in_value", 2**64, 1.8446744073709552e19, float),
-        ("below_i64_min_becomes_a_float_lossy", -(2**63) - 1, -9.223372036854776e18, float),
+        ("past_2_53_is_still_an_exact_int", 2**53 + 1, False),
+        ("u64_max_is_exact", 2**64 - 1, False),
+        ("i64_min_is_exact", -(2**63), False),
+        ("2_64_is_refused", 2**64, True),
+        ("below_i64_min_is_refused", -(2**63) - 1, True),
     ],
 )
 async def test_cached_result_integers_are_exact_only_within_64_bits(
-    branch: str, result: int, want: Any, want_type: type
+    branch: str, result: int, refused: bool
 ) -> None:
-    # The bound in the IdempotencyStore contract: a result integer outside the i64/u64 range comes
-    # back from a JSON-backed store as a float. Pinned so the edge is known, not discovered.
+    # The bound in the IdempotencyStore contract: a result integer within the i64/u64 range comes back
+    # exact. One outside it is refused as a codec failure before anything is stored, since a reader in
+    # another SDK would take it as the nearest float. The guard encodes the record before its commit, so
+    # a handler that returns such a result has that codec failure cached instead.
     store = MemoryIdempotencyStore()
     won = await store.claim("req-1", 1)
     assert isinstance(won, Won)
-    await store.complete("req-1", won.handle, Record(payload_hash=1, result=result))
+    if refused:
+        with pytest.raises(edax.CodecError, match="outside the 64-bit range"):
+            await store.complete("req-1", won.handle, Record.done(1, result))
+        prior = await store.claim("req-1", 1)
+        assert not isinstance(prior, Won) and isinstance(prior.state, Pending), f"{branch}: nothing stored"
+        return
+    await store.complete("req-1", won.handle, Record.done(1, result))
     prior = await store.claim("req-1", 1)
-    assert not isinstance(prior, Won)
-    assert prior.result == want and type(prior.result) is want_type, branch
-    assert (prior.result == result) is (branch != "below_i64_min_becomes_a_float_lossy")
+    assert not isinstance(prior, Won) and isinstance(prior.state, Done), branch
+    cached = prior.state.result
+    assert cached == result and type(cached) is int, branch
 
 
 def test_golden_canonical_payload_hash() -> None:
@@ -98,9 +147,9 @@ def test_golden_canonical_payload_hash() -> None:
     # even for non-ASCII (the case a Python-side json.dumps(ensure_ascii=True) would get wrong).
     for c in golden("canonical_payload_hash.json"):
         if c["error"] is not None:
-            with pytest.raises(RuntimeError) as caught:
+            with pytest.raises(edax.CodecError) as caught:
                 edax.payload_hash_json(c["input"].encode())
-            assert str(caught.value) == c["error"], c["input"]
+            assert f"{caught.value.code}: {caught.value}" == c["error"], c["input"]
             continue
         assert edax.payload_hash_json(c["input"].encode()) == c["expected"], c["input"]
 
@@ -170,18 +219,52 @@ class GoldenPlainQuoteOrder(GoldenPlainPlaceOrder):
     type = "order.quote"
 
 
+@dataclass
+class GoldenWithdraw:
+    """The vector's host-value command: the SDK's encoder writes its ``Decimal`` and ``datetime`` in the
+    kernel's canonical text, as ``edax::Decimal`` / ``edax::Instant`` do in Rust."""
+
+    account: str
+    amount: Decimal
+    at: datetime.datetime
+    type: ClassVar[str] = "Withdraw"
+
+
+class GoldenWithdrawStruct(msgspec.Struct):
+    account: str
+    amount: Decimal
+    at: datetime.datetime
+    type: ClassVar[str] = "Withdraw"
+
+
+class GoldenPlainWithdraw(GoldenPlainPlaceOrder):
+    type = "Withdraw"
+
+
 #: The Python command class per golden command name, per shape.
 _GOLDEN_TYPES: dict[str, dict[str, Any]] = {
-    "dataclass": {"order.place": GoldenPlaceOrder, "order.quote": GoldenQuoteOrder},
-    "struct": {"order.place": GoldenPlaceOrderStruct, "order.quote": GoldenQuoteOrderStruct},
-    "plain": {"order.place": GoldenPlainPlaceOrder, "order.quote": GoldenPlainQuoteOrder},
+    "dataclass": {
+        "order.place": GoldenPlaceOrder,
+        "order.quote": GoldenQuoteOrder,
+        "Withdraw": GoldenWithdraw,
+    },
+    "struct": {
+        "order.place": GoldenPlaceOrderStruct,
+        "order.quote": GoldenQuoteOrderStruct,
+        "Withdraw": GoldenWithdrawStruct,
+    },
+    "plain": {
+        "order.place": GoldenPlainPlaceOrder,
+        "order.quote": GoldenPlainQuoteOrder,
+        "Withdraw": GoldenPlainWithdraw,
+    },
 }
 
 
 @dataclass
 class GoldenPlaceOrderWithTypeField:
     """The shape the rule rules out: ``type`` as an instance field is hashed here and has no
-    counterpart in a Rust command, whose type name is ``command_type()``."""
+    counterpart in a Rust command, whose type name is ``Command::TYPE``."""
 
     weight_kg: float
     total_cents: int
@@ -196,9 +279,11 @@ class GoldenPlaceOrderWithTypeField:
 
 
 def _golden_command(command_type: str, fields: dict[str, Any], shape: str) -> Any:
-    """Rebuild a golden case as a Python command of the given shape."""
+    """Rebuild a golden case as a Python command of the given shape, its host-value markers built as
+    ``Decimal`` and ``datetime``."""
     cls = _GOLDEN_TYPES[shape][command_type]
-    return cls(**fields) if shape == "plain" else msgspec.convert(fields, cls)
+    values = host_values(fields)
+    return cls(**values) if shape == "plain" else msgspec.convert(values, cls)
 
 
 @pytest.mark.parametrize("shape", ["dataclass", "struct", "plain"])
@@ -221,13 +306,13 @@ async def test_golden_command_hash_holds_through_the_middleware(shape: str) -> N
         cmd = _golden_command(case["type"], case["command"], shape)
         store = MemoryIdempotencyStore()
         bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-        bus.register(case["type"], handler)
+        bus.register(type(cmd), handler)
         runs.clear()
         if case["error"] is not None:
             # A refusal row: the kernel's terminal `codec` error before any claim or handler run. The
-            # row pins the code and the rule; the byte offset is the encoder's, whose field order is
-            # its own.
-            rule = case["error"].rsplit(" is outside ", 1)[1]
+            # row pins the code and the rule; an integer's byte offset is the encoder's, whose field
+            # order is its own, so only the rule after it is compared.
+            rule = case["error"].rsplit(" is outside ", 1)[-1].removeprefix("codec: ")
             with pytest.raises(edax.CodecError, match=re.escape(rule)) as refused:
                 await bus.dispatch(cmd, idempotency_key=key)
             assert refused.value.terminal, (shape, case["name"])
@@ -250,7 +335,7 @@ def test_golden_command_hash_rejects_the_old_per_sdk_rules() -> None:
     case = golden("command_hash.json")[0]
     assert case["name"] == "the_name_and_the_whole_command"
     payload = msgspec.json.encode(case["command"])
-    assert edax._edax.command_hash_json(case["type"], payload) == case["expected"]
+    assert _edax.command_hash_json(case["type"], payload) == case["expected"]
     assert edax.payload_hash_json(payload) != case["expected"], "the payload alone is another number"
 
     # Built through the constructor, as a service writes `Deposit(...)`. A converted instance shows
@@ -390,7 +475,7 @@ def test_hash_is_independent_of_how_the_command_was_built(case: ConstructionCase
     # materialized value, not merely each other: two encodings that both dropped the defaults
     # would agree and still be wrong.
     assert _same_command(case.built, case.decoded)
-    expected = edax._edax.command_hash_json("order.place", msgspec.json.encode(DEFAULTED_ORDER))
+    expected = _edax.command_hash_json("order.place", msgspec.json.encode(DEFAULTED_ORDER))
     assert C._payload_hash(case.built, case.built.type) == expected
     assert C._payload_hash(case.decoded, case.decoded.type) == expected
 
@@ -406,7 +491,7 @@ async def test_bus_idempotency() -> None:
         calls += 1
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     assert await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") == "user:a@b.c"
     # Same key + same payload -> replayed, handler not called again.
@@ -469,13 +554,13 @@ async def test_register_rejects_a_handler_that_is_not_a_coroutine_function(case:
     """The wiring mistake is caught at register time, not on the first dispatch far from it."""
     bus = C.CommandBus()
     if case.rejected_as is None:
-        bus.register("user.create", case.handler)
+        bus.register(CreateUser, case.handler)
         assert await bus.dispatch(CreateUser("a@b.c")) == "ran"
         return
     with pytest.raises(TypeError) as caught:
-        bus.register("user.create", case.handler)
+        bus.register(CreateUser, case.handler)
     assert "user.create" in str(caught.value) and case.rejected_as in str(caught.value)
-    assert bus._handlers == {}, "a refused handler must not be registered"
+    assert bus._handlers.get("user.create") is None, "a refused handler must not be registered"
 
 
 async def test_transient_failure_releases_claim_so_a_retry_reruns() -> None:
@@ -494,7 +579,7 @@ async def test_transient_failure_releases_claim_so_a_retry_reruns() -> None:
             raise RuntimeError("transient downstream blip")  # not terminal
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     with pytest.raises(RuntimeError):
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
@@ -513,7 +598,7 @@ async def test_terminal_failure_is_cached_and_replayed() -> None:
         calls += 1
         raise edax.CodecError("bad payload")  # terminal -> cached
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     with pytest.raises(edax.CodecError):
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
@@ -539,7 +624,7 @@ async def test_pending_claim_raises_in_progress_not_none() -> None:
         raise AssertionError("handler must not run")
 
     bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("user.create", must_not_run)
+    bus.register(CreateUser, must_not_run)
     with pytest.raises(edax.InProgress):
         await bus.dispatch(cmd, idempotency_key="req-1")
 
@@ -753,7 +838,7 @@ def test_payload_data_leaves_values_without_dataclasses_untouched(case: Untouche
     # common case copies nothing, and a Struct is not rebuilt, since `msgspec.structs.replace`
     # re-runs `__post_init__` and hashing must not have that side effect.
     post_inits = len(POST_INITS)
-    data = C._payload_data(case.cmd)
+    data = _json._materialized(C._payload_data(case.cmd))
     original = case.cmd if case.attr is None else getattr(case.cmd, case.attr)
     got = data if case.attr is None else data[case.attr]
     assert got is original
@@ -801,7 +886,7 @@ async def test_retry_inside_idempotent_shares_one_claim() -> None:
             raise RuntimeError("transient downstream blip")  # not terminal
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     assert await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1") == "user:a@b.c"
     assert calls == 2
@@ -826,9 +911,9 @@ def test_register_duplicate_type_raises() -> None:
     async def handler(cmd: CreateUser) -> str:
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     with pytest.raises(C.AlreadyRegistered, match=r"user\.create"):
-        bus.register("user.create", handler)
+        bus.register(CreateUser, handler)
 
 
 class DeclaredTerminal(Exception):
@@ -889,7 +974,7 @@ async def test_retry_branches(case: RetryCase) -> None:
             raise error
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     if case.raises is None:
         assert await bus.dispatch(CreateUser("a@b.c")) == "user:a@b.c"
@@ -949,11 +1034,11 @@ async def test_retry_refuses_to_run_inside_an_open_transaction(case: PlacementCa
         nonlocal runs
         runs += 1
         account = await accounts.get(cmd.account_id) or Entity(cmd.account_id, 0, {"balance": 0})
-        account.document = {"balance": account.document["balance"] + cmd.amount}
-        await accounts.save(account)  # joins the open unit of work
+        balance: int = account.document["balance"] + cmd.amount
+        await accounts.save(replace(account, document={"balance": balance}))  # joins the open unit of work
         if runs == 1:
             raise ConnectionError("notification service reset after the save")  # transient
-        return account.document["balance"]
+        return balance
 
     def key(cmd: Deposit) -> str:
         return cmd.request_id
@@ -972,7 +1057,7 @@ async def test_retry_refuses_to_run_inside_an_open_transaction(case: PlacementCa
             C.retry(3, pacing=NO_WAIT),
             C.idempotent(ledger, unit_of_work=db, scope="test", tenancy=edax.Tenancy.SILO),
         )
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
     command = Deposit("acct-1", 100, "req-1")
 
     async def dispatch() -> int:
@@ -1063,7 +1148,7 @@ async def test_idempotent_branches(case: IdemCase) -> None:
             raise error
         return "ok"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     for _ in range(2):  # a dispatch and its redelivery
         if case.raises is None:
@@ -1112,7 +1197,7 @@ async def test_cancellation_never_strands_a_pending_claim(case: CancelCase) -> N
             await asyncio.Event().wait()  # parked until cancelled
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
 
     task = asyncio.create_task(bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1"))
     await started.wait()
@@ -1141,7 +1226,7 @@ async def test_concurrent_dispatches_of_one_key_run_the_handler_once() -> None:
         await release.wait()
         return f"user:{cmd.email}"
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     cmd = CreateUser("a@b.c")
     racers = [asyncio.create_task(bus.dispatch(cmd, idempotency_key="req-1")) for _ in range(5)]
     # The native claim resolves on another thread, so one loop turn does not put every racer past its
@@ -1173,7 +1258,7 @@ async def test_unserializable_result_is_terminal_and_cached() -> None:
         runs += 1
         return object()
 
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     with pytest.raises(edax.CodecError, match="not JSON-encodable") as caught:
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
     assert caught.value.terminal is True
@@ -1195,7 +1280,7 @@ def test_decode_record_rejects_unreadable_json_as_terminal(raw: str) -> None:
     with pytest.raises(
         edax.CodecError, match=r"not a JSON object|missing field|line 1 column|not valid JSON"
     ) as caught:
-        C.decode_record(raw)
+        idempotency.decode_record(raw)
     assert caught.value.terminal is True
 
 
@@ -1204,26 +1289,26 @@ def test_decode_record_rejects_unreadable_json_as_terminal(raw: str) -> None:
     [
         pytest.param(
             '{"payload_hash": 18446744073709551615, "result": {"id": 7}, "error": null}',
-            (2**64 - 1, {"id": 7}, None, False),
+            Record.done(2**64 - 1, {"id": 7}),
             id="record_without_pending_field_reads_as_completed",
         ),
         pytest.param(
             '{"payload_hash": 1, "result": null, "error": null, "pending": true}',
-            (1, None, None, True),
+            Record.pending(1),
             id="pending_claim_is_not_a_none_success",
         ),
         pytest.param(
             '{"payload_hash": 1, "result": null, "error": "bad payload", "pending": false}',
-            (1, None, "bad payload", False),
+            Record.failed(1, "bad payload"),
             id="cached_failure",
         ),
     ],
 )
-def test_record_decodes_cross_sdk_json(raw: str, want: tuple[int, Any, str | None, bool]) -> None:
-    record = C.decode_record(raw)
-    assert (record.payload_hash, record.result, record.error, record.pending) == want
+def test_record_decodes_cross_sdk_json(raw: str, want: Record) -> None:
+    record = idempotency.decode_record(raw)
+    assert record == want
     # The 64-bit hash survives the round trip losslessly (no float).
-    assert C.decode_record(C.encode_record(record)).payload_hash == want[0]
+    assert idempotency.decode_record(idempotency.encode_record(record)) == want
 
 
 # A real 64-bit payload hash above 2**63, and what a *signed* BIGINT column reads it back as. The
@@ -1252,14 +1337,18 @@ def test_stored_payload_hash_outside_64_bits_is_terminal(case: HashCase) -> None
     # A hash a backend stored lossily is a deterministic store defect: every read of that key fails
     # the same way. Untyped it surfaces as a bare OverflowError, which is_terminal reads as
     # transient — so the dispatcher would nack and the broker redeliver it forever.
-    record = Record(case.payload_hash, result={"user_id": "u-1"})
+    record = Record.done(case.payload_hash, {"user_id": "u-1"})
+    replay = functools.partial(
+        Guard(_NO_STORE, "CreateUser", "req-1", case.payload_hash, edax.Observer()).replay,
+        record,
+    )
     if not case.terminal_error:
-        assert C._outcome(record, case.payload_hash) == "succeeded"
-        assert C.decode_record(C.encode_record(record)).payload_hash == case.payload_hash
+        assert replay() == {"user_id": "u-1"}
+        assert idempotency.decode_record(idempotency.encode_record(record)).payload_hash == case.payload_hash
         return
     for entry, call in (
-        ("_outcome", lambda: C._outcome(record, 1)),
-        ("encode", lambda: C.encode_record(record)),
+        ("replay", replay),
+        ("encode", lambda: idempotency.encode_record(record)),
     ):
         with pytest.raises(edax.CodecError, match="could not cross into the kernel") as caught:
             call()
@@ -1324,7 +1413,7 @@ async def test_a_second_cancel_does_not_abandon_the_claim(case: CancelCase) -> N
         return f"user:{cmd.email}"
 
     bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     task = asyncio.create_task(bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1"))
     await running.wait()
 
@@ -1358,11 +1447,11 @@ def test_a_result_the_kernel_accepted_but_python_cannot_decode_is_terminal(
         result_json = '{"balance_cents": 42,}'  # trailing comma: valid to no JSON parser
         error = ""
 
-    monkeypatch.setattr(C._edax, "decode_idempotency_record", lambda raw: _Decoded())
+    monkeypatch.setattr(C._native, "decode_idempotency_record", lambda raw: _Decoded())
     with pytest.raises(
         edax.CodecError, match=r"not a JSON object|missing field|line 1 column|not valid JSON"
     ) as caught:
-        C.decode_record('{"payload_hash":11258580006047770801,"result":{},"error":null}')
+        idempotency.decode_record('{"payload_hash":11258580006047770801,"result":{},"error":null}')
     assert caught.value.terminal is True
 
 
@@ -1379,7 +1468,7 @@ async def test_a_cancel_at_the_claims_first_suspension_point_never_strands_the_k
         return f"user:{cmd.email}"
 
     bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register("user.create", handler)
+    bus.register(CreateUser, handler)
     task = asyncio.create_task(bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1"))
     await asyncio.sleep(0)  # the dispatch runs up to its first suspension point
     task.cancel()
@@ -1392,10 +1481,20 @@ async def test_a_cancel_at_the_claims_first_suspension_point_never_strands_the_k
     assert runs == ["a@b.c"], "the handler ran exactly once"
 
 
-@pytest.mark.parametrize("attempts", [0, -3], ids=["zero", "negative"])
-def test_retry_refuses_fewer_than_one_attempt(attempts: int) -> None:
-    """A count below one is a wiring typo; clamping it to one attempt would hide it."""
-    with pytest.raises(ValueError, match=f"at least one attempt, got {attempts}"):
+@pytest.mark.parametrize(
+    "attempts, want",
+    [
+        (0, "retry needs at least one attempt, got 0"),
+        (-3, "retry attempts must be an unsigned 32-bit integer, got -3"),
+        (2**32, "retry attempts must be an unsigned 32-bit integer"),
+        (2.0, "retry attempts must be an int, got 2.0"),
+    ],
+    ids=["zero", "negative", "past_u32", "not_an_int"],
+)
+def test_retry_refuses_a_count_the_kernel_refuses(attempts: Any, want: str) -> None:
+    """A count below one is a wiring typo; clamping it to one attempt would hide it. The terminal BadHandle,
+    as the kernel's ``retry_step`` refuses zero attempts."""
+    with pytest.raises(edax.BadHandle, match=want):
         C.retry(attempts)
 
 
@@ -1403,14 +1502,14 @@ async def test_the_bus_registers_by_decorator() -> None:
     """The command bus has the event router's decorator form, and the bare handler comes back."""
     bus = C.CommandBus()
 
-    @bus.on("user.create")
+    @bus.on(CreateUser)
     async def create(cmd: CreateUser) -> str:
         return cmd.email
 
     assert await bus.dispatch(CreateUser("ada@example.com")) == "ada@example.com"
     assert await create(CreateUser("grace@example.com")) == "grace@example.com", "the bare handler"
     with pytest.raises(edax.AlreadyRegistered):
-        bus.on("user.create")(create)
+        bus.on(CreateUser)(create)
 
 
 async def test_one_key_reused_by_another_command_type_is_a_payload_mismatch() -> None:
@@ -1429,8 +1528,8 @@ async def test_one_key_reused_by_another_command_type_is_a_payload_mismatch() ->
         ran.append(cmd.type)
         return "quoted"
 
-    bus.register("order.place", place)
-    bus.register("order.quote", quote)
+    bus.register(PlaceOrder, place)
+    bus.register(GoldenQuoteOrder, quote)
     assert (
         await bus.dispatch(msgspec.convert(fields, GoldenPlaceOrder), idempotency_key="req-shared")
         == "placed"

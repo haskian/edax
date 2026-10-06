@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
+from . import _native
 from .errors import BadHandle
 
 T = TypeVar("T")
@@ -25,6 +26,9 @@ def _thread_token() -> object:
 class ThreadBound(Generic[T]):
     """A native ``_edax`` handle and the thread that built it.
 
+    :meth:`get` hands out the handle behind :func:`~edax._native.handle`, so each method call's failure is
+    mapped to :mod:`edax.errors` once, here, for every holder.
+
     The binding generator marks every native handle ``unsendable``, so a call from another thread
     panics inside PyO3. The panic surfaces as ``PanicException``, a ``BaseException`` that no
     ``except Exception`` arm in the SDK or the host sees. :meth:`get` raises the terminal
@@ -38,7 +42,7 @@ class ThreadBound(Generic[T]):
     _what: str
 
     def __init__(self, handle: T, what: str) -> None:
-        self._handle = handle
+        self._handle = _native.handle(handle)
         self._owner = _thread_token()
         self._what = what
 
@@ -53,10 +57,15 @@ class ThreadBound(Generic[T]):
     def get(self) -> T:
         """The handle, on the thread that built it; :class:`~edax.errors.BadHandle` on any other."""
         if self._owner is None:
-            self._handle, self._owner = self._build(), _thread_token()
+            self._handle, self._owner = _native.handle(self._build()), _thread_token()
         if _thread_token() is not self._owner:
             raise BadHandle(
                 f"{self._what} was built on another thread, and its native state is bound to that "
                 "thread: build it on the thread (and event loop) that uses it"
             )
         return self._handle
+
+    def peek(self) -> T | None:
+        """The handle as :meth:`get` returns it, or ``None`` while a lazy one is unbuilt. For a read that
+        must not build the handle, so a caller on another thread never takes it from its user."""
+        return None if self._owner is None else self.get()

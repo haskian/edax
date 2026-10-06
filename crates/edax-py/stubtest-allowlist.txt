@@ -9,25 +9,37 @@ edax\._edax\.__all__
 # alef marks no pyclass `@final` or `@disjoint_base`, and stubtest reports both on the class itself.
 # One line per class, so a class the ABI adds is a deliberate addition here.
 edax\._edax\.BackoffPolicy
+edax\._edax\.ClaimResult
 edax\._edax\.CommandMessage
-edax\._edax\.Event
+edax\._edax\.DraftBatch
+edax\._edax\.Drain
+edax\._edax\.DrainRow
+edax\._edax\.DrainRowFailed
+edax\._edax\.Drained
 edax\._edax\.EventDraft
 edax\._edax\.EventIdempotency
 edax\._edax\.EventMessage
 edax\._edax\.IdempotencyRecord
+edax\._edax\.IdempotencyReplay
 edax\._edax\.KafkaDue
 edax\._edax\.KafkaHeader
 edax\._edax\.KafkaRecord
 edax\._edax\.KafkaRoute
 edax\._edax\.Lineage
 edax\._edax\.MemoryBroker
-edax\._edax\.MemoryClaim
+edax\._edax\.MemoryCommandOutbox
+edax\._edax\.MemoryEventStore
+edax\._edax\.MemoryIdempotencyStore
+edax\._edax\.MemoryProjectionStore
+edax\._edax\.MemorySagaStore
 edax\._edax\.MemoryTransactor
 edax\._edax\.NackDecision
 edax\._edax\.OffsetTracker
 edax\._edax\.PartitionStats
+edax\._edax\.Payload
 edax\._edax\.PollResult
 edax\._edax\.ProjectionRow
+edax\._edax\.RedisDefaults
 edax\._edax\.RedisScripts
 edax\._edax\.Retries
 edax\._edax\.RetriesTracked
@@ -37,6 +49,7 @@ edax\._edax\.SagaRow
 edax\._edax\.SagaWrite
 edax\._edax\.SnapshotResult
 edax\._edax\.SplitError
+edax\._edax\.Streak
 edax\._edax\.TenancyRules
 # `edax.aggregate` gives each record's two dictionaries a key-ordered read-only property at import (the
 # native getter iterates in a per-process order); the stub keeps alef's field declaration.

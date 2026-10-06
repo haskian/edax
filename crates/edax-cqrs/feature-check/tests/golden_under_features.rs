@@ -3,10 +3,22 @@
 //! match, refusals included: the 2^53 check reads the input text, so `arbitrary_precision` cannot
 //! hide a wide literal from it.
 
-use edax_cqrs::query::{encode_cursor, SortKey};
-use edax_cqrs::{canonical_json, command_hash, payload_hash};
-use edax_golden::read as golden;
+use edax_cqrs::{canonical_json, command_hash, encode_cursor, payload_hash, Decimal, Instant, SortKey};
+use edax_golden::{map_markers, read as golden, DECIMAL_MARKER};
 use serde_json::Value;
+
+/// `value` with each host-value marker built as the kernel's host type and written back as its text,
+/// or the kernel's error in its wire form.
+fn host_values(value: &Value) -> Result<Value, String> {
+    map_markers(value, &|marker, text| {
+        let canonical = if marker == DECIMAL_MARKER {
+            text.parse::<Decimal>().map(|decimal| decimal.to_string())
+        } else {
+            text.parse::<Instant>().map(|instant| instant.to_string())
+        };
+        canonical.map(Value::String).map_err(|e| e.to_string())
+    })
+}
 
 #[test]
 fn the_features_are_on() {
@@ -22,7 +34,11 @@ fn canonical_json_vector_holds() {
         let input = case["input"].as_str().unwrap();
         match canonical_json(input.as_bytes()) {
             Ok(canonical) => {
-                assert_eq!(Some(std::str::from_utf8(&canonical).unwrap()), case["canonical"].as_str(), "{name}");
+                assert_eq!(
+                    Some(std::str::from_utf8(&canonical).unwrap()),
+                    case["canonical"].as_str(),
+                    "{name}"
+                );
                 assert_eq!(Some(payload_hash(&canonical)), case["hash"].as_u64(), "{name}: hash");
             }
             Err(error) => assert_eq!(Some(error.to_string().as_str()), case["error"].as_str(), "{name}"),
@@ -47,11 +63,16 @@ fn command_hash_vector_holds() {
     // under `arbitrary_precision` keeps the number text: exactly the two things the hash must ignore.
     // `arbitrary_precision` also keeps an integer past 2^53 as its text, so the refusal rows prove the
     // kernel reads the literal, not a `Value` that may already have rounded it.
+    //
+    // A host-value row's markers are built as `Decimal` / `Instant` first, in a `Value`, so the canonical
+    // text those types write is hashed under the features too.
     for case in golden("command_hash.json") {
         let name = case["name"].as_str().unwrap();
-        match command_hash(case["type"].as_str().unwrap(), &case["command"]) {
+        let hashed = host_values(&case["command"])
+            .and_then(|command| command_hash(case["type"].as_str().unwrap(), &command).map_err(|e| e.to_string()));
+        match hashed {
             Ok(hash) => assert_eq!(Some(hash), case["expected"].as_u64(), "{name}"),
-            Err(error) => assert_eq!(Some(error.to_string().as_str()), case["error"].as_str(), "{name}"),
+            Err(error) => assert_eq!(Some(error.as_str()), case["error"].as_str(), "{name}"),
         }
     }
 }
@@ -64,6 +85,11 @@ fn cursor_vector_holds() {
         }
         let keys: Vec<SortKey> = serde_json::from_value(case["sort"].clone()).unwrap();
         let cursor = encode_cursor(&case["document"], &keys).unwrap();
-        assert_eq!(Some(cursor.as_str()), case["expected_cursor"].as_str(), "{}", case["sort"]);
+        assert_eq!(
+            Some(cursor.as_str()),
+            case["expected_cursor"].as_str(),
+            "{}",
+            case["sort"]
+        );
     }
 }

@@ -23,7 +23,7 @@ written against them. Pin a minor in your dependency declaration
 | Kernel decisions: local partition and Kafka placement, the ordering key, lineage, the extension key rule, the canonical form (RFC 8785) and the payload and command hashes, the claim key, the idempotency record, verdict, settle and forget, the replay of an unreadable record, filter order and keyset cursors, the upcast plan, the retry and dead-letter policy, the saga step | Pinned by golden vectors. A change here is a breaking change even if no signature moves. |
 | The message wire format, events and commands, and its media types | Pinned by golden vectors. Within a minor, old bytes stay readable. A minor may refuse an old shape; the upgrade notes below name each one. |
 | The Redis key, value layout and scripts | A cross-SDK contract: two services share a ledger only while it holds. The value carries a layout version, so a later layout is named, and replays as a cached `codec` failure instead of being split at the wrong place. |
-| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `CommandOutbox`, `Transactor`) | Adding a required method is a breaking change. Adding an optional one, declared by a capability flag, is not. |
+| The storage seam protocols (`EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Outbox`, `CountedOutbox`, `CommandOutbox`, `Transactor`), each generic in its transaction handle | Adding a required method is a breaking change. Adding an optional one, as its own port or declared by a capability flag, is not. |
 | The conformance suites in `edax.testing` | A new clause may fail a backend that passed before, so clauses are added in a minor. |
 
 ## What is not covered
@@ -41,6 +41,89 @@ written against them. Pin a minor in your dependency declaration
   [Rust and Python parity](sdk/rust-parity.md).
 
 ## Upgrade notes
+
+### 0.5 to 0.6
+
+- **Saga store seam keyed by the saga's name.** Every `SagaStore` method takes the saga's `name`
+  first: `load(saga, id)`, `save(saga, id, ...)`, `complete(saga, id, ...)`, `unpublished(saga, limit)`,
+  `mark_published(saga, ids)`. Key the instance table and the outbox by `(saga, id)`, so two sagas
+  over one database share neither an instance nor a command. A relay drains one saga's outbox:
+  `Relay(runner.outbox(), publish)`, not `Relay(store, publish)`. Existing rows need the saga's name
+  added to their key.
+- **Drain legacy saga commands before migrating.** Version 0.6 scopes command IDs by saga name;
+  version 0.5 used `instance:version:index`. New runners do not retain every failure of an old-format
+  command, so replay after another failure can repeat compensation.
+  Quiesce new saga inputs and drain all saga command outboxes under 0.5, including commands emitted
+  by compensation. Settle or explicitly resolve old dead letters and pending failure notifications
+  before stopping the old runners. Verify no old commands or failure deliveries remain in brokers,
+  outboxes, or scheduled redrives; then migrate instance keys and deploy 0.6.
+  Preserve saved folded marks and idempotency records. Do not rewrite command IDs to the new format:
+  a changed identity can execute an already-completed command again. If old deliveries remain,
+  postpone the upgrade; adding saga names to storage keys alone is unsafe.
+- **Store refusals.** `IdempotencyStore.complete` refuses a pending record with `BadHandle`, and
+  `ProjectionStore.save` refuses a document that is not a JSON object with `CodecError`
+  (`edax.projection.check_document`). The contract kit holds a store of your own to both.
+- **`Event` is now `Payload`.** The codec's output, `name`, `version` and `data`, is `edax.Payload`
+  (Rust `edax::Payload`, `edax_event::Payload`), since a command carries one too. `EventCodec.marshal`
+  returns it. The structural type `unmarshal` reads is `edax.message.Marshaled`.
+- **Projection ports.** `ProjectionStore.save` returns the new version and leaves the `Entity` as it
+  was; `Entity` is frozen (Rust: `save(tx, &entity) -> Result<u64, Error>`). `get_many` moved to its
+  own port, `ProjectionQuery`, and the contract kit runs the paging clauses for a store that is one
+  (`supports_kernel_queries` is gone). `get` returns the document with its row key as `"id"`, as
+  `get_many` does (`edax.projection.keyed_document`).
+- **Outbox reads take a limit.** `Outbox.unpublished(limit)` and `SagaStore.unpublished(saga, limit)`
+  have no default; `Relay.drain` and `Relay.run` default to `edax.outbox.DEFAULT_BATCH`. `Relay` is
+  generic in its row type. `SagaRunner.relay(bus, ...)` is gone: write
+  `Relay(runner.outbox(), runner.publish_to(bus), on_dead=runner.command_failed)`.
+- **Command bus.** `dispatch_message` runs the message as received: middleware and
+  `current_command()` see the key the sender set, and the guard claims a keyless one under its id. A
+  duplicate handler raises `AlreadyRegistered` naming it, in the bus and the router alike. A `scope`
+  that is not a `str` raises `BadHandle`. The codec protocol is `PayloadCodec` (`EventCodec` stays its
+  name in the event role), and `RegistryEventCodec` is `RegistryCodec`.
+- **Stored naive datetimes stop reading.** `json_codec` and `msgpack_codec` now check every `datetime`
+  and `Decimal` they read, as they check what they write. An event stored with a naive `datetime` (no
+  UTC offset) raises `CodecError` on read. Its aggregate stops loading, and a consumer dead-letters it.
+  So does a stored `Decimal` that is `NaN` or infinite. Before the upgrade, rewrite such payloads with
+  an offset, or give the name an upcaster step that adds one.
+- **Observer label.** The delivery outcome `stale` is `retired`.
+- **Memory backends.** `MemoryLedger` wraps a `MemoryIdempotencyStore` instead of subclassing it, and
+  exposes no `transactor`. `Snapshot` is frozen.
+- **Kernel paths (Rust).** `edax_event::domain` is `edax_event::message`, `edax_event::dedup` is
+  `edax_event::idempotency`, and `received_key` moved to `edax_cqrs`. `payload_hash` lives in
+  `edax_core` (`edax_cqrs` re-exports it), and `edax_core::verdict` is `edax_core::is_terminal`.
+  `saga_command` takes a `Cause` in place of the folded event's id, correlation id and tenant.
+  `edax_cqrs::query` and `edax_cqrs::record` are private: name their items from the crate root.
+- **One dead-letter value.** Every sink takes one `DeadLetter`: `message`, `attempt`, `failure` and
+  `origin`, from a dispatcher and a relay alike. A dispatcher sink was `on_dead(delivery, error)` and a
+  relay sink `on_dead(row, error)`; read `letter.message`, `letter.failure` and `letter.origin` instead.
+  The field is `failure` in both SDKs, as the Rust `DeadLetter` names it.
+  `SagaRunner.command_failed` takes the `DeadLetter` too. In Rust, `Relay::on_dead` takes a
+  `DeadLetter<&R, &HandlerError>`, and `SagaRunner::command_failed(tx, dead)` takes it.
+- **Poison is `Undecodable`.** A record that will not decode is an `edax.Undecodable` (`id`, `payload`,
+  `error`), not an `UndecodableDelivery` with a stand-in event. `Consumer.poll` returns it, and a
+  dispatcher sink gets it as `DeadLetter.message`. `settle_poison(poison)` takes it alone.
+- **Consumer loop.** The `Consumer` protocol is `poll` alone. `edax.broker.consume(consumer,
+  dispatcher)` replaces the `ConsumerLoop` mixin; `KafkaConsumer.run` and `MemoryBroker.run` stay.
+- **Async event handlers.** `EventRouter.register`, `on` and `on_unhandled` refuse a handler that is
+  not a coroutine function with `TypeError`, as `CommandBus.register` does.
+- **Saga instances.** `SagaStore.load` returns a `RunningInstance(state, version, folded)` or a
+  `CompletedInstance(version)`, not a `SagaInstance` with a `completed` flag.
+- **Renames.** `tenant_key(mode, tenant, key)` takes the tenant before the key, as Rust does.
+  `edax.upcast.Upcast` is `UpcastStep`. `edax.projection` and `edax.store` no longer re-export
+  `ConcurrencyError`: import it from `edax` or `edax.errors`. The dispatcher's `handler` attribute is
+  private. `edax.upcast.schema_version` is gone; `Upcaster.step` checks the version itself.
+- **A command bus owns its codec.** Build it as `CommandBus(*middleware, codec=commands)` and call
+  `dispatch_message(msg)` without a codec. `register` refuses a command the codec does not name with
+  `BadHandle`, and so does `dispatch_message` on a bus built without a codec. `dispatch` builds its
+  message with the codec too. `SagaRunner.publish_to(bus)` refuses a bus with no codec. The bus takes a
+  `CommandCodec`: a `PayloadCodec` with `type_of(name)`, which `RegistryCodec` has. A hand-written
+  command codec adds it. `register` also refuses a class the codec reads the name as another class.
+- **Wiring refusals.** `KeyOrderedDispatcher.submit` refuses a `Delivery.attempt` outside an unsigned
+  32-bit integer with `BadHandle`, and `KafkaConsumer` refuses a serializer whose `kind` is no message
+  kind. Both used to fail later, with the delivery unsettled.
+- **Typing.** A dispatcher's `Handler[M]` is async, as a router's handlers are. A sync one still runs,
+  but a type checker refuses it. `Consumer`, `Polled` and `consume` are generic in the message kind, so
+  `consume` checks that the consumer and the dispatcher carry the same one.
 
 ### 0.4 to 0.5
 
@@ -124,7 +207,7 @@ written against them. Pin a minor in your dependency declaration
 - **Unreadable idempotency records.** A stored record no reader can decode replays as
   `CachedFailure` of code `codec`, in both SDKs, instead of raising `CodecError` on every claim. So
   does a cached result that does not convert to the handler's `result_type`. A store reads the record
-  that holds a key with `edax.command.decode_prior`; a store of your own that calls `decode_record`
+  that holds a key with `edax.idempotency.decode_prior`; a store of your own that calls `decode_record`
   there must switch.
 
 ## Supported runtimes

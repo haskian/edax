@@ -18,22 +18,107 @@ the text.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypedDict
 
-from . import _edax, _json, errors
+from . import _json, _native
 
-Filter = dict[str, Any]  # one filter node in the kernel's canonical form
+if TYPE_CHECKING:  # `query` imports this module for `Filter`
+    from .query import Document
+
+__all__ = [
+    "AndFilter",
+    "CompareFilter",
+    "Comparison",
+    "Containment",
+    "ContainsFilter",
+    "ExistsFilter",
+    "Filter",
+    "InFilter",
+    "Membership",
+    "NotFilter",
+    "Operator",
+    "OrFilter",
+    "Presence",
+    "and_",
+    "contains",
+    "eq",
+    "exists",
+    "gt",
+    "gte",
+    "in_",
+    "lt",
+    "lte",
+    "matches",
+    "ne",
+    "not_",
+    "or_",
+    "starts_with",
+]
+
+#: A comparison's operator, as the kernel's filter grammar spells it.
+Operator = Literal["eq", "ne", "gt", "gte", "lt", "lte", "starts_with"]
 
 
-def _collated(node: dict[str, Any], *values: Any) -> Filter:
+class _Collated(TypedDict, total=False):
+    #: Set for a ``Decimal`` comparand: decimal text then compares by exact value.
+    collation: Literal["decimal"]
+
+
+class Comparison(_Collated):
+    path: str
+    op: Operator
+    value: Any
+
+
+class Membership(_Collated):
+    path: str
+    values: list[Any]
+
+
+class Containment(TypedDict):
+    path: str
+    value: Any
+
+
+class Presence(TypedDict):
+    path: str
+    exists: bool
+
+
+# One node of the kernel's canonical filter form each, keyed by its kind. The keys `in`, `and`, `or` and
+# `not` are Python keywords, so those nodes take the functional form.
+class CompareFilter(TypedDict):
+    compare: Comparison
+
+
+InFilter = TypedDict("InFilter", {"in": Membership})
+
+
+class ContainsFilter(TypedDict):
+    contains: Containment
+
+
+class ExistsFilter(TypedDict):
+    exists: Presence
+
+
+AndFilter = TypedDict("AndFilter", {"and": list["Filter"]})
+OrFilter = TypedDict("OrFilter", {"or": list["Filter"]})
+NotFilter = TypedDict("NotFilter", {"not": "Filter"})
+
+#: One filter node in the kernel's canonical form.
+Filter: TypeAlias = (
+    CompareFilter | InFilter | ContainsFilter | ExistsFilter | AndFilter | OrFilter | NotFilter
+)
+
+
+def _collation(*values: Any) -> _Collated:
     # A Decimal encodes as decimal text, which orders by value only under the decimal collation.
-    if any(isinstance(value, Decimal) for value in values):
-        node["collation"] = "decimal"
-    return node
+    return {"collation": "decimal"} if any(isinstance(value, Decimal) for value in values) else {}
 
 
-def _compare(path: str, op: str, value: Any) -> Filter:
-    return {"compare": _collated({"path": path, "op": op, "value": value}, value)}
+def _compare(path: str, op: Operator, value: Any) -> Filter:
+    return {"compare": {"path": path, "op": op, "value": value, **_collation(value)}}
 
 
 def eq(path: str, value: Any) -> Filter:
@@ -65,7 +150,7 @@ def starts_with(path: str, prefix: str) -> Filter:
 
 
 def in_(path: str, *values: Any) -> Filter:
-    return {"in": _collated({"path": path, "values": list(values)}, *values)}
+    return {"in": {"path": path, "values": list(values), **_collation(*values)}}
 
 
 def contains(path: str, value: Any) -> Filter:
@@ -89,7 +174,6 @@ def not_(filter: Filter) -> Filter:
     return {"not": filter}
 
 
-def matches(filter: Filter, document: Any) -> bool:
+def matches(filter: Filter, document: Document) -> bool:
     """Return whether ``document`` satisfies ``filter``."""
-    with errors.mapped():
-        return _edax.eval_filter(_json.encode(filter), _json.encode(document))
+    return _json.call(_native.eval_filter, filter, document)

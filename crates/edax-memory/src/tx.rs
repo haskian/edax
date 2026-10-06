@@ -1,34 +1,59 @@
 //! The transaction boundary: the token, the staged write sets, the committed database, and the
-//! transactor that hands out both tokens and store views.
+//! transactor that hands out both tokens and store views. Each seam's tables and its merge rule live
+//! in the seam's own module; this one composes them and applies a commit to all of them at once.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error, TokenMint, NO_TOKEN};
-use edax_event::{CommandMessage, EventMessage, Message};
-use serde_json::{Map, Value};
+use edax_event::{CommandMessage, EventMessage};
 
 use crate::event::{MemoryEventStore, Snapshot};
-use crate::idempotency::MemoryIdempotencyStore;
+use crate::idempotency::{Held, MemoryIdempotencyStore};
 use crate::outbox::MemoryCommandOutbox;
-use crate::projection::MemoryProjectionStore;
-use crate::saga::{MemorySagaStore, SagaRow};
+use crate::outbox_rows::OutboxRows;
+use crate::projection::{Document, MemoryProjectionStore};
+use crate::saga::{MemorySagaStore, SagaKey, SagaRow};
+use crate::versioned::{Staged, VersionedTable};
 
-/// A read-model document: always a JSON object, so the store can inject the row key as its `"id"`.
-pub type Document = Map<String, Value>;
+/// A transaction token: names one transaction [`MemoryTransactor::begin`] opened, or
+/// [`Tx::auto_commit`]. `Copy`, so a host keeps the open transaction's token wherever it needs it. A
+/// token used after its transaction ended, or on another transactor's stores, is refused as unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Tx(i64);
 
-/// What an idempotency key holds: the kernel's record bytes and, while it is a pending claim, the id of
-/// that claim, which its handle names. A settled record carries no claim: nobody owns it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Held {
-    pub(crate) record: Vec<u8>,
-    pub(crate) claim: Option<i64>,
+impl Tx {
+    /// The token that names no transaction. A write made under it lands at once (auto-commit) and a
+    /// read under it sees only committed state. Every store method accepts it, so a caller that opens
+    /// no unit of work gets plain write-then-read behaviour. Also the `Default` token.
+    pub const fn auto_commit() -> Tx {
+        Tx(NO_TOKEN)
+    }
+
+    /// The token a binding's host handed back: the number [`raw`](Self::raw) gave it. Only a binding
+    /// needs it, since a host that holds a number cannot hold a Rust value; any other number is a
+    /// token no transaction holds, refused as unknown by every store method.
+    pub const fn from_raw(raw: i64) -> Tx {
+        Tx(raw)
+    }
+
+    /// The token as the number a binding hands its host.
+    pub const fn raw(self) -> i64 {
+        self.0
+    }
 }
 
-/// The token that names no transaction. A write made under it lands at once (auto-commit) and a
-/// read under it sees only committed state. Every store method accepts it, so a caller that opens no
-/// unit of work gets plain write-then-read behaviour.
-pub const NO_TX: i64 = NO_TOKEN;
+impl Default for Tx {
+    fn default() -> Self {
+        Tx::auto_commit()
+    }
+}
+
+impl std::fmt::Display for Tx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Process-wide token source, unlike the offset tracker's per-instance one: a token names one transaction of
 /// one transactor for the whole process lifetime, so a handle from another transactor is refused as
@@ -39,41 +64,10 @@ static TX_TOKENS: TokenMint = TokenMint::new();
 /// back. Its own terminal code, `bad_handle`, rather than `codec`, which the kernel reserves for a
 /// value that would not marshal: the same token fails identically on every retry, and a transient
 /// code would have a host retry a wiring mistake forever.
-pub(crate) fn unknown_tx(tx: i64) -> Error {
-    Error::bad_handle(format_args!("unknown transaction {tx}: not begun, or already committed or rolled back"))
-}
-
-/// An event's sequence, with an unsequenced one reading as 0. The stream's version space is the
-/// kernel's `u64`, so no conversion can clamp or wrap it.
-pub(crate) fn sequence_of(event: &EventMessage) -> u64 {
-    event.sequence.unwrap_or(0)
-}
-
-/// The first `limit` committed rows, oldest commit first. The outbox holds unpublished rows only, so
-/// this is a bounded prefix scan rather than a filter over an ever-growing log. One page, one refusal
-/// and one prune serve every outbox (events, saga commands, outbox commands), so the three cannot
-/// drift apart.
-pub(crate) fn page<R: Message + Clone>(rows: &[R], limit: usize) -> Vec<R> {
-    rows.iter().take(limit).cloned().collect()
-}
-
-/// Refuse a `batch` of `what` rows when one's id is already `waiting` (committed, or staged by any open
-/// transaction) or repeats within the batch. A relay marks rows sent by id, so two rows under one id
-/// could not be told apart, and marking one would prune both. Deterministic, so `codec`.
-pub(crate) fn refuse_waiting<'a, R: Message + 'a>(waiting: impl Iterator<Item = &'a R>, batch: &[R], what: &str) -> Result<(), Error> {
-    let mut ids: HashSet<&str> = waiting.map(Message::id).collect();
-    for row in batch {
-        if !ids.insert(row.id()) {
-            return Err(Error::codec(format_args!("{what} {} is already in the outbox", row.id())));
-        }
-    }
-    Ok(())
-}
-
-/// Drop the rows marked sent, keeping the outbox bounded. Idempotent; an unknown id is a no-op.
-pub(crate) fn prune<R: Message>(rows: &mut Vec<R>, ids: Vec<String>) {
-    let sent: HashSet<String> = ids.into_iter().collect();
-    rows.retain(|row| !sent.contains(row.id()));
+pub(crate) fn unknown_tx(tx: Tx) -> Error {
+    Error::bad_handle(format_args!(
+        "unknown transaction {tx}: not begun, or already committed or rolled back"
+    ))
 }
 
 /// Everything committed, for every seam. One struct so one lock guards it all: a commit applies a
@@ -81,15 +75,15 @@ pub(crate) fn prune<R: Message>(rows: &mut Vec<R>, ids: Vec<String>) {
 /// without the claim that guards them.
 #[derive(Default)]
 pub(crate) struct Committed {
-    pub(crate) events: HashMap<String, Vec<EventMessage>>,     // aggregate_id -> ordered events
-    pub(crate) event_ids: HashSet<String>,                     // every stored event id
-    pub(crate) snapshots: HashMap<String, Snapshot>,           // aggregate_id -> snapshot
-    pub(crate) outbox: Vec<EventMessage>,                      // unpublished rows only (pruned on publish)
-    pub(crate) projections: BTreeMap<String, (u64, Document)>, // id -> (version, document); id-ordered
-    pub(crate) claims: HashMap<String, Held>,                  // idempotency key -> record (and claim)
-    pub(crate) sagas: HashMap<String, (u64, SagaRow)>,         // saga instance id -> (version, row)
-    pub(crate) saga_commands: Vec<CommandMessage>,             // unsent saga commands only (pruned on send)
-    pub(crate) commands: Vec<CommandMessage>,                  // unsent outbox commands only (pruned on send)
+    pub(crate) events: HashMap<String, Vec<EventMessage>>, // aggregate_id -> ordered events
+    pub(crate) event_ids: HashSet<String>,                 // every stored event id
+    pub(crate) snapshots: HashMap<String, Snapshot>,       // aggregate_id -> snapshot
+    pub(crate) event_outbox: OutboxRows<EventMessage>,     // unpublished events only
+    pub(crate) projections: VersionedTable<String, Document>, // id -> document
+    pub(crate) claims: HashMap<String, Held>,              // idempotency key -> record (and claim)
+    pub(crate) sagas: VersionedTable<SagaKey, SagaRow>,    // (saga, instance id) -> row
+    pub(crate) saga_outbox: HashMap<String, OutboxRows<CommandMessage>>, // saga -> its unsent commands only
+    pub(crate) command_outbox: OutboxRows<CommandMessage>, // unsent outbox commands only
 }
 
 /// One open transaction's staged writes: the overlay a read inside it sees over [`Committed`], and
@@ -97,34 +91,27 @@ pub(crate) struct Committed {
 #[derive(Default)]
 pub(crate) struct WriteSet {
     pub(crate) streams: HashMap<String, Vec<EventMessage>>, // aggregate_id -> appended tail
-    pub(crate) outbox: Vec<EventMessage>,                   // the same events, in append order
+    pub(crate) event_outbox: Vec<EventMessage>,             // the same events, in append order
     pub(crate) snapshots: HashMap<String, Snapshot>,
-    pub(crate) projections: HashMap<String, (u64, Document)>,
+    pub(crate) projections: Staged<String, Document>,
     pub(crate) claims: HashMap<String, Option<Held>>,
-    pub(crate) sagas: HashMap<String, (u64, SagaRow)>,
-    pub(crate) saga_commands: Vec<CommandMessage>, // the same commands, in write order
-    pub(crate) commands: Vec<CommandMessage>,      // outbox commands, in enqueue order
-}
-
-impl WriteSet {
-    /// The version another writer of `aggregate_id` would commit, if this set stages a tail for it.
-    pub(crate) fn stream_version(&self, aggregate_id: &str) -> Option<u64> {
-        self.streams.get(aggregate_id).and_then(|tail| tail.last()).map(sequence_of)
-    }
+    pub(crate) sagas: Staged<SagaKey, SagaRow>,
+    pub(crate) saga_outbox: HashMap<String, Vec<CommandMessage>>, // saga -> its commands, in write order
+    pub(crate) command_outbox: Vec<CommandMessage>,               // outbox commands, in enqueue order
 }
 
 /// The whole memory database: the committed state plus every open transaction, behind one lock.
 #[derive(Default)]
 pub(crate) struct MemoryState {
     pub(crate) committed: Committed,
-    pub(crate) open: HashMap<i64, WriteSet>,
+    pub(crate) open: HashMap<Tx, WriteSet>,
 }
 
 impl MemoryState {
-    /// Run a read under `tx`: against the committed state alone for [`NO_TX`], or overlaid with the
+    /// Run a read under `tx`: against the committed state alone for [`Tx::auto_commit`], or overlaid with the
     /// transaction's own staged writes (read-your-writes) for an open token.
-    pub(crate) fn read<R>(&self, tx: i64, op: impl FnOnce(&Committed, Option<&WriteSet>) -> R) -> Result<R, Error> {
-        if tx == NO_TX {
+    pub(crate) fn read<R>(&self, tx: Tx, op: impl FnOnce(&Committed, Option<&WriteSet>) -> R) -> Result<R, Error> {
+        if tx == Tx::auto_commit() {
             return Ok(op(&self.committed, None));
         }
         match self.open.get(&tx) {
@@ -135,14 +122,14 @@ impl MemoryState {
 
     /// Run a write under `tx`. The operation sees the committed state, the *other* open transactions
     /// (so a key one of them holds can be refused) and its own write set to stage into. Under
-    /// [`NO_TX`] the write set is a fresh one applied as soon as the operation succeeds, which is
+    /// [`Tx::auto_commit`] the write set is a fresh one applied as soon as the operation succeeds, which is
     /// what makes a call outside any unit of work an auto-commit of exactly that call.
     pub(crate) fn write<R>(
         &mut self,
-        tx: i64,
-        op: impl FnOnce(&Committed, &HashMap<i64, WriteSet>, &mut WriteSet) -> Result<R, Error>,
+        tx: Tx,
+        op: impl FnOnce(&Committed, &HashMap<Tx, WriteSet>, &mut WriteSet) -> Result<R, Error>,
     ) -> Result<R, Error> {
-        if tx == NO_TX {
+        if tx == Tx::auto_commit() {
             let mut own = WriteSet::default();
             let result = op(&self.committed, &self.open, &mut own)?;
             self.committed.apply(own);
@@ -151,7 +138,9 @@ impl MemoryState {
         // Taken out of the map for the call so `op` can borrow the other write sets immutably while
         // staging into this one; put back whatever the outcome, since a refused write must not
         // discard what the transaction staged before it.
-        let Some(mut own) = self.open.remove(&tx) else { return Err(unknown_tx(tx)) };
+        let Some(mut own) = self.open.remove(&tx) else {
+            return Err(unknown_tx(tx));
+        };
         let result = op(&self.committed, &self.open, &mut own);
         self.open.insert(tx, own);
         result
@@ -164,7 +153,7 @@ impl MemoryState {
 /// The first holder found decides the conflict. There can be more than one only across different
 /// keys, since a held key is held against every other transaction.
 pub(crate) fn held_by_other<'a, T>(
-    others: &'a HashMap<i64, WriteSet>,
+    others: &'a HashMap<Tx, WriteSet>,
     accessor: impl Fn(&'a WriteSet) -> Option<T>,
 ) -> Option<T> {
     others.values().find_map(accessor)
@@ -173,32 +162,23 @@ pub(crate) fn held_by_other<'a, T>(
 impl Committed {
     /// Apply a write set. Infallible by construction: every check ran when the write was staged, and
     /// a staged key is held until its transaction ends, so nothing can have changed underneath it.
+    /// Each seam merges its own writes by its own rule.
     pub(crate) fn apply(&mut self, set: WriteSet) {
-        for (aggregate_id, tail) in set.streams {
-            self.event_ids.extend(tail.iter().map(|e| e.id.clone()));
-            self.events.entry(aggregate_id).or_default().extend(tail);
-        }
-        self.outbox.extend(set.outbox);
-        for (aggregate_id, snapshot) in set.snapshots {
-            // Snapshots are not held keys, so two transactions may both have saved one: the higher
-            // version wins whichever commits last, and a snapshot never moves back.
-            match self.snapshots.get(&aggregate_id) {
-                Some(stored) if stored.version > snapshot.version => {}
-                _ => {
-                    self.snapshots.insert(aggregate_id, snapshot);
-                }
-            }
-        }
-        self.projections.extend(set.projections);
-        for (key, held) in set.claims {
-            match held {
-                Some(held) => self.claims.insert(key, held),
-                None => self.claims.remove(&key),
-            };
-        }
-        self.sagas.extend(set.sagas);
-        self.saga_commands.extend(set.saga_commands);
-        self.commands.extend(set.commands);
+        let WriteSet {
+            streams,
+            event_outbox,
+            snapshots,
+            projections,
+            claims,
+            sagas,
+            saga_outbox,
+            command_outbox,
+        } = set;
+        self.apply_events(streams, event_outbox, snapshots);
+        self.projections.apply(projections);
+        self.apply_claims(claims);
+        self.apply_sagas(sagas, saga_outbox);
+        self.command_outbox.apply(command_outbox);
     }
 }
 
@@ -222,7 +202,9 @@ macro_rules! store_view {
 
             /// The transactor this store enlists with.
             pub fn transactor(&self) -> MemoryTransactor {
-                MemoryTransactor { state: Arc::clone(&self.state) }
+                MemoryTransactor {
+                    state: Arc::clone(&self.state),
+                }
             }
         }
     };
@@ -230,13 +212,13 @@ macro_rules! store_view {
 pub(crate) use store_view;
 
 /// The transaction boundary of the in-memory backend, for development and tests. One transactor is
-/// one database: the four stores it hands out share its state, so their writes under one token
+/// one database: the five stores it hands out share its state, so their writes under one token
 /// commit together. A token from [`begin`](Self::begin) stages every write made under it; reads
-/// under it see the committed state plus those staged writes; other transactions and [`NO_TX`]
+/// under it see the committed state plus those staged writes; other transactions and [`Tx::auto_commit`]
 /// readers see nothing of it until [`commit`](Self::commit). `Clone` shares the same database.
 ///
 /// Isolation is by exclusion, not by blocking: a key (an aggregate's stream, a projection id, an
-/// idempotency key, a saga instance id) staged by one open transaction is held until that transaction
+/// idempotency key, a saga's instance) staged by one open transaction is held until that transaction
 /// ends, and a second writer conflicts at once instead of waiting. A durable store would park the
 /// second writer on a row lock; an in-memory store driven from one asyncio loop cannot park anyone
 /// without deadlocking the loop, so the conflict is reported as the reload-and-retry signal the
@@ -256,29 +238,32 @@ pub struct MemoryTransactor {
 }
 
 impl MemoryTransactor {
+    /// An empty in-memory database with no open transaction.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Open a transaction and return its token. Never [`NO_TX`].
-    pub fn begin(&self) -> i64 {
-        let token = TX_TOKENS.issue();
+    /// Open a transaction and return its token. Never [`Tx::auto_commit`].
+    pub fn begin(&self) -> Tx {
+        let token = Tx(TX_TOKENS.issue());
         lock(&self.state).open.insert(token, WriteSet::default());
         token
     }
 
     /// Apply the transaction's staged writes to every seam atomically and close it. A token that
     /// names no open transaction is refused: the caller believes it committed something.
-    pub fn commit(&self, tx: i64) -> Result<(), Error> {
+    pub fn commit(&self, tx: Tx) -> Result<(), Error> {
         let mut state = lock(&self.state);
-        let Some(set) = state.open.remove(&tx) else { return Err(unknown_tx(tx)) };
+        let Some(set) = state.open.remove(&tx) else {
+            return Err(unknown_tx(tx));
+        };
         state.committed.apply(set);
         Ok(())
     }
 
     /// Drop the transaction's staged writes and close it. Returns `false` and changes nothing if the
     /// token names no open transaction: there was nothing to roll back.
-    pub fn rollback(&self, tx: i64) -> bool {
+    pub fn rollback(&self, tx: Tx) -> bool {
         lock(&self.state).open.remove(&tx).is_some()
     }
 
@@ -298,37 +283,48 @@ impl MemoryTransactor {
 
     /// The event store over this database.
     pub fn event_store(&self) -> MemoryEventStore {
-        MemoryEventStore { state: Arc::clone(&self.state) }
+        MemoryEventStore {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// The projection store over this database.
     pub fn projection_store(&self) -> MemoryProjectionStore {
-        MemoryProjectionStore { state: Arc::clone(&self.state) }
+        MemoryProjectionStore {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// The idempotency store over this database.
     pub fn idempotency_store(&self) -> MemoryIdempotencyStore {
-        MemoryIdempotencyStore { state: Arc::clone(&self.state) }
+        MemoryIdempotencyStore {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// The saga store over this database.
     pub fn saga_store(&self) -> MemorySagaStore {
-        MemorySagaStore { state: Arc::clone(&self.state) }
+        MemorySagaStore {
+            state: Arc::clone(&self.state),
+        }
     }
 
     /// The command outbox over this database.
     pub fn command_outbox(&self) -> MemoryCommandOutbox {
-        MemoryCommandOutbox { state: Arc::clone(&self.state) }
+        MemoryCommandOutbox {
+            state: Arc::clone(&self.state),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::idempotency::Claimed;
+    use crate::idempotency::Owner;
     use crate::saga::SagaRow;
     use crate::testkit::{draft, ids, RECORDED_AT};
-    use serde_json::json;
+    use edax_cqrs::Claimed;
+    use serde_json::{json, Value};
     /// One database with every seam, and a handle on each view.
     struct Db {
         tr: MemoryTransactor,
@@ -352,7 +348,9 @@ mod tests {
     const HASH: u64 = 11_234_062_831_410_934_249;
 
     fn doc() -> Document {
-        let Value::Object(doc) = json!({"email": "ada@example.com", "age": 36}) else { unreachable!() };
+        let Value::Object(doc) = json!({"email": "ada@example.com", "age": 36}) else {
+            unreachable!()
+        };
         doc
     }
 
@@ -377,23 +375,29 @@ mod tests {
     }
 
     /// Stage one write on every seam under `tx`.
-    fn write_everything(db: &Db, tx: i64) {
-        db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).expect("append");
-        db.events.save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec()).expect("snapshot");
+    fn write_everything(db: &Db, tx: Tx) {
+        db.events
+            .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .expect("append");
+        db.events
+            .save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec())
+            .expect("snapshot");
         db.projections.save(tx, "user-1", 0, doc()).expect("projection");
         won(db.claims.claim(tx, "req-A", HASH));
-        db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).expect("saga");
+        db.sagas
+            .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![])
+            .expect("saga");
     }
 
     /// What a reader under `tx` sees of every seam: `(events, outbox, snapshot, projection, claim, saga)`.
-    fn visible(db: &Db, tx: i64) -> (usize, usize, bool, bool, bool, bool) {
+    fn visible(db: &Db, tx: Tx) -> (usize, usize, bool, bool, bool, bool) {
         (
             db.events.load(tx, "invoice-7", 0).unwrap().len(),
             db.events.unpublished(10).len(),
             db.events.load_snapshot(tx, "invoice-7").unwrap().is_some(),
             db.projections.get(tx, "user-1").unwrap().is_some(),
             matches!(db.claims.claim(tx, "req-A", HASH), Ok(Claimed::Prior(_))),
-            db.sagas.load(tx, "order-1").unwrap().is_some(),
+            db.sagas.load(tx, "shipping", "order-1").unwrap().is_some(),
         )
     }
 
@@ -410,8 +414,16 @@ mod tests {
             want: (usize, usize, bool, bool, bool, bool),
         }
         let cases = [
-            Case { name: "commit_lands_every_seam_together", commit: true, want: EVERYTHING },
-            Case { name: "rollback_leaves_nothing_behind_on_any_seam", commit: false, want: NOTHING },
+            Case {
+                name: "commit_lands_every_seam_together",
+                commit: true,
+                want: EVERYTHING,
+            },
+            Case {
+                name: "rollback_leaves_nothing_behind_on_any_seam",
+                commit: false,
+                want: NOTHING,
+            },
         ];
         for c in cases {
             let db = db();
@@ -420,10 +432,20 @@ mod tests {
             // Read-your-writes: the transaction sees its own staged writes, the outbox excepted (a
             // staged append is not a row to publish). Nobody else sees any of it yet.
             assert_eq!(visible(&db, tx), (1, 0, true, true, true, true), "{}: own view", c.name);
-            // `visible` claims the key under NO_TX and must lose: the open transaction holds it.
-            assert_eq!(visible(&db, NO_TX), (0, 0, false, false, true, false), "{}: outside view", c.name);
+            // `visible` claims the key under Tx::auto_commit() and must lose: the open transaction holds it.
+            assert_eq!(
+                visible(&db, Tx::auto_commit()),
+                (0, 0, false, false, true, false),
+                "{}: outside view",
+                c.name
+            );
             let other = db.tr.begin();
-            assert_eq!(visible(&db, other), (0, 0, false, false, true, false), "{}: another transaction", c.name);
+            assert_eq!(
+                visible(&db, other),
+                (0, 0, false, false, true, false),
+                "{}: another transaction",
+                c.name
+            );
             assert!(db.tr.rollback(other));
 
             if c.commit {
@@ -431,10 +453,19 @@ mod tests {
             } else {
                 assert!(db.tr.rollback(tx), "{}", c.name);
             }
-            assert_eq!(visible(&db, NO_TX), c.want, "{}: after", c.name);
+            assert_eq!(visible(&db, Tx::auto_commit()), c.want, "{}: after", c.name);
             // The token is spent either way.
-            assert_eq!(db.tr.commit(tx), Err(unknown_tx(tx)), "{}: a closed token cannot commit", c.name);
-            assert!(!db.tr.rollback(tx), "{}: a closed token has nothing to roll back", c.name);
+            assert_eq!(
+                db.tr.commit(tx),
+                Err(unknown_tx(tx)),
+                "{}: a closed token cannot commit",
+                c.name
+            );
+            assert!(
+                !db.tr.rollback(tx),
+                "{}: a closed token has nothing to roll back",
+                c.name
+            );
         }
     }
 
@@ -445,28 +476,55 @@ mod tests {
         // key is free again.
         struct Case {
             name: &'static str,
-            write: fn(&Db, i64) -> Result<(), Error>,
+            write: fn(&Db, Tx) -> Result<(), Error>,
         }
         let cases = [
             Case {
                 name: "event stream",
-                write: |db, tx| db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).map(|_| ()),
+                write: |db, tx| {
+                    db.events
+                        .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+                        .map(|_| ())
+                },
             },
-            Case { name: "projection row", write: |db, tx| db.projections.save(tx, "user-1", 0, doc()).map(|_| ()) },
-            Case { name: "saga instance", write: |db, tx| db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()) },
-            Case { name: "saga completion", write: |db, tx| db.sagas.complete(tx, "order-1", 0, vec![]).map(|_| ()) },
+            Case {
+                name: "projection row",
+                write: |db, tx| db.projections.save(tx, "user-1", 0, doc()).map(|_| ()),
+            },
+            Case {
+                name: "saga instance",
+                write: |db, tx| {
+                    db.sagas
+                        .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![])
+                        .map(|_| ())
+                },
+            },
+            Case {
+                name: "saga completion",
+                write: |db, tx| db.sagas.complete(tx, "shipping", "order-1", 0, vec![]).map(|_| ()),
+            },
         ];
         for c in cases {
             let db = db();
             let holder = db.tr.begin();
             write_everything(&db, holder);
             let want = Err(Error::concurrency(0, 0));
-            assert_eq!((c.write)(&db, NO_TX), want, "{}: auto-commit writer", c.name);
+            assert_eq!(
+                (c.write)(&db, Tx::auto_commit()),
+                want,
+                "{}: auto-commit writer",
+                c.name
+            );
             let other = db.tr.begin();
             assert_eq!((c.write)(&db, other), want, "{}: another transaction", c.name);
             assert!(db.tr.rollback(other));
             assert!(db.tr.rollback(holder));
-            assert_eq!((c.write)(&db, NO_TX), Ok(()), "{}: free once the holder rolled back", c.name);
+            assert_eq!(
+                (c.write)(&db, Tx::auto_commit()),
+                Ok(()),
+                "{}: free once the holder rolled back",
+                c.name
+            );
         }
     }
 
@@ -485,14 +543,14 @@ mod tests {
         let handle = won(db.claims.claim(holder, "req-A", HASH));
         db.claims.complete(holder, "req-A", &handle, DONE).unwrap();
 
-        assert_eq!(prior(db.claims.claim(NO_TX, "req-A", HASH)), pending());
+        assert_eq!(prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)), pending());
         let other = db.tr.begin();
         assert_eq!(prior(db.claims.claim(other, "req-A", HASH)), pending());
         assert!(db.tr.rollback(other));
 
         // Once committed the real outcome is readable; a later claimant replays it.
         db.tr.commit(holder).unwrap();
-        assert_eq!(prior(db.claims.claim(NO_TX, "req-A", HASH)), DONE);
+        assert_eq!(prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)), DONE);
     }
 
     #[test]
@@ -507,21 +565,25 @@ mod tests {
             /// one both transactions settle with.
             seed: bool,
             /// What the holder stages for `req-A` before the write under test; returns the handle.
-            stage: fn(&Db, i64, Vec<u8>) -> Vec<u8>,
-            write: fn(&Db, i64, &[u8]) -> Result<(), Error>,
+            stage: fn(&Db, Tx, Vec<u8>) -> Vec<u8>,
+            write: fn(&Db, Tx, &[u8]) -> Result<(), Error>,
             expected: Result<(), Error>,
             /// Whether `req-A` is claimed once both transactions have committed, in either order.
             claimed_after: bool,
         }
         let held = Err(crate::idempotency::held_claim("req-A"));
-        let claim = |db: &Db, tx: i64, _: Vec<u8>| won(db.claims.claim(tx, "req-A", HASH));
-        let claim_then_release = |db: &Db, tx: i64, _: Vec<u8>| {
+        let claim = |db: &Db, tx: Tx, _: Vec<u8>| won(db.claims.claim(tx, "req-A", HASH));
+        let claim_then_release = |db: &Db, tx: Tx, _: Vec<u8>| {
             let handle = won(db.claims.claim(tx, "req-A", HASH));
-            db.claims.release(tx, "req-A", &handle).expect("the holder releases its own claim");
+            db.claims
+                .release(tx, "req-A", &handle)
+                .expect("the holder releases its own claim");
             handle
         };
-        let release_seed = |db: &Db, tx: i64, seed: Vec<u8>| {
-            db.claims.release(tx, "req-A", &seed).expect("the holder deletes the committed claim");
+        let release_seed = |db: &Db, tx: Tx, seed: Vec<u8>| {
+            db.claims
+                .release(tx, "req-A", &seed)
+                .expect("the holder deletes the committed claim");
             seed
         };
         let cases = [
@@ -548,7 +610,7 @@ mod tests {
                 seed: false,
                 stage: claim_then_release,
                 write: |db, tx, handle| db.claims.complete(tx, "req-A", handle, DONE),
-                expected: Err(crate::idempotency::lapsed_claim("req-A")),
+                expected: Err(edax_cqrs::lapsed_claim("req-A")),
                 claimed_after: false,
             },
             Case {
@@ -582,16 +644,24 @@ mod tests {
             for holder_commits_first in [true, false] {
                 let name = format!("{} (holder commits first: {holder_commits_first})", case.name);
                 let db = db();
-                let seed = if case.seed { won(db.claims.claim(NO_TX, "req-A", HASH)) } else { Vec::new() };
+                let seed = if case.seed {
+                    won(db.claims.claim(Tx::auto_commit(), "req-A", HASH))
+                } else {
+                    Vec::new()
+                };
                 let holder = db.tr.begin();
                 let handle = (case.stage)(&db, holder, seed);
                 let writer = db.tr.begin();
                 assert_eq!((case.write)(&db, writer, &handle), case.expected, "{name}");
-                let order = if holder_commits_first { [holder, writer] } else { [writer, holder] };
+                let order = if holder_commits_first {
+                    [holder, writer]
+                } else {
+                    [writer, holder]
+                };
                 for tx in order {
                     db.tr.commit(tx).expect("each transaction settles");
                 }
-                let claimed = matches!(db.claims.claim(NO_TX, "req-A", HASH), Ok(Claimed::Prior(_)));
+                let claimed = matches!(db.claims.claim(Tx::auto_commit(), "req-A", HASH), Ok(Claimed::Prior(_)));
                 assert_eq!(claimed, case.claimed_after, "{name}: committed claim");
             }
         }
@@ -611,7 +681,11 @@ mod tests {
         db.tr.commit(second).unwrap();
         assert_eq!(prior(db.claims.claim(first, "req-A", HASH)), DONE, "replays the winner");
         db.tr.commit(first).unwrap();
-        assert_eq!(prior(db.claims.claim(NO_TX, "req-A", HASH)), DONE, "the winner's record stands");
+        assert_eq!(
+            prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)),
+            DONE,
+            "the winner's record stands"
+        );
     }
 
     #[test]
@@ -619,16 +693,45 @@ mod tests {
         // The deleter may still roll back, so a claimant waits rather than winning a key the
         // committed claim still guards.
         let db = db();
-        let handle = won(db.claims.claim(NO_TX, "req-A", HASH));
+        let handle = won(db.claims.claim(Tx::auto_commit(), "req-A", HASH));
         let deleter = db.tr.begin();
         db.claims.release(deleter, "req-A", &handle).unwrap();
-        assert_eq!(prior(db.claims.claim(NO_TX, "req-A", HASH)), pending());
+        assert_eq!(prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)), pending());
         // The deleter itself freed the key, so its own re-claim wins it.
         let again = won(db.claims.claim(deleter, "req-A", HASH));
         assert_ne!(again, handle, "a new claim gets a new handle");
         assert!(db.tr.rollback(deleter));
-        assert_eq!(prior(db.claims.claim(NO_TX, "req-A", HASH)), pending(), "the rollback kept the claim");
-        db.claims.complete(NO_TX, "req-A", &handle, DONE).expect("and its handle still settles it");
+        assert_eq!(
+            prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)),
+            pending(),
+            "the rollback kept the claim"
+        );
+        db.claims
+            .complete(Tx::auto_commit(), "req-A", &handle, DONE)
+            .expect("and its handle still settles it");
+    }
+
+    #[test]
+    fn a_staged_delete_does_not_outlive_the_claim_it_deletes() {
+        // tx1 releases the committed claim, the claim lapses, and tx2 takes the key over and commits.
+        // tx1's commit must leave tx2's claim alone, or a third claimant wins while tx2's handler runs.
+        let db = db();
+        let lapsed = won(db.claims.claim(Tx::auto_commit(), "req-A", HASH));
+        let first = db.tr.begin();
+        db.claims.release(first, "req-A", &lapsed).unwrap();
+        assert!(db.claims.expire("req-A"));
+        let second = db.tr.begin();
+        let taker = won(db.claims.claim(second, "req-A", HASH));
+        db.tr.commit(second).unwrap();
+        db.tr.commit(first).unwrap();
+        assert_eq!(
+            prior(db.claims.claim(Tx::auto_commit(), "req-A", HASH)),
+            pending(),
+            "the taker's claim stands"
+        );
+        db.claims
+            .complete(Tx::auto_commit(), "req-A", &taker, DONE)
+            .expect("and its handle still settles it");
     }
 
     #[test]
@@ -658,41 +761,115 @@ mod tests {
             /// What the key reads afterwards: `None` free, else the record a claimant gets.
             after: Option<Vec<u8>>,
         }
-        let lapsed = Err(crate::idempotency::lapsed_claim("req-A"));
+        let lapsed = Err(edax_cqrs::lapsed_claim("req-A"));
         let cases = [
-            Case { name: "complete_of_the_live_claim_settles_it", seed: Seed::Claimed, complete: Some(DONE), expected: Ok(()), after: Some(DONE.to_vec()) },
-            Case { name: "release_of_the_live_claim_frees_the_key", seed: Seed::Claimed, complete: None, expected: Ok(()), after: None },
-            Case { name: "a_repeated_complete_is_idempotent", seed: Seed::Settled, complete: Some(DONE), expected: Ok(()), after: Some(DONE.to_vec()) },
-            Case { name: "complete_with_another_record_over_a_settled_key_is_refused", seed: Seed::Settled, complete: Some(OTHER), expected: lapsed.clone(), after: Some(DONE.to_vec()) },
-            Case { name: "release_after_complete_keeps_the_record", seed: Seed::Settled, complete: None, expected: Ok(()), after: Some(DONE.to_vec()) },
-            Case { name: "complete_of_an_expired_claim_is_refused", seed: Seed::Expired, complete: Some(DONE), expected: lapsed.clone(), after: None },
-            Case { name: "release_of_an_expired_claim_is_a_no_op", seed: Seed::Expired, complete: None, expected: Ok(()), after: None },
-            Case { name: "a_stale_owners_complete_is_refused_after_a_takeover", seed: Seed::TakenOver, complete: Some(DONE), expected: lapsed.clone(), after: Some(pending()) },
-            Case { name: "a_stale_owners_release_keeps_the_new_claim", seed: Seed::TakenOver, complete: None, expected: Ok(()), after: Some(pending()) },
-            Case { name: "complete_of_a_key_never_claimed_is_refused", seed: Seed::Absent, complete: Some(DONE), expected: lapsed, after: None },
-            Case { name: "release_of_a_key_never_claimed_is_a_no_op", seed: Seed::Absent, complete: None, expected: Ok(()), after: None },
+            Case {
+                name: "complete_of_the_live_claim_settles_it",
+                seed: Seed::Claimed,
+                complete: Some(DONE),
+                expected: Ok(()),
+                after: Some(DONE.to_vec()),
+            },
+            Case {
+                name: "release_of_the_live_claim_frees_the_key",
+                seed: Seed::Claimed,
+                complete: None,
+                expected: Ok(()),
+                after: None,
+            },
+            Case {
+                name: "a_repeated_complete_is_idempotent",
+                seed: Seed::Settled,
+                complete: Some(DONE),
+                expected: Ok(()),
+                after: Some(DONE.to_vec()),
+            },
+            Case {
+                name: "complete_with_another_record_over_a_settled_key_is_refused",
+                seed: Seed::Settled,
+                complete: Some(OTHER),
+                expected: lapsed.clone(),
+                after: Some(DONE.to_vec()),
+            },
+            Case {
+                name: "release_after_complete_keeps_the_record",
+                seed: Seed::Settled,
+                complete: None,
+                expected: Ok(()),
+                after: Some(DONE.to_vec()),
+            },
+            Case {
+                name: "complete_of_an_expired_claim_is_refused",
+                seed: Seed::Expired,
+                complete: Some(DONE),
+                expected: lapsed.clone(),
+                after: None,
+            },
+            Case {
+                name: "release_of_an_expired_claim_is_a_no_op",
+                seed: Seed::Expired,
+                complete: None,
+                expected: Ok(()),
+                after: None,
+            },
+            Case {
+                name: "a_stale_owners_complete_is_refused_after_a_takeover",
+                seed: Seed::TakenOver,
+                complete: Some(DONE),
+                expected: lapsed.clone(),
+                after: Some(pending()),
+            },
+            Case {
+                name: "a_stale_owners_release_keeps_the_new_claim",
+                seed: Seed::TakenOver,
+                complete: None,
+                expected: Ok(()),
+                after: Some(pending()),
+            },
+            Case {
+                name: "complete_of_a_key_never_claimed_is_refused",
+                seed: Seed::Absent,
+                complete: Some(DONE),
+                expected: lapsed,
+                after: None,
+            },
+            Case {
+                name: "release_of_a_key_never_claimed_is_a_no_op",
+                seed: Seed::Absent,
+                complete: None,
+                expected: Ok(()),
+                after: None,
+            },
         ];
         for case in cases {
             let db = db();
             let first = match case.seed {
                 Seed::Absent => 1i64.to_be_bytes().to_vec(),
-                _ => won(db.claims.claim(NO_TX, "req-A", HASH)),
+                _ => won(db.claims.claim(Tx::auto_commit(), "req-A", HASH)),
             };
             match case.seed {
-                Seed::Settled => db.claims.complete(NO_TX, "req-A", &first, DONE).expect("settles"),
+                Seed::Settled => db
+                    .claims
+                    .complete(Tx::auto_commit(), "req-A", &first, DONE)
+                    .expect("settles"),
                 Seed::Expired => assert!(db.claims.expire("req-A"), "{}: the claim lapses", case.name),
                 Seed::TakenOver => {
                     assert!(db.claims.expire("req-A"));
-                    assert_ne!(won(db.claims.claim(NO_TX, "req-A", HASH)), first, "{}: a new handle", case.name);
+                    assert_ne!(
+                        won(db.claims.claim(Tx::auto_commit(), "req-A", HASH)),
+                        first,
+                        "{}: a new handle",
+                        case.name
+                    );
                 }
                 Seed::Claimed | Seed::Absent => {}
             }
             let got = match case.complete {
-                Some(record) => db.claims.complete(NO_TX, "req-A", &first, record),
-                None => db.claims.release(NO_TX, "req-A", &first),
+                Some(record) => db.claims.complete(Tx::auto_commit(), "req-A", &first, record),
+                None => db.claims.release(Tx::auto_commit(), "req-A", &first),
             };
             assert_eq!(got, case.expected, "{}", case.name);
-            let after = match db.claims.claim(NO_TX, "req-A", HASH) {
+            let after = match db.claims.claim(Tx::auto_commit(), "req-A", HASH) {
                 Ok(Claimed::Won(_)) => None,
                 Ok(Claimed::Prior(record)) => Some(record),
                 Err(e) => panic!("{}: {e}", case.name),
@@ -708,11 +885,19 @@ mod tests {
         assert!(!db.claims.expire("req-A"), "nothing to lapse");
         let tx = db.tr.begin();
         let handle = won(db.claims.claim(tx, "req-A", HASH));
-        assert!(!db.claims.expire("req-A"), "the open transaction's claim is not committed");
-        db.claims.complete(tx, "req-A", &handle, DONE).expect("its handle still settles it");
+        assert!(
+            !db.claims.expire("req-A"),
+            "the open transaction's claim is not committed"
+        );
+        db.claims
+            .complete(tx, "req-A", &handle, DONE)
+            .expect("its handle still settles it");
         db.tr.commit(tx).unwrap();
-        assert!(db.claims.expire("req-A"), "a settled record lapses too, as retention would");
-        won(db.claims.claim(NO_TX, "req-A", HASH));
+        assert!(
+            db.claims.expire("req-A"),
+            "a settled record lapses too, as retention would"
+        );
+        won(db.claims.claim(Tx::auto_commit(), "req-A", HASH));
     }
 
     /// One step of an interleaved history over one idempotency key: which of three transactions
@@ -749,7 +934,8 @@ mod tests {
         /// - a claim is won only over a key with no committed record, or one this transaction
         ///   deleted itself (a stolen win runs the handler twice);
         /// - a commit removes a committed record only if that transaction released it while it was
-        ///   committed (an erased winner's record lets the next dispatch run the handler again);
+        ///   committed, and it has not lapsed since (an erased winner's record lets the next dispatch
+        ///   run the handler again);
         /// - a complete lands only with the handle of the claim the key holds as the transaction sees
         ///   it (a stale owner's record over a newer claim lets two outcomes land).
         #[test]
@@ -758,7 +944,7 @@ mod tests {
             const DONE: &[u8] = br#"{"payload_hash":11234062831410934249,"result":42,"error":null,"pending":false}"#;
             let db = db();
             let committed = |db: &Db| lock(&db.tr.state).committed.claims.get(KEY).cloned();
-            let seen = |db: &Db, tx: i64| {
+            let seen = |db: &Db, tx: Tx| {
                 let state = lock(&db.tr.state);
                 match state.open.get(&tx).and_then(|own| own.claims.get(KEY)) {
                     Some(staged) => staged.clone(),
@@ -785,19 +971,23 @@ mod tests {
                     Step::Complete(i) => {
                         let held = seen(&db, txs[i]);
                         if db.claims.complete(txs[i], KEY, &handles[i], DONE).is_ok() {
-                            let named = held.as_ref().is_some_and(|h| h.claim.is_some_and(|id| id.to_be_bytes().as_slice() == handles[i]));
-                            let same = held.as_ref().is_some_and(|h| h.claim.is_none() && h.record == DONE);
+                            let named = held.as_ref().is_some_and(|h| matches!(h.owner, Owner::Claim(id) if id.to_be_bytes() == *handles[i]));
+                            let same = held.as_ref().is_some_and(|h| {
+                                matches!(h.owner, Owner::SettledBy(Some(id)) if id.to_be_bytes() == *handles[i]) && h.record == DONE
+                            });
                             proptest::prop_assert!(named || same, "a complete landed over a claim its handle does not name");
                         }
                     }
                     Step::Release(i) => {
-                        let held = committed(&db).is_some_and(|h| h.claim.is_some_and(|id| id.to_be_bytes().as_slice() == handles[i]));
+                        let held = committed(&db).is_some_and(|h| matches!(h.owner, Owner::Claim(id) if id.to_be_bytes() == *handles[i]));
                         if db.claims.release(txs[i], KEY, &handles[i]).is_ok() && held {
                             deleted_committed[i] = true;
                         }
                     }
                     Step::Expire => {
+                        // What every staged delete would delete lapsed, so none of them deletes anything.
                         db.claims.expire(KEY);
+                        deleted_committed = [false; 3];
                     }
                     Step::Commit(i) => {
                         let before = committed(&db);
@@ -830,7 +1020,11 @@ mod tests {
         assert!(db.tr.rollback(second));
         assert_eq!(db.tr.open_count(), 0, "a rollback closes its transaction");
         assert!(!db.tr.rollback(second), "a settled token is not open");
-        assert_eq!(db.tr.open_count(), 0, "a second rollback of a settled token changes nothing");
+        assert_eq!(
+            db.tr.open_count(),
+            0,
+            "a second rollback of a settled token changes nothing"
+        );
     }
 
     #[test]
@@ -839,28 +1033,67 @@ mod tests {
         // release frees the key for the same transaction, and a save-then-delete leaves no row.
         let db = db();
         let tx = db.tr.begin();
-        db.events.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
-        db.events.append(tx, "invoice-7", 1, vec![draft("evt-2", Some(2))], RECORDED_AT).unwrap();
+        db.events
+            .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .unwrap();
+        db.events
+            .append(tx, "invoice-7", 1, vec![draft("evt-2", Some(2))], RECORDED_AT)
+            .unwrap();
         assert_eq!(
-            db.events.append(tx, "invoice-7", 1, vec![draft("evt-3", Some(2))], RECORDED_AT),
+            db.events
+                .append(tx, "invoice-7", 1, vec![draft("evt-3", Some(2))], RECORDED_AT),
             Err(Error::concurrency(1, 2)),
             "the staged tail is the version the transaction sees"
         );
         let handle = won(db.claims.claim(tx, "req-A", HASH));
         db.claims.release(tx, "req-A", &handle).unwrap();
         won(db.claims.claim(tx, "req-A", HASH));
-        assert_eq!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]), Ok(1));
-        assert_eq!(db.sagas.complete(tx, "order-1", 1, vec![]), Ok(2));
-        assert!(db.sagas.load(tx, "order-1").unwrap().is_some_and(|row| row.value == SagaRow::Completed), "completed in the same transaction");
-        assert!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).is_err(), "and never started again");
+        assert_eq!(
+            db.sagas
+                .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![]),
+            Ok(1)
+        );
+        assert_eq!(db.sagas.complete(tx, "shipping", "order-1", 1, vec![]), Ok(2));
+        assert!(
+            db.sagas
+                .load(tx, "shipping", "order-1")
+                .unwrap()
+                .is_some_and(|row| row.value == SagaRow::Completed),
+            "completed in the same transaction"
+        );
+        assert!(
+            db.sagas
+                .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![])
+                .is_err(),
+            "and never started again"
+        );
         // An empty batch is a version check only: it stages no tail and holds nothing.
         db.events.append(tx, "invoice-8", 0, vec![], RECORDED_AT).unwrap();
-        db.events.append(NO_TX, "invoice-8", 0, vec![draft("evt-9", Some(1))], RECORDED_AT).expect("not held");
+        db.events
+            .append(
+                Tx::auto_commit(),
+                "invoice-8",
+                0,
+                vec![draft("evt-9", Some(1))],
+                RECORDED_AT,
+            )
+            .expect("not held");
 
         db.tr.commit(tx).unwrap();
-        assert_eq!(ids(&db.events.load(NO_TX, "invoice-7", 0).unwrap()), ["evt-1", "evt-2"]);
-        assert_eq!(ids(&db.events.unpublished(10)), ["evt-9", "evt-1", "evt-2"], "outbox: commit order, then append order");
-        assert!(db.sagas.load(NO_TX, "order-1").unwrap().is_some());
+        assert_eq!(
+            ids(&db.events.load(Tx::auto_commit(), "invoice-7", 0).unwrap()),
+            ["evt-1", "evt-2"]
+        );
+        assert_eq!(
+            ids(&db.events.unpublished(10)),
+            ["evt-9", "evt-1", "evt-2"],
+            "outbox: commit order, then append order"
+        );
+        assert!(db
+            .sagas
+            .load(Tx::auto_commit(), "shipping", "order-1")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -871,37 +1104,87 @@ mod tests {
         let foreign = MemoryTransactor::new().begin();
         let closed = db.tr.begin();
         db.tr.commit(closed).unwrap();
-        for (name, tx) in [("never begun", 12_345), ("another transactor", foreign), ("already closed", closed)] {
+        for (name, tx) in [
+            ("never begun", Tx::from_raw(12_345)),
+            ("another transactor", foreign),
+            ("already closed", closed),
+        ] {
             let want: Result<(), Error> = Err(unknown_tx(tx));
             assert_eq!(db.events.load(tx, "invoice-7", 0).map(|_| ()), want, "{name}: load");
-            assert_eq!(db.events.append(tx, "invoice-7", 0, vec![], RECORDED_AT).map(|_| ()), want, "{name}: append");
-            assert_eq!(db.events.load_snapshot(tx, "invoice-7").map(|_| ()), want, "{name}: load_snapshot");
-            assert_eq!(db.events.save_snapshot(tx, "invoice-7", "Invoice", 1, vec![]).map(|_| ()), want, "{name}: save_snapshot");
+            assert_eq!(
+                db.events.append(tx, "invoice-7", 0, vec![], RECORDED_AT).map(|_| ()),
+                want,
+                "{name}: append"
+            );
+            assert_eq!(
+                db.events.load_snapshot(tx, "invoice-7").map(|_| ()),
+                want,
+                "{name}: load_snapshot"
+            );
+            assert_eq!(
+                db.events
+                    .save_snapshot(tx, "invoice-7", "Invoice", 1, vec![])
+                    .map(|_| ()),
+                want,
+                "{name}: save_snapshot"
+            );
             assert_eq!(db.projections.get(tx, "user-1").map(|_| ()), want, "{name}: get");
-            assert_eq!(db.projections.save(tx, "user-1", 0, doc()).map(|_| ()), want, "{name}: save");
-            assert_eq!(db.projections.get_many(tx, &edax_cqrs::Query::default()).map(|_| ()), want, "{name}: get_many");
+            assert_eq!(
+                db.projections.save(tx, "user-1", 0, doc()).map(|_| ()),
+                want,
+                "{name}: save"
+            );
+            assert_eq!(
+                db.projections.get_many(tx, &edax_cqrs::Query::default()).map(|_| ()),
+                want,
+                "{name}: get_many"
+            );
             assert_eq!(db.claims.claim(tx, "req-A", HASH).map(|_| ()), want, "{name}: claim");
-            assert_eq!(db.claims.complete(tx, "req-A", b"", b"{}").map(|_| ()), want, "{name}: complete");
+            assert_eq!(
+                db.claims.complete(tx, "req-A", b"", b"{}").map(|_| ()),
+                want,
+                "{name}: complete"
+            );
             assert_eq!(db.claims.release(tx, "req-A", b"").map(|_| ()), want, "{name}: release");
             assert_eq!(db.claims.forget(tx, "req-A"), want, "{name}: forget");
-            assert_eq!(db.sagas.load(tx, "order-1").map(|_| ()), want, "{name}: saga load");
-            assert_eq!(db.sagas.save(tx, "order-1", 0, state(), String::new(), vec![]).map(|_| ()), want, "{name}: saga save");
-            assert_eq!(db.sagas.complete(tx, "order-1", 0, vec![]).map(|_| ()), want, "{name}: saga complete");
+            assert_eq!(
+                db.sagas.load(tx, "shipping", "order-1").map(|_| ()),
+                want,
+                "{name}: saga load"
+            );
+            assert_eq!(
+                db.sagas
+                    .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![])
+                    .map(|_| ()),
+                want,
+                "{name}: saga save"
+            );
+            assert_eq!(
+                db.sagas.complete(tx, "shipping", "order-1", 0, vec![]).map(|_| ()),
+                want,
+                "{name}: saga complete"
+            );
             assert_eq!(db.tr.commit(tx).map(|_| ()), want, "{name}: commit");
             assert!(!db.tr.rollback(tx), "{name}: rollback");
             assert!(unknown_tx(tx).is_terminal(), "{name}: a wiring mistake is not retried");
         }
-        assert_eq!(visible(&db, NO_TX), (0, 0, false, false, false, false), "nothing landed");
+        assert_eq!(
+            visible(&db, Tx::auto_commit()),
+            (0, 0, false, false, false, false),
+            "nothing landed"
+        );
     }
 
     #[test]
     fn a_standalone_store_and_its_transactor_share_one_database() {
         let store = MemoryEventStore::new();
         let tx = store.transactor().begin();
-        store.append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT).unwrap();
-        assert!(store.load(NO_TX, "invoice-7", 0).unwrap().is_empty());
+        store
+            .append(tx, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .unwrap();
+        assert!(store.load(Tx::auto_commit(), "invoice-7", 0).unwrap().is_empty());
         store.transactor().commit(tx).unwrap();
-        assert_eq!(ids(&store.load(NO_TX, "invoice-7", 0).unwrap()), ["evt-1"]);
+        assert_eq!(ids(&store.load(Tx::auto_commit(), "invoice-7", 0).unwrap()), ["evt-1"]);
         // Two standalone stores are two databases: a token of one is unknown to the other.
         let other = MemoryProjectionStore::new();
         let tx = store.transactor().begin();
@@ -921,7 +1204,13 @@ mod tests {
                         let tx = db.tr.begin();
                         // Every thread writes its own projection row and races on one stream.
                         db.projections.save(tx, &format!("user-{i}"), 0, doc())?;
-                        let raced = db.events.append(tx, "invoice-7", 0, vec![draft(&format!("evt-{i}"), Some(1))], RECORDED_AT);
+                        let raced = db.events.append(
+                            tx,
+                            "invoice-7",
+                            0,
+                            vec![draft(&format!("evt-{i}"), Some(1))],
+                            RECORDED_AT,
+                        );
                         match raced {
                             Ok(_) => db.tr.commit(tx),
                             Err(e) => {
@@ -934,13 +1223,24 @@ mod tests {
                 .collect();
             handles.into_iter().map(|h| h.join().expect("writer thread")).collect()
         });
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one writer of the stream wins: {results:?}");
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "one writer of the stream wins: {results:?}"
+        );
         for e in results.iter().filter_map(|r| r.as_ref().err()) {
             // `stored 0` while the winner is still open, `stored 1` once it committed.
             assert_eq!(e.code, edax_core::ErrorCode::Concurrency, "{e}");
         }
-        assert_eq!(db.events.load(NO_TX, "invoice-7", 0).unwrap().len(), 1);
-        let page = db.projections.get_many(NO_TX, &edax_cqrs::Query::default()).unwrap();
-        assert_eq!(page.rows.len(), 1, "the losers rolled their rows back with the lost race");
+        assert_eq!(db.events.load(Tx::auto_commit(), "invoice-7", 0).unwrap().len(), 1);
+        let page = db
+            .projections
+            .get_many(Tx::auto_commit(), &edax_cqrs::Query::default())
+            .unwrap();
+        assert_eq!(
+            page.rows.len(),
+            1,
+            "the losers rolled their rows back with the lost race"
+        );
     }
 }

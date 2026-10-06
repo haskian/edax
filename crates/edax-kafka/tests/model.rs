@@ -106,10 +106,17 @@ impl Consumer {
 
     fn fetch(&mut self, p: usize) {
         let offset = self.position[p];
-        let Some(&rec) = self.log[p].get(usize::try_from(offset).unwrap()) else { return };
+        let Some(&rec) = self.log[p].get(usize::try_from(offset).unwrap()) else {
+            return;
+        };
         let token = self.tracker.book(TOPIC, Self::partition_of(p), offset).unwrap();
         self.position[p] = offset + 1;
-        self.queues[rec.key].push_back(Held { token, partition: p, offset, rec });
+        self.queues[rec.key].push_back(Held {
+            token,
+            partition: p,
+            offset,
+            rec,
+        });
     }
 
     fn start(&mut self, key: usize) {
@@ -151,7 +158,10 @@ impl Consumer {
     fn commit(&mut self) {
         for due in self.tracker.due() {
             let p = usize::try_from(due.partition).unwrap();
-            assert!(due.offset > self.committed[p], "a due watermark never moves the commit back");
+            assert!(
+                due.offset > self.committed[p],
+                "a due watermark never moves the commit back"
+            );
             for offset in 0..due.offset {
                 assert!(
                     self.settled.contains(&(p, offset)),
@@ -203,7 +213,10 @@ impl Consumer {
                 return;
             }
         }
-        panic!("the consumer never drained: positions {:?}, commits {:?}", self.position, self.committed);
+        panic!(
+            "the consumer never drained: positions {:?}, commits {:?}",
+            self.position, self.committed
+        );
     }
 }
 

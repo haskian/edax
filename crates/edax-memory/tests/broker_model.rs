@@ -49,14 +49,23 @@ fn publish(broker: &MemoryBroker, key: usize, seq: u64, command: bool) {
     let id = format!("k{key}-{seq}");
     let aggregate_id = format!("k{key}");
     if command {
-        broker.publish_command(CommandMessage {
-            idempotency_key: Some(id.clone()),
-            id,
-            aggregate_id: Some(aggregate_id),
-            ..base_command()
-        });
+        broker
+            .publish_command(CommandMessage {
+                idempotency_key: Some(id.clone()),
+                id,
+                aggregate_id: Some(aggregate_id),
+                ..base_command()
+            })
+            .expect("published");
     } else {
-        broker.publish_event(EventMessage { id, aggregate_id, sequence: Some(seq), ..base_event() });
+        broker
+            .publish_event(EventMessage {
+                id,
+                aggregate_id,
+                sequence: Some(seq),
+                ..base_event()
+            })
+            .expect("published");
     }
 }
 
@@ -75,7 +84,12 @@ struct Dispatcher {
 
 impl Dispatcher {
     fn new(group: &'static str) -> Self {
-        Self { group, queues: vec![VecDeque::new(); KEYS], running: vec![None; KEYS], processed: HashMap::new() }
+        Self {
+            group,
+            queues: vec![VecDeque::new(); KEYS],
+            running: vec![None; KEYS],
+            processed: HashMap::new(),
+        }
     }
 
     fn key(d: &PolledDelivery) -> usize {
@@ -114,7 +128,11 @@ impl Dispatcher {
         let (key, id) = key_and_id(&d);
         let seq: u64 = id.rsplit('-').next().unwrap().parse().unwrap();
         let last = self.processed.get(key).copied().unwrap_or(0);
-        assert!(seq <= last + 1, "{}: {key} processed {seq} with only {last} before it: per-key order broke", self.group);
+        assert!(
+            seq <= last + 1,
+            "{}: {key} processed {seq} with only {last} before it: per-key order broke",
+            self.group
+        );
         self.processed.insert(key.to_owned(), last.max(seq));
         let _ = broker.ack(self.group, d.token);
     }
@@ -149,7 +167,7 @@ proptest! {
         partitions in 1u32..4,
         ops in prop::collection::vec(op(), 0..120),
     ) {
-        let broker = MemoryBroker::with_partitions(partitions).unwrap();
+        let broker = MemoryBroker::with_partitions(partitions, edax_core::Tenancy::Silo).unwrap();
         let mut groups: Vec<Dispatcher> = GROUPS.iter().map(|g| Dispatcher::new(g)).collect();
         let mut published: Vec<u64> = vec![0; KEYS];
         for op in ops {

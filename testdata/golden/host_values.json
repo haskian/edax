@@ -97,7 +97,7 @@
   },
   {
     "epoch_micros": null,
-    "error": "codec",
+    "error": "codec: \"NaN\" is not decimal text",
     "input": "NaN",
     "json": null,
     "kind": "decimal",
@@ -105,7 +105,7 @@
   },
   {
     "epoch_micros": null,
-    "error": "codec",
+    "error": "codec: \"sNaN\" is not decimal text",
     "input": "sNaN",
     "json": null,
     "kind": "decimal",
@@ -113,7 +113,7 @@
   },
   {
     "epoch_micros": null,
-    "error": "codec",
+    "error": "codec: \"-Infinity\" is not decimal text",
     "input": "-Infinity",
     "json": null,
     "kind": "decimal",
@@ -121,7 +121,7 @@
   },
   {
     "epoch_micros": null,
-    "error": "codec",
+    "error": "codec: \"1E+1000\" has more than 1000 digits in plain notation",
     "input": "1E+1000",
     "json": null,
     "kind": "decimal",
@@ -201,7 +201,7 @@
   },
   {
     "epoch_micros": null,
-    "error": "codec",
+    "error": "codec: \"2024-01-01T00:00:00\" is not an RFC 3339 timestamp with an offset: failed to find offset component, which is required for parsing a timestamp",
     "input": "2024-01-01T00:00:00",
     "json": null,
     "kind": "datetime",
@@ -214,5 +214,37 @@
     "json": "\"0999-03-07\"",
     "kind": "date",
     "name": "date_keeps_iso"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "1.5",
+    "json": "1.5",
+    "kind": "float",
+    "name": "float_finite"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "NaN",
+    "json": "null",
+    "kind": "float",
+    "name": "float_nan_is_written_as_null"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "inf",
+    "json": "null",
+    "kind": "float",
+    "name": "float_infinity_is_written_as_null"
+  },
+  {
+    "epoch_micros": null,
+    "error": null,
+    "input": "-inf",
+    "json": "null",
+    "kind": "float",
+    "name": "float_negative_infinity_is_written_as_null"
   }
 ]

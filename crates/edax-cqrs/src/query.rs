@@ -17,8 +17,8 @@
 //! and the cursor for the next one, so a caller never restates the sort to mint it.
 //!
 //! Total type order (smallest to largest): number < string < bool < array < object < null. Within
-//! a type: numbers numerically, strings by Unicode code point, bools `false < true` — the order
-//! [`crate::filter::value_cmp`] gives a range filter. A **missing** path and an explicit `null`
+//! a type: numbers numerically, strings by Unicode code point, bools `false < true` — the order a
+//! range filter gives each pair. A **missing** path and an explicit `null`
 //! both sort as null (last in ascending). Arrays and objects order by type rank only — two of them
 //! compare equal.
 //!
@@ -36,9 +36,12 @@
 //! range back as the double it came from. The fingerprint is the [`crate::payload_hash`] of the
 //! canonical effective sort, as 16 lowercase hex digits.
 
-use crate::canonical::MAX_SAFE_INTEGER;
-use crate::filter::{self, Collation, Filter};
+use crate::collation::{self, Collation};
+use crate::filter::{self, Filter};
+use crate::json_numbers::MAX_SAFE_INTEGER;
+use crate::value::{check_path, parse_strict, read_json, resolve};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use bigdecimal::BigDecimal;
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -63,12 +66,20 @@ pub struct SortKey {
 impl SortKey {
     /// A key over plain JSON values.
     pub fn new(path: impl Into<String>, desc: bool) -> SortKey {
-        SortKey { path: path.into(), desc, collation: None }
+        SortKey {
+            path: path.into(),
+            desc,
+            collation: None,
+        }
     }
 
     /// A key over decimal text, ordered by exact value ([`Collation::Decimal`]).
     pub fn decimal(path: impl Into<String>, desc: bool) -> SortKey {
-        SortKey { path: path.into(), desc, collation: Some(Collation::Decimal) }
+        SortKey {
+            path: path.into(),
+            desc,
+            collation: Some(Collation::Decimal),
+        }
     }
 }
 
@@ -116,7 +127,7 @@ impl Query {
         if let Some(filter) = &self.filter {
             filter.validate()?;
         }
-        self.sort.iter().try_for_each(|key| filter::check_path(&key.path))?;
+        self.sort.iter().try_for_each(|key| check_path(&key.path))?;
         if self.after.is_some() && self.sort.is_empty() {
             return Err(unsorted_cursor());
         }
@@ -136,37 +147,10 @@ pub struct Page {
     pub next: Option<String>,
 }
 
-fn type_rank(v: &Value) -> u8 {
-    match v {
-        Value::Number(_) => 0,
-        Value::String(_) => 1,
-        Value::Bool(_) => 2,
-        Value::Array(_) => 3,
-        Value::Object(_) => 4,
-        Value::Null => 5,
-    }
-}
-
-/// Total order over JSON values — never "incomparable", so sorting is always deterministic.
-fn compare_values(collation: Option<Collation>, a: &Value, b: &Value) -> Ordering {
-    let (ra, rb) = (type_rank(a), type_rank(b));
-    if ra != rb {
-        return ra.cmp(&rb);
-    }
-    match (collation, a, b) {
-        // Under the decimal collation two decimal texts order by value, as the collated range filter
-        // orders them. A string that is not decimal text sorts after every decimal text, and among
-        // its own kind by code point, so the order stays total.
-        (Some(Collation::Decimal), Value::String(x), Value::String(y)) => {
-            crate::decimal::decimal_cmp(x, y).unwrap_or_else(|| {
-                let other_text = |text: &str| !crate::decimal::is_decimal(text);
-                other_text(x).cmp(&other_text(y)).then_with(|| x.cmp(y))
-            })
-        }
-        // Within a rank the filter kernel's order, so a sort and a range filter rank a number, a
-        // string or a bool pair identically. Same-rank arrays, objects and nulls have no order beyond
-        // the rank.
-        _ => filter::value_cmp(a, b).unwrap_or(Ordering::Equal),
+impl Page {
+    /// The page as the text every JSON boundary returns: `{"rows": [...], "next": cursor|null}`.
+    pub fn to_json(&self) -> Result<String, Error> {
+        serde_json::to_string(self).map_err(Error::codec)
     }
 }
 
@@ -174,7 +158,7 @@ static NULL: Value = Value::Null;
 
 /// The value at `path`, with a missing path reading as `null` so it sorts last.
 fn at<'a>(doc: &'a Value, path: &str) -> &'a Value {
-    filter::resolve(doc, path).unwrap_or(&NULL)
+    resolve(doc, path).unwrap_or(&NULL)
 }
 
 /// Apply a key's direction to an ascending comparison.
@@ -187,8 +171,8 @@ fn directed(key: &SortKey, order: Ordering) -> Ordering {
 }
 
 /// The unique document path appended as the final sort key, so no two rows share a full sort tuple.
-/// A row a cursor is minted from must carry a string or a number here; a backend that keys its rows
-/// by something else injects it under this name (the in-memory store injects its row key).
+/// A row a cursor is minted from must carry a string or a number here; a store reads every row with its
+/// key under this name ([`keyed_document`]).
 pub const TIEBREAK_PATH: &str = "id";
 
 /// The keys a page is actually ordered by: `sort` with an ascending [`TIEBREAK_PATH`] key appended
@@ -200,18 +184,77 @@ pub const TIEBREAK_PATH: &str = "id";
 /// included, or its pages disagree with the kernel at every tie.
 pub fn effective_sort(sort: &[SortKey]) -> Vec<SortKey> {
     let mut keys = sort.to_vec();
-    let ends_on_tiebreak = keys.last().is_some_and(|k| k.path == TIEBREAK_PATH && k.collation.is_none());
+    let ends_on_tiebreak = keys
+        .last()
+        .is_some_and(|k| k.path == TIEBREAK_PATH && k.collation.is_none());
     if !keys.is_empty() && !ends_on_tiebreak {
         keys.push(SortKey::new(TIEBREAK_PATH, false));
     }
     keys
 }
 
-/// Compare two documents under the given sort keys (missing/null sort last in ascending order).
+/// The values `doc` is ordered by under `keys`, one per key, a missing path reading as `null`: what a
+/// sort compares and what a cursor carries.
+fn sort_tuple<'a>(keys: &'a [SortKey], doc: &'a Value) -> impl Iterator<Item = &'a Value> + 'a {
+    keys.iter().map(move |key| at(doc, &key.path))
+}
+
+/// Compare two sort tuples under `keys`, each key under its collation and direction (missing/null sort
+/// last in ascending order).
+fn compare_tuples<'a>(
+    keys: &[SortKey],
+    a: impl IntoIterator<Item = &'a Value>,
+    b: impl IntoIterator<Item = &'a Value>,
+) -> Ordering {
+    keys.iter()
+        .zip(a.into_iter().zip(b))
+        .fold(Ordering::Equal, |order, (key, (a, b))| {
+            order.then_with(|| directed(key, collation::total_cmp(key.collation, a, b)))
+        })
+}
+
+/// Compare two documents under the given sort keys: the order [`sort_rows`] sorts by, compared afresh.
 fn compare(keys: &[SortKey], a: &Value, b: &Value) -> Ordering {
-    keys.iter().fold(Ordering::Equal, |order, key| {
-        order.then_with(|| directed(key, compare_values(key.collation, at(a, &key.path), at(b, &key.path))))
-    })
+    compare_tuples(keys, sort_tuple(keys, a), sort_tuple(keys, b))
+}
+
+/// Sort `rows` under `keys`, stable. Each row's decimal readings are taken once before the sort, so a
+/// decimal key parses each value once rather than twice per comparison.
+fn sort_rows(keys: &[SortKey], rows: &mut Vec<Value>) {
+    if keys.is_empty() {
+        return;
+    }
+    // Ordinary sorts need no per-row decimal cache. Keep the direct sort stable too.
+    if keys.iter().all(|key| key.collation.is_none()) {
+        rows.sort_by(|a, b| compare(keys, a, b));
+        return;
+    }
+    let mut read: Vec<(Vec<Option<BigDecimal>>, Value)> = std::mem::take(rows)
+        .into_iter()
+        .map(|row| {
+            (
+                sort_tuple(keys, &row)
+                    .zip(keys)
+                    .map(|(value, key)| collation::read_decimal(key.collation, value))
+                    .collect(),
+                row,
+            )
+        })
+        .collect();
+    read.sort_by(|(a_read, a), (b_read, b)| {
+        keys.iter()
+            .zip(a_read.iter().zip(b_read))
+            .fold(Ordering::Equal, |order, (key, (a_decimal, b_decimal))| {
+                order.then_with(|| {
+                    let (a, b) = (
+                        (at(a, &key.path), a_decimal.as_ref()),
+                        (at(b, &key.path), b_decimal.as_ref()),
+                    );
+                    directed(key, collation::total_cmp_read(key.collation, a, b))
+                })
+            })
+    });
+    rows.extend(read.into_iter().map(|(_, row)| row));
 }
 
 fn unsorted_cursor() -> Error {
@@ -248,13 +291,17 @@ pub fn encode_cursor(doc: &Value, sort: &[SortKey]) -> Result<String, Error> {
     if keys.is_empty() {
         return Err(unsorted_cursor());
     }
-    let values: Vec<Value> = keys.iter().map(|k| at(doc, &k.path).clone()).collect();
+    let values: Vec<Value> = sort_tuple(&keys, doc).cloned().collect();
     if !matches!(at(doc, TIEBREAK_PATH), Value::String(_) | Value::Number(_)) {
         return Err(Error::codec(format_args!(
             "a keyset cursor needs a string or number `{TIEBREAK_PATH}` on the row it resumes after"
         )));
     }
-    let json = serde_json::to_vec(&CursorWire { s: fingerprint(&keys)?, v: values }).map_err(Error::codec)?;
+    let json = serde_json::to_vec(&CursorWire {
+        s: fingerprint(&keys)?,
+        v: values,
+    })
+    .map_err(Error::codec)?;
     Ok(B64.encode(crate::canonical_json(&json)?))
 }
 
@@ -270,7 +317,9 @@ pub fn decode_cursor(cursor: &str, sort: &[SortKey]) -> Result<Vec<Value>, Error
     if keys.is_empty() {
         return Err(unsorted_cursor());
     }
-    let bytes = B64.decode(cursor).map_err(|e| Error::codec(format_args!("cursor is not base64url: {e}")))?;
+    let bytes = B64
+        .decode(cursor)
+        .map_err(|e| Error::codec(format_args!("cursor is not base64url: {e}")))?;
     let wire: CursorWire =
         serde_json::from_slice(&bytes).map_err(|e| Error::codec(format_args!("cursor is not a keyset cursor: {e}")))?;
     if wire.s != fingerprint(&keys)? {
@@ -307,10 +356,7 @@ fn as_minted(value: Value) -> Value {
 /// Whether a document sorts strictly after the cursor tuple under the given keys. An equal tuple is
 /// not "after": that row was the last of the previous page.
 fn after_cursor(keys: &[SortKey], doc: &Value, tuple: &[Value]) -> bool {
-    let order = keys.iter().zip(tuple).fold(Ordering::Equal, |order, (key, bound)| {
-        order.then_with(|| directed(key, compare_values(key.collation, at(doc, &key.path), bound)))
-    });
-    order == Ordering::Greater
+    compare_tuples(keys, sort_tuple(keys, doc), tuple) == Ordering::Greater
 }
 
 /// Reference applier: filter -> keyset(after) -> stable sort -> offset -> limit, and the cursor for
@@ -327,7 +373,7 @@ pub fn query(query: &Query, docs: Vec<Value>) -> Result<Page, Error> {
         let tuple = decode_cursor(cursor, &query.sort)?;
         rows.retain(|d| after_cursor(&sort, d, &tuple));
     }
-    rows.sort_by(|a, b| compare(&sort, a, b)); // stable
+    sort_rows(&sort, &mut rows);
 
     let mut rest = rows.into_iter().skip(query.offset);
     let page: Vec<Value> = match query.limit {
@@ -342,41 +388,77 @@ pub fn query(query: &Query, docs: Vec<Value>) -> Result<Page, Error> {
 }
 
 /// A query spec from JSON text, read strictly as [`query_json`] reads it: an integer literal wider than
-/// 64 bits or an unknown field is the terminal `codec` error. For a store that holds its documents
-/// itself and must refuse exactly the specs the kernel refuses.
+/// 64 bits, an unknown field, or a spec [`Query::validate`] refuses is the terminal `codec` error. For a
+/// store that holds its documents itself and must refuse exactly the specs the kernel refuses.
 pub fn query_spec(spec: &[u8]) -> Result<Query, Error> {
-    filter::parse_spec(spec)
+    let query: Query = parse_strict(spec)?;
+    query.validate()?;
+    Ok(query)
 }
 
 /// JSON boundary for [`query`]: the spec and a JSON array of documents in, the [`Page`] as
 /// `{"rows": [...], "next": cursor|null}` out. The spec is read strictly (see [`query_spec`]), and so
-/// are the documents (see [`filter::check_document`]).
+/// are the documents: an integer literal wider than 64 bits is refused.
 pub fn query_json(spec: &[u8], docs: &[u8]) -> Result<String, Error> {
-    let spec = query_spec(spec)?;
-    filter::check_document(docs)?;
-    let docs: Vec<Value> = serde_json::from_slice(docs).map_err(Error::codec)?;
-    serde_json::to_string(&query(&spec, docs)?).map_err(Error::codec)
+    // Not `query_spec`: `query` validates the spec itself.
+    let spec: Query = parse_strict(spec)?;
+    let docs: Vec<Value> = parse_strict(docs)?;
+    query(&spec, docs)?.to_json()
+}
+
+/// A read-model document as a store keeps it: a JSON object, because the query reads the row key from
+/// its [`TIEBREAK_PATH`] field and a store that keys rows itself injects the key there. A scalar, an
+/// array or `null` could be saved and never queried, so it is refused as `codec`, naming the row `id`.
+/// Every store's save runs this, or [`document_json`] for a document held as text.
+pub fn document(id: &str, value: Value) -> Result<serde_json::Map<String, Value>, Error> {
+    match value {
+        Value::Object(fields) => Ok(fields),
+        _ => Err(Error::codec(format_args!(
+            "projection {id} is not a JSON object: the query reads each row's key from its `{TIEBREAK_PATH}` field"
+        ))),
+    }
+}
+
+/// A stored read-model `document` as a projection store reads it back, by `get` and `get_many` alike: its
+/// row key `id` under [`TIEBREAK_PATH`]. The key is authoritative, so it overwrites an `"id"` the document
+/// carries. The query sorts its keyset tiebreak on that field and mints every cursor from it, so a store
+/// that read rows without it would page only while each writer copied the key in, and a filter on `id`
+/// would match a stale copy. Pinned by `testdata/golden/projection_document.json`.
+pub fn keyed_document(id: &str, mut document: serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    document.insert(TIEBREAK_PATH.to_owned(), Value::String(id.to_owned()));
+    document
+}
+
+/// [`keyed_document`] for a document held as JSON text: read by [`document_json`], so a document a
+/// store's save refuses is refused here too, and written back as JSON text.
+pub fn keyed_document_json(id: &str, json: &[u8]) -> Result<String, Error> {
+    serde_json::to_string(&keyed_document(id, document_json(id, json)?)).map_err(Error::codec)
+}
+
+/// [`document`] for a document held as JSON text, read strictly: an integer literal wider than 64 bits
+/// or text that is not JSON is refused as `codec` too.
+pub fn document_json(id: &str, json: &[u8]) -> Result<serde_json::Map<String, Value>, Error> {
+    document(id, read_json(&format!("projection {id}"), json)?)
 }
 
 /// Boundary helper: decode a cursor into its value tuple under `sort` (JSON in, JSON array out).
 pub fn decode_cursor_json(cursor: &[u8], sort: &[u8]) -> Result<String, Error> {
     let cursor = std::str::from_utf8(cursor).map_err(Error::codec)?;
-    let keys: Vec<SortKey> = filter::parse_spec(sort)?;
+    let keys: Vec<SortKey> = parse_strict(sort)?;
     let tuple = decode_cursor(cursor, &keys)?;
     serde_json::to_string(&tuple).map_err(Error::codec)
 }
 
 /// Boundary helper: the sort keys a page is actually ordered by, tiebreak included (JSON in, out).
 pub fn effective_sort_json(sort: &[u8]) -> Result<String, Error> {
-    let keys: Vec<SortKey> = filter::parse_spec(sort)?;
+    let keys: Vec<SortKey> = parse_strict(sort)?;
     serde_json::to_string(&effective_sort(&keys)).map_err(Error::codec)
 }
 
 /// Boundary helper: mint the cursor that resumes after a document under the sort keys (both JSON).
 pub fn encode_cursor_json(doc: &[u8], sort: &[u8]) -> Result<String, Error> {
-    filter::check_document(doc)?;
-    let doc: Value = serde_json::from_slice(doc).map_err(Error::codec)?;
-    let keys: Vec<SortKey> = filter::parse_spec(sort)?;
+    let doc: Value = parse_strict(doc)?;
+    let keys: Vec<SortKey> = parse_strict(sort)?;
     encode_cursor(&doc, &keys)
 }
 
@@ -409,33 +491,26 @@ mod tests {
     }
 
     #[test]
-    fn total_order_across_types() {
-        // number < string < bool < array < object < null
-        let vals = [json!(1), json!("a"), json!(true), json!([1]), json!({"k": 1}), json!(null)];
-        for (i, a) in vals.iter().enumerate() {
-            for (j, b) in vals.iter().enumerate() {
-                assert_eq!(compare_values(None, a, b), i.cmp(&j), "{i} vs {j}");
-            }
-        }
-        let decimal = Some(Collation::Decimal);
-        let within: [(&str, Option<Collation>, Value, Value, Ordering); 12] = [
-            ("int_and_float_compare_numerically", None, json!(1), json!(1.0), Ordering::Equal),
-            // Above 2^53 an f64 cast would round both to the same value and report Equal.
-            ("integers_order_exactly", None, json!(9_007_199_254_740_993u64), json!(9_007_199_254_740_992u64), Ordering::Greater),
-            ("bools_order_false_first", None, json!(false), json!(true), Ordering::Less),
-            ("arrays_order_by_rank_only", None, json!([1]), json!([2]), Ordering::Equal),
-            ("nulls_tie", None, json!(null), json!(null), Ordering::Equal),
-            ("plain_strings_order_by_code_point", None, json!("9.5"), json!("10"), Ordering::Greater),
-            ("decimals_order_by_value", decimal, json!("9.5"), json!("10"), Ordering::Less),
-            ("decimal_spellings_of_one_value_tie", decimal, json!("9.50"), json!("9.5"), Ordering::Equal),
-            ("decimal_text_before_other_text", decimal, json!("100"), json!("abc"), Ordering::Less),
-            ("other_text_by_code_point", decimal, json!("b"), json!("a"), Ordering::Greater),
-            ("the_type_order_stays_under_the_collation", decimal, json!(1), json!("0"), Ordering::Less),
-            ("numbers_stay_numeric_under_the_collation", decimal, json!(2), json!(10), Ordering::Less),
+    fn sorting_keeps_tied_rows_in_input_order_with_and_without_decimal_keys() {
+        let input = vec![
+            json!({"id": "b", "n": 2, "price": "2.00"}),
+            json!({"id": "a", "n": 2, "price": "2"}),
+            json!({"id": "c", "n": 1, "price": "10"}),
+            json!({"id": "d"}),
         ];
-        for (name, collation, a, b, want) in within {
-            assert_eq!(compare_values(collation, &a, &b), want, "{name}");
-            assert_eq!(compare_values(collation, &b, &a), want.reverse(), "{name} reversed");
+        let cases = [
+            (vec![], vec!["b", "a", "c", "d"]),
+            (keys(&[("n", false)]), vec!["c", "b", "a", "d"]),
+            (keys(&[("n", true)]), vec!["d", "b", "a", "c"]),
+            (
+                vec![SortKey::decimal("price", false), SortKey::new("n", false)],
+                vec!["b", "a", "c", "d"],
+            ),
+        ];
+        for (keys, want) in cases {
+            let mut rows = input.clone();
+            sort_rows(&keys, &mut rows);
+            assert_eq!(ids(&rows), want, "{keys:?}");
         }
     }
 
@@ -448,26 +523,81 @@ mod tests {
         let cases: Vec<(&str, Value, Vec<&str>, Option<&str>)> = vec![
             ("no_sort_keeps_input_order", json!({}), vec!["c", "a", "b", "d"], None),
             // Rows follow, but there is no keyset to resume: an unsorted query pages by offset.
-            ("an_unsorted_page_mints_no_cursor", json!({"limit": 2}), vec!["c", "a"], None),
-            ("sort_ascending_missing_path_last", json!({"sort": [{"path": "n"}]}), vec!["a", "b", "c", "d"], None),
-            ("sort_descending_reverses", json!({"sort": [{"path": "n", "desc": true}]}), vec!["d", "c", "b", "a"], None),
+            (
+                "an_unsorted_page_mints_no_cursor",
+                json!({"limit": 2}),
+                vec!["c", "a"],
+                None,
+            ),
+            (
+                "sort_ascending_missing_path_last",
+                json!({"sort": [{"path": "n"}]}),
+                vec!["a", "b", "c", "d"],
+                None,
+            ),
+            (
+                "sort_descending_reverses",
+                json!({"sort": [{"path": "n", "desc": true}]}),
+                vec!["d", "c", "b", "a"],
+                None,
+            ),
             (
                 "filter_then_sort",
                 json!({"filter": {"compare": {"path": "s", "op": "eq", "value": "open"}}, "sort": [{"path": "n"}]}),
                 vec!["b", "c", "d"],
                 None,
             ),
-            ("a_full_page_with_rows_after_it_mints_next", json!({"sort": [{"path": "n"}], "limit": 2}), vec!["a", "b"], Some("b")),
-            ("offset_and_limit", json!({"sort": [{"path": "n"}], "offset": 1, "limit": 2}), vec!["b", "c"], Some("c")),
+            (
+                "a_full_page_with_rows_after_it_mints_next",
+                json!({"sort": [{"path": "n"}], "limit": 2}),
+                vec!["a", "b"],
+                Some("b"),
+            ),
+            (
+                "offset_and_limit",
+                json!({"sort": [{"path": "n"}], "offset": 1, "limit": 2}),
+                vec!["b", "c"],
+                Some("c"),
+            ),
             // Exactly the last rows: nothing follows, so no empty page is promised.
-            ("a_page_ending_at_the_last_row_mints_none", json!({"sort": [{"path": "n"}], "offset": 2, "limit": 2}), vec!["c", "d"], None),
-            ("offset_past_the_end_is_empty", json!({"sort": [{"path": "n"}], "offset": 9}), vec![], None),
+            (
+                "a_page_ending_at_the_last_row_mints_none",
+                json!({"sort": [{"path": "n"}], "offset": 2, "limit": 2}),
+                vec!["c", "d"],
+                None,
+            ),
+            (
+                "offset_past_the_end_is_empty",
+                json!({"sort": [{"path": "n"}], "offset": 9}),
+                vec![],
+                None,
+            ),
             // Rows follow an empty page, but there is no last row to resume after.
-            ("zero_limit_is_empty", json!({"sort": [{"path": "n"}], "limit": 0}), vec![], None),
-            ("after_resumes_strictly_after", json!({"sort": [{"path": "n"}], "after": after_a}), vec!["b", "c", "d"], None),
-            ("after_and_limit_mint_the_next_cursor", json!({"sort": [{"path": "n"}], "after": after_a, "limit": 1}), vec!["b"], Some("b")),
+            (
+                "zero_limit_is_empty",
+                json!({"sort": [{"path": "n"}], "limit": 0}),
+                vec![],
+                None,
+            ),
+            (
+                "after_resumes_strictly_after",
+                json!({"sort": [{"path": "n"}], "after": after_a}),
+                vec!["b", "c", "d"],
+                None,
+            ),
+            (
+                "after_and_limit_mint_the_next_cursor",
+                json!({"sort": [{"path": "n"}], "after": after_a, "limit": 1}),
+                vec!["b"],
+                Some("b"),
+            ),
             // A cursor names a position, not a row: resuming after a deleted row still works.
-            ("after_a_row_no_longer_present", json!({"sort": [{"path": "n"}], "after": after_b}), vec!["c", "d"], None),
+            (
+                "after_a_row_no_longer_present",
+                json!({"sort": [{"path": "n"}], "after": after_b}),
+                vec!["c", "d"],
+                None,
+            ),
         ];
         for (name, spec, want, next_after) in cases {
             let sort: Vec<SortKey> = serde_json::from_value(spec.get("sort").cloned().unwrap_or(json!([]))).unwrap();
@@ -488,21 +618,66 @@ mod tests {
         let cursor = encode_cursor(&json!({"id": "a", "n": 1}), &sorted).unwrap();
         let tied_without_ids = vec![json!({"k": 1}), json!({"k": 1}), json!({"k": 1})];
         // Object ids compare by rank only, so these three tie on the tiebreak as null ids would.
-        let tied_object_ids: Vec<Value> = (0..3).map(|n| json!({"id": {"tenant": "t1", "n": n}, "k": 1})).collect();
-        let wide = vec![json!({"id": "a", "n": 9_007_199_254_740_992u64}), json!({"id": "b", "n": u64::MAX})];
+        let tied_object_ids: Vec<Value> = (0..3)
+            .map(|n| json!({"id": {"tenant": "t1", "n": n}, "k": 1}))
+            .collect();
+        let wide = vec![
+            json!({"id": "a", "n": 9_007_199_254_740_992u64}),
+            json!({"id": "b", "n": u64::MAX}),
+        ];
         let wide_document = br#"[{"id": "a", "n": 18446744073709551617}]"#;
         let cases: Vec<(&str, Value, Vec<Value>, &str)> = vec![
-            ("a_cursor_without_a_sort", json!({"after": cursor}), docs(), "takes no cursor"),
-            ("a_cursor_under_another_sort", json!({"sort": [{"path": "s"}], "after": cursor}), docs(), "another sort"),
-            ("a_cursor_under_another_direction", json!({"sort": [{"path": "n", "desc": true}], "after": cursor}), docs(), "another sort"),
-            ("a_sort_path_with_an_empty_segment", json!({"sort": [{"path": "a..b"}]}), docs(), "empty segment"),
-            ("a_filter_the_kernel_refuses", json!({"filter": {"compare": {"path": "n", "op": "eq", "value": null}}}), docs(), "null comparand"),
+            (
+                "a_cursor_without_a_sort",
+                json!({"after": cursor}),
+                docs(),
+                "takes no cursor",
+            ),
+            (
+                "a_cursor_under_another_sort",
+                json!({"sort": [{"path": "s"}], "after": cursor}),
+                docs(),
+                "another sort",
+            ),
+            (
+                "a_cursor_under_another_direction",
+                json!({"sort": [{"path": "n", "desc": true}], "after": cursor}),
+                docs(),
+                "another sort",
+            ),
+            (
+                "a_sort_path_with_an_empty_segment",
+                json!({"sort": [{"path": "a..b"}]}),
+                docs(),
+                "empty segment",
+            ),
+            (
+                "a_filter_the_kernel_refuses",
+                json!({"filter": {"compare": {"path": "n", "op": "eq", "value": null}}}),
+                docs(),
+                "null comparand",
+            ),
             // Tied rows with no id: minting `next` would drop the rest of the tie, so it is refused.
-            ("next_from_a_row_without_an_id", json!({"sort": [{"path": "k"}], "limit": 1}), tied_without_ids, "string or number `id`"),
-            ("next_from_a_row_with_an_object_id", json!({"sort": [{"path": "k"}], "limit": 1}), tied_object_ids, "string or number `id`"),
+            (
+                "next_from_a_row_without_an_id",
+                json!({"sort": [{"path": "k"}], "limit": 1}),
+                tied_without_ids,
+                "string or number `id`",
+            ),
+            (
+                "next_from_a_row_with_an_object_id",
+                json!({"sort": [{"path": "k"}], "limit": 1}),
+                tied_object_ids,
+                "string or number `id`",
+            ),
             // A page ending on a sort value at 2^53: the RFC 8785 cursor could not tell it from
             // 2^53 + 1, so it would resume at the wrong row. One below the boundary pages (`cursor_branches`).
-            ("next_from_a_sort_value_at_2_pow_53", json!({"sort": [{"path": "n"}], "limit": 1}), wide, "outside -(2^53-1)..=2^53-1"),
+            (
+                "next_from_a_sort_value_at_2_pow_53",
+                json!({"sort": [{"path": "n"}], "limit": 1}),
+                wide,
+                "outside -(2^53-1)..=2^53-1",
+            ),
         ];
         for (name, spec, docs, needle) in cases {
             let error = run(spec, docs).expect_err(name);
@@ -512,13 +687,63 @@ mod tests {
         // A document integer wider than 64 bits would be read as the nearest float and come back
         // rounded, so the JSON boundary refuses it as it refuses one in the spec.
         let error = query_json(b"{}", wide_document).expect_err("a wide document integer");
-        assert_eq!(error.to_string(), "codec: integer at byte 18 is outside the 64-bit range");
+        assert_eq!(
+            error.to_string(),
+            "codec: integer at byte 18 is outside the 64-bit range"
+        );
+    }
+
+    /// A store that reads its own spec refuses what the applier refuses, before it reads a document.
+    #[test]
+    fn query_spec_branches() {
+        let cases: [(&str, &str, Option<&str>); 6] = [
+            (
+                "a_valid_spec",
+                r#"{"filter": {"exists": {"path": "n", "exists": true}}, "sort": [{"path": "n"}]}"#,
+                None,
+            ),
+            ("not_json", "{not json}", Some("key must be a string")),
+            (
+                "a_wide_integer",
+                r#"{"limit": 18446744073709551617}"#,
+                Some("outside the 64-bit range"),
+            ),
+            (
+                "a_null_comparand",
+                r#"{"filter": {"compare": {"path": "n", "op": "eq", "value": null}}}"#,
+                Some("null comparand"),
+            ),
+            (
+                "a_sort_path_with_an_empty_segment",
+                r#"{"sort": [{"path": "a..b"}]}"#,
+                Some("empty segment"),
+            ),
+            (
+                "a_cursor_without_a_sort",
+                r#"{"after": "W10"}"#,
+                Some("takes no cursor"),
+            ),
+        ];
+        for (name, spec, want) in cases {
+            match (query_spec(spec.as_bytes()), want) {
+                (Ok(_), None) => {}
+                (Err(error), Some(needle)) => {
+                    assert_eq!(error.code, edax_core::ErrorCode::Codec, "{name}");
+                    assert!(error.message.contains(needle), "{name}: {error}");
+                }
+                (got, want) => panic!("{name}: got {got:?}, want {want:?}"),
+            }
+        }
     }
 
     #[test]
     fn keyset_paging_walks_every_row_exactly_once() {
         // One row per page, resuming from the previous page's `next`: no row may be dropped or repeated.
-        let tied = vec![json!({"id": "a", "bal": 100}), json!({"id": "b", "bal": 100}), json!({"id": "c", "bal": 100})];
+        let tied = vec![
+            json!({"id": "a", "bal": 100}),
+            json!({"id": "b", "bal": 100}),
+            json!({"id": "c", "bal": 100}),
+        ];
         // Whole-number doubles past 2^53, which RFC 8785 writes as integer digits: tied, then one
         // whose digits sit above the double, then a row with no value at all.
         let wide_doubles = vec![
@@ -529,19 +754,54 @@ mod tests {
         ];
         type Case = (&'static str, Vec<Value>, Vec<SortKey>, Vec<&'static str>);
         let cases: Vec<Case> = vec![
-            ("unique_sort_key", docs(), keys(&[("n", false)]), vec!["a", "b", "c", "d"]),
-            ("descending_sort_key", docs(), keys(&[("n", true)]), vec!["d", "c", "b", "a"]),
-            ("tied_sort_key_broken_by_id", tied, keys(&[("bal", false)]), vec!["a", "b", "c"]),
-            ("sort_already_ends_in_id", docs(), keys(&[("n", false), ("id", false)]), vec!["a", "b", "c", "d"]),
-            ("sort_ends_in_id_descending", docs(), keys(&[("id", true)]), vec!["d", "c", "b", "a"]),
-            ("whole_number_doubles_past_2_pow_53", wide_doubles, keys(&[("n", false)]), vec!["a", "b", "c", "d"]),
+            (
+                "unique_sort_key",
+                docs(),
+                keys(&[("n", false)]),
+                vec!["a", "b", "c", "d"],
+            ),
+            (
+                "descending_sort_key",
+                docs(),
+                keys(&[("n", true)]),
+                vec!["d", "c", "b", "a"],
+            ),
+            (
+                "tied_sort_key_broken_by_id",
+                tied,
+                keys(&[("bal", false)]),
+                vec!["a", "b", "c"],
+            ),
+            (
+                "sort_already_ends_in_id",
+                docs(),
+                keys(&[("n", false), ("id", false)]),
+                vec!["a", "b", "c", "d"],
+            ),
+            (
+                "sort_ends_in_id_descending",
+                docs(),
+                keys(&[("id", true)]),
+                vec!["d", "c", "b", "a"],
+            ),
+            (
+                "whole_number_doubles_past_2_pow_53",
+                wide_doubles,
+                keys(&[("n", false)]),
+                vec!["a", "b", "c", "d"],
+            ),
         ];
         for (name, documents, sort, want) in cases {
             let mut seen: Vec<String> = Vec::new();
             let mut after: Option<String> = None;
             // One row per page: a walk longer than the rows plus one repeated a row.
             for _ in 0..=want.len() {
-                let spec = Query { sort: sort.clone(), limit: Some(1), after: after.clone(), ..Default::default() };
+                let spec = Query {
+                    sort: sort.clone(),
+                    limit: Some(1),
+                    after: after.clone(),
+                    ..Default::default()
+                };
                 let page = query(&spec, documents.clone()).unwrap();
                 seen.extend(page.rows.iter().map(|r| r["id"].as_str().unwrap().to_string()));
                 match page.next {
@@ -583,11 +843,20 @@ mod tests {
             Ok(vec![json!(1), json!("a")]),
             "the tuple is one value per effective key, tiebreak last"
         );
-        assert!(encode_cursor(&json!({"id": "a"}), &[]).is_err(), "an unsorted query mints no cursor");
+        assert!(
+            encode_cursor(&json!({"id": "a"}), &[]).is_err(),
+            "an unsorted query mints no cursor"
+        );
         assert!(encode_cursor(&json!({"n": 1}), &sort).is_err(), "a missing id");
         assert!(encode_cursor(&json!({"n": 1, "id": null}), &sort).is_err(), "a null id");
-        assert!(encode_cursor(&json!({"n": 1, "id": ["a"]}), &sort).is_err(), "an array id");
-        assert!(encode_cursor(&json!({"n": 1, "id": {"k": "a"}}), &sort).is_err(), "an object id");
+        assert!(
+            encode_cursor(&json!({"n": 1, "id": ["a"]}), &sort).is_err(),
+            "an array id"
+        );
+        assert!(
+            encode_cursor(&json!({"n": 1, "id": {"k": "a"}}), &sort).is_err(),
+            "an object id"
+        );
         assert!(encode_cursor(&json!({"n": 1, "id": 7}), &sort).is_ok(), "a number id");
         // A sort value nested to the canonical form's depth bound, which the cursor's own two levels
         // then exceed: refused as `codec`, never a cursor no reader could parse.
@@ -596,27 +865,64 @@ mod tests {
         assert!(error.message.contains("recursion limit exceeded"), "{error}");
         // The widest integers the cursor text keeps exact round-trip; one past them is refused.
         let edge = json!({"id": "a", "n": -9_007_199_254_740_991i64});
-        assert_eq!(decode_cursor(&encode_cursor(&edge, &sort).unwrap(), &sort), Ok(vec![json!(-9_007_199_254_740_991i64), json!("a")]));
+        assert_eq!(
+            decode_cursor(&encode_cursor(&edge, &sort).unwrap(), &sort),
+            Ok(vec![json!(-9_007_199_254_740_991i64), json!("a")])
+        );
         let error = encode_cursor(&json!({"id": "a", "n": -9_007_199_254_740_992i64}), &sort).expect_err("at 2^53");
         assert!(error.message.contains("outside -(2^53-1)..=2^53-1"), "{error}");
         // A whole-number double past the safe range is written as integer digits that are not its
         // exact value (`58088200776852270`); it decodes as the double, nested values included.
         let double = json!({"id": "a", "n": 5.808820077685227e16});
-        assert_eq!(decode_cursor(&encode_cursor(&double, &sort).unwrap(), &sort), Ok(vec![json!(5.808820077685227e16), json!("a")]));
+        assert_eq!(
+            decode_cursor(&encode_cursor(&double, &sort).unwrap(), &sort),
+            Ok(vec![json!(5.808820077685227e16), json!("a")])
+        );
         let nested = json!({"id": "a", "n": {"k": [-1.1108287563226614e18]}});
-        assert_eq!(decode_cursor(&encode_cursor(&nested, &sort).unwrap(), &sort), Ok(vec![nested["n"].clone(), json!("a")]));
+        assert_eq!(
+            decode_cursor(&encode_cursor(&nested, &sort).unwrap(), &sort),
+            Ok(vec![nested["n"].clone(), json!("a")])
+        );
         // decode: every refusal arm
         let cases: [(&str, String, Vec<SortKey>, &str); 6] = [
-            ("unsorted", wire(json!({"s": print, "v": [1, "a"]})), vec![], "takes no cursor"),
+            (
+                "unsorted",
+                wire(json!({"s": print, "v": [1, "a"]})),
+                vec![],
+                "takes no cursor",
+            ),
             ("not_base64url", "!!".to_owned(), sort.clone(), "not base64url"),
-            ("standard_base64_padding_is_refused", "e30=".to_owned(), sort.clone(), "not base64url"),
-            ("not_a_cursor", wire(json!([1, "a"])), sort.clone(), "not a keyset cursor"),
-            ("an_unknown_field", wire(json!({"s": print, "v": [1, "a"], "x": 0})), sort.clone(), "not a keyset cursor"),
-            ("forged_arity", wire(json!({"s": print, "v": [1]})), sort.clone(), "carries 1 values for 2 sort keys"),
+            (
+                "standard_base64_padding_is_refused",
+                "e30=".to_owned(),
+                sort.clone(),
+                "not base64url",
+            ),
+            (
+                "not_a_cursor",
+                wire(json!([1, "a"])),
+                sort.clone(),
+                "not a keyset cursor",
+            ),
+            (
+                "an_unknown_field",
+                wire(json!({"s": print, "v": [1, "a"], "x": 0})),
+                sort.clone(),
+                "not a keyset cursor",
+            ),
+            (
+                "forged_arity",
+                wire(json!({"s": print, "v": [1]})),
+                sort.clone(),
+                "carries 1 values for 2 sort keys",
+            ),
         ];
         for (name, cursor, sort, needle) in cases {
             let error = decode_cursor(&cursor, &sort).expect_err(name);
-            assert!(error.to_string().starts_with("codec: ") && error.message.contains(needle), "{name}: {error}");
+            assert!(
+                error.to_string().starts_with("codec: ") && error.message.contains(needle),
+                "{name}: {error}"
+            );
         }
     }
 
@@ -636,10 +942,20 @@ mod tests {
             ("every_field_unset_emits_an_empty_spec", Query::default(), json!({})),
             (
                 "an_empty_sort_is_omitted_but_a_set_one_is_not",
-                Query { sort: full.sort.clone(), ..Default::default() },
+                Query {
+                    sort: full.sort.clone(),
+                    ..Default::default()
+                },
                 json!({"sort": [{"path": "name", "desc": true}]}),
             ),
-            ("a_nonzero_offset_is_emitted", Query { offset: 3, ..Default::default() }, json!({"offset": 3})),
+            (
+                "a_nonzero_offset_is_emitted",
+                Query {
+                    offset: 3,
+                    ..Default::default()
+                },
+                json!({"offset": 3}),
+            ),
             (
                 "every_field_set_emits_every_field",
                 full,
@@ -654,15 +970,26 @@ mod tests {
         ];
         for (name, query, wire) in cases {
             assert_eq!(serde_json::to_value(&query).unwrap(), wire, "{name}");
-            assert_eq!(serde_json::from_value::<Query>(wire).unwrap(), query, "{name} round-trip");
+            assert_eq!(
+                serde_json::from_value::<Query>(wire).unwrap(),
+                query,
+                "{name} round-trip"
+            );
         }
     }
 
     #[test]
     fn tiebreak_is_appended_once() {
         assert_eq!(effective_sort(&[]), vec![], "an unsorted query takes no tiebreak");
-        assert_eq!(effective_sort(&keys(&[("n", false)])), keys(&[("n", false), ("id", false)]));
-        assert_eq!(effective_sort(&keys(&[("id", true)])), keys(&[("id", true)]), "a terminal id key is kept as-is");
+        assert_eq!(
+            effective_sort(&keys(&[("n", false)])),
+            keys(&[("n", false), ("id", false)])
+        );
+        assert_eq!(
+            effective_sort(&keys(&[("id", true)])),
+            keys(&[("id", true)]),
+            "a terminal id key is kept as-is"
+        );
         assert_eq!(
             effective_sort(&[SortKey::decimal("id", false)]),
             vec![SortKey::decimal("id", false), SortKey::new("id", false)],
@@ -680,15 +1007,26 @@ mod tests {
             ("documents_are_not_json", br#"{"sort": [{"path": "n"}]}"#, b"{"),
             ("documents_are_not_an_array", br#"{"sort": [{"path": "n"}]}"#, b"{}"),
             ("a_typo_in_the_spec", br#"{"limt": 1}"#, &documents),
-            ("a_typo_in_a_sort_key", br#"{"sort": [{"path": "n", "dsc": true}]}"#, &documents),
-            ("an_integer_wider_than_64_bits", br#"{"filter": {"compare": {"path": "n", "op": "eq", "value": 1180591620717411303424}}}"#, &documents),
+            (
+                "a_typo_in_a_sort_key",
+                br#"{"sort": [{"path": "n", "dsc": true}]}"#,
+                &documents,
+            ),
+            (
+                "an_integer_wider_than_64_bits",
+                br#"{"filter": {"compare": {"path": "n", "op": "eq", "value": 1180591620717411303424}}}"#,
+                &documents,
+            ),
         ];
         for (name, spec, documents) in cases {
             assert!(query_json(spec, documents).is_err(), "{name}");
         }
         let page = query_json(br#"{"sort": [{"path": "n"}], "limit": 1}"#, &documents).unwrap();
         let next = encode_cursor(&json!({"id": "a", "n": 1}), &keys(&[("n", false)])).unwrap();
-        assert_eq!(page, format!(r#"{{"rows":[{{"id":"a","n":1,"s":"closed"}}],"next":"{next}"}}"#));
+        assert_eq!(
+            page,
+            format!(r#"{{"rows":[{{"id":"a","n":1,"s":"closed"}}],"next":"{next}"}}"#)
+        );
     }
 
     #[test]
@@ -698,9 +1036,15 @@ mod tests {
         let cursor = encode_cursor_json(doc, sort).unwrap();
         assert!(!cursor.contains(['+', '/', '=']), "URL-safe and unpadded: {cursor}");
         assert_eq!(decode_cursor_json(cursor.as_bytes(), sort).unwrap(), r#"[1,"a"]"#);
-        assert_eq!(effective_sort_json(sort).unwrap(), r#"[{"path":"n","desc":false},{"path":"id","desc":false}]"#);
+        assert_eq!(
+            effective_sort_json(sort).unwrap(),
+            r#"[{"path":"n","desc":false},{"path":"id","desc":false}]"#
+        );
         assert!(encode_cursor_json(b"not json", sort).is_err());
-        assert!(encode_cursor_json(br#"{"id":"a","n":18446744073709551617}"#, sort).is_err(), "a wide document integer");
+        assert!(
+            encode_cursor_json(br#"{"id":"a","n":18446744073709551617}"#, sort).is_err(),
+            "a wide document integer"
+        );
         assert!(encode_cursor_json(doc, b"not json").is_err());
         assert!(decode_cursor_json(b"not base64!", sort).is_err());
         assert!(decode_cursor_json(&[0xff], sort).is_err(), "a cursor is text");

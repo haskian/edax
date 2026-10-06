@@ -45,9 +45,11 @@ from conftest import (
     stamp,
 )
 from edax import command as C
-from edax.aggregate import WireFormat
+from edax import idempotency
 from edax.backend.memory import MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
+from edax.message import WireFormat
+from edax.query import Query
 from edax.testing import drafted, recorded
 from edax.testing.faults import LostResponse
 from hypothesis import given, settings
@@ -102,7 +104,7 @@ store_op = st.one_of(
 
 @dataclass
 class OutboxModel:
-    """Per-aggregate streams plus a FIFO outbox drained by prefixes. Pure: no store calls."""
+    """Per-aggregate streams plus an outbox in commit order, ordered per aggregate. Pure: no store calls."""
 
     events: dict[int, list[edax.EventMessage]] = field(default_factory=dict)
     outbox: list[edax.EventMessage] = field(default_factory=list)
@@ -140,8 +142,9 @@ class OutboxModel:
         self.events.setdefault(agg, []).extend(envs)
         self.outbox.extend(envs)
 
-    def drained(self, n: int) -> None:
-        self.outbox = self.outbox[n:]
+    def marked(self, rows: list[edax.EventMessage]) -> None:
+        ids = {e.id for e in rows}
+        self.outbox = [e for e in self.outbox if e.id not in ids]
 
     @property
     def all_ids(self) -> list[str]:
@@ -226,15 +229,18 @@ class StoreReplay:
         with expect(edax.StoreError if failed or lost else None):
             n = await self.relay.drain(op.limit)
         if failed:
-            # The published prefix is marked, and the failed row and everything behind it stay for the
-            # next drain (at-least-once, never a drop, never out of order).
+            # Order is promised per aggregate: the failed row and its aggregate's rows behind it stay for
+            # the next drain (at-least-once, never a drop, never out of order), and every other row is
+            # published and marked. One row fails, so the outage breaker never trips here.
             assert op.fail_at is not None
             self.model.failed_drains += 1
-            same(self.sink.seen, batch[: op.fail_at + 1])
-            self.model.drained(op.fail_at)
+            failed_row = batch[op.fail_at]
+            behind = [e for e in batch[op.fail_at + 1 :] if e.aggregate_id != failed_row.aggregate_id]
+            same(self.sink.seen, batch[: op.fail_at + 1] + behind)
+            self.model.marked(batch[: op.fail_at] + behind)
         else:
             # Marked — even when the mark's response was lost — so the batch never republishes.
-            self.model.drained(len(batch))
+            self.model.marked(batch)
             same(self.sink.seen, batch)
             if not lost:
                 assert n == len(batch)
@@ -248,9 +254,12 @@ class StoreReplay:
         await self.relay.drain(1000)
         self.model.published.extend(e.id for e in self.sink.seen)
         assert await self.store.unpublished(1000) == []
-        # The outbox is a FIFO drained by prefixes, so first publication follows append order.
+        # Order is promised per aggregate, so each aggregate's first publications follow its append order.
         first_seen = list(dict.fromkeys(self.model.published))
-        assert first_seen == self.model.all_ids
+        assert sorted(first_seen) == sorted(self.model.all_ids)
+        for es in self.model.events.values():
+            ids = {e.id for e in es}
+            assert [i for i in first_seen if i in ids] == [e.id for e in es]
         for id_ in first_seen:
             assert self.model.published.count(id_) <= 1 + self.model.failed_drains
 
@@ -475,8 +484,8 @@ class BusReplay:
         # The handle of each pending claim a SeedPending took, so a Release can name it.
         self.seeded: dict[int, bytes] = {}
         self.bus = C.CommandBus(C.idempotent(store, scope="test", tenancy=edax.Tenancy.SILO))
-        self.bus.register("A", self.handler)
-        self.bus.register("B", self.handler)
+        for kind in (0, 1):
+            self.bus.register(type(make_cmd(kind, 0, 0, 0)), self.handler)
 
     async def handler(self, cmd: Any) -> int:
         self.calls[cmd.kind] += 1
@@ -522,7 +531,7 @@ class BusReplay:
         cmd = make_cmd(0, op.key, op.payload, 0)
         hash_ = C._payload_hash(cmd, cmd.type)
         got = await self.store.claim(claimed(str(op.key)), hash_)
-        if isinstance(got, C.Won):
+        if isinstance(got, idempotency.Won):
             assert op.key not in self.model
             self.model[op.key] = (hash_, Slot.PENDING)
             self.seeded[op.key] = got.handle
@@ -558,16 +567,17 @@ class BusReplay:
         for key, (stored, slot) in self.model.items():
             hash_ = 0 if stored is None else stored
             record = await self.store.claim(claimed(str(key)), hash_)
-            assert not isinstance(record, C.Won), f"key {key} should still hold a record"
+            assert not isinstance(record, idempotency.Won), f"key {key} should still hold a record"
             assert record.payload_hash == hash_
+            state = record.state
             if slot is Slot.UNREADABLE:
-                assert record.error_code == "codec" and record.result is None
+                assert isinstance(state, idempotency.Failed) and state.error_code == "codec"
             elif slot is Slot.PENDING:
-                assert record.pending
+                assert isinstance(state, idempotency.Pending)
             elif slot[0] == "done":
-                assert record.result == slot[1]
+                assert state == idempotency.Done(slot[1])
             else:
-                assert record.error == slot[1]
+                assert isinstance(state, idempotency.Failed) and state.error == slot[1]
 
 
 async def _replay_bus(history: list[BusOp], backend: str) -> None:
@@ -611,8 +621,8 @@ async def _replay_dispatcher(workers: int, max_attempts: int, with_dead: bool, s
         if env.name == "Terminal":
             raise edax.CodecError("terminal")
 
-    async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        dead.append(delivery.message.id)
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append(letter.message.id)
 
     dispatcher = edax.KeyOrderedDispatcher(
         workers=workers,
@@ -770,7 +780,7 @@ class RepoReplay:
         envs = await self.repo.save(instance, extensions=extensions, metadata=metadata)
         assert [e.sequence for e in envs] == list(range(version + 1, version + len(op.ticks) + 1))
         assert all(dict(e.extensions) == extensions and dict(e.metadata) == metadata for e in envs)
-        assert instance.pending == []
+        assert instance.pending == ()
         assert instance.version.initial == version + len(op.ticks)
         assert instance.version.updates == 0
         ticks.extend(op.ticks)
@@ -1033,18 +1043,18 @@ class ProjectionReplay:
         if lost:
             self.store.arm("save")
         exc = (edax.StoreError if lost else None) if clean else edax.ConcurrencyError
+        saved: int | None = None
         with expect(exc):
-            await self.store.save(entity)
+            saved = await self.store.save(entity)
         if clean:
             self.model[op.id] = (stored + 1, op.n)
-        # Clean: advanced in place. Lost: the row advanced but the caller's entity.version is rolled
-        # back to what it saw (the OCC bump was lost with the response). Conflict: unchanged.
-        assert entity.version == (stored + 1 if clean and not lost else expected)
+        # Clean: the new version comes back. Lost: the row advanced but the caller never heard the new
+        # version. Conflict: nothing comes back.
+        assert saved == (stored + 1 if clean and not lost else None)
         if lost:
             # Blind retry with the same stale entity: OCC turns it into a conflict, not a dup write.
             with expect(edax.ConcurrencyError):
                 await self.store.save(entity)
-            assert entity.version == expected
 
     async def get(self, op: Get) -> None:
         got = await self.store.get(f"u{op.id}")
@@ -1057,7 +1067,7 @@ class ProjectionReplay:
 
     async def page(self, op: Page) -> None:
         page = await self.store.get_many(
-            sort=[{"path": "id", "desc": op.desc}], offset=op.offset, limit=op.limit
+            Query(sort=[{"path": "id", "desc": op.desc}], offset=op.offset, limit=op.limit)
         )
         ids = [f"u{i}" for i in sorted(self.model, reverse=op.desc)]
         want = ids[op.offset :] if op.limit is None else ids[op.offset : op.offset + op.limit]

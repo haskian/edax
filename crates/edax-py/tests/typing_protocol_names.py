@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from edax.aggregate import Aggregate, CommandMessage, Event, EventMessage, Payload, Serializer
+from edax.aggregate import Aggregate, AggregateCodec, EventCodec
+from edax.message import CommandMessage, EventMessage, Marshaled, Payload
 from edax.saga import Completed, Saga
-from edax.store import AggregateCodec, EventCodec
+from edax.serializer import Serializer
 
 
 class Account(Aggregate):
@@ -45,10 +46,10 @@ class AccountCodec:
 class DepositCodec:
     """An `EventCodec` naming its parameter after the domain event rather than `event`."""
 
-    def marshal(self, deposited: Any) -> Event:
-        return Event("Deposited", 1, b"{}")
+    def marshal(self, deposited: Any) -> Payload:
+        return Payload("Deposited", 1, b"{}")
 
-    def unmarshal(self, stored: Payload) -> Any:
+    def unmarshal(self, stored: Marshaled) -> Any:
         return stored
 
 

@@ -1,4 +1,10 @@
+import ast
 import asyncio
+import inspect
+import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import edax
@@ -13,11 +19,129 @@ from conftest import (
     message_as_obj,
     message_from_obj,
     sequence_of,
+    wire_code,
 )
-from edax import _edax, causation
+from edax import _edax, causation, testing
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
-from edax.broker import UndecodableDelivery
 from edax.causation import caused_by, current_lineage, originate, propagate, use_lineage
+from edax.message import message_kind
+
+
+def test_no_root_name_is_a_raw_kernel_function() -> None:
+    """A raw `_edax` function raises a bare `RuntimeError`, which `is_terminal` reads as transient, so the
+    root exports only wrappers that map the failure. Native classes are data, not calls, and may cross."""
+    raw = [
+        name
+        for name in edax.__all__
+        if inspect.isroutine(getattr(edax, name))
+        and getattr(getattr(edax, name), "__module__", None) == _edax.__name__
+    ]
+    assert raw == []
+
+
+#: The SDK's own modules and packages by name, and the native module: what may cross by a ``_`` name.
+_PACKAGE = Path(edax.__file__).parent
+_MODULES = {path.stem for path in _PACKAGE.rglob("*.py")} | {
+    path.parent.name for path in _PACKAGE.rglob("__init__.py")
+}
+_MODULES.add("_edax")
+
+
+def _private_crossings(source: str, modules: set[str]) -> list[str]:
+    """Each ``_`` name a module takes from another edax module: imported by name, or read off an edax module
+    it imported. A private module (``_json``) and the native ``_edax`` are modules, not names, so they cross:
+    a helper two modules share gets a plain name in a private module instead."""
+    tree = ast.parse(source)
+    bound: set[str] = set()  # local names an edax module is bound to
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level == 0 and (node.module or "").split(".")[0] != "edax":
+            continue
+        for alias in node.names:
+            if alias.name in modules:
+                bound.add(alias.asname or alias.name)
+            elif alias.name.startswith("_"):
+                found.append(alias.name)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in bound
+            and node.attr.startswith("_")
+            and not node.attr.startswith("__")
+        ):
+            found.append(f"{node.value.id}.{node.attr}")
+    return found
+
+
+@pytest.mark.parametrize(
+    "source, want",
+    [
+        pytest.param("from .observe import _wrap", ["_wrap"], id="a_private_name_imported_is_found"),
+        pytest.param("from edax.message import _replace", ["_replace"], id="an_absolute_import_is_found_too"),
+        pytest.param(
+            "from . import errors\nerrors._wiring_u32(1, 'n')",
+            ["errors._wiring_u32"],
+            id="a_private_attribute_is_found",
+        ),
+        pytest.param("from . import _edax, _json\n_json.encode(1)", [], id="a_private_module_may_cross"),
+        pytest.param("from ._observer import wrap", [], id="a_plain_name_of_a_private_module_may_cross"),
+        pytest.param("from asyncio import _get_running_loop", [], id="another_package_is_not_judged"),
+        pytest.param("self._inner.close()", [], id="an_object_attribute_is_not_a_module_name"),
+    ],
+)
+def test_the_crossing_check_branches(source: str, want: list[str]) -> None:
+    assert _private_crossings(source, _MODULES) == want
+
+
+def test_no_private_name_crosses_between_sdk_modules() -> None:
+    """A ``_`` name is its module's own. One another module reaches for is a shared helper in disguise:
+    renaming it in its home module breaks a module that never said it depends on it."""
+    crossings = {
+        str(path.relative_to(_PACKAGE)): found
+        for path in sorted(_PACKAGE.rglob("*.py"))
+        if (found := _private_crossings(path.read_text(), _MODULES))
+    }
+    assert crossings == {}
+
+
+def test_the_testing_kit_builds_messages_without_pytest_and_loads_the_contracts_on_use() -> None:
+    """``edax.testing`` imports the contract suites, which need pytest, only when one is named. A host test
+    that builds a message by hand runs with no pytest installed; naming a suite then fails on the import."""
+    script = """
+import sys
+sys.modules["pytest"] = None  # an import of pytest now raises ImportError
+import edax.testing as kit
+assert "edax.testing.contracts" not in sys.modules
+print(kit.drafted(kit.event("acct-1", "Deposited", 1)).aggregate_id)
+try:
+    kit.EventStoreContract
+except ImportError:
+    print("contracts need pytest")
+"""
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert done.stdout.splitlines() == ["acct-1", "contracts need pytest"]
+
+
+def test_a_green_rerun_of_the_last_failures_passes_the_golden_guard(tmp_path: Path) -> None:
+    """``--lf`` reruns only the modules that failed and leaves every other one out unimported, so their
+    goldens go unread. The guard reads such a run as partial, as it reads a ``-k`` run, and passes it. Read as
+    full, it failed every green rerun on goldens no test was asked to read."""
+    tests = Path(__file__).parent
+    cache = tmp_path / "v" / "cache"
+    cache.mkdir(parents=True)
+    rerun = "tests/test_edax.py::test_no_root_name_is_a_raw_kernel_function"
+    (cache / "lastfailed").write_text(json.dumps({rerun: True}))
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests", "--lf", "-q", "-o", f"cache_dir={tmp_path}"],
+        cwd=tests.parent,
+        capture_output=True,
+        text=True,
+    )
+    assert "golden vectors no Python test read" not in done.stdout, done.stdout
+    assert (done.returncode, done.stdout.splitlines()[-1].split(" in ")[0]) == (0, "1 passed"), done.stdout
 
 
 def test_golden_partition() -> None:
@@ -45,7 +169,7 @@ def test_golden_staleness() -> None:
 
 
 def test_golden_snapshot_due() -> None:
-    """The snapshot interval :class:`~edax.store.Repository` asks the kernel about on every save."""
+    """The snapshot interval :class:`~edax.repository.Repository` asks the kernel about on every save."""
     for c in golden("snapshot_due.json"):
         assert _edax.snapshot_due(c["every"], c["initial"], c["current"]) is c["due"], c
 
@@ -56,7 +180,7 @@ def test_golden_sequence_batch() -> None:
     hits it fails the same way on every retry instead of reading as a transient store error."""
     for c in golden("sequence_batch.json"):
         if c["error"] is None:
-            assert edax.check_sequence_batch(c["expected"], c["sequences"]) is None
+            assert edax.check_sequence_batch(c["expected"], c["sequences"]) == c["version"]
         else:
             with pytest.raises(edax.CodecError) as caught:
                 edax.check_sequence_batch(c["expected"], c["sequences"])
@@ -79,7 +203,7 @@ def test_golden_backoff() -> None:
     :class:`~edax.Backoff`, which is what :class:`~edax.Pacing` waits on."""
     for c in golden("backoff.json"):
         policy = edax.Backoff(c["base_millis"], c["cap_millis"])
-        got = edax.backoff_millis(c["base_millis"], c["cap_millis"], c["attempt"], c["entropy"])
+        got = _edax.backoff_millis(c["base_millis"], c["cap_millis"], c["attempt"], c["entropy"])
         assert got == policy.delay_millis(c["attempt"], c["entropy"]) == c["expected_millis"], c
         assert got <= c["ceiling_millis"] <= c["cap_millis"], c
 
@@ -92,10 +216,10 @@ def test_golden_tenancy() -> None:
         mode = edax.Tenancy(c["mode"])
         assert (mode.requires_tenant, mode.composes_keys) == (c["requires_tenant"], c["composes_keys"]), c
         if c["error"] is None:
-            assert edax.tenant_key(mode, c["key"], c["tenant"]) == c["expected"], c
+            assert edax.tenant_key(mode, c["tenant"], c["key"]) == c["expected"], c
             continue
         with pytest.raises(edax.errors.CodecError) as caught:
-            edax.tenant_key(mode, c["key"], c["tenant"])
+            edax.tenant_key(mode, c["tenant"], c["key"])
         assert str(caught.value) == c["error"].removeprefix("codec: "), c
 
 
@@ -131,12 +255,14 @@ def test_golden_envelope_decode() -> None:
     for case in golden("envelope_decode.json"):
         for fmt in ("json", "msgpack"):
             wire = bytes.fromhex(case[f"{fmt}_hex"])
-            got: dict[str, Any]
-            try:
-                got = {"message": message_as_obj(edax.KernelSerializer(fmt, case["kind"]).decode(wire))}
-            except edax.CodecError as e:
-                got = {"error_code": e.code}
-            assert got == case["want"], (case["name"], fmt)
+            serializer = edax.KernelSerializer(fmt, case["kind"])
+            if "error" in case["want"]:
+                # The format parser words a refusal its own way, so the code is what both formats share.
+                with pytest.raises(edax.CodecError) as refused:
+                    serializer.decode(wire)
+                assert refused.value.code == wire_code(case["want"]["error"]), (case["name"], fmt)
+                continue
+            assert message_as_obj(serializer.decode(wire)) == case["want"]["message"], (case["name"], fmt)
 
 
 def _headers_from_obj(headers: list[dict[str, str]]) -> list[Any]:
@@ -173,38 +299,76 @@ def test_golden_kafka_record() -> None:
 
 
 def test_golden_kafka_decode() -> None:
-    """The consumer side, through a real :class:`~edax.backend.kafka.KafkaConsumer` over a fake client, so
-    the vector proves the adapter and not a copy of its rule: the kernel routes the record by its first
-    ``content-type``, an absent one falls back to the default, and a media type no serializer claims —
-    the empty one included — is poison instead of a guess. A consumer of one kind registers that kind's
-    serializers only, so a record of the other kind is poison too, and a command consumer has no
-    header-less default. Every failure is a terminal ``CodecError``, so the consumer dead-letters the
-    record instead of redelivering it forever."""
+    """The consumer side, through a real :class:`~edax.backend.kafka.KafkaConsumer` over a fake client and
+    built with the registry the row names, so the vector proves the adapter and not a copy of its rule: the
+    kernel routes the record by its first ``content-type`` among the registered media types, an absent one
+    goes to the default when it reads events, and the serializer the route picks decodes the bytes. A media
+    type nobody registered, the empty one included, a header-less record under a command default, and bytes
+    the picked serializer cannot read are all poison: a terminal ``CodecError``, so the consumer
+    dead-letters the record instead of redelivering it forever."""
     for c in golden("kafka_decode.json"):
-        kind = c["kind"]
-        default = c["default_format"] or "json"
-        other = "msgpack" if default == "json" else "json"
         client = FakeKafkaClient()
         headers = [(h["key"], bytes.fromhex(h["value_hex"])) for h in c["headers"]]
-        value = bytes.fromhex(c["value_hex"])
-        client.log.append(KafkaMsg("t", 0, 0, b"agg-1", value, headers))
-        consumer = KafkaConsumer(
-            client,
-            serializer=edax.KernelSerializer(default, kind),
-            serializers=[edax.KernelSerializer(other, kind)],
-        )
+        client.log.append(KafkaMsg("t", 0, 0, b"agg-1", bytes.fromhex(c["value_hex"]), headers))
+        registry = [edax.KernelSerializer(entry["format"], entry["kind"]) for entry in c["registry"]]
+        assert [s.media_type for s in registry] == [entry["media_type"] for entry in c["registry"]], c["name"]
+        consumer = KafkaConsumer(client, serializer=registry[0], serializers=registry[1:])
         delivery = asyncio.run(consumer.poll())
         assert delivery is not None, c["name"]
-        if "message" in c["want"]:
-            assert not isinstance(delivery, UndecodableDelivery), c["name"]
-            assert message_as_obj(delivery.message) == c["want"]["message"], c["name"]
+        want = c["want"]
+        if "message" in want:
+            assert not isinstance(delivery, edax.Undecodable), c["name"]
+            assert message_kind(delivery.message) == want["kind"], c["name"]
+            assert message_as_obj(delivery.message) == want["message"], c["name"]
             continue
-        assert isinstance(delivery, UndecodableDelivery), c["name"]
+        assert isinstance(delivery, edax.Undecodable), c["name"]
         assert isinstance(delivery.error, edax.CodecError) and delivery.error.terminal, c["name"]
-        unknown = c["want"]["error"].removeprefix("codec: unknown format: ")
-        if unknown != c["want"]["error"]:
-            # The kernel refused the media type; the shell names the same one it found no serializer for.
-            assert f"no serializer for content type {unknown!r}" in str(delivery.error), c["name"]
+        route = want.get("route")
+        if route == "unknown":
+            assert f"no serializer for content type {want['media_type']!r}" in str(delivery.error), c["name"]
+        elif route == "headerless":
+            assert "no readable content-type header" in str(delivery.error), c["name"]
+        else:
+            # The serializer's own refusal, carried under the poison id.
+            assert want["error"].removeprefix("codec: ") in str(delivery.error), c["name"]
+
+
+def test_golden_kafka_config() -> None:
+    """What a Kafka shell checks when it is built, through the binding: the durations, each refused at zero
+    and below as the terminal ``BadHandle`` naming the setting and accepted from one millisecond; the consumer
+    configurations refused the same way; and the producer ``acks`` the kernel warns about. The adapters read
+    their client and call these checks (``test_kafka.py`` drives them)."""
+    for c in golden("kafka_config.json"):
+        if c["op"] == "acks":
+            assert _edax.kafka_acks_warning(c["acks"]) == c["warning"], c["name"]
+            continue
+        if c["op"] == "dead_sink":
+            if c["error"] is None:
+                _edax.kafka_check_dead_sink(c["has_dead_sink"])
+                continue
+            with pytest.raises(edax.BadHandle) as refused, edax.errors.mapped():
+                _edax.kafka_check_dead_sink(c["has_dead_sink"])
+            assert f"bad_handle: {refused.value}" == c["error"], c["name"]
+            continue
+        if c["op"] == "consumer":
+            if c["error"] is None:
+                _edax.kafka_check_consumer(c["auto_commit"], c["has_group"])
+                continue
+            with pytest.raises(edax.BadHandle) as refused, edax.errors.mapped():
+                _edax.kafka_check_consumer(c["auto_commit"], c["has_group"])
+            assert f"bad_handle: {refused.value}" == c["error"], c["name"]
+            continue
+        assert c["op"] == "durations", c["name"]
+        settings = {
+            name: c[name]
+            for name in ("publish_timeout_ms", "commit_interval_ms", "commit_timeout_ms", "drain_timeout_ms")
+        }
+        if c["error"] is None:
+            _edax.kafka_check_config(**settings)
+            continue
+        with pytest.raises(edax.BadHandle) as refused, edax.errors.mapped():
+            _edax.kafka_check_config(**settings)
+        assert f"bad_handle: {refused.value}" == c["error"], c["name"]
 
 
 def test_golden_kafka_route() -> None:
@@ -232,9 +396,9 @@ def test_golden_kafka_route() -> None:
 
 
 def test_golden_kafka_dead_letter() -> None:
-    """The record a dead-letter sink publishes: key, value and headers verbatim plus the four
-    ``edax-dlq-*`` headers. The rows for the kernel's reader of those headers replay in Rust only: no
-    SDK reads a dead-letter record back."""
+    """The record a dead-letter sink publishes: key, value and headers verbatim plus the four ``edax-dlq-*``
+    headers; and its stub, the value dropped and ``edax-dlq-dropped`` added. The rows for the kernel's
+    reader of those headers replay in Rust only: no SDK reads a dead-letter record back."""
     for c in golden("kafka_dead_letter.json"):
         if "record" not in c:
             continue
@@ -242,9 +406,16 @@ def test_golden_kafka_dead_letter() -> None:
         record = _edax.KafkaRecord(
             bytes.fromhex(rec["key_hex"]), bytes.fromhex(rec["value_hex"]), _headers_from_obj(rec["headers"])
         )
-        dead = _edax.kafka_dead_letter_record(record, c["topic"], c["partition"], c["offset"], c["error"])
+        dead = _edax.kafka_dead_letter_record(
+            record, c["topic"], c["partition"], c["offset"], c["message"], c["code"]
+        )
         assert (dead.key.hex(), dead.value.hex()) == (want["key_hex"], want["value_hex"]), c["name"]
         assert [{"key": h.key, "value_hex": h.value.hex()} for h in dead.headers] == want["headers"], c[
+            "name"
+        ]
+        stub, want_stub = _edax.kafka_dead_letter_stub(dead), want["stub"]
+        assert (stub.key.hex(), stub.value.hex()) == (want_stub["key_hex"], want_stub["value_hex"]), c["name"]
+        assert [{"key": h.key, "value_hex": h.value.hex()} for h in stub.headers] == want_stub["headers"], c[
             "name"
         ]
 
@@ -297,6 +468,14 @@ def test_golden_kafka_offsets() -> None:
                     for r in tracker.stats()
                 ]
                 assert rows == want["rows"], where
+            elif op == "revoke":
+                due = tracker.revoke(step["topic"], step["partition"])
+                got = (
+                    None
+                    if due is None
+                    else {"topic": due.topic, "partition": due.partition, "offset": due.offset}
+                )
+                assert {"due": got} == want, where
             else:
                 raise AssertionError(f"{where}: unknown op")
 
@@ -318,13 +497,14 @@ def test_golden_redis_value() -> None:
             if "error" in want:
                 # A value the split refuses still holds the key: the claimant reads the kernel's
                 # unreadable record, a codec failure under its own hash naming the split's refusal.
-                prior = _edax.redis_claim_outcome(reader, raw)
-                assert prior is not None, name
+                claimed = _edax.redis_claim_outcome(reader, raw)
+                assert not claimed.won and claimed.prior is not None, name
                 code, _, cause = want["error"].partition(": ")
-                failed = edax.Record(0, error=f"unreadable idempotency record: {cause}", error_code=code)
-                assert edax.command.decode_prior(prior, 0) == failed, name
+                failed = edax.Record.failed(0, f"unreadable idempotency record: {cause}", code)
+                assert edax.idempotency.decode_prior(claimed.prior, 0) == failed, name
                 continue
-            assert _edax.redis_claim_outcome(reader, raw) == want["record"], name
+            claimed = _edax.redis_claim_outcome(reader, raw)
+            assert (claimed.won, claimed.handle, claimed.prior) == (False, None, want["record"]), name
         elif op != "claim":
             raise AssertionError(f"{name}: unknown op {op}")
 
@@ -342,18 +522,30 @@ def _redis_ledger_case(c: dict[str, Any]) -> Any:
         return _edax.redis_check_claim(bytes.fromhex(c["handle_hex"]))
     if op == "outcome":
         reply = None if c["reply_hex"] is None else bytes.fromhex(c["reply_hex"])
-        prior = _edax.redis_claim_outcome(c["claim"].encode(), reply)
-        return {"won": True} if prior is None else {"prior": prior}
+        claim = c["claim"].encode()
+        claimed = _edax.redis_claim_outcome(claim, reply)
+        if claimed.won:
+            assert (claimed.handle, claimed.prior) == (claim, None), "the handle is the claim value"
+            return {"won": True}
+        return {"prior": claimed.prior}
     if op == "forget":
         held = None if c["held_hex"] is None else bytes.fromhex(c["held_hex"])
         return "delete" if _edax.redis_forget_outcome(c["key"], held) else "nothing"
+    if op == "settle":
+        return _edax.redis_settled_value(c["claim"].encode(), c["record_json"]).decode()
+    if op == "complete_outcome":
+        return _edax.redis_complete_outcome(c["key"], c["written"])
+    if op == "forget_exhausted":
+        raise RuntimeError(_edax.redis_forget_exhausted(c["key"]))
+    if op == "heartbeat_due":
+        return _edax.redis_heartbeat_due_ms(c["sent_at_ms"], c["claim_ttl_ms"], c["beat"])
     raise AssertionError(f"{c['name']}: unknown op {op}")
 
 
 def test_golden_redis_ledger() -> None:
-    """The key, the refused settings and handles, the claim outcome, the forget verdict and the reply
-    verdicts: every
-    decision a second SDK's Redis store must make the same way, read through the binding."""
+    """The key, the refused settings and handles, the claim and complete outcomes, the forget verdict and
+    the error a forget gives up with, the settling value, the heartbeat schedule and the reply verdicts:
+    every decision a second SDK's Redis store must make the same way, read through the binding."""
     for c in golden("redis_ledger.json"):
         if c["op"] == "reply":
             assert _edax.redis_reply_error(c["reply"]) == c["error"], c["name"]
@@ -501,7 +693,7 @@ async def test_key_ordered_dispatch() -> None:
     consumer.start()
     for seq in range(per_agg):
         for agg in aggregates:
-            await consumer.submit(build_message(agg, "t", seq, id=f"{agg}-{seq}"))
+            await consumer.submit(testing.delivery(build_message(agg, "t", seq, id=f"{agg}-{seq}")))
     await consumer.stop()
 
     for agg in aggregates:

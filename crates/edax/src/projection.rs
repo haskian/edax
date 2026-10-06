@@ -9,46 +9,58 @@ use crate::Error;
 pub use edax_cqrs::{Page, Query, SortKey};
 
 /// A read model at a point in time: the queryable `document` and the `version` it was loaded at (`0` if never
-/// saved). A save persists at `version + 1` only if the store is still at `version`, then advances it.
-#[derive(Clone, Debug)]
+/// saved). A value: a save persists it at `version + 1` only if the store is still at `version`, and returns
+/// the new version rather than changing this one.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Entity {
     pub id: String,
     pub version: u64,
     pub document: Value,
 }
 
-/// Stores read-model documents keyed by id, with optimistic concurrency and kernel-defined querying: the read
-/// side's analogue of [`EventStore`](crate::EventStore). A backend serves [`ProjectionStore::get_many`] by
-/// pushing filter, sort and pagination down to its native query dialect. No durable store ships here.
+/// Stores read-model documents keyed by id, with optimistic concurrency: the read side's analogue of
+/// [`EventStore`](crate::EventStore). A store that also pages them by the kernel's query is a
+/// [`ProjectionQuery`]. No durable store ships here.
 pub trait ProjectionStore {
     /// Backend transaction handle, the same one [`Transactor`](crate::Transactor) hands out, so a projection
     /// write enlists in the events' transaction and the two commit together. Use `()` if the store needs none.
     type Tx;
 
-    /// The current entity, or `None` if absent.
+    /// The current entity, or `None` if absent. Its document carries the row key as `"id"`, overwriting
+    /// any the saved document held ([`edax_cqrs::keyed_document`]), as every row `get_many` pages does.
     fn get(&self, tx: &mut Self::Tx, id: &str) -> Result<Option<Entity>, Error>;
 
-    /// Persist `entity.document` at `entity.version + 1` if the stored version still equals `entity.version`;
-    /// return a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error otherwise. On success
-    /// `entity.version` advances to the stored version.
-    fn save(&self, tx: &mut Self::Tx, entity: &mut Entity) -> Result<(), Error>;
+    /// Persist `entity.document` at `entity.version + 1` if the stored version still equals `entity.version`,
+    /// and return that new version; a [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) error
+    /// otherwise, writing nothing.
+    fn save(&self, tx: &mut Self::Tx, entity: &Entity) -> Result<u64, Error>;
+}
 
+/// A [`ProjectionStore`] that pages its documents by the kernel's query, so two services page it
+/// identically. A backend serves it by pushing filter, sort and pagination down to its native query
+/// dialect.
+pub trait ProjectionQuery: ProjectionStore {
     /// The page of documents `query` selects (see [`Query`]), with the cursor that resumes after it:
-    /// pass [`Page::next`] back as [`Query::after`] under the same sort. A backend that pages natively
-    /// mints `next` with [`edax_cqrs::encode_cursor`] and reads `after` with
-    /// [`edax_cqrs::decode_cursor`], so its cursors are every other backend's.
+    /// pass [`Page::next`] back as [`Query::after`] under the same sort. Each row carries its row key as
+    /// `"id"`, as [`get`](ProjectionStore::get) reads it. A backend that pages natively mints `next` with
+    /// [`edax_cqrs::encode_cursor`] and reads `after` with [`edax_cqrs::decode_cursor`], so its cursors are
+    /// every other backend's.
     fn get_many(&self, tx: &mut Self::Tx, query: &Query) -> Result<Page, Error>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MemoryProjectionStore, MemoryTx};
     use crate::ErrorCode;
+    use crate::{MemoryProjectionStore, MemoryTx};
     use serde_json::json;
 
     fn entity(id: &str, doc: Value) -> Entity {
-        Entity { id: id.into(), version: 0, document: doc }
+        Entity {
+            id: id.into(),
+            version: 0,
+            document: doc,
+        }
     }
 
     /// The SDK does not own a query shape: [`Query`] *is* the kernel's, so the spec the SDK
@@ -61,7 +73,10 @@ mod tests {
         let cases = edax_golden::read("query.json");
         // The round-trip only proves anything for fields the golden actually sets.
         for field in ["filter", "sort", "offset", "limit", "after"] {
-            assert!(cases.iter().any(|c| c["query"].get(field).is_some()), "no golden case sets {field}");
+            assert!(
+                cases.iter().any(|c| c["query"].get(field).is_some()),
+                "no golden case sets {field}"
+            );
         }
         for (i, case) in cases.iter().enumerate() {
             if case["expected_page"].is_null() {
@@ -72,7 +87,10 @@ mod tests {
             let bytes = serde_json::to_vec(&spec).expect("a Query is always serializable");
             let reparsed: Query = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|e| panic!("case {i}: the serialized spec does not parse back: {e}"));
-            assert_eq!(reparsed, spec, "case {i}: a field was lost between serialize and deserialize");
+            assert_eq!(
+                reparsed, spec,
+                "case {i}: a field was lost between serialize and deserialize"
+            );
 
             let documents = serde_json::to_vec(&case["documents"]).expect("golden documents are JSON");
             let page = edax_cqrs::query_json(&bytes, &documents)
@@ -86,27 +104,41 @@ mod tests {
     fn save_versions_then_get() {
         let store = MemoryProjectionStore::new();
         let mut tx = MemoryTx::auto_commit();
-        let mut e = entity("u1", json!({"id": "u1", "name": "ada", "age": 36}));
-        store.save(&mut tx, &mut e).unwrap();
-        assert_eq!(e.version, 1); // advanced in place
+        let e = entity("u1", json!({"name": "ada", "age": 36}));
+        assert_eq!(store.save(&mut tx, &e).unwrap(), 1, "the new version is returned");
+        assert_eq!(e.version, 0, "the saved value is left as it was");
         let got = store.get(&mut tx, "u1").unwrap().unwrap();
-        assert_eq!(got.version, 1);
-        assert_eq!(got.document["name"], json!("ada"));
+        assert_eq!(
+            got,
+            Entity {
+                id: "u1".into(),
+                version: 1,
+                document: json!({"id": "u1", "name": "ada", "age": 36})
+            }
+        );
     }
 
     #[test]
     fn stale_version_conflicts() {
         let store = MemoryProjectionStore::new();
         let mut tx = MemoryTx::auto_commit();
-        let mut e = entity("u1", json!({"id": "u1", "n": 1}));
-        store.save(&mut tx, &mut e).unwrap(); // version 1
+        let e = Entity {
+            version: store.save(&mut tx, &entity("u1", json!({"n": 1}))).unwrap(),
+            ..entity("u1", json!({"n": 3}))
+        };
 
-        let mut other = store.get(&mut tx, "u1").unwrap().unwrap();
-        other.document = json!({"id": "u1", "n": 2});
-        store.save(&mut tx, &mut other).unwrap(); // store -> version 2
+        let other = store.get(&mut tx, "u1").unwrap().unwrap();
+        store
+            .save(
+                &mut tx,
+                &Entity {
+                    document: json!({"n": 2}),
+                    ..other
+                },
+            )
+            .unwrap(); // store -> version 2
 
-        e.document = json!({"id": "u1", "n": 3});
-        let err = store.save(&mut tx, &mut e).unwrap_err(); // e.version is still 1, store at 2
+        let err = store.save(&mut tx, &e).unwrap_err(); // e is at 1, the store at 2
         assert_eq!(err, Error::concurrency(1, 2));
     }
 
@@ -114,14 +146,21 @@ mod tests {
     fn seeded_store() -> MemoryProjectionStore {
         let store = MemoryProjectionStore::new();
         for (i, &(name, age)) in [("ada", 36), ("bob", 41), ("cal", 36), ("dot", 29)].iter().enumerate() {
-            let mut e = entity(&format!("u{i}"), json!({"name": name, "age": age}));
-            store.save(&mut MemoryTx::auto_commit(), &mut e).unwrap();
+            store
+                .save(
+                    &mut MemoryTx::auto_commit(),
+                    &entity(&format!("u{i}"), json!({"name": name, "age": age})),
+                )
+                .unwrap();
         }
         store
     }
 
     fn field<'a>(page: &'a Page, path: &str) -> Vec<&'a str> {
-        page.rows.iter().map(|d| d[path].as_str().expect("a string field")).collect()
+        page.rows
+            .iter()
+            .map(|d| d[path].as_str().expect("a string field"))
+            .collect()
     }
 
     #[test]
@@ -133,12 +172,28 @@ mod tests {
         let sort = || vec![SortKey::new("name", false)];
 
         let page = store
-            .get_many(&mut tx, &Query { filter: filter(), sort: sort(), limit: Some(2), ..Default::default() })
+            .get_many(
+                &mut tx,
+                &Query {
+                    filter: filter(),
+                    sort: sort(),
+                    limit: Some(2),
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(field(&page, "name"), ["ada", "bob"]);
 
         let page2 = store
-            .get_many(&mut tx, &Query { filter: filter(), sort: sort(), offset: 2, ..Default::default() })
+            .get_many(
+                &mut tx,
+                &Query {
+                    filter: filter(),
+                    sort: sort(),
+                    offset: 2,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         assert_eq!(field(&page2, "name"), ["cal"]);
     }
@@ -151,7 +206,12 @@ mod tests {
         let store = seeded_store();
         let sort = vec![SortKey::new("age", false)];
         let page = |after: Option<String>| {
-            let q = Query { sort: sort.clone(), limit: Some(2), after, ..Default::default() };
+            let q = Query {
+                sort: sort.clone(),
+                limit: Some(2),
+                after,
+                ..Default::default()
+            };
             store.get_many(&mut MemoryTx::auto_commit(), &q).unwrap()
         };
 
@@ -163,9 +223,22 @@ mod tests {
 
         // The cursor binds the sort it was minted under: replayed under another, it is refused.
         let minted = page(None).next;
-        let other = Query { sort: vec![SortKey::new("name", false)], after: minted, ..Default::default() };
+        let other = Query {
+            sort: vec![SortKey::new("name", false)],
+            after: minted,
+            ..Default::default()
+        };
         let got = store.get_many(&mut MemoryTx::auto_commit(), &other);
-        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
+        assert!(
+            matches!(
+                &got,
+                Err(Error {
+                    code: ErrorCode::Codec,
+                    ..
+                })
+            ),
+            "got {got:?}"
+        );
     }
 
     #[test]
@@ -175,12 +248,24 @@ mod tests {
         let store = seeded_store();
         let mut tx = MemoryTx::auto_commit();
 
-        // A scalar document has nowhere for the store to inject the row key as `"id"`, so it could be
+        // A scalar document has nowhere for a read to carry the row key as `"id"`, so it could be
         // saved and then never paged. Rejected at the write, while the caller can still fix it.
-        let mut scalar = Entity { id: "u9".into(), version: 0, document: json!(7) };
-        let got = store.save(&mut tx, &mut scalar);
-        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
-        assert_eq!(scalar.version, 0, "a rejected save leaves the version alone");
+        let scalar = Entity {
+            id: "u9".into(),
+            version: 0,
+            document: json!(7),
+        };
+        let got = store.save(&mut tx, &scalar);
+        assert!(
+            matches!(
+                &got,
+                Err(Error {
+                    code: ErrorCode::Codec,
+                    ..
+                })
+            ),
+            "got {got:?}"
+        );
         assert!(store.get(&mut tx, "u9").unwrap().is_none(), "nothing written");
 
         // A cursor that is not base64url of a kernel cursor.
@@ -190,6 +275,15 @@ mod tests {
             ..Default::default()
         };
         let got = store.get_many(&mut tx, &q);
-        assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "got {got:?}");
+        assert!(
+            matches!(
+                &got,
+                Err(Error {
+                    code: ErrorCode::Codec,
+                    ..
+                })
+            ),
+            "got {got:?}"
+        );
     }
 }

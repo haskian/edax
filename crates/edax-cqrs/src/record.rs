@@ -25,15 +25,19 @@
 //! terminal `codec` failure, so every SDK replays it as a cached failure instead of running the
 //! handler again or raising on every redelivery.
 //!
-//! Number bound: a `result` integer is exact within the `i64`/`u64` range and is read back as an
-//! `f64` outside it (`serde_json` without `arbitrary_precision`, which the filter's `number_cmp`
-//! relies on). Pinned by the test `result_integers_are_exact_only_within_64_bits`.
+//! Number bound: a `result` integer is exact within the `i64`/`u64` range. One outside it is a `codec`
+//! error both ways: [`encode_record`] refuses to write it, and [`decode_record`] refuses to read it, so
+//! [`decode_prior`] replays a foreign writer's record as a cached `codec` failure. `serde_json` without
+//! `arbitrary_precision` (which the filter's `number_cmp` relies on) would read it as the nearest
+//! `f64`, and a typed reader would refuse what an untyped one rounds: one record, two outcomes. Pinned
+//! by the test `result_integers_outside_64_bits_are_refused` and `idempotency_record.json`.
 
 use edax_core::{Error, ErrorCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::value::check_document;
 
 /// The stored outcome for an idempotency key. `R` is the handler's result type: the host's own
 /// type in an in-process store, [`serde_json::Value`] at a JSON boundary.
@@ -93,7 +97,11 @@ impl<R> Record<R> {
     /// The record that stands in for a stored one no reader can decode: a terminal `codec` failure whose
     /// message names `cause`, the decode error. See [`decode_prior`] for which hash it carries.
     pub fn unreadable(payload_hash: u64, cause: &Error) -> Self {
-        Self::failed(payload_hash, ErrorCode::Codec, format!("unreadable idempotency record: {}", cause.message))
+        Self::failed(
+            payload_hash,
+            ErrorCode::Codec,
+            format!("unreadable idempotency record: {}", cause.message),
+        )
     }
 }
 
@@ -104,18 +112,34 @@ impl<R> State<R> {
     pub fn from_wire(pending: bool, error: Option<String>, error_code: Option<&str>, result: R) -> Self {
         match (pending, error) {
             (true, _) => State::Pending,
-            (false, Some(message)) => State::Failed { code: stored_code(error_code), message },
+            (false, Some(message)) => State::Failed {
+                code: stored_code(error_code),
+                message,
+            },
             (false, None) => State::Done(result),
         }
     }
 
-    /// Stable lowercase name of the variant, shared with every binding.
-    pub fn as_str(&self) -> &'static str {
+    /// The state's name, without its contents.
+    pub fn kind(&self) -> StateKind {
         match self {
-            State::Pending => "pending",
-            State::Failed { .. } => "failed",
-            State::Done(_) => "done",
+            State::Pending => StateKind::Pending,
+            State::Failed { .. } => StateKind::Failed,
+            State::Done(_) => StateKind::Done,
         }
+    }
+}
+
+edax_core::closed_names! {
+    /// The name of a [`State`]: what a binding that holds a record as flat fields branches on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum StateKind {
+        /// [`State::Pending`].
+        Pending = "pending",
+        /// [`State::Failed`].
+        Failed = "failed",
+        /// [`State::Done`].
+        Done = "done",
     }
 }
 
@@ -189,14 +213,19 @@ impl<'de, R: DeserializeOwned> Deserialize<'de> for Record<R> {
 }
 
 /// The canonical bytes of `record`: the only encoding a store may persist. A result JSON cannot
-/// express is a `codec` error.
+/// express, or one holding an integer wider than 64 bits (see the module's number bound), is a `codec`
+/// error.
 pub fn encode_record<R: Serialize>(record: &Record<R>) -> Result<Vec<u8>, Error> {
-    serde_json::to_vec(record).map_err(Error::codec)
+    let bytes = serde_json::to_vec(record).map_err(Error::codec)?;
+    check_document(&bytes)?;
+    Ok(bytes)
 }
 
-/// Parse stored bytes into a record whose result is decoded as `R`. Unreadable bytes are a `codec`
-/// error. A store reads the record that holds a key with [`decode_prior`] instead.
+/// Parse stored bytes into a record whose result is decoded as `R`. Unreadable bytes, an integer wider
+/// than 64 bits among them, are a `codec` error. A store reads the record that holds a key with
+/// [`decode_prior`] instead.
 pub fn decode_record<R: DeserializeOwned>(json: &[u8]) -> Result<Record<R>, Error> {
+    check_document(json)?;
     serde_json::from_slice(json).map_err(Error::codec)
 }
 
@@ -223,8 +252,7 @@ pub fn decode_prior<R: DeserializeOwned>(bytes: &[u8], claimant_hash: u64) -> Re
 /// decodes, which [`decode_prior`] replays as a cached failure: forgetting them is the way out of a
 /// poisoned key. Every store decides with this one function, pinned by the ledger goldens.
 pub fn forget(key: &str, record: &[u8]) -> Result<(), Error> {
-    // Read as `()`: only the state matters, and `pending` is read before the result.
-    if matches!(decode_prior::<()>(record, 0).state, State::Pending) {
+    if reads_pending(record) {
         return Err(unsettled_claim(key));
     }
     Ok(())
@@ -242,6 +270,44 @@ pub fn unsettled_claim(key: &str) -> Error {
     )
 }
 
+/// The refusal of a `complete` whose claim no longer holds `key`: it lapsed and another claim took the
+/// key over, or the key settled with another record. A `store` error, as every store's fence reports
+/// it (a Redis script's `0`, the memory store's handle check): the guard answers it with a release,
+/// which the same fence makes a no-op. One wording for every store.
+pub fn lapsed_claim(key: &str) -> Error {
+    Error::store(format_args!(
+        "idempotency key {key} no longer holds the claim this handle names: it lapsed and was taken over, or \
+         was settled with another record"
+    ))
+}
+
+/// Refuse `record` as the record that settles a claim when it reads as pending. A pending record
+/// written by `complete` is indistinguishable from the claim it replaces, so the key would stay
+/// claimed with no run behind it: forever in memory, for the whole record TTL in Redis. A
+/// `bad_handle` error, since only a caller wiring the store by hand can send one. Bytes that do not
+/// decode are no pending claim and pass: a reader replays them as a cached `codec` failure. Every
+/// store's `complete` runs it.
+pub fn check_settled(record: &[u8]) -> Result<(), Error> {
+    if reads_pending(record) {
+        return Err(Error::bad_handle(
+            "a pending idempotency record cannot settle a claim: complete with a done or failed record",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `record` decodes as a pending claim. Bytes that do not decode are no claim. Read as
+/// `IgnoredAny`: only the state matters, so a large result is never decoded as a value.
+fn reads_pending(record: &[u8]) -> bool {
+    matches!(
+        decode_record::<serde::de::IgnoredAny>(record),
+        Ok(Record {
+            state: State::Pending,
+            ..
+        })
+    )
+}
+
 /// The `payload_hash` of bytes that do not decode as a record, if that one field still reads. Through
 /// a `Value`, as the record itself is read, so an array is never read positionally.
 fn stored_hash(bytes: &[u8]) -> Option<u64> {
@@ -251,39 +317,10 @@ fn stored_hash(bytes: &[u8]) -> Option<u64> {
     }
 }
 
-/// The canonical record text from the flat fields a binding holds. The kernel applies its reading
-/// order (`pending` wins, then `error`, then `result_json`), so a host that models the record as
-/// separate fields cannot write an ambiguous one. `result_json` is read only for a success, and
-/// `error_code` only beside an `error`. A writer must name a code the taxonomy knows: an unknown
-/// one, or `result_json` that is not JSON, is a `codec` error.
-pub fn encode_record_fields(
-    payload_hash: u64,
-    pending: bool,
-    result_json: &str,
-    error: Option<String>,
-    error_code: Option<&str>,
-) -> Result<String, Error> {
-    let record = match State::from_wire(pending, error, None, ()) {
-        State::Pending => Record::<Value>::pending(payload_hash),
-        State::Failed { message, .. } => {
-            let code = error_code.map(str::parse::<ErrorCode>).transpose()?;
-            Record { payload_hash, state: State::Failed { code, message } }
-        }
-        State::Done(()) => Record::done(payload_hash, serde_json::from_str(result_json).map_err(Error::codec)?),
-    };
-    serde_json::to_string(&record).map_err(Error::codec)
-}
-
 /// How a record reads its `error_code`: a name the taxonomy does not know, or none, is no code. The
 /// failure is still a failure; a writer that knows a newer code must not make an older reader refuse it.
 fn stored_code(name: Option<&str>) -> Option<ErrorCode> {
     name.and_then(|name| name.parse().ok())
-}
-
-/// [`cached_failure`] from a record's flat `error` and `error_code` fields, read the way the record
-/// reads them. For a binding that holds the fields, not a [`Record`].
-pub fn cached_failure_of(message: &str, error_code: Option<&str>) -> Error {
-    cached_failure(stored_code(error_code), message)
 }
 
 /// The error a replay of a cached failure raises: `cached_failure`, terminal, whatever the original
@@ -298,26 +335,45 @@ pub fn cached_failure(code: Option<ErrorCode>, message: &str) -> Error {
 
 /// How the guard that won a claim settles it after the handler failed. The success path always
 /// completes with [`Record::done`]; this is the failure half of the settle table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub enum Settle {
-    /// Cache the failure under this code ([`Record::failed`]), so a redelivery replays it instead
-    /// of running the handler again. The failure is deterministic.
-    Cache(ErrorCode),
+pub enum Settle<R> {
+    /// Complete the claim with this failed record, so a redelivery replays the failure instead of
+    /// running the handler again. The failure is deterministic.
+    Cache(Record<R>),
     /// Release the claim, so a retry or a redelivery runs the handler again. The failure may not
-    /// repeat: a transient code, no code at all, a panic or a cancellation.
+    /// repeat: a transient code, no code at all, a panic or a cancellation; or the wiring failed, a
+    /// fatal code, and the work must run once the host fixes it.
     Release,
 }
 
-/// The failure half of the guard's settle table: cache a failure whose code is terminal, release
-/// anything else. `code` is the failure's taxonomy code, `None` for a failure no code classifies (a
-/// host's own error, a panic, a cancellation), which [`edax_core::verdict`] reads as transient. Two
-/// SDKs guarding one ledger must cache the same failures, or one replays as terminal what the other
-/// re-runs; pinned by `testdata/golden/idempotency_settle.json`.
-pub fn settle(code: Option<ErrorCode>) -> Settle {
+/// The failure half of the guard's settle table, as the write itself: a failure whose `code` is terminal
+/// is cached as [`Record::failed`] under `payload_hash` with its `message`, anything else releases the
+/// claim. `code` is the failure's taxonomy code, `None` for a failure no code classifies (a host's own
+/// error, a panic, a cancellation), which [`edax_core::is_terminal`] reads as transient. A fatal code
+/// ([`ErrorCode::is_fatal`]) releases too: the wiring failed, not the work, and a cached record would
+/// replay the failure after the host fixed the wiring, so the consumer would dead-letter a message it
+/// stopped on to run again. Two SDKs guarding one ledger must cache the same failures, or one replays as
+/// terminal what the other re-runs; pinned by `testdata/golden/idempotency_settle.json`.
+pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, message: &str) -> Settle<R> {
     match code {
-        Some(code) if edax_core::verdict(Some(code)) => Settle::Cache(code),
+        Some(code) if code.is_terminal() && !code.is_fatal() => {
+            Settle::Cache(Record::failed(payload_hash, code, message))
+        }
         _ => Settle::Release,
+    }
+}
+
+/// A losing claimant's answer from the winner's record `prior`, for a command hashing to `current`
+/// under `key`: the winner's result, or the error the loser fails with. A reused key is
+/// `payload_mismatch` and a claim still in flight `in_progress`, each naming `key`; a cached failure
+/// replays as [`cached_failure`]. Pinned by `testdata/golden/idempotency_record.json`.
+pub fn replay<'a, R>(prior: &'a Record<R>, current: u64, key: &str) -> Result<&'a R, Error> {
+    match outcome(prior, current) {
+        Outcome::PayloadMismatch => Err(Error::new(ErrorCode::PayloadMismatch, key)),
+        Outcome::InProgress => Err(Error::new(ErrorCode::InProgress, key)),
+        Outcome::Failed { code, message } => Err(cached_failure(code, message)),
+        Outcome::Succeeded(result) => Ok(result),
     }
 }
 
@@ -342,14 +398,29 @@ pub enum Outcome<'a, R> {
 }
 
 impl<R> Outcome<'_, R> {
-    /// Stable lowercase name — the single source of truth for the string form across bindings.
-    pub fn as_str(&self) -> &'static str {
+    /// The outcome's name, without the cached failure or value.
+    pub fn kind(&self) -> OutcomeKind {
         match self {
-            Outcome::PayloadMismatch => "payload_mismatch",
-            Outcome::InProgress => "in_progress",
-            Outcome::Failed { .. } => "failed",
-            Outcome::Succeeded(_) => "succeeded",
+            Outcome::PayloadMismatch => OutcomeKind::PayloadMismatch,
+            Outcome::InProgress => OutcomeKind::InProgress,
+            Outcome::Failed { .. } => OutcomeKind::Failed,
+            Outcome::Succeeded(_) => OutcomeKind::Succeeded,
         }
+    }
+}
+
+edax_core::closed_names! {
+    /// The name of an [`Outcome`]: the verdict a binding branches on and reports to its observer.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum OutcomeKind {
+        /// [`Outcome::PayloadMismatch`].
+        PayloadMismatch = "payload_mismatch",
+        /// [`Outcome::InProgress`].
+        InProgress = "in_progress",
+        /// [`Outcome::Failed`].
+        Failed = "failed",
+        /// [`Outcome::Succeeded`].
+        Succeeded = "succeeded",
     }
 }
 
@@ -377,28 +448,122 @@ mod tests {
     const HASH: u64 = 11_234_062_831_410_934_249;
 
     #[test]
-    fn settle_caches_a_terminal_code_and_releases_everything_else() {
-        assert_eq!(settle(None), Settle::Release, "no code is the transient default");
+    fn settle_failure_caches_a_terminal_code_and_releases_everything_else() {
+        assert_eq!(
+            settle_failure::<()>(HASH, None, "boom"),
+            Settle::Release,
+            "no code is the transient default"
+        );
+        assert_eq!(
+            settle_failure::<()>(HASH, Some(ErrorCode::BadHandle), "boom"),
+            Settle::Release,
+            "a fatal code is the wiring's"
+        );
         for code in ErrorCode::ALL {
-            let want = if code.is_terminal() { Settle::Cache(*code) } else { Settle::Release };
-            assert_eq!(settle(Some(*code)), want, "{code}");
+            let cached = code.is_terminal() && !code.is_fatal();
+            let want = if cached {
+                Settle::Cache(Record::failed(HASH, *code, "boom"))
+            } else {
+                Settle::Release
+            };
+            assert_eq!(settle_failure::<()>(HASH, Some(*code), "boom"), want, "{code}");
+        }
+    }
+
+    #[test]
+    fn replay_branches() {
+        let other = HASH - 1;
+        type Case = (&'static str, Record<i64>, u64, Result<i64, Error>);
+        let cases: [Case; 5] = [
+            ("succeeded", Record::done(HASH, 7), HASH, Ok(7)),
+            (
+                "in_progress",
+                Record::pending(HASH),
+                HASH,
+                Err(Error::new(ErrorCode::InProgress, "req-1")),
+            ),
+            (
+                "payload_mismatch",
+                Record::done(HASH, 7),
+                other,
+                Err(Error::new(ErrorCode::PayloadMismatch, "req-1")),
+            ),
+            (
+                "failed_with_a_code",
+                Record::failed(HASH, ErrorCode::Codec, "bad"),
+                HASH,
+                Err(Error::new(ErrorCode::CachedFailure, "codec: bad")),
+            ),
+            (
+                "failed_without_a_code",
+                Record {
+                    payload_hash: HASH,
+                    state: State::Failed {
+                        code: None,
+                        message: "bad".to_owned(),
+                    },
+                },
+                HASH,
+                Err(Error::new(ErrorCode::CachedFailure, "bad")),
+            ),
+        ];
+        for (name, prior, current, want) in cases {
+            assert_eq!(replay(&prior, current, "req-1").copied(), want, "{name}");
         }
     }
 
     #[test]
     fn from_wire_applies_the_precedence() {
-        let failed = |code| State::Failed { code, message: "boom".to_owned() };
+        let failed = |code| State::Failed {
+            code,
+            message: "boom".to_owned(),
+        };
         for (name, pending, error, error_code, want, want_str) in [
-            ("pending_wins_over_error_and_result", true, Some("boom"), Some("codec"), State::Pending, "pending"),
-            ("error_wins_over_result", false, Some("boom"), Some("codec"), failed(Some(ErrorCode::Codec)), "failed"),
-            ("absent_code_is_no_code", false, Some("boom"), None, failed(None), "failed"),
-            ("unknown_code_is_no_code", false, Some("boom"), Some("timeout"), failed(None), "failed"),
-            ("a_code_without_an_error_is_ignored", false, None, Some("codec"), State::Done(42), "done"),
+            (
+                "pending_wins_over_error_and_result",
+                true,
+                Some("boom"),
+                Some("codec"),
+                State::Pending,
+                "pending",
+            ),
+            (
+                "error_wins_over_result",
+                false,
+                Some("boom"),
+                Some("codec"),
+                failed(Some(ErrorCode::Codec)),
+                "failed",
+            ),
+            (
+                "absent_code_is_no_code",
+                false,
+                Some("boom"),
+                None,
+                failed(None),
+                "failed",
+            ),
+            (
+                "unknown_code_is_no_code",
+                false,
+                Some("boom"),
+                Some("timeout"),
+                failed(None),
+                "failed",
+            ),
+            (
+                "a_code_without_an_error_is_ignored",
+                false,
+                None,
+                Some("codec"),
+                State::Done(42),
+                "done",
+            ),
             ("neither_is_done", false, None, None, State::Done(42), "done"),
         ] {
             let got = State::from_wire(pending, error.map(str::to_owned), error_code, 42);
             assert_eq!(got, want, "{name}");
-            assert_eq!(got.as_str(), want_str, "{name}");
+            assert_eq!(got.kind().as_str(), want_str, "{name}");
         }
     }
 
@@ -471,16 +636,32 @@ mod tests {
                 br#"{"payload_hash":11234062831410934249,"result":5,"error":null,"pending":false}"#.as_slice(),
                 Record::done(HASH, 5),
             ),
-            ("garbage_carries_the_claimants_hash", b"{not json".as_slice(), unreadable(CLAIMANT, "key must be a string at line 1 column 2")),
-            ("not_utf8_carries_the_claimants_hash", b"\xff\xfe".as_slice(), unreadable(CLAIMANT, "expected value at line 1 column 1")),
+            (
+                "garbage_carries_the_claimants_hash",
+                b"{not json".as_slice(),
+                unreadable(CLAIMANT, "key must be a string at line 1 column 2"),
+            ),
+            (
+                "not_utf8_carries_the_claimants_hash",
+                b"\xff\xfe".as_slice(),
+                unreadable(CLAIMANT, "expected value at line 1 column 1"),
+            ),
             (
                 "a_torn_write_carries_the_claimants_hash",
                 br#"{"payload_hash":11234062831410934249,"res"#.as_slice(),
                 unreadable(CLAIMANT, "EOF while parsing a string at line 1 column 41"),
             ),
             // An array is never read positionally, so its first element is not taken for a hash.
-            ("an_array_carries_the_claimants_hash", b"[11234062831410934249,null]".as_slice(), unreadable(CLAIMANT, "idempotency record is not a JSON object")),
-            ("no_hash_carries_the_claimants_hash", br#"{"result":5}"#.as_slice(), unreadable(CLAIMANT, "missing field `payload_hash`")),
+            (
+                "an_array_carries_the_claimants_hash",
+                b"[11234062831410934249,null]".as_slice(),
+                unreadable(CLAIMANT, "idempotency record is not a JSON object"),
+            ),
+            (
+                "no_hash_carries_the_claimants_hash",
+                br#"{"result":5}"#.as_slice(),
+                unreadable(CLAIMANT, "missing field `payload_hash`"),
+            ),
             (
                 "a_string_hash_carries_the_claimants_hash",
                 br#"{"payload_hash":"11234062831410934249"}"#.as_slice(),
@@ -494,7 +675,10 @@ mod tests {
             (
                 "a_result_that_is_not_an_r_keeps_the_stored_hash",
                 br#"{"payload_hash":11234062831410934249,"result":"x","error":null,"pending":false}"#.as_slice(),
-                unreadable(HASH, r#"cached result is not a valid replay value: invalid type: string "x", expected u64"#),
+                unreadable(
+                    HASH,
+                    r#"cached result is not a valid replay value: invalid type: string "x", expected u64"#,
+                ),
             ),
         ] {
             assert_eq!(decode_prior::<u64>(bytes, CLAIMANT), want, "{name}");
@@ -504,12 +688,26 @@ mod tests {
     #[test]
     fn an_unreadable_record_is_a_terminal_codec_failure_naming_the_cause() {
         let record = Record::<Value>::unreadable(HASH, &Error::codec("EOF while parsing"));
-        assert_eq!(record, Record::failed(HASH, ErrorCode::Codec, "unreadable idempotency record: EOF while parsing"));
+        assert_eq!(
+            record,
+            Record::failed(
+                HASH,
+                ErrorCode::Codec,
+                "unreadable idempotency record: EOF while parsing"
+            )
+        );
         assert_eq!(
             outcome(&record, HASH),
-            Outcome::Failed { code: Some(ErrorCode::Codec), message: "unreadable idempotency record: EOF while parsing" }
+            Outcome::Failed {
+                code: Some(ErrorCode::Codec),
+                message: "unreadable idempotency record: EOF while parsing"
+            }
         );
-        assert_eq!(outcome(&record, HASH ^ 1), Outcome::PayloadMismatch, "the hash is still checked first");
+        assert_eq!(
+            outcome(&record, HASH ^ 1),
+            Outcome::PayloadMismatch,
+            "the hash is still checked first"
+        );
     }
 
     #[test]
@@ -521,12 +719,18 @@ mod tests {
         assert_eq!(decode_record::<()>(null_success), Ok(Record::done(HASH, ())));
         assert_eq!(decode_record::<Option<i64>>(null_success), Ok(Record::done(HASH, None)));
         let err = decode_record::<i64>(null_success).expect_err("null is not an i64");
-        assert!(err.message.contains("cached result is not a valid replay value"), "{err}");
+        assert!(
+            err.message.contains("cached result is not a valid replay value"),
+            "{err}"
+        );
 
         let pending = br#"{"payload_hash":11234062831410934249,"result":null,"error":null,"pending":true}"#;
         assert_eq!(decode_record::<i64>(pending), Ok(Record::pending(HASH)));
         let failed = br#"{"payload_hash":11234062831410934249,"result":null,"error":"boom","error_code":"codec","pending":false}"#;
-        assert_eq!(decode_record::<i64>(failed), Ok(Record::failed(HASH, ErrorCode::Codec, "boom")));
+        assert_eq!(
+            decode_record::<i64>(failed),
+            Ok(Record::failed(HASH, ErrorCode::Codec, "boom"))
+        );
     }
 
     #[test]
@@ -560,7 +764,13 @@ mod tests {
             ),
             (
                 "failed_without_a_code_reencodes_null",
-                Record { payload_hash: HASH, state: State::Failed { code: None, message: "boom".to_owned() } },
+                Record {
+                    payload_hash: HASH,
+                    state: State::Failed {
+                        code: None,
+                        message: "boom".to_owned(),
+                    },
+                },
                 r#"{"payload_hash":11234062831410934249,"result":null,"error":"boom","error_code":null,"pending":false}"#,
             ),
         ] {
@@ -584,56 +794,80 @@ mod tests {
     }
 
     #[test]
-    fn result_integers_are_exact_only_within_64_bits() {
-        // The bound every JSON-backed store inherits: a result integer past the u64 range (or below
-        // i64::MIN) comes back as a double, equal in value where a double can hold it and lossy
-        // beyond. Known and pinned rather than discovered in production.
+    fn result_integers_outside_64_bits_are_refused() {
+        // The bound every JSON-backed store inherits. Within the i64/u64 range a result integer is
+        // exact both ways. Outside it, the writer and the reader both refuse it, so no SDK caches a
+        // result that another reads back as the nearest double, or as a typed refusal.
         struct Case {
             name: &'static str,
             literal: &'static str,
-            want: Value,
-            exact: bool,
+            /// The record the writer encodes from the typed integer, not from a `Value`, which could
+            /// not hold it.
+            written: Result<Vec<u8>, Error>,
+            refused: Option<&'static str>,
         }
+        const REFUSED: &str = "codec: integer at byte 46 is outside the 64-bit range";
         let cases = [
             Case {
                 name: "past 2^53 is still an exact integer",
                 literal: "9007199254740993",
-                want: json!(9007199254740993u64),
-                exact: true,
+                written: encode_record(&Record::done(HASH, 9_007_199_254_740_993u64)),
+                refused: None,
             },
             Case {
                 name: "u64::MAX is exact",
                 literal: "18446744073709551615",
-                want: json!(u64::MAX),
-                exact: true,
+                written: encode_record(&Record::done(HASH, u64::MAX)),
+                refused: None,
             },
             Case {
-                name: "2^64 becomes a double, equal in value",
+                name: "2^64 is refused",
                 literal: "18446744073709551616",
-                want: json!(1.8446744073709552e19),
-                exact: false,
+                written: encode_record(&Record::done(HASH, 1u128 << 64)),
+                refused: Some(REFUSED),
             },
             Case {
-                name: "below i64::MIN becomes a double, lossy",
+                name: "below i64::MIN is refused",
                 literal: "-9223372036854775809",
-                want: json!(-9.223372036854776e18),
-                exact: false,
+                written: encode_record(&Record::done(HASH, i128::from(i64::MIN) - 1)),
+                refused: Some(REFUSED),
             },
         ];
         for c in cases {
             let stored = format!(
-                r#"{{"payload_hash":11234062831410934249,"result":{},"error":null,"pending":false}}"#,
+                r#"{{"payload_hash":{HASH},"result":{},"error":null,"error_code":null,"pending":false}}"#,
                 c.literal
             );
-            let record = decode_record::<Value>(stored.as_bytes()).unwrap();
-            let State::Done(got) = &record.state else {
-                panic!("{}: not a success", c.name)
-            };
-            assert_eq!(*got, c.want, "{}", c.name);
-            assert_eq!(got.is_i64() || got.is_u64(), c.exact, "{}: integer-ness", c.name);
-            // Re-encoding writes the double back, so the loss is visible in the stored text too.
-            let text = String::from_utf8(encode_record(&record).unwrap()).unwrap();
-            assert_eq!(text.contains(c.literal), c.exact, "{}: re-encoded {text}", c.name);
+            let read = decode_record::<Value>(stored.as_bytes()).map_err(|e| e.to_string());
+            match c.refused {
+                None => {
+                    assert_eq!(
+                        c.written.map_err(|e| e.to_string()),
+                        Ok(stored.clone().into_bytes()),
+                        "{}: written",
+                        c.name
+                    );
+                    let exact: Value = serde_json::from_str(c.literal).unwrap();
+                    assert_eq!(read, Ok(Record::done(HASH, exact)), "{}: read", c.name);
+                }
+                Some(refused) => {
+                    assert_eq!(
+                        c.written.map_err(|e| e.to_string()),
+                        Err(refused.to_owned()),
+                        "{}: written",
+                        c.name
+                    );
+                    assert_eq!(read, Err(refused.to_owned()), "{}: read", c.name);
+                    // A claimant replays it as a cached codec failure under the stored hash.
+                    let prior = decode_prior::<Value>(stored.as_bytes(), HASH ^ 1);
+                    assert_eq!(
+                        (prior.payload_hash, prior.state.kind().as_str()),
+                        (HASH, "failed"),
+                        "{}: prior",
+                        c.name
+                    );
+                }
+            }
         }
     }
 
@@ -651,7 +885,10 @@ mod tests {
                 "failed_replays_the_error",
                 Record::failed(HASH, ErrorCode::Codec, "boom"),
                 HASH,
-                Outcome::Failed { code: Some(ErrorCode::Codec), message: "boom" },
+                Outcome::Failed {
+                    code: Some(ErrorCode::Codec),
+                    message: "boom",
+                },
             ),
             (
                 "done_replays_the_value",
@@ -689,28 +926,46 @@ mod tests {
         let coded = cached_failure(Some(ErrorCode::Codec), "bad payload");
         assert_eq!(coded, Error::new(ErrorCode::CachedFailure, "codec: bad payload"));
         assert_eq!(coded.to_string(), "cached_failure: codec: bad payload");
-        assert_eq!(ErrorCode::split(&coded.message), Some((ErrorCode::Codec, "bad payload")), "the code survives");
+        assert_eq!(
+            ErrorCode::split(&coded.message),
+            Some((ErrorCode::Codec, "bad payload")),
+            "the code survives"
+        );
         let uncoded = cached_failure(None, "boom");
         assert_eq!(uncoded, Error::new(ErrorCode::CachedFailure, "boom"));
         assert!(coded.is_terminal() && uncoded.is_terminal());
-        // From flat fields: an unknown code reads as none, as the record itself reads it.
-        assert_eq!(cached_failure_of("bad payload", Some("codec")), coded);
-        assert_eq!(cached_failure_of("boom", Some("quota_exceeded")), uncoded);
-        assert_eq!(cached_failure_of("boom", None), uncoded);
     }
 
     #[test]
-    fn encode_record_fields_branches() {
-        for (name, pending, result, error, code, want) in [
-            ("pending_wins", true, "42", Some("boom"), Some("codec"), Ok(r#"{"payload_hash":7,"result":null,"error":null,"error_code":null,"pending":true}"#)),
-            ("failed_with_code", false, "42", Some("boom"), Some("rejected"), Ok(r#"{"payload_hash":7,"result":null,"error":"boom","error_code":"rejected","pending":false}"#)),
-            ("failed_without_code", false, "", Some("boom"), None, Ok(r#"{"payload_hash":7,"result":null,"error":"boom","error_code":null,"pending":false}"#)),
-            ("done_reads_the_result", false, r#"{"b":1,"a":2}"#, None, Some("codec"), Ok(r#"{"payload_hash":7,"result":{"a":2,"b":1},"error":null,"error_code":null,"pending":false}"#)),
-            ("unknown_code_is_refused", false, "", Some("boom"), Some("timeout"), Err("codec: unknown error code: timeout")),
-            ("result_not_json", false, "{", None, None, Err("codec: EOF while parsing an object at line 1 column 1")),
+    fn check_settled_branches() {
+        let refused = Err(
+            "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record"
+                .to_owned(),
+        );
+        for (name, record, want) in [
+            (
+                "a_pending_record_is_refused",
+                encode_record(&Record::<Value>::pending(HASH)).unwrap(),
+                refused,
+            ),
+            (
+                "a_done_record_passes",
+                encode_record(&Record::done(HASH, json!({"invoice_id": "invoice-7"}))).unwrap(),
+                Ok(()),
+            ),
+            (
+                "a_failed_record_passes",
+                encode_record(&Record::<Value>::failed(
+                    HASH,
+                    ErrorCode::Rejected,
+                    "insufficient funds",
+                ))
+                .unwrap(),
+                Ok(()),
+            ),
+            ("bytes_that_do_not_decode_pass", b"{not json".to_vec(), Ok(())),
         ] {
-            let got = encode_record_fields(7, pending, result, error.map(str::to_owned), code).map_err(|e| e.to_string());
-            assert_eq!(got.as_deref(), want.map_err(ToString::to_string).as_deref(), "{name}");
+            assert_eq!(check_settled(&record).map_err(|e| e.to_string()), want, "{name}");
         }
     }
 }

@@ -7,8 +7,11 @@
 //! idempotency store and disagree on a verdict leave one caching a failure the other would release:
 //! a durable replay inconsistency. So the verdict lives here, pinned by
 //! `testdata/golden/error_taxonomy.json`, and every SDK derives its own from [`ErrorCode::is_terminal`].
-//! The verdict for a failure with no code is here too ([`verdict`]): such a failure is a `store`
+//! The verdict for a failure with no code is here too ([`is_terminal`]): such a failure is a `store`
 //! failure, the same class and the same verdict, pinned by `testdata/golden/error_wire.json`.
+//!
+//! A *fatal* code ([`ErrorCode::is_fatal`]) is terminal but blames the wiring, not the work: it is
+//! never cached, so the work runs again once the host fixes the wiring.
 //!
 //! Every kernel function fails with the one [`Error`] type, so the code comes from the kernel and
 //! never from a caller's choice. Failures cross a native binding as `"<code>: <message>"`:
@@ -38,6 +41,9 @@ macro_rules! error_codes {
             /// Every code, in declaration order. The order is what the golden vector pins.
             pub const ALL: &'static [ErrorCode] = &[ $( ErrorCode::$variant, )+ ];
 
+            /// Every code's name, in declaration order: what a binding hands its host to check against.
+            pub const NAMES: &'static [&'static str] = &[ $( $code, )+ ];
+
             /// Stable lowercase name — the single source of truth for the string form across bindings.
             pub fn as_str(self) -> &'static str {
                 match self {
@@ -45,23 +51,47 @@ macro_rules! error_codes {
                 }
             }
 
-            /// Whether the failure repeats identically on retry. Terminal means: cache the failure
-            /// and never re-run. Transient means: release the claim and let a retry re-run.
+            /// Whether the failure repeats identically on retry. Terminal means: never re-run the same
+            /// work, it fails alike. Transient means: release the claim and let a retry re-run. Every
+            /// fatal code is terminal.
             pub fn is_terminal(self) -> bool {
                 match self {
                     $( ErrorCode::$variant => verdict!($verdict), )+
+                }
+            }
+
+            /// Whether the failure is the wiring's, not the work's: a refused credential, topic or
+            /// setting fails every message alike until the host fixes it. A consumer or a relay stops on
+            /// it and hands the message back uncounted, and an idempotency guard releases the claim
+            /// rather than cache it, so the work runs again once the wiring is fixed.
+            pub fn is_fatal(self) -> bool {
+                match self {
+                    $( ErrorCode::$variant => fatal!($verdict), )+
                 }
             }
         }
     };
 }
 
-/// A row's verdict, spelled as the word each SDK uses.
+/// A row's verdict, spelled as the word each SDK uses: whether it is terminal.
 macro_rules! verdict {
     (terminal) => {
         true
     };
     (transient) => {
+        false
+    };
+    (fatal) => {
+        true
+    };
+}
+
+/// Whether a row's verdict is fatal.
+macro_rules! fatal {
+    (fatal) => {
+        true
+    };
+    ($verdict:ident) => {
         false
     };
 }
@@ -88,8 +118,9 @@ error_codes! {
     /// A transaction handle names no open transaction — never begun, already settled, or belonging
     /// to another store — or a store refuses its own configuration or a server refuses the command.
     /// A wiring mistake: the same call fails the same way every time, so a transient verdict would
-    /// have a host retry it forever.
-    BadHandle = "bad_handle" => terminal,
+    /// have a host retry it forever. Fatal: the message is not at fault, so it is neither cached nor
+    /// dead-lettered.
+    BadHandle = "bad_handle" => fatal,
     /// A host's own business rejection ("insufficient funds"), marked terminal by the host. The same
     /// command is rejected the same way on every retry, so the guard caches it.
     Rejected = "rejected" => terminal,
@@ -109,19 +140,14 @@ impl ErrorCode {
     }
 }
 
-/// The verdict for a failure, from its code if it has one. A failure no code classifies — a host's
+/// Whether a failure is terminal, from its code if it has one. A failure no code classifies — a host's
 /// own error, a wire string with an unknown code — is a `store` failure, so transient: a wrongly
 /// transient failure is redelivered loudly and the work survives, while a wrongly terminal one is
 /// cached under its key and poisons it. The default lives here, pinned by
 /// `testdata/golden/error_wire.json`, so two SDKs sharing one idempotency store cannot pick
 /// different ones.
-pub fn verdict(code: Option<ErrorCode>) -> bool {
+pub fn is_terminal(code: Option<ErrorCode>) -> bool {
     code.unwrap_or(ErrorCode::Store).is_terminal()
-}
-
-/// The verdict for a wire string: the verdict of the failure [`Error::from_wire`] reads from it.
-pub fn verdict_of_wire(wire: &str) -> bool {
-    Error::from_wire(wire).is_terminal()
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -162,7 +188,10 @@ pub struct Error {
 impl Error {
     /// A failure of kind `code`.
     pub fn new(code: ErrorCode, message: impl std::fmt::Display) -> Self {
-        Error { code, message: message.to_string() }
+        Error {
+            code,
+            message: message.to_string(),
+        }
     }
 
     /// A deterministic marshaling failure: malformed JSON, an unknown format, a batch that fails
@@ -178,7 +207,10 @@ impl Error {
 
     /// An optimistic write found another version than the one it expected.
     pub fn concurrency(expected: impl std::fmt::Display, stored: impl std::fmt::Display) -> Self {
-        Error::new(ErrorCode::Concurrency, format_args!("expected {expected}, stored {stored}"))
+        Error::new(
+            ErrorCode::Concurrency,
+            format_args!("expected {expected}, stored {stored}"),
+        )
     }
 
     /// A transaction handle that names no open transaction.
@@ -247,46 +279,6 @@ mod tests {
     }
 
     #[test]
-    fn split_and_verdict_branches() {
-        // One row per branch of `split` and `verdict_of_wire`; `error_wire.json` pins the same rows
-        // for every SDK.
-        struct Case {
-            name: &'static str,
-            wire: &'static str,
-            want: Option<(ErrorCode, &'static str)>,
-            terminal: bool,
-        }
-        let cases = [
-            Case { name: "known_terminal_code", wire: "codec: bad json", want: Some((ErrorCode::Codec, "bad json")), terminal: true },
-            Case {
-                name: "known_transient_code",
-                wire: "store: connection reset",
-                want: Some((ErrorCode::Store, "connection reset")),
-                terminal: false,
-            },
-            Case {
-                name: "separator_inside_the_message",
-                wire: "store: redis: connection reset",
-                want: Some((ErrorCode::Store, "redis: connection reset")),
-                terminal: false,
-            },
-            Case { name: "empty_message", wire: "concurrency: ", want: Some((ErrorCode::Concurrency, "")), terminal: false },
-            Case { name: "unknown_code", wire: "timeout: deadline exceeded", want: None, terminal: false },
-            Case { name: "no_separator", wire: "connection reset by peer", want: None, terminal: false },
-            Case { name: "colon_without_space", wire: "codec:no space", want: None, terminal: false },
-            Case { name: "uppercase_code", wire: "CODEC: x", want: None, terminal: false },
-            Case { name: "empty", wire: "", want: None, terminal: false },
-        ];
-        for c in cases {
-            assert_eq!(ErrorCode::split(c.wire), c.want, "{}: split", c.name);
-            let (code, message) = c.want.unwrap_or((ErrorCode::Store, c.wire));
-            assert_eq!(Error::from_wire(c.wire), Error::new(code, message), "{}: from_wire", c.name);
-            assert_eq!(verdict_of_wire(c.wire), c.terminal, "{}: verdict", c.name);
-        }
-        assert_eq!(verdict(None), ErrorCode::Store.is_terminal(), "a failure no code classifies is a store failure");
-    }
-
-    #[test]
     fn error_display_is_the_tagged_wire_form() {
         // One case per constructor. The wire string is what a binding crosses and what its parser
         // takes apart, so the round trip is pinned too.
@@ -343,10 +335,20 @@ mod tests {
         ];
         for case in cases {
             assert_eq!(case.error.code, case.code, "{} code", case.name);
-            assert_eq!(case.error.is_terminal(), case.code.is_terminal(), "{} verdict", case.name);
+            assert_eq!(
+                case.error.is_terminal(),
+                case.code.is_terminal(),
+                "{} verdict",
+                case.name
+            );
             assert_eq!(case.error.to_string(), case.wire, "{} wire", case.name);
             let message = case.wire.split_once(": ").map(|(_, m)| m);
-            assert_eq!(ErrorCode::split(case.wire), message.map(|m| (case.code, m)), "{} split", case.name);
+            assert_eq!(
+                ErrorCode::split(case.wire),
+                message.map(|m| (case.code, m)),
+                "{} split",
+                case.name
+            );
             assert_eq!(Some(case.error.message.as_str()), message, "{} message", case.name);
         }
     }

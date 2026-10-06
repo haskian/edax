@@ -1,6 +1,7 @@
 [
   {
-    "error": "codec: bad payload",
+    "code": "codec",
+    "message": "bad payload",
     "name": "keeps_key_value_and_headers_verbatim",
     "offset": 42,
     "partition": 3,
@@ -56,16 +57,63 @@
       ],
       "key_hex": "6167672d31",
       "source": {
+        "dropped": null,
         "error": "codec: bad payload",
         "offset": 42,
         "partition": 3,
         "topic": "orders"
       },
+      "stub": {
+        "headers": [
+          {
+            "key": "content-type",
+            "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+          },
+          {
+            "key": "traceparent",
+            "value_hex": "30302d306166373635313931366364343364642d3031"
+          },
+          {
+            "key": "x-binary",
+            "value_hex": "ff00"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "6f7264657273"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "33"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "3432"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "636f6465633a20626164207061796c6f6164"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "333337"
+          }
+        ],
+        "key_hex": "6167672d31",
+        "source": {
+          "dropped": 337,
+          "error": "codec: bad payload",
+          "offset": 42,
+          "partition": 3,
+          "topic": "orders"
+        },
+        "value_hex": ""
+      },
       "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
     }
   },
   {
-    "error": "codec: no message",
+    "code": "codec",
+    "message": "no message",
     "name": "a_keyless_tombstone_stays_empty",
     "offset": 0,
     "partition": 0,
@@ -96,16 +144,51 @@
       ],
       "key_hex": "",
       "source": {
+        "dropped": null,
         "error": "codec: no message",
         "offset": 0,
         "partition": 0,
         "topic": "orders"
       },
+      "stub": {
+        "headers": [
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "6f7264657273"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "30"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "30"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "636f6465633a206e6f206d657373616765"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "30"
+          }
+        ],
+        "key_hex": "",
+        "source": {
+          "dropped": 0,
+          "error": "codec: no message",
+          "offset": 0,
+          "partition": 0,
+          "topic": "orders"
+        },
+        "value_hex": ""
+      },
       "value_hex": ""
     }
   },
   {
-    "error": "rejected: montant négatif",
+    "code": "rejected",
+    "message": "montant négatif",
     "name": "non_ascii_topic_and_error",
     "offset": 7,
     "partition": 0,
@@ -161,16 +244,175 @@
       ],
       "key_hex": "6167672d31",
       "source": {
+        "dropped": null,
         "error": "rejected: montant négatif",
         "offset": 7,
         "partition": 0,
         "topic": "commandes-é"
       },
+      "stub": {
+        "headers": [
+          {
+            "key": "content-type",
+            "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+          },
+          {
+            "key": "traceparent",
+            "value_hex": "30302d306166373635313931366364343364642d3031"
+          },
+          {
+            "key": "x-binary",
+            "value_hex": "ff00"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "636f6d6d616e6465732dc3a9"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "30"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "37"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "72656a65637465643a206d6f6e74616e74206ec3a96761746966"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "333337"
+          }
+        ],
+        "key_hex": "6167672d31",
+        "source": {
+          "dropped": 337,
+          "error": "rejected: montant négatif",
+          "offset": 7,
+          "partition": 0,
+          "topic": "commandes-é"
+        },
+        "value_hex": ""
+      },
       "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
     }
   },
   {
-    "error": "",
+    "code": null,
+    "message": "ValueError: the PDF renderer crashed",
+    "name": "an_unclassified_failure",
+    "offset": 9,
+    "partition": 1,
+    "record": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
+    },
+    "topic": "orders",
+    "want": {
+      "headers": [
+        {
+          "key": "content-type",
+          "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+        },
+        {
+          "key": "traceparent",
+          "value_hex": "30302d306166373635313931366364343364642d3031"
+        },
+        {
+          "key": "x-binary",
+          "value_hex": "ff00"
+        },
+        {
+          "key": "edax-dlq-topic",
+          "value_hex": "6f7264657273"
+        },
+        {
+          "key": "edax-dlq-partition",
+          "value_hex": "31"
+        },
+        {
+          "key": "edax-dlq-offset",
+          "value_hex": "39"
+        },
+        {
+          "key": "edax-dlq-error",
+          "value_hex": "756e636c61737369666965643a2056616c75654572726f723a20746865205044462072656e64657265722063726173686564"
+        }
+      ],
+      "key_hex": "6167672d31",
+      "source": {
+        "dropped": null,
+        "error": "unclassified: ValueError: the PDF renderer crashed",
+        "offset": 9,
+        "partition": 1,
+        "topic": "orders"
+      },
+      "stub": {
+        "headers": [
+          {
+            "key": "content-type",
+            "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+          },
+          {
+            "key": "traceparent",
+            "value_hex": "30302d306166373635313931366364343364642d3031"
+          },
+          {
+            "key": "x-binary",
+            "value_hex": "ff00"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "6f7264657273"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "31"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "39"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "756e636c61737369666965643a2056616c75654572726f723a20746865205044462072656e64657265722063726173686564"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "333337"
+          }
+        ],
+        "key_hex": "6167672d31",
+        "source": {
+          "dropped": 337,
+          "error": "unclassified: ValueError: the PDF renderer crashed",
+          "offset": 9,
+          "partition": 1,
+          "topic": "orders"
+        },
+        "value_hex": ""
+      },
+      "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
+    }
+  },
+  {
+    "code": "store",
+    "message": "",
     "name": "extreme_coordinates",
     "offset": 9223372036854775807,
     "partition": 2147483647,
@@ -221,21 +463,68 @@
         },
         {
           "key": "edax-dlq-error",
-          "value_hex": ""
+          "value_hex": "73746f72653a20"
         }
       ],
       "key_hex": "6167672d31",
       "source": {
-        "error": "",
+        "dropped": null,
+        "error": "store: ",
         "offset": 9223372036854775807,
         "partition": 2147483647,
         "topic": "t"
+      },
+      "stub": {
+        "headers": [
+          {
+            "key": "content-type",
+            "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+          },
+          {
+            "key": "traceparent",
+            "value_hex": "30302d306166373635313931366364343364642d3031"
+          },
+          {
+            "key": "x-binary",
+            "value_hex": "ff00"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "74"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "32313437343833363437"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "39323233333732303336383534373735383037"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "73746f72653a20"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "333337"
+          }
+        ],
+        "key_hex": "6167672d31",
+        "source": {
+          "dropped": 337,
+          "error": "store: ",
+          "offset": 9223372036854775807,
+          "partition": 2147483647,
+          "topic": "t"
+        },
+        "value_hex": ""
       },
       "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
     }
   },
   {
-    "error": "store: still failing",
+    "code": "store",
+    "message": "still failing",
     "name": "dead_lettered_twice_reads_the_last_source",
     "offset": 5,
     "partition": 0,
@@ -323,10 +612,72 @@
       ],
       "key_hex": "6167672d31",
       "source": {
+        "dropped": null,
         "error": "store: still failing",
         "offset": 5,
         "partition": 0,
         "topic": "orders-retry"
+      },
+      "stub": {
+        "headers": [
+          {
+            "key": "content-type",
+            "value_hex": "6170706c69636174696f6e2f766e642e656461782e6576656e742b6a736f6e"
+          },
+          {
+            "key": "traceparent",
+            "value_hex": "30302d306166373635313931366364343364642d3031"
+          },
+          {
+            "key": "x-binary",
+            "value_hex": "ff00"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "6f7264657273"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "33"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "3432"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "636f6465633a20756e6b6e6f776e20666f726d61743a206170706c69636174696f6e2f782d70726f746f627566"
+          },
+          {
+            "key": "edax-dlq-topic",
+            "value_hex": "6f72646572732d7265747279"
+          },
+          {
+            "key": "edax-dlq-partition",
+            "value_hex": "30"
+          },
+          {
+            "key": "edax-dlq-offset",
+            "value_hex": "35"
+          },
+          {
+            "key": "edax-dlq-error",
+            "value_hex": "73746f72653a207374696c6c206661696c696e67"
+          },
+          {
+            "key": "edax-dlq-dropped",
+            "value_hex": "333337"
+          }
+        ],
+        "key_hex": "6167672d31",
+        "source": {
+          "dropped": 337,
+          "error": "store: still failing",
+          "offset": 5,
+          "partition": 0,
+          "topic": "orders-retry"
+        },
+        "value_hex": ""
       },
       "value_hex": "7b226964223a226576742d31222c226167677265676174655f6964223a226167672d31222c2274656e616e74223a6e756c6c2c2273657175656e6365223a372c226e616d65223a22496e766f696365497373756564222c2276657273696f6e223a312c2264617461223a223371322b37773d3d222c22636f7272656c6174696f6e5f6964223a22636f72722d31222c22636175736174696f6e5f6964223a22636d642d31222c226f636375727265645f6174223a6e756c6c2c227265636f726465645f6174223a313730303030303030303030303030303030302c22657874656e73696f6e73223a7b227472616365706172656e74223a2230302d34626639326633353737623334646136613363653932396430653065343733362d303066303637616130626139303262372d3031227d2c226d65746164617461223a7b227472616365223a226162632d313233227d7d"
     }
@@ -447,6 +798,34 @@
       }
     ],
     "name": "a_missing_error",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      },
+      {
+        "key": "edax-dlq-dropped",
+        "value_hex": "6d616e79"
+      }
+    ],
+    "name": "a_dropped_count_that_is_not_a_number",
     "want": {
       "source": null
     }

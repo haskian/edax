@@ -1,13 +1,19 @@
-//! The dense-batch rule an event append must satisfy, and when a save writes a snapshot.
+//! The dense-batch rule an event append must satisfy, the drafts a save appends, and when it writes a
+//! snapshot.
 //!
 //! A store checks only the stream's last stored sequence, so a batch with a gap, a repeat or a
 //! reordering would pass that check and still break the gap-free ascending read every store
 //! promises. Every durable store needs the same rule, so it lives here and is pinned by
 //! `testdata/golden/sequence_batch.json` rather than re-derived per backend. The snapshot interval
 //! is a version rule too, pinned by `testdata/golden/snapshot_due.json`, so two SDKs saving one
-//! aggregate type snapshot at the same versions.
+//! aggregate type snapshot at the same versions. The drafts a save appends are numbered and stamped
+//! here too ([`draft_batch`], pinned by `testdata/golden/draft_batch.json`), so two SDKs saving one
+//! aggregate write the same batch.
 
 use edax_core::Error;
+
+use crate::causation::Lineage;
+use crate::message::{check_extensions, EventDraft, Extensions, Metadata, Payload};
 
 /// Check that `sequences` is the dense ascending run `expected + 1, expected + 2, ...`.
 ///
@@ -18,23 +24,29 @@ use edax_core::Error;
 /// would run past `u64::MAX` is refused rather than clamped, since a clamp would let two events
 /// share the ceiling.
 ///
+/// Returns the stream version after the batch: the last sequence, or `expected` for an empty batch.
 /// The error names the 0-based batch index, the one identifier the kernel shares with every host.
 /// It is a `codec` error: the same batch fails the same way on every retry.
-pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<(), Error> {
+pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<u64, Error> {
     let mut want = expected;
     for (index, sequence) in sequences.iter().enumerate() {
         let Some(next) = want.checked_add(1) else {
-            return Err(Error::codec(format_args!("event {index} would run the stream past sequence {}", u64::MAX)));
+            return Err(Error::codec(format_args!(
+                "event {index} would run the stream past sequence {}",
+                u64::MAX
+            )));
         };
         want = next;
         let Some(sequence) = *sequence else {
             return Err(Error::codec(format_args!("event {index} has no sequence")));
         };
         if sequence != want {
-            return Err(Error::codec(format_args!("event {index} has sequence {sequence}, expected {want}")));
+            return Err(Error::codec(format_args!(
+                "event {index} has sequence {sequence}, expected {want}"
+            )));
         }
     }
-    Ok(())
+    Ok(want)
 }
 
 /// Whether a save that moves an aggregate from version `initial` to `current` writes a snapshot under
@@ -42,6 +54,101 @@ pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<(), Error
 /// every save that appends, `0` never does, and a save with nothing pending crosses no multiple.
 pub fn snapshot_due(every: u64, initial: u64, current: u64) -> bool {
     every > 0 && current / every > initial / every
+}
+
+/// The batch a save appends: its drafts, the aggregate's version after it, and whether the save writes
+/// a snapshot at that version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftBatch {
+    /// One draft per payload, sequenced `initial + 1, initial + 2, ...`.
+    pub drafts: Vec<EventDraft>,
+    /// The aggregate's version once the batch lands: `initial` plus the number of drafts.
+    pub version: u64,
+    /// Whether the save writes a snapshot at `version` ([`snapshot_due`]).
+    pub snapshot: bool,
+}
+
+/// One save's context: what [`draft_batch`] stamps on every draft of the batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveContext<'a> {
+    /// The tenant the aggregate belongs to, `None` for none.
+    pub tenant: Option<&'a str>,
+    /// The flow every event of the batch continues.
+    pub lineage: &'a Lineage,
+    /// Edax extension context, under [`check_extensions`]'s key rule.
+    pub extensions: &'a Extensions,
+    /// The application's own context.
+    pub metadata: &'a Metadata,
+    /// The valid time of the batch in unix nanoseconds, `None` for the time the store records it.
+    pub occurred_at: Option<i64>,
+}
+
+/// The drafts a save of the aggregate `aggregate_id`, at version `initial`, appends for `payloads`, each
+/// named by the id in `ids` at its index and stamped with `context`. `snapshot_every` is the snapshot
+/// interval.
+///
+/// Refused before anything is written: as `bad_handle`, a count of `ids` that is not the count of
+/// `payloads`; as `codec`, an extension key outside [`check_extensions`], a tenant outside
+/// [`edax_core::check_tenant`], and a batch that would run the stream past sequence `u64::MAX`.
+pub fn draft_batch(
+    aggregate_id: &str,
+    initial: u64,
+    snapshot_every: u64,
+    payloads: Vec<Payload>,
+    ids: Vec<String>,
+    context: &SaveContext<'_>,
+) -> Result<DraftBatch, Error> {
+    let SaveContext {
+        tenant,
+        lineage,
+        extensions,
+        metadata,
+        occurred_at,
+    } = *context;
+    if ids.len() != payloads.len() {
+        return Err(Error::bad_handle(format_args!(
+            "{} event ids for {} events",
+            ids.len(),
+            payloads.len()
+        )));
+    }
+    check_extensions(extensions)?;
+    if let Some(tenant) = tenant {
+        edax_core::check_tenant(tenant)?;
+    }
+    let version = u64::try_from(payloads.len())
+        .ok()
+        .and_then(|count| initial.checked_add(count))
+        .ok_or_else(|| {
+            Error::codec(format_args!(
+                "the batch would run the stream past sequence {}",
+                u64::MAX
+            ))
+        })?;
+    let drafts = payloads
+        .into_iter()
+        .zip(ids)
+        .zip(initial.saturating_add(1)..=version)
+        .map(|((payload, id), sequence)| EventDraft {
+            id,
+            aggregate_id: aggregate_id.to_owned(),
+            tenant: tenant.map(ToOwned::to_owned),
+            sequence: Some(sequence),
+            name: payload.name,
+            version: payload.version,
+            data: payload.data,
+            correlation_id: lineage.correlation_id.clone(),
+            causation_id: lineage.causation_id.clone(),
+            occurred_at,
+            extensions: extensions.clone(),
+            metadata: metadata.clone(),
+        })
+        .collect();
+    Ok(DraftBatch {
+        drafts,
+        version,
+        snapshot: snapshot_due(snapshot_every, initial, version),
+    })
 }
 
 #[cfg(test)]
@@ -54,12 +161,27 @@ mod tests {
             name: &'static str,
             expected: u64,
             sequences: Vec<Option<u64>>,
-            want: Result<(), Error>,
+            want: Result<u64, Error>,
         }
         let cases = vec![
-            Case { name: "empty_batch_is_a_version_check", expected: 7, sequences: vec![], want: Ok(()) },
-            Case { name: "dense_run", expected: 2, sequences: vec![Some(3), Some(4), Some(5)], want: Ok(()) },
-            Case { name: "first_append_starts_at_one", expected: 0, sequences: vec![Some(1)], want: Ok(()) },
+            Case {
+                name: "empty_batch_is_a_version_check",
+                expected: 7,
+                sequences: vec![],
+                want: Ok(7),
+            },
+            Case {
+                name: "dense_run",
+                expected: 2,
+                sequences: vec![Some(3), Some(4), Some(5)],
+                want: Ok(5),
+            },
+            Case {
+                name: "first_append_starts_at_one",
+                expected: 0,
+                sequences: vec![Some(1)],
+                want: Ok(1),
+            },
             Case {
                 name: "missing_sequence",
                 expected: 0,
@@ -88,26 +210,30 @@ mod tests {
                 name: "past_the_i64_range_is_exact",
                 expected: i64::MAX as u64,
                 sequences: vec![Some(i64::MAX as u64 + 1), Some(i64::MAX as u64 + 2)],
-                want: Ok(()),
+                want: Ok(i64::MAX as u64 + 2),
             },
             Case {
                 name: "the_last_sequence_is_u64_max",
                 expected: u64::MAX - 1,
                 sequences: vec![Some(u64::MAX)],
-                want: Ok(()),
+                want: Ok(u64::MAX),
             },
             // A clamp would let both events sit at the ceiling; the run is refused instead.
             Case {
                 name: "a_repeat_at_the_ceiling_is_refused",
                 expected: u64::MAX - 1,
                 sequences: vec![Some(u64::MAX), Some(u64::MAX)],
-                want: Err(Error::codec("event 1 would run the stream past sequence 18446744073709551615")),
+                want: Err(Error::codec(
+                    "event 1 would run the stream past sequence 18446744073709551615",
+                )),
             },
             Case {
                 name: "a_stream_already_at_the_ceiling_takes_nothing",
                 expected: u64::MAX,
                 sequences: vec![Some(u64::MAX)],
-                want: Err(Error::codec("event 0 would run the stream past sequence 18446744073709551615")),
+                want: Err(Error::codec(
+                    "event 0 would run the stream past sequence 18446744073709551615",
+                )),
             },
             Case {
                 name: "a_sequence_far_ahead",

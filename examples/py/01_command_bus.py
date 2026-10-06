@@ -40,7 +40,7 @@ async def main() -> None:
 
     # 2. Register the handler under the command's type.
     bus = CommandBus()
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     # 3. Dispatch commands. The bus hands back what the handler returned.
     first = await bus.dispatch(Deposit("acct-1", 100))

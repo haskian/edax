@@ -23,7 +23,7 @@ import edax
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from conftest import SeqSerializer, build_message, publish_all, sequence_of, sink_ok
+from conftest import SeqSerializer, build_message, handling, publish_all, sequence_of, sink_ok
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 
 BOOTSTRAP: str | None = os.environ.get("EDAX_KAFKA_BOOTSTRAP")
@@ -219,6 +219,7 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
     script = textwrap.dedent(
         f"""
         import asyncio, sys
+        from typing import Any
         sys.path.insert(0, {os.path.dirname(__file__)!r})
         import edax
         from aiokafka import AIOKafkaConsumer
@@ -235,7 +236,7 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
                 print(env.sequence, flush=True)
                 if env.sequence >= 25:
                     await asyncio.Event().wait()  # in flight when the process dies
-            async def sink(d, e): pass
+            async def sink(letter: edax.DeadLetter[Any]) -> None: pass
             dispatcher = edax.KeyOrderedDispatcher(workers=4, handler=handler, on_dead=sink)
             dispatcher.start()
             await consumer.run(dispatcher)
@@ -344,8 +345,8 @@ async def test_a_raising_sink_gets_another_try_and_the_partition_drains(
         if sequence_of(env) == 4:
             raise edax.CodecError("negative balance")
 
-    async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
-        sink_calls.append(sequence_of(delivery.message))
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        sink_calls.append(sequence_of(letter.message))
         if len(sink_calls) == 1:
             raise ConnectionError("DLQ topic unavailable")
 
@@ -370,7 +371,7 @@ async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
     )
     tries: list[float] = []
 
-    async def on_dead(delivery: edax.Delivery, err: BaseException) -> None:
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
         tries.append(time.monotonic())
         raise ConnectionError("DLQ topic unavailable")
 
@@ -386,8 +387,8 @@ async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
 
     client = _consumer_client(name, group)
     sinkless = KafkaConsumer(client, serializer=SeqSerializer())
-    with pytest.raises(ValueError, match="on_dead"):
-        await sinkless.run(edax.KeyOrderedDispatcher(workers=1, handler=lambda env: None))
+    with pytest.raises(edax.BadHandle, match="dead-letter sink"):
+        await sinkless.run(edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None)))
 
 
 async def test_a_frozen_broker_costs_a_commit_its_deadline_not_the_run(
@@ -411,7 +412,7 @@ async def test_a_frozen_broker_costs_a_commit_its_deadline_not_the_run(
     _docker("pause", CONTAINER or "")
     try:
         started = time.monotonic()
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(edax.StoreError, match="kafka commit: no reply within"):
             await member.consumer.flush()
         assert time.monotonic() - started < 5, "the commit deadline did not hold"
         stop_started = time.monotonic()

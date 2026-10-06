@@ -1,7 +1,7 @@
-//! Core domain types: the language-agnostic shapes every binding agrees on.
+//! The messages: the language-agnostic shapes every binding agrees on, and the rules on their keys.
 //!
 //! Two messages cross a process boundary, [`EventMessage`] and [`CommandMessage`], each encoded by
-//! [`crate::codec`]. Both are flat: identity, payload, lineage, time, then two string maps. The byte
+//! [`crate::codec`]. Each carries a [`Payload`]: the name, schema version and bytes a host codec reads. Both are flat: identity, payload, lineage, time, then two string maps. The byte
 //! field `data` carries the host's already-serialized payload; the codec writes it as base64 in
 //! human-readable formats and as native bytes in binary ones.
 //!
@@ -30,39 +30,31 @@ pub type Metadata = BTreeMap<String, String>;
 /// [`check_extensions`]; values are opaque strings.
 pub type Extensions = BTreeMap<String, String>;
 
-/// The kind of a message. Exhaustive on purpose: a host must decide about every kind, so a new one is
-/// a compile error in every SDK rather than a wildcard's silent default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Kind {
-    /// An [`EventMessage`]: a fact that happened.
-    Event,
-    /// A [`CommandMessage`]: a request for something to happen.
-    Command,
+edax_core::closed_names! {
+    /// The kind of a message, named `"event"` or `"command"`. Exhaustive on purpose: a host must decide
+    /// about every kind, so a new one is a compile error in every SDK rather than a wildcard's silent
+    /// default.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Kind {
+        /// An [`EventMessage`]: a fact that happened.
+        Event = "event",
+        /// A [`CommandMessage`]: a request for something to happen.
+        Command = "command",
+    }
 }
 
 impl Kind {
-    /// The name a binding selects this kind by: `"event"` or `"command"`.
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Event => "event",
-            Kind::Command => "command",
-        }
-    }
-
-    /// The inverse of [`name`](Kind::name). Anything else is a `codec` error.
+    /// The inverse of [`as_str`](Kind::as_str). Anything else is a `codec` error.
     pub fn from_name(name: &str) -> Result<Kind, Error> {
-        match name {
-            "event" => Ok(Kind::Event),
-            "command" => Ok(Kind::Command),
-            other => Err(Error::codec(format_args!("unknown message kind: {other}"))),
-        }
+        Kind::by_name(name).ok_or_else(|| Error::codec(format_args!("unknown message kind: {name}")))
     }
 }
 
-/// A marshaled payload: what a host codec produces from a domain value and reads back. Not a wire
-/// type of its own; an aggregate holds its pending events in this shape until a save stamps them.
+/// A marshaled payload: what a host codec produces from a domain value and reads back, an event's or a
+/// command's. Not a wire type of its own: an aggregate holds its pending events in this shape until a
+/// save stamps them, and a saga hands the command it sends over in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Event {
+pub struct Payload {
     /// The type name a consumer routes and unmarshals by.
     pub name: String,
     /// The payload schema version, the input to [`crate::upcast`] planning.
@@ -162,9 +154,22 @@ pub struct EventMessage {
 }
 
 impl EventMessage {
-    /// The payload part, moved out of the message, for a codec that unmarshals by name and version.
-    pub fn into_payload(self) -> Event {
-        Event { name: self.name, version: self.version, data: self.data }
+    /// The payload part, for a codec that unmarshals by name and version.
+    pub fn payload(&self) -> Payload {
+        Payload {
+            name: self.name.clone(),
+            version: self.version,
+            data: self.data.clone(),
+        }
+    }
+
+    /// The payload part, moved out of the message.
+    pub fn into_payload(self) -> Payload {
+        Payload {
+            name: self.name,
+            version: self.version,
+            data: self.data,
+        }
     }
 }
 
@@ -206,14 +211,22 @@ pub struct CommandMessage {
 }
 
 impl CommandMessage {
-    /// The key a guard claims for this command once it is received. See [`received_key`].
-    pub fn received_key(&self) -> &str {
-        received_key(self.idempotency_key.as_deref(), &self.id)
+    /// The payload part, for a codec that unmarshals by name and version.
+    pub fn payload(&self) -> Payload {
+        Payload {
+            name: self.name.clone(),
+            version: self.version,
+            data: self.data.clone(),
+        }
     }
 
-    /// The payload part, for a codec that unmarshals by name and version.
-    pub fn payload(&self) -> Event {
-        Event { name: self.name.clone(), version: self.version, data: self.data.clone() }
+    /// The payload part, moved out of the message.
+    pub fn into_payload(self) -> Payload {
+        Payload {
+            name: self.name,
+            version: self.version,
+            data: self.data,
+        }
     }
 }
 
@@ -291,12 +304,28 @@ pub fn ordering_key<'a>(aggregate_id: Option<&'a str>, id: &'a str) -> &'a str {
     aggregate_id.unwrap_or(id)
 }
 
-/// The idempotency key a received command is claimed under: its own `idempotency_key`, or its `id`
-/// when it carries none. A broker redelivers the same message, and both copies carry one id, so with
-/// no client key the message's own id still deduplicates a redelivery. An empty key is still a key.
-/// Pinned by `testdata/golden/command_received_key.json`.
-pub fn received_key<'a>(idempotency_key: Option<&'a str>, id: &'a str) -> &'a str {
-    idempotency_key.unwrap_or(id)
+/// `command` as a save of an aggregate of `tenant` sends it. A command that names no tenant takes the
+/// aggregate's, so the relay keys it and the bus claims it inside that tenant, where the events it
+/// follows from already are. One that names another tenant is the terminal `codec` error: a save cannot
+/// move a command across tenants its load never named. Pinned by `testdata/golden/command_owner.json`.
+pub fn own_command(command: CommandMessage, tenant: Option<&str>) -> Result<CommandMessage, Error> {
+    if command.tenant.as_deref() == tenant {
+        return Ok(command);
+    }
+    let named =
+        |tenant: Option<&str>| tenant.map_or_else(|| "no tenant".to_owned(), |tenant| format!("tenant {tenant:?}"));
+    match (&command.tenant, tenant) {
+        (None, Some(tenant)) => Ok(CommandMessage {
+            tenant: Some(tenant.to_owned()),
+            ..command
+        }),
+        (owner, tenant) => Err(Error::codec(format_args!(
+            "command {} names {}, but it is saved with an aggregate of {}",
+            command.id,
+            named(owner.as_deref()),
+            named(tenant)
+        ))),
+    }
 }
 
 /// The longest [`Extensions`] key.
@@ -311,9 +340,12 @@ pub const EXTENSION_KEY_MAX: usize = 64;
 pub fn check_extensions(extensions: &Extensions) -> Result<(), Error> {
     for key in extensions.keys() {
         let bytes = key.as_bytes();
-        let first_ok = bytes.first().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
-        let rest_ok =
-            bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'));
+        let first_ok = bytes
+            .first()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        let rest_ok = bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'));
         if !first_ok || !rest_ok || bytes.len() > EXTENSION_KEY_MAX {
             return Err(Error::codec(format_args!(
                 "extension key {key:?} must be 1 to {EXTENSION_KEY_MAX} of [a-z0-9._-], starting with [a-z0-9]"

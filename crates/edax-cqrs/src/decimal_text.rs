@@ -10,7 +10,7 @@
 //!   it is not zero, without trailing zeros. `9.50` is `9.5`, `1E+2` is `100`, `-0.0` is `0`, `.5` is
 //!   `0.5` and `1.5E-7` is `0.00000015`.
 //! - **The order** of two decimal texts by value, which a filter and a sort apply under the
-//!   [`Collation::Decimal`](crate::filter::Collation) collation. Code point order would put `"10"`
+//!   [`Collation::Decimal`](crate::Collation) collation. Code point order would put `"10"`
 //!   before `"9.5"`.
 //!
 //! Decimal text is an optional sign, digits with at most one `.` and at least one digit, and an
@@ -41,9 +41,10 @@ pub const MAX_DECIMAL_DIGITS: usize = 1000;
 pub const MAX_DECIMAL_TEXT: usize = 2 * MAX_DECIMAL_DIGITS;
 
 /// Read decimal text into its normal form, or say why it is not decimal text.
-fn parse(text: &str) -> Result<BigDecimal, Error> {
+pub(crate) fn parse(text: &str) -> Result<BigDecimal, Error> {
     check_grammar(text)?;
-    let decimal = BigDecimal::from_str(text).map_err(|e| Error::codec(format_args!("{text:?} is not decimal text: {e}")))?;
+    let decimal =
+        BigDecimal::from_str(text).map_err(|e| Error::codec(format_args!("{text:?} is not decimal text: {e}")))?;
     let decimal = decimal.normalized();
     // The digits before the point (one, the `0`, for a value below one) and after it. The grammar holds
     // the exponent to 32 bits and the digits to a few thousand, so neither sum overflows.
@@ -82,13 +83,17 @@ fn check_grammar(text: &str) -> Result<(), Error> {
             return Err(not_decimal());
         }
         if exponent.parse::<i32>().is_err() {
-            return Err(Error::codec(format_args!("{text:?} has an exponent outside the 32-bit range")));
+            return Err(Error::codec(format_args!(
+                "{text:?} has an exponent outside the 32-bit range"
+            )));
         }
     }
     // The coefficient the parse builds, but for the zeros that do not change the value.
     let significant = integer.trim_start_matches('0').len() + fraction.trim_end_matches('0').len();
     if significant > MAX_DECIMAL_DIGITS {
-        return Err(Error::codec(format_args!("{text:?} has more than {MAX_DECIMAL_DIGITS} significant digits")));
+        return Err(Error::codec(format_args!(
+            "{text:?} has more than {MAX_DECIMAL_DIGITS} significant digits"
+        )));
     }
     Ok(())
 }
@@ -147,23 +152,59 @@ mod tests {
             ("a_lowercase_exponent", "1.5e3", Ok("1500")),
             ("a_negative_exponent", "1.5E-7", Ok("0.00000015")),
             ("an_exponent_inside_the_digits", "12345E-2", Ok("123.45")),
-            ("past_17_digits_stays_exact", "12345678901234567890.123456789", Ok("12345678901234567890.123456789")),
+            (
+                "past_17_digits_stays_exact",
+                "12345678901234567890.123456789",
+                Ok("12345678901234567890.123456789"),
+            ),
             ("at_the_digit_bound", &at_bound, Ok(&at_bound_plain)),
-            ("a_fraction_at_the_digit_bound", &tiny_at_bound, Ok(&tiny_at_bound_plain)),
+            (
+                "a_fraction_at_the_digit_bound",
+                &tiny_at_bound,
+                Ok(&tiny_at_bound_plain),
+            ),
             ("past_the_digit_bound", &past_bound, Err("more than 1000 digits")),
-            ("a_fraction_past_the_digit_bound", &tiny_past_bound, Err("more than 1000 digits")),
+            (
+                "a_fraction_past_the_digit_bound",
+                &tiny_past_bound,
+                Err("more than 1000 digits"),
+            ),
             ("zero_padding_at_the_text_bound", &padded_at_text_bound, Ok("1")),
             // Trailing zeros make the coefficient the parse builds long, and its normal form costs more
             // than linear time: the length is refused before the parse.
-            ("zero_padding_past_the_text_bound", &padded_past_text_bound, Err("decimal text of 2001 bytes is longer than 2000")),
+            (
+                "zero_padding_past_the_text_bound",
+                &padded_past_text_bound,
+                Err("decimal text of 2001 bytes is longer than 2000"),
+            ),
             ("significant_digits_at_the_bound", &significant_at_bound, Ok("1")),
-            ("integer_zeros_past_the_significant_bound", &integer_zeros_past_bound, Err("more than 1000 significant digits")),
-            ("fraction_zeros_past_the_significant_bound", &fraction_zeros_past_bound, Err("more than 1000 significant digits")),
+            (
+                "integer_zeros_past_the_significant_bound",
+                &integer_zeros_past_bound,
+                Err("more than 1000 significant digits"),
+            ),
+            (
+                "fraction_zeros_past_the_significant_bound",
+                &fraction_zeros_past_bound,
+                Err("more than 1000 significant digits"),
+            ),
             ("zero_at_the_widest_exponent", "0E+2147483647", Ok("0")),
-            ("the_widest_exponent_meets_the_digit_bound", "1E-2147483648", Err("more than 1000 digits")),
-            ("an_exponent_past_32_bits", "1E+2147483648", Err("outside the 32-bit range")),
+            (
+                "the_widest_exponent_meets_the_digit_bound",
+                "1E-2147483648",
+                Err("more than 1000 digits"),
+            ),
+            (
+                "an_exponent_past_32_bits",
+                "1E+2147483648",
+                Err("outside the 32-bit range"),
+            ),
             // `BigDecimal::from_str` panics on this one: the grammar must refuse it first.
-            ("an_exponent_past_i64", "1E+9223372036854775808", Err("outside the 32-bit range")),
+            (
+                "an_exponent_past_i64",
+                "1E+9223372036854775808",
+                Err("outside the 32-bit range"),
+            ),
             ("a_signed_exponent_sign_alone", "1E-", Err("not decimal text")),
             ("nan", "NaN", Err("not decimal text")),
             ("signalling_nan", "sNaN", Err("not decimal text")),
@@ -207,7 +248,12 @@ mod tests {
             ("positive_above_negative", "1", "-1000", Some(Ordering::Greater)),
             ("zero_against_a_positive", "0", "0.001", Some(Ordering::Less)),
             ("zero_against_a_negative", "-0", "-0.001", Some(Ordering::Greater)),
-            ("past_17_digits_stays_exact", "12345678901234567890.1", "12345678901234567890.01", Some(Ordering::Greater)),
+            (
+                "past_17_digits_stays_exact",
+                "12345678901234567890.1",
+                "12345678901234567890.01",
+                Some(Ordering::Greater),
+            ),
             ("a_left_side_that_is_not_decimal", "abc", "1", None),
             ("a_right_side_that_is_not_decimal", "1", "NaN", None),
         ];

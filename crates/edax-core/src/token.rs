@@ -52,7 +52,11 @@ mod tests {
     fn the_counter_wraps_rather_than_repeating_a_token() {
         let mint = TokenMint(AtomicI64::new(i64::MAX));
         assert_eq!(mint.issue(), i64::MAX);
-        assert_eq!(mint.issue(), i64::MIN, "the step wraps instead of saturating on i64::MAX");
+        assert_eq!(
+            mint.issue(),
+            i64::MIN,
+            "the step wraps instead of saturating on i64::MAX"
+        );
     }
 
     #[test]
@@ -60,9 +64,16 @@ mod tests {
         static MINT: TokenMint = TokenMint::new();
         let mut issued: Vec<i64> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..8).map(|_| scope.spawn(|| MINT.issue())).collect();
-            handles.into_iter().map(|handle| handle.join().unwrap_or(NO_TOKEN)).collect()
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap_or(NO_TOKEN))
+                .collect()
         });
         issued.sort_unstable();
-        assert_eq!(issued, (1..=8).collect::<Vec<i64>>(), "no token is issued twice under contention");
+        assert_eq!(
+            issued,
+            (1..=8).collect::<Vec<i64>>(),
+            "no token is issued twice under contention"
+        );
     }
 }

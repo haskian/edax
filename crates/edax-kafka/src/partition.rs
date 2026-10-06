@@ -96,7 +96,12 @@ mod tests {
             ("one_partition_takes_every_key", b"21", 1, Ok(0)),
             ("a_positive_hash", b"abc", 12, Ok(479_470_107 % 12)),
             ("the_empty_key_is_a_key", b"", 7, Ok((murmur2(b"") & 0x7fff_ffff) % 7)),
-            ("no_partitions_is_refused", b"21", 0, Err(Error::codec("a topic has at least one partition, got 0"))),
+            (
+                "no_partitions_is_refused",
+                b"21",
+                0,
+                Err(Error::codec("a topic has at least one partition, got 0")),
+            ),
         ];
         for (name, key, partitions, want) in cases {
             assert_eq!(partition_for(key, partitions), want, "{name}");

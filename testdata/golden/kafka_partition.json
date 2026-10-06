@@ -440,6 +440,86 @@
     "partitions": 2147483647
   },
   {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "343a61636d653a6f726465722d31",
+    "name": "pooled_acme_order",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 2,
+    "java_murmur2": null,
+    "key_hex": "343a61636d653a6f726465722d31",
+    "name": "pooled_acme_order",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 8,
+    "java_murmur2": null,
+    "key_hex": "343a61636d653a6f726465722d31",
+    "name": "pooled_acme_order",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 88,
+    "java_murmur2": null,
+    "key_hex": "343a61636d653a6f726465722d31",
+    "name": "pooled_acme_order",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 864916088,
+    "java_murmur2": null,
+    "key_hex": "343a61636d653a6f726465722d31",
+    "name": "pooled_acme_order",
+    "partitions": 2147483647
+  },
+  {
+    "error": null,
+    "expected": 0,
+    "java_murmur2": null,
+    "key_hex": "353a6f746865723a6f726465722d31",
+    "name": "pooled_other_order",
+    "partitions": 1
+  },
+  {
+    "error": null,
+    "expected": 1,
+    "java_murmur2": null,
+    "key_hex": "353a6f746865723a6f726465722d31",
+    "name": "pooled_other_order",
+    "partitions": 3
+  },
+  {
+    "error": null,
+    "expected": 1,
+    "java_murmur2": null,
+    "key_hex": "353a6f746865723a6f726465722d31",
+    "name": "pooled_other_order",
+    "partitions": 12
+  },
+  {
+    "error": null,
+    "expected": 69,
+    "java_murmur2": null,
+    "key_hex": "353a6f746865723a6f726465722d31",
+    "name": "pooled_other_order",
+    "partitions": 100
+  },
+  {
+    "error": null,
+    "expected": 1402933369,
+    "java_murmur2": null,
+    "key_hex": "353a6f746865723a6f726465722d31",
+    "name": "pooled_other_order",
+    "partitions": 2147483647
+  },
+  {
     "error": "codec: a topic has at least one partition, got 0",
     "expected": null,
     "java_murmur2": null,

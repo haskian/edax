@@ -101,13 +101,13 @@ dependencies = [
 name = "edax"
 version = "0.5.0"
 dependencies = [
+ "edax",
  "edax-core",
  "edax-cqrs",
  "edax-event",
  "edax-golden",
  "edax-memory",
  "proptest",
- "rmp-serde",
  "serde",
  "serde_json",
 ]
@@ -192,6 +192,7 @@ dependencies = [
  "edax-core",
  "edax-cqrs",
  "edax-event",
+ "edax-golden",
  "edax-kafka",
  "proptest",
  "serde_json",

@@ -4,8 +4,9 @@ The total value order, sort stability, and cursor encoding all come from the ker
 services paging the same read model agree on row order and cursor boundaries. Backends translate
 the same query spec into their native ORDER BY / LIMIT / keyset clauses.
 
-A query answers with a :class:`Page`: the rows and ``next``, the cursor the kernel minted from the last
-row under the query's own sort. Pass ``next`` back as ``after`` with the same sort to read the next page;
+A :class:`Query` names what to read, and the answer is a :class:`Page`: the rows and ``next``, the cursor
+the kernel minted from the last row under the query's own sort. Pass ``next`` back as ``after`` with the
+same sort to read the next page;
 a cursor replayed under another sort is a :class:`~edax.errors.CodecError`, never a silently wrong page.
 The spec is read strictly: an unknown field, a ``None`` comparand, a path with an empty segment or an
 integer wider than 64 bits is a :class:`~edax.errors.CodecError` too.
@@ -13,11 +14,26 @@ integer wider than 64 bits is a :class:`~edax.errors.CodecError` too.
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
-from . import _edax, _json, errors
+from . import _json, _native
 from .filter import Filter
+
+__all__ = [
+    "Document",
+    "Page",
+    "Query",
+    "SortKey",
+    "check_query",
+    "decode_cursor",
+    "effective_sort",
+    "encode_cursor",
+    "query",
+    "sort_key",
+]
 
 
 class _SortPath(TypedDict):
@@ -34,7 +50,6 @@ class SortKey(_SortPath, total=False):
 
 
 Document = dict[str, Any]  # a read-model document, as it crosses the JSON boundary
-QuerySpec = dict[str, Any]  # the kernel query spec: filter / sort / offset / limit / after
 
 
 @dataclass(frozen=True)
@@ -62,44 +77,53 @@ def sort_key(path: str, desc: bool = False, *, decimal: bool = False) -> SortKey
     return key
 
 
-def build_spec(
-    *,
-    filter: Filter | None = None,
-    sort: list[SortKey] | None = None,
-    offset: int = 0,
-    limit: int | None = None,
-    after: str | None = None,
-) -> QuerySpec:
-    """Assemble the kernel query spec with only the set fields. Shared by :func:`query` and
-    :meth:`~edax.projection.ProjectionStore.get_many` so the two build it one way."""
-    spec: QuerySpec = {}
-    if filter is not None:
-        spec["filter"] = filter
-    if sort:
-        spec["sort"] = sort
-    if offset:
-        spec["offset"] = offset
-    if limit is not None:
-        spec["limit"] = limit
-    if after is not None:
-        spec["after"] = after
-    return spec
+@dataclass(frozen=True)
+class Query:
+    """What a read selects: filter -> keyset(``after``) -> sort -> offset -> limit, the kernel's one query
+    shape (``edax_cqrs::Query``). The default selects every document in input order. ``after`` is a prior
+    page's ``next`` under the same ``sort``; ``limit=0`` is an empty page, not "no limit"."""
+
+    filter: Filter | None = None
+    sort: Sequence[SortKey] = ()
+    offset: int = 0
+    limit: int | None = None
+    after: str | None = None
+
+    def to_json(self) -> str:
+        """The kernel query spec as JSON text: :meth:`spec`, encoded."""
+        return _json.encode(self.spec())
+
+    def spec(self) -> dict[str, Any]:
+        """The kernel query spec, with only the set fields. Rust's ``Query::default()`` serializes to ``{}``
+        too, so a backend gets one document from every binding. ``limit`` and ``after`` are tested against
+        ``None``, not truthiness: an empty ``after`` (from ``?after=``) reaches the kernel, which refuses it
+        as it does from every binding."""
+        spec: dict[str, Any] = {}
+        if self.filter is not None:
+            spec["filter"] = self.filter
+        if self.sort:
+            spec["sort"] = list(self.sort)
+        if self.offset:
+            spec["offset"] = self.offset
+        if self.limit is not None:
+            spec["limit"] = self.limit
+        if self.after is not None:
+            spec["after"] = self.after
+        return spec
 
 
-def query(
-    documents: list[Document],
-    *,
-    filter: Filter | None = None,
-    sort: list[SortKey] | None = None,
-    offset: int = 0,
-    limit: int | None = None,
-    after: str | None = None,
-) -> Page:
-    """Return the :class:`Page` of ``documents`` selected by filter -> keyset(after) -> sort -> offset ->
-    limit. ``after`` is a prior page's ``next`` under the same ``sort``."""
-    spec = build_spec(filter=filter, sort=sort, offset=offset, limit=limit, after=after)
-    with errors.mapped():
-        return Page.from_kernel(_edax.query(_json.encode(spec), _json.encode(documents)))
+def query(documents: list[Document], query: Query = Query()) -> Page:
+    """Return the :class:`Page` of ``documents`` that ``query`` selects."""
+    return Page.from_kernel(_json.call(_native.query, query.spec(), documents))
+
+
+def check_query(query: Query) -> None:
+    """Refuse the spec of ``query`` as :func:`query` refuses it, with :class:`~edax.errors.CodecError`: an
+    unknown field, a ``None`` comparand, a path with an empty segment, an integer wider than 64 bits, or an
+    ``after`` cursor on an unsorted query. The cursor itself is read by :func:`decode_cursor`. For a backend
+    that answers the query itself: run it in your :meth:`~edax.projection.ProjectionQuery.get_many` before
+    you read."""
+    _json.call(_native.check_query, query.spec())
 
 
 def encode_cursor(document: Document, sort: list[SortKey]) -> str:
@@ -109,8 +133,7 @@ def encode_cursor(document: Document, sort: list[SortKey]) -> str:
     its own. The document needs a string or number ``"id"``, the kernel's tiebreak, else a
     :class:`~edax.errors.CodecError`: rows tied on every other key would tie on it too, and paging past
     them would drop the rest of the tie."""
-    with errors.mapped():
-        return _edax.encode_cursor(_json.encode(document), _json.encode(sort))
+    return _json.call(_native.encode_cursor, document, sort)
 
 
 def decode_cursor(cursor: str, sort: list[SortKey]) -> list[Any]:
@@ -121,8 +144,7 @@ def decode_cursor(cursor: str, sort: list[SortKey]) -> list[Any]:
     ``id`` tiebreak is applied here as it is everywhere else, so the tuple lines up with
     :func:`effective_sort`. A cursor minted under any other sort is a :class:`~edax.errors.CodecError`.
     """
-    with errors.mapped():
-        values: list[Any] = _json.decode(_edax.decode_cursor(cursor, _json.encode(sort)))
+    values: list[Any] = _json.decode(_json.call(functools.partial(_native.decode_cursor, cursor), sort))
     return values
 
 
@@ -133,6 +155,5 @@ def effective_sort(sort: list[SortKey]) -> list[SortKey]:
     keyset paging then drops or repeats tied rows. Empty in, empty out: an unsorted query keeps input
     order and takes no cursor.
     """
-    with errors.mapped():
-        keys: list[SortKey] = _json.decode(_edax.effective_sort(_json.encode(sort)))
+    keys: list[SortKey] = _json.decode(_json.call(_native.effective_sort, sort))
     return keys

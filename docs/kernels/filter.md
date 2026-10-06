@@ -92,7 +92,7 @@ error rather than a wildcard's silent default.
 | `Eq` | `eq` | `eq` | values are equal — numeric for numbers at every depth, structural otherwise | — |
 | `Ne` | `ne` | `ne` | values are not equal | the path is missing or null |
 | `Gt` / `Gte` / `Lt` / `Lte` | `gt` / `gte` / `lt` / `lte` | same names | both sides are numbers, both strings, or both bools, and the ordering holds | any other pairing — mismatched types, array, object |
-| `StartsWith` | `starts_with` | `starts_with` | both sides are strings and the document value has the prefix | either side is not a string |
+| `StartsWith` | `starts_with` | `starts_with` | the document value is a string with the prefix | the document value is not a string; a prefix that is not a string is refused |
 
 Ordering is defined only *within* a type. Numbers compare numerically, so `1` and `1.0` are equal;
 two integers compare exactly, with no `f64` promotion above 2^53. Strings compare by Unicode code
@@ -157,19 +157,23 @@ Two other forms order wrongly, silently, if they reach a document as plain strin
 
 ## Host values every SDK writes alike
 
-A document, a filter and a command hash agree across languages only when every SDK writes a host
-value as the same JSON. Two host types have no JSON form of their own, so the kernel fixes one.
-A Rust SDK, or a third one, must emit exactly this:
+A document, a filter, a command hash and an event payload agree across languages only when every
+SDK writes a host value as the same JSON. Two host types have no JSON form of their own, so the
+kernel fixes one. A Rust SDK, or a third one, must emit exactly this:
 
-| Host type | JSON | Kernel function | Refused, as `codec` |
-|---|---|---|---|
-| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
-| instant (Python aware `datetime`) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
-| calendar date (Python `date`) | ISO `"YYYY-MM-DD"`, already one width | — | — |
+| Host type | JSON | Kernel function | Rust host type | Refused, as `codec` |
+|---|---|---|---|---|
+| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `edax_cqrs::Decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
+| instant (Python aware `datetime`) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | `edax_cqrs::Instant` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
+| calendar date (Python `date`) | ISO `"YYYY-MM-DD"`, already one width | — | a `String` | — |
 
 A time without an offset is refused rather than read as UTC: its instant is unknown.
 `testdata/golden/host_values.json` pins every row, and the Python suite replays it with real
-`Decimal` and `datetime` values. The decimal text orders by value only under the decimal collation.
+`Decimal` and `datetime` values. Python's one encoder applies the forms to every host value. A Rust
+host gets them by declaring the field as `Decimal` or `Instant`, which canonicalize when they are
+built. A float, a `String` that holds `9.50`, or a third-party timestamp that keeps its offset
+writes another JSON value, so it hashes and stores apart. The host-value rows of
+`testdata/golden/command_hash.json` and `testdata/golden/event_codec.json` hold both SDKs to this. The decimal text orders by value only under the decimal collation.
 So a range filter or a sort over a decimal field must set it.
 
 ## What the kernel refuses
@@ -184,6 +188,7 @@ terminal `codec` error, never a filter that silently means something else:
 | a path with an empty segment: `""`, `"a."`, `".a"`, `"a..b"` | a backend translating paths to SQL has no rule for one |
 | an integer literal wider than 64 bits | it would be compared as the nearest float, so `eq(x, 2**70)` would match `2**70 + 1` |
 | under the decimal collation, a comparand that is not decimal text | no document value could equal or order against it |
+| a `StartsWith` prefix that is not a string, `starts_with("sku", 5)` | no document value starts with it, so the leaf matches nothing |
 | the decimal collation on `StartsWith` | a prefix test reads text, not a value |
 
 `Contains(path, null)` stays valid: it asks whether the array holds a `null` element. A path is
@@ -274,9 +279,9 @@ A backend is expected to translate a `Filter` into its own query language, so th
 work instead of the process. What it may not do is decide the *match*. A backend whose native `!=`
 matches a missing column would answer a `Ne` leaf differently from every other service reading the
 same model. A translation is correct only when it reproduces this evaluator's answer for every
-document, the null and missing rows included. That is why `ProjectionStore.get_many` is optional. A
-backend that cannot reproduce the semantics should leave it unimplemented rather than approximate
-it.
+document, the null and missing rows included. That is why `get_many` is its own port,
+`ProjectionQuery`. A backend that cannot reproduce the semantics should leave it unimplemented rather
+than approximate it.
 
 ## The two surfaces, side by side
 
@@ -292,7 +297,7 @@ it.
 | Evaluate | `eval(&Filter, &Value) -> bool` | `matches(filter, document) -> bool` |
 | JSON boundary | `eval_json(&[u8], &[u8]) -> Result<bool, Error>` | used internally by `matches` |
 | Validation | `Filter::validate()` | through `matches` |
-| Path helpers | `resolve`, `value_cmp`, `collated_cmp` (public, shared with the `query` module next door) | not exposed |
+| Path helpers | not exposed: crate-private `value` (path resolution, value order) and `collation` modules, shared with the query | not exposed |
 
 ```rust
 use edax_cqrs::filter::{and, eq, eval, gt};
@@ -306,12 +311,12 @@ assert!(eval(&f, &doc));
 
 ```python
 from edax.filter import and_, eq, gte
-from edax.query import sort_key
+from edax.query import Query, sort_key
 
 only = and_(gte("balance", 100), eq("status", "active"))
 order = [sort_key("balance", desc=True), sort_key("id")]  # richest first, id as the tiebreak
 
-page = await store.get_many(filter=only, sort=order, limit=2)
+page = await store.get_many(Query(filter=only, sort=order, limit=2))
 ```
 <sup>`examples/py/11_projection_query.py`</sup>
 
@@ -321,7 +326,8 @@ pins every constructor's output.
 
 ## See also
 
-- [edax-core](./core.md) — hashing, backoff, the clock and the error taxonomy.
+- [edax-core](./core.md) — `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`
+  and the `error` taxonomy.
 - [cqrs.md](./cqrs.md) — the rest of the crate: the query that composes a filter with sorting and
   paging, and the command side's idempotency decision.
 - [../sdk/projections.md](../sdk/projections.md) — the host view: read models, filters and cursors.

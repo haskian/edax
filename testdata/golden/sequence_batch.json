@@ -2,14 +2,16 @@
   {
     "error": null,
     "expected": 7,
-    "sequences": []
+    "sequences": [],
+    "version": 7
   },
   {
     "error": null,
     "expected": 0,
     "sequences": [
       1
-    ]
+    ],
+    "version": 1
   },
   {
     "error": null,
@@ -18,7 +20,8 @@
       3,
       4,
       5
-    ]
+    ],
+    "version": 5
   },
   {
     "error": "codec: event 1 has no sequence",
@@ -26,7 +29,8 @@
     "sequences": [
       1,
       null
-    ]
+    ],
+    "version": null
   },
   {
     "error": "codec: event 1 has sequence 4, expected 3",
@@ -34,7 +38,8 @@
     "sequences": [
       2,
       4
-    ]
+    ],
+    "version": null
   },
   {
     "error": "codec: event 0 has sequence 2, expected 1",
@@ -42,7 +47,8 @@
     "sequences": [
       2,
       1
-    ]
+    ],
+    "version": null
   },
   {
     "error": "codec: event 1 has sequence 1, expected 2",
@@ -50,28 +56,32 @@
     "sequences": [
       1,
       1
-    ]
+    ],
+    "version": null
   },
   {
     "error": "codec: event 0 has sequence 18446744073709551615, expected 2",
     "expected": 1,
     "sequences": [
       18446744073709551615
-    ]
+    ],
+    "version": null
   },
   {
     "error": null,
     "expected": 9223372036854775807,
     "sequences": [
       9223372036854775808
-    ]
+    ],
+    "version": 9223372036854775808
   },
   {
     "error": null,
     "expected": 18446744073709551614,
     "sequences": [
       18446744073709551615
-    ]
+    ],
+    "version": 18446744073709551615
   },
   {
     "error": "codec: event 1 would run the stream past sequence 18446744073709551615",
@@ -79,13 +89,15 @@
     "sequences": [
       18446744073709551615,
       18446744073709551615
-    ]
+    ],
+    "version": null
   },
   {
     "error": "codec: event 0 would run the stream past sequence 18446744073709551615",
     "expected": 18446744073709551615,
     "sequences": [
       18446744073709551615
-    ]
+    ],
+    "version": null
   }
 ]

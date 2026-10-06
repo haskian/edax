@@ -9,38 +9,61 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use edax_cqrs::{decode_prior, encode_record};
+use edax_cqrs::{decode_prior, encode_record, Claimed};
 use edax_event::{CommandMessage, EventDraft, EventMessage};
-use edax_memory::{Claimed, SagaRow, NO_TX};
+use edax_memory::SagaRow;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::command::{Claim, ClaimHandle, IdempotencyStore, Record};
+use crate::idempotency::{Claim, ClaimHandle, IdempotencyStore, Record};
+use crate::outbox::{CountedOutbox, Outbox};
 use crate::saga::{SagaInstance, SagaStore};
-use crate::store::Outbox;
-use crate::{Entity, Error, EventStore, Page, ProjectionStore, Query, Snapshot, Transactor};
+use crate::{Entity, Error, EventStore, Page, ProjectionQuery, ProjectionStore, Query, Snapshot, Transactor};
 
-/// The in-memory backend's transaction handle: the token of a transaction [`MemoryTransactor::begin`]
-/// opened, or [`MemoryTx::auto_commit()`] for a call outside any unit of work. A plain token, `Copy`,
-/// so a host can keep the open transaction's handle wherever it needs it (a `Cell` a middleware's
-/// tx provider reads, for instance). A handle used after its transaction ended, or against another
-/// transactor's stores, is refused as unknown by every store method.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemoryTx(i64);
+/// The in-memory backend's transaction handle: the `edax-memory` token of a transaction
+/// [`MemoryTransactor::begin`] opened, or `MemoryTx::auto_commit()` for a call outside any unit of work,
+/// which is also its `Default` and what [`idempotent`](crate::idempotent) uses when no tx is provided. A
+/// plain token, `Copy`, so a host can keep the open transaction's handle wherever it needs it (a `Cell` a
+/// middleware's tx provider reads, for instance). A handle used after its transaction ended, or against
+/// another transactor's stores, is refused as unknown by every store method.
+pub use edax_memory::Tx as MemoryTx;
 
-impl MemoryTx {
-    /// No transaction: a write lands at once and a read sees only committed state. Also the
-    /// `Default` handle, which is what [`idempotent`](crate::idempotent) uses when no tx is provided.
-    pub fn auto_commit() -> MemoryTx {
-        MemoryTx(NO_TX)
-    }
-}
+/// What every view over an `edax-memory` store shares: `new`, and the [`MemoryTransactor`] it enlists
+/// with. A generic view also gets `Default` (a database of its own) and `Clone` (sharing it) by hand,
+/// since a derive would demand the same of its type parameter, which the store never holds.
+macro_rules! memory_view {
+    ($view:ident<$param:ident> { $marker:ident }) => {
+        impl<$param> Default for $view<$param> {
+            fn default() -> Self {
+                Self { inner: Default::default(), $marker: PhantomData }
+            }
+        }
 
-impl Default for MemoryTx {
-    fn default() -> Self {
-        Self::auto_commit()
-    }
+        impl<$param> Clone for $view<$param> {
+            fn clone(&self) -> Self {
+                Self { inner: self.inner.clone(), $marker: PhantomData }
+            }
+        }
+
+        memory_view!(impl $view<$param>);
+    };
+    ($view:ident) => {
+        memory_view!(impl $view<>);
+    };
+    (impl $view:ident<$($param:ident)?>) => {
+        impl<$($param)?> $view<$($param)?> {
+            /// A store over a database of its own.
+            pub fn new() -> Self {
+                Self::default()
+            }
+
+            /// The transactor this store enlists with.
+            pub fn transactor(&self) -> MemoryTransactor {
+                MemoryTransactor { inner: self.inner.transactor() }
+            }
+        }
+    };
 }
 
 /// The transaction boundary of the in-memory backend over `edax_memory::MemoryTransactor`: one database
@@ -64,22 +87,33 @@ impl MemoryTransactor {
 
     /// The event store over this database.
     pub fn event_store(&self) -> MemoryEventStore {
-        MemoryEventStore { inner: self.inner.event_store(), now: default_clock() }
+        MemoryEventStore {
+            inner: self.inner.event_store(),
+            now: default_clock(),
+        }
     }
 
     /// The projection store over this database.
     pub fn projection_store(&self) -> MemoryProjectionStore {
-        MemoryProjectionStore { inner: self.inner.projection_store() }
+        MemoryProjectionStore {
+            inner: self.inner.projection_store(),
+        }
     }
 
     /// The idempotency store over this database, typed by the handler result it caches.
     pub fn idempotency_store<O>(&self) -> MemoryIdempotencyStore<O> {
-        MemoryIdempotencyStore { inner: self.inner.idempotency_store(), result: PhantomData }
+        MemoryIdempotencyStore {
+            inner: self.inner.idempotency_store(),
+            result: PhantomData,
+        }
     }
 
     /// The saga store over this database, typed by the saga state it holds.
     pub fn saga_store<S>(&self) -> MemorySagaStore<S> {
-        MemorySagaStore { inner: self.inner.saga_store(), state: PhantomData }
+        MemorySagaStore {
+            inner: self.inner.saga_store(),
+            state: PhantomData,
+        }
     }
 
     /// How many transactions are open on this database: a leak diagnostic. A count that does not return
@@ -98,17 +132,17 @@ impl Transactor for MemoryTransactor {
     }
 
     fn begin(&self) -> Result<MemoryTx, Error> {
-        Ok(MemoryTx(self.inner.begin()))
+        Ok(self.inner.begin())
     }
 
     fn commit(&self, tx: MemoryTx) -> Result<(), Error> {
-        self.inner.commit(tx.0)
+        self.inner.commit(tx)
     }
 
     fn rollback(&self, tx: MemoryTx) {
         // `false` means the token was already closed: there was nothing to roll back, and the seam
         // has no failure to report for a rollback.
-        self.inner.rollback(tx.0);
+        self.inner.rollback(tx);
     }
 }
 
@@ -139,31 +173,21 @@ fn default_clock() -> Clock {
 
 impl Default for MemoryEventStore {
     fn default() -> Self {
-        Self { inner: edax_memory::MemoryEventStore::default(), now: default_clock() }
+        Self {
+            inner: edax_memory::MemoryEventStore::default(),
+            now: default_clock(),
+        }
     }
 }
 
-impl MemoryEventStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
+memory_view!(MemoryEventStore);
 
+impl MemoryEventStore {
     /// Record appended events at `now` instead of the kernel's clock, for deterministic tests. A
     /// closure, so a caller can capture a seeded reading instead of reaching for a global.
     pub fn with_clock(mut self, now: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.now = Arc::new(now);
         self
-    }
-
-    /// The transactor this store enlists with.
-    pub fn transactor(&self) -> MemoryTransactor {
-        MemoryTransactor { inner: self.inner.transactor() }
-    }
-
-    /// How many committed outbox rows wait to be published, counted without paging them: the backlog
-    /// depth that tells a stalled relay from an idle one.
-    pub fn unpublished_count(&self) -> usize {
-        self.inner.unpublished_count()
     }
 }
 
@@ -193,18 +217,24 @@ impl Outbox<EventMessage> for MemoryEventStore {
     }
 
     fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
-        self.inner.mark_published(ids.to_vec());
+        self.inner.mark_published(ids);
         Ok(())
+    }
+}
+
+impl CountedOutbox<EventMessage> for MemoryEventStore {
+    fn unpublished_count(&self) -> Result<usize, Error> {
+        Ok(self.inner.unpublished_count())
     }
 }
 
 impl EventStore for MemoryEventStore {
     fn load(&self, tx: &mut MemoryTx, aggregate_id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
-        self.inner.load(tx.0, aggregate_id, after)
+        self.inner.load(*tx, aggregate_id, after)
     }
 
     fn load_snapshot(&self, tx: &mut MemoryTx, aggregate_id: &str) -> Result<Option<Snapshot>, Error> {
-        Ok(self.inner.load_snapshot(tx.0, aggregate_id)?.map(|s| Snapshot {
+        Ok(self.inner.load_snapshot(*tx, aggregate_id)?.map(|s| Snapshot {
             aggregate_id: aggregate_id.to_string(),
             type_name: s.type_name,
             version: s.version,
@@ -213,20 +243,24 @@ impl EventStore for MemoryEventStore {
     }
 
     fn save_snapshot(&self, tx: &mut MemoryTx, snapshot: &Snapshot) -> Result<(), Error> {
-        self.inner
-            .save_snapshot(
-                tx.0,
-                &snapshot.aggregate_id,
-                &snapshot.type_name,
-                snapshot.version,
-                snapshot.data.clone(),
-            )
-            
+        self.inner.save_snapshot(
+            *tx,
+            &snapshot.aggregate_id,
+            &snapshot.type_name,
+            snapshot.version,
+            snapshot.data.clone(),
+        )
     }
 
     /// Stamps `recorded_at` from the store's clock: see [`with_clock`](MemoryEventStore::with_clock).
-    fn append(&self, tx: &mut MemoryTx, aggregate_id: &str, expected: u64, drafts: Vec<EventDraft>) -> Result<Vec<EventMessage>, Error> {
-        self.inner.append(tx.0, aggregate_id, expected, drafts, (self.now)())
+    fn append(
+        &self,
+        tx: &mut MemoryTx,
+        aggregate_id: &str,
+        expected: u64,
+        drafts: Vec<EventDraft>,
+    ) -> Result<Vec<EventMessage>, Error> {
+        self.inner.append(*tx, aggregate_id, expected, drafts, (self.now)())
     }
 }
 
@@ -241,39 +275,29 @@ pub struct MemoryProjectionStore {
     inner: edax_memory::MemoryProjectionStore,
 }
 
-impl MemoryProjectionStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The transactor this store enlists with.
-    pub fn transactor(&self) -> MemoryTransactor {
-        MemoryTransactor { inner: self.inner.transactor() }
-    }
-}
+memory_view!(MemoryProjectionStore);
 
 impl ProjectionStore for MemoryProjectionStore {
     type Tx = MemoryTx;
 
     fn get(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<Entity>, Error> {
-        Ok(self.inner.get(tx.0, id)?.map(|row| Entity {
+        Ok(self.inner.get(*tx, id)?.map(|row| Entity {
             id: id.to_string(),
             version: row.version,
             document: Value::Object(row.value),
         }))
     }
 
-    fn save(&self, tx: &mut MemoryTx, entity: &mut Entity) -> Result<(), Error> {
-        // An object, never a scalar or an array: the query injects the row key as its `"id"`.
-        let Value::Object(document) = &entity.document else {
-            return Err(Error::codec(format_args!("projection {} is not a JSON object", entity.id)));
-        };
-        entity.version = self.inner.save(tx.0, &entity.id, entity.version, document.clone())?;
-        Ok(())
+    fn save(&self, tx: &mut MemoryTx, entity: &Entity) -> Result<u64, Error> {
+        // The kernel's document rule: an object, since a read carries the row key as its `"id"`.
+        let document = edax_cqrs::document(&entity.id, entity.document.clone())?;
+        self.inner.save(*tx, &entity.id, entity.version, document)
     }
+}
 
+impl ProjectionQuery for MemoryProjectionStore {
     fn get_many(&self, tx: &mut MemoryTx, query: &Query) -> Result<Page, Error> {
-        self.inner.get_many(tx.0, query)
+        self.inner.get_many(*tx, query)
     }
 }
 
@@ -293,33 +317,12 @@ pub struct MemoryIdempotencyStore<O> {
     result: PhantomData<fn() -> O>,
 }
 
-impl<O> Default for MemoryIdempotencyStore<O> {
-    fn default() -> Self {
-        Self { inner: edax_memory::MemoryIdempotencyStore::new(), result: PhantomData }
-    }
-}
-
-impl<O> Clone for MemoryIdempotencyStore<O> {
-    fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), result: PhantomData }
-    }
-}
-
-impl<O> MemoryIdempotencyStore<O> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The transactor this store enlists with.
-    pub fn transactor(&self) -> MemoryTransactor {
-        MemoryTransactor { inner: self.inner.transactor() }
-    }
-}
+memory_view!(MemoryIdempotencyStore<O> { result });
 
 /// A claim under `token`, typed: the handle on a win, or the prior record decoded as `O`.
 fn claim_typed<O: DeserializeOwned>(
     inner: &edax_memory::MemoryIdempotencyStore,
-    token: i64,
+    token: MemoryTx,
     key: &str,
     payload_hash: u64,
 ) -> Result<Claim<O>, Error> {
@@ -334,25 +337,12 @@ fn claim_typed<O: DeserializeOwned>(
     })
 }
 
-/// Overwrite `key` with `bytes` under no transaction, whatever they hold. See
-/// [`MemoryIdempotencyStore::put_raw`].
-fn put_raw(inner: &edax_memory::MemoryIdempotencyStore, key: &str, bytes: &[u8]) -> Result<(), Error> {
-    inner.expire(key);
-    match inner.claim(NO_TX, key, 0)? {
-        Claimed::Won(handle) => inner.complete(NO_TX, key, &handle, bytes),
-        Claimed::Prior(_) => Err(Error::new(
-            crate::ErrorCode::Concurrency,
-            format_args!("idempotency key {key} is held by an open transaction"),
-        )),
-    }
-}
-
 /// Settle the claim `handle` names under `token` with `record`. A result the codec cannot write is
 /// terminal and the caller must see it: the guard answers a failed `complete` by releasing the claim, so
 /// the key does not stay pending.
 fn complete_typed<O: Serialize>(
     inner: &edax_memory::MemoryIdempotencyStore,
-    token: i64,
+    token: MemoryTx,
     key: &str,
     handle: &ClaimHandle,
     record: Record<O>,
@@ -365,15 +355,19 @@ impl<O: Serialize + DeserializeOwned> IdempotencyStore<O> for MemoryIdempotencyS
     type Tx = MemoryTx;
 
     fn claim(&self, tx: &mut MemoryTx, key: &str, payload_hash: u64) -> Result<Claim<O>, Error> {
-        claim_typed(&self.inner, tx.0, key, payload_hash)
+        claim_typed(&self.inner, *tx, key, payload_hash)
     }
 
     fn complete(&self, tx: &mut MemoryTx, key: &str, handle: &ClaimHandle, record: Record<O>) -> Result<(), Error> {
-        complete_typed(&self.inner, tx.0, key, handle, record)
+        complete_typed(&self.inner, *tx, key, handle, record)
     }
 
     fn release(&self, tx: &mut MemoryTx, key: &str, handle: &ClaimHandle) -> Result<(), Error> {
-        self.inner.release(tx.0, key, &handle.0)
+        self.inner.release(*tx, key, &handle.0)
+    }
+
+    fn forget(&self, tx: &mut MemoryTx, key: &str) -> Result<(), Error> {
+        self.inner.forget(*tx, key)
     }
 }
 
@@ -391,7 +385,7 @@ impl<O> MemoryIdempotencyStore<O> {
     /// # Errors
     /// [`ErrorCode::Concurrency`](crate::ErrorCode::Concurrency) when an open transaction holds `key`.
     pub fn put_raw(&self, key: &str, bytes: &[u8]) -> Result<(), Error> {
-        put_raw(&self.inner, key, bytes)
+        self.inner.put_raw(key, bytes)
     }
 }
 
@@ -438,15 +432,19 @@ impl<O: Serialize + DeserializeOwned> IdempotencyStore<O> for MemoryLedger<O> {
     type Tx = ();
 
     fn claim(&self, _tx: &mut (), key: &str, payload_hash: u64) -> Result<Claim<O>, Error> {
-        claim_typed(&self.0.inner, NO_TX, key, payload_hash)
+        claim_typed(&self.0.inner, MemoryTx::auto_commit(), key, payload_hash)
     }
 
     fn complete(&self, _tx: &mut (), key: &str, handle: &ClaimHandle, record: Record<O>) -> Result<(), Error> {
-        complete_typed(&self.0.inner, NO_TX, key, handle, record)
+        complete_typed(&self.0.inner, MemoryTx::auto_commit(), key, handle, record)
     }
 
     fn release(&self, _tx: &mut (), key: &str, handle: &ClaimHandle) -> Result<(), Error> {
-        self.0.inner.release(NO_TX, key, &handle.0)
+        self.0.inner.release(MemoryTx::auto_commit(), key, &handle.0)
+    }
+
+    fn forget(&self, _tx: &mut (), key: &str) -> Result<(), Error> {
+        self.0.inner.forget(MemoryTx::auto_commit(), key)
     }
 }
 
@@ -463,46 +461,16 @@ pub struct MemorySagaStore<S> {
     state: PhantomData<fn() -> S>,
 }
 
-impl<S> Default for MemorySagaStore<S> {
-    fn default() -> Self {
-        Self { inner: edax_memory::MemorySagaStore::new(), state: PhantomData }
-    }
-}
-
-impl<S> Clone for MemorySagaStore<S> {
-    fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), state: PhantomData }
-    }
-}
-
-impl<S> MemorySagaStore<S> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// The transactor this store enlists with.
-    pub fn transactor(&self) -> MemoryTransactor {
-        MemoryTransactor { inner: self.inner.transactor() }
-    }
-}
-
-impl<S> Outbox<CommandMessage> for MemorySagaStore<S> {
-    fn unpublished(&self, limit: usize) -> Result<Vec<CommandMessage>, Error> {
-        Ok(self.inner.unpublished(limit))
-    }
-
-    fn mark_published(&self, ids: &[String]) -> Result<(), Error> {
-        self.inner.mark_published(ids.to_vec());
-        Ok(())
-    }
-}
+memory_view!(MemorySagaStore<S> { state });
 
 impl<S: Serialize + DeserializeOwned> SagaStore for MemorySagaStore<S> {
     type State = S;
     type Tx = MemoryTx;
 
-    fn load(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<SagaInstance<S>>, Error> {
-        let Some(row) = self.inner.load(tx.0, id)? else { return Ok(None) };
+    fn load(&self, tx: &mut MemoryTx, saga: &str, id: &str) -> Result<Option<SagaInstance<S>>, Error> {
+        let Some(row) = self.inner.load(*tx, saga, id)? else {
+            return Ok(None);
+        };
         Ok(Some(match row.value {
             SagaRow::Completed => SagaInstance::Completed { version: row.version },
             SagaRow::Active { state, folded } => SagaInstance::Running {
@@ -513,13 +481,43 @@ impl<S: Serialize + DeserializeOwned> SagaStore for MemorySagaStore<S> {
         }))
     }
 
-    fn save(&self, tx: &mut MemoryTx, id: &str, state: &S, version: u64, folded: &str, commands: &[CommandMessage]) -> Result<u64, Error> {
+    fn save(
+        &self,
+        tx: &mut MemoryTx,
+        saga: &str,
+        id: &str,
+        state: &S,
+        version: u64,
+        folded: &str,
+        commands: &[CommandMessage],
+    ) -> Result<u64, Error> {
         let state = serde_json::to_value(state).map_err(Error::codec)?;
-        self.inner.save(tx.0, id, version, state, folded.to_owned(), commands.to_vec())
+        self.inner
+            .save(*tx, saga, id, version, state, folded.to_owned(), commands.to_vec())
     }
 
-    fn complete(&self, tx: &mut MemoryTx, id: &str, version: u64, commands: &[CommandMessage]) -> Result<u64, Error> {
-        self.inner.complete(tx.0, id, version, commands.to_vec())
+    fn complete(
+        &self,
+        tx: &mut MemoryTx,
+        saga: &str,
+        id: &str,
+        version: u64,
+        commands: &[CommandMessage],
+    ) -> Result<u64, Error> {
+        self.inner.complete(*tx, saga, id, version, commands.to_vec())
+    }
+
+    fn unpublished(&self, saga: &str, limit: usize) -> Result<Vec<CommandMessage>, Error> {
+        Ok(self.inner.unpublished(saga, limit))
+    }
+
+    fn mark_published(&self, saga: &str, ids: &[String]) -> Result<(), Error> {
+        self.inner.mark_published(saga, ids);
+        Ok(())
+    }
+
+    fn unpublished_count(&self, saga: &str) -> Result<usize, Error> {
+        Ok(self.inner.unpublished_count(saga))
     }
 }
 
@@ -578,11 +576,17 @@ mod tests {
 
         // Stored success that cannot be read back as `O`: the failure is synthesized on `claim`.
         let store = MemoryIdempotencyStore::<Lossy>::new();
-        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", HASH) else { panic!("a free key") };
-        store.complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(HASH, Lossy)).unwrap();
+        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", HASH) else {
+            panic!("a free key")
+        };
+        store
+            .complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(HASH, Lossy))
+            .unwrap();
         let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", HASH)).expect("key stays taken");
         assert_eq!(got.payload_hash, HASH);
-        let edax_cqrs::State::Failed { code, message: m } = &got.state else { panic!("want Failed, got {:?}", got.state) };
+        let edax_cqrs::State::Failed { code, message: m } = &got.state else {
+            panic!("want Failed, got {:?}", got.state)
+        };
         assert_eq!(*code, Some(ErrorCode::Codec), "cached with the codec's own code");
         assert!(m.contains("not a valid replay value"), "{m}");
 
@@ -593,14 +597,29 @@ mod tests {
         assert_eq!(edax_cqrs::outcome(&got, HASH ^ 1), edax_cqrs::Outcome::PayloadMismatch);
 
         // Success that cannot be encoded: `complete` reports the codec failure instead of writing a
-        // stand-in record. The guard answers that by releasing the claim, so the key is free again
-        // rather than pending for the store's whole retention.
+        // stand-in record, and leaves the claim pending. The guard never gets here: it encodes the
+        // result before `complete` and caches the codec failure (`idempotency.rs`), so this guards a
+        // caller that writes to the store directly.
         let store = MemoryIdempotencyStore::<Unencodable>::new();
-        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", HASH) else { panic!("a free key") };
-        let wrote = store.complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(HASH, Unencodable));
-        assert!(matches!(&wrote, Err(Error { code: ErrorCode::Codec, message: m }) if m == "no wire form"), "got {wrote:?}");
-        store.release(&mut MemoryTx::auto_commit(), "k", &handle).expect("the guard releases the claim");
-        assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), "k", HASH), Ok(Claim::Won(_))), "the key is free");
+        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", HASH) else {
+            panic!("a free key")
+        };
+        let wrote = store.complete(
+            &mut MemoryTx::auto_commit(),
+            "k",
+            &handle,
+            Record::done(HASH, Unencodable),
+        );
+        assert!(
+            matches!(&wrote, Err(Error { code: ErrorCode::Codec, message: m }) if m == "no wire form"),
+            "got {wrote:?}"
+        );
+        let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", HASH)).expect("key stays taken");
+        assert_eq!(
+            got.state,
+            edax_cqrs::State::Pending,
+            "nothing was written over the claim"
+        );
     }
 
     #[test]
@@ -610,17 +629,40 @@ mod tests {
         // failure. The stored hash is kept when it still reads, so a reused key is still a mismatch.
         const HASH: u64 = 11_234_062_831_410_934_249;
         for (name, bytes, claimant, want_hash, cause) in [
-            ("torn_write", br#"{"payload_hash":11234062831410934249,"res"#.as_slice(), HASH, HASH, "EOF while parsing"),
-            ("wrong_type_keeps_the_stored_hash", br#"{"payload_hash":11234062831410934249,"error":42}"#.as_slice(), HASH ^ 1, HASH, "invalid type: integer `42`"),
-            ("result_not_an_o", br#"{"payload_hash":11234062831410934249,"result":"x","error":null,"pending":false}"#.as_slice(), HASH, HASH, "cached result is not a valid replay value"),
+            (
+                "torn_write",
+                br#"{"payload_hash":11234062831410934249,"res"#.as_slice(),
+                HASH,
+                HASH,
+                "EOF while parsing",
+            ),
+            (
+                "wrong_type_keeps_the_stored_hash",
+                br#"{"payload_hash":11234062831410934249,"error":42}"#.as_slice(),
+                HASH ^ 1,
+                HASH,
+                "invalid type: integer `42`",
+            ),
+            (
+                "result_not_an_o",
+                br#"{"payload_hash":11234062831410934249,"result":"x","error":null,"pending":false}"#.as_slice(),
+                HASH,
+                HASH,
+                "cached result is not a valid replay value",
+            ),
         ] {
             let store = MemoryIdempotencyStore::<u64>::new();
             store.put_raw("k", bytes).unwrap();
             let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", claimant)).expect("key stays taken");
             assert_eq!(got.payload_hash, want_hash, "{name}");
-            let edax_cqrs::State::Failed { code, message } = &got.state else { panic!("{name}: want Failed, got {:?}", got.state) };
+            let edax_cqrs::State::Failed { code, message } = &got.state else {
+                panic!("{name}: want Failed, got {:?}", got.state)
+            };
             assert_eq!(*code, Some(ErrorCode::Codec), "{name}");
-            assert!(message.starts_with("unreadable idempotency record: ") && message.contains(cause), "{name}: {message}");
+            assert!(
+                message.starts_with("unreadable idempotency record: ") && message.contains(cause),
+                "{name}: {message}"
+            );
         }
     }
 
@@ -628,37 +670,79 @@ mod tests {
     fn put_raw_overwrites_a_committed_record_and_refuses_a_held_key() {
         let db = MemoryTransactor::new();
         let store = db.idempotency_store::<u64>();
-        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", 1) else { panic!("a free key") };
-        store.complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(1, 5)).unwrap();
+        let Ok(Claim::Won(handle)) = store.claim(&mut MemoryTx::auto_commit(), "k", 1) else {
+            panic!("a free key")
+        };
+        store
+            .complete(&mut MemoryTx::auto_commit(), "k", &handle, Record::done(1, 5))
+            .unwrap();
         store.put_raw("k", b"{").expect("a committed record is overwritten");
         let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", 1)).expect("key stays taken");
-        assert!(matches!(got.state, edax_cqrs::State::Failed { code: Some(ErrorCode::Codec), .. }), "{got:?}");
+        assert!(
+            matches!(
+                got.state,
+                edax_cqrs::State::Failed {
+                    code: Some(ErrorCode::Codec),
+                    ..
+                }
+            ),
+            "{got:?}"
+        );
 
         // A key an open transaction holds is not committed state: refused, and the holder keeps it.
         let mut tx = db.begin().unwrap();
         assert!(matches!(store.claim(&mut tx, "held", 1), Ok(Claim::Won(_))));
         let refused = store.put_raw("held", b"{");
-        assert!(matches!(&refused, Err(Error { code: ErrorCode::Concurrency, message: m }) if m.contains("held by an open transaction")), "{refused:?}");
+        assert!(
+            matches!(&refused, Err(Error { code: ErrorCode::Concurrency, message: m }) if m.contains("held by another open transaction")),
+            "{refused:?}"
+        );
         db.rollback(tx);
 
         let ledger = MemoryLedger::<u64>::new();
         ledger.put_raw("k", b"{").unwrap();
-        let Ok(Claim::Prior(got)) = ledger.claim(&mut (), "k", 1) else { panic!("key stays taken") };
-        assert!(matches!(got.state, edax_cqrs::State::Failed { code: Some(ErrorCode::Codec), .. }), "{got:?}");
+        let Ok(Claim::Prior(got)) = ledger.claim(&mut (), "k", 1) else {
+            panic!("key stays taken")
+        };
+        assert!(
+            matches!(
+                got.state,
+                edax_cqrs::State::Failed {
+                    code: Some(ErrorCode::Codec),
+                    ..
+                }
+            ),
+            "{got:?}"
+        );
     }
 
     #[test]
     fn a_projection_document_must_be_an_object() {
-        // The query injects the row key as the document's `"id"`, so a scalar or an array could be saved
+        // A read carries the row key as the document's `"id"`, so a scalar or an array could be saved
         // and never found: refused at the write, as the terminal codec error.
         let store = MemoryProjectionStore::new();
-        for (name, document) in [("array", json!(["ada@example.com"])), ("scalar", json!(36)), ("null", Value::Null)] {
-            let mut entity = Entity { id: "user-1".into(), version: 0, document };
-            let got = store.save(&mut MemoryTx::auto_commit(), &mut entity);
-            assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, message: m }) if m == "projection user-1 is not a JSON object"), "{name}: {got:?}");
-            assert_eq!(entity.version, 0, "{name}: the version is untouched");
+        for (name, document) in [
+            ("array", json!(["ada@example.com"])),
+            ("scalar", json!(36)),
+            ("null", Value::Null),
+        ] {
+            let got = store.save(
+                &mut MemoryTx::auto_commit(),
+                &Entity {
+                    id: "user-1".into(),
+                    version: 0,
+                    document,
+                },
+            );
+            assert!(
+                matches!(&got, Err(Error { code: ErrorCode::Codec, message: m }) if *m == edax_cqrs::document("user-1", Value::Null).unwrap_err().message),
+                "{name}: {got:?}"
+            );
         }
-        assert!(store.get(&mut MemoryTx::auto_commit(), "user-1").unwrap().is_none(), "nothing was written");
+        assert!(
+            store.get(&mut MemoryTx::auto_commit(), "user-1").unwrap().is_none(),
+            "nothing was written"
+        );
     }
 
     #[test]
@@ -673,17 +757,36 @@ mod tests {
             Err(Error::store("the handler failed"))
         });
         assert!(out.is_err());
-        let Ok(Claim::Prior(pending)) = ledger.claim(&mut (), "k", HASH) else { panic!("the claim outlived the rollback") };
+        let Ok(Claim::Prior(pending)) = ledger.claim(&mut (), "k", HASH) else {
+            panic!("the claim outlived the rollback")
+        };
         assert!(matches!(pending.state, edax_cqrs::State::Pending));
 
         assert!(ledger.expire("k"));
-        let Ok(Claim::Won(live)) = ledger.claim(&mut (), "k", HASH) else { panic!("an expired key is free") };
+        let Ok(Claim::Won(live)) = ledger.claim(&mut (), "k", HASH) else {
+            panic!("an expired key is free")
+        };
         let stale = ClaimHandle(b"not this claim".to_vec());
         let refused = ledger.complete(&mut (), "k", &stale, Record::done(HASH, 1));
-        assert!(matches!(&refused, Err(Error { code: ErrorCode::Store, .. })), "{refused:?}");
-        ledger.release(&mut (), "k", &stale).expect("a stale release is a no-op");
-        ledger.complete(&mut (), "k", &live, Record::done(HASH, 2)).expect("the live claim settles");
-        let Ok(Claim::Prior(done)) = ledger.clone().claim(&mut (), "k", HASH) else { panic!("settled") };
+        assert!(
+            matches!(
+                &refused,
+                Err(Error {
+                    code: ErrorCode::Store,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        ledger
+            .release(&mut (), "k", &stale)
+            .expect("a stale release is a no-op");
+        ledger
+            .complete(&mut (), "k", &live, Record::done(HASH, 2))
+            .expect("the live claim settles");
+        let Ok(Claim::Prior(done)) = ledger.clone().claim(&mut (), "k", HASH) else {
+            panic!("settled")
+        };
         assert!(matches!(done.state, edax_cqrs::State::Done(2)));
     }
 
@@ -691,22 +794,38 @@ mod tests {
     fn the_leak_and_backlog_diagnostics_count() {
         let db = MemoryTransactor::new();
         let events = db.event_store();
-        assert_eq!((db.open_count(), events.unpublished_count()), (0, 0));
+        assert_eq!((db.open_count(), events.unpublished_count()), (0, Ok(0)));
         let mut tx = db.begin().unwrap();
         events.append(&mut tx, "a", 0, vec![draft("a", "E", 1, &[])]).unwrap();
-        assert_eq!((db.open_count(), events.unpublished_count()), (1, 0), "staged: open, nothing waiting");
+        assert_eq!(
+            (db.open_count(), events.unpublished_count()),
+            (1, Ok(0)),
+            "staged: open, nothing waiting"
+        );
         db.commit(tx).unwrap();
-        assert_eq!((db.open_count(), events.unpublished_count()), (0, 1), "committed: closed, one waiting");
+        assert_eq!(
+            (db.open_count(), events.unpublished_count()),
+            (0, Ok(1)),
+            "committed: closed, one waiting"
+        );
         events.mark_published(&["a-1".to_owned()]).unwrap();
-        assert_eq!(events.unpublished_count(), 0);
+        assert_eq!(events.unpublished_count(), Ok(0));
     }
 
     #[test]
     fn memory_stores_over_one_database_share_one_identity() {
         let db = MemoryTransactor::new();
-        assert_eq!(db.identity(), db.event_store().identity(), "a store and its transactor are one database");
+        assert_eq!(
+            db.identity(),
+            db.event_store().identity(),
+            "a store and its transactor are one database"
+        );
         assert_eq!(db.identity(), db.clone().identity(), "a clone shares the database");
-        assert_ne!(db.identity(), MemoryTransactor::new().identity(), "another transactor is another database");
+        assert_ne!(
+            db.identity(),
+            MemoryTransactor::new().identity(),
+            "another transactor is another database"
+        );
     }
 
     #[test]
@@ -723,12 +842,28 @@ mod tests {
                 events.append(tx, "a", 0, vec![draft("a", "E", 1, &[])])?;
                 // Read-your-writes inside the unit of work: the append is visible before commit.
                 assert_eq!(events.load(tx, "a", 0)?.len(), 1, "own write visible in the tx");
-                let mut e = Entity { id: "a".into(), version: 0, document: json!({"id": "a", "n": 1}) };
-                proj.save(tx, &mut e)?;
-                assert_eq!(proj.get(tx, "a")?.map(|e| e.version), Some(1), "own save visible in the tx");
+                proj.save(
+                    tx,
+                    &Entity {
+                        id: "a".into(),
+                        version: 0,
+                        document: json!({"n": 1}),
+                    },
+                )?;
+                assert_eq!(
+                    proj.get(tx, "a")?.map(|e| e.version),
+                    Some(1),
+                    "own save visible in the tx"
+                );
                 // ...and to nobody else before the commit.
-                assert!(events.load(&mut MemoryTx::auto_commit(), "a", 0)?.is_empty(), "invisible outside");
-                assert!(proj.get(&mut MemoryTx::auto_commit(), "a")?.is_none(), "invisible outside");
+                assert!(
+                    events.load(&mut MemoryTx::auto_commit(), "a", 0)?.is_empty(),
+                    "invisible outside"
+                );
+                assert!(
+                    proj.get(&mut MemoryTx::auto_commit(), "a")?.is_none(),
+                    "invisible outside"
+                );
                 Ok::<(), Error>(())
             })
             .unwrap();
@@ -744,16 +879,32 @@ mod tests {
             events.append(tx, "a", 1, vec![draft("a", "E", 2, &[])])?;
             Err::<(), _>(Error::store("boom"))
         });
-        assert!(matches!(out, Err(Error { code: ErrorCode::Store, .. })));
-        assert_eq!(events.load(&mut tx, "a", 0).unwrap().len(), 1, "the rolled-back append is gone");
+        assert!(matches!(
+            out,
+            Err(Error {
+                code: ErrorCode::Store,
+                ..
+            })
+        ));
+        assert_eq!(
+            events.load(&mut tx, "a", 0).unwrap().len(),
+            1,
+            "the rolled-back append is gone"
+        );
 
         // A standalone store is its own database: the transactor's handle is unknown to it. That is
         // `BadHandle` — terminal, a wiring mistake — and the Python backend refuses a foreign handle
         // with the same verdict (`edax.backend.memory.MemoryTransactor.token`).
         let stranger = MemoryProjectionStore::new();
         let out: Result<_, Error> = db.transaction(|tx| stranger.get(tx, "a"));
-        assert!(matches!(&out, Err(Error { code: ErrorCode::BadHandle, message: m }) if m.starts_with("unknown transaction")), "got {out:?}");
-        assert!(out.unwrap_err().is_terminal(), "a wiring mistake must not be retried forever");
+        assert!(
+            matches!(&out, Err(Error { code: ErrorCode::BadHandle, message: m }) if m.starts_with("unknown transaction")),
+            "got {out:?}"
+        );
+        assert!(
+            out.unwrap_err().is_terminal(),
+            "a wiring mistake must not be retried forever"
+        );
     }
 
     #[test]
@@ -761,11 +912,31 @@ mod tests {
         // A stored state that cannot be read back as `S` is a codec error, never a silently invented
         // instance; an `S` that cannot be encoded never reaches the adapter.
         let lossy = MemorySagaStore::<Lossy>::new();
-        lossy.save(&mut MemoryTx::auto_commit(), "k", &Lossy, 0, "", &[]).unwrap();
-        assert!(matches!(lossy.load(&mut MemoryTx::auto_commit(), "k"), Err(Error { code: ErrorCode::Codec, .. })));
+        lossy
+            .save(&mut MemoryTx::auto_commit(), "order", "k", &Lossy, 0, "", &[])
+            .unwrap();
+        assert!(matches!(
+            lossy.load(&mut MemoryTx::auto_commit(), "order", "k"),
+            Err(Error {
+                code: ErrorCode::Codec,
+                ..
+            })
+        ));
 
         let unencodable = MemorySagaStore::<Unencodable>::new();
-        assert!(matches!(unencodable.save(&mut MemoryTx::auto_commit(), "k", &Unencodable, 0, "", &[]), Err(Error { code: ErrorCode::Codec, .. })));
-        assert!(unencodable.load(&mut MemoryTx::auto_commit(), "k").unwrap().is_none(), "nothing was written");
+        assert!(matches!(
+            unencodable.save(&mut MemoryTx::auto_commit(), "order", "k", &Unencodable, 0, "", &[]),
+            Err(Error {
+                code: ErrorCode::Codec,
+                ..
+            })
+        ));
+        assert!(
+            unencodable
+                .load(&mut MemoryTx::auto_commit(), "order", "k")
+                .unwrap()
+                .is_none(),
+            "nothing was written"
+        );
     }
 }

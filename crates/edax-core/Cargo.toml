@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Primitives shared across the edax toolkit: hashing, backoff, clock, ids, error taxonomy, lock, settlement tokens"
+description = "Primitives shared across the edax toolkit: hash (the payload hash), key (tenancy, guard key), backoff, clock, guid, version, closed name sets, the error taxonomy; plus the Rust-only lock and settlement-token mint"
 
 [dependencies]
 uuid = { version = "1", features = ["v7"] }

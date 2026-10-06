@@ -248,5 +248,65 @@
     "expected": 3318828177526668670,
     "name": "empty_array_and_null_nested_field",
     "type": "order.place"
+  },
+  {
+    "command": {
+      "account": "acct-1",
+      "amount": {
+        "$decimal": "9.5"
+      },
+      "at": {
+        "$instant": "2024-01-01T00:30:00.000000Z"
+      }
+    },
+    "error": null,
+    "expected": 6964583373345415558,
+    "name": "host_values_in_canonical_form",
+    "type": "Withdraw"
+  },
+  {
+    "command": {
+      "account": "acct-1",
+      "amount": {
+        "$decimal": "9.50"
+      },
+      "at": {
+        "$instant": "2024-01-01T00:30:00.000000Z"
+      }
+    },
+    "error": null,
+    "expected": 6964583373345415558,
+    "name": "decimal_trailing_zeros_are_one_value",
+    "type": "Withdraw"
+  },
+  {
+    "command": {
+      "account": "acct-1",
+      "amount": {
+        "$decimal": "9.5"
+      },
+      "at": {
+        "$instant": "2024-01-01T01:30:00+01:00"
+      }
+    },
+    "error": null,
+    "expected": 6964583373345415558,
+    "name": "instant_offset_hashes_as_utc",
+    "type": "Withdraw"
+  },
+  {
+    "command": {
+      "account": "acct-1",
+      "amount": {
+        "$decimal": "9.5"
+      },
+      "at": {
+        "$instant": "2024-01-01T00:30:00"
+      }
+    },
+    "error": "codec: \"2024-01-01T00:30:00\" is not an RFC 3339 timestamp with an offset: failed to find offset component, which is required for parsing a timestamp",
+    "expected": null,
+    "name": "instant_without_offset_is_refused",
+    "type": "Withdraw"
   }
 ]

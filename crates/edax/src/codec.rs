@@ -25,65 +25,34 @@ use std::marker::PhantomData;
 
 use serde::de::{self, DeserializeOwned, DeserializeSeed, IntoDeserializer, Visitor};
 use serde::ser::{self, Impossible, SerializeMap, Serializer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use edax_event::Event;
+use edax_event::{Format, Payload};
 
 use crate::{Error, ErrorCode, EventCodec};
 
-/// A serde wire format a codec can encode to. Zero-sized: it names the format and holds no state.
+/// The serde wire format a codec writes payloads in: a zero-sized marker naming the kernel's [`Format`].
+/// The payload rules are the kernel's ([`Format::encode_payload`], [`Format::decode_payload`]), shared
+/// with Python's codecs: a struct is written and read as a map keyed by field name at every depth, a
+/// plain string or number reads as itself, and trailing bytes are refused. So a payload one SDK decodes,
+/// the other does too.
 pub trait PayloadFormat {
-    fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Error>;
-    fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error>;
-    /// Decode through a seed: what a [`RegistryCodec`] needs to read one variant's payload.
-    fn decode_seed<'de, S: DeserializeSeed<'de>>(bytes: &'de [u8], seed: S) -> Result<S::Value, Error>;
+    /// The kernel format this marker names.
+    const FORMAT: Format;
 }
 
 /// JSON: text, human-readable, cannot write a non-string map key or a NaN.
 pub struct Json;
 
 impl PayloadFormat for Json {
-    fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Error> {
-        serde_json::to_vec(value).map_err(Error::codec)
-    }
-
-    fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-        serde_json::from_slice(bytes).map_err(Error::codec)
-    }
-
-    fn decode_seed<'de, S: DeserializeSeed<'de>>(bytes: &'de [u8], seed: S) -> Result<S::Value, Error> {
-        let mut de = serde_json::Deserializer::from_slice(bytes);
-        let value = seed.deserialize(&mut de).map_err(Error::codec)?;
-        de.end().map_err(Error::codec)?;
-        Ok(value)
-    }
+    const FORMAT: Format = Format::Json;
 }
 
-/// MessagePack: binary, smaller, writes serde shapes JSON cannot. A struct is written as a map keyed by
-/// field name, as Python's msgspec writes it, so the two SDKs write the same bytes for the same event and
-/// a reader with an added field still reads an older payload.
-#[cfg(feature = "msgpack")]
+/// MessagePack: binary, smaller, writes serde shapes JSON cannot.
 pub struct Msgpack;
 
-#[cfg(feature = "msgpack")]
 impl PayloadFormat for Msgpack {
-    fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, Error> {
-        rmp_serde::to_vec_named(value).map_err(Error::codec)
-    }
-
-    fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-        Self::decode_seed(bytes, PhantomData::<T>)
-    }
-
-    fn decode_seed<'de, S: DeserializeSeed<'de>>(bytes: &'de [u8], seed: S) -> Result<S::Value, Error> {
-        let mut de = rmp_serde::Deserializer::new(std::io::Cursor::new(bytes));
-        let value = seed.deserialize(&mut de).map_err(Error::codec)?;
-        // The JSON reader refuses trailing data, so this one does too: one payload is one value.
-        if usize::try_from(de.position()).ok() != Some(bytes.len()) {
-            return Err(Error::codec("trailing bytes after the payload"));
-        }
-        Ok(value)
-    }
+    const FORMAT: Format = Format::Msgpack;
 }
 
 /// One single-step transform: upgrade a payload at version `v` to `v + 1`.
@@ -112,7 +81,10 @@ impl Upcaster {
         transform: impl Fn(Vec<u8>) -> Result<Vec<u8>, Error> + Send + Sync + 'static,
     ) -> Result<Self, Error> {
         if self.steps.contains_key(&version) {
-            return Err(Error::new(ErrorCode::AlreadyRegistered, format_args!("upcast step {version} is registered twice")));
+            return Err(Error::new(
+                ErrorCode::AlreadyRegistered,
+                format_args!("upcast step {version} is registered twice"),
+            ));
         }
         self.steps.insert(version, Box::new(transform));
         Ok(self)
@@ -161,7 +133,12 @@ pub struct SerdeCodec<T, F> {
 impl<T, F> SerdeCodec<T, F> {
     /// A codec writing `name` at the first schema version.
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), version: edax_event::FIRST_VERSION, upcaster: None, _marker: PhantomData }
+        Self {
+            name: name.into(),
+            version: edax_event::FIRST_VERSION,
+            upcaster: None,
+            _marker: PhantomData,
+        }
     }
 
     /// Write one past `upcaster`'s highest step, and raise payloads stored at an older version through it
@@ -176,25 +153,31 @@ impl<T, F> SerdeCodec<T, F> {
 impl<T: Serialize + DeserializeOwned, F: PayloadFormat> EventCodec for SerdeCodec<T, F> {
     type Domain = T;
 
-    fn marshal(&self, event: &T) -> Result<Event, Error> {
+    fn marshal(&self, event: &T) -> Result<Payload, Error> {
         // Serialization is a real error channel, not a formality: a format cannot write every serde
         // shape, and a hand-written `Serialize` may refuse outright.
-        Ok(Event { name: self.name.clone(), version: self.version, data: F::encode(event)? })
+        Ok(Payload {
+            name: self.name.clone(),
+            version: self.version,
+            data: F::FORMAT.encode_payload(event)?,
+        })
     }
 
-    fn unmarshal(&self, raw: &Event) -> Result<T, Error> {
+    fn unmarshal(&self, raw: &Payload) -> Result<T, Error> {
         if raw.name != self.name {
-            return Err(Error::codec(format_args!("event {:?} is not {:?}, the one name this codec reads", raw.name, self.name)));
+            return Err(Error::codec(format_args!(
+                "event {:?} is not {:?}, the one name this codec reads",
+                raw.name, self.name
+            )));
         }
         let data = raise(self.upcaster.as_ref(), &raw.data, raw.version, self.version)?;
-        F::decode(&data)
+        F::FORMAT.decode_payload(&data, PhantomData::<T>)
     }
 }
 
 /// [`SerdeCodec`] over [`Json`].
 pub type JsonCodec<T> = SerdeCodec<T, Json>;
 /// [`SerdeCodec`] over [`Msgpack`].
-#[cfg(feature = "msgpack")]
 pub type MsgpackCodec<T> = SerdeCodec<T, Msgpack>;
 
 /// Maps the variants of an event enum to event names and serializes each variant's own value whole: the
@@ -218,7 +201,11 @@ impl<T: DeserializeOwned, F> RegistryCodec<T, F> {
     /// A registry writing every name at the first schema version. A `T` that is not an externally tagged
     /// enum is a `codec` error.
     pub fn new() -> Result<Self, Error> {
-        Ok(Self { names: variant_names::<T>()?, upcasters: HashMap::new(), _marker: PhantomData })
+        Ok(Self {
+            names: variant_names::<T>()?,
+            upcasters: HashMap::new(),
+            _marker: PhantomData,
+        })
     }
 
     /// Write `name` one past `upcaster`'s highest step, and raise its older payloads through it. A name
@@ -227,18 +214,26 @@ impl<T: DeserializeOwned, F> RegistryCodec<T, F> {
     /// decoding as it is.
     pub fn upcaster(mut self, name: &str, upcaster: Upcaster) -> Result<Self, Error> {
         let Some(&name) = self.names.iter().find(|n| **n == name) else {
-            return Err(Error::codec(format_args!("an upcaster is registered for {name:?}, which is no event name of this registry")));
+            return Err(Error::codec(format_args!(
+                "an upcaster is registered for {name:?}, which is no event name of this registry"
+            )));
         };
-        let version = target(Some(&upcaster)).map_err(|e| Error::codec(format_args!("the upcaster for {name:?}: {}", e.message)))?;
+        let version = target(Some(&upcaster))
+            .map_err(|e| Error::codec(format_args!("the upcaster for {name:?}: {}", e.message)))?;
         if self.upcasters.insert(name, (version, upcaster)).is_some() {
-            return Err(Error::new(ErrorCode::AlreadyRegistered, format_args!("{name:?} has two upcasters")));
+            return Err(Error::new(
+                ErrorCode::AlreadyRegistered,
+                format_args!("{name:?} has two upcasters"),
+            ));
         }
         Ok(self)
     }
 
     /// The schema version this registry writes `name` at, and raises its older payloads to.
     fn version(&self, name: &str) -> u32 {
-        self.upcasters.get(name).map_or(edax_event::FIRST_VERSION, |(version, _)| *version)
+        self.upcasters
+            .get(name)
+            .map_or(edax_event::FIRST_VERSION, |(version, _)| *version)
     }
 
     /// The event names this registry reads and writes: the variants of `T`.
@@ -250,25 +245,36 @@ impl<T: DeserializeOwned, F> RegistryCodec<T, F> {
 impl<T: Serialize + DeserializeOwned, F: PayloadFormat> EventCodec for RegistryCodec<T, F> {
     type Domain = T;
 
-    fn marshal(&self, event: &T) -> Result<Event, Error> {
+    fn marshal(&self, event: &T) -> Result<Payload, Error> {
         let (name, data) = event.serialize(Split::<F>(PhantomData)).map_err(|e| e.0)?;
-        Ok(Event { name: name.to_owned(), version: self.version(name), data })
+        Ok(Payload {
+            name: name.to_owned(),
+            version: self.version(name),
+            data,
+        })
     }
 
-    fn unmarshal(&self, raw: &Event) -> Result<T, Error> {
+    fn unmarshal(&self, raw: &Payload) -> Result<T, Error> {
         if !self.names.contains(&raw.name.as_str()) {
-            return Err(Error::codec(format_args!("no event type registered for {:?}", raw.name)));
+            return Err(Error::codec(format_args!(
+                "no event type registered for {:?}",
+                raw.name
+            )));
         }
         let upcaster = self.upcasters.get(raw.name.as_str()).map(|(_, upcaster)| upcaster);
         let data = raise(upcaster, &raw.data, raw.version, self.version(&raw.name))?;
-        T::deserialize(Named::<F> { name: &raw.name, data: &data, _format: PhantomData }).map_err(|e| e.0)
+        T::deserialize(Named::<F> {
+            name: &raw.name,
+            data: &data,
+            _format: PhantomData,
+        })
+        .map_err(|e| e.0)
     }
 }
 
 /// [`RegistryCodec`] over [`Json`].
 pub type JsonRegistryCodec<T> = RegistryCodec<T, Json>;
 /// [`RegistryCodec`] over [`Msgpack`].
-#[cfg(feature = "msgpack")]
 pub type MsgpackRegistryCodec<T> = RegistryCodec<T, Msgpack>;
 
 /// The error type serde's traits need around the SDK's own: the orphan rule forbids implementing
@@ -296,7 +302,8 @@ impl de::Error for Refusal {
     }
 }
 
-const NEEDS_VARIANTS: &str = "a registry codec writes an enum of newtype variants (`Deposited(Deposited)`) or unit variants";
+const NEEDS_VARIANTS: &str =
+    "a registry codec writes an enum of newtype variants (`Deposited(Deposited)`) or unit variants";
 
 /// The empty map a unit variant writes: the payload an empty Python struct has.
 struct EmptyMap;
@@ -306,6 +313,11 @@ impl Serialize for EmptyMap {
         serializer.serialize_map(Some(0))?.end()
     }
 }
+
+/// What a unit variant reads its payload as: a struct with no fields, so any map, its fields ignored, as
+/// Python reads an empty struct.
+#[derive(Deserialize)]
+struct NoFields {}
 
 /// A serializer that takes one enum value apart into its variant name and its payload in `F`.
 struct Split<F>(PhantomData<F>);
@@ -341,11 +353,16 @@ impl<F: PayloadFormat> Serializer for Split<F> {
         variant: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Refusal> {
-        Ok((variant, F::encode(value).map_err(Refusal)?))
+        Ok((variant, F::FORMAT.encode_payload(value).map_err(Refusal)?))
     }
 
-    fn serialize_unit_variant(self, _name: &'static str, _index: u32, variant: &'static str) -> Result<Self::Ok, Refusal> {
-        Ok((variant, F::encode(&EmptyMap).map_err(Refusal)?))
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+    ) -> Result<Self::Ok, Refusal> {
+        Ok((variant, F::FORMAT.encode_payload(&EmptyMap).map_err(Refusal)?))
     }
 
     refuse! {
@@ -370,7 +387,13 @@ impl<F: PayloadFormat> Serializer for Split<F> {
     fn serialize_tuple_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeTupleStruct, Refusal> {
         refused()
     }
-    fn serialize_tuple_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Self::SerializeTupleVariant, Refusal> {
+    fn serialize_tuple_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        _: &'static str,
+        _: usize,
+    ) -> Result<Self::SerializeTupleVariant, Refusal> {
         refused()
     }
     fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Refusal> {
@@ -379,7 +402,13 @@ impl<F: PayloadFormat> Serializer for Split<F> {
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeStruct, Refusal> {
         refused()
     }
-    fn serialize_struct_variant(self, _: &'static str, _: u32, _: &'static str, _: usize) -> Result<Self::SerializeStructVariant, Refusal> {
+    fn serialize_struct_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        _: &'static str,
+        _: usize,
+    ) -> Result<Self::SerializeStructVariant, Refusal> {
         refused()
     }
 }
@@ -399,7 +428,12 @@ impl<'de, F: PayloadFormat> de::Deserializer<'de> for Named<'de, F> {
         refused()
     }
 
-    fn deserialize_enum<V: Visitor<'de>>(self, _: &'static str, _: &'static [&'static str], visitor: V) -> Result<V::Value, Refusal> {
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _: &'static str,
+        _: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Refusal> {
         visitor.visit_enum(self)
     }
 
@@ -423,11 +457,14 @@ impl<'de, F: PayloadFormat> de::VariantAccess<'de> for Named<'de, F> {
     type Error = Refusal;
 
     fn unit_variant(self) -> Result<(), Refusal> {
-        F::decode::<de::IgnoredAny>(self.data).map(|_| ()).map_err(Refusal)
+        F::FORMAT
+            .decode_payload(self.data, PhantomData::<NoFields>)
+            .map(|_| ())
+            .map_err(Refusal)
     }
 
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Refusal> {
-        F::decode_seed(self.data, seed).map_err(Refusal)
+        F::FORMAT.decode_payload(self.data, seed).map_err(Refusal)
     }
 
     fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, Refusal> {
@@ -451,7 +488,12 @@ fn variant_names<T: DeserializeOwned>() -> Result<&'static [&'static str], Error
             refused()
         }
 
-        fn deserialize_enum<V: Visitor<'de>>(self, _: &'static str, variants: &'static [&'static str], _: V) -> Result<V::Value, Refusal> {
+        fn deserialize_enum<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            variants: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, Refusal> {
             self.0.set(Some(variants));
             Err(Refusal(Error::codec("probe")))
         }
@@ -496,7 +538,10 @@ mod tests {
     }
 
     fn deposited() -> AccountEvent {
-        AccountEvent::Deposited(Deposited { account_id: "acct-1".into(), amount_cents: 4200 })
+        AccountEvent::Deposited(Deposited {
+            account_id: "acct-1".into(),
+            amount_cents: 4200,
+        })
     }
 
     /// Postings keyed by `(account, leg)`. JSON has no way to write a non-string map key, so this
@@ -507,7 +552,9 @@ mod tests {
     }
 
     fn posted() -> Posted {
-        Posted { entries: BTreeMap::from([(("cash".to_string(), 0u8), 1_250i64)]) }
+        Posted {
+            entries: BTreeMap::from([(("cash".to_string(), 0u8), 1_250i64)]),
+        }
     }
 
     /// An amount that validates on the way out: an unknown currency has no wire representation, so
@@ -521,7 +568,10 @@ mod tests {
     impl Serialize for Refused {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             if self.currency.len() != 3 {
-                return Err(serde::ser::Error::custom(format!("unknown currency {:?}", self.currency)));
+                return Err(serde::ser::Error::custom(format!(
+                    "unknown currency {:?}",
+                    self.currency
+                )));
             }
             serializer.serialize_i64(self.minor_units)
         }
@@ -532,16 +582,28 @@ mod tests {
         let codec = JsonRegistryCodec::<AccountEvent>::new().unwrap();
         assert_eq!(codec.names(), ["Deposited", "Withdrawn", "Frozen"]);
         for (event, name, data) in [
-            (deposited(), "Deposited", r#"{"account_id":"acct-1","amount_cents":4200}"#),
             (
-                AccountEvent::Withdrawn(Withdrawn { account_id: "acct-1".into(), amount_cents: 5, memo: None }),
+                deposited(),
+                "Deposited",
+                r#"{"account_id":"acct-1","amount_cents":4200}"#,
+            ),
+            (
+                AccountEvent::Withdrawn(Withdrawn {
+                    account_id: "acct-1".into(),
+                    amount_cents: 5,
+                    memo: None,
+                }),
                 "Withdrawn",
                 r#"{"account_id":"acct-1","amount_cents":5,"memo":null}"#,
             ),
             (AccountEvent::Frozen, "Frozen", "{}"),
         ] {
             let raw = codec.marshal(&event).unwrap();
-            assert_eq!((raw.name.as_str(), raw.version, raw.data.as_slice()), (name, 1, data.as_bytes()), "{name}");
+            assert_eq!(
+                (raw.name.as_str(), raw.version, raw.data.as_slice()),
+                (name, 1, data.as_bytes()),
+                "{name}"
+            );
             assert_eq!(codec.unmarshal(&raw).unwrap(), event, "{name} round trip");
         }
     }
@@ -558,15 +620,38 @@ mod tests {
             })
             .unwrap();
         // Deposited is at v2 through its upcaster; Withdrawn and Frozen have none, so they stay at v1.
-        let codec = JsonRegistryCodec::<AccountEvent>::new().unwrap().upcaster("Deposited", upcaster).unwrap();
-        let event = |name: &str, version: u32, data: &str| Event { name: name.into(), version, data: data.as_bytes().to_vec() };
-        let cases: [(&str, Event, Result<AccountEvent, &str>); 9] = [
-            ("current payload", event("Deposited", 2, r#"{"account_id":"acct-1","amount_cents":4200}"#), Ok(deposited())),
-            ("older payload raised by its upcaster", event("Deposited", 1, r#"{"account_id":"acct-1","amount":42}"#), Ok(deposited())),
+        let codec = JsonRegistryCodec::<AccountEvent>::new()
+            .unwrap()
+            .upcaster("Deposited", upcaster)
+            .unwrap();
+        let event = |name: &str, version: u32, data: &str| Payload {
+            name: name.into(),
+            version,
+            data: data.as_bytes().to_vec(),
+        };
+        let cases: [(&str, Payload, Result<AccountEvent, &str>); 9] = [
+            (
+                "current payload",
+                event("Deposited", 2, r#"{"account_id":"acct-1","amount_cents":4200}"#),
+                Ok(deposited()),
+            ),
+            (
+                "older payload raised by its upcaster",
+                event("Deposited", 1, r#"{"account_id":"acct-1","amount":42}"#),
+                Ok(deposited()),
+            ),
             (
                 "older payload of a name with no upcaster reads as it is",
-                event("Withdrawn", 0, r#"{"account_id":"acct-1","amount_cents":5,"memo":"atm"}"#),
-                Ok(AccountEvent::Withdrawn(Withdrawn { account_id: "acct-1".into(), amount_cents: 5, memo: Some("atm".into()) })),
+                event(
+                    "Withdrawn",
+                    0,
+                    r#"{"account_id":"acct-1","amount_cents":5,"memo":"atm"}"#,
+                ),
+                Ok(AccountEvent::Withdrawn(Withdrawn {
+                    account_id: "acct-1".into(),
+                    amount_cents: 5,
+                    memo: Some("atm".into()),
+                })),
             ),
             (
                 "a newer writer's payload is refused, with an upcaster",
@@ -575,7 +660,11 @@ mod tests {
             ),
             (
                 "a newer writer's payload is refused, without one",
-                event("Withdrawn", 2, r#"{"account_id":"acct-1","amount_cents":5,"memo":null,"fee":1}"#),
+                event(
+                    "Withdrawn",
+                    2,
+                    r#"{"account_id":"acct-1","amount_cents":5,"memo":null,"fee":1}"#,
+                ),
                 Err("codec: cannot upcast downward: from 2 > to 1 (the payload comes from a newer writer)"),
             ),
             (
@@ -583,12 +672,20 @@ mod tests {
                 event("Deposited", 0, r#"{"account_id":"acct-1","amount":42}"#),
                 Err("codec: missing upcast step 0 (no transform for v0 -> v1)"),
             ),
-            ("an unknown name is refused", event("Closed", 2, "{}"), Err(r#"codec: no event type registered for "Closed""#)),
-            ("a unit variant reads from its empty map", event("Frozen", 1, "{}"), Ok(AccountEvent::Frozen)),
+            (
+                "an unknown name is refused",
+                event("Closed", 2, "{}"),
+                Err(r#"codec: no event type registered for "Closed""#),
+            ),
+            (
+                "a unit variant reads from its empty map",
+                event("Frozen", 1, "{}"),
+                Ok(AccountEvent::Frozen),
+            ),
             (
                 "a payload that is not the variant's shape is refused",
                 event("Deposited", 2, r#"{"account_id":7}"#),
-                Err("codec: invalid type: integer `7`, expected a string at line 1 column 15"),
+                Err("codec: decode: invalid type: integer `7`, expected a string at line 1 column 15"),
             ),
         ];
         for (name, raw, want) in cases {
@@ -618,16 +715,54 @@ mod tests {
             .unwrap()
             .upcaster("Withdrawn", Upcaster::new().step(1, memo).unwrap())
             .unwrap();
-        let withdrawn = |memo: &str| AccountEvent::Withdrawn(Withdrawn { account_id: "acct-1".into(), amount_cents: 5, memo: Some(memo.into()) });
-        for (name, event, version) in [("Deposited", deposited(), 2), ("Withdrawn", withdrawn("atm"), 2), ("Frozen", AccountEvent::Frozen, 1)] {
-            assert_eq!(codec.marshal(&event).unwrap().version, version, "{name} writes its own version");
+        let withdrawn = |memo: &str| {
+            AccountEvent::Withdrawn(Withdrawn {
+                account_id: "acct-1".into(),
+                amount_cents: 5,
+                memo: Some(memo.into()),
+            })
+        };
+        for (name, event, version) in [
+            ("Deposited", deposited(), 2),
+            ("Withdrawn", withdrawn("atm"), 2),
+            ("Frozen", AccountEvent::Frozen, 1),
+        ] {
+            assert_eq!(
+                codec.marshal(&event).unwrap().version,
+                version,
+                "{name} writes its own version"
+            );
         }
-        let event = |name: &str, version: u32, data: &str| Event { name: name.into(), version, data: data.as_bytes().to_vec() };
-        let cases: [(&str, Event, AccountEvent); 4] = [
-            ("the unchanged name's v2 row reads", event("Deposited", 2, r#"{"account_id":"acct-1","amount_cents":4200}"#), deposited()),
-            ("the unchanged name's v1 row is still raised", event("Deposited", 1, r#"{"account_id":"acct-1","amount":42}"#), deposited()),
-            ("the bumped name's v1 row is raised", event("Withdrawn", 1, r#"{"account_id":"acct-1","amount_cents":5}"#), withdrawn("migrated")),
-            ("the bumped name's v2 row reads", event("Withdrawn", 2, r#"{"account_id":"acct-1","amount_cents":5,"memo":"atm"}"#), withdrawn("atm")),
+        let event = |name: &str, version: u32, data: &str| Payload {
+            name: name.into(),
+            version,
+            data: data.as_bytes().to_vec(),
+        };
+        let cases: [(&str, Payload, AccountEvent); 4] = [
+            (
+                "the unchanged name's v2 row reads",
+                event("Deposited", 2, r#"{"account_id":"acct-1","amount_cents":4200}"#),
+                deposited(),
+            ),
+            (
+                "the unchanged name's v1 row is still raised",
+                event("Deposited", 1, r#"{"account_id":"acct-1","amount":42}"#),
+                deposited(),
+            ),
+            (
+                "the bumped name's v1 row is raised",
+                event("Withdrawn", 1, r#"{"account_id":"acct-1","amount_cents":5}"#),
+                withdrawn("migrated"),
+            ),
+            (
+                "the bumped name's v2 row reads",
+                event(
+                    "Withdrawn",
+                    2,
+                    r#"{"account_id":"acct-1","amount_cents":5,"memo":"atm"}"#,
+                ),
+                withdrawn("atm"),
+            ),
         ];
         for (name, raw, want) in cases {
             assert_eq!(codec.unmarshal(&raw).map_err(|e| e.to_string()), Ok(want), "{name}");
@@ -644,7 +779,9 @@ mod tests {
             JsonRegistryCodec::<NotAnEnum>::new().err().map(|e| e.to_string()),
             Some(format!("codec: {NEEDS_VARIANTS}"))
         );
-        let dangling = JsonRegistryCodec::<AccountEvent>::new().unwrap().upcaster("Closed", Upcaster::new());
+        let dangling = JsonRegistryCodec::<AccountEvent>::new()
+            .unwrap()
+            .upcaster("Closed", Upcaster::new());
         assert_eq!(
             dangling.err().map(|e| e.to_string()).as_deref(),
             Some(r#"codec: an upcaster is registered for "Closed", which is no event name of this registry"#)
@@ -658,12 +795,20 @@ mod tests {
         // A hole in the chain leaves the rows at the missing version unreadable, so it fails here.
         let holed = || Upcaster::new().step(1, Ok).unwrap().step(3, Ok).unwrap();
         let skip = "upcast steps skip v2: a payload stored at v2 could never be raised";
-        let registry = JsonRegistryCodec::<AccountEvent>::new().unwrap().upcaster("Deposited", holed());
-        assert_eq!(registry.err().map(|e| e.to_string()), Some(format!(r#"codec: the upcaster for "Deposited": {skip}"#)));
+        let registry = JsonRegistryCodec::<AccountEvent>::new()
+            .unwrap()
+            .upcaster("Deposited", holed());
+        assert_eq!(
+            registry.err().map(|e| e.to_string()),
+            Some(format!(r#"codec: the upcaster for "Deposited": {skip}"#))
+        );
         let single = JsonCodec::<Deposited>::new("Deposited").with_upcaster(holed());
         assert_eq!(single.err().map(|e| e.to_string()), Some(format!("codec: {skip}")));
         let step_twice = Upcaster::new().step(1, Ok).unwrap().step(1, Ok);
-        assert_eq!(step_twice.err().map(|e| e.to_string()).as_deref(), Some("already_registered: upcast step 1 is registered twice"));
+        assert_eq!(
+            step_twice.err().map(|e| e.to_string()).as_deref(),
+            Some("already_registered: upcast step 1 is registered twice")
+        );
     }
 
     #[test]
@@ -675,11 +820,22 @@ mod tests {
         }
         let codec = JsonRegistryCodec::<Shapes>::new().unwrap();
         for shape in [Shapes::Point { x: 1 }, Shapes::Pair(1, 2)] {
-            assert_eq!(codec.marshal(&shape).err().map(|e| e.to_string()), Some(format!("codec: {NEEDS_VARIANTS}")));
+            assert_eq!(
+                codec.marshal(&shape).err().map(|e| e.to_string()),
+                Some(format!("codec: {NEEDS_VARIANTS}"))
+            );
         }
         for (name, data) in [("Point", r#"{"x":1}"#), ("Pair", "[1,2]")] {
-            let raw = Event { name: name.into(), version: 1, data: data.as_bytes().to_vec() };
-            assert_eq!(codec.unmarshal(&raw).err().map(|e| e.to_string()), Some(format!("codec: {NEEDS_VARIANTS}")), "{name}");
+            let raw = Payload {
+                name: name.into(),
+                version: 1,
+                data: data.as_bytes().to_vec(),
+            };
+            assert_eq!(
+                codec.unmarshal(&raw).err().map(|e| e.to_string()),
+                Some(format!("codec: {NEEDS_VARIANTS}")),
+                "{name}"
+            );
         }
     }
 
@@ -748,47 +904,103 @@ mod tests {
         }
         assert_eq!(split(BTreeMap::from([("k", 1i64)])), refused, "map");
         assert_eq!(split(Fields { n: 1 }), refused, "struct");
-        assert_eq!(split(Refuses), "codec: no wire form", "a Serialize that refuses keeps its own message");
+        assert_eq!(
+            split(Refuses),
+            "codec: no wire form",
+            "a Serialize that refuses keeps its own message"
+        );
 
         // The other direction: a variant's payload read as anything but an enum is refused, and a
         // variant name the type does not know is the deserializer's own codec error.
-        let named = || Named::<Json> { name: "Deposited", data: b"{}", _format: PhantomData };
-        assert_eq!(<i64 as serde::Deserialize>::deserialize(named()).map_err(|r| r.to_string()), Err(refused));
-        let unknown = Named::<Json> { name: "Closed", data: b"{}", _format: PhantomData };
+        let named = || Named::<Json> {
+            name: "Deposited",
+            data: b"{}",
+            _format: PhantomData,
+        };
+        assert_eq!(
+            <i64 as serde::Deserialize>::deserialize(named()).map_err(|r| r.to_string()),
+            Err(refused)
+        );
+        let unknown = Named::<Json> {
+            name: "Closed",
+            data: b"{}",
+            _format: PhantomData,
+        };
         let got = AccountEvent::deserialize(unknown).map_err(|r| r.to_string());
-        assert!(got.is_err_and(|e| e.starts_with("codec: unknown variant `Closed`")), "unknown variant");
+        assert!(
+            got.is_err_and(|e| e.starts_with("codec: unknown variant `Closed`")),
+            "unknown variant"
+        );
     }
 
     #[test]
     fn serde_codec_unmarshal_branches() {
         let codec = JsonCodec::<Deposited>::new("Deposited");
-        let event = |name: &str, version: u32| Event { name: name.into(), version, data: br#"{"account_id":"acct-1","amount_cents":4200}"#.to_vec() };
-        let want = Deposited { account_id: "acct-1".into(), amount_cents: 4200 };
-        assert_eq!(codec.marshal(&want).unwrap().version, 1, "no upcaster: the first version");
-        assert_eq!(codec.unmarshal(&event("Deposited", 1)).unwrap(), want, "current");
-        assert_eq!(codec.unmarshal(&event("Deposited", 0)).unwrap(), want, "older, no upcaster: identity");
+        let event = |name: &str, version: u32| Payload {
+            name: name.into(),
+            version,
+            data: br#"{"account_id":"acct-1","amount_cents":4200}"#.to_vec(),
+        };
+        let want = Deposited {
+            account_id: "acct-1".into(),
+            amount_cents: 4200,
+        };
         assert_eq!(
-            codec.unmarshal(&event("Deposited", 2)).err().map(|e| e.to_string()).as_deref(),
+            codec.marshal(&want).unwrap().version,
+            1,
+            "no upcaster: the first version"
+        );
+        assert_eq!(codec.unmarshal(&event("Deposited", 1)).unwrap(), want, "current");
+        assert_eq!(
+            codec.unmarshal(&event("Deposited", 0)).unwrap(),
+            want,
+            "older, no upcaster: identity"
+        );
+        assert_eq!(
+            codec
+                .unmarshal(&event("Deposited", 2))
+                .err()
+                .map(|e| e.to_string())
+                .as_deref(),
             Some("codec: cannot upcast downward: from 2 > to 1 (the payload comes from a newer writer)"),
             "newer writer"
         );
         assert_eq!(
-            codec.unmarshal(&event("Withdrawn", 1)).err().map(|e| e.to_string()).as_deref(),
+            codec
+                .unmarshal(&event("Withdrawn", 1))
+                .err()
+                .map(|e| e.to_string())
+                .as_deref(),
             Some(r#"codec: event "Withdrawn" is not "Deposited", the one name this codec reads"#),
             "another name"
         );
         let raised = JsonCodec::<Deposited>::new("Deposited")
-            .with_upcaster(Upcaster::new().step(1, |_| Ok(br#"{"account_id":"acct-9","amount_cents":1}"#.to_vec())).unwrap())
+            .with_upcaster(
+                Upcaster::new()
+                    .step(1, |_| Ok(br#"{"account_id":"acct-9","amount_cents":1}"#.to_vec()))
+                    .unwrap(),
+            )
             .unwrap();
-        assert_eq!(raised.marshal(&want).unwrap().version, 2, "an upcaster's last step sets the version");
-        assert_eq!(raised.unmarshal(&event("Deposited", 1)).unwrap().account_id, "acct-9", "an upcaster raises v1");
         assert_eq!(
-            Upcaster::new().to(b"x".to_vec(), 1, 2).err().map(|e| e.to_string()).as_deref(),
+            raised.marshal(&want).unwrap().version,
+            2,
+            "an upcaster's last step sets the version"
+        );
+        assert_eq!(
+            raised.unmarshal(&event("Deposited", 1)).unwrap().account_id,
+            "acct-9",
+            "an upcaster raises v1"
+        );
+        assert_eq!(
+            Upcaster::new()
+                .to(b"x".to_vec(), 1, 2)
+                .err()
+                .map(|e| e.to_string())
+                .as_deref(),
             Some("codec: missing upcast step 1 (no transform for v1 -> v2)")
         );
     }
 
-    #[cfg(feature = "msgpack")]
     #[test]
     fn msgpack_writes_structs_as_maps_and_round_trips() {
         let codec = MsgpackRegistryCodec::<AccountEvent>::new().unwrap();
@@ -799,7 +1011,10 @@ mod tests {
         assert_eq!(frozen.data, [0x80], "a unit variant is an empty map");
         let mut trailing = raw.clone();
         trailing.data.push(0xc0);
-        assert_eq!(codec.unmarshal(&trailing).err().map(|e| e.to_string()).as_deref(), Some("codec: trailing bytes after the payload"));
+        assert_eq!(
+            codec.unmarshal(&trailing).err().map(|e| e.to_string()).as_deref(),
+            Some("codec: decode: trailing bytes after the value")
+        );
 
         // The payload JSON refuses still round-trips here, so the failure below is the format's
         // limit, not a broken codec.
@@ -812,12 +1027,11 @@ mod tests {
     fn marshal_reports_a_serializer_failure_instead_of_panicking() {
         struct Case {
             name: &'static str,
-            marshal: fn() -> Result<Event, Error>,
+            marshal: fn() -> Result<Payload, Error>,
             /// The marshaled name on success, or the serializer's own message on failure.
             want: Result<&'static str, &'static str>,
         }
-        #[cfg_attr(not(feature = "msgpack"), allow(unused_mut))]
-        let mut cases = vec![
+        let cases = [
             Case {
                 name: "json writes a plain event",
                 marshal: || JsonCodec::<Posted>::new("Posted").marshal(&Posted::default()),
@@ -831,14 +1045,14 @@ mod tests {
             Case {
                 name: "json surfaces a refusing Serialize impl",
                 marshal: || {
-                    let event = Refused { minor_units: 500, currency: "bitcoin".into() };
+                    let event = Refused {
+                        minor_units: 500,
+                        currency: "bitcoin".into(),
+                    };
                     JsonCodec::<Refused>::new("Refused").marshal(&event)
                 },
                 want: Err(r#"codec: unknown currency "bitcoin""#),
             },
-        ];
-        #[cfg(feature = "msgpack")]
-        cases.extend([
             Case {
                 name: "msgpack writes what json cannot",
                 marshal: || MsgpackCodec::<Posted>::new("Posted").marshal(&posted()),
@@ -847,12 +1061,15 @@ mod tests {
             Case {
                 name: "msgpack surfaces a refusing Serialize impl",
                 marshal: || {
-                    let event = Refused { minor_units: 500, currency: "bitcoin".into() };
+                    let event = Refused {
+                        minor_units: 500,
+                        currency: "bitcoin".into(),
+                    };
                     MsgpackCodec::<Refused>::new("Refused").marshal(&event)
                 },
                 want: Err(r#"codec: unknown currency "bitcoin""#),
             },
-        ]);
+        ];
         for c in cases {
             let got = (c.marshal)();
             match c.want {
@@ -863,7 +1080,18 @@ mod tests {
                     assert!(!raw.data.is_empty(), "{}", c.name);
                 }
                 Err(message) => {
-                    assert!(matches!(&got, Err(Error { code: ErrorCode::Codec, .. })), "{}: got {:?}", c.name, got.as_ref().err());
+                    assert!(
+                        matches!(
+                            &got,
+                            Err(Error {
+                                code: ErrorCode::Codec,
+                                ..
+                            })
+                        ),
+                        "{}: got {:?}",
+                        c.name,
+                        got.as_ref().err()
+                    );
                     assert_eq!(got.err().map(|e| e.to_string()).as_deref(), Some(message), "{}", c.name);
                 }
             }

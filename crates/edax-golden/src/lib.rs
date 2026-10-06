@@ -9,6 +9,8 @@
 //! writer, one reader, one path to the golden directory, one failure message.
 
 use serde_json::Value;
+use std::convert::Infallible;
+use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +18,62 @@ use std::path::{Path, PathBuf};
 /// and hex is the one encoding every binding reads back identically.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A call's refusal as every vector records it, under the field `error`: `null` when the call succeeded,
+/// else the error's wire form `"<code>: <message>"`, which is the kernel `Error`'s `Display`. One field and
+/// one shape across the vectors, so a binding's replayer reads every refusal one way. A refusal whose
+/// message comes from a host library rather than the kernel (a payload decoder) matches across SDKs by its
+/// code only, the text before the first `": "`.
+pub fn refusal<T, E: Display>(result: &Result<T, E>) -> Value {
+    match result {
+        Ok(_) => Value::Null,
+        Err(error) => Value::String(error.to_string()),
+    }
+}
+
+/// The marker a vector wraps a host decimal in: `{"$decimal": "9.50"}`. JSON has no decimal type, so the
+/// marker says which strings an SDK builds as its own decimal type (`edax::Decimal`, Python's `Decimal`)
+/// before it hashes or encodes the value.
+pub const DECIMAL_MARKER: &str = "$decimal";
+
+/// The marker a vector wraps a host instant in: `{"$instant": "2024-01-01T01:30:00+01:00"}`, built as
+/// `edax::Instant` or an aware Python `datetime`.
+pub const INSTANT_MARKER: &str = "$instant";
+
+/// `value` with each host-value marker replaced by the text it wraps, as is: what a Rust host type
+/// such as `edax::Decimal` deserializes from, canonicalizing it on the way in.
+pub fn host_text(value: &Value) -> Value {
+    let Ok(value) = map_markers(value, &|_, text| Ok::<_, Infallible>(Value::String(text.to_owned())));
+    value
+}
+
+/// `value` with each host-value marker (`{"<marker>": "<text>"}`) replaced by `leaf(marker, text)`, or
+/// `leaf`'s first error. The one walk over the markers every reader shares, so a marker added here
+/// reaches each of them.
+pub fn map_markers<E>(value: &Value, leaf: &impl Fn(&str, &str) -> Result<Value, E>) -> Result<Value, E> {
+    Ok(match value {
+        Value::Object(fields) => match fields.iter().next() {
+            Some((marker, Value::String(text)))
+                if fields.len() == 1 && (marker == DECIMAL_MARKER || marker == INSTANT_MARKER) =>
+            {
+                leaf(marker, text)?
+            }
+            _ => Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, item)| Ok((key.clone(), map_markers(item, leaf)?)))
+                    .collect::<Result<_, E>>()?,
+            ),
+        },
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| map_markers(item, leaf))
+                .collect::<Result<_, E>>()?,
+        ),
+        other => other.clone(),
+    })
 }
 
 /// Set to `1` to regenerate instead of assert. Unset or empty asserts; any other value panics.
@@ -70,13 +128,21 @@ pub fn read(name: &str) -> Vec<Value> {
 #[track_caller]
 fn read_in(dir: &Path, name: &str) -> Vec<Value> {
     let path = dir.join(name);
-    let raw = match fs::read_to_string(&path) {
+    match load(&path) {
+        Value::Array(cases) => cases,
+        _ => panic!("{} is not a JSON array of cases", path.display()),
+    }
+}
+
+/// The JSON a golden file holds: the one read and parse both the reader and the assert run.
+#[track_caller]
+fn load(path: &Path) -> Value {
+    let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
-        Err(error) => panic!("cannot read {}: {error}", path.display()),
+        Err(error) => panic!("cannot read {}: {error}; regenerate with {ENV_REGEN}=1", path.display()),
     };
     match serde_json::from_str(&raw) {
-        Ok(Value::Array(cases)) => cases,
-        Ok(_) => panic!("{} is not a JSON array of cases", path.display()),
+        Ok(value) => value,
         Err(error) => panic!("{} is not valid JSON: {error}", path.display()),
     }
 }
@@ -92,8 +158,7 @@ fn write_or_check_in(dir: &Path, mode: Mode, name: &str, expected: &Value) {
 
 /// The exact bytes of a golden file. Byte-identical output is what makes `git status` a proof.
 fn render(value: &Value) -> String {
-    let pretty = serde_json::to_string_pretty(value).expect("a serde_json::Value always serializes");
-    format!("{pretty}\n")
+    format!("{}\n", pretty(value))
 }
 
 #[track_caller]
@@ -109,14 +174,7 @@ fn regenerate(path: &Path, expected: &Value) {
 
 #[track_caller]
 fn assert_matches(name: &str, path: &Path, expected: &Value) {
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(error) => panic!("cannot read {}: {error}; regenerate with {ENV_REGEN}=1", path.display()),
-    };
-    let on_disk: Value = match serde_json::from_str(&raw) {
-        Ok(value) => value,
-        Err(error) => panic!("{} is not valid JSON: {error}", path.display()),
-    };
+    let on_disk = load(path);
     if on_disk != *expected {
         panic!("{}", drift_report(name, path, &on_disk, expected));
     }
@@ -167,6 +225,18 @@ mod tests {
     use serde_json::json;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
+    #[test]
+    fn refusal_is_null_or_the_wire_form() {
+        let ok: Result<u8, String> = Ok(7);
+        let refused: Result<u8, String> = Err("codec: unknown field `vlaue`".to_owned());
+        assert_eq!(refusal(&ok), Value::Null, "a call that succeeded");
+        assert_eq!(
+            refusal(&refused),
+            json!("codec: unknown field `vlaue`"),
+            "the error's display, as it is"
+        );
+    }
+
     /// A fresh directory per test so parallel tests never share a file.
     fn scratch_dir(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("edax-golden-{}-{test}", std::process::id()));
@@ -202,11 +272,31 @@ mod tests {
             expected: Option<Mode>,
         }
         let table = [
-            Case { name: "unset_asserts", regen: None, expected: Some(Mode::Assert) },
-            Case { name: "empty_asserts", regen: Some(""), expected: Some(Mode::Assert) },
-            Case { name: "one_regenerates", regen: Some("1"), expected: Some(Mode::Regenerate) },
-            Case { name: "zero_panics", regen: Some("0"), expected: None },
-            Case { name: "true_panics", regen: Some("true"), expected: None },
+            Case {
+                name: "unset_asserts",
+                regen: None,
+                expected: Some(Mode::Assert),
+            },
+            Case {
+                name: "empty_asserts",
+                regen: Some(""),
+                expected: Some(Mode::Assert),
+            },
+            Case {
+                name: "one_regenerates",
+                regen: Some("1"),
+                expected: Some(Mode::Regenerate),
+            },
+            Case {
+                name: "zero_panics",
+                regen: Some("0"),
+                expected: None,
+            },
+            Case {
+                name: "true_panics",
+                regen: Some("true"),
+                expected: None,
+            },
         ];
         for case in table {
             match case.expected {
@@ -215,7 +305,11 @@ mod tests {
                     let message = panic_message(|| {
                         mode_from(case.regen);
                     });
-                    assert!(message.contains("set it to 1 to regenerate"), "{}: {message}", case.name);
+                    assert!(
+                        message.contains("set it to 1 to regenerate"),
+                        "{}: {message}",
+                        case.name
+                    );
                 }
             }
         }
@@ -242,7 +336,10 @@ mod tests {
         let missing = panic_message(|| {
             read_in(&dir, "absent.json");
         });
-        assert!(missing.contains("cannot read") && missing.contains("absent.json"), "{missing}");
+        assert!(
+            missing.contains("cannot read") && missing.contains("absent.json"),
+            "{missing}"
+        );
         fs::remove_dir_all(dir).expect("scratch dir removable");
     }
 
@@ -363,5 +460,38 @@ mod tests {
         let malformed = panic_message(|| write_or_check_in(&dir, Mode::Assert, "broken.json", &Value::Array(cases())));
         assert!(malformed.contains("broken.json is not valid JSON"), "{malformed}");
         fs::remove_dir_all(dir).expect("scratch dir is removable");
+    }
+
+    /// One case per branch of the walk: each marker, a marker beside another key (no marker), a marker
+    /// over a non-string (no marker), and markers nested in a map and in a list.
+    #[test]
+    fn host_text_unwraps_each_marker() {
+        let cases: [(&str, Value, Value); 6] = [
+            ("decimal_marker", json!({"$decimal": "9.50"}), json!("9.50")),
+            (
+                "instant_marker",
+                json!({"$instant": "2024-01-01T01:30:00+01:00"}),
+                json!("2024-01-01T01:30:00+01:00"),
+            ),
+            (
+                "a_second_key_is_a_plain_map",
+                json!({"$decimal": "9.50", "x": 1}),
+                json!({"$decimal": "9.50", "x": 1}),
+            ),
+            (
+                "a_marker_over_a_number_is_a_plain_map",
+                json!({"$decimal": 9.5}),
+                json!({"$decimal": 9.5}),
+            ),
+            (
+                "nested_in_a_map",
+                json!({"account": "a", "amount": {"$decimal": "9.50"}}),
+                json!({"account": "a", "amount": "9.50"}),
+            ),
+            ("nested_in_a_list", json!([{"$instant": "t"}, 1]), json!(["t", 1])),
+        ];
+        for (name, input, want) in cases {
+            assert_eq!(host_text(&input), want, "{name}");
+        }
     }
 }

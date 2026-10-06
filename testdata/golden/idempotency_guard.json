@@ -1,0 +1,183 @@
+[
+  {
+    "key": "req-1",
+    "name": "a_success_is_cached",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "result": {
+        "invoice_id": "invoice-7",
+        "total": 5000
+      }
+    },
+    "want": {
+      "result": {
+        "invoice_id": "invoice-7",
+        "total": 5000
+      }
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_null_success_is_cached_as_null",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "result": null
+    },
+    "want": {
+      "result": null
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_terminal_failure_is_cached_with_its_code",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": "codec",
+        "message": "unknown field `amount`"
+      }
+    },
+    "want": {
+      "error": "codec: unknown field `amount`"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_host_rejection_is_cached_as_rejected",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": "rejected",
+        "message": "insufficient funds"
+      }
+    },
+    "want": {
+      "error": "rejected: insufficient funds"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds\",\"error_code\":\"rejected\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_transient_failure_releases_the_claim",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": "store",
+        "message": "database unavailable"
+      }
+    },
+    "want": {
+      "error": "store: database unavailable"
+    },
+    "want_record": null
+  },
+  {
+    "key": "req-1",
+    "name": "an_unclassified_failure_releases_the_claim",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": null,
+        "message": "connection reset"
+      }
+    },
+    "want": {
+      "error": "connection reset"
+    },
+    "want_record": null
+  },
+  {
+    "key": "req-1",
+    "name": "a_fatal_failure_releases_the_claim",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": "bad_handle",
+        "message": "kafka broker error 29: topic authorization failed"
+      }
+    },
+    "want": {
+      "error": "bad_handle: kafka broker error 29: topic authorization failed"
+    },
+    "want_record": null
+  },
+  {
+    "key": "req-1",
+    "name": "a_loser_replays_the_cached_result",
+    "payload_hash": 11234062831410934249,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "run": null,
+    "want": {
+      "result": {
+        "invoice_id": "invoice-7",
+        "total": 5000
+      }
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_loser_replays_the_cached_failure_with_its_code",
+    "payload_hash": 11234062831410934249,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}",
+    "run": null,
+    "want": {
+      "error": "cached_failure: codec: unknown field `amount`"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_claim_in_flight_is_in_progress",
+    "payload_hash": 11234062831410934249,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "run": null,
+    "want": {
+      "error": "in_progress: req-1"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_reused_key_is_a_payload_mismatch",
+    "payload_hash": 11234059532876049616,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "run": null,
+    "want": {
+      "error": "payload_mismatch: req-1"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "an_unreadable_record_replays_as_a_cached_codec_failure",
+    "payload_hash": 11234062831410934249,
+    "prior": "{",
+    "run": null,
+    "want": {
+      "error": "cached_failure: codec: unreadable idempotency record: EOF while parsing an object at line 1 column 1"
+    },
+    "want_record": "{"
+  },
+  {
+    "key": "req-1",
+    "name": "a_failure_cached_without_a_code_replays_its_message",
+    "payload_hash": 11234062831410934249,
+    "prior": "{\"payload_hash\":11234062831410934249,\"error\":\"boom\",\"pending\":false}",
+    "run": null,
+    "want": {
+      "error": "cached_failure: boom"
+    },
+    "want_record": "{\"payload_hash\":11234062831410934249,\"error\":\"boom\",\"pending\":false}"
+  }
+]

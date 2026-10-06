@@ -16,13 +16,19 @@ pub struct Backoff {
 
 impl Backoff {
     /// The toolkit's default: 100 ms, doubling, capped at 30 s.
-    pub const DEFAULT: Backoff = Backoff { base_millis: 100, cap_millis: 30_000 };
+    pub const DEFAULT: Backoff = Backoff {
+        base_millis: 100,
+        cap_millis: 30_000,
+    };
 
     /// The longest wait before retry `attempt` (0-based): `min(base * 2^attempt, cap)`. Saturates
     /// instead of overflowing, so every `u64` attempt is defined and a port that doubles in a loop
     /// cannot spin at the top of the range.
     pub fn ceiling_millis(self, attempt: u64) -> u64 {
-        let factor = u32::try_from(attempt).ok().and_then(|shift| 1u64.checked_shl(shift)).unwrap_or(u64::MAX);
+        let factor = u32::try_from(attempt)
+            .ok()
+            .and_then(|shift| 1u64.checked_shl(shift))
+            .unwrap_or(u64::MAX);
         self.base_millis.saturating_mul(factor).min(self.cap_millis)
     }
 }
@@ -60,8 +66,24 @@ mod tests {
             ("capped", default, 9, 30_000),
             ("shift_past_63_saturates", default, 64, 30_000),
             ("attempt_past_u32_saturates", default, u64::from(u32::MAX) + 1, 30_000),
-            ("zero_base_never_waits", Backoff { base_millis: 0, cap_millis: 30_000 }, 5, 0),
-            ("cap_below_base_wins", Backoff { base_millis: 500, cap_millis: 50 }, 0, 50),
+            (
+                "zero_base_never_waits",
+                Backoff {
+                    base_millis: 0,
+                    cap_millis: 30_000,
+                },
+                5,
+                0,
+            ),
+            (
+                "cap_below_base_wins",
+                Backoff {
+                    base_millis: 500,
+                    cap_millis: 50,
+                },
+                0,
+                50,
+            ),
         ] {
             assert_eq!(policy.ceiling_millis(attempt), want, "{name}");
         }
@@ -70,12 +92,27 @@ mod tests {
 
     #[test]
     fn jitter_branches() {
-        let unbounded = Backoff { base_millis: u64::MAX, cap_millis: u64::MAX };
+        let unbounded = Backoff {
+            base_millis: u64::MAX,
+            cap_millis: u64::MAX,
+        };
         for (name, policy, attempt, entropy, want) in [
             ("zero_entropy_waits_nothing", Backoff::DEFAULT, 3, 0, 0),
-            ("entropy_equal_to_the_ceiling_waits_the_ceiling", Backoff::DEFAULT, 0, 100, 100),
+            (
+                "entropy_equal_to_the_ceiling_waits_the_ceiling",
+                Backoff::DEFAULT,
+                0,
+                100,
+                100,
+            ),
             ("entropy_wraps_past_the_ceiling", Backoff::DEFAULT, 0, 101, 0),
-            ("a_full_range_ceiling_keeps_the_entropy", unbounded, 0, u64::MAX, u64::MAX),
+            (
+                "a_full_range_ceiling_keeps_the_entropy",
+                unbounded,
+                0,
+                u64::MAX,
+                u64::MAX,
+            ),
         ] {
             assert_eq!(backoff_millis(policy, attempt, entropy), want, "{name}");
         }

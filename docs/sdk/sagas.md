@@ -25,28 +25,32 @@ flowchart LR
 | Piece | Source | What it is |
 |---|---|---|
 | `Saga` | seam, `edax.saga`, `edax::saga` | the decision half: a `name`, then `instance_id` and `handle` |
-| `SagaInstance` | `edax.saga`, `edax::saga` | one stored instance: its `state` and `version`, or a completed tombstone |
-| `SagaStore` | seam, `edax.saga`, `edax::saga` | instance state keyed by instance id, with optimistic concurrency, plus the saga outbox |
+| `SagaInstance` | `edax.saga`, `edax::saga` | one stored instance: running (`RunningInstance`, its `state` and `version`) or completed (`CompletedInstance`, a tombstone) |
+| `SagaStore` | seam, `edax.saga`, `edax::saga` | instance state keyed by the saga's name and the instance id, with optimistic concurrency, plus each saga's outbox |
+| `SagaOutbox` | `edax.saga`, `edax::saga` | one saga's outbox over its store: what a `Relay` drains, built by `runner.outbox()` |
 | `CommandMessage` | `edax`, `edax::CommandMessage` | one outbox row: the command message the kernel's `saga_command` built |
 | `SagaRunner` | `edax.saga`, `edax::saga` | the wiring: load, fold, persist state and commands in one write |
-| `Relay` | `edax.store`, `edax::Relay` | sends the committed commands, the same relay that drains the event outbox |
+| `Relay` | `edax.outbox`, `edax::Relay` | sends the committed commands, the same relay that drains the event outbox |
 | `Completed` | `edax.saga` | the Python sentinel a `handle` returns to finish the instance |
 | `SAGA_COMMAND_FAILED`, `SagaCommandFailed` | `edax.saga`, `edax::saga` | the event a dead command folds back into its instance, and its JSON payload |
 
 The runner is an ordinary event handler. Pass `SagaRunner.on_event` to an `EventRouter` or straight
 to a `KeyOrderedDispatcher`. It takes a command codec, `json_codec({"Fulfill": Fulfill})`, to put the
-commands in the outbox. `runner.relay(bus, on_dead=runner.command_failed)` sends them through
-`bus.dispatch_message` (`examples/py/13_saga.py`). Pass `on_dead`: without a sink, a command that
-fails terminally is handed back on every drain, and the rows behind it wait. `command_failed` is the
+commands in the outbox. `Relay(runner.outbox(), runner.publish_to(bus), on_dead=runner.command_failed)`
+sends them through `bus.dispatch_message`, decoded by the bus's codec, which names the same commands
+(`examples/py/13_saga.py`). Pass `on_dead`: without a sink, a command that
+fails terminally is handed back on every drain, and its instance's rows behind it wait. `command_failed` is the
 sink that tells the instance; see [compensation](#compensation). In Rust, the codec is a
-`RegistryCodec` over the command enum, and `Relay::<_, CommandMessage>::new(store).on_dead(sink)`
-with `runner.command(row)` sends them. The sink calls `runner.command_failed(tx, row, error)`.
+`RegistryCodec` over the command enum, and `Relay::<_, CommandMessage>::new(runner.outbox()).on_dead(sink)`
+with `runner.command(row)` sends them. The sink calls `runner.command_failed(tx, dead)` with the
+`DeadLetter` it was handed.
 
 ### The name
 
 A saga declares a `name`, such as `name: ClassVar[str] = "order"`. Keep it stable across deploys. It
-scopes the idempotency key of every command the saga sends. Two sagas may share an instance id and a
-bus, and their commands still never meet under one key.
+scopes the idempotency key of every command the saga sends, and the store keys the saga's rows and
+its outbox by it. Two sagas may share a database, an instance id and a bus. Their instances, their
+outboxes and their commands' keys still never meet.
 
 ### The instance rule
 
@@ -56,8 +60,8 @@ bus, and their commands still never meet under one key.
   there is none. A completed instance takes no event: the runner returns before it folds.
 - `None` ignores the event. The runner returns before it touches the store, so an unrelated event
   costs nothing and writes nothing.
-- Where one store serves every tenant, compose the tenant in here, with `tenant_key(mode, id,
-  msg.tenant)`. Two tenants' instances would otherwise fold into one. See
+- Where one store serves every tenant, compose the tenant in here, with `tenant_key(mode,
+  msg.tenant, id)`. Two tenants' instances would otherwise fold into one. See
   [multi-tenancy](../guides/multi-tenancy.md).
 
 The instance id is the saga's own key, not the aggregate id: one instance spans several
@@ -96,7 +100,7 @@ field and why. Two inputs come from the runner. The idempotency key scopes the i
 
 The command stays a pure business intent: it needs no lineage fields.
 
-The relay hands each row to `bus.dispatch_message(row, codec)`. The row keeps its id and lineage, so
+The relay hands each row to `bus.dispatch_message(row)`. The row keeps its id and lineage, so
 the events its handler saves continue the flow ([lineage rules](../kernels/event.md#causation--lineage)).
 The chain reads request, event, saga command, event, and nothing in it was stamped by hand. `testdata/golden/saga.json` pins the row, so both SDKs write
 the same one.
@@ -105,31 +109,40 @@ the same one.
 
 | Method | Contract |
 |---|---|
-| `load(id, tx)` | the stored `SagaInstance` (state, version and `folded` marks, or a completed tombstone) or `None` |
-| `save(id, state, version, folded, commands, tx)` | write the state, the `folded` marks and the step's commands at `version + 1` only if the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
-| `complete(id, version, commands, tx)` | the same, writing a tombstone instead of state |
-| `unpublished(limit)` / `mark_published(ids)` | the saga outbox, read by the relay outside any `tx`: committed commands only, oldest first, pruned by id, idempotently |
+| `saga` | the saga's `name`, the first argument of every method. Key the instance table and the outbox by `(saga, id)` |
+| `load(saga, id, tx)` | the stored instance, a `RunningInstance` (state, version and `folded` marks) or a `CompletedInstance` tombstone (its version), or `None` |
+| `save(saga, id, state, version, folded, commands, tx)` | write the state, the `folded` marks and the step's commands at `version + 1` only if the store is still at `version`, else raise `ConcurrencyError` and write nothing; returns the new version |
+| `complete(saga, id, version, commands, tx)` | the same, writing a tombstone instead of state |
+| `unpublished(saga, limit)` / `mark_published(saga, ids)` | the saga's outbox, read by the relay outside any `tx`: committed commands only, oldest first, pruned by id, idempotently |
+| `unpublished_count(saga)` | how many of the saga's committed commands wait to be sent, outside any `tx`; `SagaOutbox` forwards it as a `CountedOutbox` |
 | `tx` | with `tx` given, or `current_tx` of the store's transactor set, a durable backend enlists the write in that unit of work |
 
-A completed instance takes no write at all. Each command carries the id
-`saga_command_id(id, version + 1, index)`, which is `"{instance_id}:{version}:{index}"`. It is
-unique per committed transition. A durable store can key the outbox row on it. The command's
-idempotency key is that id under the saga's name, so a consumer deduplicates on it. The in-memory
+A completed instance takes no write at all. The saga name is part of the key because two sagas
+share one database: their writes must join the events' unit of work. Keyed by the instance id
+alone, one saga would load the other's state under a shared id. Each runner's relay would also drain
+the other's commands with the wrong codec and sink. A store counts one saga's waiting commands with
+`unpublished_count(saga)`, so `SagaOutbox` is a `CountedOutbox`. Each command carries the id
+`saga_command_id(saga, id, version + 1, index)`, which is
+`"{len(saga)}:{saga}:{instance_id}:{version}:{index}"`. It is unique per committed transition, and
+across sagas that share an instance id. A durable store can key the outbox row on it. The command's
+idempotency key is that id, so a consumer deduplicates on it. The in-memory
 backend refuses a command whose id is not that one, as `codec`. A
 durable store purges tombstones by retention, longer than any redelivery window. `SagaStoreContract` in
-`edax.testing` (and `crates/edax/tests/contract.rs` in Rust) holds a backend to every clause.
+`edax.testing` (and `edax::testkit::contract::saga_store`, behind the `testkit` feature, in Rust) holds a backend to every clause.
 
 `folded` is the kernel's record of the events the instance has folded (`saga_admit`). It is opaque
 text: the store keeps it in a text column, as `save` wrote it, and `load` returns it. It
 holds one entry per source aggregate: the highest sequence folded from it with that event's id, and,
 separately, the id of the last unsequenced event folded from it. It also keeps the id of every
-`SagaCommandFailed` folded, one per dead command. So it grows with the aggregates a workflow touches
+failure of the instance's own commands folded, one per dead command. So it grows with the aggregates a workflow touches
 and the commands that died, not with its events. Before it folds, the runner asks the kernel whether the
 instance has folded the event already. A repeat is skipped: no fold, no write, no command. So a
 redelivered step never decides its commands a second time under the next version's ids, even when
 one aggregate mixes sequenced and unsequenced events. An unsequenced event has no order, so only the
-last unsequenced one folded from its aggregate is recognized. A `SagaCommandFailed` is the exception: the
-kernel recognizes every one folded.
+last unsequenced one folded from its aggregate is recognized. A failure of the instance's own command is the
+exception: the kernel recognizes every one folded. It knows one by the whole shape `command_failed` builds:
+named `SagaCommandFailed`, its cause a command of the instance, and its id that command's plus `:failed`. A
+host event that only shares the name is an ordinary unsequenced event.
 
 The rule relies on the dispatcher handing one aggregate's events over in order, as the staleness
 rule does: an event below its aggregate's highest sequence is assumed folded (`below_mark`). A dead
@@ -177,7 +190,7 @@ saga: the decision and the messages it produces are stored in one transaction.
 | the step commits, then the ack is lost, or a crash replays every event above the committed offset | advanced | each redelivered event the instance folded is skipped: its command was committed once and is sent once |
 | crash after the commit, before the relay sends | advanced | the command waits in the outbox; the next drain sends it |
 | crash after the relay sent, before it marked | advanced | the next drain sends it again; the consumer deduplicates by the idempotency key, the command id under the saga's name |
-| a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks the rows behind it. With `on_dead=runner.command_failed`, the instance folds a `SagaCommandFailed` event |
+| a command fails terminally in the relay | advanced | with `on_dead` wired, the relay dead-letters the row through it and the rows behind it go out; without it, the row is handed back on every drain and blocks its instance's rows behind it. With `on_dead=runner.command_failed`, the instance folds a `SagaCommandFailed` event |
 
 So a command is sent at least once per committed step, and never for a step that did not commit.
 The row's `idempotency_key` is stable across re-sends, so an `idempotent` guard on the bus replays a
@@ -244,14 +257,15 @@ the relay's own re-sends after a lost mark. See [idempotency.md](./idempotency.m
 | Completion | `handle` returns `None` for the state | `handle` returns the `Completed` sentinel |
 | Transaction | `run(tx, msg)` takes the handle explicitly | `on_event(msg, tx=None)` falls back to `current_tx` |
 | Commands | `SagaRunner::new(saga, store, codec)`, the codec a `RegistryCodec` over the command enum | `SagaRunner(saga, store, codec)`, the codec a `json_codec` over the command types |
-| Sending | `Relay::<_, CommandMessage>::new(store)` and `runner.command(row)` | `runner.relay(bus)`, through `bus.dispatch_message` |
-| A dead command | `runner.command_failed(tx, row, error)` inside `on_dead` | `on_dead=runner.command_failed` |
+| Sending | `Relay::<_, CommandMessage>::new(runner.outbox())`, publishing each row with `bus.dispatch_message::<C>(row)` for the command type `C` its name names, each registered with `register_with_codec` | `Relay(runner.outbox(), runner.publish_to(bus))`, through `bus.dispatch_message` |
+| A dead command | `runner.command_failed(tx, dead)` inside `on_dead` | `on_dead=runner.command_failed` |
 | A skipped event | not reported: Rust has no `Observer` | `observer=`, `Observer.saga_skipped(name, reason, event_id)` |
 | State type | `Saga::State` and `SagaStore::State`, statically typed | `Any`, serialized as JSON by the in-memory backend |
 
 Both runners ask the kernel whether a step folds at all (`edax_event::saga_admit`) and which write it
-makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. A completed instance folds
-nothing. When nothing was loaded and the fold neither keeps state nor sends a command, the write is
+makes (`edax_event::saga_write`), pinned by `testdata/golden/saga.json`. Each passes what it loaded,
+the absent, running or completed instance, to both calls as one kernel `Loaded`, and writes what the
+kernel's write answers. A completed instance folds nothing. When nothing was loaded and the fold neither keeps state nor sends a command, the write is
 `nothing`. Otherwise it is `save` or `complete` at the loaded version, and the kernel also names the
 version the write commits, which the command ids carry. A versioned write for the
 `nothing` case would turn a no-op into a write that a concurrent creator of the same instance
@@ -287,15 +301,37 @@ saga's `instance_id`. Its `data` is JSON, `SagaCommandFailed` in both SDKs:
 def handle(self, state: Any, msg: EventMessage, /) -> tuple[Any, list[Any]]:
     if msg.name == SAGA_COMMAND_FAILED:
         failure: SagaCommandFailed = json.loads(msg.data)  # command_id, command, code, error
-        return Completed, [Refund(state["order_id"])]
-    ...
+        if failure["command"] == "Refund":
+            # Keep the failure durable for an explicit recovery or escalation step.
+            return {**state, "phase": "refund_failed", "failure": failure}, []
+        if state["phase"] == "waiting_for_fulfilment":
+            return {**state, "phase": "refunding"}, [Refund(state["order_id"])]
+    if msg.name == "RefundSucceeded" and state["phase"] in ("refunding", "refund_failed"):
+        return Completed, []
+    return state, []
 ```
+
+Here the host names the command `Refund` and routes its success reply back to this instance.
+A failed refund remains open for a host recovery event or operator action; it does not recursively
+issue another refund for every command failure. Recovery must respect the participant's idempotency
+contract, especially when the refund outcome is uncertain.
 
 A completed instance folds nothing, this event included. So a saga that may compensate keeps its
 instance open until the commands it waits on have run, instead of completing in the step that sends
 them. The event's id is the row's id plus `:failed`, so a sink that runs twice for one row folds it
 once, even when another command's failure folded in between.
 [edax-event](../kernels/event.md#saga--the-write-a-saga-step-makes) lists its fields.
+
+### Host-owned timeouts
+
+Persist each awaited reply's deadline and arrange durable delivery of a correlated timeout event.
+An in-process sleep alone loses the timeout on restart. The host handler decides whether the timeout
+still matches the current phase and deadline, then compensates or escalates. Ignore obsolete timers
+after a reply advances the instance, and make timeout delivery safe to repeat.
+
+edax supplies neither a timer scheduler nor automatic abandonment. Include timeout scheduling and
+recovery in the host's deployment requirements; without them, a missing reply can leave a saga open
+indefinitely.
 
 ## See also
 

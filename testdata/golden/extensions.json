@@ -1,57 +1,46 @@
 [
   {
-    "error_code": null,
-    "key": "traceparent",
-    "valid": true
+    "error": null,
+    "key": "traceparent"
   },
   {
-    "error_code": null,
-    "key": "http.origin_ip",
-    "valid": true
+    "error": null,
+    "key": "http.origin_ip"
   },
   {
-    "error_code": null,
-    "key": "x-amzn-trace-id",
-    "valid": true
+    "error": null,
+    "key": "x-amzn-trace-id"
   },
   {
-    "error_code": null,
-    "key": "0day",
-    "valid": true
+    "error": null,
+    "key": "0day"
   },
   {
-    "error_code": null,
-    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "valid": true
+    "error": null,
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   {
-    "error_code": "codec",
-    "key": "",
-    "valid": false
+    "error": "codec: extension key \"\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": ""
   },
   {
-    "error_code": "codec",
-    "key": "Traceparent",
-    "valid": false
+    "error": "codec: extension key \"Traceparent\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": "Traceparent"
   },
   {
-    "error_code": "codec",
-    "key": ".hidden",
-    "valid": false
+    "error": "codec: extension key \".hidden\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": ".hidden"
   },
   {
-    "error_code": "codec",
-    "key": "has space",
-    "valid": false
+    "error": "codec: extension key \"has space\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": "has space"
   },
   {
-    "error_code": "codec",
-    "key": "ünïcode",
-    "valid": false
+    "error": "codec: extension key \"ünïcode\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": "ünïcode"
   },
   {
-    "error_code": "codec",
-    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "valid": false
+    "error": "codec: extension key \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" must be 1 to 64 of [a-z0-9._-], starting with [a-z0-9]",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }
 ]

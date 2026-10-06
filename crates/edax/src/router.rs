@@ -3,12 +3,11 @@
 //! [`idempotent_by_id`] claims the event id under the consumer's scope, so a handler's side effect is
 //! effectively-once.
 
-use std::sync::Arc;
-
 use edax_event::{event_idempotency, EventMessage};
 
 use crate::chain::Chain;
-use crate::command::{guarded, HandlerError, IdempotencyStore};
+use crate::failure::HandlerError;
+use crate::idempotency::{Guard, IdempotencyStore};
 use crate::{Error, Tenancy};
 
 /// Handles one committed event. `Send + Sync` so a router can sit behind a worker pool. It fails with
@@ -16,12 +15,19 @@ use crate::{Error, Tenancy};
 /// command's failure with `?` and its verdict survives to the dispatcher.
 pub type EventHandler = Box<dyn Fn(&EventMessage) -> Result<(), HandlerError> + Send + Sync>;
 pub type EventMiddleware = Box<dyn Fn(EventHandler) -> EventHandler + Send + Sync>;
-/// The store behind [`idempotent_by_id`], shared by every wrapped handler and worker thread. Its result is `()`.
-pub type EventIdempotencyStore<T = ()> = Arc<dyn IdempotencyStore<(), Tx = T> + Send + Sync>;
 
 /// Routes a committed event to the handler for its event name, through a middleware chain baked around each
 /// handler at register time (first middleware is outermost); the unhandled fallback is wrapped too. Pass
 /// [`EventRouter::dispatch`] to a [`crate::dispatcher::KeyOrderedDispatcher`] to keep same-aggregate ordering.
+///
+/// The middleware is given once, to [`new`](Self::new), so a handler can never be registered before a
+/// middleware that should wrap it, such as [`idempotent_by_id`]. There is no way to add one later:
+///
+/// ```compile_fail
+/// let mut router = edax::EventRouter::new(Vec::new());
+/// router.register("Deposited", Box::new(|_| Ok(()))).unwrap();
+/// let router = router.with(Box::new(|next| next));
+/// ```
 pub struct EventRouter {
     chain: Chain<EventHandler, EventMiddleware>,
     on_unhandled: Option<EventHandler>,
@@ -29,20 +35,17 @@ pub struct EventRouter {
 
 impl Default for EventRouter {
     fn default() -> Self {
-        Self::new()
+        Self::new(Vec::new())
     }
 }
 
 impl EventRouter {
-    pub fn new() -> Self {
-        Self { chain: Chain::new(), on_unhandled: None }
-    }
-
-    /// Add a middleware to the chain. Middleware added first is outermost when handlers run. The chain
-    /// is baked at register time, so add middleware first.
-    pub fn with(mut self, mw: EventMiddleware) -> Self {
-        self.chain.push_middleware(mw);
-        self
+    /// A router whose every handler, and the fallback, runs inside `middleware`, the first one outermost.
+    pub fn new(middleware: Vec<EventMiddleware>) -> Self {
+        Self {
+            chain: Chain::new(middleware),
+            on_unhandled: None,
+        }
     }
 
     /// Fallback for events with no registered handler, wrapped in the chain. Without one they are ignored.
@@ -75,14 +78,15 @@ impl EventRouter {
 /// transient `in_progress` error, which the dispatcher nacks. A transient handler failure, or a panic,
 /// releases the claim; a terminal one is cached with its code and replays as the terminal `cached_failure`.
 /// Two events sharing an id with different bodies give the terminal `payload_mismatch`. The default handle
-/// gives at-least-once; [`idempotent_by_id_in`] commits the claim with the writes. See
+/// gives at-least-once; [`idempotent_by_id_in`] commits the claim with the writes. The store is taken by
+/// value, as [`idempotent`](crate::idempotent) takes it; pass an `Arc` of one to share it. See
 /// `docs/sdk/idempotency.md`.
-pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(
-    store: EventIdempotencyStore<T>,
-    scope: impl Into<String>,
-    tenancy: Tenancy,
-) -> EventMiddleware {
-    idempotent_by_id_in(store, scope, tenancy, |_| T::default())
+pub fn idempotent_by_id<S>(store: S, scope: impl Into<String>, tenancy: Tenancy) -> EventMiddleware
+where
+    S: IdempotencyStore<()> + Send + Sync + 'static,
+    S::Tx: Default + 'static,
+{
+    idempotent_by_id_in(store, scope, tenancy, |_| S::Tx::default())
 }
 
 /// [`idempotent_by_id`] over the host's transaction. `current` is called once per guarded event, with that event,
@@ -90,23 +94,22 @@ pub fn idempotent_by_id<T: Default + Send + Sync + 'static>(
 /// in the same handle, so the claim commits with them and a rollback drops both. Outside a unit of work
 /// `current` returns the auto-commit handle and the guarantee falls back to at-least-once. `current` runs on
 /// worker threads, so it must be `Send + Sync`, and it takes the event: one slot every worker reads is a race.
-pub fn idempotent_by_id_in<T: Send + Sync + 'static>(
-    store: EventIdempotencyStore<T>,
+pub fn idempotent_by_id_in<S>(
+    store: S,
     scope: impl Into<String>,
     tenancy: Tenancy,
-    current: impl Fn(&EventMessage) -> T + Send + Sync + 'static,
-) -> EventMiddleware {
-    // The middleware closure runs once per registered handler; the reference counts give each a cheap clone.
-    let scope: Arc<str> = Arc::from(scope.into());
-    let current = Arc::new(current);
+    current: impl Fn(&EventMessage) -> S::Tx + Send + Sync + 'static,
+) -> EventMiddleware
+where
+    S: IdempotencyStore<()> + Send + Sync + 'static,
+    S::Tx: 'static,
+{
+    let guard = Guard::new(store, scope, current);
     Box::new(move |next: EventHandler| {
-        let store = Arc::clone(&store);
-        let scope = Arc::clone(&scope);
-        let current = Arc::clone(&current);
+        let guard = guard.clone();
         Box::new(move |event: &EventMessage| -> Result<(), HandlerError> {
-            let rule = event_idempotency(event, tenancy, &scope)?;
-            let mut tx = current(event);
-            guarded(&*store, &mut tx, &rule.key, rule.payload_hash, || next(event))
+            let rule = event_idempotency(event, tenancy, guard.scope())?;
+            guard.run(event, &rule.key, rule.payload_hash, || next(event))
         })
     })
 }
@@ -114,14 +117,14 @@ pub fn idempotent_by_id_in<T: Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{Claim, ClaimHandle, Record};
-    use crate::ErrorCode;
     use crate::dispatcher::{Delivery, KeyOrderedDispatcher};
-    use crate::{MemoryIdempotencyStore, MemoryTransactor, MemoryTx, Transactor};
+    use crate::idempotency::{Claim, ClaimHandle, Record};
     use crate::testkit::event;
+    use crate::ErrorCode;
+    use crate::{MemoryIdempotencyStore, MemoryTransactor, MemoryTx, Transactor};
+    use std::collections::HashMap;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::collections::HashMap;
     use std::sync::{Arc, Barrier, Mutex};
 
     const DEPOSITED: &[u8] =
@@ -155,10 +158,13 @@ mod tests {
 
     #[test]
     fn duplicate_registration_is_rejected() {
-        let mut router = EventRouter::new();
+        let mut router = EventRouter::default();
         router.register("Created", Box::new(|_| Ok(()))).unwrap();
         let err = router.register("Created", Box::new(|_| Ok(()))).unwrap_err();
-        assert!(matches!(&err, Error { code: ErrorCode::AlreadyRegistered, message: n } if n == "Created"), "got {err}");
+        assert!(
+            matches!(&err, Error { code: ErrorCode::AlreadyRegistered, message: n } if n == "Created"),
+            "got {err}"
+        );
     }
 
     #[test]
@@ -210,16 +216,22 @@ mod tests {
         for c in cases {
             let named = Arc::new(Mutex::new(0u32));
             let unhandled = Arc::new(Mutex::new(0u32));
-            let mut router = EventRouter::new();
+            let mut router = EventRouter::default();
             let n = Arc::clone(&named);
             router
-                .register("Created", Box::new(move |_: &EventMessage| {
-                    *n.lock().unwrap() += 1;
-                    Ok(())
-                }))
+                .register(
+                    "Created",
+                    Box::new(move |_: &EventMessage| {
+                        *n.lock().unwrap() += 1;
+                        Ok(())
+                    }),
+                )
                 .unwrap();
             router
-                .register("Broken", Box::new(|_: &EventMessage| Err(Error::store("projection down").into())))
+                .register(
+                    "Broken",
+                    Box::new(|_: &EventMessage| Err(Error::store("projection down").into())),
+                )
                 .unwrap();
             if c.fallback {
                 let u = Arc::clone(&unhandled);
@@ -236,7 +248,12 @@ mod tests {
                 (want, got) => panic!("{}: want {want:?}, got {got:?}", c.name),
             }
             assert_eq!(*named.lock().unwrap(), c.want_named, "{}: named handler calls", c.name);
-            assert_eq!(*unhandled.lock().unwrap(), c.want_unhandled, "{}: fallback calls", c.name);
+            assert_eq!(
+                *unhandled.lock().unwrap(),
+                c.want_unhandled,
+                "{}: fallback calls",
+                c.name
+            );
         }
     }
 
@@ -263,17 +280,25 @@ mod tests {
                 fallback: true,
                 want: &[">a", ">b", "fallback", "<b", "<a"],
             },
-            Case { name: "ignored event runs no middleware", event: "Closed", fallback: false, want: &[] },
+            Case {
+                name: "ignored event runs no middleware",
+                event: "Closed",
+                fallback: false,
+                want: &[],
+            },
         ];
         for c in cases {
             let trace = Arc::new(Mutex::new(Vec::new()));
-            let mut router = EventRouter::new().with(tracing("a", &trace)).with(tracing("b", &trace));
+            let mut router = EventRouter::new(vec![tracing("a", &trace), tracing("b", &trace)]);
             let t = Arc::clone(&trace);
             router
-                .register("Deposited", Box::new(move |_: &EventMessage| {
-                    t.lock().unwrap().push("handler".into());
-                    Ok(())
-                }))
+                .register(
+                    "Deposited",
+                    Box::new(move |_: &EventMessage| {
+                        t.lock().unwrap().push("handler".into());
+                        Ok(())
+                    }),
+                )
                 .unwrap();
             if c.fallback {
                 let t = Arc::clone(&trace);
@@ -310,12 +335,21 @@ mod tests {
             self.claims.fetch_add(1, Ordering::SeqCst);
             self.inner.claim(tx, key, payload_hash)
         }
-        fn complete(&self, tx: &mut MemoryTx, key: &str, handle: &ClaimHandle, record: Record<()>) -> Result<(), Error> {
+        fn complete(
+            &self,
+            tx: &mut MemoryTx,
+            key: &str,
+            handle: &ClaimHandle,
+            record: Record<()>,
+        ) -> Result<(), Error> {
             self.inner.complete(tx, key, handle, record)
         }
         fn release(&self, tx: &mut MemoryTx, key: &str, handle: &ClaimHandle) -> Result<(), Error> {
             self.releases.fetch_add(1, Ordering::SeqCst);
             self.inner.release(tx, key, handle)
+        }
+        fn forget(&self, tx: &mut MemoryTx, key: &str) -> Result<(), Error> {
+            self.inner.forget(tx, key)
         }
     }
 
@@ -357,7 +391,10 @@ mod tests {
             Case {
                 name: "claim held by another worker fails with InProgress",
                 errors: &[],
-                want: [Some(Error::new(ErrorCode::InProgress, KEY)), Some(Error::new(ErrorCode::InProgress, KEY))],
+                want: [
+                    Some(Error::new(ErrorCode::InProgress, KEY)),
+                    Some(Error::new(ErrorCode::InProgress, KEY)),
+                ],
                 held: true,
                 redelivered: DEPOSITED,
                 want_calls: 0,
@@ -377,7 +414,10 @@ mod tests {
             Case {
                 name: "terminal failure is cached and the redelivery replays it",
                 errors: &[Some(codec)],
-                want: [Some(Error::codec("bad bytes")), Some(Error::new(ErrorCode::CachedFailure, "codec: bad bytes"))],
+                want: [
+                    Some(Error::codec("bad bytes")),
+                    Some(Error::new(ErrorCode::CachedFailure, "codec: bad bytes")),
+                ],
                 held: false,
                 redelivered: DEPOSITED,
                 want_calls: 1,
@@ -407,10 +447,14 @@ mod tests {
                     None => Ok(()),
                 }
             });
-            let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, SCOPE, Tenancy::Silo)(handler);
+            let guarded = idempotent_by_id(Arc::clone(&store), SCOPE, Tenancy::Silo)(handler);
             if c.held {
                 let hash = edax_cqrs::payload_hash(DEPOSITED);
-                assert!(matches!(store.claim(&mut MemoryTx::auto_commit(), KEY, hash), Ok(Claim::Won(_))), "{}", c.name);
+                assert!(
+                    matches!(store.claim(&mut MemoryTx::auto_commit(), KEY, hash), Ok(Claim::Won(_))),
+                    "{}",
+                    c.name
+                );
                 store.claims.store(0, Ordering::SeqCst);
             }
 
@@ -424,7 +468,12 @@ mod tests {
             }
             assert_eq!(calls.load(Ordering::SeqCst), c.want_calls, "{}: handler calls", c.name);
             assert_eq!(store.claims.load(Ordering::SeqCst), c.want_claims, "{}: claims", c.name);
-            assert_eq!(store.releases.load(Ordering::SeqCst), c.want_releases, "{}: releases", c.name);
+            assert_eq!(
+                store.releases.load(Ordering::SeqCst),
+                c.want_releases,
+                "{}: releases",
+                c.name
+            );
         }
     }
 
@@ -488,10 +537,12 @@ mod tests {
                     counted.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 });
-                let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, scope, mode)(handler);
+                let guarded = idempotent_by_id(Arc::clone(&store), scope, mode)(handler);
                 let mut env = deposited(DEPOSITED);
                 env.tenant = tenant.map(ToOwned::to_owned);
-                let code = guarded(&env).err().and_then(|e| e.downcast_ref::<Error>().map(|e| e.code));
+                let code = guarded(&env)
+                    .err()
+                    .and_then(|e| e.downcast_ref::<Error>().map(|e| e.code));
                 assert_eq!(code, c.want_error, "{}", c.name);
                 runs.push(calls.load(Ordering::SeqCst));
             }
@@ -513,11 +564,18 @@ mod tests {
             }
             Ok(())
         });
-        let guarded = idempotent_by_id(Arc::clone(&store) as EventIdempotencyStore<MemoryTx>, SCOPE, Tenancy::Silo)(handler);
+        let guarded = idempotent_by_id(Arc::clone(&store), SCOPE, Tenancy::Silo)(handler);
         let env = deposited(DEPOSITED);
 
-        assert!(catch_unwind(AssertUnwindSafe(|| guarded(&env))).is_err(), "the panic reaches the dispatcher");
-        assert_eq!(store.releases.load(Ordering::SeqCst), 1, "the claim is released, not stranded");
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| guarded(&env))).is_err(),
+            "the panic reaches the dispatcher"
+        );
+        assert_eq!(
+            store.releases.load(Ordering::SeqCst),
+            1,
+            "the claim is released, not stranded"
+        );
 
         // The redelivery re-runs the handler instead of reading the winner's stranded claim.
         guarded(&env).expect("the redelivery runs and completes");
@@ -530,18 +588,26 @@ mod tests {
         // the router's boxed handlers are Send + Sync (the dispatcher requires Send + Sync + 'static).
         let hits = Arc::new(Mutex::new(0u32));
         let h = Arc::clone(&hits);
-        let mut router = EventRouter::new();
+        let mut router = EventRouter::default();
         router
-            .register("Created", Box::new(move |_e: &EventMessage| {
-                *h.lock().unwrap() += 1;
-                Ok(())
-            }))
+            .register(
+                "Created",
+                Box::new(move |_e: &EventMessage| {
+                    *h.lock().unwrap() += 1;
+                    Ok(())
+                }),
+            )
             .unwrap();
         let router = Arc::new(router);
 
-        let dispatcher = KeyOrderedDispatcher::new(2, move |e: &EventMessage| router.dispatch(e)).expect("the dispatcher's workers spawn");
-        dispatcher.submit(event("a", "Created", 1));
-        dispatcher.submit(event("a", "Ignored", 2)); // no handler -> no-op
+        let dispatcher = KeyOrderedDispatcher::new(2, move |e: &EventMessage| router.dispatch(e))
+            .expect("the dispatcher's workers spawn");
+        for (seq, name) in [(1, "Created"), (2, "Ignored")] {
+            // An event with no handler is a no-op that acks.
+            dispatcher
+                .submit(Delivery::new(event("a", name, seq), || {}, || {}))
+                .expect("the dispatcher is running");
+        }
         dispatcher.stop();
         assert_eq!(*hits.lock().unwrap(), 1);
     }
@@ -552,30 +618,40 @@ mod tests {
         // and the worker acks it, so the broker drops it instead of nacking forever.
         let calls = Arc::new(AtomicUsize::new(0));
         let settled: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-        let store: EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::new());
-        let mut router = EventRouter::new().with(idempotent_by_id(store, SCOPE, Tenancy::Silo));
+        let store = Arc::new(MemoryIdempotencyStore::<()>::new());
+        let mut router = EventRouter::new(vec![idempotent_by_id(store, SCOPE, Tenancy::Silo)]);
         let c = Arc::clone(&calls);
         router
-            .register("Deposited", Box::new(move |_: &EventMessage| {
-                c.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }))
+            .register(
+                "Deposited",
+                Box::new(move |_: &EventMessage| {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }),
+            )
             .unwrap();
         let router = Arc::new(router);
 
-        let dispatcher = KeyOrderedDispatcher::new(1, move |e: &EventMessage| router.dispatch(e)).expect("the dispatcher's workers spawn");
+        let dispatcher = KeyOrderedDispatcher::new(1, move |e: &EventMessage| router.dispatch(e))
+            .expect("the dispatcher's workers spawn");
         for _ in 0..2 {
             let (a, n) = (Arc::clone(&settled), Arc::clone(&settled));
-            dispatcher.deliver(Delivery::new(
-                deposited(DEPOSITED),
-                move || a.lock().unwrap().push("ack"),
-                move || n.lock().unwrap().push("nack"),
-            ));
+            dispatcher
+                .submit(Delivery::new(
+                    deposited(DEPOSITED),
+                    move || a.lock().unwrap().push("ack"),
+                    move || n.lock().unwrap().push("nack"),
+                ))
+                .expect("the dispatcher is running");
         }
         dispatcher.stop();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the handler ran once");
-        assert_eq!(*settled.lock().unwrap(), ["ack", "ack"], "the duplicate is acked, not nacked");
+        assert_eq!(
+            *settled.lock().unwrap(),
+            ["ack", "ack"],
+            "the duplicate is acked, not nacked"
+        );
     }
 
     /// The consume-path twin of the command path's `idempotent_in`: the claim commits with the
@@ -588,7 +664,7 @@ mod tests {
     #[test]
     fn each_worker_claims_under_its_own_open_transaction() {
         let db = MemoryTransactor::new();
-        let store: EventIdempotencyStore<MemoryTx> = Arc::new(db.idempotency_store::<()>());
+        let store = db.idempotency_store::<()>();
         // The host's map from a delivery to the handle its own worker opened. `MemoryTx` is `Copy`,
         // so it hands out a value, not a borrow.
         let open: Arc<Mutex<HashMap<String, MemoryTx>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -596,13 +672,27 @@ mod tests {
 
         let counter = Arc::clone(&runs);
         let handler: EventHandler = Box::new(move |env: &EventMessage| {
-            *counter.lock().expect("no worker panics").entry(env.id.clone()).or_insert(0) += 1;
+            *counter
+                .lock()
+                .expect("no worker panics")
+                .entry(env.id.clone())
+                .or_insert(0) += 1;
             Ok(())
         });
         let published = Arc::clone(&open);
-        let guarded = Arc::new(idempotent_by_id_in(store, SCOPE, Tenancy::Silo, move |env: &EventMessage| {
-            published.lock().expect("no worker panics").get(&env.id).copied().unwrap_or_else(MemoryTx::auto_commit)
-        })(handler));
+        let guarded = Arc::new(idempotent_by_id_in(
+            store,
+            SCOPE,
+            Tenancy::Silo,
+            move |env: &EventMessage| {
+                published
+                    .lock()
+                    .expect("no worker panics")
+                    .get(&env.id)
+                    .copied()
+                    .unwrap_or_else(MemoryTx::auto_commit)
+            },
+        )(handler));
 
         // Both transactions are open before either claims, so a shared slot would hand one worker
         // the other's handle.
@@ -610,8 +700,12 @@ mod tests {
         let workers: Vec<_> = [("acct-1", false), ("acct-2", true)]
             .into_iter()
             .map(|(aggregate, roll_back)| {
-                let (db, open, guarded, both_open) =
-                    (db.clone(), Arc::clone(&open), Arc::clone(&guarded), Arc::clone(&both_open));
+                let (db, open, guarded, both_open) = (
+                    db.clone(),
+                    Arc::clone(&open),
+                    Arc::clone(&guarded),
+                    Arc::clone(&both_open),
+                );
                 std::thread::spawn(move || {
                     let env = event(aggregate, "Deposited", 1);
                     let unit = db.transaction(|tx| {
@@ -639,8 +733,16 @@ mod tests {
             guarded(&event(aggregate, "Deposited", 1)).expect("the redelivery settles");
         }
         let runs = runs.lock().expect("no worker panics").clone();
-        assert_eq!(runs.get("acct-1-1"), Some(&1), "the committed claim skips the redelivery");
-        assert_eq!(runs.get("acct-2-1"), Some(&2), "the rolled-back claim re-runs the handler");
+        assert_eq!(
+            runs.get("acct-1-1"),
+            Some(&1),
+            "the committed claim skips the redelivery"
+        );
+        assert_eq!(
+            runs.get("acct-2-1"),
+            Some(&2),
+            "the rolled-back claim re-runs the handler"
+        );
     }
 
     /// The shared-ledger half the Python suite reads back (`test_cross_sdk.py`): the bytes this guard
@@ -654,14 +756,17 @@ mod tests {
             .find(|c| c["name"] == "cached_rejection_written_by_rust")
             .expect("the vector carries the Rust-written rejection");
         let message = row["error"].as_str().expect("a failed row has a message").to_owned();
-        let store: EventIdempotencyStore<MemoryTx> = Arc::new(MemoryIdempotencyStore::new());
+        let store = Arc::new(MemoryIdempotencyStore::<()>::new());
         let handler: EventHandler = Box::new(move |_: &EventMessage| Err(crate::Terminal::new(message.clone()).into()));
         let guarded = idempotent_by_id(Arc::clone(&store), SCOPE, Tenancy::Silo)(handler);
         let mut env = event("acct-1", "Deposited", 1);
         env.id = "evt-1".into();
         env.data = b"cmd-a".to_vec();
         let err = guarded(&env).expect_err("the handler rejects");
-        assert!(err.downcast_ref::<crate::Terminal>().is_some(), "the caller sees its own rejection");
+        assert!(
+            err.downcast_ref::<crate::Terminal>().is_some(),
+            "the caller sees its own rejection"
+        );
 
         let key = event_idempotency(&env, Tenancy::Silo, SCOPE).unwrap().key;
         let stored = match store.claim(&mut MemoryTx::auto_commit(), &key, 0).unwrap() {

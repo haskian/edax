@@ -16,9 +16,9 @@ import pytest
 from conftest import SCOPE, build_message, delivered, event_claimed
 from edax._async import maybe_await
 from edax.backend.memory import MemoryBroker, MemoryIdempotencyStore
-from edax.command import Claimed, Record, Won
+from edax.idempotency import Claimed, Record, Won
 from edax.router import EventHandler, EventMiddleware, idempotent_by_id
-from edax.store import Tx, current_tx, transaction
+from edax.unit_of_work import Tx, current_tx, transaction
 
 DEPOSITED = (
     b'{"account_id":"acct-1","amount_cents":4200,"currency":"USD","occurred_at":"2024-05-01T12:00:00Z"}'
@@ -38,7 +38,7 @@ def tracing(name: str, trace: list[str]) -> EventMiddleware:
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(env: edax.EventMessage) -> None:
             trace.append(f">{name}")
-            await maybe_await(next_(env))
+            await next_(env)
             trace.append(f"<{name}")
 
         return handler
@@ -70,7 +70,7 @@ async def test_router_chain_branches(branch: str, event_name: str, fallback: boo
     )
 
     @router.on("Deposited")
-    def handler(env: edax.EventMessage) -> None:  # sync handler: the chain still awaits it
+    async def handler(env: edax.EventMessage) -> None:
         trace.append("handler")
 
     assert router.on("Other")(handler) is handler  # the decorator hands back the bare function
@@ -107,7 +107,6 @@ class IdCase:
     releases: int
     held: bool = False  # another worker holds the claim before the first delivery
     redelivered: bytes = DEPOSITED  # the second delivery's body
-    sync: bool = False  # the wrapped handler is a plain def, not a coroutine function
 
 
 @pytest.mark.parametrize(
@@ -140,14 +139,6 @@ class IdCase:
             ),
             id="same_id_with_a_different_body_raises_payload_mismatch",
         ),
-        pytest.param(
-            IdCase([None], [None, None], 1, 2, 0, sync=True),
-            id="sync_handler_runs_under_the_claim_and_its_duplicate_is_skipped",
-        ),
-        pytest.param(
-            IdCase([edax.CodecError("bad bytes")], [edax.CodecError, edax.CachedFailure], 1, 2, 0, sync=True),
-            id="sync_handler_raising_is_caught_by_the_guard_not_at_call_time",
-        ),
     ],
 )
 async def test_idempotent_by_id_branches(case: IdCase) -> None:
@@ -161,26 +152,54 @@ async def test_idempotent_by_id_branches(case: IdCase) -> None:
         if error is not None:
             raise error
 
-    async def async_handler(env: edax.EventMessage) -> None:
+    async def handler(env: edax.EventMessage) -> None:
         run(env)
 
-    # A sync handler raises while the middleware is *building* the awaitable, so the guard has to
-    # call it inside its own try or the claim is left pending and the failure never cached.
-    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(
-        run if case.sync else async_handler
-    )
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=edax.Tenancy.SILO)(handler)
     if case.held:
         assert isinstance(await store.claim(event_claimed(deposited().id), edax.payload_hash(DEPOSITED)), Won)
         store.claims = 0
 
     for env, raises in zip([deposited(), deposited(case.redelivered)], case.raises, strict=True):
         if raises is None:
-            assert await maybe_await(guarded(env)) is None
+            assert await guarded(env) is None
         else:
             with pytest.raises(raises):
-                await maybe_await(guarded(env))
+                await guarded(env)
     assert calls == case.calls
     assert (store.claims, store.releases) == (case.claims, case.releases)
+
+
+@pytest.mark.parametrize(
+    "tenancy, tenant",
+    [
+        pytest.param(edax.Tenancy.SILO, None, id="silo"),
+        pytest.param(edax.Tenancy.POOL, "acme", id="a_pool_forgets_under_the_tenant_composed_key"),
+    ],
+)
+async def test_forget_event_lets_a_re_driven_dead_letter_run_again(
+    tenancy: edax.Tenancy, tenant: str | None
+) -> None:
+    """A terminal failure is cached under the event's id, so a re-drive replays it. Forgetting the record
+    from the event id alone, as an operator holds it, lets the re-drive run the handler again."""
+    store = MemoryIdempotencyStore()
+    failures: list[BaseException] = [edax.Rejected("out of stock")]
+    runs: list[str] = []
+
+    async def handle(env: edax.EventMessage) -> None:
+        runs.append(env.id)
+        if failures:
+            raise failures.pop()
+
+    guarded = idempotent_by_id(store, scope=SCOPE, tenancy=tenancy)(handle)
+    env = build_message("acct-1", "Deposited", 3, data=DEPOSITED, tenant=tenant)
+    with pytest.raises(edax.Rejected):
+        await guarded(env)
+    with pytest.raises(edax.CachedFailure):
+        await guarded(env)
+    await edax.forget_event(store, SCOPE, env.id, tenancy=tenancy, tenant=tenant)
+    await guarded(env)
+    assert runs == [env.id, env.id], "the re-drive ran the handler, the replay did not"
 
 
 #: One delivery of :func:`deposited` through a guard of its own: the guard's scope and tenancy, and the
@@ -240,15 +259,17 @@ async def test_idempotent_by_id_keys_the_claim_by_scope_and_tenant(
     runs: list[int] = []
     for scope, tenancy, tenant in deliveries:
         calls: list[str] = []
-        guarded = idempotent_by_id(ledger, scope=scope, tenancy=tenancy)(
-            lambda env, ran=calls: ran.append(env.id)
-        )
+
+        async def handler(env: edax.EventMessage, ran: list[str] = calls) -> None:
+            ran.append(env.id)
+
+        guarded = idempotent_by_id(ledger, scope=scope, tenancy=tenancy)(handler)
         env = build_message("acct-1", "Deposited", 3, id="acct-1-3", data=DEPOSITED, tenant=tenant)
         if want_error is None:
-            await maybe_await(guarded(env))
+            await guarded(env)
         else:
             with pytest.raises(want_error):
-                await maybe_await(guarded(env))
+                await guarded(env)
         runs.append(len(calls))
     assert runs == want_runs
     assert ledger.claims == (0 if want_error else len(deliveries)), "a refused event claims nothing"
@@ -295,7 +316,7 @@ class TxIdempotencyStore:
         prior = view.get(key) if key in view else self.records.get(key)
         if prior is not None:
             return prior
-        view[key] = Record(payload_hash, pending=True)
+        view[key] = Record.pending(payload_hash)
         return Won()
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
@@ -329,14 +350,14 @@ async def test_claim_enlists_in_the_ambient_tx(
     env = deposited()
     try:
         async with transaction(store):
-            await maybe_await(guarded(env))  # no tx threaded: the store reads current_tx(itself)
+            await guarded(env)  # no tx threaded: the store reads current_tx(itself)
             assert event_claimed(env.id) not in store.records  # staged, not landed
             if body_raises:
                 raise RuntimeError("a later write in the same unit of work failed")
     except RuntimeError:
         assert body_raises
     assert (event_claimed(env.id) in store.records) is not body_raises
-    await maybe_await(guarded(env))  # redelivery outside any tx
+    await guarded(env)  # redelivery outside any tx
     assert calls == calls_after_redelivery
 
 
@@ -398,7 +419,7 @@ async def test_a_handler_runs_under_the_lineage_of_its_event() -> None:
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(msg: edax.EventMessage) -> None:
             seen.append(edax.current_lineage())
-            await maybe_await(next_(msg))
+            await next_(msg)
 
         return handler
 

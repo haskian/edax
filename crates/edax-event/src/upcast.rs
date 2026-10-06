@@ -39,7 +39,9 @@ pub fn upcast_plan(from: u32, to: u32, available: Option<&[u32]>) -> Result<Vec<
             "cannot upcast downward: from {from} > to {to} (the payload comes from a newer writer)"
         )));
     }
-    let Some(available) = available else { return Ok(Vec::new()) };
+    let Some(available) = available else {
+        return Ok(Vec::new());
+    };
     let have: BTreeSet<u32> = available.iter().copied().collect();
     if let Some(step) = (from..to).find(|step| !have.contains(step)) {
         return Err(Error::codec(format_args!(
@@ -63,16 +65,25 @@ pub const FIRST_VERSION: u32 = 1;
 /// asks once per name when it is built, so either mistake fails at startup, not on the first event.
 pub fn upcast_target(available: Option<&[u32]>) -> Result<u32, Error> {
     let have: BTreeSet<u32> = available.unwrap_or_default().iter().copied().collect();
-    let Some(&last) = have.last() else { return Ok(FIRST_VERSION) };
+    let Some(&last) = have.last() else {
+        return Ok(FIRST_VERSION);
+    };
     // Pairwise, not `first..last`: a chain `[0, u32::MAX]` must not walk 2^32 versions to find its hole.
-    if let Some((&below, _)) = have.iter().zip(have.iter().skip(1)).find(|(a, b)| a.checked_add(1) != Some(**b)) {
+    if let Some((&below, _)) = have
+        .iter()
+        .zip(have.iter().skip(1))
+        .find(|(a, b)| a.checked_add(1) != Some(**b))
+    {
         let missing = below.saturating_add(1);
         return Err(Error::codec(format_args!(
             "upcast steps skip v{missing}: a payload stored at v{missing} could never be raised"
         )));
     }
     last.checked_add(1).ok_or_else(|| {
-        Error::codec(format_args!("upcast step {last} raises past the largest schema version {}", u32::MAX))
+        Error::codec(format_args!(
+            "upcast step {last} raises past the largest schema version {}",
+            u32::MAX
+        ))
     })
 }
 
@@ -90,9 +101,27 @@ mod tests {
             want: Result<Vec<u32>, &'static str>,
         }
         let cases = [
-            Case { name: "already current", from: 1, to: 1, available: Some(&[]), want: Ok(vec![]) },
-            Case { name: "contiguous chain", from: 1, to: 3, available: Some(&[1, 2]), want: Ok(vec![1, 2]) },
-            Case { name: "extra step ignored", from: 2, to: 5, available: Some(&[2, 3, 4, 9]), want: Ok(vec![2, 3, 4]) },
+            Case {
+                name: "already current",
+                from: 1,
+                to: 1,
+                available: Some(&[]),
+                want: Ok(vec![]),
+            },
+            Case {
+                name: "contiguous chain",
+                from: 1,
+                to: 3,
+                available: Some(&[1, 2]),
+                want: Ok(vec![1, 2]),
+            },
+            Case {
+                name: "extra step ignored",
+                from: 2,
+                to: 5,
+                available: Some(&[2, 3, 4, 9]),
+                want: Ok(vec![2, 3, 4]),
+            },
             Case {
                 name: "gap",
                 from: 1,
@@ -107,8 +136,20 @@ mod tests {
                 available: Some(&[2]),
                 want: Err("codec: cannot upcast downward: from 3 > to 2 (the payload comes from a newer writer)"),
             },
-            Case { name: "no transforms: older payload is identity", from: 1, to: 3, available: None, want: Ok(vec![]) },
-            Case { name: "no transforms: current payload", from: 2, to: 2, available: None, want: Ok(vec![]) },
+            Case {
+                name: "no transforms: older payload is identity",
+                from: 1,
+                to: 3,
+                available: None,
+                want: Ok(vec![]),
+            },
+            Case {
+                name: "no transforms: current payload",
+                from: 2,
+                to: 2,
+                available: None,
+                want: Ok(vec![]),
+            },
             Case {
                 name: "no transforms: newer writer is refused",
                 from: 5,
@@ -132,9 +173,21 @@ mod tests {
             ("one step raises to v2", Some(&[1]), Ok(2)),
             ("unsorted, repeated steps are a set", Some(&[2, 1, 2]), Ok(3)),
             ("a chain may start above 1", Some(&[2, 3]), Ok(4)),
-            ("a hole is refused", Some(&[1, 3]), Err("codec: upcast steps skip v2: a payload stored at v2 could never be raised")),
-            ("a hole across the u32 span is found without walking it", Some(&[0, u32::MAX]), Err("codec: upcast steps skip v1: a payload stored at v1 could never be raised")),
-            ("a step at the ceiling has no target", Some(&[u32::MAX - 1, u32::MAX]), Err("codec: upcast step 4294967295 raises past the largest schema version 4294967295")),
+            (
+                "a hole is refused",
+                Some(&[1, 3]),
+                Err("codec: upcast steps skip v2: a payload stored at v2 could never be raised"),
+            ),
+            (
+                "a hole across the u32 span is found without walking it",
+                Some(&[0, u32::MAX]),
+                Err("codec: upcast steps skip v1: a payload stored at v1 could never be raised"),
+            ),
+            (
+                "a step at the ceiling has no target",
+                Some(&[u32::MAX - 1, u32::MAX]),
+                Err("codec: upcast step 4294967295 raises past the largest schema version 4294967295"),
+            ),
         ];
         for (name, available, want) in cases {
             let got = upcast_target(available).map_err(|e| e.to_string());

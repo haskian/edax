@@ -1,0 +1,222 @@
+[
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": null,
+    "name": "nothing_set",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": 1,
+    "commit_timeout_ms": 1,
+    "drain_timeout_ms": 1,
+    "error": null,
+    "name": "all_at_the_floor",
+    "op": "durations",
+    "publish_timeout_ms": 1
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": null,
+    "name": "publish_timeout_ms_one_millisecond",
+    "op": "durations",
+    "publish_timeout_ms": 1
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: publish_timeout_ms is 0 ms; a duration must be positive, or every send would time out",
+    "name": "publish_timeout_ms_zero",
+    "op": "durations",
+    "publish_timeout_ms": 0
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: publish_timeout_ms is -1 ms; a duration must be positive, or every send would time out",
+    "name": "publish_timeout_ms_negative",
+    "op": "durations",
+    "publish_timeout_ms": -1
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: publish_timeout_ms is -9223372036854775808 ms; a duration must be positive, or every send would time out",
+    "name": "publish_timeout_ms_most_negative",
+    "op": "durations",
+    "publish_timeout_ms": -9223372036854775808
+  },
+  {
+    "commit_interval_ms": 1,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": null,
+    "name": "commit_interval_ms_one_millisecond",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": 0,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_interval_ms is 0 ms; a duration must be positive, or the commit loop would spin",
+    "name": "commit_interval_ms_zero",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": -1,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_interval_ms is -1 ms; a duration must be positive, or the commit loop would spin",
+    "name": "commit_interval_ms_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": -9223372036854775808,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_interval_ms is -9223372036854775808 ms; a duration must be positive, or the commit loop would spin",
+    "name": "commit_interval_ms_most_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": 1,
+    "drain_timeout_ms": null,
+    "error": null,
+    "name": "commit_timeout_ms_one_millisecond",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": 0,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_timeout_ms is 0 ms; a duration must be positive, or no commit would ever land",
+    "name": "commit_timeout_ms_zero",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": -1,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_timeout_ms is -1 ms; a duration must be positive, or no commit would ever land",
+    "name": "commit_timeout_ms_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": -9223372036854775808,
+    "drain_timeout_ms": null,
+    "error": "bad_handle: commit_timeout_ms is -9223372036854775808 ms; a duration must be positive, or no commit would ever land",
+    "name": "commit_timeout_ms_most_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": 1,
+    "error": null,
+    "name": "drain_timeout_ms_one_millisecond",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": 0,
+    "error": "bad_handle: drain_timeout_ms is 0 ms; a duration must be positive, or a revoke would hand a running key to the new owner",
+    "name": "drain_timeout_ms_zero",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": -1,
+    "error": "bad_handle: drain_timeout_ms is -1 ms; a duration must be positive, or a revoke would hand a running key to the new owner",
+    "name": "drain_timeout_ms_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "commit_interval_ms": null,
+    "commit_timeout_ms": null,
+    "drain_timeout_ms": -9223372036854775808,
+    "error": "bad_handle: drain_timeout_ms is -9223372036854775808 ms; a duration must be positive, or a revoke would hand a running key to the new owner",
+    "name": "drain_timeout_ms_most_negative",
+    "op": "durations",
+    "publish_timeout_ms": null
+  },
+  {
+    "auto_commit": false,
+    "error": null,
+    "has_group": true,
+    "name": "consumer_in_a_group_without_auto_commit",
+    "op": "consumer"
+  },
+  {
+    "auto_commit": true,
+    "error": "bad_handle: the consumer client auto-commits its fetch position, which commits past deliveries still in flight and loses them on a restart; turn auto-commit off",
+    "has_group": true,
+    "name": "consumer_that_auto_commits",
+    "op": "consumer"
+  },
+  {
+    "auto_commit": false,
+    "error": "bad_handle: the consumer client has no group id, so every commit fails and nothing is ever committed; give it a group id",
+    "has_group": false,
+    "name": "consumer_with_no_group",
+    "op": "consumer"
+  },
+  {
+    "auto_commit": true,
+    "error": "bad_handle: the consumer client auto-commits its fetch position, which commits past deliveries still in flight and loses them on a restart; turn auto-commit off",
+    "has_group": false,
+    "name": "consumer_that_auto_commits_with_no_group",
+    "op": "consumer"
+  },
+  {
+    "error": null,
+    "has_dead_sink": true,
+    "name": "consumer_with_a_dead_letter_sink",
+    "op": "dead_sink"
+  },
+  {
+    "error": "bad_handle: the consumer runs a dispatcher with no dead-letter sink: a nack rewinds the partition, so a message that fails for good stalls its partition forever; wire a dead-letter sink",
+    "has_dead_sink": false,
+    "name": "consumer_with_no_dead_letter_sink",
+    "op": "dead_sink"
+  },
+  {
+    "acks": -1,
+    "name": "acks_all",
+    "op": "acks",
+    "warning": null
+  },
+  {
+    "acks": 1,
+    "name": "acks_leader",
+    "op": "acks",
+    "warning": "the producer client acks with acks=1, so a leader failover loses an acknowledged outbox event; build it with acks=all (-1), which an idempotent producer implies"
+  },
+  {
+    "acks": 0,
+    "name": "acks_none",
+    "op": "acks",
+    "warning": "the producer client acks with acks=0, so a leader failover loses an acknowledged outbox event; build it with acks=all (-1), which an idempotent producer implies"
+  }
+]

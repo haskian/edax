@@ -17,7 +17,7 @@ flowchart LR
     F -->|"at-least-once, ordered per aggregate id"| G["broker"]
     G -->|"at-least-once, per-key order"| H["KeyOrderedDispatcher"]
     H -->|"at-least-once, bounded, then dead-letter"| I["event handler"]
-    I -->|"at-most-once per version"| J["ProjectionStore"]
+    I -->|"one write per expected row version; guard deduplicates events"| J["ProjectionStore"]
 ```
 
 ## Hop by hop
@@ -67,7 +67,9 @@ flowchart LR
   lost event.
 - Two relays on a non-leasing `unpublished` double-publish. Overlapping drains of one relay take
   turns.
-- A row whose publish fails stops the batch; the rows before it are marked.
+- Order is per key, the row's tenant and aggregate. A row whose publish fails holds back the rows
+  behind it of its own key; the other keys go on, and every row the drain settled is marked. A second
+  transient failure with no publish between them stops the batch: the broker is likely down.
 - A poison row goes to `on_dead` (terminal, or at `max_attempts`) instead of stalling the outbox.
   Any other failure is handed back after a growing backoff step.
 - A saga's commands ride the same relay from the saga outbox. They are written with the step's
@@ -101,15 +103,22 @@ flowchart LR
   failure.
 - Without `on_dead` a raising handler nacks forever and the broker redelivers forever, at the capped
   backoff. `KafkaConsumer.run` refuses that.
+- A successful dead-letter sink acknowledges the failed event, so later events can advance the key
+  past a gap. The relay also advances after a successful dead-letter.
+  A later redrive can fall below a saga or projector's sequence watermark and be skipped.
+  Strict processing order requires stopping before acknowledgement and resolving the gap before
+  resuming; there is no durable per-key parking mode. Kafka rewinds affect the whole partition.
 
 ### handler to `ProjectionStore`
 
-- Delivery: at-most-once per version.
-- Safe because `save` is a database-enforced compare-and-set on `entity.version`.
-- Last-writer-wins lets a redelivery overwrite a newer document.
+- Concurrency: one successful write per expected row version.
+- `save` is a database-enforced compare-and-set on `entity.version`.
+- A redelivery can reload the new version and fold again; the version check alone does not deduplicate events.
 
 The consume path gets its deduplication from `idempotent_by_id`, which claims `msg.id` under the
 consumer's `scope` in the same ledger and reaches the same kernel verdict the command bus does.
+The guard's settlement and projection write must share a transaction to close the crash window
+between writing the document and recording completion.
 
 The `Relay` hop has a second shape. Change data capture reads the write-ahead log, through logical
 replication or a Debezium outbox router. The outbox row is already written in the same transaction,

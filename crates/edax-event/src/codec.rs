@@ -9,15 +9,15 @@
 //!
 //! One evolution rule for both formats and both kinds, pinned by `testdata/golden/envelope_decode.json`:
 //!
-//! - A message is a **map** keyed by field name in both formats, never a positional array. A reader
-//!   refuses an array where a map belongs.
+//! - A message is a **map** keyed by field name in both formats, never a positional array, and so is
+//!   every struct inside it. A reader refuses an array where a map belongs ([`StructsFromMaps`]).
 //! - A reader **ignores a field it does not know**, so a writer may add one and an older reader keeps
 //!   decoding (forward compatible). An optional field (`tenant`, `sequence`, `occurred_at`,
 //!   `idempotency_key`, a command's `aggregate_id`) is written as `null` and reads as `None` when
 //!   missing; every other field is required.
 //! - **Trailing bytes** after the message are refused in both formats: a frame holds one message.
 //! - A repeated field is refused; a repeated key inside `extensions` or `metadata` keeps its last value.
-//! - An [`Extensions`](crate::domain::Extensions) key outside [`check_extensions`] is refused on
+//! - An [`Extensions`](crate::message::Extensions) key outside [`check_extensions`] is refused on
 //!   encode and on decode, so a producer never writes what every consumer would refuse.
 //! - A `tenant` outside [`check_tenant`] (empty, or over [`edax_core::TENANT_MAX`] bytes) is refused
 //!   on encode and on decode, so a tenant another service minted is checked before any key is composed
@@ -27,14 +27,25 @@
 //! as a Kafka `content-type` header, decodes by it ([`Format::from_media_type`]), and a decode of the
 //! wrong kind fails on that, not on whichever field happens to be missing.
 //!
+//! A domain event's or command's **payload** meets the same format rules through
+//! [`Format::encode_payload`] and [`Format::decode_payload`], which every SDK codec calls: a struct at any
+//! depth reads from a map only, a plain string or number reads as itself, and trailing bytes are refused.
+//! Pinned, through the Rust SDK's registry codec, by `testdata/golden/event_codec.json`.
+//!
 //! Custom formats are NOT handled here. The consistency primitives ([`crate::partition()`],
 //! [`crate::is_stale`]) operate on fields, not encoded bytes, so a service that serializes its own
 //! messages with a format the lib doesn't know still routes and orders correctly.
 
-use crate::domain::{check_extensions, Kind, Message};
+mod maps;
+
+pub use maps::StructsFromMaps;
+
+use crate::message::{check_extensions, Kind, Message};
 use edax_core::check_tenant;
 use edax_core::Error;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::{DeserializeOwned, DeserializeSeed};
+use serde::Serialize;
+use std::marker::PhantomData;
 
 /// The media types edax mints, one per format and kind. Private, so the mapping cannot be read
 /// through [`Format::media_type`] here and written differently there.
@@ -43,14 +54,16 @@ const MEDIA_TYPE_EVENT_MSGPACK: &str = "application/vnd.edax.event+msgpack";
 const MEDIA_TYPE_COMMAND_JSON: &str = "application/vnd.edax.command+json";
 const MEDIA_TYPE_COMMAND_MSGPACK: &str = "application/vnd.edax.command+msgpack";
 
-/// A built-in message serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Format {
-    /// Human-readable JSON; `data` is base64.
-    Json,
-    /// Compact MessagePack; `data` is native bytes.
-    Msgpack,
+edax_core::closed_names! {
+    /// A built-in message serialization, named `"json"` or `"msgpack"`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum Format {
+        /// Human-readable JSON; `data` is base64.
+        Json = "json",
+        /// Compact MessagePack; `data` is native bytes.
+        Msgpack = "msgpack",
+    }
 }
 
 /// The field rules the codec holds every message to, in both directions: the extension key rule, and
@@ -66,19 +79,7 @@ impl Format {
     /// Resolve a format by name (`"json"` / `"msgpack"`). Used by the bindings. An unknown name is
     /// a `codec` error.
     pub fn from_name(name: &str) -> Result<Format, Error> {
-        match name {
-            "json" => Ok(Format::Json),
-            "msgpack" => Ok(Format::Msgpack),
-            other => Err(unknown_format(other)),
-        }
-    }
-
-    /// The name a binding selects this format by, the inverse of [`from_name`](Format::from_name).
-    pub fn name(&self) -> &'static str {
-        match self {
-            Format::Json => "json",
-            Format::Msgpack => "msgpack",
-        }
+        Format::by_name(name).ok_or_else(|| unknown_format(name))
     }
 
     // Vocabulary, because the two words below are not synonyms (RFC 9110 §8.3, RFC 6838):
@@ -134,43 +135,48 @@ impl Format {
 
     /// Encode a message of either kind to this format's canonical wire bytes: a map keyed by field
     /// name in both formats (MessagePack through `to_vec_named`, never the positional array). A bad
-    /// extension key or tenant id is a `codec` error; nothing else can fail.
+    /// extension key or tenant id is a `codec` error. A message holds only strings, integers, bytes and
+    /// string maps, so the serializer itself has nothing to refuse.
     pub fn encode<M: Message + Serialize>(self, msg: &M) -> Result<Vec<u8>, Error> {
         check_message(msg)?;
-        Ok(self.encode_value(msg))
+        self.encode_payload(msg)
     }
 
     /// Decode this format's wire bytes to a message of kind `M`, under the evolution rule in the module
     /// docs. Bytes that are not a valid `M` in this format are a `codec` error: the same bytes fail the
     /// same way every time.
     pub fn decode<M: Message + DeserializeOwned>(self, bytes: &[u8]) -> Result<M, Error> {
-        let msg: M = self.decode_value(bytes)?;
+        let msg: M = self.decode_payload(bytes, PhantomData)?;
         check_message(&msg)?;
         Ok(msg)
     }
 
-    #[allow(clippy::expect_used, reason = "a message holds only strings, ints, bytes and string maps, none of which fail")]
-    fn encode_value<T: Serialize>(self, value: &T) -> Vec<u8> {
+    /// Encode any serde value to this format's bytes: JSON through `serde_json`, MessagePack with every
+    /// struct as a map keyed by field name (`to_vec_named`), as Python's msgspec writes it. A value the
+    /// format cannot write (a non-string JSON map key, a refusing `Serialize`) is a `codec` error.
+    pub fn encode_payload<T: Serialize + ?Sized>(self, value: &T) -> Result<Vec<u8>, Error> {
         match self {
-            Format::Json => serde_json::to_vec(value).expect("a message is always serializable"),
-            Format::Msgpack => rmp_serde::to_vec_named(value).expect("a message is always serializable"),
+            Format::Json => serde_json::to_vec(value).map_err(Error::codec),
+            Format::Msgpack => rmp_serde::to_vec_named(value).map_err(Error::codec),
         }
     }
 
-    fn decode_value<T: DeserializeOwned>(self, bytes: &[u8]) -> Result<T, Error> {
+    /// Decode exactly one value from this format's bytes through `seed`, under the payload rules: every
+    /// struct at any depth reads from a map only ([`StructsFromMaps`]), and trailing bytes are refused
+    /// (whitespace after a JSON value is not data). Bytes that are not such a value are a `codec` error.
+    pub fn decode_payload<'de, S: DeserializeSeed<'de>>(self, bytes: &'de [u8], seed: S) -> Result<S::Value, Error> {
         match self {
             Format::Json => {
                 let mut de = serde_json::Deserializer::from_slice(bytes);
-                let value = map_only(&mut de).map_err(decode_error)?;
-                // `end` refuses anything but trailing whitespace.
+                let value = seed.deserialize(StructsFromMaps(&mut de)).map_err(decode_error)?;
                 de.end().map_err(decode_error)?;
                 Ok(value)
             }
             Format::Msgpack => {
                 let mut de = rmp_serde::Deserializer::new(std::io::Cursor::new(bytes));
-                let value = map_only(&mut de).map_err(decode_error)?;
+                let value = seed.deserialize(StructsFromMaps(&mut de)).map_err(decode_error)?;
                 if usize::try_from(de.position()).ok() != Some(bytes.len()) {
-                    return Err(Error::codec("decode: trailing bytes after the message"));
+                    return Err(Error::codec("decode: trailing bytes after the value"));
                 }
                 Ok(value)
             }
@@ -180,27 +186,6 @@ impl Format {
 
 fn decode_error(error: impl std::fmt::Display) -> Error {
     Error::codec(format_args!("decode: {error}"))
-}
-
-/// Deserialize `T` from a map only. serde's derive also reads a struct from a positional array, so
-/// without this a reader would accept two shapes of one message, and a writer that added a field
-/// would make a fixed-length array poison for every older reader.
-pub(crate) fn map_only<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    struct MapOnly<T>(std::marker::PhantomData<T>);
-    impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for MapOnly<T> {
-        type Value = T;
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a map keyed by field name")
-        }
-        fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
-            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-        }
-    }
-    deserializer.deserialize_map(MapOnly(std::marker::PhantomData))
 }
 
 fn unknown_format(name: &str) -> Error {
@@ -234,16 +219,205 @@ pub(crate) mod bytes_field {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{CommandMessage, EventMessage, Metadata};
+    use crate::message::{CommandMessage, EventMessage, Metadata};
     use crate::testkit::{base_command, base_event};
 
     #[test]
     fn each_format_round_trips_both_kinds() {
         for fmt in [Format::Json, Format::Msgpack] {
             let event = base_event();
-            assert_eq!(fmt.decode::<EventMessage>(&fmt.encode(&event).unwrap()).unwrap(), event, "{fmt:?}");
+            assert_eq!(
+                fmt.decode::<EventMessage>(&fmt.encode(&event).unwrap()).unwrap(),
+                event,
+                "{fmt:?}"
+            );
             let cmd = base_command();
-            assert_eq!(fmt.decode::<CommandMessage>(&fmt.encode(&cmd).unwrap()).unwrap(), cmd, "{fmt:?}");
+            assert_eq!(
+                fmt.decode::<CommandMessage>(&fmt.encode(&cmd).unwrap()).unwrap(),
+                cmd,
+                "{fmt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_the_serializer_refuses_is_a_codec_error_not_a_panic() {
+        // No message reaches this today, but the kernel never panics on a host's input.
+        struct Refuses;
+        impl Serialize for Refuses {
+            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("no wire form"))
+            }
+        }
+        for fmt in [Format::Json, Format::Msgpack] {
+            assert_eq!(
+                fmt.encode_payload(&Refuses),
+                Err(Error::codec("no wire form")),
+                "{fmt:?}"
+            );
+        }
+    }
+
+    /// The payload rule at every depth and through every serde shape the adapter wraps: a struct reads
+    /// from a map only, wherever it sits, and every other shape reads as it did. Each input is one JSON
+    /// value, written in both formats.
+    #[test]
+    fn a_struct_reads_from_a_map_only_at_every_depth() {
+        use serde::Deserialize;
+        use serde_json::json;
+        use std::collections::BTreeMap;
+
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Inner {
+            city: String,
+        }
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Wrapper(i64);
+        #[derive(Debug, Deserialize, PartialEq)]
+        enum Shape {
+            Unit,
+            Newtype(Inner),
+            Tuple(i64, String),
+            Struct { city: String },
+        }
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Outer {
+            inner: Inner,
+            listed: Vec<Inner>,
+            keyed: BTreeMap<String, Inner>,
+            optional: Option<Inner>,
+            shape: Shape,
+            wrapped: Wrapper,
+            pair: (i64, String),
+        }
+
+        fn decode<T: for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
+            format: Format,
+            value: &serde_json::Value,
+        ) -> Result<T, String> {
+            let bytes = format.encode_payload(value).map_err(|e| e.to_string())?;
+            format
+                .decode_payload(&bytes, PhantomData::<T>)
+                .map_err(|e| e.to_string())
+        }
+        let nyc = || Inner { city: "NYC".into() };
+        let outer = |overrides: serde_json::Value| {
+            let mut value = json!({
+                "inner": {"city": "NYC"},
+                "listed": [{"city": "NYC"}],
+                "keyed": {"home": {"city": "NYC"}},
+                "optional": {"city": "NYC"},
+                "shape": {"Newtype": {"city": "NYC"}},
+                "wrapped": 7,
+                "pair": [1, "x"],
+                "unknown": [1, 2],
+            });
+            for (field, item) in overrides.as_object().unwrap() {
+                value[field] = item.clone();
+            }
+            value
+        };
+        let want = |shape: Shape| Outer {
+            inner: nyc(),
+            listed: vec![nyc()],
+            keyed: BTreeMap::from([("home".to_owned(), nyc())]),
+            optional: Some(nyc()),
+            shape,
+            wrapped: Wrapper(7),
+            pair: (1, "x".into()),
+        };
+        let refused = "as a map keyed by field name";
+        let cases: [(&str, serde_json::Value, Result<Outer, &str>); 11] = [
+            (
+                "every_struct_a_map_reads_and_an_unknown_field_is_ignored",
+                outer(json!({})),
+                Ok(want(Shape::Newtype(nyc()))),
+            ),
+            (
+                "a_unit_variant_reads",
+                outer(json!({"shape": "Unit"})),
+                Ok(want(Shape::Unit)),
+            ),
+            (
+                "a_tuple_variant_reads_from_its_array",
+                outer(json!({"shape": {"Tuple": [1, "x"]}})),
+                Ok(want(Shape::Tuple(1, "x".into()))),
+            ),
+            (
+                "a_struct_variant_reads_from_a_map",
+                outer(json!({"shape": {"Struct": {"city": "NYC"}}})),
+                Ok(want(Shape::Struct { city: "NYC".into() })),
+            ),
+            (
+                "an_absent_option_reads_as_none",
+                outer(json!({"optional": null})),
+                Ok(Outer {
+                    optional: None,
+                    ..want(Shape::Newtype(nyc()))
+                }),
+            ),
+            (
+                "a_nested_struct_as_an_array",
+                outer(json!({"inner": ["NYC"]})),
+                Err(refused),
+            ),
+            (
+                "a_struct_in_a_list_as_an_array",
+                outer(json!({"listed": [["NYC"]]})),
+                Err(refused),
+            ),
+            (
+                "a_struct_in_a_map_as_an_array",
+                outer(json!({"keyed": {"home": ["NYC"]}})),
+                Err(refused),
+            ),
+            (
+                "a_struct_in_an_option_as_an_array",
+                outer(json!({"optional": ["NYC"]})),
+                Err(refused),
+            ),
+            (
+                "a_struct_in_a_newtype_variant_as_an_array",
+                outer(json!({"shape": {"Newtype": ["NYC"]}})),
+                Err(refused),
+            ),
+            (
+                "a_struct_variant_as_an_array",
+                outer(json!({"shape": {"Struct": ["NYC"]}})),
+                Err(refused),
+            ),
+        ];
+        for format in [Format::Json, Format::Msgpack] {
+            for (name, value, want) in &cases {
+                match (decode::<Outer>(format, value), want) {
+                    (Ok(got), Ok(want)) => assert_eq!(&got, want, "{format:?} {name}"),
+                    (Err(error), Err(needle)) => {
+                        assert!(
+                            error.starts_with("codec: decode: invalid type") && error.contains(needle),
+                            "{format:?} {name}: {error}"
+                        );
+                    }
+                    (got, want) => panic!("{format:?} {name}: got {got:?}, want {want:?}"),
+                }
+            }
+            // The top level, and the shapes that are no struct, which read as themselves.
+            let top = decode::<Inner>(format, &json!(["NYC"])).expect_err("top level");
+            assert!(top.contains(refused), "{format:?}: {top}");
+            assert_eq!(
+                decode::<String>(format, &json!("new-name")),
+                Ok("new-name".to_owned()),
+                "{format:?}: a string"
+            );
+            assert_eq!(
+                decode::<Wrapper>(format, &json!(7)),
+                Ok(Wrapper(7)),
+                "{format:?}: a newtype"
+            );
+            assert_eq!(
+                decode::<Vec<i64>>(format, &json!([1, 2])),
+                Ok(vec![1, 2]),
+                "{format:?}: a list"
+            );
         }
     }
 
@@ -273,7 +447,7 @@ mod tests {
     /// The next event version as a writer would ship it: today's fields plus one more. A reader of
     /// either version must read the other's bytes.
     mod next_version {
-        use crate::domain::{Extensions, Metadata};
+        use crate::message::{Extensions, Metadata};
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Serialize, Deserialize)]
@@ -341,7 +515,10 @@ mod tests {
                 _ => rmp_serde::from_slice(&wire).unwrap(),
             };
             assert_eq!(newer.priority, None, "{format:?}");
-            assert_eq!((newer.id, newer.data, newer.sequence), (env.id.clone(), env.data.clone(), env.sequence));
+            assert_eq!(
+                (newer.id, newer.data, newer.sequence),
+                (env.id.clone(), env.data.clone(), env.sequence)
+            );
         }
     }
 
@@ -368,12 +545,15 @@ mod tests {
     #[test]
     fn every_format_and_kind_round_trips_through_its_media_type() {
         for fmt in [Format::Json, Format::Msgpack] {
-            assert_eq!(Format::from_name(fmt.name()).unwrap(), fmt);
+            assert_eq!(Format::from_name(fmt.as_str()).unwrap(), fmt);
             for kind in [Kind::Event, Kind::Command] {
                 assert_eq!(Format::from_media_type(fmt.media_type(kind)).unwrap(), (fmt, kind));
                 // The suffix is the structured-syntax one (RFC 6839), so tooling that never heard of
                 // edax still knows how to parse the bytes.
-                assert_eq!(fmt.media_type(kind), format!("application/vnd.edax.{}+{}", kind.name(), fmt.name()));
+                assert_eq!(
+                    fmt.media_type(kind),
+                    format!("application/vnd.edax.{}+{}", kind.as_str(), fmt.as_str())
+                );
             }
         }
     }
@@ -381,17 +561,32 @@ mod tests {
     #[test]
     fn malformed_input_is_rejected() {
         assert!(Format::from_name("protobuf").is_err(), "unknown format name");
-        assert!(Format::from_media_type("application/json").is_err(), "a media type edax never mints");
+        assert!(
+            Format::from_media_type("application/json").is_err(),
+            "a media type edax never mints"
+        );
         assert!(
             Format::from_media_type("application/vnd.edax.event+json; charset=utf-8").is_err(),
             "parameters are not stripped, so the string must match whole"
         );
-        assert!(Format::Json.decode::<EventMessage>(b"not json").is_err(), "json wire bytes are not json");
-        assert!(Format::Msgpack.decode::<EventMessage>(b"not msgpack").is_err(), "msgpack wire bytes are not msgpack");
-        assert!(Format::Json.decode::<EventMessage>(br#"{"id": "evt-1"}"#).is_err(), "json is missing message fields");
+        assert!(
+            Format::Json.decode::<EventMessage>(b"not json").is_err(),
+            "json wire bytes are not json"
+        );
+        assert!(
+            Format::Msgpack.decode::<EventMessage>(b"not msgpack").is_err(),
+            "msgpack wire bytes are not msgpack"
+        );
+        assert!(
+            Format::Json.decode::<EventMessage>(br#"{"id": "evt-1"}"#).is_err(),
+            "json is missing message fields"
+        );
         // `data` is base64 in the human-readable format, so an unpaddable string is a decode error.
         let bad_base64 = br#"{"id":"e","aggregate_id":"a","sequence":null,"name":"N","version":1,"data":"!!",
             "correlation_id":"c","causation_id":"c","occurred_at":null,"recorded_at":0,"extensions":{},"metadata":{}}"#;
-        assert!(Format::Json.decode::<EventMessage>(bad_base64).is_err(), "data is not base64");
+        assert!(
+            Format::Json.decode::<EventMessage>(bad_base64).is_err(),
+            "data is not base64"
+        );
     }
 }

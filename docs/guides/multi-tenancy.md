@@ -17,7 +17,7 @@ models below are the shapes those choices take.
 ## The field and the rule
 
 Every `EventMessage` and `CommandMessage` carries `tenant`, beside `aggregate_id` and the lineage. It
-is a typed field and not a metadata key, because the kernel reads it. `tenant_key(mode, key, tenant)`
+is a typed field and not a metadata key, because the kernel reads it. `tenant_key(mode, tenant, key)`
 composes the key a seam is called with. `testdata/golden/tenancy.json` pins the result, so every
 binding spells one tenant's keys identically.
 
@@ -25,9 +25,9 @@ binding spells one tenant's keys identically.
 ```python
 from edax import Tenancy, tenant_key
 
-tenant_key(Tenancy.POOL, "order-1", "acme")  # "4:acme:order-1"
-tenant_key(Tenancy.BRIDGE, "order-1", "acme")  # "order-1": its store is already the tenant's
-tenant_key(Tenancy.POOL, "order-1", None)  # CodecError: a pool cannot key without a tenant
+tenant_key(Tenancy.POOL, "acme", "order-1")  # "4:acme:order-1"
+tenant_key(Tenancy.BRIDGE, "acme", "order-1")  # "order-1": its store is already the tenant's
+tenant_key(Tenancy.POOL, None, "order-1")  # CodecError: a pool cannot key without a tenant
 ```
 
 The composed form is `"{len(tenant)}:{tenant}:{key}"`. The byte-length prefix makes it injective: a
@@ -55,7 +55,7 @@ producer = KafkaProducer(client, "events", tenancy=Tenancy.POOL)
 | `Repository.load(id, tenant=...)` | the event stream and the snapshot | the aggregate carries it, so the save that follows cannot name another |
 | `Repository.save` | every event's `tenant` field, and every saved command's | stamped by the repository, from the aggregate; a command naming another tenant is refused |
 | `idempotent(..., tenancy=...)` | the ledger claim, inside its `scope` | read off the command message |
-| `forget(..., tenancy=..., tenant=...)` | the ledger record a re-drive deletes | passed by the operator, from the dead-lettered message |
+| `forget(..., tenancy=..., tenant=...)`, `forget_event(...)` | the ledger record a re-drive deletes | passed by the operator, from the dead-lettered message |
 | `idempotent_by_id(..., tenancy=...)` | the event claim, inside its `scope` | read off the event message |
 | `CommandBus.dispatch(..., tenant=...)` | the message it builds | a typed field of the message |
 | `KafkaProducer` | the record key, and so the partition: the kernel's `edax_kafka::record_key` | read off the message |
@@ -76,7 +76,7 @@ class Shipping:
     name = "shipping"
 
     def instance_id(self, msg: EventMessage) -> str | None:
-        return tenant_key(Tenancy.POOL, msg.aggregate_id, msg.tenant)
+        return tenant_key(Tenancy.POOL, msg.tenant, msg.aggregate_id)
 ```
 
 The runner then keys the instance and its outbox rows by that one string. Every command a step emits
@@ -206,10 +206,12 @@ adapter you write is what adds it.
 ### One shared outbox, one shared queue
 
 A relay publishes a batch in order and marks every row it settled, including when a later row fails.
-The rows that went out are not re-sent, and the failing row stops the batch there.
+The rows that went out are not re-sent. A failing row holds back only its own key, the tenant and the
+aggregate, so one tenant's poison row does not hold up another tenant's rows.
 
-- **The stall is shared.** A destination that is down holds up every tenant's rows behind it. The
-  relay backs off per its retry policy and drains again once that destination recovers.
+- **An outage is shared.** A destination that is down fails every tenant's rows. Two transient
+  failures in a row stop the drain, and the relay backs off per its retry policy and drains again
+  once that destination recovers.
 - **The stall is bounded, if you wire a sink.** A row the retry policy calls dead goes to `on_dead`
   and is marked settled. One unroutable tenant therefore cannot block the outbox forever.
 

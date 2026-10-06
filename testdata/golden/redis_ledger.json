@@ -328,6 +328,100 @@
     }
   },
   {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "name": "a_done_record_settles",
+    "op": "settle",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "want": {
+      "ok": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":{\"account_id\":\"acct-1\",\"balance_cents\":4200},\"error\":null,\"error_code\":null,\"pending\":false}"
+    }
+  },
+  {
+    "claim": "10190b5c8e1f37c4b9a2d5e6f7a8b9c0d{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "name": "a_pending_record_is_refused",
+    "op": "settle",
+    "record_json": "{\"payload_hash\":11258580006047770801,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "want": {
+      "error": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record"
+    }
+  },
+  {
+    "key": "order-7",
+    "name": "the_record_landed",
+    "op": "complete_outcome",
+    "want": {
+      "ok": null
+    },
+    "written": true
+  },
+  {
+    "key": "order-7",
+    "name": "the_fence_refused_it",
+    "op": "complete_outcome",
+    "want": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record"
+    },
+    "written": false
+  },
+  {
+    "key": "order-7",
+    "name": "the_key_kept_changing",
+    "op": "forget_exhausted",
+    "want": {
+      "error": "store: idempotency key order-7 changed on every one of 3 forget reads"
+    }
+  },
+  {
+    "beat": 1,
+    "claim_ttl_ms": 300000,
+    "name": "the_first_beat",
+    "op": "heartbeat_due",
+    "sent_at_ms": 1000,
+    "want": {
+      "ok": 101000
+    }
+  },
+  {
+    "beat": 2,
+    "claim_ttl_ms": 300000,
+    "name": "the_second_beat",
+    "op": "heartbeat_due",
+    "sent_at_ms": 1000,
+    "want": {
+      "ok": 201000
+    }
+  },
+  {
+    "beat": 3,
+    "claim_ttl_ms": 300000,
+    "name": "the_third_beat_is_a_whole_claim_ttl_on",
+    "op": "heartbeat_due",
+    "sent_at_ms": 1000,
+    "want": {
+      "ok": 301000
+    }
+  },
+  {
+    "beat": 1,
+    "claim_ttl_ms": 10000,
+    "name": "a_claim_ttl_not_divisible_by_three_rounds_down",
+    "op": "heartbeat_due",
+    "sent_at_ms": 1000,
+    "want": {
+      "ok": 4333
+    }
+  },
+  {
+    "beat": 4294967295,
+    "claim_ttl_ms": 9007199254740991,
+    "name": "saturates_rather_than_wrapping",
+    "op": "heartbeat_due",
+    "sent_at_ms": 9223372036854775806,
+    "want": {
+      "ok": 9223372036854775807
+    }
+  },
+  {
     "error": "codec: redis replied WRONGTYPE Operation against a key holding the wrong kind of value",
     "name": "wrong_type",
     "op": "reply",

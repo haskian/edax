@@ -30,7 +30,11 @@ pub struct Pacing {
 
 impl Default for Pacing {
     fn default() -> Self {
-        Pacing { backoff: Backoff::DEFAULT, sleep: Arc::new(std::thread::sleep), entropy: Arc::new(random_u64) }
+        Pacing {
+            backoff: Backoff::DEFAULT,
+            sleep: Arc::new(std::thread::sleep),
+            entropy: Arc::new(random_u64),
+        }
     }
 }
 
@@ -47,7 +51,10 @@ impl Pacing {
 
     /// The kernel's schedule, waited out in no time: for a test, or a host that paces its own loop.
     pub fn instant() -> Self {
-        Pacing { sleep: Arc::new(|_| {}), ..Pacing::default() }
+        Pacing {
+            sleep: Arc::new(|_| {}),
+            ..Pacing::default()
+        }
     }
 
     /// The kernel's schedule, recorded instead of slept, for a test. The draw is fixed at `u64::MAX`,
@@ -79,7 +86,10 @@ mod tests {
         let slept: Arc<Mutex<Vec<Duration>>> = Arc::default();
         let recorder = Arc::clone(&slept);
         let pacing = Pacing {
-            backoff: Backoff { base_millis: 100, cap_millis: 1_000 },
+            backoff: Backoff {
+                base_millis: 100,
+                cap_millis: 1_000,
+            },
             sleep: Arc::new(move |d| recorder.lock().unwrap().push(d)),
             entropy: Arc::new(|| 150),
         };

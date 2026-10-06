@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Event-sourcing consistency kernel for the edax polyglot toolkit"
+description = "Event-driven consistency kernel of the edax polyglot toolkit: messages, codec, causation, partition, staleness, event idempotency key, sequence, upcast, retry, drain, saga"
 
 [dependencies]
 edax-core.workspace = true

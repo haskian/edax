@@ -21,11 +21,14 @@ from edax.backend.memory import (
     MemorySagaStore,
     MemoryTransactor,
 )
+from edax.saga import SagaOutbox
 from edax.testing import (
     CommandOutboxContract,
+    EventOutboxContract,
     EventStoreContract,
     IdempotencyStoreContract,
     ProjectionStoreContract,
+    SagaOutboxContract,
     SagaStoreContract,
 )
 
@@ -36,16 +39,23 @@ def db() -> MemoryTransactor:
 
 
 class TestMemoryEventStore(EventStoreContract):
-    supports_unpublished_count = True
-
     @pytest.fixture
     def event_store(self, db: MemoryTransactor) -> Any:
         return MemoryEventStore(db)
 
 
-class TestMemoryProjectionStore(ProjectionStoreContract):
-    supports_kernel_queries = True
+class TestMemoryEventOutbox(EventOutboxContract):
+    @pytest.fixture
+    def event_store(self, db: MemoryTransactor) -> Any:
+        return MemoryEventStore(db)
 
+    @pytest.fixture
+    def outbox(self, event_store: MemoryEventStore) -> Any:
+        # The memory event store is both ports: it writes the rows and reads them back.
+        return event_store
+
+
+class TestMemoryProjectionStore(ProjectionStoreContract):
     @pytest.fixture
     def projection_store(self, db: MemoryTransactor) -> Any:
         return MemoryProjectionStore(db)
@@ -65,10 +75,28 @@ class TestMemorySagaStore(SagaStoreContract):
         return db
 
 
+class TestMemorySagaOutbox(SagaOutboxContract):
+    @pytest.fixture
+    def saga_store(self, db: MemoryTransactor) -> Any:
+        return MemorySagaStore(db)
+
+    @pytest.fixture
+    def outbox(self, saga_store: MemorySagaStore) -> Any:
+        return SagaOutbox(saga_store, "order")
+
+    @pytest.fixture
+    def transactor(self, db: MemoryTransactor) -> Any:
+        return db
+
+
 class TestMemoryCommandOutbox(CommandOutboxContract):
     @pytest.fixture
     def command_outbox(self, db: MemoryTransactor) -> Any:
         return MemoryCommandOutbox(db)
+
+    @pytest.fixture
+    def outbox(self, command_outbox: MemoryCommandOutbox) -> Any:
+        return command_outbox
 
     @pytest.fixture
     def event_store(self, db: MemoryTransactor) -> Any:
@@ -92,13 +120,13 @@ class TestMemoryIdempotencyStore(IdempotencyStoreContract):
         return MemoryIdempotencyStore(db)
 
     @pytest.fixture
-    def event_store(self, db: MemoryTransactor) -> Any:
-        # The same transactor, so the rollback clause has one unit of work to roll back.
-        return MemoryEventStore(db)
+    def transactor(self, db: MemoryTransactor) -> Any:
+        # The store's own transactor, so the rollback clauses have one unit of work to roll back.
+        return db
 
 
 class TestMemoryLedger(IdempotencyStoreContract):
-    """The Redis shape, shipped: a ledger of its own, with no ``event_store`` fixture on purpose. The store
+    """The Redis shape, shipped: a ledger of its own, with no ``transactor`` fixture on purpose. The store
     declares ``joins_transaction = False``, so the clauses that need a shared rollback skip rather than
     error on the missing fixture, and its claims lapse through ``expire`` the way Redis's TTL lapses them,
     so the takeover clauses hold it to the clauses `test_redis.py` holds Redis to."""

@@ -17,14 +17,15 @@ mod support;
 use support::{Shared, SCOPE};
 
 use std::cell::Cell;
+use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use edax::Tenancy;
 use edax::{
-    idempotent, idempotent_in, retry, retry_transaction, transaction, wrap, Command, CommandBus, Entity, Error,
-    ErrorCode, HandlerError, IdempotencyStore, MemoryProjectionStore, MemoryTransactor, MemoryTx, Pacing,
+    idempotent, idempotent_in, retry, retry_transaction, transaction, Command, CommandBus, DispatchOptions, Entity,
+    Error, ErrorCode, HandlerError, IdempotencyStore, MemoryProjectionStore, MemoryTransactor, MemoryTx, Pacing,
     ProjectionStore,
 };
 use serde::Serialize;
@@ -34,17 +35,27 @@ use serde_json::json;
 struct Deposit {
     account_id: String,
     amount: i64,
-    request_id: String,
 }
 
 impl Command for Deposit {
-    fn command_type(&self) -> &str {
-        "Deposit"
-    }
+    const TYPE: &'static str = "Deposit";
+    type Output = i64;
+}
+
+fn attempts(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).expect("a positive attempt count")
 }
 
 fn deposit() -> Deposit {
-    Deposit { account_id: "acct-1".into(), amount: 100, request_id: "req-1".into() }
+    Deposit {
+        account_id: "acct-1".into(),
+        amount: 100,
+    }
+}
+
+/// Dispatch the deposit as the client's request `req-1`: the request id travels on the message.
+fn send(bus: &CommandBus) -> Result<i64, HandlerError> {
+    bus.dispatch(&deposit(), DispatchOptions::keyed("req-1"))
 }
 
 /// The committed balance of `acct-1`, read outside any unit of work.
@@ -60,8 +71,14 @@ fn balance(projections: &MemoryProjectionStore) -> i64 {
 fn add(projections: &MemoryProjectionStore, tx: &mut MemoryTx, amount: i64) -> Result<i64, Error> {
     let prior = projections.get(tx, "acct-1")?;
     let (version, current) = prior.map_or((0, 0), |e| (e.version, e.document["balance"].as_i64().unwrap_or(0)));
-    let mut entity = Entity { id: "acct-1".into(), version, document: json!({ "balance": current + amount }) };
-    projections.save(tx, &mut entity)?;
+    projections.save(
+        tx,
+        &Entity {
+            id: "acct-1".into(),
+            version,
+            document: json!({ "balance": current + amount }),
+        },
+    )?;
     Ok(current + amount)
 }
 
@@ -86,12 +103,12 @@ impl Rig {
         }
     }
 
-    fn bus(&self, middleware: Vec<edax::Middleware<Deposit, i64>>, blips: usize) -> CommandBus {
+    fn bus(&self, middleware: Vec<edax::Middleware<Deposit>>, blips: usize) -> CommandBus {
         let mut bus = CommandBus::new();
         let projections = self.projections.clone();
         let handle = Arc::clone(&self.handle);
         let runs = Arc::clone(&self.runs);
-        let handler: edax::Handler<Deposit, i64> = Box::new(move |cmd: &Deposit| -> Result<i64, HandlerError> {
+        let handler: edax::Handler<Deposit> = Box::new(move |cmd: &Deposit| -> Result<i64, HandlerError> {
             let run = runs.fetch_add(1, Ordering::SeqCst);
             let mut tx = handle.get();
             let balance = add(&projections, &mut tx, cmd.amount)?;
@@ -100,19 +117,18 @@ impl Rig {
             }
             Ok(balance)
         });
-        bus.register("Deposit", wrap(handler, middleware)).expect("one handler per type");
+        bus.register(handler, middleware).expect("one handler per type");
         bus
     }
 
-    fn guard(&self) -> edax::Middleware<Deposit, i64> {
+    fn guard(&self) -> edax::Middleware<Deposit> {
         let handle = Arc::clone(&self.handle);
         let ledger = Arc::new(self.db.idempotency_store::<i64>());
         idempotent_in(
             ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
             SCOPE,
             Tenancy::Silo,
-            |cmd: &Deposit| Some(cmd.request_id.clone()),
-            move |_: &Deposit| handle.get(),
+            move |_: &edax::CommandMessage| handle.get(),
         )
     }
 
@@ -121,7 +137,7 @@ impl Rig {
     fn dispatch_in_host_transaction(&self, bus: &CommandBus) -> Result<i64, HandlerError> {
         transaction(&self.db, |tx| {
             self.handle.set(*tx);
-            let result = bus.dispatch(&deposit());
+            let result = send(bus);
             self.handle.set(MemoryTx::auto_commit());
             result
         })
@@ -129,7 +145,9 @@ impl Rig {
 }
 
 fn is_bad_handle(error: &HandlerError) -> bool {
-    error.downcast_ref::<Error>().is_some_and(|e| e.code == ErrorCode::BadHandle)
+    error
+        .downcast_ref::<Error>()
+        .is_some_and(|e| e.code == ErrorCode::BadHandle)
 }
 
 #[test]
@@ -141,21 +159,41 @@ fn retry_refuses_to_run_inside_a_host_transaction() {
         retry_outside_the_guard: bool,
     }
     for case in [
-        Case { name: "retry_inside_idempotent_in", retry_outside_the_guard: false },
-        Case { name: "retry_outside_idempotent_in", retry_outside_the_guard: true },
+        Case {
+            name: "retry_inside_idempotent_in",
+            retry_outside_the_guard: false,
+        },
+        Case {
+            name: "retry_outside_idempotent_in",
+            retry_outside_the_guard: true,
+        },
     ] {
         let rig = Rig::new();
-        let chain = if case.retry_outside_the_guard { vec![retry(3, Pacing::instant()), rig.guard()] } else { vec![rig.guard(), retry(3, Pacing::instant())] };
+        let chain = if case.retry_outside_the_guard {
+            vec![retry(attempts(3), Pacing::instant()), rig.guard()]
+        } else {
+            vec![rig.guard(), retry(attempts(3), Pacing::instant())]
+        };
         let bus = rig.bus(chain, 1);
         let refused = transaction(&rig.db, |tx| {
             rig.handle.set(*tx);
-            let result = bus.dispatch::<_, i64>(&deposit());
+            let result = send(&bus);
             rig.handle.set(MemoryTx::auto_commit());
             Ok::<_, Error>(result)
         })
         .expect("the host's unit of work commits whatever the dispatch returned");
-        assert!(refused.as_ref().is_err_and(is_bad_handle), "{}: {:?}", case.name, refused.err());
-        assert_eq!(rig.runs.load(Ordering::SeqCst), 0, "{}: the handler never ran", case.name);
+        assert!(
+            refused.as_ref().is_err_and(is_bad_handle),
+            "{}: {:?}",
+            case.name,
+            refused.err()
+        );
+        assert_eq!(
+            rig.runs.load(Ordering::SeqCst),
+            0,
+            "{}: the handler never ran",
+            case.name
+        );
         assert_eq!(balance(&rig.projections), 0, "{}: nothing was deposited", case.name);
     }
 }
@@ -164,8 +202,8 @@ fn retry_refuses_to_run_inside_a_host_transaction() {
 fn retry_outside_any_transaction_still_retries() {
     // No unit of work is open, so retry runs: at-least-once, every attempt's write lands on its own.
     let rig = Rig::new();
-    let bus = rig.bus(vec![retry(2, Pacing::instant())], 1);
-    assert_eq!(bus.dispatch::<_, i64>(&deposit()).ok(), Some(200), "attempt 2 sees attempt 1's committed write");
+    let bus = rig.bus(vec![retry(attempts(2), Pacing::instant())], 1);
+    assert_eq!(send(&bus).ok(), Some(200), "attempt 2 sees attempt 1's committed write");
     assert_eq!(rig.runs.load(Ordering::SeqCst), 2);
 }
 
@@ -173,12 +211,14 @@ fn retry_outside_any_transaction_still_retries() {
 fn the_refusal_ends_with_the_transaction_body() {
     // The marker is scoped to the body: on return, on an error, and on a panic, a later retry runs.
     let rig = Rig::new();
-    let bus = rig.bus(vec![retry(1, Pacing::instant())], 0);
+    let bus = rig.bus(vec![retry(attempts(1), Pacing::instant())], 0);
     transaction(&rig.db, |_| Ok::<_, Error>(())).expect("a clean body commits");
     transaction(&rig.db, |_| Err::<(), _>(Error::store("body gave up"))).expect_err("the body's error");
-    let panicked = catch_unwind(AssertUnwindSafe(|| transaction(&rig.db, |_| -> Result<(), Error> { panic!("boom") })));
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        transaction(&rig.db, |_| -> Result<(), Error> { panic!("boom") })
+    }));
     assert!(panicked.is_err(), "the panic keeps unwinding");
-    assert_eq!(bus.dispatch::<_, i64>(&deposit()).ok(), Some(100), "outside every body, retry runs");
+    assert_eq!(send(&bus).ok(), Some(100), "outside every body, retry runs");
 }
 
 #[test]
@@ -186,10 +226,10 @@ fn a_nested_transaction_keeps_the_outer_one_marked() {
     // Two transactors over two databases nest; leaving the inner body must not unmark the outer one.
     let rig = Rig::new();
     let other = MemoryTransactor::new();
-    let bus = rig.bus(vec![retry(1, Pacing::instant())], 0);
+    let bus = rig.bus(vec![retry(attempts(1), Pacing::instant())], 0);
     let refused = transaction(&rig.db, |_| {
         transaction(&other, |_| Ok::<_, Error>(())).expect("the inner unit of work commits");
-        Ok::<_, Error>(bus.dispatch::<_, i64>(&deposit()))
+        Ok::<_, Error>(send(&bus))
     })
     .expect("the outer unit of work commits");
     assert!(refused.as_ref().is_err_and(is_bad_handle), "{:?}", refused.err());
@@ -199,7 +239,7 @@ fn a_nested_transaction_keeps_the_outer_one_marked() {
 fn retry_transaction_branches() {
     struct Case {
         name: &'static str,
-        attempts: usize,
+        attempts: u32,
         /// Transient failures before the body succeeds (`usize::MAX`: never succeeds).
         blips: usize,
         /// The body fails terminally on its first run instead.
@@ -209,17 +249,48 @@ fn retry_transaction_branches() {
         want_ok: bool,
     }
     let cases = [
-        Case { name: "clean_first_attempt", attempts: 3, blips: 0, terminal: false, want_runs: 1, want_balance: 100, want_ok: true },
+        Case {
+            name: "clean_first_attempt",
+            attempts: 3,
+            blips: 0,
+            terminal: false,
+            want_runs: 1,
+            want_balance: 100,
+            want_ok: true,
+        },
         // The failed attempt's deposit rolled back with it: one deposit lands, not two.
-        Case { name: "transient_then_success", attempts: 3, blips: 1, terminal: false, want_runs: 2, want_balance: 100, want_ok: true },
-        Case { name: "terminal_returns_at_once", attempts: 3, blips: 0, terminal: true, want_runs: 1, want_balance: 0, want_ok: false },
-        Case { name: "attempts_exhausted", attempts: 2, blips: usize::MAX, terminal: false, want_runs: 2, want_balance: 0, want_ok: false },
-        Case { name: "zero_attempts_clamps_to_one", attempts: 0, blips: usize::MAX, terminal: false, want_runs: 1, want_balance: 0, want_ok: false },
+        Case {
+            name: "transient_then_success",
+            attempts: 3,
+            blips: 1,
+            terminal: false,
+            want_runs: 2,
+            want_balance: 100,
+            want_ok: true,
+        },
+        Case {
+            name: "terminal_returns_at_once",
+            attempts: 3,
+            blips: 0,
+            terminal: true,
+            want_runs: 1,
+            want_balance: 0,
+            want_ok: false,
+        },
+        Case {
+            name: "attempts_exhausted",
+            attempts: 2,
+            blips: usize::MAX,
+            terminal: false,
+            want_runs: 2,
+            want_balance: 0,
+            want_ok: false,
+        },
     ];
     for case in cases {
         let rig = Rig::new();
         let runs = Cell::new(0usize);
-        let result = retry_transaction(&rig.db, case.attempts, &Pacing::instant(), |tx| {
+        let result = retry_transaction(&rig.db, attempts(case.attempts), &Pacing::instant(), |tx| {
             let run = runs.get();
             runs.set(run + 1);
             add(&rig.projections, tx, 100)?;
@@ -233,7 +304,12 @@ fn retry_transaction_branches() {
         });
         assert_eq!(result.is_ok(), case.want_ok, "{}: {result:?}", case.name);
         assert_eq!(runs.get(), case.want_runs, "{}: runs", case.name);
-        assert_eq!(balance(&rig.projections), case.want_balance, "{}: committed balance", case.name);
+        assert_eq!(
+            balance(&rig.projections),
+            case.want_balance,
+            "{}: committed balance",
+            case.name
+        );
     }
 }
 
@@ -243,16 +319,24 @@ fn retry_transaction_retries_a_guarded_dispatch_once_per_outcome() {
     // the failed attempt rolls back its claim and its deposit together, and a redelivery replays.
     let rig = Rig::new();
     let bus = rig.bus(vec![rig.guard()], 1);
-    let first = retry_transaction(&rig.db, 3, &Pacing::instant(), |tx| {
+    let first = retry_transaction(&rig.db, attempts(3), &Pacing::instant(), |tx| {
         rig.handle.set(*tx);
-        let result = bus.dispatch::<_, i64>(&deposit());
+        let result = send(&bus);
         rig.handle.set(MemoryTx::auto_commit());
         result
     });
     assert_eq!(first.ok(), Some(100));
-    assert_eq!(rig.runs.load(Ordering::SeqCst), 2, "the failed attempt and the one that landed");
+    assert_eq!(
+        rig.runs.load(Ordering::SeqCst),
+        2,
+        "the failed attempt and the one that landed"
+    );
     assert_eq!(balance(&rig.projections), 100, "one deposit committed");
-    assert_eq!(rig.dispatch_in_host_transaction(&bus).ok(), Some(100), "a redelivery replays the record");
+    assert_eq!(
+        rig.dispatch_in_host_transaction(&bus).ok(),
+        Some(100),
+        "a redelivery replays the record"
+    );
     assert_eq!(rig.runs.load(Ordering::SeqCst), 2, "and does not run the handler");
 }
 
@@ -265,8 +349,7 @@ fn retry_inside_idempotent_without_a_transaction_is_still_allowed() {
         ledger as Arc<dyn IdempotencyStore<i64, Tx = MemoryTx> + Send + Sync>,
         SCOPE,
         Tenancy::Silo,
-        |cmd: &Deposit| Some(cmd.request_id.clone()),
     );
-    let bus = rig.bus(vec![guard, retry(2, Pacing::instant())], 0);
-    assert_eq!(bus.dispatch::<_, i64>(&deposit()).ok(), Some(100));
+    let bus = rig.bus(vec![guard, retry(attempts(2), Pacing::instant())], 0);
+    assert_eq!(send(&bus).ok(), Some(100));
 }

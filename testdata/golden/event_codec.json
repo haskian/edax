@@ -1,6 +1,12 @@
 [
   {
     "case": "deposit",
+    "error": null,
+    "fields": {
+      "account_id": "acct-1",
+      "amount_cents": 4200,
+      "currency": "EUR"
+    },
     "json": "{\"account_id\":\"acct-1\",\"amount_cents\":4200,\"currency\":\"EUR\"}",
     "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473cd1068a863757272656e6379a3455552",
     "name": "Deposited",
@@ -8,6 +14,12 @@
   },
   {
     "case": "negative_and_wide_amount",
+    "error": null,
+    "fields": {
+      "account_id": "acct-1",
+      "amount_cents": -9007199254740993,
+      "currency": "USD"
+    },
     "json": "{\"account_id\":\"acct-1\",\"amount_cents\":-9007199254740993,\"currency\":\"USD\"}",
     "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473d3ffdfffffffffffffa863757272656e6379a3555344",
     "name": "Deposited",
@@ -15,6 +27,12 @@
   },
   {
     "case": "optional_field_absent",
+    "error": null,
+    "fields": {
+      "account_id": "acct-1",
+      "amount_cents": 500,
+      "memo": null
+    },
     "json": "{\"account_id\":\"acct-1\",\"amount_cents\":500,\"memo\":null}",
     "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31ac616d6f756e745f63656e7473cd01f4a46d656d6fc0",
     "name": "Withdrawn",
@@ -22,6 +40,12 @@
   },
   {
     "case": "non_ascii_text",
+    "error": null,
+    "fields": {
+      "account_id": "acct-é",
+      "amount_cents": 500,
+      "memo": "café ☕ 🦀"
+    },
     "json": "{\"account_id\":\"acct-é\",\"amount_cents\":500,\"memo\":\"café ☕ 🦀\"}",
     "msgpack_hex": "83aa6163636f756e745f6964a7616363742dc3a9ac616d6f756e745f63656e7473cd01f4a46d656d6fae636166c3a920e2989520f09fa680",
     "name": "Withdrawn",
@@ -29,16 +53,115 @@
   },
   {
     "case": "lists",
+    "error": null,
+    "fields": {
+      "flags": [
+        true,
+        false
+      ],
+      "tags": [
+        "vip",
+        ""
+      ]
+    },
     "json": "{\"tags\":[\"vip\",\"\"],\"flags\":[true,false]}",
     "msgpack_hex": "82a47461677392a3766970a0a5666c61677392c3c2",
     "name": "Tagged",
     "version": 1
   },
   {
+    "case": "nested_struct",
+    "error": null,
+    "fields": {
+      "account_id": "acct-1",
+      "address": {
+        "city": "NYC",
+        "zip": "10001"
+      }
+    },
+    "json": "{\"account_id\":\"acct-1\",\"address\":{\"city\":\"NYC\",\"zip\":\"10001\"}}",
+    "msgpack_hex": "82aa6163636f756e745f6964a6616363742d31a76164647265737382a463697479a34e5943a37a6970a53130303031",
+    "name": "Relocated",
+    "version": 1
+  },
+  {
+    "case": "host_values_are_written_canonical",
+    "error": null,
+    "fields": {
+      "account_id": "acct-1",
+      "amount": {
+        "$decimal": "9.50"
+      },
+      "at": {
+        "$instant": "2024-01-01T01:30:00+01:00"
+      }
+    },
+    "json": "{\"account_id\":\"acct-1\",\"amount\":\"9.5\",\"at\":\"2024-01-01T00:30:00.000000Z\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31a6616d6f756e74a3392e35a26174bb323032342d30312d30315430303a33303a30302e3030303030305a",
+    "name": "Priced",
+    "version": 1
+  },
+  {
+    "case": "string_payload_for_a_string_type_is_read",
+    "error": null,
+    "fields": "new-name",
+    "json": "\"new-name\"",
+    "msgpack_hex": "a86e65772d6e616d65",
+    "name": "Renamed",
+    "version": 1
+  },
+  {
     "case": "unit_variant",
+    "error": null,
+    "fields": {},
     "json": "{}",
     "msgpack_hex": "80",
     "name": "Frozen",
+    "version": 1
+  },
+  {
+    "case": "array_for_a_struct_is_refused",
+    "error": "codec: decode: invalid type: sequence, expected struct Deposited as a map keyed by field name at line 1 column 0",
+    "fields": null,
+    "json": "[\"acct-1\",4200,\"EUR\"]",
+    "msgpack_hex": "93a6616363742d31cd1068a3455552",
+    "name": "Deposited",
+    "version": 1
+  },
+  {
+    "case": "nested_array_for_a_struct_is_refused",
+    "error": "codec: decode: invalid type: sequence, expected struct Address as a map keyed by field name at line 1 column 33",
+    "fields": null,
+    "json": "{\"account_id\":\"acct-1\",\"address\":[\"NYC\",\"10001\"]}",
+    "msgpack_hex": "82aa6163636f756e745f6964a6616363742d31a76164647265737392a34e5943a53130303031",
+    "name": "Relocated",
+    "version": 1
+  },
+  {
+    "case": "naive_instant_is_refused",
+    "error": "codec: decode: codec: \"2024-01-01T00:30:00\" is not an RFC 3339 timestamp with an offset: failed to find offset component, which is required for parsing a timestamp at line 1 column 65",
+    "fields": null,
+    "json": "{\"account_id\":\"acct-1\",\"amount\":\"9.5\",\"at\":\"2024-01-01T00:30:00\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31a6616d6f756e74a3392e35a26174b3323032342d30312d30315430303a33303a3030",
+    "name": "Priced",
+    "version": 1
+  },
+  {
+    "case": "nan_decimal_is_refused",
+    "error": "codec: decode: codec: \"NaN\" is not decimal text at line 1 column 37",
+    "fields": null,
+    "json": "{\"account_id\":\"acct-1\",\"amount\":\"NaN\",\"at\":\"2024-01-01T00:30:00.000000Z\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31a6616d6f756e74a34e614ea26174bb323032342d30312d30315430303a33303a30302e3030303030305a",
+    "name": "Priced",
+    "version": 1
+  },
+  {
+    "case": "infinite_decimal_is_refused",
+    "error": "codec: decode: codec: \"-Infinity\" is not decimal text at line 1 column 43",
+    "fields": null,
+    "json": "{\"account_id\":\"acct-1\",\"amount\":\"-Infinity\",\"at\":\"2024-01-01T00:30:00.000000Z\"}",
+    "msgpack_hex": "83aa6163636f756e745f6964a6616363742d31a6616d6f756e74a92d496e66696e697479a26174bb323032342d30312d30315430303a33303a30302e3030303030305a",
+    "name": "Priced",
     "version": 1
   }
 ]

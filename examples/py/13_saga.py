@@ -2,7 +2,7 @@
 
 An order saga waits for `OrderPlaced`, then for `PaymentReceived`, then sends `ShipOrder` and
 completes. The runner never sends a command itself. It saves the new state and the commands in one
-write. `runner.relay(bus)` then sends what was saved, as the event Relay does (step 7).
+write. `Relay(runner.outbox(), runner.publish_to(bus))` then sends what was saved, as the event Relay does (step 7).
 
 Each saved command carries its saga command id as its idempotency key. A relay that sends a row twice,
 after a crash before the row was marked, is replayed by the bus's `idempotent` guard.
@@ -20,8 +20,11 @@ from edax import (
     CommandBus,
     CommandMessage,
     Completed,
+    DeadLetter,
     EventMessage,
     Lineage,
+    Relay,
+    RunningInstance,
     SagaRunner,
     Tenancy,
     current_lineage,
@@ -67,21 +70,24 @@ def order_event(order_id: str, name: str, flow: Lineage) -> EventMessage:
 
 
 async def main() -> None:
-    # 1. The command side: a bus that ships an order, once per order. The handler notes the lineage
-    #    it runs under: whatever it saves continues the order's flow (step 12).
+    # 1. The command side: a bus that ships an order, once per order. Its codec decodes each command the
+    #    saga sends. The handler notes the lineage it runs under: whatever it saves continues the order's
+    #    flow (step 12).
     shipped: list[ShipOrder] = []
     lineages: list[Lineage | None] = []
-    bus = CommandBus(idempotent(MemoryIdempotencyStore(), scope="shipping", tenancy=Tenancy.SILO))
+    commands = json_codec({"ShipOrder": ShipOrder})
+    bus = CommandBus(
+        idempotent(MemoryIdempotencyStore(), scope="shipping", tenancy=Tenancy.SILO), codec=commands
+    )
 
     async def ship(cmd: ShipOrder) -> None:
         shipped.append(cmd)
         lineages.append(current_lineage())
 
-    bus.register("ShipOrder", ship)
+    bus.register(ShipOrder, ship)
 
-    # 2. The saga runner: saga, state store, and a codec for the commands it saves.
+    # 2. The saga runner: saga, state store, and the codec for the commands it saves.
     sagas = MemorySagaStore()
-    commands = json_codec({"ShipOrder": ShipOrder})
     runner = SagaRunner(OrderSaga(), sagas, commands)
 
     # 3. Feed it events of one order flow. In a service, pass `runner.on_event` to an EventRouter.
@@ -89,25 +95,25 @@ async def main() -> None:
     placed = order_event("order-1", "OrderPlaced", flow)
     paid = order_event("order-1", "PaymentReceived", flow)
     await runner.on_event(placed)
-    instance = await sagas.load("order-1")
-    assert instance is not None
+    instance = await sagas.load("order", "order-1")
+    assert isinstance(instance, RunningInstance)
     print(f"after OrderPlaced:     state {instance.state!r}")
     await runner.on_event(paid)
     await runner.on_event(paid)  # the broker delivered it twice
-    [row] = await sagas.unpublished()
+    [row] = await runner.outbox().unpublished(100)
     print(f"after PaymentReceived: one command waiting, {row.name} {row.id}, caused by {row.causation_id}")
 
     # 4. Send the saved commands. A command that fails for good goes to `on_dead`.
     dead: list[str] = []
 
-    async def to_dead_letters(row: CommandMessage, error: BaseException) -> None:
-        dead.append(row.id)
+    async def to_dead_letters(letter: DeadLetter[CommandMessage]) -> None:
+        dead.append(letter.message.id)
 
-    sent = await runner.relay(bus, on_dead=to_dead_letters).drain()
+    sent = await Relay(runner.outbox(), runner.publish_to(bus), on_dead=to_dead_letters).drain()
     print(f"relay sent {sent}: shipped {[cmd.order_id for cmd in shipped]}")
 
     # 5. A relay that crashed before marking the row sends it again: the guard replays it.
-    await bus.dispatch_message(row, commands)
+    await bus.dispatch_message(row)
     print(f"row sent again:        shipped {[cmd.order_id for cmd in shipped]} (replayed)")
 
     assert [cmd.order_id for cmd in shipped] == ["order-1"] and dead == [], (shipped, dead)

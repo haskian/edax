@@ -6,18 +6,21 @@ makes."""
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import edax
+import msgspec
 import pytest
-from conftest import golden
+from conftest import golden, wire_of
 from edax import _json
 from edax import command as C
 from edax import filter as F
 from edax import query as Q
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore
+from edax.codec import RegistryCodec, json_codec, msgpack_codec
 from edax.projection import Entity
 
 UTC = dt.timezone.utc
@@ -27,10 +30,12 @@ EPOCH = dt.datetime(1970, 1, 1, tzinfo=UTC)
 MICROSECOND = dt.timedelta(microseconds=1)
 
 
-def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date:
+def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date | float:
     """The host value a golden row names by its ``kind`` and ``input`` text."""
     if kind == "decimal":
         return Decimal(text)
+    if kind == "float":
+        return float(text)
     if kind == "datetime":
         # Python 3.10 reads no `Z` suffix; the kernel reads both spellings of UTC.
         return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -50,9 +55,11 @@ def test_golden_host_values(case: dict[str, Any]) -> None:
         for holder in holders:
             with pytest.raises(edax.CodecError) as caught:
                 _json.encode(holder)
-            assert caught.value.code == case["error"], holder
+            assert wire_of(caught.value) == case["error"], holder
         return
     assert _json.encode(value) == case["json"]
+    if case["kind"] == "float":
+        return  # a JSON object key is text, so a float key has no form of its own to pin
     assert _json.encode({value: 1}) == f"{{{case['json']}:1}}", "a dict key takes the same form"
     if case["epoch_micros"] is not None:
         assert isinstance(value, dt.datetime)
@@ -111,7 +118,7 @@ def test_filter_compares_host_values_by_value(
     ],
 )
 def test_constructor_sets_the_decimal_collation(branch: str, built: F.Filter, collated: bool) -> None:
-    (node,) = built.values()
+    (node,) = cast("dict[str, Any]", built).values()
     assert (node.get("collation") == "decimal") is collated, branch
 
 
@@ -161,13 +168,13 @@ async def test_sort_and_cursor_paging_order_host_values_by_value(
     store = MemoryProjectionStore()
     for row in LEDGER:
         await store.save(Entity(row["id"], 0, row))
-    whole = await store.get_many(sort=sort)
+    whole = await store.get_many(Q.Query(sort=sort))
     assert [row["id"] for row in whole.rows] == want, branch
     # Two rows a page, each resumed from the previous page's cursor: no row dropped or repeated.
     walked: list[str] = []
     after: str | None = None
     for _ in range(len(LEDGER)):
-        page = await store.get_many(sort=sort, limit=2, after=after)
+        page = await store.get_many(Q.Query(sort=sort, limit=2, after=after))
         walked.extend(row["id"] for row in page.rows)
         if page.next is None:
             break
@@ -217,7 +224,7 @@ async def test_command_hash_sees_host_values_by_value(
         return "charged"
 
     bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register(Charge.type, handler)
+    bus.register(Charge, handler)
     assert await bus.dispatch(first, idempotency_key="req-1") == "charged"
     assert await bus.dispatch(second, idempotency_key="req-1") == "charged"
     assert runs == [first], branch
@@ -238,7 +245,280 @@ async def test_command_refusals_are_codec_errors_before_the_handler(branch: str,
         runs.append(cmd)
 
     bus = C.CommandBus(C.idempotent(MemoryIdempotencyStore(), scope="test", tenancy=edax.Tenancy.SILO))
-    bus.register(Charge.type, handler)
+    bus.register(Charge, handler)
     with pytest.raises(edax.CodecError) as caught:
         await bus.dispatch(cmd, idempotency_key="req-1")
     assert caught.value.terminal and runs == [], branch
+
+
+class Settled(msgspec.Struct):
+    """An event with both host values and raw bytes."""
+
+    amount: Decimal
+    at: dt.datetime
+    receipt: bytes
+
+
+SETTLED = Settled(Decimal("9.50"), dt.datetime(2024, 1, 1, 1, 30, tzinfo=PLUS_ONE), b"\x00\xff")
+_CODECS: dict[str, Callable[..., RegistryCodec]] = {"json": json_codec, "msgpack": msgpack_codec}
+
+
+@pytest.mark.parametrize("fmt", ["json", "msgpack"])
+@pytest.mark.parametrize(
+    "branch, event, refused",
+    [
+        ("host_values_written_in_the_shared_form", SETTLED, False),
+        ("a_naive_datetime_is_refused", msgspec.structs.replace(SETTLED, at=dt.datetime(2024, 1, 1)), True),
+        ("a_nan_decimal_is_refused", msgspec.structs.replace(SETTLED, amount=Decimal("NaN")), True),
+    ],
+)
+def test_event_codecs_write_host_values_in_the_shared_form(
+    fmt: str, branch: str, event: Settled, refused: bool
+) -> None:
+    """The event codecs write what every other path writes: the decimal and instant texts the Rust SDK's
+    ``edax::Decimal`` / ``edax::Instant`` write, so a stream reads alike from both SDKs. MessagePack keeps
+    bytes native and writes the instant as text, never as a MessagePack timestamp."""
+    codec = _CODECS[fmt]({"Settled": Settled})
+    if refused:
+        with pytest.raises(edax.CodecError) as caught:
+            codec.marshal(event)
+        assert caught.value.terminal, branch
+        return
+    written = codec.marshal(event)
+    payload = (msgspec.json.decode if fmt == "json" else msgspec.msgpack.decode)(bytes(written.data))
+    receipt = "AP8=" if fmt == "json" else b"\x00\xff"
+    assert payload == {"amount": "9.5", "at": "2024-01-01T00:30:00.000000Z", "receipt": receipt}, branch
+    assert codec.unmarshal(written) == event, "read back as the same value"
+
+
+@pytest.mark.parametrize(
+    "branch, fmt, data",
+    [
+        ("json_decimal_with_trailing_zeros", "json", b'{"amount":"9.50","at":"2024-01-01T01:30:00+01:00","receipt":"AP8="}'),
+        ("msgpack_timestamp_extension", "msgpack", msgspec.msgpack.encode(msgspec.structs.asdict(SETTLED))),
+    ],
+)  # fmt: skip
+def test_event_codecs_read_payloads_written_before_the_shared_form(
+    branch: str, fmt: str, data: bytes
+) -> None:
+    """A payload stored before the codecs wrote the shared form still reads, as the same value."""
+    codec = _CODECS[fmt]({"Settled": Settled})
+    assert codec.unmarshal(edax.Payload("Settled", 1, data)) == SETTLED, branch
+
+
+@dataclass
+class Renamed:
+    """An event with an optional field msgspec leaves out while it holds ``UNSET``."""
+
+    id: str
+    note: str | msgspec.UnsetType = msgspec.UNSET
+
+
+class Deferred(msgspec.Struct):
+    """An event that defers part of its body: ``body`` holds the bytes as the decoder found them."""
+
+    id: str
+    body: msgspec.Raw
+
+
+class Tagged(msgspec.Struct):
+    """An event carrying a MessagePack extension value."""
+
+    id: str
+    tag: msgspec.msgpack.Ext
+
+
+def _raw_body(fmt: str) -> msgspec.Raw:
+    """The deferred body ``{"x": 1}`` as raw bytes in ``fmt``'s own encoding."""
+    return msgspec.Raw(msgspec.json.encode({"x": 1}) if fmt == "json" else msgspec.msgpack.encode({"x": 1}))
+
+
+@pytest.mark.parametrize("fmt", ["json", "msgpack"])
+@pytest.mark.parametrize(
+    "branch, event, written",
+    [
+        ("an_unset_field_is_left_out", lambda fmt: Renamed("a"), {"id": "a"}),
+        ("a_set_optional_field_is_written", lambda fmt: Renamed("a", "hi"), {"id": "a", "note": "hi"}),
+        ("a_raw_field_is_written_as_it_is", lambda fmt: Deferred("a", _raw_body(fmt)), {"id": "a", "body": {"x": 1}}),
+    ],
+    ids=lambda row: row if isinstance(row, str) else "",
+)  # fmt: skip
+def test_event_codecs_pass_msgspec_markers_through_as_msgspec_writes_them(
+    fmt: str, branch: str, event: Callable[[str], Any], written: dict[str, Any]
+) -> None:
+    """``UNSET`` and ``Raw`` are msgspec's own: msgspec leaves an ``UNSET`` field out and writes a ``Raw``
+    verbatim. The codecs keep both, on write and on the read check, so such an event marshals, and one
+    another writer stored reads back."""
+    codec = _CODECS[fmt]({"Renamed": Renamed, "Deferred": Deferred})
+    value = event(fmt)
+    marshaled = codec.marshal(value)
+    loads = msgspec.json.decode if fmt == "json" else msgspec.msgpack.decode
+    assert loads(bytes(marshaled.data)) == written, branch
+    assert codec.unmarshal(marshaled) == value, branch
+
+
+def test_the_msgpack_codec_passes_an_extension_value_through() -> None:
+    """A MessagePack extension value is the format's own: written as it is and read back as it was."""
+    codec = msgpack_codec({"Tagged": Tagged})
+    event = Tagged("a", msgspec.msgpack.Ext(7, b"\x01\x02"))
+    assert codec.unmarshal(codec.marshal(event)) == event
+
+
+def test_an_unset_field_is_left_out_of_every_encoded_value() -> None:
+    """The one encoder writes a cached command result, a document and the command hash: an ``UNSET`` field
+    is left out there too, as msgspec leaves it out."""
+    assert _json.encode({"result": Renamed("a")}) == '{"result":{"id":"a"}}'
+
+
+@dataclass
+class OrderLine:
+    """A read-model value with a plain default: the field ``msgspec.convert`` leaves out of ``__dict__``."""
+
+    sku: str
+    quantity: int
+    currency: str = "EUR"
+
+
+class OrderView(msgspec.Struct):
+    order_id: str
+    line: OrderLine
+
+
+LINE_FIELDS: dict[str, Any] = {"sku": "sku-42", "quantity": 3}
+
+
+@pytest.mark.parametrize(
+    "branch, document, filter",
+    [
+        ("at_the_root", lambda line: line, F.eq("currency", "EUR")),
+        ("in_a_dict", lambda line: {"order_id": "ord-7", "line": line}, F.eq("line.currency", "EUR")),
+        ("in_a_struct", lambda line: OrderView("ord-7", line), F.eq("line.currency", "EUR")),
+        (
+            "in_a_list",
+            lambda line: {"order_id": "ord-7", "lines": [line]},
+            F.contains("lines", {**LINE_FIELDS, "currency": "EUR"}),
+        ),
+    ],
+)
+async def test_a_defaulted_field_encodes_matches_and_stores_however_the_value_was_built(
+    branch: str, document: Callable[[OrderLine], Any], filter: F.Filter
+) -> None:
+    """Two equal values, one built by the constructor and one by ``msgspec.convert``, are one document: the
+    same JSON text, the same filter verdict and the same stored row."""
+    built = OrderLine("sku-42", 3)
+    converted = msgspec.convert(LINE_FIELDS, OrderLine)
+    assert built == converted and "currency" not in vars(converted), "the gap the encoder must fill"
+    documents = [document(built), document(converted)]
+    assert _json.encode(documents[0]) == _json.encode(documents[1]), branch
+    assert [F.matches(filter, d) for d in documents] == [True, True], branch
+    stored: list[list[Any]] = []
+    for d in documents:
+        store = MemoryProjectionStore()
+        await store.save(Entity("view-1", 0, d))
+        stored.append((await store.get_many(Q.Query(filter=filter))).rows)
+    assert len(stored[0]) == 1 and stored[0] == stored[1], branch
+
+
+class _NotJson:
+    """A host value msgspec cannot encode."""
+
+
+@pytest.mark.parametrize(
+    "branch, value, native_raises, want",
+    [
+        pytest.param("ok", {"price": Decimal("9.50")}, None, '{"price":"9.5"}', id="the_native_call_gets_json_text"),
+        pytest.param(
+            "native_refuses",
+            {"price": 1},
+            RuntimeError("codec: no such operator"),
+            "no such operator",
+            id="a_native_refusal_passes_through_for_the_native_module_to_retype",
+        ),
+        pytest.param(
+            "host_value_refused",
+            {"price": _NotJson()},
+            None,
+            "value is not JSON-encodable",
+            id="a_host_value_that_will_not_encode_never_reaches_the_native_call",
+        ),
+    ],
+)  # fmt: skip
+def test_json_call_branches(branch: str, value: Any, native_raises: Exception | None, want: str) -> None:
+    """``_json.call`` encodes every host value before the native call, so an encoding error keeps its own
+    message and the native function never runs on it. It retypes nothing: ``edax._native`` maps the native
+    call's own failure."""
+    calls: list[str] = []
+
+    def native(text: str) -> str:
+        calls.append(text)
+        if native_raises is not None:
+            raise native_raises
+        return text
+
+    if branch == "ok":
+        assert _json.call(native, value) == want
+        assert calls == [want]
+        return
+    with pytest.raises(RuntimeError if branch == "native_refuses" else edax.CodecError, match=want):
+        _json.call(native, value)
+    assert len(calls) == (1 if native_raises is not None else 0), branch
+
+
+class _Plain(msgspec.Struct):
+    sku: str
+    quantity: int
+    tags: tuple[str, ...] = ()
+
+
+class _Timed(msgspec.Struct):
+    sku: str
+    at: dt.datetime
+
+
+class _Loose(msgspec.Struct):
+    sku: str
+    price: Any
+
+
+@dataclass
+class _Line:
+    sku: str
+    currency: str = "EUR"
+
+
+@pytest.mark.parametrize(
+    "value, direct, want",
+    [
+        pytest.param(_Plain("sku-42", 3), True, b'{"sku":"sku-42","quantity":3,"tags":[]}', id="a_type_with_no_host_value_is_written_as_it_is"),
+        pytest.param(_Timed("sku-42", dt.datetime(2024, 1, 1, 0, 30, tzinfo=dt.timezone.utc)), False, b'{"sku":"sku-42","at":"2024-01-01T00:30:00.000000Z"}', id="a_declared_datetime_is_walked_to_its_shared_form"),
+        pytest.param(_Loose("sku-42", Decimal("9.50")), False, b'{"sku":"sku-42","price":"9.5"}', id="an_any_field_may_hold_a_decimal_so_it_is_walked"),
+        pytest.param(_Line("sku-42"), False, b'{"sku":"sku-42","currency":"EUR"}', id="a_dataclass_is_walked_for_its_defaulted_fields"),
+        pytest.param({"price": Decimal("9.50")}, False, b'{"price":"9.5"}', id="a_dict_holds_anything_so_it_is_walked"),
+    ],
+)  # fmt: skip
+def test_the_encode_plan_is_decided_per_type(value: Any, direct: bool, want: bytes) -> None:
+    """Whether a value needs the shared-form walk is read once off its type's declared fields. A type that
+    holds no ``datetime``, ``Decimal`` or dataclass is written by msgspec as it is, and its bytes are exactly
+    the walk's; a type that may hold one, an ``Any`` field included, is walked."""
+    assert _json._plan(type(value)).direct is direct
+    assert _json.encode_bytes(value) == want == msgspec.json.encode(_json._builtins(value, _json._OWN_FORM))
+
+
+@pytest.mark.parametrize(
+    "decoded_as, payload, refused",
+    [
+        pytest.param(_Plain, b'{"sku":"sku-42","quantity":3}', False, id="a_type_with_no_host_value_is_never_walked"),
+        pytest.param(_Timed, b'{"sku":"sku-42","at":"2024-01-01T00:30:00"}', True, id="a_naive_datetime_is_refused_on_read"),
+        pytest.param(_Timed, b'{"sku":"sku-42","at":"2024-01-01T00:30:00Z"}', False, id="an_aware_datetime_reads"),
+    ],
+)  # fmt: skip
+def test_check_read_walks_only_a_type_that_holds_a_host_value(
+    decoded_as: type, payload: bytes, refused: bool
+) -> None:
+    """``check_read`` decides by the decoded type whether a payload can hold a host value to check."""
+    value = msgspec.json.decode(payload, type=decoded_as)
+    if refused:
+        with pytest.raises(edax.CodecError):
+            _json.check_read(value, decoded_as)
+        return
+    assert _json.check_read(value, decoded_as) is value

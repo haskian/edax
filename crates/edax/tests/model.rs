@@ -23,30 +23,26 @@ mod support;
 use support::{draft, Shared};
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use edax::command::{Claim, State};
+use edax::idempotency::{Claim, State};
+use edax::testkit::account::next_id;
 use edax::Tenancy;
 use edax::{
-    idempotent, propagate, wrap, Aggregate, AggregateCodec, Command, CommandBus, Delivery, Entity, Error, ErrorCode, EventCodec,
-    EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec, KeyOrderedDispatcher,
-    MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Metadata, Outbox, Pacing, ProjectionStore, Query,
-    Relay, Repository, Root,
+    idempotent, propagate, Aggregate, AggregateCodec, Command, CommandBus, Delivery, DispatchOptions, Entity, Error,
+    ErrorCode, EventCodec, EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec,
+    KeyOrderedDispatcher, MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Metadata, Outbox,
+    Pacing, ProjectionQuery, Query, Relay, Repository, Root, SaveOptions,
 };
 use edax_cqrs::{claim_key, command_hash, SortKey};
-use edax_event::Event;
+use edax_event::Payload;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 // --- shared helpers -------------------------------------------------------
-
-fn next_id() -> String {
-    static N: AtomicU64 = AtomicU64::new(1);
-    format!("e{}", N.fetch_add(1, Ordering::Relaxed))
-}
 
 /// Event context varied per append, so the model comparison covers the fields a store could silently
 /// drop (extensions, metadata, the time it records) rather than just ids and sequences.
@@ -56,11 +52,17 @@ fn stamp(variant: u8) -> (Extensions, Metadata, i64) {
     match variant % 3 {
         0 => {}
         1 => {
-            ext.insert("traceparent".into(), "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into());
+            ext.insert(
+                "traceparent".into(),
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
+            );
             md.insert("tenant".into(), "t1".into());
         }
         _ => {
-            ext.insert("traceparent".into(), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into());
+            ext.insert(
+                "traceparent".into(),
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into(),
+            );
             ext.insert("http.origin_ip".into(), "203.0.113.7".into());
             // non-ASCII: the field has to survive the store round-trip byte for byte
             md.insert("tenant".into(), "déjà-vu".into());
@@ -99,7 +101,10 @@ fn handler_err(got: Result<u8, HandlerError>) -> Result<String, TestCaseError> {
 /// router report a verdict as the same kernel error.
 fn kernel_err(got: Result<u8, HandlerError>) -> Result<Error, TestCaseError> {
     match got {
-        Err(e) => e.downcast_ref::<Error>().cloned().ok_or_else(|| TestCaseError::fail(format!("not a kernel error: {e}"))),
+        Err(e) => e
+            .downcast_ref::<Error>()
+            .cloned()
+            .ok_or_else(|| TestCaseError::fail(format!("not a kernel error: {e}"))),
         other => Err(TestCaseError::fail(format!("expected handler error, got {other:?}"))),
     }
 }
@@ -113,22 +118,39 @@ enum StoreOp {
     /// `gap` skews the last draft's sequence by one, so the batch is no longer dense from
     /// `expected + 1` — the shape a store must reject whole, and the one a generator that only ever
     /// builds `expected + 1 + i` can never produce.
-    Append { agg: u8, delta: i8, n: u8, ns: u8, gap: bool },
-    Load { agg: u8, after: u64 },
-    Drain { limit: u8, fail_at: Option<u8> },
+    Append {
+        agg: u8,
+        delta: i8,
+        n: u8,
+        ns: u8,
+        gap: bool,
+    },
+    Load {
+        agg: u8,
+        after: u64,
+    },
+    Drain {
+        limit: u8,
+        fail_at: Option<u8>,
+    },
 }
 
 fn store_op() -> impl Strategy<Value = StoreOp> {
     prop_oneof![
-        (0u8..3, -2i8..=2, 0u8..=3, 0u8..3, any::<bool>())
-            .prop_map(|(agg, delta, n, ns, gap)| StoreOp::Append { agg, delta, n, ns, gap }),
+        (0u8..3, -2i8..=2, 0u8..=3, 0u8..3, any::<bool>()).prop_map(|(agg, delta, n, ns, gap)| StoreOp::Append {
+            agg,
+            delta,
+            n,
+            ns,
+            gap
+        }),
         (0u8..3, 0u64..9).prop_map(|(agg, after)| StoreOp::Load { agg, after }),
         (0u8..7, proptest::option::of(0u8..6)).prop_map(|(limit, fail_at)| StoreOp::Drain { limit, fail_at }),
     ]
 }
 
-/// The reference model: events per aggregate in append order, an outbox FIFO, and the ids the relay
-/// has handed to `publish` (with repeats — a failed drain re-publishes its prefix).
+/// The reference model: events per aggregate in append order, the outbox in commit order, and the ids
+/// the relay has handed to `publish` (with repeats — a failed drain re-publishes the failed row).
 #[derive(Default)]
 struct StoreModel {
     events: HashMap<u8, Vec<EventMessage>>,
@@ -137,14 +159,14 @@ struct StoreModel {
     failed_drains: usize,
 }
 
-/// P1 over any [`EventStore`]: the generic bound *is* the contract — the append CAS, the per-aggregate
+/// P1 over any [`EventStore`] that is also its own [`Outbox`]: the generic bound *is* the contract — the append CAS, the per-aggregate
 /// load window, and the outbox FIFO hold for any backend, not just the in-memory one exercised here.
 ///
 /// `new_store` builds the store over a clock that reads `clock`, so the model knows the time each
 /// append is recorded at.
 fn check_event_store<S>(new_store: impl FnOnce(Arc<AtomicI64>) -> S, history: Vec<StoreOp>) -> Result<(), TestCaseError>
 where
-    S: EventStore + Clone,
+    S: EventStore + Outbox<EventMessage> + Clone,
     S::Tx: Default,
 {
     let clock = Arc::new(AtomicI64::new(0));
@@ -234,13 +256,26 @@ where
                 if failed {
                     let k = fail_at.unwrap() as usize;
                     prop_assert!(
-                        matches!(got.as_ref().map_err(|e| e.downcast_ref::<Error>().map(|e| e.code)), Err(Some(ErrorCode::Store))),
+                        matches!(
+                            got.as_ref().map_err(|e| e.downcast_ref::<Error>().map(|e| e.code)),
+                            Err(Some(ErrorCode::Store))
+                        ),
                         "drain should surface the publish error"
                     );
-                    prop_assert_eq!(&seen, &batch[..=k].to_vec());
-                    // The published prefix is marked, and the failed row and everything behind it
-                    // stay for the next drain (at-least-once, never a drop, never out of order).
-                    model.outbox.drain(..k);
+                    // Order is promised per aggregate: the failed row and its aggregate's rows behind it
+                    // stay for the next drain (at-least-once, never a drop, never out of order), and every
+                    // other row is published and marked. One row fails, so the outage breaker never trips.
+                    let failed_row = &batch[k];
+                    let behind: Vec<EventMessage> = batch[k + 1..]
+                        .iter()
+                        .filter(|e| e.aggregate_id != failed_row.aggregate_id)
+                        .cloned()
+                        .collect();
+                    let mut want_seen = batch[..=k].to_vec();
+                    want_seen.extend(behind.iter().cloned());
+                    prop_assert_eq!(&seen, &want_seen);
+                    let marked: Vec<&String> = batch[..k].iter().chain(&behind).map(|e| &e.id).collect();
+                    model.outbox.retain(|e| !marked.contains(&&e.id));
                     prop_assert_eq!(store.unpublished(1000).unwrap(), model.outbox.clone());
                     model.failed_drains += 1;
                 } else {
@@ -255,7 +290,7 @@ where
     }
 
     // Drain what's left with an infallible publisher: every appended event must have been
-    // published at least once, in append order, and at most once per failed drain extra.
+    // published at least once, in its aggregate's append order, and at most once per failed drain extra.
     let mut tail: Vec<EventMessage> = Vec::new();
     relay
         .drain(1000, |env: &EventMessage| {
@@ -272,11 +307,18 @@ where
             first_seen.push(id.clone());
         }
     }
-    // Ids come from a monotonic counter, so sorting by it *is* global append order. The outbox
-    // is a FIFO drained by prefixes, so first publication must follow that same order.
+    // Every appended event went out, and each aggregate's first publications follow its append order:
+    // order is promised per aggregate, not across them.
     let mut appended: Vec<String> = model.events.values().flatten().map(|e| e.id.clone()).collect();
-    appended.sort_by_key(|id| id[1..].parse::<u64>().unwrap());
-    prop_assert_eq!(first_seen.clone(), appended);
+    let mut published = first_seen.clone();
+    appended.sort();
+    published.sort();
+    prop_assert_eq!(published, appended);
+    for events in model.events.values() {
+        let stream: Vec<&String> = events.iter().map(|e| &e.id).collect();
+        let order: Vec<&String> = first_seen.iter().filter(|id| stream.contains(id)).collect();
+        prop_assert_eq!(order, stream);
+    }
     for id in &first_seen {
         let n = model.published.iter().filter(|p| *p == id).count();
         prop_assert!(n <= 1 + model.failed_drains, "{id} published {n} times");
@@ -297,28 +339,55 @@ proptest! {
 // P2 — command bus: routing, idempotency claim, replay, pending
 // =========================================================================
 
-/// Only `p` is on the wire: routing, key and outcome are test-side steering, kept out of the hash
-/// so two dispatches of one payload under one key are one command whatever their outcome.
+/// Command type `KIND` of three. Only `p` is on the wire: the outcome is test-side steering, kept out of
+/// the hash so two dispatches of one payload under one key are one command whatever their outcome. The
+/// key travels on the message.
 #[derive(Serialize)]
-struct Cmd {
-    #[serde(skip)]
-    kind: u8,
-    #[serde(skip)]
-    key: u8,
+struct Cmd<const KIND: u8> {
     #[serde(rename = "p")]
     payload: u8,
     #[serde(skip)]
     outcome: u8,
 }
 
-impl Command for Cmd {
-    fn command_type(&self) -> &str {
-        match self.kind {
-            0 => "A",
-            1 => "B",
-            _ => "Z", // never registered: routing must reject it before any middleware runs
+impl Command for Cmd<0> {
+    const TYPE: &'static str = "A";
+    type Output = u8;
+}
+
+impl Command for Cmd<1> {
+    const TYPE: &'static str = "B";
+    type Output = u8;
+}
+
+// Never registered: routing must reject it before any middleware runs.
+impl Command for Cmd<2> {
+    const TYPE: &'static str = "Z";
+    type Output = u8;
+}
+
+/// Each kind's name, by kind.
+const NAMES: [&str; 3] = [Cmd::<0>::TYPE, Cmd::<1>::TYPE, Cmd::<2>::TYPE];
+
+/// Register command type `K` on `bus`, guarded by `store`, its handler counting its runs in `counter`.
+fn register<const K: u8>(
+    bus: &mut CommandBus,
+    store: &Arc<dyn IdempotencyStore<u8, Tx = MemoryTx> + Send + Sync>,
+    counter: Arc<Shared<usize>>,
+) where
+    Cmd<K>: Command<Output = u8>,
+{
+    let guard = idempotent(Arc::clone(store), SCOPE, Tenancy::Silo);
+    let handler: edax::Handler<Cmd<K>> = Box::new(move |cmd: &Cmd<K>| {
+        counter.set(counter.get() + 1);
+        match cmd.outcome {
+            0 => Ok(cmd.payload + 10 * K),
+            1 => Err("transient".into()),
+            // a Codec error is the kernel's terminal class: cached, never retried
+            _ => Err(Error::codec("terminal").into()),
         }
-    }
+    });
+    bus.register(handler, vec![guard]).unwrap();
 }
 
 /// The scope both command types' guards claim under: one key space, so a key reused across types is
@@ -327,8 +396,8 @@ const SCOPE: &str = "model";
 
 fn cmd_hash(kind: u8, payload: u8) -> u64 {
     // Hash through the same kernel rule the middleware uses, so the model can never drift from it.
-    let cmd = Cmd { kind, key: 0, payload, outcome: 0 };
-    command_hash(cmd.command_type(), &cmd).expect("the command hashes")
+    // Every kind serializes alike, so one kind's value under each kind's name is that kind's command.
+    command_hash(NAMES[usize::from(kind)], &Cmd::<0> { payload, outcome: 0 }).expect("the command hashes")
 }
 
 /// The ledger key the guard claims for model key `key`.
@@ -376,20 +445,8 @@ proptest! {
         let calls = [Arc::new(Shared::<usize>::default()), Arc::new(Shared::<usize>::default())];
 
         let mut bus = CommandBus::new();
-        for (kind, name) in [(0u8, "A"), (1u8, "B")] {
-            let counter = Arc::clone(&calls[kind as usize]);
-            let guard = idempotent(Arc::clone(&store), SCOPE, Tenancy::Silo, |c: &Cmd| Some(c.key.to_string()));
-            let handler: edax::Handler<Cmd, u8> = Box::new(move |cmd: &Cmd| {
-                counter.set(counter.get() + 1);
-                match cmd.outcome {
-                    0 => Ok(cmd.payload + 10 * kind),
-                    1 => Err("transient".into()),
-                    // a Codec error is the kernel's terminal class: cached, never retried
-                    _ => Err(Error::codec("terminal").into()),
-                }
-            });
-            bus.register(name, wrap(handler, vec![guard])).unwrap();
-        }
+        register::<0>(&mut bus, &store, Arc::clone(&calls[0]));
+        register::<1>(&mut bus, &store, Arc::clone(&calls[1]));
 
         let mut model: HashMap<u8, (u64, Slot)> = HashMap::new();
         let mut tx = MemoryTx::auto_commit();
@@ -399,7 +456,12 @@ proptest! {
                 BusOp::Dispatch { kind, key, payload, outcome } => {
                     let hash = cmd_hash(kind, payload);
                     let before: Vec<usize> = calls.iter().map(|c| c.get()).collect();
-                    let got = bus.dispatch::<Cmd, u8>(&Cmd { kind, key, payload, outcome });
+                    let options = || DispatchOptions::keyed(key.to_string());
+                    let got = match kind {
+                        0 => bus.dispatch(&Cmd::<0> { payload, outcome }, options()),
+                        1 => bus.dispatch(&Cmd::<1> { payload, outcome }, options()),
+                        _ => bus.dispatch(&Cmd::<2> { payload, outcome }, options()),
+                    };
 
                     if kind == 2 {
                         // Routing precedes the middleware chain: no claim, no handler, no record.
@@ -531,11 +593,11 @@ proptest! {
             if *fail { expected_nack.push(id.clone()) } else { expected_ack.push(id.clone()) }
             let (a, na) = (Arc::clone(&acked), Arc::clone(&nacked));
             let (ack_id, nack_id) = (id.clone(), id);
-            dispatcher.deliver(Delivery::new(
+            dispatcher.submit(Delivery::new(
                 env,
                 move || a.lock().unwrap().push(ack_id),
                 move || na.lock().unwrap().push(nack_id),
-            ));
+            )).expect("the dispatcher is running");
         }
         dispatcher.stop();
 
@@ -661,26 +723,33 @@ proptest! {
                     let stale = stale && !ticks.is_empty() && version > 0;
 
                     // Loaded *before* the live instance saves, so it holds the old version.
-                    let mut stale_agg = if stale { Some(repo.load(&agg_id(agg)).unwrap()) } else { None };
+                    let mut stale_agg = if stale { Some(repo.load(None, &agg_id(agg)).unwrap()) } else { None };
 
                     let instance = match live.entry(agg) {
                         std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                         std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(repo.load(&agg_id(agg)).unwrap())
+                            e.insert(repo.load(None, &agg_id(agg)).unwrap())
                         }
                     };
                     for t in &ticks {
                         instance.apply(Tick(*t));
                     }
-                    let saved = repo
-                        .save_with(instance, lineage.clone(), extensions.clone(), metadata.clone())
-                        .expect("live save");
+                    // Half the saves import facts that happened earlier than the store records them.
+                    let occurred_at = (version % 2 == 1).then_some(1_714_564_799_000_000_000);
+                    let options = SaveOptions {
+                        lineage: Some(lineage.clone()),
+                        extensions: extensions.clone(),
+                        metadata: metadata.clone(),
+                        occurred_at,
+                    };
+                    let saved = repo.save(instance, options.clone()).expect("live save");
                     // Every event of the batch carries the context it was saved with.
                     let carries = |e: &EventMessage| {
                         e.extensions == extensions
                             && e.metadata == metadata
                             && e.correlation_id == lineage.correlation_id
                             && e.causation_id == lineage.causation_id
+                            && e.occurred_at == occurred_at
                     };
 
                     let want_seqs: Vec<Option<u64>> =
@@ -688,7 +757,7 @@ proptest! {
                     prop_assert_eq!(saved.iter().map(|e| e.sequence).collect::<Vec<_>>(), want_seqs);
                     prop_assert!(saved.iter().all(carries));
                     prop_assert!(instance.root().pending().is_empty());
-                    prop_assert_eq!(instance.root().version, version + ticks.len() as u64);
+                    prop_assert_eq!(instance.root().version(), version + ticks.len() as u64);
                     prop_assert!(instance.root().pending().is_empty());
                     ticks_model.extend(ticks.iter().copied());
 
@@ -701,7 +770,7 @@ proptest! {
                             agg_stale.apply(Tick(*t));
                         }
                         expect_conflict(
-                            repo.save_with(agg_stale, lineage, extensions, metadata),
+                            repo.save(agg_stale, options),
                             version,
                             version + ticks.len() as u64,
                         )?;
@@ -714,9 +783,9 @@ proptest! {
                 RepoOp::Reload { agg } => {
                     let ticks = model.get(&agg).cloned().unwrap_or_default();
                     let want: i64 = ticks.iter().map(|t| *t as i64).sum();
-                    let loaded = repo.load(&agg_id(agg)).unwrap();
+                    let loaded = repo.load(None, &agg_id(agg)).unwrap();
                     prop_assert_eq!(loaded.n, want);
-                    prop_assert_eq!(loaded.root().version, ticks.len() as u64);
+                    prop_assert_eq!(loaded.root().version(), ticks.len() as u64);
 
                     // The snapshot path must agree with a pure replay: rebuild the same stream in a
                     // store that has no snapshot at all and load again.
@@ -731,9 +800,9 @@ proptest! {
                         })
                         .collect();
                     fresh.append(&mut MemoryTx::auto_commit(), &agg_id(agg), 0, drafts).unwrap();
-                    let replayed = counter_repo(fresh).load(&agg_id(agg)).unwrap();
+                    let replayed = counter_repo(fresh).load(None, &agg_id(agg)).unwrap();
                     prop_assert_eq!(replayed.n, want);
-                    prop_assert_eq!(replayed.root().version, ticks.len() as u64);
+                    prop_assert_eq!(replayed.root().version(), ticks.len() as u64);
 
                     live.insert(agg, loaded);
                 }
@@ -753,7 +822,7 @@ proptest! {
 // =========================================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-enum Payload {
+enum Sample {
     Empty,
     Scalar {
         label: String,
@@ -772,12 +841,12 @@ prop_compose! {
                           flag in proptest::option::of(any::<bool>()),
                           blob in prop::collection::vec(any::<u8>(), 0..24),
                           tags in prop::collection::btree_map(".*", any::<i64>(), 0..4))
-                         -> Payload {
+                         -> Sample {
         match choice {
-            0 => Payload::Empty,
-            1 => Payload::Scalar { label, count, flag },
-            2 => Payload::Blob(blob),
-            _ => Payload::Nested { tags, label },
+            0 => Sample::Empty,
+            1 => Sample::Scalar { label, count, flag },
+            2 => Sample::Blob(blob),
+            _ => Sample::Nested { tags, label },
         }
     }
 }
@@ -787,31 +856,27 @@ proptest! {
 
     #[test]
     fn codecs_roundtrip(event in payload_strategy()) {
-        let json = JsonCodec::<Payload>::new("Payload");
+        let json = JsonCodec::<Sample>::new("Sample");
         let raw = json.marshal(&event).unwrap();
-        prop_assert_eq!(&raw.name, "Payload");
+        prop_assert_eq!(&raw.name, "Sample");
         prop_assert_eq!(raw.version, 1);
         prop_assert_eq!(json.unmarshal(&raw).unwrap(), event.clone());
 
-        #[cfg(feature = "msgpack")]
-        {
-            let mp = edax::MsgpackCodec::<Payload>::new("Payload");
-            let raw = mp.marshal(&event).unwrap();
-            prop_assert_eq!(&raw.name, "Payload");
-            prop_assert_eq!(mp.unmarshal(&raw).unwrap(), event);
-        }
+        let mp = edax::MsgpackCodec::<Sample>::new("Sample");
+        let raw = mp.marshal(&event).unwrap();
+        prop_assert_eq!(&raw.name, "Sample");
+        prop_assert_eq!(mp.unmarshal(&raw).unwrap(), event);
     }
 
     #[test]
     fn codecs_reject_garbage(bytes in prop::collection::vec(any::<u8>(), 1..16)) {
-        let raw = Event { name: "Payload".into(), version: 1, data: bytes };
+        let raw = Payload { name: "Sample".into(), version: 1, data: bytes };
         // Whatever the bytes are, a codec either decodes them or returns Error::codec — never panics.
-        let json = JsonCodec::<Payload>::new("Payload");
+        let json = JsonCodec::<Sample>::new("Sample");
         if let Err(e) = json.unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
-        #[cfg(feature = "msgpack")]
-        if let Err(e) = edax::MsgpackCodec::<Payload>::new("Payload").unmarshal(&raw) {
+        if let Err(e) = edax::MsgpackCodec::<Sample>::new("Sample").unmarshal(&raw) {
             prop_assert_eq!(e.code, ErrorCode::Codec);
         }
     }
@@ -847,11 +912,11 @@ fn proj_op() -> impl Strategy<Value = ProjOp> {
     ]
 }
 
-/// P6 over any [`ProjectionStore`]: the generic bound *is* the contract — the OCC on `version + 1`
+/// P6 over any [`ProjectionQuery`]: the generic bound *is* the contract — the OCC on `version + 1`
 /// and the sort/offset/limit paging hold for any backend, not just the in-memory one exercised here.
 fn check_projection_store<S>(new_store: impl Fn() -> S, history: Vec<ProjOp>) -> Result<(), TestCaseError>
 where
-    S: ProjectionStore,
+    S: ProjectionQuery,
     S::Tx: Default,
 {
     let store = new_store();
@@ -863,19 +928,17 @@ where
             ProjOp::Save { id, delta, n } => {
                 let stored = model.get(&id).map(|(v, _)| *v).unwrap_or(0);
                 let expected = (stored as i64 + delta as i64).max(0) as u64;
-                let mut entity = Entity {
+                let entity = Entity {
                     id: format!("u{id}"),
                     version: expected,
                     document: json!({ "n": n }),
                 };
-                let got = store.save(&mut tx, &mut entity);
+                let got = store.save(&mut tx, &entity);
                 if expected == stored {
-                    prop_assert!(got.is_ok(), "clean save rejected: {:?}", got.err());
-                    prop_assert_eq!(entity.version, stored + 1); // advanced in place
+                    prop_assert_eq!(got.ok(), Some(stored + 1), "a clean save returns the next version");
                     model.insert(id, (stored + 1, n));
                 } else {
                     expect_conflict(got, expected, stored)?;
-                    prop_assert_eq!(entity.version, expected); // unchanged on conflict
                 }
             }
 
@@ -908,7 +971,11 @@ where
                     ids.reverse();
                 }
                 let want: Vec<String> = ids.into_iter().skip(offset).take(limit.unwrap_or(usize::MAX)).collect();
-                let got: Vec<String> = page.rows.iter().map(|d| d["id"].as_str().unwrap().to_string()).collect();
+                let got: Vec<String> = page
+                    .rows
+                    .iter()
+                    .map(|d| d["id"].as_str().unwrap().to_string())
+                    .collect();
                 prop_assert_eq!(got, want);
             }
         }
@@ -952,7 +1019,11 @@ fn concurrent_appends_one_winner() {
         let winners = results.iter().filter(|r| r.is_ok()).count();
         assert_eq!(winners, 1, "exactly one append may win round {round}");
         for e in results.iter().filter_map(|r| r.as_ref().err()) {
-            assert_eq!(*e, Error::concurrency(round, round + 1), "loser should see the winner's version");
+            assert_eq!(
+                *e,
+                Error::concurrency(round, round + 1),
+                "loser should see the winner's version"
+            );
         }
 
         let mut tx = MemoryTx::auto_commit();

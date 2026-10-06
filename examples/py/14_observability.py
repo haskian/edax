@@ -75,12 +75,12 @@ async def main() -> None:
     # 1. timing() outermost, so it times every dispatch, the replayed ones too.
     ledger = MemoryIdempotencyStore(db)
     guard = idempotent(ledger, db, scope="accounts-api", observer=observer, tenancy=Tenancy.SILO)
-    bus = CommandBus(timing(record_latency, lambda cmd: cmd.type), guard)
+    bus = CommandBus(timing(record_latency, lambda msg: msg.name), guard)
 
     async def deposit(cmd: Deposit) -> int:
         return cmd.amount  # a real handler saves through a Repository here
 
-    bus.register("Deposit", deposit)
+    bus.register(Deposit, deposit)
 
     # 2. A first dispatch, then a repeat of the same request.
     print("dispatch req-1:")

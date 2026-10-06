@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 
 import edax
 import pytest
-from conftest import Counter, FakeKafkaClient, Tick, build_message, claimed, counter_repo
+from conftest import Counter, FakeKafkaClient, Tick, build_message, claimed, counter_repo, on_another_thread
 from edax import EventMessage, KeyOrderedDispatcher, Snapshot, _edax, current_tx, transaction
 from edax._owned import ThreadBound
 from edax.backend.kafka import KafkaConsumer
@@ -28,11 +28,12 @@ from edax.backend.memory import (
     MemorySagaStore,
     MemoryTransactor,
 )
-from edax.command import CommandBus, Record, Won, idempotent
+from edax.command import CommandBus, idempotent
+from edax.idempotency import Done, Failed, Pending, Record, Won
 from edax.projection import Entity
-from edax.store import Tx
-from edax.testing import drafted
+from edax.testing import delivery, drafted
 from edax.testing.faults import BrokenCommit, LostResponse
+from edax.unit_of_work import Tx
 
 
 class CountingTransactor:
@@ -81,13 +82,13 @@ async def test_one_tx_threaded_to_projection_and_idempotency() -> None:
         await proj.save(Entity("u1", 0, {"id": "u1", "n": 1}), tx=tx)  # explicit
         won = await idem.claim("k1", 1, tx=current_tx(db))  # ambient: won the claim
         assert isinstance(won, Won)
-        await idem.complete("k1", won.handle, Record(payload_hash=1, result=42), tx=current_tx(db))
+        await idem.complete("k1", won.handle, Record.done(1, 42), tx=current_tx(db))
         assert await proj.get("u1", tx=db.auto_commit()) is None, "staged, not landed"
     stored = await proj.get("u1")
     assert stored is not None, "the committed tx must have landed the projection row"
     assert stored.document["n"] == 1
     prior = await idem.claim("k1", 1)  # replay: the completed record comes back
-    assert not isinstance(prior, Won) and prior.result == 42
+    assert not isinstance(prior, Won) and prior.state == Done(42)
 
 
 async def test_a_memory_store_refuses_a_foreign_tx() -> None:
@@ -142,7 +143,9 @@ class RecordingStore:
         return []
 
 
-def _repo_with_pending(transactor: object = None) -> tuple[RecordingStore, edax.Repository[Counter], Counter]:
+def _repo_with_pending(
+    transactor: object = None,
+) -> tuple[RecordingStore, edax.Repository[Counter, Any], Counter]:
     store = RecordingStore(transactor)
     acct = Counter("a1")
     acct.apply(Tick(5))
@@ -266,7 +269,7 @@ async def test_dispatcher_workers_do_not_inherit_the_ambient_tx() -> None:
     dispatcher = KeyOrderedDispatcher(workers=1, handler=handle)
     async with transaction(tr):
         dispatcher.start()
-        await dispatcher.submit(build_message("acct-1", "Deposited", 1))
+        await dispatcher.submit(delivery(build_message("acct-1", "Deposited", 1)))
     await dispatcher.stop()
     assert seen == [None]
     assert (tr.committed, tr.rolled_back) == (2, 0), "the caller's unit of work and the worker's"
@@ -362,7 +365,7 @@ class Rig:
         self.repo = counter_repo(self.store, iter(range(1, 100)))
         self.calls = 0
         self.bus = CommandBus(idempotent(self.claims, scope="test", tenancy=edax.Tenancy.SILO))
-        self.bus.register("Deposit", self._deposit)
+        self.bus.register(Deposit, self._deposit)
 
     async def _deposit(self, cmd: Deposit) -> int:
         self.calls += 1
@@ -375,7 +378,7 @@ class Rig:
         """One write on every participant, inside the ambient unit of work."""
         await self.bus.dispatch(Deposit("acct-1", 100, "req-A"), idempotency_key="req-A")
         await self.proj.save(Entity("acct-1", 0, {"balance": 100}))
-        await self.sagas.save("order-1", {"status": "open"}, 0, "", [])
+        await self.sagas.save("order", "order-1", {"status": "open"}, 0, "", [])
 
     async def visible(self) -> tuple[int, int, bool, bool, bool, bool]:
         """What a reader outside any transaction sees of every participant:
@@ -391,11 +394,11 @@ class Rig:
             pass
         return (
             len(await self.store.load(none, "acct-1", 0)),
-            len(await self.store.unpublished()),
+            len(await self.store.unpublished(100)),
             await self.store.load_snapshot(none, "acct-1") is not None,
             await self.proj.get("acct-1", tx=none) is not None,
             taken,
-            await self.sagas.load("order-1", tx=none) is not None,
+            await self.sagas.load("order", "order-1", tx=none) is not None,
         )
 
 
@@ -485,7 +488,7 @@ async def test_a_cancelled_unit_of_work_rolls_back() -> None:
 
 # A real 64-bit payload hash, past 2^53.
 HASH = 11_234_062_831_410_934_249
-DONE = Record(payload_hash=HASH, result=42)
+DONE = Record.done(HASH, 42)
 
 
 @pytest.mark.parametrize(
@@ -513,7 +516,7 @@ async def test_completing_or_releasing_a_held_claim_conflicts(branch: str, write
 
 
 def test_the_auto_commit_token_comes_from_the_native_binding() -> None:
-    # Not a Python-side literal: `edax_abi::NO_TX` is the one owner of the value.
+    # Not a Python-side literal: `edax_memory::Tx::auto_commit`, through `no_tx()`, owns the value.
     assert MemoryTransactor().auto_commit().token == _edax.no_tx()
 
 
@@ -557,7 +560,9 @@ def _sync(awaitable: Any) -> Any:
         ),
         pytest.param(ForeignThreadCase(MemoryBroker, lambda b: b.empty()), id="memory_broker"),
         pytest.param(
-            ForeignThreadCase(lambda: KafkaConsumer(FakeKafkaClient()), lambda c: c.stats()),
+            # A flush is the consumer's own work, so it builds the offset tracker; a probe like `stats()`
+            # builds nothing, so another thread may call it before the first poll.
+            ForeignThreadCase(lambda: KafkaConsumer(FakeKafkaClient()), lambda c: _sync(c.flush())),
             id="kafka_consumer",
         ),
     ],
@@ -577,9 +582,7 @@ def test_a_native_handle_used_from_another_thread_raises_bad_handle(case: Foreig
         except BaseException as e:  # noqa: BLE001 - the assertion below inspects whatever crossed
             raised.append(e)
 
-    thread = threading.Thread(target=foreign)
-    thread.start()
-    thread.join()
+    on_another_thread(foreign)
     assert len(raised) == 1 and isinstance(raised[0], edax.BadHandle), raised
     assert raised[0].terminal is True, "a wiring mistake is not retried"
 
@@ -596,9 +599,7 @@ def test_a_handle_whose_owner_thread_exited_raises_bad_handle_on_a_thread_reusin
         bound.get()
         owner_ident.append(threading.get_ident())
 
-    owner = threading.Thread(target=own)
-    owner.start()
-    owner.join()
+    on_another_thread(own)
     seen: list[tuple[bool, str]] = []
 
     def use() -> None:
@@ -610,9 +611,7 @@ def test_a_handle_whose_owner_thread_exited_raises_bad_handle_on_a_thread_reusin
         seen.append((threading.get_ident() == owner_ident[0], outcome))
 
     for _ in range(50):
-        thread = threading.Thread(target=use)
-        thread.start()
-        thread.join()
+        on_another_thread(use)
         if seen[-1][0]:
             break
     if not seen[-1][0]:
@@ -633,13 +632,13 @@ async def test_a_released_claim_with_nothing_committed_does_not_shadow_or_erase_
         async with db.begin() as winner:
             won = await ledger.claim("req-1", 7, tx=winner)
             assert isinstance(won, Won), "the released key is free"
-            await ledger.complete("req-1", won.handle, Record(7, result=42), tx=winner)
+            await ledger.complete("req-1", won.handle, Record.done(7, 42), tx=winner)
         replay = await ledger.claim("req-1", 7, tx=releaser)
-        assert not isinstance(replay, Won) and replay.result == 42, (
+        assert not isinstance(replay, Won) and replay.state == Done(42), (
             "the releaser replays the winner's outcome"
         )
     stored = await ledger.claim("req-1", 7)
-    assert not isinstance(stored, Won) and stored.result == 42, (
+    assert not isinstance(stored, Won) and stored.state == Done(42), (
         "the releaser's commit left the winner's record"
     )
 
@@ -655,21 +654,25 @@ async def test_a_release_of_a_committed_claim_holds_the_key_until_it_ends() -> N
     async with db.begin() as releaser:
         await ledger.release("req-1", won.handle, tx=releaser)
         held = await ledger.claim("req-1", 7)
-        assert not isinstance(held, Won) and held.pending, "a claimant waits on the held key"
+        assert not isinstance(held, Won) and isinstance(held.state, Pending), (
+            "a claimant waits on the held key"
+        )
         with pytest.raises(edax.ConcurrencyError):
-            await ledger.complete("req-1", won.handle, Record(7, result=42))
+            await ledger.complete("req-1", won.handle, Record.done(7, 42))
     assert isinstance(await ledger.claim("req-1", 7), Won), "the release landed once the releaser committed"
 
     other = MemoryIdempotencyStore()
     won = await other.claim("req-2", 7)
     assert isinstance(won, Won)
-    await other.complete(
-        "req-2", won.handle, Record(7, error="the order is malformed", error_code="rejected")
-    )
+    await other.complete("req-2", won.handle, Record.failed(7, "the order is malformed", "rejected"))
     async with other.transactor.begin() as releaser:
         await other.release("req-2", won.handle, tx=releaser)
     settled = await other.claim("req-2", 7)
-    assert not isinstance(settled, Won) and settled.error_code == "rejected", "the settled record stays"
+    assert (
+        not isinstance(settled, Won)
+        and isinstance(settled.state, Failed)
+        and settled.state.error_code == "rejected"
+    ), "the settled record stays"
 
 
 # =========================================================================
@@ -748,20 +751,21 @@ async def test_a_store_never_reads_another_databases_ambient_tx() -> None:
             await projections.save(Entity("order-8", 0, {"status": "paid"}), tx=audit_tx)
 
 
-def test_a_transactor_chain_that_loops_names_no_database() -> None:
-    """``transactor`` attributes are followed to the database that owns the units of work; a chain that
-    loops back is a wiring mistake, refused as terminal ``BadHandle`` rather than followed forever."""
+async def test_the_transactor_attribute_is_followed_one_hop() -> None:
+    """The *Identity* clause: a ``transactor`` attribute names the owner itself, so the SDK follows it once.
+    A store and its transactor share one ambient tx; an object whose owner names yet another object is its
+    owner's database, not that object's."""
 
-    class Loop:
-        def __init__(self) -> None:
-            self.transactor: object = self
+    class Named:
+        def __init__(self, transactor: object) -> None:
+            self.transactor = transactor
 
-    a, b = Loop(), Loop()
-    a.transactor, b.transactor = b, a
-    with pytest.raises(edax.BadHandle, match="form a cycle"):
-        current_tx(a)
-    single = Loop()
-    assert current_tx(single) is None, "an object naming itself is its own database"
+    db = MemoryTransactor()
+    store, beyond = MemoryProjectionStore(db), Named(Named(db))
+    async with transaction(db) as tx:
+        assert current_tx(store) is tx, "the store names its transactor"
+        assert current_tx(Named(db)) is tx, "one hop reaches the owner"
+        assert current_tx(beyond) is None, "a second hop is not followed"
 
 
 async def test_put_raw_overwrites_committed_state_and_leaves_a_held_key_alone() -> None:
@@ -771,14 +775,18 @@ async def test_put_raw_overwrites_committed_state_and_leaves_a_held_key_alone() 
     store = MemoryIdempotencyStore(db)
     won = await store.claim("k1", 1)
     assert isinstance(won, Won)
-    await store.complete("k1", won.handle, Record(payload_hash=1, result=42))
+    await store.complete("k1", won.handle, Record.done(1, 42))
     store.put_raw("k1", "{")
     prior = await store.claim("k1", 1)
-    assert not isinstance(prior, Won) and prior.error_code == "codec", "the settled record was overwritten"
+    assert (
+        not isinstance(prior, Won) and isinstance(prior.state, Failed) and prior.state.error_code == "codec"
+    ), "the settled record was overwritten"
 
     async with transaction(db) as tx:
         assert isinstance(await store.claim("held", 1, tx=tx), Won)
-        with pytest.raises(edax.ConcurrencyError, match="held by an open transaction"):
+        with pytest.raises(edax.ConcurrencyError, match="held by another open transaction"):
             store.put_raw("held", "{")
         held = await store.claim("held", 1, tx=tx)
-        assert not isinstance(held, Won) and held.pending, "the holder's own claim is untouched"
+        assert not isinstance(held, Won) and isinstance(held.state, Pending), (
+            "the holder's own claim is untouched"
+        )

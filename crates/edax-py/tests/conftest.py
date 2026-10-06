@@ -3,20 +3,24 @@
 The fault wrappers themselves ship in :mod:`edax.testing.faults`, where an adopter's suite gets the same
 ones: :class:`~edax.testing.faults.LostResponse` lands a write and loses its reply (``"commit"`` loses a whole
 unit of work's), :class:`~edax.testing.faults.Refusing` refuses one, :class:`~edax.testing.faults.BrokenCommit`
-fails a commit either way, :class:`~edax.testing.faults.LostReply` loses one Redis script's reply. The
+fails a commit either way, and :class:`~edax.testing.redis.LostReply` loses one Redis script's reply. The
 tests wrap a store in them directly.
 """
 
 import asyncio
 import base64
+import datetime
+import gc
 import json
 import os
+import threading
 import types
 import uuid
 from collections import defaultdict, namedtuple
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 from unittest import mock
@@ -30,7 +34,7 @@ import redis.asyncio
 import redis.exceptions
 from aiokafka import TopicPartition
 from edax import _edax
-from edax.aggregate import _fields_of
+from edax._values import fields_of
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
     MemoryIdempotencyStore,
@@ -54,8 +58,8 @@ def claimed(idempotency_key: str, scope: str = SCOPE) -> str:
 
 def event_claimed(event_id: str, scope: str = SCOPE) -> str:
     """The ledger key the event guard of ``scope`` claims for the event ``event_id``: the kernel's
-    ``event_idempotency`` key. Only the id and the scope reach it, so any event with that id will do."""
-    return _edax.event_idempotency(build_message("agg-1", "Probe", 1, id=event_id), "silo", scope).key
+    ``event_claim_key``."""
+    return edax.event_claim_key(scope, event_id, tenancy=edax.Tenancy.SILO)
 
 
 _GOLDEN_READ: set[str] = set()
@@ -69,14 +73,62 @@ def golden(name: str) -> list[dict[str, Any]]:
     return cases
 
 
+def wire_of(error: BaseException) -> str:
+    """``error`` in the form every golden vector records a refusal in, its ``error`` field: the kernel's wire
+    form ``"<code>: <message>"`` (``edax_golden::refusal``)."""
+    return f"{edax.errors.code_of(error)}: {error}"
+
+
+def wire_code(wire: str) -> str:
+    """The code of a refusal's wire form. A refusal whose message comes from a host library (a payload
+    decoder) rather than the kernel matches across SDKs by its code only."""
+    return wire.partition(": ")[0]
+
+
+#: The marker a vector wraps a host value's text in, and the Python type each builds: the twin of
+#: ``edax_golden::host_text``, which a Rust suite builds ``edax::Decimal`` / ``edax::Instant`` from.
+_HOST_VALUE_MARKERS: dict[str, Callable[[str], Any]] = {
+    "$decimal": Decimal,
+    # Python 3.10 accepts the UTC offset spelling, but not the golden vectors' `Z` suffix.
+    "$instant": lambda text: datetime.datetime.fromisoformat(text.replace("Z", "+00:00")),
+}
+
+
+def host_values(value: Any) -> Any:
+    """``value`` from a golden vector with each ``{"$decimal": text}`` built as a ``Decimal`` and each
+    ``{"$instant": text}`` as a ``datetime`` (naive when the text has no offset), at any depth."""
+    if isinstance(value, dict):
+        if len(value) == 1:
+            [(marker, text)] = value.items()
+            if marker in _HOST_VALUE_MARKERS and isinstance(text, str):
+                return _HOST_VALUE_MARKERS[marker](text)
+        return {key: host_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [host_values(item) for item in value]
+    return value
+
+
+#: The test modules that skipped themselves at import: they yield no item, yet ran in full.
+_SKIPPED_MODULES: set[str] = set()
+
+
+def pytest_collectreport(report: pytest.CollectReport) -> None:
+    # Only a skip counts. A module that skips itself at import (the live suites without a broker) yields
+    # no item, and would make every run look partial. A passed report with no item is not one: `--lf` and
+    # `--sw` leave a module out that way, unimported, so its goldens were never read.
+    if report.skipped:
+        _SKIPPED_MODULES.add(Path(report.fspath).name)
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Fail a full, green run that left a golden vector unread: a vector no Python test replays
-    proves nothing across languages. A partial run (a ``-k``, a ``-m``, one file) skips the check,
-    because it never meant to read every vector."""
-    if exitstatus != 0 or session.config.option.keyword or session.config.option.markexpr:
+    proves nothing across languages. A partial run (a ``-k``, a ``-m``, a ``--deselect``, one file)
+    skips the check, because it never meant to read every vector."""
+    option = session.config.option
+    if exitstatus != 0 or option.keyword or option.markexpr or option.deselect:
         return
     test_files = {path.name for path in Path(__file__).parent.glob("test_*.py")}
-    if not test_files <= {item.path.name for item in session.items}:
+    if not test_files <= {item.path.name for item in session.items} | _SKIPPED_MODULES:
         return
     unread = sorted({path.name for path in GOLDEN_DIR.glob("*.json")} - _GOLDEN_READ)
     if unread:
@@ -86,12 +138,29 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
-def delivered(delivery: edax.Delivery | None) -> edax.Delivery:
-    """Narrow a ``Consumer.poll`` result. ``poll`` returns ``None`` at end of stream; every caller
-    here has just published, so ``None`` means the broker lost the message — a failed assertion
+def on_another_thread(target: Callable[[], object]) -> None:
+    """Run ``target`` on a new thread and wait for it. Garbage is collected first, here: a native handle an
+    earlier test left in a reference cycle would otherwise be collected on the new thread, which PyO3
+    reports as an unraisable error, since the handle is bound to the thread that built it."""
+    gc.collect()
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+
+
+def delivered(polled: edax.broker.Polled) -> edax.Delivery:
+    """Narrow a ``Consumer.poll`` result to a delivery. ``poll`` returns ``None`` at end of stream; every
+    caller here has just published, so ``None`` means the broker lost the message — a failed assertion
     naming that, not an ``AttributeError`` three lines later."""
-    assert delivery is not None, "poll returned None: the broker had nothing to deliver"
-    return delivery
+    assert polled is not None, "poll returned None: the broker had nothing to deliver"
+    assert isinstance(polled, edax.Delivery), f"poll returned poison where a delivery was due: {polled!r}"
+    return polled
+
+
+def poisoned(polled: edax.broker.Polled) -> edax.Undecodable:
+    """Narrow a ``Consumer.poll`` result to the poison record a test expects."""
+    assert isinstance(polled, edax.Undecodable), f"poll returned {polled!r} where poison was due"
+    return polled
 
 
 def sequence_of(msg: edax.EventMessage | edax.CommandMessage) -> int:
@@ -157,7 +226,7 @@ def message_from_obj(o: dict[str, Any]) -> edax.EventMessage | edax.CommandMessa
 def message_as_obj(msg: edax.EventMessage | edax.CommandMessage) -> dict[str, Any]:
     """The golden's message shape out of a native message, so a case compares one value against the
     vector's JSON instead of a dozen fields."""
-    return _fields_of(msg) | {"data": base64.b64encode(bytes(msg.data)).decode()}
+    return fields_of(msg) | {"data": base64.b64encode(bytes(msg.data)).decode()}
 
 
 class Recording(edax.Observer):
@@ -177,6 +246,7 @@ class Recording(edax.Observer):
         self.poll_failures: list[type[BaseException]] = []
         self.commit_failures: list[type[BaseException]] = []
         self.revoke_overruns: list[int] = []
+        self.leases_lost: list[tuple[str, type[BaseException] | None]] = []  # (key, error type)
         self.saga_skips: list[tuple[str, str, str]] = []  # (name, reason, event_id)
 
     def claim(self, name: str, verdict: str) -> None:
@@ -228,6 +298,9 @@ class Recording(edax.Observer):
     def revoke_overrun(self, handling: int) -> None:
         self.revoke_overruns.append(handling)
 
+    def lease_lost(self, key: str, error: BaseException | None) -> None:
+        self.leases_lost.append((key, None if error is None else type(error)))
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         assert reason in SAGA_SKIPS, reason
         self.saga_skips.append((name, reason, event_id))
@@ -247,8 +320,17 @@ class SeqSerializer:
         return build_message(agg, "Tick", int(seq), id=f"{agg}-{seq}")
 
 
-async def sink_ok(delivery: edax.Delivery, err: BaseException) -> None:
+async def sink_ok(letter: edax.DeadLetter[Any]) -> None:
     """A dead-letter sink that takes everything: what a test that is not about the sink wires."""
+
+
+def handling(step: Callable[[Any], object]) -> Callable[[Any], Awaitable[None]]:
+    """``step``, a test's one-line record of what it saw, as the async handler a dispatcher takes."""
+
+    async def handler(msg: Any) -> None:
+        step(msg)
+
+    return handler
 
 
 async def publish_all(client: Any, topic: str, serializer: Any, msgs: Sequence[edax.EventMessage]) -> None:
@@ -430,10 +512,10 @@ class Counter(edax.Aggregate):
 
 
 class TickEvents:
-    def marshal(self, event: Any) -> edax.Event:
-        return edax.Event("Tick", 1, str(event.v).encode())
+    def marshal(self, event: Any) -> edax.Payload:
+        return edax.Payload("Tick", 1, str(event.v).encode())
 
-    def unmarshal(self, event: edax.aggregate.Payload) -> Any:
+    def unmarshal(self, event: edax.message.Marshaled) -> Any:
         return Tick(int(bytes(event.data).decode()))
 
 
@@ -450,7 +532,7 @@ class CounterCodec:
         return str(agg.n).encode()
 
 
-def counter_repo(store: Any, ids: Iterator[int]) -> edax.Repository[Counter]:
+def counter_repo(store: Any, ids: Iterator[int]) -> edax.Repository[Counter, Any]:
     """A Repository over ``store`` with a deterministic id sequence. The codec fixes the aggregate type, so
     ``repo.load(...)`` is a :class:`Counter`."""
     return edax.Repository(store, TickEvents(), CounterCodec(), new_id=lambda: f"e{next(ids)}")

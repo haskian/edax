@@ -14,7 +14,7 @@
         "n": 2
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -64,7 +64,7 @@
         "n": 4
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlszLCJyMCJdfQ",
       "rows": [
@@ -103,7 +103,7 @@
         "n": 3
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -165,7 +165,7 @@
         "v": false
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -230,7 +230,7 @@
         "s": "open"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -281,7 +281,7 @@
         "n": 3
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlsyLCJyMiJdfQ",
       "rows": [
@@ -317,7 +317,7 @@
         "n": 3
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -361,7 +361,7 @@
         "id": "d"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiMzAxZDRkYzI2MmY1MGRiYiIsInYiOlsxMDAsImMiXX0",
       "rows": [
@@ -398,7 +398,7 @@
         "n": 1
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -436,7 +436,7 @@
         "n": 4
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -475,7 +475,7 @@
         "id": "c"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYiJdfQ",
       "rows": [
@@ -519,7 +519,7 @@
         "v": -1.5
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -577,7 +577,7 @@
         "s": ""
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -627,7 +627,7 @@
         "id": "c"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjY4ZGI4ZTkzMDkxZGNjNCIsInYiOlsxNTAsImEiXX0",
       "rows": [
@@ -670,7 +670,7 @@
         "n": 2
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -727,7 +727,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -815,7 +815,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -904,7 +904,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -994,7 +994,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiOS41MCIsImIiXX0",
       "rows": [
@@ -1061,7 +1061,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiNjQ1MWI1NDE5NDZjZDdiZSIsInYiOlsiMTAiLCJhIl19",
       "rows": [
@@ -1125,7 +1125,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": [
@@ -1181,7 +1181,7 @@
         "id": "07"
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": "eyJzIjoiMDczN2M3NGI1OGU0NThkYiIsInYiOlsiNyIsIjciXX0",
       "rows": [
@@ -1213,7 +1213,7 @@
         "n": 2
       }
     ],
-    "error_code": null,
+    "error": null,
     "expected_page": {
       "next": null,
       "rows": []
@@ -1239,7 +1239,7 @@
         "n": 2
       }
     ],
-    "error_code": "codec",
+    "error": "codec: cursor was minted under another sort",
     "expected_page": null,
     "name": "refused_cursor_under_another_sort",
     "query": {
@@ -1262,7 +1262,7 @@
         "n": 2
       }
     ],
-    "error_code": "codec",
+    "error": "codec: cursor was minted under another sort",
     "expected_page": null,
     "name": "refused_cursor_under_another_direction",
     "query": {
@@ -1286,7 +1286,7 @@
         "n": 2
       }
     ],
-    "error_code": "codec",
+    "error": "codec: an unsorted query has no order to resume from, so it takes no cursor",
     "expected_page": null,
     "name": "refused_cursor_without_a_sort",
     "query": {
@@ -1302,7 +1302,7 @@
         "k": 1
       }
     ],
-    "error_code": "codec",
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
     "expected_page": null,
     "name": "refused_next_from_a_row_without_an_id",
     "query": {
@@ -1329,7 +1329,7 @@
         "k": 1
       }
     ],
-    "error_code": "codec",
+    "error": "codec: a keyset cursor needs a string or number `id` on the row it resumes after",
     "expected_page": null,
     "name": "refused_next_from_a_row_with_an_object_id",
     "query": {
@@ -1348,7 +1348,7 @@
         "n": 1
       }
     ],
-    "error_code": "codec",
+    "error": "codec: unknown field `limt`, expected one of `filter`, `sort`, `offset`, `limit`, `after` at line 1 column 7",
     "expected_page": null,
     "name": "refused_unknown_field",
     "query": {
@@ -1356,6 +1356,49 @@
       "sort": [
         {
           "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      }
+    ],
+    "error": "codec: a null comparand at \"n\" matches nothing; use exists(\"n\", false) for a missing or null path",
+    "expected_page": null,
+    "name": "refused_null_comparand_in_the_filter",
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "eq",
+          "path": "n",
+          "value": null
+        }
+      },
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    }
+  },
+  {
+    "documents": [
+      {
+        "id": "r0",
+        "n": 1
+      }
+    ],
+    "error": "codec: path \"a..b\" has an empty segment",
+    "expected_page": null,
+    "name": "refused_sort_path_with_an_empty_segment",
+    "query": {
+      "sort": [
+        {
+          "path": "a..b"
         }
       ]
     }
@@ -1398,7 +1441,7 @@
         "p": "1E+1"
       }
     ],
-    "error_code": "codec",
+    "error": "codec: cursor was minted under another sort",
     "expected_page": null,
     "name": "refused_cursor_under_another_collation",
     "query": {

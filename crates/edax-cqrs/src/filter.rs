@@ -34,7 +34,7 @@
 //! A form that omits a zero fraction (`...00Z` sorts after `...00.500000Z`) or keeps an offset
 //! (`+01:00` sorts by wall time, not by instant) orders wrongly, silently.
 //!
-//! `StartsWith` is a string-prefix test (both operands must be strings, else `false`). `Contains`
+//! `StartsWith` is a string-prefix test: a document value that is not a string is `false`. `Contains`
 //! is the mirror of `In`: `In` tests a scalar path against a given set, `Contains` tests whether
 //! the **array** at a path includes a given value.
 //!
@@ -45,13 +45,17 @@
 //! - a path with an empty segment (`""`, `"a."`, `"a..b"`). A path is dot-delimited object keys:
 //!   a key containing `.` cannot be addressed, and a numeric segment is a key, never an array index;
 //! - an integer literal wider than 64 bits, which would otherwise be compared as the nearest float;
+//! - a `StartsWith` prefix that is not a string, which no document value could start with;
 //! - under the decimal collation, a comparand that is not decimal text, and `StartsWith`, which tests
 //!   text and not a value.
 
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value};
+use serde_json::Value;
 use std::cmp::Ordering;
+
+use crate::collation::{self, Collation};
+use crate::value::{check_path, parse_strict, resolve, value_eq};
 
 /// Comparison operator for [`Filter::Compare`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,16 +77,6 @@ pub enum Operator {
     /// String prefix test: matches iff both the document and filter values are strings and the
     /// document value starts with the filter value.
     StartsWith,
-}
-
-/// How a filter or a sort reads the values it compares, when plain JSON order is not what they
-/// mean. Unset, numbers compare as numbers and strings by code point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum Collation {
-    /// Strings holding decimal text, compared by exact value (see [`crate::canonical_decimal`]).
-    Decimal,
 }
 
 /// A sealed filter AST. Each variant serializes to an externally-tagged JSON object, e.g.
@@ -262,117 +256,12 @@ pub fn not(filter: Filter) -> Filter {
 
 // --- evaluation ---
 
-/// Resolve a dot-delimited path into a document. Intermediate segments must be objects; anything
-/// else (or a missing key) resolves to `None`. Shared with the read-side query so path semantics
-/// match.
-pub fn resolve<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
-    let mut current = doc;
-    for segment in path.split('.') {
-        match current {
-            Value::Object(map) => current = map.get(segment)?,
-            _ => return None,
-        }
-    }
-    Some(current)
-}
-
-/// Every JSON integer as `i128`, which holds both the `i64` and the `u64` range exactly.
-fn as_int(n: &Number) -> Option<i128> {
-    n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from))
-}
-
-/// Compare an integer against a float exactly, without promoting the integer to `f64`.
-///
-/// Splitting the float at its floor keeps every comparison in integer space: equal integer parts are
-/// then decided by whether the float carries a fraction. JSON has no NaN or infinity, so a finite
-/// float is the only case.
-fn int_vs_float(int: i128, float: f64) -> Ordering {
-    let floor = float.floor();
-    // A float past the i128 range saturates on cast, which would tie against the bound instead of
-    // ordering. The bounds are asymmetric because `i128::MIN` is exactly representable as an `f64`
-    // and `i128::MAX` is not: `i128::MAX as f64` rounds up to 2^127, already past every `i128`,
-    // whereas a floor of exactly `i128::MIN` is a legitimate comparand and must fall through.
-    if floor >= i128::MAX as f64 {
-        return Ordering::Less;
-    }
-    if floor < i128::MIN as f64 {
-        return Ordering::Greater;
-    }
-    match int.cmp(&(floor as i128)) {
-        // Same integer part: a fraction makes the float the larger of the two.
-        Ordering::Equal if float > floor => Ordering::Less,
-        other => other,
-    }
-}
-
-/// Compare two JSON numbers exactly.
-///
-/// `f64` loses precision above 2^53, so promoting both sides would make two distinct ids (snowflakes,
-/// sequences) compare equal — a filter matching the wrong row, keyset paging dropping rows. Worse, a
-/// mixed integer/float promotion is not even *transitive* (`2^53+1 == 2^53.0` and `2^53.0 == 2^53`,
-/// yet `2^53+1 > 2^53`), and an intransitive comparator is allowed to panic `slice::sort_by`. So
-/// integers compare as integers and a mixed pair compares without promoting the integer.
-fn number_cmp(a: &Number, b: &Number) -> Option<Ordering> {
-    match (as_int(a), as_int(b)) {
-        (Some(x), Some(y)) => Some(x.cmp(&y)),
-        (Some(x), None) => Some(int_vs_float(x, b.as_f64()?)),
-        (None, Some(y)) => Some(int_vs_float(y, a.as_f64()?).reverse()),
-        (None, None) => a.as_f64()?.partial_cmp(&b.as_f64()?),
-    }
-}
-
-/// Equality with numbers compared by value at every depth, so a number means the same inside an
-/// array or an object as it does at the top level.
-fn value_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => number_cmp(x, y) == Some(Ordering::Equal),
-        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| value_eq(x, y)),
-        (Value::Object(x), Value::Object(y)) => {
-            x.len() == y.len() && x.iter().all(|(key, x)| y.get(key).is_some_and(|y| value_eq(x, y)))
-        }
-        _ => a == b,
-    }
-}
-
-/// Order two values within one type: numbers numerically, strings by Unicode code point, bools
-/// `false < true`. Any other pairing is unordered (`None`). The read-side query layers its
-/// cross-type total order on top of this, so a sort and a range filter rank every orderable pair the
-/// same way.
-pub fn value_cmp(a: &Value, b: &Value) -> Option<Ordering> {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => number_cmp(x, y),
-        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
-        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
-        _ => None,
-    }
-}
-
-/// [`value_cmp`] under a collation. Under [`Collation::Decimal`] two decimal texts order by value,
-/// and any other pair is unordered (`None`), as a mismatched type is.
-pub fn collated_cmp(collation: Option<Collation>, a: &Value, b: &Value) -> Option<Ordering> {
-    match collation {
-        None => value_cmp(a, b),
-        Some(Collation::Decimal) => match (a, b) {
-            (Value::String(x), Value::String(y)) => crate::decimal::decimal_cmp(x, y),
-            _ => None,
-        },
-    }
-}
-
-/// Equality under a collation: [`value_eq`] unset, equal decimal values under [`Collation::Decimal`].
-fn collated_eq(collation: Option<Collation>, a: &Value, b: &Value) -> bool {
-    match collation {
-        None => value_eq(a, b),
-        Some(_) => collated_cmp(collation, a, b) == Some(Ordering::Equal),
-    }
-}
-
 /// Apply an operator to a present, non-null document value and the filter's value.
 fn apply(op: Operator, collation: Option<Collation>, doc_value: &Value, filter_value: &Value) -> bool {
-    let order = || collated_cmp(collation, doc_value, filter_value);
+    let order = || collation::partial_cmp(collation, doc_value, filter_value);
     match op {
-        Operator::Eq => collated_eq(collation, doc_value, filter_value),
-        Operator::Ne => !collated_eq(collation, doc_value, filter_value),
+        Operator::Eq => collation::eq(collation, doc_value, filter_value),
+        Operator::Ne => !collation::eq(collation, doc_value, filter_value),
         Operator::Gt => order() == Some(Ordering::Greater),
         Operator::Gte => matches!(order(), Some(Ordering::Greater | Ordering::Equal)),
         Operator::Lt => order() == Some(Ordering::Less),
@@ -395,10 +284,17 @@ fn present<'a>(doc: &'a Value, path: &str) -> Option<&'a Value> {
 /// Evaluate a filter against a document.
 pub fn eval(filter: &Filter, doc: &Value) -> bool {
     match filter {
-        Filter::Compare { path, op, value, collation } => present(doc, path).is_some_and(|v| apply(*op, *collation, v, value)),
-        Filter::In { path, values, collation } => {
-            present(doc, path).is_some_and(|v| values.iter().any(|x| collated_eq(*collation, v, x)))
-        }
+        Filter::Compare {
+            path,
+            op,
+            value,
+            collation,
+        } => present(doc, path).is_some_and(|v| apply(*op, *collation, v, value)),
+        Filter::In {
+            path,
+            values,
+            collation,
+        } => present(doc, path).is_some_and(|v| values.iter().any(|x| collation::eq(*collation, v, x))),
         Filter::Contains { path, value } => match present(doc, path) {
             Some(Value::Array(items)) => items.iter().any(|x| value_eq(x, value)),
             _ => false,
@@ -416,17 +312,24 @@ impl Filter {
     /// `Not` is found too.
     pub fn validate(&self) -> Result<(), Error> {
         match self {
-            Filter::Compare { path, op, value, collation } => {
+            Filter::Compare {
+                path,
+                op,
+                value,
+                collation,
+            } => {
                 check_path(path)?;
                 check_comparand(path, value)?;
-                if collation.is_some() && *op == Operator::StartsWith {
-                    return Err(Error::codec(format_args!(
-                        "starts_with at {path:?} tests text, so it takes no collation"
-                    )));
+                if *op == Operator::StartsWith {
+                    return check_prefix(path, *collation, value);
                 }
                 check_collated(path, *collation, value)
             }
-            Filter::In { path, values, collation } => {
+            Filter::In {
+                path,
+                values,
+                collation,
+            } => {
                 check_path(path)?;
                 values.iter().try_for_each(|value| {
                     check_comparand(path, value)?;
@@ -440,14 +343,6 @@ impl Filter {
     }
 }
 
-/// A path is one or more dot-delimited object keys, none of them empty.
-pub(crate) fn check_path(path: &str) -> Result<(), Error> {
-    if path.split('.').any(str::is_empty) {
-        return Err(Error::codec(format_args!("path {path:?} has an empty segment")));
-    }
-    Ok(())
-}
-
 fn check_comparand(path: &str, value: &Value) -> Result<(), Error> {
     if value.is_null() {
         return Err(Error::codec(format_args!(
@@ -457,41 +352,39 @@ fn check_comparand(path: &str, value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
+/// Refuse a `StartsWith` no document could match: a prefix that is not text, or a collation, since
+/// the test reads text and not a value.
+fn check_prefix(path: &str, collation: Option<Collation>, value: &Value) -> Result<(), Error> {
+    if collation.is_some() {
+        return Err(Error::codec(format_args!(
+            "starts_with at {path:?} tests text, so it takes no collation"
+        )));
+    }
+    if !value.is_string() {
+        return Err(Error::codec(format_args!(
+            "starts_with at {path:?} needs a text prefix, not {value}"
+        )));
+    }
+    Ok(())
+}
+
 /// Refuse a comparand the collation cannot read, which no document value could equal or order against.
 fn check_collated(path: &str, collation: Option<Collation>, value: &Value) -> Result<(), Error> {
-    match (collation, value) {
-        (None, _) => Ok(()),
-        (Some(Collation::Decimal), Value::String(text)) if crate::decimal::is_decimal(text) => Ok(()),
-        (Some(Collation::Decimal), _) => Err(Error::codec(format_args!(
-            "the decimal collation at {path:?} needs decimal text as the comparand, not {value}"
-        ))),
+    if collation::admits(collation, value) {
+        return Ok(());
     }
-}
-
-/// Parse `json` as `T` under the strict reading every query spec gets: integer literals within 64
-/// bits, unknown fields refused by `T`'s own attributes. Shared with the read side's query parse.
-pub(crate) fn parse_spec<T: serde::de::DeserializeOwned>(json: &[u8]) -> Result<T, Error> {
-    crate::canonical::reject_wide_integers(json)?;
-    serde_json::from_slice(json).map_err(Error::codec)
-}
-
-/// Refuse a document the filter and the sort could not compare exactly: one holding an integer
-/// literal wider than 64 bits, which `serde_json` reads as the nearest float, so it would come back
-/// rounded and match or sort as its neighbour. The query spec refuses the same literals. A `codec`
-/// error. Every boundary that reads a document from text runs it, a projection store's save among
-/// them, so such a document is refused where it is written rather than read back changed.
-pub fn check_document(json: &[u8]) -> Result<(), Error> {
-    crate::canonical::reject_wide_integers(json)
+    Err(Error::codec(format_args!(
+        "the decimal collation at {path:?} needs decimal text as the comparand, not {value}"
+    )))
 }
 
 /// JSON boundary for the bindings: parse a filter and a document, return the match decision. A
-/// filter the kernel refuses (see [`Filter::validate`]), a document [`check_document`] refuses, or
-/// JSON it cannot read is a `codec` error.
+/// filter the kernel refuses (see [`Filter::validate`]), a document holding an integer literal wider
+/// than 64 bits, or JSON it cannot read is a `codec` error.
 pub fn eval_json(filter_json: &[u8], doc_json: &[u8]) -> Result<bool, Error> {
-    let filter: Filter = parse_spec(filter_json)?;
+    let filter: Filter = parse_strict(filter_json)?;
     filter.validate()?;
-    check_document(doc_json)?;
-    let doc: Value = serde_json::from_slice(doc_json).map_err(Error::codec)?;
+    let doc: Value = parse_strict(doc_json)?;
     Ok(eval(&filter, &doc))
 }
 
@@ -602,13 +495,33 @@ mod tests {
             ),
             ("or_empty_is_vacuously_false", or(vec![]), false),
             // Numbers mean the same at every depth as at the top level.
-            ("eq_array_is_numeric_per_element", eq("amounts", json!([1.0, 2.5])), true),
+            (
+                "eq_array_is_numeric_per_element",
+                eq("amounts", json!([1.0, 2.5])),
+                true,
+            ),
             ("eq_array_needs_the_same_length", eq("amounts", json!([1.0])), false),
             ("eq_array_needs_equal_elements", eq("amounts", json!([1, 2])), false),
-            ("eq_object_is_numeric_per_member", eq("totals", json!({"net": 100.0, "tax": 20})), true),
-            ("eq_object_needs_the_same_keys", eq("totals", json!({"net": 100, "fee": 20})), false),
-            ("eq_object_needs_the_same_size", eq("totals", json!({"net": 100})), false),
-            ("in_is_numeric_inside_arrays", is_in("amounts", vec![json!([1.0, 2.5])]), true),
+            (
+                "eq_object_is_numeric_per_member",
+                eq("totals", json!({"net": 100.0, "tax": 20})),
+                true,
+            ),
+            (
+                "eq_object_needs_the_same_keys",
+                eq("totals", json!({"net": 100, "fee": 20})),
+                false,
+            ),
+            (
+                "eq_object_needs_the_same_size",
+                eq("totals", json!({"net": 100})),
+                false,
+            ),
+            (
+                "in_is_numeric_inside_arrays",
+                is_in("amounts", vec![json!([1.0, 2.5])]),
+                true,
+            ),
             ("contains_is_numeric", contains("amounts", json!(2.50)), true),
             // Bools order `false < true`, as the sort ranks them.
             ("gt_true_over_false", gt("paid", json!(false)), true),
@@ -625,13 +538,21 @@ mod tests {
             ("decimal_gte_at_the_boundary", decimal::gte("price", "9.5000"), true),
             ("decimal_lte_below", decimal::lte("price", "9.49"), false),
             ("decimal_negatives_order_by_value", decimal::lt("debt", "-9.5"), true),
-            ("decimal_past_17_digits_is_exact", decimal::gt("exact", "12345678901234567890.119"), true),
+            (
+                "decimal_past_17_digits_is_exact",
+                decimal::gt("exact", "12345678901234567890.119"),
+                true,
+            ),
             ("decimal_in_by_value", decimal::is_in("price", ["1", "9.5"]), true),
             ("decimal_in_misses", decimal::is_in("price", ["9.51"]), false),
             ("decimal_against_text_is_unordered", decimal::lt("sku", "10"), false),
             ("decimal_eq_against_text_is_false", decimal::eq("sku", "10"), false),
             ("decimal_ne_against_text_is_true", decimal::ne("sku", "10"), true),
-            ("decimal_against_a_number_is_unordered", decimal::gt("total", "1"), false),
+            (
+                "decimal_against_a_number_is_unordered",
+                decimal::gt("total", "1"),
+                false,
+            ),
             ("decimal_on_a_missing_path_is_false", decimal::ne("missing", "1"), false),
         ];
         for (name, filter, want) in cases {
@@ -649,34 +570,99 @@ mod tests {
             ("ne_with_null", ne("status", json!(null)), Err("null comparand")),
             ("in_with_values", is_in("status", vec![json!("a"), json!("b")]), ok),
             ("in_empty_matches_nothing_but_is_valid", is_in("status", vec![]), ok),
-            ("in_with_a_null_member", is_in("status", vec![json!("a"), json!(null)]), Err("null comparand")),
-            ("contains_null_asks_for_a_null_element", contains("tags", json!(null)), ok),
+            (
+                "in_with_a_null_member",
+                is_in("status", vec![json!("a"), json!(null)]),
+                Err("null comparand"),
+            ),
+            (
+                "contains_null_asks_for_a_null_element",
+                contains("tags", json!(null)),
+                ok,
+            ),
             ("exists", exists("status", false), ok),
             ("an_empty_path", eq("", json!(1)), Err("empty segment")),
             ("a_trailing_dot", exists("a.", true), Err("empty segment")),
             ("a_leading_dot", contains(".a", json!(1)), Err("empty segment")),
             ("a_double_dot", is_in("a..b", vec![json!(1)]), Err("empty segment")),
-            ("a_compare_path_is_checked_before_its_value", eq("a..b", json!(null)), Err("empty segment")),
-            ("and_finds_a_bad_leaf", and(vec![exists("a", true), eq("b", json!(null))]), Err("null comparand")),
-            ("or_finds_a_bad_leaf", or(vec![exists("a.", true)]), Err("empty segment")),
+            (
+                "a_compare_path_is_checked_before_its_value",
+                eq("a..b", json!(null)),
+                Err("empty segment"),
+            ),
+            (
+                "and_finds_a_bad_leaf",
+                and(vec![exists("a", true), eq("b", json!(null))]),
+                Err("null comparand"),
+            ),
+            (
+                "or_finds_a_bad_leaf",
+                or(vec![exists("a.", true)]),
+                Err("empty segment"),
+            ),
             ("not_finds_a_bad_leaf", not(eq("b", json!(null))), Err("null comparand")),
             ("empty_and_or", and(vec![or(vec![])]), ok),
             ("decimal_compare_with_decimal_text", decimal::gt("price", "1E+2"), ok),
-            ("decimal_compare_with_other_text", decimal::gt("price", "ten"), Err("needs decimal text")),
-            ("decimal_compare_with_nan", decimal::eq("price", "NaN"), Err("needs decimal text")),
+            (
+                "decimal_compare_with_other_text",
+                decimal::gt("price", "ten"),
+                Err("needs decimal text"),
+            ),
+            (
+                "decimal_compare_with_nan",
+                decimal::eq("price", "NaN"),
+                Err("needs decimal text"),
+            ),
             (
                 "decimal_compare_with_a_number",
-                Filter::Compare { path: "price".into(), op: Operator::Lt, value: json!(10), collation: Some(Collation::Decimal) },
+                Filter::Compare {
+                    path: "price".into(),
+                    op: Operator::Lt,
+                    value: json!(10),
+                    collation: Some(Collation::Decimal),
+                },
                 Err("needs decimal text"),
             ),
             (
                 "decimal_starts_with",
-                Filter::Compare { path: "price".into(), op: Operator::StartsWith, value: json!("9"), collation: Some(Collation::Decimal) },
+                Filter::Compare {
+                    path: "price".into(),
+                    op: Operator::StartsWith,
+                    value: json!("9"),
+                    collation: Some(Collation::Decimal),
+                },
                 Err("takes no collation"),
             ),
-            ("decimal_in_with_decimal_text", decimal::is_in("price", ["1", "2.5"]), ok),
-            ("decimal_in_with_other_text", decimal::is_in("price", ["1", "x"]), Err("needs decimal text")),
-            ("decimal_in_with_a_null", Filter::In { path: "p".into(), values: vec![json!(null)], collation: Some(Collation::Decimal) }, Err("null comparand")),
+            ("starts_with_a_text_prefix", starts_with("sku", json!("INV-")), ok),
+            (
+                "starts_with_a_number_prefix",
+                starts_with("sku", json!(5)),
+                Err("needs a text prefix"),
+            ),
+            (
+                "starts_with_an_array_prefix",
+                starts_with("sku", json!(["INV-"])),
+                Err("needs a text prefix"),
+            ),
+            (
+                "decimal_in_with_decimal_text",
+                decimal::is_in("price", ["1", "2.5"]),
+                ok,
+            ),
+            (
+                "decimal_in_with_other_text",
+                decimal::is_in("price", ["1", "x"]),
+                Err("needs decimal text"),
+            ),
+            (
+                "decimal_in_with_a_null",
+                Filter::In {
+                    path: "p".into(),
+                    values: vec![json!(null)],
+                    collation: Some(Collation::Decimal),
+                },
+                Err("null comparand"),
+            ),
         ];
         for (name, filter, want) in cases {
             match (filter.validate(), want) {
@@ -697,15 +683,47 @@ mod tests {
         let document = serde_json::to_vec(&doc()).unwrap();
         let wide_document = br#"{"big": 18446744073709551617}"#;
         let cases: [(&str, &str, &[u8]); 8] = [
-            ("a_typo_in_a_compare_field", r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#, &document),
-            ("an_extra_field_in_exists", r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#, &document),
-            ("an_extra_field_in_in", r#"{"in": {"path": "total", "values": [1], "all": true}}"#, &document),
-            ("an_unknown_operator", r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#, &document),
-            ("an_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#, &document),
-            ("a_negative_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#, &document),
-            ("a_null_comparand", r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#, &document),
+            (
+                "a_typo_in_a_compare_field",
+                r#"{"compare": {"path": "total", "op": "gt", "vlaue": 1}}"#,
+                &document,
+            ),
+            (
+                "an_extra_field_in_exists",
+                r#"{"exists": {"path": "total", "exists": true, "deep": true}}"#,
+                &document,
+            ),
+            (
+                "an_extra_field_in_in",
+                r#"{"in": {"path": "total", "values": [1], "all": true}}"#,
+                &document,
+            ),
+            (
+                "an_unknown_operator",
+                r#"{"compare": {"path": "total", "op": "like", "value": 1}}"#,
+                &document,
+            ),
+            (
+                "an_integer_wider_than_64_bits",
+                r#"{"compare": {"path": "big", "op": "eq", "value": 1180591620717411303424}}"#,
+                &document,
+            ),
+            (
+                "a_negative_integer_wider_than_64_bits",
+                r#"{"compare": {"path": "big", "op": "eq", "value": -9223372036854775809}}"#,
+                &document,
+            ),
+            (
+                "a_null_comparand",
+                r#"{"compare": {"path": "maybe", "op": "eq", "value": null}}"#,
+                &document,
+            ),
             // Read as the nearest float, the document would match `eq(big, 2^64)`.
-            ("a_document_integer_wider_than_64_bits", r#"{"compare": {"path": "big", "op": "eq", "value": 1}}"#, wide_document),
+            (
+                "a_document_integer_wider_than_64_bits",
+                r#"{"compare": {"path": "big", "op": "eq", "value": 1}}"#,
+                wide_document,
+            ),
         ];
         for (name, filter, document) in cases {
             let error = eval_json(filter.as_bytes(), document).expect_err(name);
@@ -729,61 +747,6 @@ mod tests {
         assert!(eval_json(b"not json", &document).is_err());
         assert!(eval_json(&wire, b"not json").is_err());
         assert!(eval_json(br#"{"unknown_variant": {}}"#, &document).is_err());
-    }
-
-    #[test]
-    fn number_cmp_is_exact_and_transitive() {
-        // 2^53 is the last integer f64 represents exactly, so it is where a promoting comparator
-        // starts lying. The three 2^53 rows are also the transitivity triangle `slice::sort_by` may
-        // panic over: promoting the integer made big == as_float and as_float == at_53 while
-        // big > at_53. Each row is (label, left, right, expected).
-        let big = json!(9_007_199_254_740_993u64); // 2^53 + 1
-        let at_53 = json!(9_007_199_254_740_992u64); // 2^53
-        let as_float = json!(9_007_199_254_740_992.0f64); // 2^53, but stored as f64
-        let cases: Vec<(&str, Value, Value, Ordering)> = vec![
-            ("int_equals_its_own_float_form", json!(1), json!(1.0), Ordering::Equal),
-            (
-                "int_above_2_53_beats_its_float_neighbour",
-                big.clone(),
-                as_float.clone(),
-                Ordering::Greater,
-            ),
-            ("float_at_2_53_equals_the_int", as_float, at_53.clone(), Ordering::Equal),
-            ("ints_above_2_53_stay_distinct", big, at_53, Ordering::Greater),
-            (
-                "fraction_breaks_an_equal_integer_part",
-                json!(1),
-                json!(1.5),
-                Ordering::Less,
-            ),
-            (
-                "negative_fraction_is_below_its_floor",
-                json!(-1),
-                json!(-1.5),
-                Ordering::Greater,
-            ),
-            ("float_beyond_i128_is_greater", json!(0), json!(1e300), Ordering::Less),
-            ("float_below_i128_is_less", json!(0), json!(-1e300), Ordering::Greater),
-            ("u64_above_i64_max", json!(u64::MAX), json!(i64::MAX), Ordering::Greater),
-            ("two_floats_order_by_value", json!(1.5), json!(2.5), Ordering::Less),
-            ("signed_zeroes_are_one_value", json!(-0.0), json!(0.0), Ordering::Equal),
-        ];
-        for (label, left, right, want) in &cases {
-            assert_eq!(value_cmp(left, right), Some(*want), "{label}");
-            assert_eq!(value_cmp(right, left), Some(want.reverse()), "{label} reversed");
-        }
-    }
-
-    #[test]
-    fn int_vs_float_stays_exact_at_the_i128_bounds() {
-        // Unreachable through a JSON number (which is at most u64-wide) but the helper is declared
-        // over all of i128: `i128::MIN as f64` is exact, so that floor must compare, not saturate.
-        let min_as_float = i128::MIN as f64;
-        assert_eq!(int_vs_float(i128::MIN, min_as_float), Ordering::Equal);
-        assert_eq!(int_vs_float(i128::MIN + 1, min_as_float), Ordering::Greater);
-        assert_eq!(int_vs_float(i128::MIN, min_as_float * 2.0), Ordering::Greater);
-        // `i128::MAX as f64` rounds up to 2^127, past every i128, so the upper bound is exclusive.
-        assert_eq!(int_vs_float(i128::MAX, i128::MAX as f64), Ordering::Less);
     }
 
     #[test]

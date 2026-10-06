@@ -14,18 +14,35 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
-from edax import Delivery, EventDraft, EventMessage, KeyOrderedDispatcher, Rejected, Relay, guid, transaction
+from edax import (
+    DeadLetter,
+    EventDraft,
+    EventMessage,
+    KeyOrderedDispatcher,
+    Rejected,
+    Relay,
+    Undecodable,
+    guid,
+    json_codec,
+    transaction,
+)
+from edax.backend.kafka import KafkaConsumer, KafkaDeadLetterSink
 from edax.backend.memory import MemoryBroker, MemoryEventStore
-from edax.broker import Consumer
-
-#: Forwards a dead delivery somewhere a human will look, such as a dead-letter topic.
-DeadLetterSink = Callable[[Delivery, BaseException], Awaitable[None]]
 
 ORDERS = [("order-1", 2), ("order-2", 0), ("order-3", 1)]  # order-2 is invalid: quantity 0
+
+
+@dataclass
+class OrderPlaced:
+    quantity: int
+
+
+# The writer's codec. The consumer decodes with the same one, which applies any upcast.
+events = json_codec({"OrderPlaced": OrderPlaced})
 
 
 class InvalidOrder(Rejected):
@@ -39,7 +56,7 @@ def order_placed(order_id: str, quantity: int) -> EventDraft:
         sequence=1,
         name="OrderPlaced",
         version=1,
-        data=json.dumps({"quantity": quantity}).encode(),
+        data=events.marshal(OrderPlaced(quantity)).data,
         correlation_id=f"{order_id}-placed",
         causation_id=f"{order_id}-placed",
         extensions={},
@@ -48,7 +65,9 @@ def order_placed(order_id: str, quantity: int) -> EventDraft:
 
 
 async def run(
-    publish: Callable[[EventMessage], Awaitable[None]], consumer: Consumer, sink: DeadLetterSink | None
+    publish: Callable[[EventMessage], Awaitable[None]],
+    consumer: KafkaConsumer | MemoryBroker,
+    sink: KafkaDeadLetterSink | None,
 ) -> None:
     # 1. Save the orders, then let the Relay publish them from the outbox.
     store = MemoryEventStore()
@@ -62,18 +81,19 @@ async def run(
     dead: list[str] = []
 
     async def pack(event: EventMessage) -> None:
-        if json.loads(event.data)["quantity"] < 1:
+        order: OrderPlaced = events.unmarshal(event)
+        if order.quantity < 1:
             raise InvalidOrder(f"{event.aggregate_id} has no items")
         packed.append(event.aggregate_id)
         print(f"  packed {event.aggregate_id}")
 
-    async def to_dead_letters(delivery: Delivery, error: BaseException) -> None:
-        order = delivery.message
-        assert isinstance(order, EventMessage), "the topic carries events only"
+    async def to_dead_letters(letter: DeadLetter[EventMessage | Undecodable]) -> None:
+        order = letter.message
+        assert isinstance(order, EventMessage), "every record decoded"
         dead.append(order.aggregate_id)
-        print(f"  dead-lettered {order.aggregate_id}: {error}")
+        print(f"  dead-lettered {order.aggregate_id} at attempt {letter.attempt}: {letter.failure}")
         if sink is not None:
-            await sink(delivery, error)
+            await sink(letter)
 
     # 3. Consume until every order is packed or dead-lettered, then shut down.
     dispatcher = KeyOrderedDispatcher(workers=2, handler=pack, on_dead=to_dead_letters)
@@ -95,7 +115,7 @@ async def run(
 async def run_on_kafka(bootstrap: str) -> None:
     from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
     from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-    from edax.backend.kafka import KafkaConsumer, KafkaDeadLetterSink, KafkaProducer
+    from edax.backend.kafka import KafkaProducer
 
     # Fresh topics per run. A real deployment creates its topics up front.
     topic = f"orders-{guid()}"

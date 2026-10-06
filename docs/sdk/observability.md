@@ -17,6 +17,7 @@ flowchart LR
     R["Relay"] -->|"drain(published, dead_lettered, ...), drain_failed(error, published, dead_lettered)"| OBS
     L["consumer loop, any Consumer"] -->|"undecodable(message_id, error), poll_failed(error)"| OBS
     K["KafkaConsumer"] -->|"commit_failed(error), revoke_overrun(handling)"| OBS
+    RS["RedisIdempotencyStore"] -->|"lease_lost(key, error)"| OBS
     SR["SagaRunner"] -->|"saga_skipped(name, reason, event_id)"| OBS
     OBS --> EXP["host adapter: OpenTelemetry, a dict"]
     D -->|"stats(), idle()"| PULL["health check"]
@@ -51,7 +52,7 @@ labels it with `error_type(error)`, never with its message.
 |---|---|---|---|
 | `claim(name, verdict)` | `idempotent`, `idempotent_by_id` | `CLAIM_VERDICTS`: `succeeded`, `in_progress`, `payload_mismatch`, `failed` | a dispatch lost the claim to a prior record |
 | `settled(name, how, duration_ns)` | `idempotent`, `idempotent_by_id` | `SETTLEMENTS`: `completed`, `released`, `cached`, `refused` | the winner's claim reached its terminal state |
-| `delivery(name, message_id, correlation_id, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `sink_failed`, `stale`, `stopped`, `unsettled` | the dispatcher settled a delivery |
+| `delivery(name, message_id, correlation_id, outcome, attempt, duration_ns, error_type)` | `KeyOrderedDispatcher` | `DELIVERY_OUTCOMES`: `ack`, `nack`, `dead`, `in_progress`, `sink_failed`, `retired`, `stopped`, `unsettled` | the dispatcher settled a delivery |
 | `settlement_failed(name, event_id, error)` | `KeyOrderedDispatcher` | none | an ack or a nack raised after the handler ran |
 | `transaction(outcome, duration_ns)` | `transaction`, `Repository`, the guards given a `unit_of_work` | `TRANSACTIONS`: `committed`, `rolled_back` | a unit of work ended |
 | `drain(published, dead_lettered, duration_ns, oldest_timestamp)` | `Relay` | none | a drain completed |
@@ -60,6 +61,7 @@ labels it with `error_type(error)`, never with its message.
 | `poll_failed(error)` | the consumer loop, for any `Consumer` | none | a poll raised |
 | `commit_failed(error)` | `KafkaConsumer` | none | an offset commit raised or passed its deadline |
 | `revoke_overrun(handling)` | `KafkaConsumer` | none | a rebalance revoke passed its drain deadline with handlers running |
+| `lease_lost(key, error)` | `RedisIdempotencyStore` with `heartbeat` | none | a heartbeat stopped renewing a claim before it settled |
 | `saga_skipped(name, reason, event_id)` | `SagaRunner` | `SAGA_SKIPS`: `completed`, `repeat`, `below_mark` | a saga instance did not fold an event routed to it |
 
 ### Method by method
@@ -67,7 +69,8 @@ labels it with `error_type(error)`, never with its message.
 Each entry says when the method fires, what its arguments mean, what to read from it, and what it
 is not. Each outcome set is also a `Literal` type: `ClaimVerdict`, `Settlement`, `DeliveryOutcome`,
 `TransactionOutcome`, `HandlerOutcome`, `SagaSkip`. The hooks are annotated with it, and the tuple is `get_args`
-of it, so a type checker catches a branch on a string the SDK never sends.
+of it, so a type checker catches a branch on a string the SDK never sends. `ClaimVerdict` and `SagaSkip`
+pass on the kernel's own names, so the import checks them against the kernel's lists.
 
 Hooks are synchronous. An `async def` hook returns a coroutine nobody awaits, so its metric would
 vanish. The SDK closes that coroutine and logs an error naming the hook, and the measured work
@@ -79,7 +82,7 @@ path it is the event name, `msg.name`, as the producer wrote it. The dispatcher 
 routing, and the router runs its middleware for a name it has no handler for, so an unregistered
 name reaches the observer too. Map every name your router does not register to one fixed value, such
 as `other`, before you label by it. `transaction`, `drain`, `drain_failed`, `undecodable`,
-`poll_failed`, `commit_failed` and `revoke_overrun` have no handler to name. `saga_skipped`
+`poll_failed`, `commit_failed`, `revoke_overrun` and `lease_lost` have no handler to name. `saga_skipped`
 takes the saga's `name`, a closed set.
 
 #### `claim(name, verdict)`: a dispatch lost the idempotency claim
@@ -139,12 +142,12 @@ still queued.
 | `dead` | `on_dead` took it; acked | forgets it; the sink has it |
 | `in_progress` | the handler raised `InProgress`: another worker holds the claim; nacked after one backoff step, no attempt spent | redelivers it |
 | `sink_failed` | `on_dead` raised; nacked after one backoff step, the attempt recorded | redelivers it, and the sink gets another try |
-| `stale` | the transport retired it (a nack rewound its partition, or a rebalance took the partition) before or while the handler ran; not settled | redelivers it behind the earlier event of its key |
+| `retired` | the transport retired it (a nack rewound its partition, or a rebalance took the partition) before or while the handler ran; not settled | redelivers it behind the earlier event of its key |
 | `stopped` | `stop()` cancelled the worker in the handler, the sink or a backoff wait, or the delivery was still queued; nacked at once | redelivers it |
 | `unsettled` | the ack or the nack itself raised, or a stop cut it short; neither is known to have landed | a log broker brings it back after a rebalance or a restart |
 
 `nack` is a transient error below the `max_attempts` ceiling, or any error when no `on_dead` is
-wired. `dead` is a terminal error on any attempt, or a transient one at the ceiling. A `stale` rate
+wired. `dead` is a terminal error on any attempt, or a transient one at the ceiling. A `retired` rate
 follows the nack rate on a log broker: each nack retires the partition's queued copies. Its
 `duration_ns` is `0` when the handler never ran.
 
@@ -161,8 +164,7 @@ it. `error_type` is what the handler raised, through `error_type()`, or `None` w
 splits nacks by cause. It also tells a `dead` on a terminal error, such as `codec`, from a `dead` at
 the ceiling, where the label is the transient type that kept failing.
 
-A bare message submitted without a `Delivery` fires nothing, because nothing settles it; time that
-path with `timing()`. The settlement's own failure is `settlement_failed`.
+The settlement's own failure is `settlement_failed`.
 
 #### `settlement_failed(name, event_id, error)`: the ack or the nack raised
 
@@ -209,8 +211,8 @@ A drain that raised fires `drain_failed` instead.
 #### `drain_failed(error, published, dead_lettered)`: a drain raised before marking
 
 A `Relay` drain raised in `unpublished`, `publish` or `mark_published`. When a row failed, the rows
-before it are marked; the failing row and the rows behind it come back on the next drain, and
-delivery stays at-least-once. This fires once per failed drain, before the drain waits its backoff
+the drain settled are marked. The failing row and the rows behind it of its own key come back on the
+next drain, and delivery stays at-least-once. This fires once per failed drain, before the drain waits its backoff
 step and re-raises to the caller.
 
 `published` and `dead_lettered` count what the drain did before it failed, so add them to the same
@@ -233,8 +235,9 @@ never reached a worker, so no `delivery` reports it.
 
 #### `poll_failed(error)`: a poll raised
 
-A consumer loop's `poll` raised. A transient error waits one backoff step and polls again. A
-terminal one ends the loop and re-raises to the caller of `run`. This fires once per failed poll,
+A consumer loop's `poll` raised. A fatal error (`is_fatal`) ends the loop and re-raises to the
+caller of `run`. Any other waits one backoff step, which grows while the polls keep failing, and polls
+again. This fires once per failed poll,
 for any `Consumer`, through the observer of the dispatcher the loop feeds. Label by
 `error_type(error)`. Read a sustained rate as a broker, or a record middleware's dependency, that is
 down: nothing is consumed meanwhile.
@@ -254,6 +257,15 @@ of the revoked partitions may run one of their keys while this member still does
 is broken for that window. `handling` is how many handlers were still running. Alert on any count,
 and raise the deadline above the slowest handler.
 
+#### `lease_lost(key, error)`: a heartbeat stopped renewing a claim
+
+A `RedisIdempotencyStore` built with `heartbeat=True` stopped renewing a claim before it settled. The
+handler under that claim may still be running. Once the claim lapses, another worker can take the key
+and run it too. `error` is `None` when the claim was already lost: it lapsed, and another worker may
+hold it. Otherwise it is the terminal failure that stopped the renewal; label by `error_type(error)`.
+`key` is for the log line only, never a label. Alert on any count: a handler that outlives its claim
+breaks the guard's promise of one run per key.
+
 #### `saga_skipped(name, reason, event_id)`: an event a saga instance did not fold
 
 A `SagaRunner` routed an event to an instance, and the kernel's `saga_admit` answered that the
@@ -271,8 +283,8 @@ An event the saga's `instance_id` ignores never reaches an instance, so it is no
 #### `timing()` rows: handler latency
 
 `timing()` is middleware, not an `Observer` method, and uses the same vocabulary. It hands its
-recorder one row per handler call: `(name, outcome, error_type, duration_ns)`. `name` is the command
-type or the event name. `outcome` is `ok` when the handler returned, `error` when it raised, with
+recorder one row per handler call: `(name, outcome, error_type, duration_ns)`. `name` reads the message
+each step takes first, so `lambda msg: msg.name` names a command type and an event name alike. `outcome` is `ok` when the handler returned, `error` when it raised, with
 `error_type` of the exception. `duration_ns` is the handler and everything inside the middleware
 chain below `timing()`, so wire it outermost to include the guard, or inside the guard to exclude
 it.
@@ -290,6 +302,7 @@ it.
 | Is the broker or the commit failing after the work is done? | `settlement_failed`, and `delivery` with `unsettled` |
 | Is the consumer polling, and is its progress saved? | `poll_failed`, `commit_failed` |
 | Did a rebalance let two members run one key? | `revoke_overrun` |
+| Did a handler outlive its Redis claim? | `lease_lost` |
 | Is the dead-letter route down? | `delivery` with `sink_failed` |
 | Is the ledger healthy? | `settled` with `refused` |
 | How long do we hold a database connection? | `transaction` |
@@ -392,7 +405,7 @@ the loop. `unpublished_count` queries the store.
 | `KeyOrderedDispatcher.stats()` | `DispatcherStats` | `queue_depth: list[int]` one entry per worker; `in_flight: int` items taken off a queue and not yet settled; `attempts_tracked: int` and `contended_tracked: int`, the sizes of the two failure maps; `running: bool`, true only while every worker is alive; `workers_alive: int`; `handling: int` handlers running right now, which a rebalance waits on |
 | `KeyOrderedDispatcher.idle()` | `bool` | every queue empty and `in_flight == 0` |
 | `Relay.last` | `DrainStats`, or `None` until the first drain completes | `published: int`, `duration_ns: int`, `oldest_timestamp` (an `int`, or `None` for an empty batch), `dead_lettered: int`; a drain that raised leaves it |
-| `await EventStore.unpublished_count()` | `int` | optional store method: committed unmarked outbox rows waiting now |
+| `await outbox.unpublished_count()` | `int` | a `CountedOutbox`: committed unmarked outbox rows waiting now |
 | `KafkaConsumer.stats()` | `dict[TopicPartition, PartitionStats]` | `unsettled: int` offsets delivered and not yet settled, retired ones included; `live: int` of those, the ones a handler may still settle; `max_delivered: int` the highest offset booked; `committed` the last watermark, `None` before the first commit |
 
 The health checks a host builds from them:
@@ -404,15 +417,16 @@ The health checks a host builds from them:
 - **Outbox lag.** `relay.last.oldest_timestamp` against your clock, `edax.current_timestamp()` for
   the kernel's. The relay reports a timestamp, not an age, so it needs no clock of its own. Alert
   when the lag climbs across drains.
-- **Outbox depth.** `await store.unpublished_count()` is how many rows are waiting now. `Relay.last`
+- **Outbox depth.** `await outbox.unpublished_count()` is how many rows are waiting now. `Relay.last`
   moves only when a drain completes. A relay that died, a publisher that is failing, and an idle
   system all leave it frozen. A depth that grows while `last` stands still is a stalled relay.
 - **Failure maps.** `attempts_tracked` and `contended_tracked` grow by one per failing id and shrink
   when that id is settled. Steady growth means nacked ids that never come back.
 
-`unpublished_count` is not declared on the `EventStore` Protocol. Read it with
-`getattr(store, "unpublished_count", None)`, and declare `supports_unpublished_count = True` on your
-`EventStoreContract` subclass so the conformance clause runs. `MemoryEventStore` implements it.
+`unpublished_count` is the optional `CountedOutbox` port, not part of `Outbox`. Check it with
+`isinstance(outbox, CountedOutbox)`; `OutboxContract` runs its conformance clause for an outbox that is
+one. `MemoryEventStore`, `MemoryCommandOutbox` and every `SagaOutbox` implement it; a saga store
+counts through the `SagaStore` port's `unpublished_count(saga)`.
 Without it, `oldest_timestamp` is the lag signal and depth is unavailable.
 
 ## Traces via extensions, and where request-scoped values go
@@ -522,6 +536,7 @@ time of writing and are kept in `observe.py` rather than a golden file for that 
 | `poll_failed` | counter, `edax.poll.failed` | `error.type` |
 | `commit_failed` | counter, `edax.commit.failed` | `error.type` |
 | `revoke_overrun(handling)` | counter, `edax.revoke.overrun` | — |
+| `lease_lost(key, error)` | counter, `edax.lease.lost` | `error.type`, when `error` is set |
 | `saga_skipped(name, reason, ...)` | counter, `edax.saga.skipped` | `edax.saga=name`, `edax.reason` |
 | `stats().queue_depth` | observable gauge, `edax.dispatcher.queue_depth` | — |
 
@@ -609,6 +624,7 @@ undecodable = meter.create_counter("edax.undecodable")
 poll_failed = meter.create_counter("edax.poll.failed")
 commit_failed = meter.create_counter("edax.commit.failed")
 revoke_overrun = meter.create_counter("edax.revoke.overrun")
+lease_lost = meter.create_counter("edax.lease.lost")
 saga_skipped = meter.create_counter("edax.saga.skipped")
 
 
@@ -673,6 +689,9 @@ class OtelObserver(Observer):
     def revoke_overrun(self, handling: int) -> None:
         revoke_overrun.add(1, SYSTEM)
 
+    def lease_lost(self, key: str, error: BaseException | None) -> None:
+        lease_lost.add(1, SYSTEM if error is None else {**SYSTEM, "error.type": error_type(error)})
+
     def saga_skipped(self, name: str, reason: str, event_id: str) -> None:
         saga_skipped.add(1, {"edax.saga": name, "edax.reason": reason})
 ```
@@ -685,8 +704,6 @@ adds only `error.type`, and re-raises so the guard and the dispatcher still see 
 
 ```python
 # yourapp/telemetry/tracing.py
-import inspect
-
 from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
@@ -717,9 +734,7 @@ def traced(next_: EventHandler) -> EventHandler:
             f"process {TOPIC}", context=parent, kind=SpanKind.CONSUMER, attributes=attrs
         ) as span:
             try:
-                result = next_(msg)  # sync or async, as any EventHandler may be
-                if inspect.isawaitable(result):
-                    await result
+                await next_(msg)
             except Exception as e:
                 span.set_attribute("error.type", error_type(e))
                 raise
@@ -728,8 +743,9 @@ def traced(next_: EventHandler) -> EventHandler:
 ```
 
 Wire it outermost, before the guard: `EventRouter(traced, idempotent_by_id(ledger, ...))`. The
-command form is the same shape over `Middleware`, with `kind=SpanKind.INTERNAL`, the span named
-after `cmd.type`, and `edax.command.type` in place of the `messaging.*` attributes. Pair either with
+command form is the same shape over `Middleware`, whose step takes the message and the command. It
+uses `kind=SpanKind.INTERNAL`, the span named after `msg.name`, and `edax.command.type` in place of the
+`messaging.*` attributes. Pair either with
 `timing()` next to it when you want the histogram as well as the span.
 
 ## See also

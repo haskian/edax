@@ -41,7 +41,7 @@ trap](../../docs/guides/getting-started.md#the-stale-native-module-trap).
 | [`10_idempotent_events.py`](10_idempotent_events.py) | update a read model once per event | `idempotent_by_id(..., unit_of_work=)`, `ProjectionStore` | [idempotency](../../docs/sdk/idempotency.md) |
 | [`11_projection_query.py`](11_projection_query.py) | filter, sort and page a read model | `get_many`, `edax.filter`, `sort_key`, `Page.next` | [projections](../../docs/sdk/projections.md) |
 | [`12_causation.py`](12_causation.py) | link events into one traceable flow | `originate`, `propagate`, `caused_by`, `save(lineage=)` | [kernels/event](../../docs/kernels/event.md#causation--lineage) |
-| [`13_saga.py`](13_saga.py) | turn events into commands, through a saga outbox | `SagaRunner`, `Completed`, `runner.relay(bus, on_dead=)` | [sagas](../../docs/sdk/sagas.md) |
+| [`13_saga.py`](13_saga.py) | turn events into commands, through a saga outbox | `SagaRunner`, `Completed`, `Relay(runner.outbox(), runner.publish_to(bus), on_dead=)` | [sagas](../../docs/sdk/sagas.md) |
 | [`14_observability.py`](14_observability.py) | see claims, transactions, drains and latency | `Observer`, `timing`, `Relay.last` | [observability](../../docs/sdk/observability.md) |
 | [`15_lease_takeover.py`](15_lease_takeover.py) | rehearse a Redis claim expiring mid-handler | `MemoryLedger`, `expire`, `InProgress` | [backends/memory](../../docs/backends/memory.md#test-on-the-ordering-you-deploy-memoryledger) |
 | [`16_redis_ledger.py`](16_redis_ledger.py) | keep the idempotency ledger in Redis | `RedisIdempotencyStore`, `CachedFailure` | [backends/redis](../../docs/backends/redis.md) |

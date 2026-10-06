@@ -7,9 +7,9 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use edax_core::lock;
+use edax_core::{lock, Tenancy};
 use edax_event::EventMessage;
-use edax_memory::Message;
+use edax_memory::LogMessage;
 
 use crate::dispatcher::Delivery;
 use crate::Error;
@@ -67,27 +67,46 @@ impl MemoryBroker {
         Self::default()
     }
 
-    /// A broker with `partitions` partitions, read as the default consumer group; a key lands on
-    /// Kafka's partition for it. `0` is a `codec` error.
-    pub fn with_partitions(partitions: u32) -> Result<Self, Error> {
-        Ok(Self::over(edax_memory::MemoryBroker::with_partitions(partitions)?))
+    /// A broker with `partitions` partitions under `tenancy`, read as the default consumer group: an
+    /// event lands on the partition Kafka gives its key, its aggregate composed with its tenant where
+    /// `tenancy` composes keys. `0` is a `codec` error.
+    pub fn with_partitions(partitions: u32, tenancy: Tenancy) -> Result<Self, Error> {
+        Ok(Self::over(edax_memory::MemoryBroker::with_partitions(
+            partitions, tenancy,
+        )?))
     }
 
     fn over(machine: edax_memory::MemoryBroker) -> Self {
-        let inner = Inner { machine, wait: Mutex::new(()), queued: Condvar::new() };
-        Self { inner: Arc::new(inner), group: Arc::from(DEFAULT_GROUP) }
+        let inner = Inner {
+            machine,
+            wait: Mutex::new(()),
+            queued: Condvar::new(),
+        };
+        Self {
+            inner: Arc::new(inner),
+            group: Arc::from(DEFAULT_GROUP),
+        }
     }
 
     /// The same log, read as consumer group `name`: it gets every message, settles on its own, and
     /// starts at the beginning of the log.
     pub fn group(&self, name: &str) -> Self {
-        Self { inner: Arc::clone(&self.inner), group: Arc::from(name) }
+        Self {
+            inner: Arc::clone(&self.inner),
+            group: Arc::from(name),
+        }
     }
 
-    /// Append `event` to the partition of its ordering key, its aggregate.
-    pub fn publish(&self, event: EventMessage) {
-        self.inner.machine.publish_event(event);
+    /// Append `event` to the partition of its key: its aggregate, scoped by its tenant where the
+    /// broker's tenancy composes keys.
+    ///
+    /// # Errors
+    /// A `codec` error when the tenancy requires a tenant and `event` names none, as on Kafka. Nothing
+    /// is appended then.
+    pub fn publish(&self, event: EventMessage) -> Result<(), Error> {
+        self.inner.machine.publish_event(event)?;
         self.inner.announce();
+        Ok(())
     }
 
     /// Take the next message for this group as a [`Delivery`], waiting up to `timeout` for one.
@@ -115,7 +134,11 @@ impl MemoryBroker {
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .0
                 }
-                None => self.inner.queued.wait(guard).unwrap_or_else(|poisoned| poisoned.into_inner()),
+                None => self
+                    .inner
+                    .queued
+                    .wait(guard)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
             };
         };
         drop(guard);
@@ -123,9 +146,11 @@ impl MemoryBroker {
         // Only `publish` writes to the log, and it writes events, so a command here means another
         // writer shares the machine: a wiring mistake, refused rather than silently skipped.
         let event = match polled.message {
-            Message::Event(event) => event,
-            Message::Command(_) => {
-                return Err(Error::bad_handle("the memory broker delivered a command, which a Delivery cannot carry"));
+            LogMessage::Event(event) => event,
+            LogMessage::Command(_) => {
+                return Err(Error::bad_handle(
+                    "the memory broker delivered a command, which a Delivery cannot carry",
+                ));
             }
         };
         let token = polled.token;
@@ -204,8 +229,20 @@ mod tests {
             want_empty: bool,
         }
         let cases = [
-            Case { name: "a new broker is empty and a poll times out", steps: &[Poll], want_polled: &[""], want_live: &[], want_empty: true },
-            Case { name: "a published event makes it non-empty", steps: &[Publish("a", 1)], want_polled: &[], want_live: &[], want_empty: false },
+            Case {
+                name: "a new broker is empty and a poll times out",
+                steps: &[Poll],
+                want_polled: &[""],
+                want_live: &[],
+                want_empty: true,
+            },
+            Case {
+                name: "a published event makes it non-empty",
+                steps: &[Publish("a", 1)],
+                want_polled: &[],
+                want_live: &[],
+                want_empty: false,
+            },
             Case {
                 name: "a polled delivery is unsettled, so still non-empty",
                 steps: &[Publish("a", 1), Poll, Live(0)],
@@ -213,10 +250,25 @@ mod tests {
                 want_live: &[true],
                 want_empty: false,
             },
-            Case { name: "ack settles it", steps: &[Publish("a", 1), Poll, Ack(0)], want_polled: &["a-1"], want_live: &[], want_empty: true },
+            Case {
+                name: "ack settles it",
+                steps: &[Publish("a", 1), Poll, Ack(0)],
+                want_polled: &["a-1"],
+                want_live: &[],
+                want_empty: true,
+            },
             Case {
                 name: "a nack rewinds: the nacked message and the later one come back, in order",
-                steps: &[Publish("a", 1), Publish("a", 2), Poll, Poll, Ack(1), Nack(0), Poll, Poll],
+                steps: &[
+                    Publish("a", 1),
+                    Publish("a", 2),
+                    Poll,
+                    Poll,
+                    Ack(1),
+                    Nack(0),
+                    Poll,
+                    Poll,
+                ],
                 want_polled: &["a-1", "a-2", "a-1", "a-2"],
                 want_live: &[],
                 want_empty: false,
@@ -244,7 +296,16 @@ mod tests {
             },
             Case {
                 name: "a crash redelivers what was not committed and retires what was held",
-                steps: &[Publish("a", 1), Publish("a", 2), Poll, Poll, Ack(0), Crash, Live(1), Poll],
+                steps: &[
+                    Publish("a", 1),
+                    Publish("a", 2),
+                    Poll,
+                    Poll,
+                    Ack(0),
+                    Crash,
+                    Live(1),
+                    Poll,
+                ],
                 want_polled: &["a-1", "a-2", "a-2"],
                 want_live: &[false],
                 want_empty: false,
@@ -271,10 +332,10 @@ mod tests {
             let mut live: Vec<bool> = Vec::new();
             for step in c.steps {
                 match step {
-                    Publish(agg, seq) => broker.publish(tick(agg, *seq)),
+                    Publish(agg, seq) => broker.publish(tick(agg, *seq)).expect("published"),
                     Poll => match poll(&broker, WAIT) {
                         Some(d) => {
-                            polled.push(d.event.id.clone());
+                            polled.push(d.message.id.clone());
                             held.push(Some(d));
                         }
                         None => polled.push(String::new()),
@@ -294,18 +355,21 @@ mod tests {
 
     #[test]
     fn a_group_reads_every_message_on_its_own() {
-        let projection = MemoryBroker::with_partitions(2).expect("two partitions");
+        let projection = MemoryBroker::with_partitions(2, Tenancy::Silo).expect("two partitions");
         let saga = projection.group("saga");
-        projection.publish(tick("a", 1));
+        projection.publish(tick("a", 1)).expect("published");
         let first = poll(&projection, WAIT).expect("the projection gets it");
         let second = poll(&saga, WAIT).expect("the saga gets it too");
-        assert_eq!((first.event.id.as_str(), second.event.id.as_str()), ("a-1", "a-1"));
+        assert_eq!((first.message.id.as_str(), second.message.id.as_str()), ("a-1", "a-1"));
         first.ack();
         assert!(projection.empty(), "the projection settled its copy");
         assert!(!saga.empty(), "the saga's copy is its own");
         second.ack();
         assert!(saga.empty());
-        assert!(MemoryBroker::with_partitions(0).is_err(), "zero partitions is refused");
+        assert!(
+            MemoryBroker::with_partitions(0, Tenancy::Silo).is_err(),
+            "zero partitions is refused"
+        );
     }
 
     #[test]
@@ -314,10 +378,10 @@ mod tests {
         // while the test polls the original. The poll blocks until the publish lands.
         let broker = MemoryBroker::new();
         let sink = broker.clone();
-        let publisher = std::thread::spawn(move || sink.publish(tick("a", 1)));
+        let publisher = std::thread::spawn(move || sink.publish(tick("a", 1)).expect("published"));
         let delivery = poll(&broker, Duration::from_secs(2)).expect("the publish woke the poll");
         publisher.join().expect("publisher thread");
-        assert_eq!(delivery.event.id, "a-1");
+        assert_eq!(delivery.message.id, "a-1");
         assert_eq!(delivery.attempt, 0, "this broker keeps no redelivery count");
         delivery.ack();
         assert!(broker.empty(), "the clone and the original share one log");
@@ -327,7 +391,7 @@ mod tests {
     fn a_blocked_poll_wakes_on_nack_and_on_crash() {
         for wake in ["nack", "crash"] {
             let broker = MemoryBroker::new();
-            broker.publish(tick("a", 1));
+            broker.publish(tick("a", 1)).expect("published");
             let first = poll(&broker, WAIT).expect("queued");
 
             let consumer = broker.clone();
@@ -338,8 +402,12 @@ mod tests {
             } else {
                 broker.crash();
             }
-            let again = poller.join().expect("poller thread").expect("poll").expect("the rewind woke the poll");
-            assert_eq!(again.event.id, "a-1", "{wake}");
+            let again = poller
+                .join()
+                .expect("poller thread")
+                .expect("poll")
+                .expect("the rewind woke the poll");
+            assert_eq!(again.message.id, "a-1", "{wake}");
             again.ack();
             assert!(broker.empty(), "{wake}");
         }
@@ -353,11 +421,11 @@ mod tests {
         let sink = broker.clone();
         let publisher = std::thread::spawn(move || {
             std::thread::sleep(WAIT); // let the poller park before the publish lands
-            sink.publish(tick("a", 1));
+            sink.publish(tick("a", 1)).expect("published");
         });
         let delivery = poll(&broker, Duration::MAX).expect("the publish woke the unbounded wait");
         publisher.join().expect("publisher thread");
-        assert_eq!(delivery.event.id, "a-1");
+        assert_eq!(delivery.message.id, "a-1");
         delivery.ack();
         assert!(broker.empty());
     }
@@ -368,8 +436,11 @@ mod tests {
         let started = Instant::now();
         assert!(poll(&broker, Duration::ZERO).is_none());
         assert!(started.elapsed() < Duration::from_millis(50), "returned at once");
-        broker.publish(tick("a", 1));
-        assert!(poll(&broker, Duration::ZERO).is_some(), "a queued message is taken without waiting");
+        broker.publish(tick("a", 1)).expect("published");
+        assert!(
+            poll(&broker, Duration::ZERO).is_some(),
+            "a queued message is taken without waiting"
+        );
     }
 
     /// Seq 1 fails once, and the staleness guard must not lose it. A nack that requeued seq 1 behind
@@ -396,13 +467,17 @@ mod tests {
         .build()
         .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();
-        broker.publish(tick("acct-1", 1));
-        broker.publish(tick("acct-1", 2));
+        broker.publish(tick("acct-1", 1)).expect("published");
+        broker.publish(tick("acct-1", 2)).expect("published");
         while let Some(d) = poll(&broker, Duration::from_millis(200)) {
-            dispatcher.deliver(d);
+            dispatcher.submit(d).expect("the dispatcher is running");
         }
         dispatcher.stop();
-        assert_eq!(*applied.lock().expect("lock"), [1, 2], "seq 1 applied before seq 2, none lost");
+        assert_eq!(
+            *applied.lock().expect("lock"),
+            [1, 2],
+            "seq 1 applied before seq 2, none lost"
+        );
         assert_eq!(*stored.lock().expect("lock"), Some(2));
         assert!(broker.empty());
     }
@@ -413,19 +488,18 @@ mod tests {
     fn a_failing_sink_nacks_and_the_redelivery_reaches_it_again() {
         let sink_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&sink_calls);
-        let dispatcher =
-            KeyOrderedDispatcher::builder(1, |_: &EventMessage| Err(crate::Error::codec("poison").into()))
-                .on_dead(move |_| match calls.fetch_add(1, Ordering::SeqCst) {
-                    0 => Err(crate::Error::store("dlq down").into()),
-                    _ => Ok(()),
-                })
-                .pacing(Pacing::instant())
-                .build()
-                .expect("the dispatcher's workers spawn");
+        let dispatcher = KeyOrderedDispatcher::builder(1, |_: &EventMessage| Err(crate::Error::codec("poison").into()))
+            .on_dead(move |_| match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(crate::Error::store("dlq down").into()),
+                _ => Ok(()),
+            })
+            .pacing(Pacing::instant())
+            .build()
+            .expect("the dispatcher's workers spawn");
         let broker = MemoryBroker::new();
-        broker.publish(tick("acct-1", 1));
+        broker.publish(tick("acct-1", 1)).expect("published");
         while let Some(d) = poll(&broker, Duration::from_millis(200)) {
-            dispatcher.deliver(d);
+            dispatcher.submit(d).expect("the dispatcher is running");
         }
         dispatcher.stop();
         assert_eq!(sink_calls.load(Ordering::SeqCst), 2, "the sink got a second try");

@@ -59,21 +59,22 @@ the commit. A saga keeps its own command outbox in the `SagaStore`.
 
 **Message** — what crosses a process boundary. Two kinds exist, an event message and a command
 message. Both are flat: identity, payload, lineage, time, then two string maps. See
-[edax-event](kernels/event.md#domain--the-messages).
+[edax-event](kernels/event.md#message--the-messages).
 
 **Event message** — a stored fact, as the store returns it and every reader downstream sees it.
 `EventMessage` in Rust and Python. Its fields are listed in
-[edax-event](kernels/event.md#domain--the-messages).
+[edax-event](kernels/event.md#message--the-messages).
 
 **Event draft** — an event as `Repository` hands it to `EventStore.append`. `EventDraft` has every
 field of an event message but `recorded_at`, which the store stamps.
 
 **Command message** — a request for something to happen, as a bus dispatches it, an outbox holds it
 and a broker carries it. `CommandMessage`. Its fields are listed in
-[edax-event](kernels/event.md#domain--the-messages).
+[edax-event](kernels/event.md#message--the-messages).
 
-**Event** — a codec's output: `name`, `version` and `data`. An aggregate holds its pending events in
-this shape until a save turns them into drafts. Not a wire type of its own.
+**Payload** — a codec's output, an event's or a command's: `name`, `version` and `data`. An aggregate
+holds its pending events in this shape until a save turns them into drafts, and a saga hands the
+commands it sends over in it. Not a wire type of its own.
 
 **Kind** — `event` or `command`. The bytes do not say which kind they hold; the media type does.
 
@@ -157,7 +158,8 @@ the command causes, and the key a retry policy counts attempts by. It is not the
 other's outcome.
 
 **Claim key** — the ledger key a command guard claims, `claim_key(scope, key)`, composed with the
-tenant under a pool. An event guard claims the event id under its scope the same way (`edax:evt:`).
+tenant under a pool. An event guard claims the event id under its scope the same way (`edax:evt:`),
+`event_claim_key(scope, event_id)`.
 See [edax-cqrs](kernels/cqrs.md#claim_key--which-ledger-key-a-command-guard-claims).
 
 **Claim** — the atomic insert-if-absent that reserves an idempotency key. It must be linearizable
@@ -256,7 +258,8 @@ The kernel's `ErrorCode` carries the verdict, so no SDK restates it. See [errors
 
 **Projection** — a read model built by folding events into an `Entity`.
 
-**Entity** — id, version, document. The version makes `save` a compare-and-set.
+**Entity** — id, version, document: a value. The version makes `save` a compare-and-set, and `save`
+returns the new one. A read carries the id in the document as `"id"`.
 
 **Filter** — the backend-neutral query abstract syntax tree (AST) in `edax-cqrs`, plus the reference
 evaluator that pins the match verdict. A missing or null path makes a leaf false, which is why
