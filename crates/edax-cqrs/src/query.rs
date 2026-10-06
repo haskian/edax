@@ -214,7 +214,6 @@ fn compare_tuples<'a>(
 }
 
 /// Compare two documents under the given sort keys: the order [`sort_rows`] sorts by, compared afresh.
-#[cfg(test)]
 fn compare(keys: &[SortKey], a: &Value, b: &Value) -> Ordering {
     compare_tuples(keys, sort_tuple(keys, a), sort_tuple(keys, b))
 }
@@ -222,6 +221,14 @@ fn compare(keys: &[SortKey], a: &Value, b: &Value) -> Ordering {
 /// Sort `rows` under `keys`, stable. Each row's decimal readings are taken once before the sort, so a
 /// decimal key parses each value once rather than twice per comparison.
 fn sort_rows(keys: &[SortKey], rows: &mut Vec<Value>) {
+    if keys.is_empty() {
+        return;
+    }
+    // Ordinary sorts need no per-row decimal cache. Keep the direct sort stable too.
+    if keys.iter().all(|key| key.collation.is_none()) {
+        rows.sort_by(|a, b| compare(keys, a, b));
+        return;
+    }
     let mut read: Vec<(Vec<Option<BigDecimal>>, Value)> = std::mem::take(rows)
         .into_iter()
         .map(|row| {
@@ -481,6 +488,30 @@ mod tests {
 
     fn ids(rows: &[Value]) -> Vec<&str> {
         rows.iter().map(|d| d["id"].as_str().unwrap_or("?")).collect()
+    }
+
+    #[test]
+    fn sorting_keeps_tied_rows_in_input_order_with_and_without_decimal_keys() {
+        let input = vec![
+            json!({"id": "b", "n": 2, "price": "2.00"}),
+            json!({"id": "a", "n": 2, "price": "2"}),
+            json!({"id": "c", "n": 1, "price": "10"}),
+            json!({"id": "d"}),
+        ];
+        let cases = [
+            (vec![], vec!["b", "a", "c", "d"]),
+            (keys(&[("n", false)]), vec!["c", "b", "a", "d"]),
+            (keys(&[("n", true)]), vec!["d", "b", "a", "c"]),
+            (
+                vec![SortKey::decimal("price", false), SortKey::new("n", false)],
+                vec!["b", "a", "c", "d"],
+            ),
+        ];
+        for (keys, want) in cases {
+            let mut rows = input.clone();
+            sort_rows(&keys, &mut rows);
+            assert_eq!(ids(&rows), want, "{keys:?}");
+        }
     }
 
     /// One case per branch of [`query`]: the selection, the keyset, the paging and the `next` rule.
