@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.6.0](https://github.com/crtomirmajer/edax/compare/cc4df9c7276595cca0b3a491c27244c1fec4a1ef..v0.6.0) - 2026-10-06
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) move duplicated SDK orchestration into kernels and fix drift (#19) - ([cc4df9c](https://github.com/crtomirmajer/edax/commit/cc4df9c7276595cca0b3a491c27244c1fec4a1ef)) - Črtomir Majer
+
+- - -
+
 ## [v0.5.0](https://github.com/crtomirmajer/edax/compare/2dbedc0628df4729c75b69e8d913209fa1a98c80..v0.5.0) - 2026-10-05
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) fix the feature review and compare Decimal and datetime by value (#18) - ([2dbedc0](https://github.com/crtomirmajer/edax/commit/2dbedc0628df4729c75b69e8d913209fa1a98c80)) - Črtomir Majer
