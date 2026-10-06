@@ -89,7 +89,8 @@ def wire_code(wire: str) -> str:
 #: ``edax_golden::host_text``, which a Rust suite builds ``edax::Decimal`` / ``edax::Instant`` from.
 _HOST_VALUE_MARKERS: dict[str, Callable[[str], Any]] = {
     "$decimal": Decimal,
-    "$instant": datetime.datetime.fromisoformat,
+    # Python 3.10 accepts the UTC offset spelling, but not the golden vectors' `Z` suffix.
+    "$instant": lambda text: datetime.datetime.fromisoformat(text.replace("Z", "+00:00")),
 }
 
 

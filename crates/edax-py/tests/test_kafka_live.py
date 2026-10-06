@@ -219,6 +219,7 @@ async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(
     script = textwrap.dedent(
         f"""
         import asyncio, sys
+        from typing import Any
         sys.path.insert(0, {os.path.dirname(__file__)!r})
         import edax
         from aiokafka import AIOKafkaConsumer
@@ -386,7 +387,7 @@ async def test_a_poison_record_backs_off_and_a_sinkless_run_is_refused(
 
     client = _consumer_client(name, group)
     sinkless = KafkaConsumer(client, serializer=SeqSerializer())
-    with pytest.raises(edax.BadHandle, match="on_dead"):
+    with pytest.raises(edax.BadHandle, match="dead-letter sink"):
         await sinkless.run(edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None)))
 
 
