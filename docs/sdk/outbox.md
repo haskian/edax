@@ -258,7 +258,7 @@ A drain marks every row it settled, also when a later row fails, so a row that w
 published again. A failing row holds back the rows behind it of its own key for the rest of the drain,
 because they may be its aggregate's later events. Every other key goes on. Which rows a drain
 publishes is the kernel's drain rule (`edax_event::Drain`, pinned by
-`testdata/golden/relay_drain.json`), the same in both SDKs. Whether a failed row is handed back or
+`testdata/golden/relay_drain.json`), the same in the Rust and Python SDKs. Whether a failed row is handed back or
 dead-lettered is the retry policy inside it (`edax_event::Retries`), the one the `KeyOrderedDispatcher`
 runs, keyed by row id:
 

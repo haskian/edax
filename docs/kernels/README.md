@@ -14,6 +14,7 @@ flowchart LR
     subgraph sdks["SDK — wiring and I/O"]
         RS["crates/edax<br/>reference Rust SDK"]
         PY["crates/edax-py/python/edax<br/>Python SDK"]
+        GO["crates/edax-go<br/>Go SDK"]
     end
 
     subgraph binding["binding crate"]
@@ -22,21 +23,23 @@ flowchart LR
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · error<br/>Rust-only: lock · token"]
+        CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · names · error<br/>Rust-only: lock · token"]
         EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga"]
-        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · Decimal · Instant<br/>filter · query"]
+        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query"]
         KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
         RED["edax-redis<br/>ledger · scripts"]
     end
 
     APP -->|"calls a seam"| RS
     APP -->|"calls a seam"| PY
+    APP -->|"calls a seam"| GO
     RS -->|"depends on the kernel crates"| CORE
     RS --> EV
     RS --> CQ
     RS -->|"and the in-memory stores"| MEM["edax-memory"]
     PY -->|"imports the generated module"| NAT
     NAT -->|"forwards"| ABI
+    GO -->|"generated cgo binding and C ABI"| ABI
     ABI -->|"forwards, reshaping only"| CORE
     ABI --> EV
     ABI --> CQ
@@ -63,8 +66,8 @@ The Rust SDK depends on `edax-core`, `edax-event`, `edax-cqrs` and `edax-memory`
 (`crates/edax/Cargo.toml`). The Python SDK reaches the same code through one extra hop.
 `crates/edax-abi` holds a flat, plain-Rust surface with no logic of its own. Alef generates the
 native `_edax` module from it. That generated module is never hand-edited. Both paths end at the
-same function, which is why a filter built in Python and a filter built in Rust reach the same
-verdict.
+same function. Go reaches it through alef's generated C ABI and a cgo binding. Shared functions
+keep filter verdicts and other kernel decisions consistent across these paths.
 
 ## The rule: the SDK wires, the kernel decides
 
@@ -121,7 +124,7 @@ flowchart TB
 
 ## The decisions, and what each golden vector prevents
 
-Every row is a decision the kernel owns. The vector is the cross-language contract: both test suites
+Every row is a decision the kernel owns. The vector is the cross-language contract: the Rust and Python suites
 assert it, and a byte of drift fails the build.
 
 | Decision | Kernel | Golden vector | Failure if two services disagreed |
@@ -141,7 +144,7 @@ assert it, and a byte of drift fails the build.
 | What lineage does a child of a message get? | `edax-event` | `causation.json` | A trace breaks at the language boundary, so a cross-service failure cannot be attributed |
 | What lineage does a message no message caused start with? | `edax-event` | `causation_originate.json` | Roots of two traces are generated differently, so correlation cannot be joined |
 | Is an incoming sequence older than the watermark, and what is the watermark after it applies? | `edax-event` | `staleness.json` | One consumer applies a redelivered event the other skips, or an unsequenced event erases the mark and a stale event lands |
-| What is the stable hash of these bytes? | `edax-cqrs` | `payload_hash.json` | Idempotency keys bind to different hashes, so a duplicate is not recognised as one |
+| What is the stable hash of these bytes? | `edax-core` | `payload_hash.json` | Idempotency keys bind to different hashes, so a duplicate is not recognised as one |
 | What are the canonical bytes of this JSON, and their hash? | `edax-cqrs` | `canonical_payload_hash.json` | The same logical command spelled with different key order or escaping hashes twice, defeating deduplication |
 | *Which* bytes does a command's hash cover? | `edax-cqrs` | `command_hash.json` | One SDK includes a field or the name the other omits, so the same command looks like a payload mismatch |
 | Which ledger key does a command guard claim? | `edax-cqrs` | `claim_key.json` | Two SDKs claim one intent under two keys, so a shared ledger runs it twice |
@@ -161,7 +164,7 @@ itself is one crate, so the rule enforcing the contract cannot drift between ker
 
 ## Deterministic, and the three functions that are not
 
-Every kernel function is a pure function of its arguments, with three deliberate exceptions:
+Kernel decisions are deterministic given their inputs and any caller-owned state. Three functions also read ambient state:
 
 | Function | Source | Why it is not deterministic | What it guarantees instead |
 |---|---|---|---|
@@ -171,9 +174,9 @@ Every kernel function is a pure function of its arguments, with three deliberate
 
 None of the three carries a golden vector, and each docstring says so. They still belong in a kernel
 because the shape of what they produce is a cross-language contract. A token of the wrong width
-cannot fence a claim any other SDK wrote. Every service must generate an id that sorts the same
-way, and a timestamp that never repeats, or event ordering and the outbox break. Both SDKs take the first two as overridable defaults, so a test can
-pin them: `Repository::with_clock` in Rust and the `new_id=` / `now=` constructor arguments in
+cannot fence a claim any other SDK wrote. These functions do not establish delivery order:
+aggregate sequences do that. The Rust and Python SDKs accept overrides for identifier and timestamp
+generation so tests can pin them: `Repository::with_clock` in Rust and the `new_id=` / `now=` constructor arguments in
 Python.
 
 `current_timestamp` also holds the only mutable state any kernel function keeps: one process-local
@@ -184,11 +187,13 @@ own tracker, and two trackers share nothing.
 
 ## Purity constraints
 
-The kernels are pure, synchronous, allocation-light, and free of I/O, threads and callbacks. Their
-whole dependency set is `serde`, `serde_json`, `serde_json_canonicalizer`, `rmp-serde`,
-`serde_bytes`, `base64` and `uuid`. No runtime, no client, no database driver.
+Kernel calls are synchronous. The kernels start no threads and call no database or broker client.
+Their external runtime dependencies are `serde`, `serde_json`, `serde_json_canonicalizer`,
+`rmp-serde`, `serde_bytes`, `base64`, `uuid`, `bigdecimal` and `jiff`.
+The clock and identifier exceptions are listed above. Rust's `lock` helper synchronizes native
+state; it does not make a storage or network call.
 
-What that buys:
+These constraints allow:
 
 - **Reproducibility.** A decision with no ambient input is the same in a test, in continuous
   integration (CI), in production, and in the other language. That is what makes a golden vector a
@@ -201,9 +206,9 @@ What that buys:
 - **A surface a generator can bind.** `edax-abi` is a flat list of plain-Rust signatures, which is
   what alef extracts to emit the native module. A kernel that took a callback or an async handle
   could not be described that way.
-- **No lock held across a kernel call.** The generated Python wrappers release the interpreter lock
-  around each call, for example `py.detach` around `eval_filter`. That is only sound because the
-  kernel touches no Python state.
+- **Interpreter lock release for free functions.** Alef wraps generated Python free functions such
+  as `eval_filter` in `py.detach`. Native-handle methods keep the lock. Those handles are bound to
+  their creating thread, and the Python SDK checks that ownership before each call.
 
 The cost is that everything impure is the SDK's job: persistence, transactions, brokers,
 concurrency, retries in wall-clock time. The kernel says *how long to wait*; the SDK does the
@@ -211,8 +216,8 @@ waiting.
 
 ## See also
 
-- [core.md](./core.md) — `edax-core` module by module: `hash`, `backoff`, `clock`, `guid`, `error`,
-  `sync`, `token`.
+- [core.md](./core.md) — `edax-core`: `hash`, `key`, `backoff`, `clock`, `guid`, `version`, `names`,
+  `error`, `sync`, `token`.
 - [filter.md](./filter.md) — the filter module of `edax-cqrs`, on its own page.
 - [event.md](./event.md) — `edax-event`: the messages, codec, lineage, ordering key, partition,
   upcast, staleness, the event guard's key, sequence, retry, saga.

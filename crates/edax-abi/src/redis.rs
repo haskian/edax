@@ -60,6 +60,7 @@ pub fn redis_forget_exhausted(key: &str) -> String {
 
 /// The ledger settings a store is built with when its host overrides none, in milliseconds. A struct
 /// rather than three calls, like [`RedisScripts`]. See [`edax_redis::DEFAULT_TTL_MS`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RedisDefaults {
     /// The record TTL: the dedup window a settled outcome is replayed in.
     pub ttl_ms: i64,
@@ -95,6 +96,15 @@ pub fn redis_claim_outcome(claim: &[u8], reply: Option<Vec<u8>>) -> Result<Claim
         .map_err(to_wire)
 }
 
+/// The same claim verdict with an explicit presence bit for C callers. Alef's Go
+/// marshaller represents both absent and empty optional byte slices as a null pointer.
+/// The bit preserves an empty stored value so the kernel can refuse it as unreadable.
+pub fn redis_claim_outcome_present(claim: &[u8], present: bool, reply: &[u8]) -> Result<ClaimResult, String> {
+    edax_redis::claim_outcome(present.then_some(reply), claim)
+        .map(claim_result)
+        .map_err(to_wire)
+}
+
 /// The kernel error for a Redis error reply, prefix included, in its wire form
 /// `"<code>: <message>"`. See [`edax_redis::reply_error`].
 pub fn redis_reply_error(reply: &str) -> String {
@@ -113,8 +123,17 @@ pub fn redis_forget_outcome(key: &str, held: Option<Vec<u8>>) -> Result<bool, St
     )
 }
 
+/// The forget verdict with an explicit presence bit, as in [`redis_claim_outcome_present`].
+pub fn redis_forget_outcome_present(key: &str, present: bool, held: &[u8]) -> Result<bool, String> {
+    Ok(matches!(
+        edax_redis::forget_outcome(key, present.then_some(held)).map_err(to_wire)?,
+        edax_redis::ForgetOutcome::Delete
+    ))
+}
+
 /// The five kernel scripts, byte for byte, so every SDK's `EVALSHA` names one digest. A struct
 /// rather than five calls, like [`SplitError`](crate::SplitError). See [`edax_redis::CLAIM_SCRIPT`] and its siblings.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RedisScripts {
     pub claim: String,
     pub complete: String,
@@ -218,5 +237,34 @@ mod tests {
                 edax_redis::EXTEND_SCRIPT
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_presence_preserves_optional_bytes() {
+        let claim = redis_new_claim(42).unwrap();
+        for (name, value) in [
+            ("absent", None),
+            ("empty_stored_value", Some(Vec::new())),
+            ("own_claim", Some(claim.clone())),
+            ("unreadable_stored_value", Some(b"corrupt".to_vec())),
+        ] {
+            let present = value.is_some();
+            let bytes = value.as_deref().unwrap_or_default();
+            let expected = redis_claim_outcome(&claim, value.clone()).unwrap();
+            let actual = redis_claim_outcome_present(&claim, present, bytes).unwrap();
+            assert_eq!(actual.won, expected.won, "{name}");
+            assert_eq!(actual.handle, expected.handle, "{name}");
+            assert_eq!(actual.prior, expected.prior, "{name}");
+            assert_eq!(
+                redis_forget_outcome_present("payments:invoice-1042", present, bytes),
+                redis_forget_outcome("payments:invoice-1042", value),
+                "{name}"
+            );
+        }
     }
 }

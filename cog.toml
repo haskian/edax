@@ -19,11 +19,13 @@ skip_ci = "[skip ci]"
 # still says 0.0.1. `cargo check` re-locks the workspace so `Cargo.lock` lands in the bump commit
 # rather than dirtying the next one.
 #
-# Deliberately not `--locked`: Cargo.lock records the members' own versions, so set_version.py has
+# Deliberately not `--locked`: Cargo.lock records the members' own versions, so version:set has
 # just made it stale, and `--locked` forbids the very update that has to happen here. With it, every
 # bump fails at this hook before cog cuts a tag.
 pre_bump_hooks = [
-    "python3 scripts/set_version.py {{version}}",
+    "mise -q run version:check-go -- {{version}}",
+    "mise run version:set -- {{version}}",
+    "mise run bindings:generate",
     "cargo check --workspace --quiet",
 ]
 
@@ -31,7 +33,7 @@ pre_bump_hooks = [
 path = "CHANGELOG.md"
 template = "remote"
 remote = "github.com"
-owner = "crtomirmajer"
+owner = "haskian"
 repository = "edax"
 
 # `versionbump!` is how a major is cut (see AGENTS.md). It has to be declared: cog refuses an

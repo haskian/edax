@@ -12,4 +12,4 @@
 # hand-written file that happens to match must never be claimed. Do not hand-add
 # entries; run `alef adopt <path>`, read the diff it prints, and let it write.
 
-owned_paths = ["crates/edax-py/.alef/_edax.pyi"]
+owned_paths = [".clang-format", "crates/edax-abi-ffi/cmake/edax-abi-ffi-config.cmake", "crates/edax-py/.alef/_edax.pyi"]

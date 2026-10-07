@@ -1,29 +1,23 @@
 name: Release
 
-# Tag-driven. The build runs on every tag; publishing is a separate job behind the
-# `pypi` GitHub environment, so it cannot fire until that environment exists.
+# Both tag pushes and version.yml dispatches build the tagged tree.
+# PyPI publishing stays disabled until PYPI_PUBLISH_ENABLED is true.
 on:
   push:
     tags: ["v*"]
+  # GITHUB_TOKEN tag pushes start no workflows. A dispatch creates a separate run,
+  # so PyPI sees release.yml as the publisher instead of a reusable workflow caller.
   workflow_dispatch:
-  # version.yml calls this after it cuts a tag. It cannot rely on the tag push above:
-  # GitHub does not start a workflow from a ref pushed with GITHUB_TOKEN, so a bump would
-  # tag the release and then publish nothing.
-  workflow_call:
-    inputs:
-      ref:
-        description: Tag to build, e.g. `v0.1.0`.
-        type: string
-        required: true
 
 permissions:
   contents: read
 
-# `github.ref_name` on a tag push; the input when version.yml calls this, because a called workflow
-# inherits the caller's `github` context — there, the caller's SHA is the commit *before* the bump
-# commit that set_version.py wrote.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  BUILD_REF: ${{ inputs.ref || github.ref_name }}
+  BUILD_REF: ${{ github.ref_name }}
 
 jobs:
   # Publishing an artifact that fails its own test suite is not worth the convenience.
@@ -33,21 +27,34 @@ jobs:
   # A wheel whose version disagrees with its tag cannot be unpublished — PyPI refuses to reuse a
   # filename even after a delete. The tree is what decides that version (maturin reads the Cargo
   # version; pyproject.toml declares it dynamic), so the tree is what gets checked, before the
-  # matrix runs. Catches a hand-pushed tag, which never ran scripts/set_version.py.
+  # matrix runs. Catches a hand-pushed tag, which never ran mise run version:set.
   version:
     name: Tag matches the tree
     runs-on: ubuntu-latest
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+      # The version checker needs Go, not the Rust build toolchain.
+      MISE_TASK_RUN_AUTO_INSTALL: "false"
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.BUILD_REF }}
+      - uses: jdx/mise-action@v4
+        with:
+          install_args: go
+          cache: true
       - run: |
           set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != tag ] || [[ "$BUILD_REF" != v* ]]; then
+            echo "::error::Run this workflow on a v-prefixed release tag."
+            exit 1
+          fi
           declared="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')"
           if [ "$declared" != "${BUILD_REF#v}" ]; then
             echo "::error::$BUILD_REF was cut from a tree declaring $declared — run the bump, do not tag by hand"
             exit 1
           fi
+          mise -q run version:check-go -- "$declared"
           echo "$BUILD_REF matches the tree"
 
   wheels:
@@ -87,6 +94,7 @@ jobs:
         with:
           name: wheels-${{ matrix.name }}
           path: dist/*.whl
+          if-no-files-found: error
 
   sdist:
     name: Source distribution
@@ -104,6 +112,7 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
+          if-no-files-found: error
 
   # An artifact that cannot be installed is worse than no artifact: it fails in the adopter's
   # environment rather than here. The wheel is abi3, so the floor and the ceiling of the
@@ -172,13 +181,39 @@ jobs:
           pip install dist/edax-*.tar.gz
           python -c "import edax; assert edax.backoff_millis(1) == 200; print('sdist ok')"
 
+  release:
+    name: GitHub Release
+    needs: [smoke, sdist-builds]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.BUILD_REF }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
   publish:
     name: Publish to PyPI
     needs: [smoke, sdist-builds]
     runs-on: ubuntu-latest
-    # Create this environment (with a required reviewer) to arm publishing. Until then
-    # the job is blocked, so a stray tag cannot release anything.
-    environment: pypi
+    # GitHub creates missing environments without protection rules. The repository
+    # variable is the explicit opt-in; configure the pypi environment before enabling it.
+    if: github.repository == 'haskian/edax' && vars.PYPI_PUBLISH_ENABLED == 'true'
+    environment:
+      name: pypi
+      url: https://pypi.org/p/edax
     permissions:
       # Trusted publishing: no long-lived PyPI token in secrets.
       id-token: write

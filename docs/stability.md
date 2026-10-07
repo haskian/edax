@@ -96,7 +96,7 @@ written against them. Pin a minor in your dependency declaration
 - **One dead-letter value.** Every sink takes one `DeadLetter`: `message`, `attempt`, `failure` and
   `origin`, from a dispatcher and a relay alike. A dispatcher sink was `on_dead(delivery, error)` and a
   relay sink `on_dead(row, error)`; read `letter.message`, `letter.failure` and `letter.origin` instead.
-  The field is `failure` in both SDKs, as the Rust `DeadLetter` names it.
+  Python and Rust name the field `failure`. Go exports it as `Failure`.
   `SagaRunner.command_failed` takes the `DeadLetter` too. In Rust, `Relay::on_dead` takes a
   `DeadLetter<&R, &HandlerError>`, and `SagaRunner::command_failed(tx, dead)` takes it.
 - **Poison is `Undecodable`.** A record that will not decode is an `edax.Undecodable` (`id`, `payload`,
@@ -205,7 +205,7 @@ written against them. Pin a minor in your dependency declaration
 - **Retry policy at the boundary.** The native `retries` takes the sink flag at construction, and
   `Retries.failed` takes the failure's error code instead of a failure kind.
 - **Unreadable idempotency records.** A stored record no reader can decode replays as
-  `CachedFailure` of code `codec`, in both SDKs, instead of raising `CodecError` on every claim. So
+  `CachedFailure` of code `codec`, in the Rust and Python SDKs, instead of raising `CodecError` on every claim. So
   does a cached result that does not convert to the handler's `result_type`. A store reads the record
   that holds a key with `edax.idempotency.decode_prior`; a store of your own that calls `decode_record`
   there must switch.
@@ -227,12 +227,16 @@ next one. The deprecation names its replacement. Python marks it with `Deprecati
 
 ## How a release is cut
 
-`cog bump` reads the conventional commits since the last tag and writes `CHANGELOG.md` and the tag.
-Which increment it is handed is [AGENTS.md's rule](../AGENTS.md): `versionbump!` for a major, `feat`
-for a minor, `fix` for a patch. A breaking `feat!` is still only a minor.
-`scripts/set_version.py` rewrites the two version literals in the tree, so the tag and the artefacts
-cannot disagree. The release refuses to build a tag whose tree declares a different version.
-Pushing the tag builds the wheels and publishes them. See [release.yml](../.github/workflows/release.yml).
+[version.yml](../.github/workflows/version.yml) chooses the increment from Conventional Commit subjects.
+`versionbump!` requests a major release. `feat` requests a minor release. `fix` requests a patch release.
+A breaking `feat!` still requests a minor release.
 
-Publishing runs under a `pypi` GitHub environment with a required reviewer. The workflow cannot
-publish until that environment exists, so a tag pushed before it is created builds wheels and stops.
+Cocogitto updates the changelog and runs `mise run version:set` before creating the tag.
+The script updates the workspace and ABI crate versions. Maturin reads the Python package version from Cargo.
+The workflow pushes the tag and dispatches [release.yml](../.github/workflows/release.yml) on it.
+The release rejects a tag whose version differs from the tree.
+
+After CI and install checks pass, the release attaches the wheels and source distribution to a GitHub Release.
+PyPI upload requires `PYPI_PUBLISH_ENABLED=true` in the repository's Actions variables.
+The `pypi` environment provides the configured approval rules.
+[Releasing the Python SDK](releasing.md) lists the publisher settings and activation steps.

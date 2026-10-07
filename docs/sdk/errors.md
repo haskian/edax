@@ -61,7 +61,7 @@ Every row is a code of the kernel; the second column names the constructor where
   `datetime`, whose instant is unknown, and a `Decimal` that is `NaN`, infinite or past 1000 digits.
 - an idempotency record that will not encode, or that the strict `decode_record` will not decode. A
   store reads the record holding a key with `decode_prior` instead, which never raises: an unreadable
-  record replays as `CachedFailure` with `original_code` `codec`, in both SDKs.
+  record replays as `CachedFailure` with `original_code` `codec`, in the Rust and Python SDKs.
 - every kernel refusal. Examples: a batch that is not dense (`check_sequence_batch`), an upcast plan
   with a gap, a cursor that is not base64, an unknown error code.
 - in Python, an argument the binding cannot convert: a negative or too-wide integer (`OverflowError`),

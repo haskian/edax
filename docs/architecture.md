@@ -1,14 +1,8 @@
 # Architecture
 
-How edax is layered, why the layering exists, and what the build pipeline turns each layer into.
-
-Event-driven services stay consistent only while every service agrees on a small set of decisions,
-bit for bit. Which partition an aggregate routes to. What bytes a message serializes to. Whether a
-redelivered command is a duplicate. How a filtered page is ordered. edax puts exactly those
-decisions in pure Rust kernels, wraps them in a software development kit (SDK) per language, and
-pins the result with golden vectors.
-
-The SDK wires. The kernel decides. Neither layer re-derives the other's job.
+edax puts shared decisions in Rust kernels: partition placement, message bytes, duplicate detection
+and query ordering. Each language's software development kit (SDK) connects those decisions to
+storage and transports. Golden vectors test that the SDKs agree.
 
 ## The three layers
 
@@ -23,9 +17,9 @@ flowchart TB
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>canonical_json, command_hash, claim_key<br/>record, Decimal, Instant<br/>filter, query"]
+        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, ledger, Decimal, Instant<br/>filter, query"]
         D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga"]
-        E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, error"]
+        E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, names, error"]
     end
 
     A -->|"implements the seams"| B
@@ -44,8 +38,8 @@ flowchart TB
 
 ## Why a kernel at all
 
-Get one shared decision subtly wrong in one service, or in one language, and the bug surfaces months
-later as a dropped row or a double-charged customer. Two examples the kernel removes:
+Different implementations of a shared decision can drop rows or apply an operation twice.
+Two examples explain why the kernels own these decisions:
 
 - Canonical JSON. Python's `json.dumps(ensure_ascii=True)` does not agree with serde on non-ASCII,
   so two services hashing "the same" command would reach different idempotency keys.
@@ -54,8 +48,9 @@ later as a dropped row or a double-charged customer. Two examples the kernel rem
   changes which rows a page returns. The `edax-cqrs` evaluator pins the verdict
   (`crates/edax-cqrs/src/filter.rs`).
 
-The kernels are pure, synchronous, and free of I/O, threads and callbacks. That is what makes them
-portable, testable without a harness, and cheap to pin with a vector file.
+Kernel decisions are synchronous and need no database or broker. Most are pure functions of their
+arguments. Clock and identifier generation have explicit exceptions; native handles also keep
+caller-owned state. See [kernel constraints](kernels/README.md#purity-constraints).
 
 ## The crate graph
 
@@ -70,6 +65,8 @@ flowchart LR
     abi["edax-abi<br/>flat surface"]
     rust["crates/edax<br/>Rust SDK"]
     py["crates/edax-py<br/>Python binding"]
+    ffi["crates/edax-abi-ffi<br/>generated C ABI"]
+    go["crates/edax-go<br/>Go SDK"]
     golden["edax-golden<br/>vector harness"]
 
     event --> core
@@ -93,6 +90,8 @@ flowchart LR
     abi --> kafka
     abi --> redis
     py --> abi
+    ffi --> abi
+    go --> ffi
     core -.->|"dev-dependency"| golden
     event -.-> golden
     cqrs -.-> golden
@@ -106,15 +105,17 @@ what each one owns.
 
 | Crate | What |
 |---|---|
-| `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
+| `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
-| `edax-cqrs` | `canonical_json`, `payload_hash`, `command_hash`, `claim_key`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query` |
-| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by both SDKs |
-| `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`) |
+| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by the Rust, Python and Go SDKs |
+| `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
+| `edax-abi-ffi` | alef-generated C ABI used by the Go binding |
+| `crates/edax-go` | the Go SDK: generated cgo binding and handle facade, plus hand-written orchestration |
 | `edax-golden` | the golden-vector harness, one writer and one reader for every kernel |
 
 The `edax-memory`, `edax-kafka` and `edax-redis` rows follow one rule. A backend's bytes, its names
@@ -122,7 +123,7 @@ and its state decisions live in a kernel crate named `edax-<tech>`, pinned by go
 SDK then ships only the client calls around that crate. Call it a protocol module in Rust and an
 input and output (I/O) shell per SDK.
 
-Read the three crates that way. Both SDKs' in-memory backends are views over `edax-memory`, so the
+The Rust, Python and Go in-memory backends are views over `edax-memory`. The
 staging, the optimistic-concurrency checks and the transaction boundary are one implementation.
 `edax-kafka` owns the record a published message becomes and the offset watermark that settles it.
 `edax-redis` owns the value stored under an idempotency key and the Lua a fenced write runs. Neither
@@ -130,23 +131,35 @@ crate links a client library, so the I/O stays in the SDK that has one.
 
 ## The build pipeline
 
-The Python native module is generated. The Python package is not.
+Alef generates the Python extension and the Go binding from one ABI surface. Each language has
+a hand-written SDK around that binding.
 
 ```mermaid
 flowchart LR
     K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis"] --> ABI["crates/edax-abi/src/<br/>hand-written flat surface"]
-    ABI -->|"alef generate --lang python --clean"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
+    ABI -->|"alef"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
     ABI -->|"alef"| STUB["python/edax/_edax.pyi<br/>generated type stub, shipped"]
     GEN -->|"maturin develop"| SO["_edax native module"]
     SO --> PKG["python/edax/*.py<br/>hand-written SDK"]
     PKG --> APP["your service"]
+    ABI -->|"alef"| FFI["crates/edax-abi-ffi<br/>generated C ABI"]
+    FFI -->|"cgo"| GO["crates/edax-go/internal/native<br/>generated binding"]
+    GO --> FACADE["crates/edax-go/internal/kernel/native.gen.go<br/>generated safe handle facade"]
+    FACADE --> SDKGO["crates/edax-go/*.go<br/>hand-written Go SDK"]
+    SDKGO --> APP
 ```
 
 - `crates/edax-py/src/lib.rs`, `crates/edax-py/python/edax/_edax.pyi` and everything under
   `crates/edax-py/.alef/` are generated. Never edit them. Change `crates/edax-abi/src/` and run
-  `scripts/regenerate_binding.sh`. It runs `alef generate` with `--clean`, because a plain incremental
+  `mise run bindings:generate`. It runs `alef generate` with `--clean`, because a plain incremental
   run deletes the generated files (the comment at the top of `alef.toml` explains why).
-- `crates/edax-py/python/edax/` is hand-written and is yours to edit.
+- `crates/edax-abi-ffi/`, `crates/edax-go/internal/native/` and `crates/edax-go/internal/kernel/native.gen.go` are
+  generated too. The regeneration script runs alef for `python,ffi,go`, then generates the Go
+  facade and refreshes the shipped Python stub.
+- `crates/edax-py/python/edax/` is hand-written apart from its stub. Go orchestration lives in
+  the non-generated files under `crates/edax-go/`.
+- `mise run go:build` builds and installs the Rust static library for local cgo builds. See
+  [Go setup](sdk/go.md#build-from-source).
 - `pytest` does **not** rebuild the native module. Read [the stale native module
   trap](guides/getting-started.md#the-stale-native-module-trap).
 
@@ -157,8 +170,10 @@ flowchart LR
     KER["kernel"] -->|"EDAX_REGEN=1 cargo test"| GV["testdata/golden/*.json"]
     GV -->|"asserted by"| RT["Rust suite<br/>crates/edax-*/tests/golden.rs"]
     GV -->|"asserted by"| PT["Python suite<br/>through the _edax module"]
+    GV -->|"selected contracts replayed by"| GT["Go suite<br/>through the C ABI"]
     RT -->|"a byte of drift"| FAIL["the build fails"]
     PT -->|"a byte of drift"| FAIL
+    GT -->|"a byte of drift"| FAIL
 ```
 
 A golden vector always wins over a disagreeing test. See [golden vectors](kernels/golden-vectors.md)
@@ -166,10 +181,15 @@ for the file-by-file list and the regeneration rules.
 
 ## Binding responsibilities
 
-The binding crate does only type conversion, error-to-exception mapping and Python-idiomatic
-configuration. Every `edax-abi` function is synchronous, so the binding links no async runtime. The
-SDK package owns orchestration: `CommandBus` with
-its middleware, `EventRouter`, the dispatcher, `Saga`, and the store and transactor seams.
+The bindings convert types and expose kernel errors in each language. Every `edax-abi` function
+is synchronous. Python's extension needs no async runtime. Go calls the generated C ABI through
+cgo; its generated scaffold may include runtime dependencies even though edax exposes no async
+ABI function.
+
+Python messages cross as native classes. Go presents typed structs but alef serializes them as
+JSON when converting through the C ABI. The Go facade wraps native handles with a mutex and
+`Close`; it prevents calls from racing with a free. Each SDK owns orchestration: command and event
+handlers, transactions, dispatchers, relays and sagas.
 
 Neither layer may re-derive kernel logic. No duplicated validation, no re-implemented idempotency or
 payload-hash decisions, no routing or partition placement, no business rules. If it must match
@@ -177,14 +197,14 @@ across versions or languages, it belongs in a kernel with a golden vector.
 
 ## Language differences that follow from the layering
 
-| | Rust SDK | Python SDK |
-|---|---|---|
-| concurrency | synchronous, dispatcher workers are operating-system threads | `asyncio`, workers are tasks |
-| transaction handle | passed explicitly, or published by the host through a `Fn(&C) -> Tx` provider keyed by the command | ambient, found through `current_tx(transactor)` in a `contextvars` map keyed by database |
-| backends shipped | in-memory only; the `edax-kafka` and `edax-redis` kernels ship with no client shell over them | in-memory, Redis, Kafka |
-| guard that owns the transaction | not implemented | `unit_of_work=` on both guards |
+| | Rust reference SDK | Python SDK | Go SDK |
+|---|---|---|---|
+| concurrency | synchronous; dispatcher workers are operating-system threads | `asyncio` tasks | synchronous context-aware calls; dispatcher workers are goroutines |
+| transaction handle | explicit or obtained from a host provider | `contextvars`, keyed by database | `context.Context`, keyed by `UnitOfWork` |
+| backends shipped | in-memory | in-memory, Redis, Kafka | in-memory, Redis, Kafka client interfaces |
+| guard that owns the transaction | not implemented | `unit_of_work=` on both guards | `IdempotentOptions.UnitOfWork` on both guards |
 
-None of these differences reaches the kernels. Both SDKs call the same kernel functions, so a
+None of these differences reaches the kernels. All three SDKs call the same kernel functions, so a
 filter built in Python and a filter built in Rust reach the same verdict, and a vector proves it.
 
 ## See also

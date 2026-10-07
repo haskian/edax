@@ -1,29 +1,31 @@
-# alef drives the edax-py native binding. The plain-Rust surface in `edax-abi` is the single source;
-# alef emits the pyo3 module (`_edax`) into `crates/edax-py/src/lib.rs`. The hand-written ergonomic
-# package under `crates/edax-py/python/edax/` is NOT owned by alef — only the generated binding is, so
-# the generator's whole python package (scaffold __init__/api/exceptions/options AND the type stub)
-# is routed to the throwaway `.alef` dir and not shipped. In this alef version that output dir IS the
-# package dir, so it must NOT point at `python/edax` or alef overwrites the hand-written __init__.py.
+# Both bindings come from the synchronous edax-abi surface.
+# Python output is the native _edax extension. Its generated package scaffold stays in
+# crates/edax-py/.alef so it cannot overwrite the handwritten SDK.
+# mise run bindings:generate copies the generated stub beside the Python package.
 #
-# The `_edax.pyi` type stub is the one piece we DO ship, so checkers see the message records'
-# fields. It is committed at `crates/edax-py/python/edax/_edax.pyi` next to the compiled `_edax`, with
-# a `py.typed` marker (PEP 561), so checkers need not regenerate it. The shipped copy has alef's
-# `# alef:hash:` header stripped so alef's stale-file cleanup leaves it alone.
+# Go output is internal/native. Alef also generates its C interface in edax-abi-ffi.
+# .mise/cmd/go-facade adds typed errors and synchronized handle ownership.
+# The Go SDK calls that facade. mise run go:build stages the native static library.
+# Alef's generated download helpers are ignored because no Go native archives ship yet.
 #
-# Regenerate with `scripts/regenerate_binding.sh`. It runs `alef generate --lang python --clean` and
-# then refreshes the shipped stub (the body of `.alef/_edax.pyi` under a fixed PEP 561 header, without
-# alef's `# alef:hash:` lines, so alef's cleanup ignores it). --clean ONLY: a plain incremental
-# `alef generate` is destructive here — on a cache hit it skips re-emitting `src/lib.rs` / the stub but
-# still runs cleanup, deleting them; `--clean` re-emits everything so cleanup has nothing to orphan.
-#
-# alef also writes `crates/edax-abi-py/Cargo.toml` on every run, at a path it hardcodes as
-# `crates/<crate>-py/` with no setting to move it. That manifest is not a workspace member and nothing
-# builds it; the real binding manifest is `crates/edax-py/Cargo.toml`. It stays tracked because alef
-# would recreate it after any deletion.
+# Use mise run bindings:generate for every regeneration. --clean prevents an incremental
+# cache hit from leaving stale or deleted output. Alef also emits crates/edax-abi-py/Cargo.toml;
+# that scaffold manifest stays outside the workspace and is never built.
 
 [workspace]
-languages = ["python"]
-alef_version = "0.103.12"
+languages = ["python", "ffi", "go"]
+alef_version = "0.106.1"
+
+[workspace.scaffold]
+repository = "https://github.com/haskian/edax"
+
+# Alef fixes the Go hook root at packages/go. This repository owns its hook paths.
+[workspace.ownership]
+user_owned = ["poly.toml"]
+
+[workspace.package_metadata]
+repository = "https://github.com/haskian/edax"
+license = "MIT"
 
 [[crates]]
 name = "edax-abi"
@@ -46,6 +48,8 @@ version_from = "crates/edax-abi/Cargo.toml"
 
 [crates.output]
 python = "crates/edax-py/src"
+ffi = "crates/edax-abi-ffi/src"
+go = "crates/edax-go/internal/native"
 
 [crates.python]
 module_name = "_edax"
@@ -54,3 +58,24 @@ scaffold_output = "crates/edax-py/.alef"
 
 [crates.python.stubs]
 output = "crates/edax-py/.alef"
+
+[crates.ffi]
+prefix = "edax"
+header_name = "edax.h"
+lib_name = "edax_abi_ffi"
+
+[crates.go]
+module = "github.com/haskian/edax/crates/edax-go"
+package_name = "native"
+
+[crates.go.link_flags]
+darwin = ["-framework", "Security", "-framework", "CoreFoundation", "-lresolv"]
+linux = ["-ldl", "-lpthread", "-lm"]
+
+[crates.verify]
+ignore_ephemeral = [
+  "crates/edax-py/.alef/**",
+  "crates/edax-go/internal/native/cmd/**",
+  "crates/edax-go/internal/native/generate.go",
+  "crates/edax-go/internal/native/native_setup.go",
+]

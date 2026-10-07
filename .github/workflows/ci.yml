@@ -18,19 +18,27 @@ concurrency:
 jobs:
   rust:
     uses: ./.github/workflows/rust.yml
-  # alef owns `crates/edax-py/src/lib.rs` and the shipped `_edax.pyi`. Regenerating them must change
-  # nothing: an `edax-abi` change that landed without its regeneration leaves a new ABI function
-  # silently absent from Python. Independent of the interpreter, so it runs once.
+  go:
+    uses: ./.github/workflows/go.yml
+  # Regenerate the Python extension and stub, C interface and Go facade together.
+  # A changed ABI must reach both SDKs. Run this once, outside the runtime matrices.
   binding:
     name: alef freshness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
+      - name: Test binding and release tooling
+        run: |
+          mise exec -- go -C .mise test ./...
+          mise exec -- go -C .mise vet ./...
       - name: Regenerate the binding
-        run: scripts/regenerate_binding.sh
+        run: mise run bindings:generate
       - name: The committed binding is what alef generates
-        run: git diff --exit-code crates/edax-py/src/lib.rs crates/edax-py/python/edax/_edax.pyi
+        run: |
+          git diff --exit-code crates/edax-py/src/lib.rs crates/edax-py/python/edax/_edax.pyi \
+            crates/edax-abi-ffi crates/edax-go/internal/native crates/edax-go/internal/kernel/native.gen.go crates/edax-go/internal/kernel/error_codes.gen.go \
+            crates/edax-go/error_codes.gen.go
 
   # `requires-python = ">=3.10"` is a promise the suite has to keep. The floor is where a
   # syntax or typing feature added later breaks first; the ceiling is where a dependency or a

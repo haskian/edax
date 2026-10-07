@@ -11,6 +11,7 @@ use crate::{count, failure_of, names, to_wire};
 /// relay on the failure. A field the action does not use is `None`. `failure` is the kind the kernel read off the failure's
 /// code, one of [`retry_failures`], so a host labels a nack for contention without classifying the
 /// failure itself. See [`edax_event::Verdict`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RetryVerdict {
     pub action: String,
     pub attempt: Option<u32>,
@@ -62,6 +63,7 @@ pub fn retry_failures() -> Vec<String> {
 }
 
 /// How many messages a [`Retries`] tracks. See [`edax_event::Tracked`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RetriesTracked {
     pub attempts: u64,
     pub contended: u64,
@@ -184,6 +186,7 @@ pub fn retry_step(attempts: u32, failed: u32, code: Option<String>) -> Result<Op
 /// `"hand_back"` leaves it, and its key's later rows, for the next drain; `"dead_letter"` hands it to the
 /// sink, `attempt` being the attempt that killed it, then reports its answer through [`Drain::sunk`];
 /// `"stop"` publishes nothing more. `attempt` is set only when dead. See [`edax_event::RowFailed`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DrainRowFailed {
     pub action: String,
     pub attempt: Option<u32>,
@@ -209,7 +212,9 @@ pub fn drain_actions() -> Vec<String> {
 
 /// What one drain did: the row ids to mark published, the counts, the backoff step to wait before
 /// returning, if any, and the row whose failure to raise, if any. See [`edax_event::Drained`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Drained {
+    #[serde(default)]
     pub settled: Vec<String>,
     pub published: u64,
     pub dead_lettered: u64,
@@ -219,6 +224,7 @@ pub struct Drained {
 
 /// The keys of one outbox row a [`Drain`] decides over: an event's or a command's `id`, `tenant` and
 /// `aggregate_id`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DrainRow {
     pub id: String,
     pub tenant: Option<String>,
@@ -447,5 +453,18 @@ mod tests {
             Some("codec: unknown error code: poison")
         );
         assert_eq!(drain.tracked().attempts, 1);
+    }
+}
+
+/// A sink result with an owned outer record for Go's generated return conversion.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DrainReply {
+    pub value: Option<DrainRowFailed>,
+}
+
+impl Drain {
+    /// The ownership-safe C result shape of [`Self::sunk`].
+    pub fn sunk_result(&self, id: &str, attempt: u32, taken: bool, code: Option<String>) -> Result<DrainReply, String> {
+        self.sunk(id, attempt, taken, code).map(|value| DrainReply { value })
     }
 }

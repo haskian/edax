@@ -1,36 +1,43 @@
 # edax
 
 > [!WARNING]
-> **Early alpha (0.x).** The application programming interface (API) is unstable and a minor release may break it, and nothing is
-> published to a package registry yet. Not ready for production. Build from source. What a version
-> promises: [stability](docs/stability.md).
+> Early alpha (0.x). The application programming interface (API) can change in a minor release.
+> Build from source. See [stability](docs/stability.md) for the version policy.
 
-**An ergonomic toolkit for building event-driven systems. Command Query Responsibility Segregation
-(CQRS) and event sourcing, with a Rust core and language software development kits (SDKs) that
-cannot drift apart.**
+edax provides Python and Go software development kits (SDKs) for event-driven systems.
+It supports Command Query Responsibility Segregation (CQRS), event sourcing, idempotency,
+transactional outboxes, projections, and sagas.
 
-Event-driven services stay consistent only while every service agrees, bit for bit, on a small set
-of decisions. Which partition an aggregate routes to. What bytes a message serializes to. Whether
-a redelivered command is a duplicate. How a filtered page is ordered. Get one of those wrong in one
-service, or in one language, and the bug surfaces months later as a dropped row or a double-charged
-customer. edax puts exactly those decisions in pure Rust **kernels**, and wraps them in an SDK per
-language. **Golden vectors** pin the result, so drift fails the build instead of production. The
-SDK wires. The kernel decides. Neither layer re-derives the other's job.
+Both SDKs call the same Rust kernels for message encoding, partition placement, sequencing,
+idempotency decisions, and query semantics. Shared golden vectors test those results.
+The SDKs run handlers and coordinate stores. Applications supply domain rules and durable storage.
 
 ## Install
 
-Nothing is published to a registry yet, so install from the Git source. The Python SDK builds the
-Rust kernel from source, so a [Rust toolchain](https://rustup.rs) must be on your `PATH`.
+Install from source while registry publishing is disabled. The Python SDK builds a native extension,
+so a [Rust toolchain](https://rustup.rs) must be on your `PATH`.
 
 **Python ([uv](https://docs.astral.sh/uv/)):** `maturin` builds the native extension automatically.
 
 ```sh
-uv pip install "git+https://github.com/crtomirmajer/edax#subdirectory=crates/edax-py"
+uv pip install "git+https://github.com/haskian/edax#subdirectory=crates/edax-py"
 ```
 
-Python is the supported SDK. The Rust `edax` crate is a reference model (`publish = false`). It
-implements the same orchestration in a second language, against the same kernels and golden
-vectors. See [Rust and Python parity](docs/sdk/rust-parity.md).
+**Go:** Clone this repository and build its native library with the pinned toolchain.
+
+```sh
+mise trust
+mise install
+mise run go:build
+cd crates/edax-go
+mise exec -- go test ./...
+```
+
+The Go module is `github.com/haskian/edax/crates/edax-go`. It requires cgo and a C compiler.
+See the [Go SDK guide](docs/sdk/go.md) for application setup and examples.
+
+The Rust `edax` crate is a reference model (`publish = false`). It runs against the same kernels
+and golden vectors. See [Rust and Python parity](docs/sdk/rust-parity.md).
 
 Working inside a checkout instead? Point `uv` at the local path (`uv pip install ./crates/edax-py`),
 or use the pinned [mise](https://mise.jdx.dev) toolchain. See
@@ -146,24 +153,27 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 
 | Path | What |
 |---|---|
-| `crates/edax-core` | shared primitives: `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`, `error` (the taxonomy); and two Rust-only runtime helpers, `lock` and `TokenMint`. [Scope](docs/kernels/core.md) |
+| `crates/edax-core` | shared primitives: `names`, `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`, `error` (the taxonomy); and two Rust-only runtime helpers, `lock` and `TokenMint`. [Scope](docs/kernels/core.md) |
 | `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`. [Scope](docs/kernels/event.md) |
-| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash`, `command_hash`, `claim_key`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`. [Scope](docs/kernels/cqrs.md) |
+| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash_json`, `command_hash`, `received_key`, `claim_key`, `complete_fence`, `release_fence`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`. [Scope](docs/kernels/cqrs.md) |
 | `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
 | `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
 | `crates/edax-kafka` | Kafka kernel: `record` (key, header, route, dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`). [Scope](docs/kernels/kafka.md) |
 | `crates/edax-redis` | Redis kernel: `ledger` (the idempotency ledger's key, settings, value layout, claim handle, reply outcomes), `scripts` (the five fence scripts, the reply verdict). [Scope](docs/kernels/redis.md) |
-| `crates/edax-abi` | flat Rust surface over the kernels, and the source the Python binding is generated from |
+| `crates/edax-abi` | flat Rust surface over the kernels, and the source both native bindings are generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
+| `crates/edax-abi-ffi` | Alef-generated C interface used by Go; no independent consistency logic |
+| `crates/edax-go` | Go SDK, with generated native calls under `internal/native` |
 | `examples/py` | nineteen runnable examples in learning order; start at its [README](examples/py/README.md) |
 | `docs` | the full documentation set. Start at [`docs/README.md`](docs/README.md) |
 | `testdata/golden` | cross-language consistency vectors |
 
 ## Status
 
-Early alpha. The API is not yet stable, and nothing is published to a package registry. Build from source; see
-[getting started](docs/guides/getting-started.md). The version literal lives in `Cargo.toml` alone,
+Early alpha. The API is not yet stable. Build from source; see
+[getting started](docs/guides/getting-started.md). PyPI publishing is prepared and disabled by default.
+See [release setup](docs/releasing.md). The version literal lives in `Cargo.toml` alone,
 so this page does not restate it; [stability](docs/stability.md) says what a version promises.
 
 Deliberately out of scope: durable event- and projection-store backends, transports beyond the

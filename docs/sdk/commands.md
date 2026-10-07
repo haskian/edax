@@ -88,7 +88,7 @@ value. Its relay runs each row as the command its name names, with `dispatch_mes
 ## The command message
 
 Every dispatch builds a `CommandMessage`, the shape a command has on the wire. The message is the unit
-of dispatch in both SDKs. Middleware receives it as an argument with the command, so a guard reads the
+of dispatch in the Rust and Python SDKs. Middleware receives it as an argument with the command, so a guard reads the
 idempotency key and the tenant off it and cannot miss them. A handler still receives the command value
 alone. In Python it reads the message, while it runs, through `current_command()`.
 
@@ -304,13 +304,13 @@ Every failure the SDK itself raises is an `edax::Error`, the kernel's `Error { c
 inside that box; a caller downcasts to read its code. Python raises `HandlerNotFound` directly and
 lets a handler's exception propagate untouched.
 
-A replayed result is the handler's own type in both SDKs: Rust decodes the record as `C::Output`, and Python's
-`idempotent` converts it to `result_type` or the handler's return annotation. See
+Rust decodes a replayed result as `C::Output`. Python's `idempotent` converts it to `result_type`
+or the handler's return annotation. Go callers use `ExecuteAs[R]` to restore the result type. See
 [idempotency](./idempotency.md#the-loser-paths).
 
 ## The middleware chain
 
-Both SDKs use the same shape: a middleware takes the next step and returns a step. A step takes the
+The Rust and Python SDKs use the same shape: a middleware takes the next step and returns a step. A step takes the
 message being dispatched and the command; the handler at the end of the chain takes the command alone.
 
 ```rust
@@ -411,7 +411,7 @@ The guard never releases a claim it lost: the key belongs to the winner.
 | Not retried | terminal errors, and a panic keeps unwinding | terminal errors, and `BaseException` is never caught |
 
 `attempts` counts handler runs, not extra runs: `retry(3)` calls the handler at most three times. A
-count below one is refused at wiring in both SDKs, where a typo is cheap to find: Rust cannot spell it,
+count below one is refused at wiring in the Rust and Python SDKs, where a typo is cheap to find: Rust cannot spell it,
 and Python raises (`test_retry_refuses_fewer_than_one_attempt`).
 
 **What it retries.** Only transient failures. A terminal error is returned or re-raised at once

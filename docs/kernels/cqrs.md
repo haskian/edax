@@ -7,7 +7,7 @@ claimant does with a record it did not write, and when a record may be forgotten
 
 The command bus itself is host-local ergonomics: handler registration, typed dispatch and the
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
-(SDKs), not here. The command side is nine decisions and one stored shape.
+(SDKs), not here. The table below lists its shared decisions and stored types.
 
 The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
@@ -23,7 +23,8 @@ and the two travel together because the query evaluates the filter.
 | `Record` / `State` | the stored record's wire shape and reading order, for the command guard and the event guard alike |
 | `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
-| `settle` | whether a winner caches its failure or releases the claim |
+| `settle_failure` | whether a winner caches its failure or releases the claim |
+| `complete_fence` / `release_fence` | whether a claim owner may complete or release the record currently held by a ledger key |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
@@ -214,7 +215,7 @@ any claim, so a pool never claims a shared row. The event guard's key follows th
 `edax_core::guard_key` with their `GuardKind`, so the two cannot compose in different orders.
 `testdata/golden/claim_key.json` pins the key, with a row per mode.
 
-The scope is required in both SDKs. A default would put two services on one ledger under one scope,
+The scope is required in the Rust and Python SDKs. A default would put two services on one ledger under one scope,
 and the second would replay the first one's outcome.
 
 ---
@@ -284,7 +285,7 @@ A typed reader decodes the stored value as its own result type. `null` decodes t
 unit-result command, to `None` for `Option<i64>`, and fails — typed, naming the step — for a command
 whose result type has no null form. A pending or failed record never touches the result type at all.
 
-Both SDKs are held to it: `testdata/golden/idempotency_record.json` carries
+The Rust and Python SDKs are held to it: `testdata/golden/idempotency_record.json` carries
 `cached_success_with_null_result`, and the Python suite dispatches a `None`-returning handler twice
 and asserts one call and two `None` replays.
 
@@ -368,7 +369,7 @@ flowchart TB
   IP --> TR["transient: retry or redeliver"]
 ```
 
-| Record | Hash | `outcome` | Both SDKs raise | Class |
+| Record | Hash | `outcome` | The Rust and Python SDKs raise | Class |
 |---|---|---|---|---|
 | any | differs | `payload_mismatch` | `PayloadMismatch(key)` | terminal |
 | `pending` | matches | `in_progress` | `InProgress(key)` | transient |
@@ -398,6 +399,23 @@ dispatch returns or raises, whether the handler ran, and what the key holds afte
 every row through its own guard over its memory ledger.
 
 ---
+
+## Ledger fences
+
+`complete_fence(key, holder)` and `release_fence(holder)` define the same ownership checks for
+every ledger backend. The store classifies what the key holds, then applies the kernel's verdict
+atomically with the write.
+
+| Current holder | Complete | Release |
+|---|---|---|
+| caller's claim | write the settled record | delete the claim |
+| the same settled record | leave it unchanged | leave it unchanged |
+| no record, another claim or another settled record | fail with a `store` error | leave it unchanged |
+
+A repeated completion succeeds only when it matches the settled record. A worker whose claim
+expired cannot overwrite its successor. A repeated release is harmless and cannot delete another
+worker's claim. `testdata/golden/idempotency_fence.json` pins these cases. Redis's Lua scripts replay
+the same contract; the memory ledger calls these functions directly.
 
 ## `forget` — deleting a settled record
 

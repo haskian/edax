@@ -6,6 +6,7 @@ use edax_core::ErrorCode;
 use crate::{error_code, names, tenancy_mode, to_wire};
 
 /// A backoff policy, in milliseconds. See [`edax_core::Backoff`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackoffPolicy {
     /// The ceiling of the first retry's wait; each later attempt doubles it.
     pub base_millis: u64,
@@ -65,6 +66,7 @@ pub fn error_verdict(code: Option<String>) -> Result<bool, String> {
 
 /// A wire failure taken apart. A struct rather than a tuple: the generator sanitizes a tuple return
 /// to `Vec<String>` and loses the field names.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SplitError {
     /// The taxonomy code: `store` when the wire form carries no code the kernel knows.
     pub code: String,
@@ -132,6 +134,7 @@ pub fn tenancy_rules(mode: &str) -> Result<TenancyRules, String> {
 }
 
 /// What a tenancy mode demands, as [`tenancy_rules`] reports it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TenancyRules {
     /// Every message and keyed call must name a tenant.
     pub requires_tenant: bool,

@@ -55,7 +55,7 @@ jobs:
 
       # Documentation regressions: long sentences, crates/...:NNN citations, banned idioms.
       - name: Lint the documentation
-        run: python3 scripts/doclint.py
+        run: mise run docs:lint
 
       # Adopters copy documentation snippets verbatim, so the complete programs among them are held
       # to the same type check as the SDK. Opt-in per fence, with `<!-- doclint: check -->`: most
@@ -63,7 +63,7 @@ jobs:
       # non-zero when no fence carries the marker, so a marker lost in an edit fails here.
       - name: Type-check the documentation snippets
         run: |
-          python3 scripts/doclint.py --extract .doclint
+          mise run docs:lint -- --extract .doclint
           mise exec -- ty check --python crates/edax-py/.venv \
             --extra-search-path crates/edax-py/python .doclint/*.py
 

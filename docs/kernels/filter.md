@@ -173,7 +173,7 @@ A time without an offset is refused rather than read as UTC: its instant is unkn
 host gets them by declaring the field as `Decimal` or `Instant`, which canonicalize when they are
 built. A float, a `String` that holds `9.50`, or a third-party timestamp that keeps its offset
 writes another JSON value, so it hashes and stores apart. The host-value rows of
-`testdata/golden/command_hash.json` and `testdata/golden/event_codec.json` hold both SDKs to this. The decimal text orders by value only under the decimal collation.
+`testdata/golden/command_hash.json` and `testdata/golden/event_codec.json` hold the Rust and Python SDKs to this. The decimal text orders by value only under the decimal collation.
 So a range filter or a sort over a decimal field must set it.
 
 ## What the kernel refuses

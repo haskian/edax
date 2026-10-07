@@ -48,7 +48,7 @@ CONTINUES_MARKER = "<!-- doclint: continues -->"
 CITATION = re.compile(r"crates/[\w./-]+:\d+")
 IDIOM = re.compile(r"(?i)(?<![a-z])(" + "|".join(map(re.escape, IDIOMS)) + r")")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def check(path: Path) -> list[str]:
@@ -122,7 +122,7 @@ def main(argv: list[str]) -> int:
     files = [*sorted(ROOT.joinpath("docs").rglob("*.md")), ROOT / "README.md", ROOT / "examples/py/README.md"]
     if argv[:1] == ["--extract"]:
         if len(argv) != 2:
-            print("usage: doclint.py [--extract DIR]", file=sys.stderr)
+            print("usage: mise run docs:lint -- [--extract DIR]", file=sys.stderr)
             return 2
         return extract(files, Path(argv[1]))
     problems = [problem for file in files for problem in check(file)]

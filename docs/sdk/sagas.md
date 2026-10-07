@@ -102,7 +102,7 @@ The command stays a pure business intent: it needs no lineage fields.
 
 The relay hands each row to `bus.dispatch_message(row)`. The row keeps its id and lineage, so
 the events its handler saves continue the flow ([lineage rules](../kernels/event.md#causation--lineage)).
-The chain reads request, event, saga command, event, and nothing in it was stamped by hand. `testdata/golden/saga.json` pins the row, so both SDKs write
+The chain reads request, event, saga command, event, and nothing in it was stamped by hand. `testdata/golden/saga.json` pins the row, so the Rust and Python SDKs write
 the same one.
 
 ### SagaStore
@@ -295,7 +295,7 @@ response to an ordinary event.
 A command whose handler raises `Rejected` saves no event, so no participant reply exists. The relay
 dead-letters the row, and `runner.command_failed` turns it into the reply: a `SagaCommandFailed`
 event for the instance the row names (its `aggregate_id`). The same runner folds it, without the
-saga's `instance_id`. Its `data` is JSON, `SagaCommandFailed` in both SDKs:
+saga's `instance_id`. Its `data` is JSON, `SagaCommandFailed` in the Rust and Python SDKs:
 
 ```python
 def handle(self, state: Any, msg: EventMessage, /) -> tuple[Any, list[Any]]:

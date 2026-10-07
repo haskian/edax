@@ -2,56 +2,56 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
-## [v0.6.0](https://github.com/crtomirmajer/edax/compare/cc4df9c7276595cca0b3a491c27244c1fec4a1ef..v0.6.0) - 2026-10-06
+## [v0.6.0](https://github.com/haskian/edax/compare/cc4df9c7276595cca0b3a491c27244c1fec4a1ef..v0.6.0) - 2026-10-06
 #### Features
-- ![BREAKING](https://img.shields.io/badge/BREAKING-red) move duplicated SDK orchestration into kernels and fix drift (#19) - ([cc4df9c](https://github.com/crtomirmajer/edax/commit/cc4df9c7276595cca0b3a491c27244c1fec4a1ef)) - Črtomir Majer
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) move duplicated SDK orchestration into kernels and fix drift (#19) - ([cc4df9c](https://github.com/haskian/edax/commit/cc4df9c7276595cca0b3a491c27244c1fec4a1ef)) - Črtomir Majer
 
 - - -
 
-## [v0.5.0](https://github.com/crtomirmajer/edax/compare/2dbedc0628df4729c75b69e8d913209fa1a98c80..v0.5.0) - 2026-10-05
+## [v0.5.0](https://github.com/haskian/edax/compare/2dbedc0628df4729c75b69e8d913209fa1a98c80..v0.5.0) - 2026-10-05
 #### Features
-- ![BREAKING](https://img.shields.io/badge/BREAKING-red) fix the feature review and compare Decimal and datetime by value (#18) - ([2dbedc0](https://github.com/crtomirmajer/edax/commit/2dbedc0628df4729c75b69e8d913209fa1a98c80)) - Črtomir Majer
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) fix the feature review and compare Decimal and datetime by value (#18) - ([2dbedc0](https://github.com/haskian/edax/commit/2dbedc0628df4729c75b69e8d913209fa1a98c80)) - Črtomir Majer
 
 - - -
 
-## [v0.4.0](https://github.com/crtomirmajer/edax/compare/66f280b8e56f1b9d15be3432fec22257af45b043..v0.4.0) - 2026-10-04
+## [v0.4.0](https://github.com/haskian/edax/compare/66f280b8e56f1b9d15be3432fec22257af45b043..v0.4.0) - 2026-10-04
 #### Features
-- ![BREAKING](https://img.shields.io/badge/BREAKING-red) make the tenant a typed field with a kernel key rule (#17) - ([66f280b](https://github.com/crtomirmajer/edax/commit/66f280b8e56f1b9d15be3432fec22257af45b043)) - Črtomir Majer
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) make the tenant a typed field with a kernel key rule (#17) - ([66f280b](https://github.com/haskian/edax/commit/66f280b8e56f1b9d15be3432fec22257af45b043)) - Črtomir Majer
 
 - - -
 
-## [v0.3.0](https://github.com/crtomirmajer/edax/compare/d4d14b10d42050b7eaae2699228e46c9852dedf4..v0.3.0) - 2026-10-04
+## [v0.3.0](https://github.com/haskian/edax/compare/d4d14b10d42050b7eaae2699228e46c9852dedf4..v0.3.0) - 2026-10-04
 #### Features
-- ![BREAKING](https://img.shields.io/badge/BREAKING-red) split events and commands into flat typed messages (#16) - ([d4d14b1](https://github.com/crtomirmajer/edax/commit/d4d14b10d42050b7eaae2699228e46c9852dedf4)) - Črtomir Majer
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) split events and commands into flat typed messages (#16) - ([d4d14b1](https://github.com/haskian/edax/commit/d4d14b10d42050b7eaae2699228e46c9852dedf4)) - Črtomir Majer
 
 - - -
 
-## [v0.2.0](https://github.com/crtomirmajer/edax/compare/88e611c13041143e088e174432bbb97742913c19..v0.2.0) - 2026-10-03
+## [v0.2.0](https://github.com/haskian/edax/compare/88e611c13041143e088e174432bbb97742913c19..v0.2.0) - 2026-10-03
 #### Features
-- ![BREAKING](https://img.shields.io/badge/BREAKING-red) address the nine-crate review (104 findings) (#15) - ([a7896aa](https://github.com/crtomirmajer/edax/commit/a7896aa3577d976a32f68b85945c95d8f5486a1f)) - Črtomir Majer
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) address the nine-crate review (104 findings) (#15) - ([a7896aa](https://github.com/haskian/edax/commit/a7896aa3577d976a32f68b85945c95d8f5486a1f)) - Črtomir Majer
 #### Documentation
-- fix the command-field rule and document the saga causation hop (#14) - ([882ddb2](https://github.com/crtomirmajer/edax/commit/882ddb2f5005bd2987327c0c6e8e4e481c197be3)) - Črtomir Majer
+- fix the command-field rule and document the saga causation hop (#14) - ([882ddb2](https://github.com/haskian/edax/commit/882ddb2f5005bd2987327c0c6e8e4e481c197be3)) - Črtomir Majer
 #### Continuous Integration
-- let the release smoke tests fetch dependencies from the index (#12) - ([45cc793](https://github.com/crtomirmajer/edax/commit/45cc79385243ed8aabf0f8f3e4f795fe1cc2ec9e)) - Črtomir Majer
+- let the release smoke tests fetch dependencies from the index (#12) - ([45cc793](https://github.com/haskian/edax/commit/45cc79385243ed8aabf0f8f3e4f795fe1cc2ec9e)) - Črtomir Majer
 #### Refactoring
-- (**kernels**) move filter and query into edax-cqrs (#13) - ([88e611c](https://github.com/crtomirmajer/edax/commit/88e611c13041143e088e174432bbb97742913c19)) - Črtomir Majer
+- (**kernels**) move filter and query into edax-cqrs (#13) - ([88e611c](https://github.com/haskian/edax/commit/88e611c13041143e088e174432bbb97742913c19)) - Črtomir Majer
 
 - - -
 
-## [v0.1.0](https://github.com/crtomirmajer/edax/compare/1440e10672bbf3f858c178a1e1c796d55158b53c..v0.1.0) - 2026-09-16
+## [v0.1.0](https://github.com/haskian/edax/compare/1440e10672bbf3f858c178a1e1c796d55158b53c..v0.1.0) - 2026-09-16
 #### Features
-- (**edax-py**) observability seam — Observer plus timing middleware, no deps (#6) - ([a9fc898](https://github.com/crtomirmajer/edax/commit/a9fc898504166d601b7d62874dc18b602b413909)) - Črtomir Majer
-- edax, a polyglot toolkit for event-driven systems (#1) - ([1440e10](https://github.com/crtomirmajer/edax/commit/1440e10672bbf3f858c178a1e1c796d55158b53c)) - Črtomir Majer
+- (**edax-py**) observability seam — Observer plus timing middleware, no deps (#6) - ([a9fc898](https://github.com/haskian/edax/commit/a9fc898504166d601b7d62874dc18b602b413909)) - Črtomir Majer
+- edax, a polyglot toolkit for event-driven systems (#1) - ([1440e10](https://github.com/haskian/edax/commit/1440e10672bbf3f858c178a1e1c796d55158b53c)) - Črtomir Majer
 #### Bug Fixes
-- (**ci**) drop --locked from the pre-bump hook so a bump can re-lock (#11) - ([419af87](https://github.com/crtomirmajer/edax/commit/419af87fe4eda608f8ae1a4650c7fc53af26eb44)) - Črtomir Majer
-- (**ci**) make ci.yml reusable so release.yml can call it (#4) - ([f35e90e](https://github.com/crtomirmajer/edax/commit/f35e90ee7c86c16d4d52a3f8a39db9256d015b36)) - Črtomir Majer
-- (**ci**) grant id-token to the release call from version.yml (#2) - ([e79a325](https://github.com/crtomirmajer/edax/commit/e79a325e49edaf3f6fb53d0382b9ad080a2f3ec9)) - Črtomir Majer
-- (**edax-py**) resolve event_store lazily so a split ledger skips the rollback clause (#7) - ([5c095a0](https://github.com/crtomirmajer/edax/commit/5c095a07057a0e2b5dbb84c5416e01d70ceba088)) - Črtomir Majer
-- act on the adopter review — nine defects, the doc gaps, and the 0.1.0 gate (#5) - ([834fcd1](https://github.com/crtomirmajer/edax/commit/834fcd1028324beff50cc841f612cd3e79dfa0bb)) - Črtomir Majer
+- (**ci**) drop --locked from the pre-bump hook so a bump can re-lock (#11) - ([419af87](https://github.com/haskian/edax/commit/419af87fe4eda608f8ae1a4650c7fc53af26eb44)) - Črtomir Majer
+- (**ci**) make ci.yml reusable so release.yml can call it (#4) - ([f35e90e](https://github.com/haskian/edax/commit/f35e90ee7c86c16d4d52a3f8a39db9256d015b36)) - Črtomir Majer
+- (**ci**) grant id-token to the release call from version.yml (#2) - ([e79a325](https://github.com/haskian/edax/commit/e79a325e49edaf3f6fb53d0382b9ad080a2f3ec9)) - Črtomir Majer
+- (**edax-py**) resolve event_store lazily so a split ledger skips the rollback clause (#7) - ([5c095a0](https://github.com/haskian/edax/commit/5c095a07057a0e2b5dbb84c5416e01d70ceba088)) - Črtomir Majer
+- act on the adopter review — nine defects, the doc gaps, and the 0.1.0 gate (#5) - ([834fcd1](https://github.com/haskian/edax/commit/834fcd1028324beff50cc841f612cd3e79dfa0bb)) - Črtomir Majer
 #### Documentation
-- early-alpha warning + install steps; fix CI example segfault gate (#3) - ([2899343](https://github.com/crtomirmajer/edax/commit/28993438fc329a82ff4d17bf7113baaf2d71eae3)) - Črtomir Majer
+- early-alpha warning + install steps; fix CI example segfault gate (#3) - ([2899343](https://github.com/haskian/edax/commit/28993438fc329a82ff4d17bf7113baaf2d71eae3)) - Črtomir Majer
 #### Continuous Integration
-- enforce conventional PR titles and gate majors on versionbump! (#10) - ([f45f9f7](https://github.com/crtomirmajer/edax/commit/f45f9f7909b0a009c5067403fe321fdacd3120b3)) - Črtomir Majer
+- enforce conventional PR titles and gate majors on versionbump! (#10) - ([f45f9f7](https://github.com/haskian/edax/commit/f45f9f7909b0a009c5067403fe321fdacd3120b3)) - Črtomir Majer
 
 - - -
 

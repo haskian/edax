@@ -7,6 +7,7 @@ The primitives the other kernels build on. Each is a cross-language contract.
 - `backoff`: the retry backoff schedule.
 - `clock` and `guid`: the clock and id generation.
 - `version`: the next version of a versioned row.
+- `names`: closed sets of names shared by the kernels and bindings.
 - `error`: the error taxonomy.
 
 Two Rust-only runtime helpers the adapters share sit here too: a poison-tolerant lock (`sync`) and a
@@ -15,8 +16,8 @@ them and no golden vector pins them; they keep two Rust state machines from drif
 is the one complete list of this crate's scope. The query filter is not here: it lives in `edax-cqrs`,
 beside the query that evaluates it ([filter.md](./filter.md)).
 
-Everything here is a pure function of its arguments except `guid` and `current_timestamp`. The
-crate's whole dependency set is `uuid`
+The shared decisions are pure functions except `guid` and `current_timestamp`. The Rust runtime
+helpers operate on caller-owned state. The crate's only external runtime dependency is `uuid`
 (`crates/edax-core/Cargo.toml`). Its modules are private and re-exported flat: one path per item,
 `edax_core::guid`, never `edax_core::guid::guid`.
 
@@ -139,7 +140,7 @@ time.
 **Why they still live in the kernel.** The contract is the shape of the value. Every service
 must generate an id that sorts the same way and a timestamp that never repeats, or event ordering
 and the outbox break at the language boundary. One implementation of "what a fresh event id looks
-like" beats one per SDK. Both SDKs take them as overridable defaults, so nothing is locked in:
+like" beats one per SDK. The Rust and Python SDKs take them as overridable defaults, so nothing is locked in:
 
 ```python
 self._new_id = new_id or _edax.guid  # Repository: a time-ordered event id
@@ -222,7 +223,7 @@ SDK states this default for itself.
 What *branches* on the verdict — the exception hierarchy, `is_terminal`, the retry middleware, the
 idempotency guards, the dead-letter path — belongs to the SDK and is documented in
 [../sdk/errors.md](../sdk/errors.md). The short version: nothing above the kernel states its own
-verdict. Both SDKs read the code off the error and ask the kernel `edax_core::is_terminal`: Python through
+verdict. The Rust and Python SDKs read the code off the error and ask the kernel `edax_core::is_terminal`: Python through
 `error_verdict(code)`, which takes `None` for a failure with no code; Rust directly.
 
 ## See also

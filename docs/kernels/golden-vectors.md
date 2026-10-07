@@ -40,6 +40,10 @@ rule of `edax_golden::write_or_check`.
 | failure message | names the first differing case index and prints only that case, plus the regenerate hint |
 | missing file | panics naming the path and the regenerate command |
 
+The Go suite reads shared fixtures through the generated C binding. Its replay tests live in
+`crates/edax-go`. Go does not regenerate the vector files. The coverage tables on this page name
+the Rust and Python readers; they are not a claim that each Go test replays every vector.
+
 The Python suite never regenerates. It reads through one helper, `golden(name)` in
 `crates/edax-py/tests/conftest.py`, which records every name it loads. A full green run then fails if
 any `testdata/golden/*.json` went unread, so a new vector cannot ship without a Python reader. A run
@@ -177,7 +181,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 
 Three vectors are asserted **through the SDK layer** rather than against the kernel function.
 `command_hash.json` is dispatched through each SDK's own `idempotent` middleware. The hash the
-ledger received is then compared. That proves both SDKs bind one key to one number for one command.
+ledger received is then compared. That proves the Rust and Python SDKs bind one key to one number for one command.
 `query.json` is parsed into the SDK's own query type, so a re-declared shape fails.
 `kafka_decode.json` is polled through a real `KafkaConsumer`, so the adapter's routing is what is
 proved, not a copy of it in the test.

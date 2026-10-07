@@ -1,0 +1,33 @@
+name: Go
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Go (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cargo-cache-key: go
+      - name: Build the native library
+        run: mise run go:build
+      - name: Test with the race detector
+        working-directory: crates/edax-go
+        run: mise exec -- go test -race ./...
+      - name: Vet
+        working-directory: crates/edax-go
+        run: mise exec -- go vet ./...
+      - name: Check handwritten Go formatting
+        run: |
+          unformatted=$(mise exec -- gofmt -l crates/edax-go .mise)
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
