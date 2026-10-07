@@ -1,13 +1,13 @@
 # Examples
 
-The runnable examples live in `examples/py`. Its [README](../../examples/py/README.md) lists all
-nineteen in learning order: what each one teaches, its key API, and the page to read next. This page
-covers how to run them, how continuous integration (CI) checks them, and which part of the pipeline
-each one covers.
+The [Python examples](../../examples/py/README.md) and
+[Go examples](../../crates/edax-go/examples/README.md) cover the same nineteen topics in learning order.
+Their READMEs list what each example teaches. This page explains how to run them and how continuous
+integration (CI) checks them.
 
-Each example is one file with a `main()`, one idea, and numbered steps that print what happens. It
-ends in asserts and a final `ok:` line. There is no test framework and no expected-output file: the
-program either exits `0` or raises.
+Each program checks the behavior it demonstrates and prints a final `ok:` line. Python uses
+assertions; Go returns an error on a failed check. The contract-kit examples use pytest and Go's
+test runner to check backend contracts.
 
 ## Running them
 
@@ -32,24 +32,29 @@ python examples/py/11_projection_query.py
 The build step is not optional. Read [the stale native module
 trap](./getting-started.md#the-stale-native-module-trap).
 
-## A clean exit is the test
+The Go examples live inside the Go module. Build the native library, then run a numbered directory:
 
-Every example ends in asserts that pin the values it printed, then prints `ok:`. An assert that fires
-raises `AssertionError`, and the process exits non-zero.
-
-CI relies on that. The `Examples` step of `.github/workflows/python.yml` loops over
-`examples/py/*.py` and stops on the first file that fails or prints no `ok:` line:
-
-```yaml
-- name: Examples
-  run: |
-    for f in examples/py/*.py; do
-      echo "--- $f"
-      out=$(crates/edax-py/.venv/bin/python "$f")
-      echo "$out"
-      echo "$out" | grep -q '^ok:' || { echo "FAILED: $f did not reach its ok: marker"; exit 1; }
-    done
+```sh
+mise run go:build
+cd crates/edax-go
+mise exec -- go run -race ./examples/11_projection_query
 ```
+
+Example 18 is a test package. Run it with `mise exec -- go test -race -v ./examples/18_contract_kit`.
+
+## Smoke tests
+
+After building both native bindings, run these tasks from the repository root:
+
+```sh
+mise run examples:python
+mise run examples:go
+```
+
+The tasks discover numbered examples. They stop on a nonzero exit or a missing `ok:` marker.
+The Go task runs programs with the race detector and runs test packages with caching disabled.
+Pass filenames to `examples:python` or directory names to `examples:go` to select examples.
+The Python and Go workflows call these same tasks.
 
 `crates/edax-py/tests/test_examples.py` runs every `main()` inside the test suite too. It also
 checks that no example command declares `type` as a hashed instance field. Both checks find a new
@@ -62,11 +67,11 @@ them switch to a real server when an environment variable names one:
 
 | Example | Variable | Real backend | In-memory stand-in |
 |---|---|---|---|
-| `16_redis_ledger.py` | `EDAX_REDIS_URL` | `RedisIdempotencyStore` | `MemoryLedger` |
-| `17_kafka.py` | `EDAX_KAFKA_BOOTSTRAP` | `KafkaProducer`, `KafkaConsumer`, `KafkaDeadLetterSink` | `MemoryBroker` |
+| `16_redis_ledger` in either language | `EDAX_REDIS_URL` | Redis idempotency ledger | A separate memory ledger |
+| `17_kafka` in either language | `EDAX_KAFKA_BOOTSTRAP` | Kafka producer, consumer and dead-letter sink | Memory broker |
 
-The CI test job sets both variables for its Redis and Kafka services. So in CI these two run
-against real servers, in the test suite and in the `Examples` step alike.
+The Python CI test job sets both variables for its Redis and Kafka services. Go runs every example
+in memory on Linux and macOS. A separate Linux job sets the variables and runs its two live examples.
 
 ## What covers what
 

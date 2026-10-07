@@ -49,11 +49,11 @@ An expired worker cannot settle a replacement claim.
 Redis does not join another database's transaction. Handlers must tolerate redelivery after a partial failure.
 The ledger fence does not fence writes in another database.
 
-The [runnable Redis example](../../crates/edax-go/examples/redis/main.go) uses a local Redis server and checks that a second call replays the result.
+The [runnable Redis example](../../crates/edax-go/examples/16_redis_ledger/main.go) uses Redis when `EDAX_REDIS_URL` is set and checks that a second call replays the result.
 Run it from `crates/edax-go`:
 
 ```sh
-mise exec -- go run ./examples/redis
+EDAX_REDIS_URL=redis://localhost:6379/0 mise exec -- go run ./examples/16_redis_ledger
 ```
 
 The backend tests run the kernel scripts in `miniredis`. They cover claim expiry, stale settlement, corrupt records, heartbeat failures and cancellation.
@@ -114,13 +114,13 @@ Kafka may have accepted that record before the timeout. An application retry can
 Use an idempotent handler when side effects must survive this ambiguity.
 Franz-go still deduplicates its own internal retries. See its [cancellation contract](https://github.com/twmb/franz-go/blob/v1.22.1/pkg/kgo/config.go).
 
-The [runnable Kafka example](../../crates/edax-go/examples/kafka/main.go) publishes an invoice and consumes it with explicit settlement.
-Create `invoices` and `invoices.dead` topics first. Run one example consumer at a time.
-The default broker address is `localhost:9092`; `EDAX_KAFKA_BOOTSTRAP` accepts comma-separated addresses.
+The [runnable Kafka example](../../crates/edax-go/examples/17_kafka/main.go) publishes an outbox through Kafka and consumes it with a dispatcher.
+It creates fresh topics for the run and deletes them when it finishes.
+Unset `EDAX_KAFKA_BOOTSTRAP` to run in memory. Set it to comma-separated broker addresses for Kafka.
 From `crates/edax-go`, run:
 
 ```sh
-mise exec -- go run ./examples/kafka
+EDAX_KAFKA_BOOTSTRAP=localhost:9092 mise exec -- go run ./examples/17_kafka
 ```
 
 The bridge tests run without a broker. They verify exact offsets, protocol error mapping, blocked-poll cancellation and revoke/lost behavior.

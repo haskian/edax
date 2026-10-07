@@ -37,6 +37,18 @@ go get github.com/haskian/edax/crates/edax-go
 The Go native library must be built in that checkout before compiling the application. This is a
 source installation workflow; the Python wheel does not install the Go library.
 
+## Examples
+
+The [nineteen Go examples](../../crates/edax-go/examples/README.md) follow the Python learning order.
+Each program checks its results. Run them after building the native library:
+
+```sh
+mise run examples:go
+```
+
+The task uses the race detector and runs the contract-kit example as a Go test. Examples 16 and 17
+use memory by default. Set `EDAX_REDIS_URL` or `EDAX_KAFKA_BOOTSTRAP` to exercise a real backend.
+
 ## API map
 
 | Concern | Go API | Shared contract |

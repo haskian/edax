@@ -130,10 +130,10 @@ different command and the guard raises `PayloadMismatch`. The guard claims the k
 mismatch, so a Rust service that shares the store reaches the same verdict. A retry re-runs a whole
 unit of work, never a handler inside one, so `retry` goes outside a guard given `unit_of_work`.
 
-Nineteen runnable examples, one idea each, go on from here in learning order. The
-[examples README](examples/py/README.md) lists them, from `01_command_bus.py` to
-`19_fault_injection.py`. Each one ends in asserts, so a clean exit is the test. Continuous
-integration (CI) runs them all.
+Python and Go each have nineteen examples in the same learning order. The
+[Python examples](examples/py/README.md) and [Go examples](crates/edax-go/examples/README.md)
+cover commands through fault injection. Each example checks its results. Continuous integration
+(CI) smoke-tests both sets, including Redis and Kafka against real services.
 
 ## Documentation
 
@@ -165,7 +165,8 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `crates/edax-abi-ffi` | Alef-generated C interface used by Go; no independent consistency logic |
 | `crates/edax-go` | Go SDK, with generated native calls under `internal/native` |
-| `examples/py` | nineteen runnable examples in learning order; start at its [README](examples/py/README.md) |
+| `examples/py` | nineteen Python examples in learning order; start at its [README](examples/py/README.md) |
+| `crates/edax-go/examples` | the same nineteen topics in Go; start at its [README](crates/edax-go/examples/README.md) |
 | `docs` | the full documentation set. Start at [`docs/README.md`](docs/README.md) |
 | `testdata/golden` | cross-language consistency vectors |
 

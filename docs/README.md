@@ -82,7 +82,7 @@ flowchart LR
 | [Getting started](guides/getting-started.md) | build it, then wire one command end to end |
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
-| [Examples](guides/examples.md) | the nineteen runnable examples in `examples/py`, in learning order |
+| [Examples](guides/examples.md) | nineteen topics in Python and Go, in learning order |
 | [Multi-tenancy](guides/multi-tenancy.md) | silo, pool and bridge mapped onto the seams, and what is not enforced |
 
 ## Three things to know before you build
@@ -99,4 +99,4 @@ flowchart LR
 
 - [`README.md`](../README.md) — the project overview and quickstart.
 - [`AGENTS.md`](../AGENTS.md) — operational rules for working in this repository.
-- [`examples/py`](../examples/py/README.md) — nineteen runnable examples, one idea each, each ending in asserts.
+- [Python examples](../examples/py/README.md) and [Go examples](../crates/edax-go/examples/README.md) — nineteen topics in each language, with result checks.

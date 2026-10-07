@@ -289,8 +289,13 @@ mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 # Python SDK; layer 1's Python half plus the Python halves of layers 2 and 3
 crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
 
-# the examples: every one ends in asserts, so a clean exit is the test
-for f in examples/py/*.py; do crates/edax-py/.venv/bin/python "$f" || break; done
+# Go SDK; rebuild the native library before testing
+mise run go:build
+mise exec -- go -C crates/edax-go test -race ./...
+
+# Both sets of examples, including their result checks
+mise run examples:python
+mise run examples:go
 ```
 
 `pytest` does not rebuild `_edax`. Read [the stale native module
@@ -304,6 +309,8 @@ flowchart TB
     CI --> B["ci.yml: job binding, alef freshness"]
     CI -->|"workflow_call, Python 3.10 and 3.13"| PL["python.yml: job lint"]
     CI -->|"workflow_call, Python 3.10 and 3.13"| PT["python.yml: job test"]
+    CI -->|"workflow_call, Linux and macOS"| GT["go.yml: job test"]
+    CI -->|"workflow_call, Linux"| GL["go.yml: job live-examples"]
 
     R -->|"1"| R1["cargo clippy --workspace --all-targets -- -D warnings"]
     R1 -->|"2"| R2["cargo test --workspace, golden vectors included"]
@@ -318,7 +325,10 @@ flowchart TB
     T1 -->|"2"| T2["maturin develop --release"]
     T2 -->|"3"| T3["stubtest: _edax.pyi against the built module"]
     T3 -->|"4"| T4["pytest crates/edax-py/tests -q"]
-    T4 -->|"5"| T5["run every file in examples/py"]
+    T4 -->|"5"| T5["mise run examples:python"]
+    GT --> G1["build native library, Go race tests, vet"]
+    G1 --> G2["mise run examples:go, then format check"]
+    GL --> G3["build native library, run examples 16 and 17 against Redis and Kafka"]
 ```
 
 The jobs run concurrently; the steps inside each are ordered. `lint` runs beside `test` rather than
@@ -334,4 +344,4 @@ gating it, so a style error does not wait on a release build of the kernel. In `
   proves.
 - [./getting-started.md](./getting-started.md) — the build order, and the stale native module trap.
 - [../backends/README.md](../backends/README.md) — the seam contracts a reusable suite checks.
-- [./examples.md](./examples.md) — `examples/py`, which continuous integration (CI) runs as tests.
+- [./examples.md](./examples.md) — Python and Go examples, which CI smoke-tests.

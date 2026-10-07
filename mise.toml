@@ -81,6 +81,47 @@ run = '''
 exec python3 .mise/lib/doclint.py "$@"
 '''
 
+[tasks."examples:go"]
+description = "Smoke-test all Go examples, or selected numbered directories, with the race detector"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+source .mise/lib/examples.sh
+examples=("$@")
+if [ "$#" -eq 0 ]; then
+  examples=(crates/edax-go/examples/[0-9][0-9]_*)
+fi
+for example in "${examples[@]}"; do
+  name=${example%/}
+  name=${name##*/}
+  [ -d "crates/edax-go/examples/$name" ] || { echo "FAILED: no Go example named $name" >&2; exit 1; }
+  echo "--- Go: $name"
+  if [ -f "crates/edax-go/examples/$name/main.go" ]; then
+    run_example "$name" go -C crates/edax-go run -race "./examples/$name"
+  else
+    go -C crates/edax-go test -race -count=1 -v "./examples/$name"
+  fi
+done
+'''
+
+[tasks."examples:python"]
+description = "Smoke-test all Python examples, or selected numbered filenames, using the SDK venv"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+source .mise/lib/examples.sh
+examples=("$@")
+if [ "$#" -eq 0 ]; then
+  examples=(examples/py/[0-9][0-9]_*.py)
+fi
+for example in "${examples[@]}"; do
+  name=${example##*/}
+  [ -f "examples/py/$name" ] || { echo "FAILED: no Python example named $name" >&2; exit 1; }
+  echo "--- Python: $name"
+  run_example "$name" crates/edax-py/.venv/bin/python "examples/py/$name"
+done
+'''
+
 [tasks."version:check-go"]
 # The release workflow captures stdout as a git tag. Never prefix it with a task label.
 raw = true

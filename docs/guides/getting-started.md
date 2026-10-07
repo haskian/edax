@@ -351,7 +351,7 @@ languages, it belongs in a kernel with a golden vector (`AGENTS.md`).
 
 ## See also
 
-- [./examples.md](./examples.md) — how the examples in `examples/py` run, and how CI checks them.
+- [./examples.md](./examples.md) — how the Python and Go examples run, and how CI checks them.
 - [./testing.md](./testing.md) — the three test layers and the commands to run them all.
 - [../kernels/golden-vectors.md](../kernels/golden-vectors.md) — the cross-language contract and how
   to regenerate it.
@@ -367,6 +367,8 @@ and run from the repository root, even when invoked inside a crate.
 | `mise run go:build` | Build and stage the native library for the local Go SDK |
 | `mise run bindings:generate` | Regenerate Python, C and Go bindings, including the internal Go facade |
 | `mise run bindings:go-facade` | Regenerate only the Go facade from existing alef output |
+| `mise run examples:go` | Smoke-test Go examples with the race detector |
+| `mise run examples:python` | Smoke-test Python examples with the SDK venv |
 | `mise run docs:lint` | Check documentation prose |
 | `mise run docs:lint -- --extract .doclint` | Extract marked Python examples for type checking |
 
