@@ -7,6 +7,7 @@ use crate::{CommandMessage, EventMessage, Payload};
 /// The write a saga step makes: `action` is one of [`saga_write_actions`] (`"nothing"`, `"save"` or
 /// `"complete"`), `expected` the version a save or complete is conditional on, and `version` the one it
 /// commits, which the step's command ids carry (both `None` for nothing). See [`edax_event::SagaWrite`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SagaWrite {
     pub action: String,
     pub expected: Option<u64>,
@@ -53,6 +54,7 @@ pub fn saga_write_actions() -> Vec<String> {
 /// `"completed"` (a tombstone), `"repeat"` (an event the instance folded), or `"below_mark"` (a
 /// sequence below the one the instance folded from its aggregate, assumed folded). See
 /// [`edax_event::SagaAdmit`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SagaAdmit {
     pub action: String,
     pub folded: Option<String>,

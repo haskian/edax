@@ -2,7 +2,7 @@
 
 How to plug your own database or broker into edax, and what each seam demands in return.
 
-No durable store ships; you bring one. Every seam is a `Protocol` in the Python software development
+No durable event, projection or saga store ships. You supply those database adapters. Every seam is a `Protocol` in the Python software development
 kit (SDK) and a trait in the Rust SDK. That docstring is the specification. This page indexes the
 seams and adds the checklist for writing one. A backend supplies the I/O and nothing else; the
 decisions stay in the [kernels](../kernels/README.md).

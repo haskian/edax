@@ -1,7 +1,8 @@
 name: Version
 
 # On push to main: a conventional-commit SemVer bump (cog) writes CHANGELOG.md and cuts the
-# tag, then the release runs for that tag. This workflow publishes nothing itself.
+# root and Go module tags, then release.yml runs for the root tag.
+# Source version tags are public; this workflow uploads no distribution artifacts.
 #
 # Requires main to accept pushes from github-actions[bot] — either a bot bypass on the branch
 # protection rule, or an unprotected main. Without it the bump commit cannot land and the job
@@ -43,9 +44,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # First run on a repo with no tags: anchor v0.0.0 at the root commit so the first
+          # First run on a repo with no root version tags: anchor v0.0.0 at the root commit so the first
           # real bump measures only the commits that followed it, not the whole history.
-          if [ -z "$(git tag)" ]; then
+          if [ -z "$(git tag --list 'v[0-9]*')" ]; then
             git tag v0.0.0 "$(git rev-list --max-parents=0 HEAD | tail -1)"
             git push origin v0.0.0
           fi
@@ -56,7 +57,7 @@ jobs:
           #
           # Subjects, because merges are squash-only: one commit on main is one PR title, the same
           # string the PR-title check verified. Merge commits carry no type of their own.
-          subjects="$(git log --no-merges --format=%s "$(git describe --tags --abbrev=0)..HEAD")"
+          subjects="$(git log --no-merges --format=%s "$(git describe --tags --match 'v[0-9]*' --abbrev=0)..HEAD")"
           marked='(\([^)]*\))?'    # optional scope, shared by all three so the grammar is written once
 
           # A `versionbump:` that forgot its `!` means a major was intended. Silently shipping
@@ -89,25 +90,26 @@ jobs:
             exit 0
           fi
           mise exec -- cog bump "$INCREMENT" --skip-ci
-          git push origin HEAD:main
-          git push origin --tags
+          version="$(mise exec -- cog get-version)"
+          tag="v$version"
+          go_tag="$(mise -q run version:check-go -- "$version")"
+          git tag "$go_tag" "refs/tags/$tag^{commit}"
+          # Publish the commit and both version names together, or publish none.
+          git push --atomic origin HEAD:main "refs/tags/$tag" "refs/tags/$go_tag"
           echo "released=true" >> "$GITHUB_OUTPUT"
-          echo "version=v$(mise exec -- cog get-version)" >> "$GITHUB_OUTPUT"
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
 
-  # Same jobs a manually pushed `v*` tag would run: CI, wheels, then PyPI behind the `pypi`
-  # environment. Called rather than triggered — see the note on release.yml's workflow_call.
+  # A dispatch creates a release.yml run on the tag. PyPI trusted publishing does
+  # not accept release.yml as the publisher when it runs through workflow_call.
   release:
     needs: bump
     if: needs.bump.outputs.released == 'true'
-    # A called workflow may only use what its caller grants. release.yml's publish job needs
-    # `id-token: write` for PyPI trusted publishing; without this grant GitHub rejects the
-    # whole run at validation, before any job starts.
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/release.yml
-    # The tag, not the branch: the called workflow inherits this job's SHA, which is the commit
-    # before the bump, and would otherwise build and publish the previous version's tree.
-    with:
-      ref: ${{ needs.bump.outputs.version }}
-    secrets: inherit
+      actions: write
+    steps:
+      - name: Start the release workflow on the tag
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.bump.outputs.version }}

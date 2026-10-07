@@ -28,7 +28,7 @@ flowchart LR
 | fold one event | `fn transition(&mut self, event: &Self::Event)` | `def transition(self, event) -> None` |
 | record a new event | `apply(event)`, one event | `apply(*events)`, any number |
 
-Both SDKs split the version in two on purpose. One half is what storage last said. The other half
+The Rust and Python SDKs split the version in two on purpose. One half is what storage last said. The other half
 counts what this instance applied since. Their sum is the version a save is about to write. The
 stored half is the `expected_version` that save compares against.
 
@@ -88,8 +88,8 @@ use. A `Decimal` is written as the kernel's canonical decimal text (`Decimal("9.
 aware `datetime` is written as fixed-width UTC text (`"2024-01-01T00:30:00.000000Z"`), in MessagePack
 too, never as a MessagePack timestamp. A naive `datetime` raises `CodecError`: its instant is unknown.
 A payload an earlier release stored, with `"9.50"` or a MessagePack timestamp, still reads as the same value. On read, a struct comes
-from a map only, at every depth: a positional array is a `CodecError` in both SDKs. A host value is
-read as strictly as it is written. A stored instant with no offset is a `CodecError` in both SDKs, and
+from a map only, at every depth: a positional array is a `CodecError` in the Rust and Python SDKs. A host value is
+read as strictly as it is written. A stored instant with no offset is a `CodecError` in the Rust and Python SDKs, and
 so is a decimal that is `NaN` or an infinity. `event_codec.json` pins both.
 
 Each event name has its own schema version, and its upcaster is the only place it is set. A name with
@@ -342,7 +342,7 @@ A snapshot is a cache, not a source of truth. Deleting every snapshot must leave
 with slower loads. So `load` folds the tail after the snapshot, and the append's rejection
 short-circuits the snapshot write.
 
-Both SDKs' `Repository.load` skip a snapshot they cannot use and replay from version 0. That happens
+The Rust and Python SDKs' `Repository.load` skip a snapshot they cannot use and replay from version 0. That happens
 when its `type_name` is not this codec's, as for another aggregate type under the same id. It also
 happens when the codec's `load` refuses its `data`, as after a `dump` format change.
 

@@ -12,7 +12,14 @@ __pycache__/
 *.pyd
 *.egg-info/
 dist/
-# `doclint.py --extract` writes the marked documentation snippets here for `ty` to check.
+# `mise run docs:lint -- --extract` writes the marked documentation snippets here for `ty` to check.
 .doclint/
 
 .cocoindex_code
+*.h.bak
+*.test
+# Alef's download scaffolds assume published Go native archives. Source builds use mise run go:build.
+/crates/edax-go/internal/native/cmd/
+/crates/edax-go/internal/native/generate.go
+/crates/edax-go/internal/native/native_setup.go
+/packages/go/

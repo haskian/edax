@@ -90,7 +90,7 @@ refused begin runs neither the body nor a rollback. A unit of work opened on a d
 one open on the thread is refused with `BadHandle` before it begins; `identity` decides which database.
 So `Repository::save` inside a host's body can never commit apart from the host. `save_in` joins instead.
 
-An `EventStore` is a `Transactor` in both SDKs. The simplest wiring therefore needs no separate
+An `EventStore` is a `Transactor` in the Rust and Python SDKs. The simplest wiring therefore needs no separate
 object. `async with transaction(store)` opens the store's own unit of work. A backend may also implement
 `Transactor` standalone and hand the same handle to every store, as `MemoryTransactor` does.
 
@@ -296,7 +296,7 @@ commit together over one `MemoryTransactor`.
 
 `BadHandle` is terminal. The same handle fails the same way on every retry. A transient verdict
 would have the dispatcher redeliver a wiring mistake forever. The Rust store refuses an unknown
-transaction token with the same code (`edax_memory::unknown_tx`), so both SDKs give a misrouted
+transaction token with the same code (`edax_memory::unknown_tx`), so the Rust and Python SDKs give a misrouted
 handle one verdict. See [errors.md](./errors.md).
 
 **Nesting is refused.** The SDK never opens a second unit of work inside an open one, and neither may

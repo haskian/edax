@@ -57,7 +57,9 @@ pub fn check_sequence_batch(expected: u64, sequences: Vec<Option<u64>>) -> Resul
 
 /// The batch a save appends: its drafts, the aggregate's version after it, and whether the save writes a
 /// snapshot at that version. See [`edax_event::DraftBatch`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DraftBatch {
+    #[serde(default)]
     pub drafts: Vec<EventDraft>,
     pub version: u64,
     pub snapshot: bool,
@@ -126,7 +128,18 @@ pub fn upcast_target(available: Option<Vec<u32>>) -> Result<u32, String> {
     edax_event::upcast_target(available.as_deref()).map_err(to_wire)
 }
 
+/// Preserve absent versus empty steps across generators that JSON-encode optional vectors.
+pub fn upcast_plan_present(from_version: u32, to: u32, present: bool, available: Vec<u32>) -> Result<Vec<u32>, String> {
+    upcast_plan(from_version, to, present.then_some(available))
+}
+
+/// The explicit presence bit keeps an absent upcaster distinct from an empty one.
+pub fn upcast_target_present(present: bool, available: Vec<u32>) -> Result<u32, String> {
+    upcast_target(present.then_some(available))
+}
+
 /// The two ids that place a message in its flow. See [`edax_event::Lineage`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Lineage {
     /// Constant across one logical flow.
     pub correlation_id: String,
@@ -173,6 +186,7 @@ pub fn check_extensions(extensions: HashMap<String, String>) -> Result<(), Strin
 
 /// What an event's idempotency guard claims: the key and the payload hash. See
 /// [`edax_event::event_idempotency`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventIdempotency {
     /// The event id under the guard's scope, composed with the event's tenant under a pool.
     pub key: String,
@@ -206,14 +220,17 @@ pub fn event_claim_key(mode: &str, scope: &str, event_id: &str, tenant: Option<S
 /// A marshaled payload: a name, a schema version, and the host-serialized `data`, an event's or a
 /// command's. What a host codec produces from a domain value; a saga hands its commands over in this
 /// shape. See [`edax_event::Payload`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Payload {
     pub name: String,
     pub version: u32,
+    #[serde(default)]
     pub data: Vec<u8>,
 }
 
 /// An event as a repository hands it to the store: every field of [`EventMessage`] but
 /// `recorded_at`, which the store assigns. See [`edax_event::EventDraft`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventDraft {
     /// Globally unique event id.
     pub id: String,
@@ -229,6 +246,7 @@ pub struct EventDraft {
     /// The payload schema version.
     pub version: u32,
     /// The host-serialized payload.
+    #[serde(default)]
     pub data: Vec<u8>,
     /// Constant across one logical flow.
     pub correlation_id: String,
@@ -237,14 +255,17 @@ pub struct EventDraft {
     /// When the fact happened, if the host knows it apart from when it was recorded.
     pub occurred_at: Option<i64>,
     /// Extension context, under the key rule of [`check_extensions`].
+    #[serde(default)]
     pub extensions: HashMap<String, String>,
     /// Application context, opaque to edax.
+    #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
 
-/// An event as stored, published and consumed. It crosses as a structured object: bytes stay
-/// bytes, dictionaries stay dictionaries, with no JSON or wire encoding in between. See
+/// An event as stored, published and consumed. Python receives a native record. Go uses the
+/// generated C interface and serde conversion. The SDK exposes byte slices and maps in both. See
 /// [`edax_event::EventMessage`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EventMessage {
     /// Globally unique event id: the causation id of anything this event causes.
     pub id: String,
@@ -260,6 +281,7 @@ pub struct EventMessage {
     /// The payload schema version.
     pub version: u32,
     /// The host-serialized payload.
+    #[serde(default)]
     pub data: Vec<u8>,
     /// Constant across one logical flow.
     pub correlation_id: String,
@@ -270,12 +292,15 @@ pub struct EventMessage {
     /// Unix nanoseconds on the store's clock when the store appended the event.
     pub recorded_at: i64,
     /// Extension context, under the key rule of [`check_extensions`].
+    #[serde(default)]
     pub extensions: HashMap<String, String>,
     /// Application context, opaque to edax.
+    #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
 
 /// A command as dispatched, queued and consumed. See [`edax_event::CommandMessage`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommandMessage {
     /// This message instance. A redelivery of the same message keeps it.
     pub id: String,
@@ -291,6 +316,7 @@ pub struct CommandMessage {
     /// The payload schema version.
     pub version: u32,
     /// The host-serialized payload.
+    #[serde(default)]
     pub data: Vec<u8>,
     /// Constant across one logical flow.
     pub correlation_id: String,
@@ -299,8 +325,10 @@ pub struct CommandMessage {
     /// Unix nanoseconds on the issuer's clock when the command was built.
     pub issued_at: i64,
     /// Extension context, under the key rule of [`check_extensions`].
+    #[serde(default)]
     pub extensions: HashMap<String, String>,
     /// Application context, opaque to edax.
+    #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
 
@@ -500,6 +528,19 @@ mod tests {
             upcast_target(Some(vec![1, 3])).unwrap_err(),
             "codec: upcast steps skip v2: a payload stored at v2 could never be raised"
         );
+    }
+
+    #[test]
+    fn explicit_upcast_presence_preserves_absent_and_empty() {
+        for available in [None, Some(vec![]), Some(vec![1, 2]), Some(vec![1, 3])] {
+            let present = available.is_some();
+            let steps = available.clone().unwrap_or_default();
+            assert_eq!(
+                upcast_plan_present(1, 3, present, steps.clone()),
+                upcast_plan(1, 3, available.clone())
+            );
+            assert_eq!(upcast_target_present(present, steps), upcast_target(available));
+        }
     }
 
     #[test]

@@ -1,11 +1,13 @@
 # SDK map
 
-What the software development kit (SDK) layer gives you, where each piece lives, and how far the two
-SDKs agree.
+The software development kits (SDKs) connect kernel decisions to persistence and transport.
+Their seams (`Protocol` in Python and traits in Rust) let you supply database and broker adapters.
+Python and Go provide memory, Redis-ledger and Kafka adapters. See the [Go API map](go.md). You supply durable event,
+projection and saga stores.
 
-The kernels own no I/O, so persistence and transport are the SDK's job. The SDK offers seams (a
-`Protocol` in Python, a trait in Rust) that you implement against your own database or broker, plus
-the orchestration over them. No durable store ships; you bring one.
+The pages below use Python method names and compare the Rust reference model where its behavior
+differs. The [Go guide](go.md) maps those contracts to Go interfaces and explains its context and
+lifetime rules.
 
 ## The whole pipeline
 
@@ -23,18 +25,21 @@ flowchart LR
     RT --> EH["your event handler"]
     EH --> PS["ProjectionStore<br/>save: compare-and-set"]
     RT --> SAGA["SagaRunner"]
-    SAGA -->|"emits commands"| BUS
+    SAGA -->|"stages commands with its state"| SO["saga outbox"]
+    SO --> REL
+    BR -->|"received commands"| BUS
 ```
 
-Everything on the write side of the broker can share one transaction. Everything past the broker is
-at-least-once, which is why the guard and the version compare-and-set exist.
+State changes and outbox rows can share one database transaction. The relay publishes after that
+transaction commits. Publishing and broker delivery are at-least-once. Idempotency guards remove
+duplicates within their retention window; version checks reject conflicting writes.
 
 ## Seams and the orchestration over them
 
 | Seam | Orchestration | Doc |
 |---|---|---|
 | `EventStore` | `Repository` loads from snapshot plus replay, saves pending events under optimistic concurrency | [aggregates](aggregates.md) |
-| `EventStore` (outbox half) | `Relay.drain` polls it, `pump` feeds it from change data capture | [outbox](outbox.md) |
+| `EventStore` (outbox half) | `Relay.drain` polls outbox rows; `pump` publishes a change-data-capture stream | [outbox](outbox.md) |
 | `IdempotencyStore` | `idempotent` and `idempotent_by_id`; in Rust also `idempotent_in` and `idempotent_by_id_in` | [idempotency](idempotency.md) |
 | `Transactor` | `transaction` and `current_tx`; in Rust `transaction` and `retry_transaction` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
@@ -117,4 +122,4 @@ promises: [delivery guarantees](../guides/delivery-guarantees.md).
 
 - [Architecture](../architecture.md) — why the kernel and SDK boundary sits where it does.
 - [Backends](../backends/README.md) — the seam contracts, and writing your own.
-- [Examples](../../examples/py/README.md) — nineteen runnable examples, one idea each, in learning order.
+- [Python examples](../../examples/py/README.md) and [Go examples](../../crates/edax-go/examples/README.md) — nineteen topics in the same learning order.

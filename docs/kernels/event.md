@@ -218,7 +218,7 @@ struct as a map and passes every other shape through, so a string payload still 
 Its one limit: a value serde buffers before it picks a type (an untagged or internally tagged enum,
 a `#[serde(flatten)]` field) reads its inner structs from that buffer. Trailing bytes are refused
 as for a message. `testdata/golden/event_codec.json` pins an array refused for a struct, at the top
-and nested, in both formats and both SDKs.
+and nested, in both formats and the Rust and Python SDKs.
 
 Reproducible bytes matter because two services in different languages hash, compare and store the
 same logical message. Suppose Python sorted `metadata` by insertion and Rust by key. One event
@@ -296,7 +296,7 @@ stateDiagram-v2
 Its expected message names step 1, not step 2. The plan fails on the earliest hole, not the nearest
 one. The vector also pins that `available` is a set: unsorted and repeated entries plan the same. A
 span of 2^32 versions fails at its second step without walking the span, and an identity span is an
-empty plan. Every error row carries the kernel's exact message, and both SDK suites compare it.
+empty plan. Every error row carries the kernel's exact message, and the Rust and Python suites compare it.
 
 ### Each event name has its own version
 
@@ -335,12 +335,12 @@ assert_eq!(edax_event::upcast_target(Some(&[1, 2]))?, 3);    // the name writes 
 assert!(edax_event::upcast_target(Some(&[1, 3])).is_err());  // a hole: no target
 ```
 
-Both SDKs wire this into their event codecs. Python's `RegistryCodec` and Rust's `RegistryCodec`
+The Rust and Python SDKs wire this into their event codecs. Python's `RegistryCodec` and Rust's `RegistryCodec`
 / `SerdeCodec` ask `upcast_target` for each name when they are built, and stamp that version on
 marshal. On unmarshal they ask `upcast_plan` before decoding, with the name's `Upcaster` steps or
 `None`, and no host-side version comparison. Every failure is deterministic, so each is a `codec`
 error: a broken chain fails the codec's construction, and a bad payload dead-letters on the first
-attempt instead of nacking forever. `Upcaster.step` (both SDKs) refuses a second transform for one
+attempt instead of nacking forever. `Upcaster.step` (the Rust and Python SDKs) refuses a second transform for one
 version as `already_registered`. A schema version is a `u32`. In Python, a negative or oversized step
 is refused at wiring: `Upcaster.step` raises `BadHandle`, before any message is stamped.
 
@@ -481,7 +481,7 @@ with it, so no SDK adds the one itself. A loaded version of `u64::MAX` has no ne
 `saga_write` returns a `codec` error.
 
 The commands go in the same write, to the saga outbox. `saga_command(saga, instance_id, version,
-index, cause, payload, issued_at)` builds each one as a `CommandMessage`, so both SDKs write the same
+index, cause, payload, issued_at)` builds each one as a `CommandMessage`, so the Rust and Python SDKs write the same
 row. `saga` is the saga's name. `cause` is a `Cause`: the folded event's `id`, `correlation_id` and
 `tenant`, built with `Cause::from(&event)`. The ABI takes the three flat, so a host builds no native
 object for them:
@@ -618,9 +618,9 @@ nack rewinds the partition and retires the queued copies (`OffsetTracker::is_liv
 dispatcher skips them. A consumer of your own must do the same (see
 [sdk/consuming.md](../sdk/consuming.md)).
 
-Neither SDK calls these for you: the host owns where the watermark per aggregate is stored, so it
-owns the check. Both SDKs surface them at their root — `edax.is_stale` and `edax.advance` in Python,
-`edax::is_stale` and `edax::advance` in Rust — so the call reads the same in either language. A
+The host stores each aggregate's watermark and decides when to check it. Python exports
+`edax.is_stale` and `edax.advance`; Rust exports `edax::is_stale` and `edax::advance`.
+Go exports `edax.IsStale` and `edax.Advance`. A
 projection keeps a `last_sequence` beside its read model. It reads that value and asks the kernel.
 It then applies the event and stores the advanced mark, or skips the event.
 

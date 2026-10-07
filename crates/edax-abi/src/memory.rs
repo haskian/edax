@@ -6,13 +6,16 @@ use crate::{claim_result, count};
 use crate::{tenancy_mode, to_wire, ClaimResult, CommandMessage, EventDraft, EventMessage};
 
 /// A stored snapshot as the event store holds it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotResult {
     pub type_name: String,
     pub version: u64,
+    #[serde(default)]
     pub data: Vec<u8>,
 }
 
 /// A stored read-model document and its version.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectionRow {
     pub version: u64,
     /// The document as JSON text: always an object.
@@ -21,6 +24,7 @@ pub struct ProjectionRow {
 
 /// A stored saga instance and its version: running with its state and the kernel's `folded` marks, or
 /// `completed` (a tombstone, whose `state_json` is `null` and whose `folded` is empty).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SagaRow {
     pub version: u64,
     pub completed: bool,
@@ -61,8 +65,8 @@ fn tx_of(raw: i64) -> edax_memory::Tx {
 /// commit. The journal itself lives in `edax-memory`, so the host SDK keeps no transaction state
 /// of its own: it holds the token across calls and hands it back.
 ///
-/// Events cross as structured [`EventMessage`] records and commands as [`CommandMessage`] records
-/// (no JSON or wire encoding at the boundary); snapshots cross as their raw `data` bytes; idempotency
+/// Events cross as [`EventMessage`] records and commands as [`CommandMessage`] records. Python uses
+/// native objects; Go uses the generated C interface with serde conversion. Snapshots carry bytes; idempotency
 /// records, documents, saga state and query specs cross as JSON text. `edax-memory` is typed (`u64`
 /// versions, JSON values, the kernel's query); the text is this boundary's shape, so the parsing
 /// happens here.
@@ -439,6 +443,7 @@ pub fn memory_transactor() -> MemoryTransactor {
 }
 
 /// One message a non-blocking poll fetched.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PollResult {
     /// The delivery token that settles this delivery through [`MemoryBroker::ack`] / [`MemoryBroker::nack`].
     pub token: i64,
@@ -1115,5 +1120,59 @@ mod tests {
             command_message(Some("invoice-7")),
             "polled command",
         );
+    }
+}
+
+// Alef 0.106.1's Go wrappers do not free optional record handles returned by methods.
+// These non-optional envelopes use its regular owned-return path. Python keeps the
+// original methods; the Go facade unwraps `value` after the generated call frees the envelope.
+
+/// A snapshot lookup whose outer record always has an owned native handle.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotLookup {
+    pub value: Option<SnapshotResult>,
+}
+
+/// A projection lookup whose outer record always has an owned native handle.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProjectionLookup {
+    pub value: Option<ProjectionRow>,
+}
+
+/// A saga lookup whose outer record always has an owned native handle.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SagaLookup {
+    pub value: Option<SagaRow>,
+}
+
+/// A broker poll whose outer record always has an owned native handle.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct PollLookup {
+    pub value: Option<PollResult>,
+}
+
+impl MemoryEventStore {
+    /// The ownership-safe C result shape of [`Self::load_snapshot`].
+    pub fn load_snapshot_result(&self, tx: i64, aggregate_id: &str) -> Result<SnapshotLookup, String> {
+        self.load_snapshot(tx, aggregate_id)
+            .map(|value| SnapshotLookup { value })
+    }
+}
+impl MemoryProjectionStore {
+    /// The ownership-safe C result shape of [`Self::get`].
+    pub fn get_result(&self, tx: i64, id: &str) -> Result<ProjectionLookup, String> {
+        self.get(tx, id).map(|value| ProjectionLookup { value })
+    }
+}
+impl MemorySagaStore {
+    /// The ownership-safe C result shape of [`Self::load`].
+    pub fn load_result(&self, tx: i64, saga: &str, id: &str) -> Result<SagaLookup, String> {
+        self.load(tx, saga, id).map(|value| SagaLookup { value })
+    }
+}
+impl MemoryBroker {
+    /// The ownership-safe C result shape of [`Self::try_poll`].
+    pub fn try_poll_result(&self, group: &str) -> Result<PollLookup, String> {
+        self.try_poll(group).map(|value| PollLookup { value })
     }
 }

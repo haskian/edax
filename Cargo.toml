@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-abi"]
+members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-abi", "crates/edax-abi-ffi"]
 # Its own workspace: it turns on serde_json features that must never reach the main build.
 exclude = ["crates/edax-cqrs/feature-check"]
 
@@ -8,7 +8,7 @@ exclude = ["crates/edax-cqrs/feature-check"]
 version = "0.6.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/crtomirmajer/edax"
+repository = "https://github.com/haskian/edax"
 
 # One no-panic posture for every crate the native binding links (each opts in with
 # `[lints] workspace = true`). PyO3 does catch a panic at the function boundary, but it surfaces as

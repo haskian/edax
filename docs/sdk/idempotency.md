@@ -24,7 +24,7 @@ Both paths share one orchestration. Python routes both through `guarded`; Rust r
 does with the result.
 
 **Command path.** The key is the client's intent: the `idempotency_key` of the command message, in
-both SDKs. It is given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
+the Rust and Python SDKs. It is given to `dispatch`, carried by a message `dispatch_message` runs, or the message's
 own `id` when it carries none (the kernel's `received_key`). The guard reads it, and the tenant, off
 the message its middleware receives, which runs as it was received. A message `dispatch` built with no
 key makes no claim, and the handler runs. The guard claims `claim_key(scope, key)`, so two guards with different scopes on one
@@ -51,8 +51,10 @@ completed event therefore returns nothing and skips silently. A command redelive
 winner's cached value.
 
 The seam is one Protocol in Python (`edax.idempotency.IdempotencyStore`) and one trait in Rust
-(`edax::IdempotencyStore<O>`, which carries the transaction handle type as `type Tx`). `joins_transaction`
-is Python-only; see [Rust parity](#rust-parity).
+(`edax::IdempotencyStore<O>`, which carries the transaction handle type as `type Tx`). Go exposes an
+`IdempotencyStore` interface and uses the optional `TransactionalStore` interface to identify a
+shared transaction. Python uses `joins_transaction`. See [Rust parity](#rust-parity) and the
+[Go API guide](go.md#commands-and-transactions).
 
 A won claim comes back with a claim handle: `Won(handle)` in Python, `Claim::Won(ClaimHandle)` in
 Rust. The guard passes it to `complete` and `release`, so a store whose claims can lapse settles a key
@@ -244,7 +246,7 @@ the handler's type. Every store reads it with the kernel's `decode_prior`, which
 `codec` failure. The guard replays it as `CachedFailure`, with `original_code` `codec` and a message
 that names the decode error (`codec: unreadable idempotency record: EOF while parsing ...`). The
 handler never runs again for the key, and the dispatcher dead-letters the message instead of
-redelivering it until the record expires. Both SDKs reach the same failure from the same bytes,
+redelivering it until the record expires. The Rust and Python SDKs reach the same failure from the same bytes,
 pinned by the `decode_error` rows of `idempotency_record.json`.
 
 The failure keeps the stored `payload_hash` when that one field still reads. Another command that
@@ -258,7 +260,7 @@ would delete a live claim another worker is still working under. Pinned by
 `test_losing_the_claim_never_releases_the_winners_key`.
 
 **The one pre-claim exception.** A `claim` that fails is not compensated, even though the insert
-may have landed and only its response been lost. Both SDKs' seams are fallible here (Python's
+may have landed and only its response been lost. The Rust and Python SDKs' seams are fallible here (Python's
 `claim` raises, Rust's returns `Result<Claim<O>, Error>`), and both guards propagate the store's own
 verdict without releasing. A failed claim returned no handle, so there is nothing to release with.
 An orphan pending record costs `InProgress` until the claim's retention expires.
@@ -348,7 +350,7 @@ Two broker-level guarantees sit over all of this, asserted in both modes:
 - A delivery that acks leaves a terminal record, and a redelivery inside the retention window
   replays it (`test_an_ack_keeps_the_claim_so_the_redelivery_is_skipped`).
 
-One property runs over random histories in both SDKs. A key that reads back as a completed success
+One property runs over random histories in the Rust and Python SDKs. A key that reads back as a completed success
 must have had its handler's write land at least once. Shared mode strengthens it to exactly one.
 Pinned by `test_a_done_record_never_covers_work_that_did_not_land` and its Rust twin,
 `a_done_record_never_covers_work_that_did_not_land`.
@@ -423,7 +425,8 @@ guarantees](../guides/delivery-guarantees.md) states what edax does and does not
 
 ## Rust parity
 
-`joins_transaction` and `unit_of_work=` are Python-only. Rust hosts publish a handle provider to
+Python uses `joins_transaction` and `unit_of_work=`. Go uses `TransactionalStore` and
+`IdempotentOptions.UnitOfWork` for the same two commit orderings. Rust hosts publish a handle provider to
 `idempotent_in` or `idempotent_by_id_in` instead. [Rust parity](./rust-parity.md) states the whole
 difference.
 

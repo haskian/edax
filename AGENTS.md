@@ -2,14 +2,17 @@
 
 Operational gotchas only — design lives in `README.md`.
 
-## Scope: Python-only
+## Scope: Python and Go
 
-Supported binding is **Python** (`crates/edax-py`). Kernels + reference Rust SDK (`crates/edax`) stay; Typehints are a must, use them everywhere.
-**no Go / C ABI / FFI** — don't reintroduce `edax-ffi`, `bindings/go`, `cbindgen`, `cgo`, or `*.h`.
+Bindings support **Python** (`crates/edax-py`) and **Go** (`crates/edax-go`).
+The kernels and reference Rust SDK (`crates/edax`) stay. Use type hints throughout Python.
+Alef generates the C interface (`crates/edax-abi-ffi`) and Go native package
+(`crates/edax-go/internal/native`) from `edax-abi`. Never hand-edit generated bindings or headers.
+Keep Go wrappers idiomatic. All consistency decisions still belong in the kernels.
 
 ## Toolchain via `mise`
 
-`cargo` / `maturin` / `uv` / `alef` aren't on `PATH` — prefix with `mise exec --` (run `mise install`
+`cargo` / `maturin` / `uv` / `alef` / `go` aren't on `PATH` — prefix with `mise exec --` (run `mise install`
 once on a fresh checkout; `mise trust` if it complains). `mise.toml` pins alef to the `alef_version` in
 `alef.toml` and installs its prebuilt GitHub release binary. Never switch it back to `cargo:alef`:
 two parallel `cargo:` builds race on the same rustup download and break `mise install`.
@@ -38,7 +41,7 @@ The Kafka suites run on the Kafka-shaped fake in `tests/conftest.py`. Set `EDAX_
 
 `crates/edax-py/src/lib.rs` and `crates/edax-py/python/edax/_edax.pyi` are **alef-generated** from
 `edax-abi` — never hand-edit them. Change `crates/edax-abi/src/` and run
-`scripts/regenerate_binding.sh`: it runs `alef generate --lang python --clean` and refreshes the
+`mise run bindings:generate`: it runs `alef generate --lang python,ffi,go --clean` and refreshes the
 shipped stub. Plain `alef generate` is destructive here — see `alef.toml`. CI regenerates and fails on
 any diff in those two files, and runs `mypy.stubtest` against the built module
 (`crates/edax-py/stubtest-allowlist.txt` lists alef's own conventions only). alef also rewrites
@@ -50,6 +53,25 @@ and the `.alef/` scaffold are not.
 `saga.rs`, `cqrs.rs`, `memory.rs`, `kafka.rs`, `redis.rs`), each declared with `mod` and re-exported with
 `pub use` from `lib.rs`, which keeps only the shared helpers. alef follows those declarations, but it
 fingerprints only the files `sources` in `alef.toml` lists: list a new module there too.
+
+Go's generated C interface is in `crates/edax-abi-ffi`; generated Go code is in
+`crates/edax-go/internal/native`. Edit `.mise/cmd/go-facade/` to change the internal kernel facade,
+then regenerate `crates/edax-go/internal/kernel/native.gen.go`. CI checks all these generated outputs, including the generated error and tenancy names.
+The root `kernel.go` exposes only the records and helpers used by the public SDK.
+The facade tool parses Go declarations with `go/parser`. The `edax-core` example `binding_names`
+exports error and tenancy names to it; do not parse Rust source or copy those name lists.
+Keep the ABI's explicit presence helpers for optional byte slices and upcast vectors: alef otherwise
+conflates absent and empty input. The result envelopes for optional method records let alef free
+their native handles; calling the original optional-return methods from Go leaks those handles.
+The facade discovers these cases from alef's IR. An optional slice requires a `<Function>Present`
+companion with `present bool` (or `<parameter>Present bool`) immediately before that slice.
+An optional record method requires a `<Method>Result` companion returning an envelope whose only
+field is `Value` with the original result type. Keep the other parameters and error result unchanged.
+The generator validates these signatures and rejects missing companions. Do not add method-name
+overrides to it. Multiple optional slices or combined presence/envelope cases need a convention
+before the generator can support them.
+Remove these workarounds only after upgrading alef and proving those cases still pass.
+`poly.toml` is repository-owned because alef hardcodes the wrong directory for its Go hook.
 
 ## Kernels are the source of truth
 
@@ -76,7 +98,7 @@ runtime helpers, `lock` and `TokenMint`, which no binding crosses and no golden 
 `edax-event` is event-driven: `message` (the messages, their `Payload` and the ordering key), `codec`,
 `causation`, `partition` (local fan-out), `staleness`, `idempotency` (the event guard's key and hash),
 `sequence` (and a save's `draft_batch`), `upcast`,
-and the orchestration decisions both SDKs make: `retry` (`Retries`, which every dispatcher performs, and
+and the orchestration decisions the SDKs make: `retry` (`Retries`, which every dispatcher performs, and
 `retry_step`), `drain` (the relay's `Drain`) and `saga` (`saga_admit`, `saga_write`, `saga_command_id`).
 `edax-cqrs` is both halves of its name: the command side's `canonical_json`, `command_hash`,
 `received_key`, `claim_key` and the idempotency `record` (the claimant's `outcome` and `replay`, the
@@ -86,7 +108,7 @@ Lua replays it from `idempotency_fence.json`), the host values `Decimal` and `In
 the state machine. Filter and query live together because both read documents through one value model
 and one collation (the crate-private `value` and `collation` modules) — never split them across crates.
 
-**One kernel crate per technology.** A Kafka or Redis decision two SDKs must match belongs in
+**One kernel crate per technology.** A Kafka or Redis decision all SDKs must match belongs in
 `edax-kafka` or `edax-redis` with a golden vector, never in the Python adapter. `edax-kafka` owns
 `record` (the record key, header, media-type route and dead-letter record), `partition`
 (`partition_for`), `offsets` (the offset watermark and the revoke) and `client` (`check_config`,
@@ -97,8 +119,9 @@ calls the client and the kernel, and decides nothing on its own.
 
 `#[non_exhaustive]` goes on a kernel enum a host only *reads* — one whose new variant a host may
 refuse at runtime (`Format`, `Operator`). It stays **off** an enum whose every variant a host must
-decide about, so a new one is a compile error in every SDK instead of a wildcard's silent default
-(`ErrorCode`).
+decide about (`ErrorCode`), so Rust consumers must handle each variant explicitly.
+Go cannot enforce exhaustive switches. Generate its error and tenancy constants from the compiled Rust
+kernel name lists, check them against the native names, and reject unknown orchestration decisions.
 
 **One error type.** Every kernel function fails with `edax_core::Error { code, message }` — never a
 bare `String`, never a crate-local error enum — so the code (and with it the terminal / transient
@@ -108,12 +131,12 @@ Rust SDK re-exports it as `edax::Error`; the default verdict for a failure with 
 
 ## Binding responsibilities
 
-Binding crate = `edax-abi` + generated `_edax`. SDK = `python/edax/`, which owns orchestration (`CommandBus` +
+Binding crates = `edax-abi` + generated `_edax` and `edax-abi-ffi`. SDKs = `python/edax/` and `crates/edax-go`, which own orchestration (`CommandBus` +
 `retry`/`idempotent` middleware, `EventRouter` + `idempotent_by_id`, dispatcher, `Saga`, store/transactor seams).
 
 Binding crate does **ONLY**: type conversion (Rust ↔ Python), error → exception, Python-idiomatic
-config/builders. It has no async-runtime integration: every `edax-abi` method is synchronous, so alef
-links no tokio and no `pyo3-async-runtimes`. Never put `async fn` on the ABI: the generated wrapper
+config/builders. Every `edax-abi` method is synchronous. Python links no tokio or `pyo3-async-runtimes`.
+Alef's generated C crate declares tokio as scaffold infrastructure; no edax ABI call starts async work. Never put `async fn` on the ABI: the generated wrapper
 spawns it on a runtime thread, where it starts at once and a cancelled `await` cannot stop it. The
 SDK's async store views await nothing of the native call.
 
@@ -153,13 +176,15 @@ to parse, so `versionbump` is registered in `cog.toml` instead.
 
 There is **no version literal in `crates/edax-py/pyproject.toml`** — it declares `dynamic =
 ["version"]` and maturin reads the Cargo version. Nothing reads the git tag at build time; the tag
-and the wheel agree only because `cog` runs `scripts/set_version.py` *before* it tags. So never hand-
+and the wheel agree only because `cog` runs `mise run version:set` *before* it tags. So never hand-
 edit a version: run the bump. A hand-pushed tag builds a wheel carrying the old version, which the
 release's `version` job refuses before it builds anything.
 
 ## Before you finish
 
-Run **both** the kernel tests and the Python tests — `cargo test` alone misses binding regressions.
+Run the kernel, Python and Go tests. `cargo test` alone misses binding regressions.
+Build Go with `mise run go:build`, then run `mise exec -- go test -race ./...` from `crates/edax-go`.
+The static native library must be rebuilt after an ABI or kernel change.
 
 `pytest` does **not** rebuild the native module. After any change under `edax-core`, `edax-event`,
 `edax-cqrs`, `edax-memory`, `edax-kafka`, `edax-redis` or `edax-abi`, run `maturin develop` first or

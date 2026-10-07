@@ -51,7 +51,7 @@ worker index = partition(ordering_key(message), workers)
 
 The [ordering key](../kernels/event.md#the-ordering-key) is the kernel's. `partition` is the
 kernel's bucket function, `fnv1a32(key) % n`. It is pure and stable, so the same aggregate id always
-lands on the same worker for the life of the dispatcher. Both SDKs refuse zero workers at
+lands on the same worker for the life of the dispatcher. The Rust and Python SDKs refuse zero workers at
 construction.
 
 **The ordering guarantee.** All events carrying one aggregate id run on one worker, one at a
@@ -106,7 +106,7 @@ per-key order.
 Why the Python worker clears the ambient transaction:
 [transactions](./transactions.md#boundary-rules).
 
-Both SDKs take a `Delivery` only. A bare message would have nothing to settle it, so a handler
+The Rust and Python SDKs take a `Delivery` only. A bare message would have nothing to settle it, so a handler
 failure would reach no ack, nack or sink. Python refuses one with `BadHandle`; in Rust it does not
 compile. A test that watches only the handler submits `edax.testing.delivery(msg)`, a delivery whose
 settlement does nothing.
@@ -216,7 +216,7 @@ sequenceDiagram
 
 By default a raising handler nacks and the broker redelivers forever. Two settings bound that:
 `max_attempts` and `on_dead`. The rule below is the kernel's (`edax_event::Retries`, pinned by
-`testdata/golden/retries.json`). Both SDKs' dispatchers, and both `Relay`s, perform its answers, so
+`testdata/golden/retries.json`). The Rust and Python SDKs' dispatchers, and both `Relay`s, perform its answers, so
 two services consuming one topic dead-letter the same message at the same attempt. `max_attempts` is
 an unsigned 32-bit count; the Python dispatcher and `Relay` refuse any other value with `BadHandle`
 when they are built.
@@ -277,9 +277,9 @@ error. Once the dispatcher has stopped, the sink is never called again: each poi
 An ack that fails after the sink took the record is reported through `Observer.settlement_failed`, and
 the outcome is `unsettled`, as on the handler path.
 
-Both SDKs hand every sink one `DeadLetter`: the dispatcher's sink and the relay's. It carries the
+The Rust and Python SDKs hand every sink one `DeadLetter`: the dispatcher's sink and the relay's. It carries the
 `message` that died, the `attempt` that killed it as the kernel counts it, and the `failure`, one name
-in both SDKs. In Python `origin` is the transport's record (`Delivery.origin`) for a sink that
+in the Rust and Python SDKs. In Python `origin` is the transport's record (`Delivery.origin`) for a sink that
 republishes it. A dispatcher's `message` is the handler's message, or the `Undecodable` poison. A
 relay's is the outbox row. In Rust a dispatcher's `failure` is a `HandlerFailure::Error` or a
 `HandlerFailure::Panic` carrying the unwind payload. A relay's sink borrows the row and the error,

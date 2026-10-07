@@ -13,7 +13,128 @@ uv = "latest"
 # version `alef.toml` declares, so a regeneration here matches CI's freshness check. It comes from
 # the prebuilt GitHub release binary. A `cargo:` install compiles it beside maturin, and the two
 # parallel builds race on the same rustup download, which broke CI setup.
-"github:xberg-io/alef" = "0.103.12"
+"github:xberg-io/alef" = "0.106.1"
+go = "1.26.5"
 "aqua:cocogitto/cocogitto" = "7.0.0"  # `cog`: conventional-commit version bumps in CI
 "aqua:astral-sh/ruff" = "0.16.7"
 "aqua:astral-sh/ty" = "0.0.80"
+
+[tasks."go:build"]
+description = "Build the Rust native library for the local Go SDK"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+os=$(go env GOOS)
+arch=$(go env GOARCH)
+if [ "$os" != "$(go env GOHOSTOS)" ] || [ "$arch" != "$(go env GOHOSTARCH)" ]; then
+  echo "go:build builds for the host only; unset GOOS and GOARCH for cross targets." >&2
+  exit 1
+fi
+case "$os/$arch" in
+  darwin/arm64) platform=macos-arm64 ;;
+  darwin/amd64) platform=macos-x86_64 ;;
+  linux/arm64) platform=linux-aarch64 ;;
+  linux/amd64) platform=linux-x86_64 ;;
+  *) echo "Unsupported Go native target: $os/$arch" >&2; exit 1 ;;
+esac
+native_target=$(rustc -vV | sed -n 's/^host: //p')
+cargo build -p edax-abi-ffi --release --target "$native_target"
+destination="crates/edax-go/internal/native/.lib/$platform"
+mkdir -p "$destination"
+cp "${CARGO_TARGET_DIR:-target}/$native_target/release/libedax_abi_ffi.a" "$destination/"
+'''
+
+[tasks."bindings:generate"]
+description = "Regenerate Python, C and Go bindings and the internal Go facade"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+alef generate --lang python,ffi,go --clean
+mise run bindings:go-facade
+
+shipped=crates/edax-py/python/edax/_edax.pyi
+{
+  cat <<'HEADER'
+# Committed type stub for the alef-generated `_edax` extension (PEP 561, beside `_edax.abi3.so`
+# + `py.typed`). Gives the message records their field types; the native classes have none.
+# Copy of `crates/edax-py/.alef/_edax.pyi` with the alef header stripped so alef cleanup leaves it.
+# Never edit by hand: regenerate with `mise run bindings:generate`.
+
+HEADER
+  tail -n +6 crates/edax-py/.alef/_edax.pyi
+} > "$shipped.tmp"
+mv "$shipped.tmp" "$shipped"
+'''
+
+[tasks."bindings:go-facade"]
+description = "Generate safe Go handles and taxonomy constants from alef output"
+run = '''
+#!/usr/bin/env bash
+exec go -C .mise run ./cmd/go-facade -root .. "$@"
+'''
+
+[tasks."docs:lint"]
+description = "Check documentation prose, or extract marked Python snippets with --extract DIR"
+run = '''
+#!/usr/bin/env bash
+exec python3 .mise/lib/doclint.py "$@"
+'''
+
+[tasks."examples:go"]
+description = "Smoke-test all Go examples, or selected numbered directories, with the race detector"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+source .mise/lib/examples.sh
+examples=("$@")
+if [ "$#" -eq 0 ]; then
+  examples=(crates/edax-go/examples/[0-9][0-9]_*)
+fi
+for example in "${examples[@]}"; do
+  name=${example%/}
+  name=${name##*/}
+  [ -d "crates/edax-go/examples/$name" ] || { echo "FAILED: no Go example named $name" >&2; exit 1; }
+  echo "--- Go: $name"
+  if [ -f "crates/edax-go/examples/$name/main.go" ]; then
+    run_example "$name" go -C crates/edax-go run -race "./examples/$name"
+  else
+    go -C crates/edax-go test -race -count=1 -v "./examples/$name"
+  fi
+done
+'''
+
+[tasks."examples:python"]
+description = "Smoke-test all Python examples, or selected numbered filenames, using the SDK venv"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+source .mise/lib/examples.sh
+examples=("$@")
+if [ "$#" -eq 0 ]; then
+  examples=(examples/py/[0-9][0-9]_*.py)
+fi
+for example in "${examples[@]}"; do
+  name=${example##*/}
+  [ -f "examples/py/$name" ] || { echo "FAILED: no Python example named $name" >&2; exit 1; }
+  echo "--- Python: $name"
+  run_example "$name" crates/edax-py/.venv/bin/python "examples/py/$name"
+done
+'''
+
+[tasks."version:check-go"]
+# The release workflow captures stdout as a git tag. Never prefix it with a task label.
+raw = true
+quiet = true
+description = "Validate a release VERSION against the Go module path and print its tag"
+run = '''
+#!/usr/bin/env bash
+exec go -C .mise run ./cmd/check-go-version -root .. "$@"
+'''
+
+[tasks."version:set"]
+description = "Write a release VERSION to Cargo manifests; called by cog before tagging"
+run = '''
+#!/usr/bin/env bash
+exec python3 .mise/lib/set_version.py "$@"
+'''

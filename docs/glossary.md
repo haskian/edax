@@ -5,9 +5,10 @@ exactly this.
 
 ## Layers
 
-**Kernel** — a pure Rust crate that decides something every service must agree on, bit for bit.
-`edax-core`, `edax-event`, `edax-cqrs`, plus the per-technology `edax-kafka` and `edax-redis`. No
-I/O, no threads, no callbacks, synchronous. See [kernels](kernels/README.md).
+**Kernel** — a synchronous Rust crate that defines shared decisions across languages and processes.
+The kernels are `edax-core`, `edax-event`, `edax-cqrs`, `edax-kafka` and `edax-redis`. They call no
+database or broker client. Clock and identifier generation have explicit nondeterministic
+exceptions. See [kernels](kernels/README.md).
 
 **Protocol module** — a kernel crate named `edax-<tech>` that owns one technology's shared
 decisions: its bytes, its names and its state machines. `edax-kafka` and `edax-redis` are the two
@@ -17,21 +18,21 @@ that ship. It links no client library.
 decides nothing in between. `edax.backend.kafka` and `edax.backend.redis` are the two Python ones.
 
 **SDK** — software development kit, the per-language layer that wires the kernels to a host's
-storage and transports. `crates/edax` (Rust) and `crates/edax-py/python/edax` (Python). The SDK
-wires; the kernel decides.
+storage and transports: `crates/edax` (Rust reference model), `crates/edax-py/python/edax` (Python)
+and `crates/edax-go` (Go).
 
 **ABI** — application binary interface. `crates/edax-abi`, a flat Rust surface over the kernels. The
-Python native module is generated from it. See [architecture](architecture.md).
+Python native module and Go C binding are generated from it. See [architecture](architecture.md).
 
-**Seam** — a `Protocol` (Python) or trait (Rust) a host implements against its own database or
+**Seam** — a `Protocol` (Python), interface (Go) or trait (Rust) a host implements against its own database or
 broker: `EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Transactor`, `Producer`,
 `Consumer`. Its docstring is the specification.
 
 **Backend** — a concrete implementation of one or more seams. Three ship: `memory`, `redis`,
 `kafka`. See [backends](backends/README.md).
 
-**Golden vector** — a JSON file under `testdata/golden/` generated from a kernel and asserted by
-every SDK's test suite. A golden vector always wins over a disagreeing test. See [golden
+**Golden vector** — a JSON file under `testdata/golden/` generated from a kernel and replayed by
+the kernel and SDK tests. A golden vector always wins over a disagreeing test. See [golden
 vectors](kernels/golden-vectors.md).
 
 ## Write side
@@ -84,8 +85,8 @@ commands it sends over in it. Not a wire type of its own.
 **Extensions** — a string map for edax extensions, such as a W3C `traceparent`. A key outside the
 kernel's [extension key rule](kernels/event.md#three-tiers-of-fields) raises `CodecError`.
 
-**Metadata** — a string map that belongs to the application. edax never reads it. Tenancy lives
-here too.
+**Metadata** — a string map that belongs to the application. edax never reads it. Tenancy is a
+separate typed message field.
 
 **Broker facts** — the offset, partition and broker time of a delivery. They never enter a message.
 A transport reports them beside the message, as `KafkaFetched` does.
@@ -222,8 +223,9 @@ commits.
 selects a dispatcher worker, so one aggregate stays ordered while other aggregates run in parallel.
 Broker placement is a separate decision: `edax-kafka`'s `partition_for` uses Kafka's murmur2 rule.
 
-**Settle** — to finish a delivery with `ack` or `nack`. Every delivery is settled exactly once.
-`ack` settles only that message; `nack` redelivers.
+**Settle** — to finish a delivery with `ack` or `nack`. A delivery is settled at most once.
+Retired deliveries are skipped. A failed settlement may leave a delivery unsettled until the
+broker recovers it. `ack` settles that message; `nack` requests redelivery.
 
 **Dead-letter** — where a terminal failure, or one that exhausted its attempt budget, is sent.
 

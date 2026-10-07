@@ -8,21 +8,27 @@ use crate::{error_code, tenancy_mode, to_wire, CommandMessage, EventMessage};
 /// One Kafka record header. The value crosses as bytes and not text: a foreign header on the same
 /// topic may carry anything, and the boundary hands it back unchanged rather than lose it. See
 /// [`edax_kafka::KafkaHeader`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KafkaHeader {
     /// The header name, as the client hands it over.
     pub key: String,
     /// The header value, uninterpreted.
+    #[serde(default)]
     pub value: Vec<u8>,
 }
 
 /// One Kafka record, minus the client's own coordinates (topic, partition, offset), which stay with
 /// the host's IO shell. See [`edax_kafka::KafkaRecord`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KafkaRecord {
     /// The partitioning key: the message's ordering key, or the host's override. UTF-8 bytes.
+    #[serde(default)]
     pub key: Vec<u8>,
     /// The encoded message.
+    #[serde(default)]
     pub value: Vec<u8>,
     /// The contract headers, in the order the kernel writes them.
+    #[serde(default)]
     pub headers: Vec<KafkaHeader>,
 }
 
@@ -107,6 +113,7 @@ pub fn kafka_command_record(
 /// host passed; `unknown` carries a readable media type nobody registered, the empty one included;
 /// `headerless` is a record with no readable content type under a command default. The last two are
 /// poison.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KafkaRoute {
     /// The index of the matching media type in the host's registered list.
     pub registered: Option<u32>,
@@ -253,6 +260,7 @@ pub fn kafka_broker_error(error_code: i64, message: &str) -> String {
 }
 
 /// What [`OffsetTracker::nack`] tells the host to do. See [`edax_kafka::NackDecision`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct NackDecision {
     /// The offset to seek the partition back to — the lowest still in flight — or `None` when the
     /// token is stale or unknown and there is nothing to do.
@@ -260,6 +268,7 @@ pub struct NackDecision {
 }
 
 /// One partition's watermark that is due for a commit. See [`edax_kafka::Due`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct KafkaDue {
     pub topic: String,
     pub partition: i32,
@@ -278,6 +287,7 @@ impl From<edax_kafka::Due> for KafkaDue {
 }
 
 /// One partition's bookkeeping, for a health check or a gauge.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct PartitionStats {
     /// The topic this partition belongs to.
     pub topic: String,
@@ -656,5 +666,20 @@ mod tests {
 
         tracker.reset("orders", 0);
         assert!(tracker.stats().is_empty(), "a revoked partition leaves no row behind");
+    }
+}
+
+/// A revoked watermark with an owned outer record for Go's generated return conversion.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct KafkaRevoked {
+    pub value: Option<KafkaDue>,
+}
+
+impl OffsetTracker {
+    /// The ownership-safe C result shape of [`Self::revoke`].
+    pub fn revoke_result(&self, topic: &str, partition: i32) -> KafkaRevoked {
+        KafkaRevoked {
+            value: self.revoke(topic, partition),
+        }
     }
 }

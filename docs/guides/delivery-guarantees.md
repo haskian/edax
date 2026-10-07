@@ -3,9 +3,10 @@
 What guarantee holds at every hop from a caller's request to a read model. What makes each one hold.
 What a host must do to claim effectively-once for its own database state.
 
-Nothing in this pipeline is exactly-once, and `edax` never promises it. Each hop is either atomic
-(one transaction) or at-least-once with something downstream that removes the duplicate. Every
-duplicate is detectable, and detection is a kernel decision, so two services reach the same verdict.
+edax does not promise exactly-once delivery. Database writes can be atomic within one transaction.
+Publishing and broker delivery are at-least-once. Consumers must deduplicate repeated messages.
+The kernel defines the duplicate verdict; a guard can recognize a duplicate only while its record
+remains in the ledger.
 
 ```mermaid
 flowchart LR
@@ -33,7 +34,8 @@ flowchart LR
 
 ### `CommandBus` to handler
 
-- Delivery: exactly one handler per command type. `retry` re-runs a whole unit of work.
+- Routing: one registered handler per command type. A retry can invoke that handler again.
+  With the wiring below, `retry` re-runs the whole unit of work.
 - Safe because `retry` sits outside a guard given `unit_of_work`, so a failed attempt rolls back
   its claim and its writes together.
 - The next attempt claims again in a fresh unit of work, from committed state.
@@ -208,8 +210,8 @@ The guard's own claim/complete/release orderings and every failure window inside
    participants. Events, snapshot, outbox rows, projection write and the idempotency record commit
    as one set or roll back as one set. This is the only place edax gets effectively-once.
 2. **A database and a broker cannot be atomic.** The transactional Outbox exists for that reason. The row is written inside the database transaction. A separate `Relay` publishes it
-   afterwards. Publishing from inside the handler instead loses events on a rollback and invents
-   them on a failed commit.
+   afterwards. Publishing before commit can expose an event for state that later rolls back.
+   Publishing after commit without an outbox can lose the event if the process stops between the two writes.
 3. **Two databases cannot be atomic without a distributed transaction, and edax does not use one.**
    No two-phase commit, no eXtended Architecture (XA). A ledger in Redis beside business state in
    your own database is two independent commits; no ordering makes them one. That mode is
@@ -307,8 +309,9 @@ Also at-least-once by construction, whatever the host does:
   `split_lost_commit_response_releases_a_claim_over_work_that_landed_so_it_runs_twice` in
   `test_unit_of_work.py` asserts it.
 
-Each of those is caught downstream by a claim or by `is_stale`. None of them is removed at the
-source, because none of them can be.
+A downstream claim can remove these duplicates while its record remains in the ledger.
+`is_stale` only rejects sequences below the stored watermark; it does not deduplicate equal
+sequences or unsequenced messages. External effects still need their own idempotency contract.
 
 ## See also
 

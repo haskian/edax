@@ -123,6 +123,7 @@ pub fn idempotency_outcomes() -> Vec<String> {
 /// `"done"`; `error` is set only for `"failed"`, and `error_code` beside it when the failure was
 /// stored with a code the kernel knows; `result_json` (the cached result as JSON text) is set only for
 /// `"done"`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyRecord {
     pub payload_hash: u64,
     pub state: String,
@@ -243,6 +244,7 @@ pub fn idempotency_settle_failure(
 /// What a claimant that lost the claim on `key` reads from the winner's record: `outcome` is one of
 /// [`idempotency_outcomes`], and `error` the wire form of the error the claimant fails with, `None` for
 /// `"succeeded"` (replay the cached result).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyReplay {
     pub outcome: String,
     pub error: Option<String>,
@@ -276,6 +278,7 @@ pub fn idempotency_replay(
 /// [`redis_claim_outcome`](crate::redis_claim_outcome)), flattened from [`edax_cqrs::Claimed`]: `won` with the `handle` that settles
 /// the claim, or else the `prior` record JSON holding the key. One struct rather than a union, which the
 /// boundary cannot carry.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClaimResult {
     pub won: bool,
     pub handle: Option<Vec<u8>>,

@@ -25,6 +25,9 @@ crates/edax-py/.venv/bin/python examples/py/01_command_bus.py
 `maturin develop` is not optional there. Read [the stale native module
 trap](../../docs/guides/getting-started.md#the-stale-native-module-trap).
 
+Smoke-test every file with `mise run examples:python` from the repository root.
+The [Go examples](../../crates/edax-go/examples/README.md) cover the same nineteen topics.
+
 ## Learning order
 
 | File | What you learn | Key API | Read next |

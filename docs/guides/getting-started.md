@@ -1,5 +1,7 @@
 # Getting started
 
+This guide builds the Python SDK. For Go, use the [Go SDK guide](../sdk/go.md).
+
 From a fresh checkout to a running service: install the toolchain, build the native module, run both
 test suites, then wire a command-handling service in three steps.
 
@@ -23,7 +25,7 @@ flowchart LR
 mise install          # once per checkout; `mise trust` first if mise refuses the config
 ```
 
-`mise.toml` pins `uv`, `maturin`, `alef`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
+`mise.toml` selects `uv` and pins `maturin`, `alef`, `ruff` and `ty`. The Rust channel is not pinned there. It comes
 from the alef-generated `rust-toolchain.toml`, which mise reads as an idiomatic version file (see
 the comment at the top of `mise.toml`). Pinning Rust in both places overrides that file and drops
 `clippy` with no warning.
@@ -304,7 +306,7 @@ flowchart LR
     MEM -->|"forwarded"| ABI
     KAF -->|"forwarded"| ABI
     RED -->|"forwarded"| ABI
-    ABI -->|"alef generate --lang python --clean"| GEN
+    ABI -->|"alef generate --lang python,ffi,go --clean"| GEN
     GEN -->|"maturin develop"| SO
     SO -->|"from . import _edax"| PKG
 ```
@@ -312,16 +314,19 @@ flowchart LR
 | File | Owner | Rule |
 |---|---|---|
 | `crates/edax-abi/src/` | you | change the binding surface here, one module per kernel crate, then regenerate |
-| `crates/edax-py/src/lib.rs` | alef | never hand-edit (`AGENTS.md`; header at line 1 of the file) |
+| `crates/edax-py/src/lib.rs` | alef | committed generated module; regenerate instead of editing |
 | `crates/edax-py/.alef/` | alef | throwaway scaffold, gitignored; not shipped (`alef.toml`) |
-| `crates/edax-py/python/edax/_edax.pyi` | alef, committed by hand | the one generated artefact that is committed, with alef's `# alef:hash:` header stripped so cleanup leaves it alone (`alef.toml`) |
+| `crates/edax-py/python/edax/_edax.pyi` | regeneration script | committed copy of alef's stub; the script strips the generated header so cleanup leaves the shipped copy alone |
 | `crates/edax-py/python/edax/*.py` | you | the SDK: `CommandBus`, `Repository`, `Relay`, `KeyOrderedDispatcher`, `EventRouter`, `Saga`, and every seam |
 
-Regenerate with `--clean` only:
+From the repository root, regenerate the native module and refresh the shipped stub together:
 
 ```sh
-alef generate --lang python --clean
+mise run bindings:generate
 ```
+
+The script invokes `mise exec -- alef generate --lang python,ffi,go --clean`, regenerates the Go
+facade and copies the Python stub.
 
 A plain incremental `alef generate` is destructive here: on a cache hit it skips re-emitting
 `src/lib.rs` and the stub but still runs cleanup, deleting them (`alef.toml`).
@@ -346,8 +351,35 @@ languages, it belongs in a kernel with a golden vector (`AGENTS.md`).
 
 ## See also
 
-- [./examples.md](./examples.md) — how the examples in `examples/py` run, and how CI checks them.
+- [./examples.md](./examples.md) — how the Python and Go examples run, and how CI checks them.
 - [./testing.md](./testing.md) — the three test layers and the commands to run them all.
 - [../kernels/golden-vectors.md](../kernels/golden-vectors.md) — the cross-language contract and how
   to regenerate it.
 - [../glossary.md](../glossary.md) — every term in one place.
+
+## Repository tasks
+
+Run `mise tasks` to list the commands defined in `mise.toml`. They use the pinned toolchain
+and run from the repository root, even when invoked inside a crate.
+
+| Command | Purpose |
+|---|---|
+| `mise run go:build` | Build and stage the native library for the local Go SDK |
+| `mise run bindings:generate` | Regenerate Python, C and Go bindings, including the internal Go facade |
+| `mise run bindings:go-facade` | Regenerate only the Go facade from existing alef output |
+| `mise run examples:go` | Smoke-test Go examples with the race detector |
+| `mise run examples:python` | Smoke-test Python examples with the SDK venv |
+| `mise run docs:lint` | Check documentation prose |
+| `mise run docs:lint -- --extract .doclint` | Extract marked Python examples for type checking |
+
+The Go tools live under `.mise/cmd`; documentation and Cargo-version helpers remain under `.mise/lib`.
+The facade tool reads alef's Go declarations with `go/parser` and formats its output with `go/format`.
+It adds typed errors, synchronized handle ownership, cleanup and conversion safeguards.
+Alef's metadata identifies optional slices and optional record returns. The tool selects the ABI's
+`FunctionPresent` and `MethodResult` companions by convention, then validates their signatures.
+It has no list of special-case methods. A missing or incompatible companion stops generation.
+The Rust kernel exports its error and tenancy names through `binding_names`; the tool does not parse Rust source.
+
+`version:check-go` and `version:set` are release hooks. The first checks the module path and prints
+its Go subdirectory tag. The second updates Cargo versions. Let Cocogitto call them during a bump;
+see [releasing](../releasing.md).
