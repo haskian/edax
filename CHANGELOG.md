@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.7.0](https://github.com/haskian/edax/compare/f1edb34ccd855e0ee6d9a05d3b74888f76709d42..v0.7.0) - 2026-10-07
+#### Features
+- add the Go SDK on the C interface and move scripts to mise tasks (#20) - ([f1edb34](https://github.com/haskian/edax/commit/f1edb34ccd855e0ee6d9a05d3b74888f76709d42)) - Črtomir Majer
+
+- - -
+
 ## [v0.6.0](https://github.com/haskian/edax/compare/cc4df9c7276595cca0b3a491c27244c1fec4a1ef..v0.6.0) - 2026-10-06
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) move duplicated SDK orchestration into kernels and fix drift (#19) - ([cc4df9c](https://github.com/haskian/edax/commit/cc4df9c7276595cca0b3a491c27244c1fec4a1ef)) - Črtomir Majer
