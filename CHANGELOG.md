@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.8.0](https://github.com/haskian/edax/compare/1f0e7915a51974c9ccac8aedabf8cb0cd51a54b4..v0.8.0) - 2026-10-08
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) enforce SDK contracts and harden message delivery (#21) - ([1f0e791](https://github.com/haskian/edax/commit/1f0e7915a51974c9ccac8aedabf8cb0cd51a54b4)) - Črtomir Majer
+
+- - -
+
 ## [v0.7.0](https://github.com/haskian/edax/compare/f1edb34ccd855e0ee6d9a05d3b74888f76709d42..v0.7.0) - 2026-10-07
 #### Features
 - add the Go SDK on the C interface and move scripts to mise tasks (#20) - ([f1edb34](https://github.com/haskian/edax/commit/f1edb34ccd855e0ee6d9a05d3b74888f76709d42)) - Črtomir Majer
