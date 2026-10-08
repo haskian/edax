@@ -180,8 +180,8 @@ fn envelope_cases() -> Vec<Value> {
                 e.metadata = map(&[("acteur", "système")]);
             }),
         ),
-        // Map keys sort by UTF-8 bytes: "Z" < "a", "" first, and U+FF71 after U+1F980 by bytes
-        // (EF.. < F0..) although JavaScript, Java and C# sort it first by UTF-16 code units.
+        // Map keys sort by UTF-8 bytes: "Z" < "a", "" first, and U+FF71 before U+1F980 by bytes
+        // (EF.. < F0..) although JavaScript, Java and C# put U+1F980 first by UTF-16 code units.
         (
             "keys_sort_by_utf8_bytes_not_utf16",
             with(&|e| {
@@ -918,15 +918,18 @@ fn event_idempotency_cases() -> Vec<Value> {
 /// One step of a [`Retries`](edax_event::Retries) scenario: an operation and the answer it gave.
 #[derive(Clone, Copy)]
 enum RetryOp {
-    Attempt(&'static str, u32),
-    Failed(&'static str, u32, Option<ErrorCode>),
-    Succeeded(&'static str),
-    /// The sink took the message `id`, dead at the attempt.
-    Taken(&'static str, u32),
-    /// The sink refused the message `id`, dead at the attempt, with a failure carrying the code.
-    Refused(&'static str, u32, Option<ErrorCode>),
+    Attempt(&'static str, Tenant, u32),
+    Failed(&'static str, Tenant, u32, Option<ErrorCode>),
+    Succeeded(&'static str, Tenant),
+    /// The sink took the message `id` of the tenant, dead at the attempt.
+    Taken(&'static str, Tenant, u32),
+    /// The sink refused the message `id` of the tenant, dead at the attempt, with a failure carrying the code.
+    Refused(&'static str, Tenant, u32, Option<ErrorCode>),
     Tracked,
 }
+
+/// The tenant of a [`RetryOp`]'s message.
+type Tenant = Option<&'static str>;
 
 /// The failure kind of every error code, and of a failure with no code: what decides whether a
 /// failed message is contention, a transient failure or a terminal one.
@@ -948,7 +951,8 @@ fn verdict_json(verdict: edax_event::Verdict) -> Value {
 /// The retry and dead-letter policy as operation scripts: each scenario builds
 /// `Retries::new(max_attempts, sink)` and replays `ops`, each with the answer the kernel gave, so a second
 /// SDK replays the same script and must get the same answers. A failed op carries the failure's error
-/// code, `null` for none, as a host passes it. One scenario per branch of the rule.
+/// code, `null` for none, as a host passes it, and every op names the message by its id and its tenant.
+/// One scenario per branch of the rule.
 fn retries_cases() -> Vec<Value> {
     use RetryOp::*;
     const TRANSIENT: Option<ErrorCode> = Some(ErrorCode::Store);
@@ -961,12 +965,12 @@ fn retries_cases() -> Vec<Value> {
             3,
             true,
             vec![
-                Attempt("evt-1", 0),
-                Failed("evt-1", 0, TRANSIENT),
-                Attempt("evt-1", 0),
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, TRANSIENT),
-                Taken("evt-1", 3),
+                Attempt("evt-1", None, 0),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Attempt("evt-1", None, 0),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Taken("evt-1", None, 3),
                 Tracked,
             ],
         ),
@@ -974,17 +978,17 @@ fn retries_cases() -> Vec<Value> {
             "a_terminal_failure_dies_on_its_first_attempt",
             3,
             true,
-            vec![Failed("evt-1", 0, TERMINAL), Taken("evt-1", 1), Tracked],
+            vec![Failed("evt-1", None, 0, TERMINAL), Taken("evt-1", None, 1), Tracked],
         ),
         (
             "with_no_sink_a_dead_message_nacks_with_a_growing_step",
             3,
             false,
             vec![
-                Failed("evt-1", 0, TERMINAL),
-                Failed("evt-1", 0, TERMINAL),
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, TRANSIENT),
+                Failed("evt-1", None, 0, TERMINAL),
+                Failed("evt-1", None, 0, TERMINAL),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, TRANSIENT),
                 Tracked,
             ],
         ),
@@ -994,26 +998,26 @@ fn retries_cases() -> Vec<Value> {
             true,
             // The second failure carries no code: unclassified, so transient like the others.
             vec![
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, None),
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, TERMINAL),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, None),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, TERMINAL),
             ],
         ),
         (
             "a_broker_attempt_raises_the_count",
             3,
             true,
-            vec![Attempt("evt-1", 2), Failed("evt-1", 2, TRANSIENT)],
+            vec![Attempt("evt-1", None, 2), Failed("evt-1", None, 2, TRANSIENT)],
         ),
         (
             "a_lower_broker_attempt_never_lowers_it",
             5,
             true,
             vec![
-                Failed("evt-1", 3, TRANSIENT),
-                Attempt("evt-1", 0),
-                Failed("evt-1", 0, TRANSIENT),
+                Failed("evt-1", None, 3, TRANSIENT),
+                Attempt("evt-1", None, 0),
+                Failed("evt-1", None, 0, TRANSIENT),
             ],
         ),
         (
@@ -1021,14 +1025,14 @@ fn retries_cases() -> Vec<Value> {
             2,
             true,
             vec![
-                Failed("evt-1", 0, CONTENDED),
-                Failed("evt-1", 0, CONTENDED),
-                Failed("evt-1", 0, CONTENDED),
-                Attempt("evt-1", 0),
+                Failed("evt-1", None, 0, CONTENDED),
+                Failed("evt-1", None, 0, CONTENDED),
+                Failed("evt-1", None, 0, CONTENDED),
+                Attempt("evt-1", None, 0),
                 Tracked,
-                Failed("evt-1", 0, TRANSIENT),
+                Failed("evt-1", None, 0, TRANSIENT),
                 Tracked,
-                Failed("evt-1", 0, CONTENDED),
+                Failed("evt-1", None, 0, CONTENDED),
             ],
         ),
         (
@@ -1036,12 +1040,12 @@ fn retries_cases() -> Vec<Value> {
             3,
             true,
             vec![
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, CONTENDED),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, CONTENDED),
                 Tracked,
-                Succeeded("evt-1"),
+                Succeeded("evt-1", None),
                 Tracked,
-                Attempt("evt-1", 0),
+                Attempt("evt-1", None, 0),
             ],
         ),
         (
@@ -1049,12 +1053,12 @@ fn retries_cases() -> Vec<Value> {
             2,
             true,
             vec![
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, TRANSIENT),
-                Refused("evt-1", 2, TRANSIENT),
-                Attempt("evt-1", 0),
-                Failed("evt-1", 0, TRANSIENT),
-                Taken("evt-1", 3),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Refused("evt-1", None, 2, TRANSIENT),
+                Attempt("evt-1", None, 0),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Taken("evt-1", None, 3),
                 Tracked,
             ],
         ),
@@ -1065,9 +1069,9 @@ fn retries_cases() -> Vec<Value> {
             2,
             true,
             vec![
-                Failed("evt-1", 0, TERMINAL),
-                Refused("evt-1", 1, FATAL),
-                Attempt("evt-1", 0),
+                Failed("evt-1", None, 0, TERMINAL),
+                Refused("evt-1", None, 1, FATAL),
+                Attempt("evt-1", None, 0),
                 Tracked,
             ],
         ),
@@ -1078,30 +1082,46 @@ fn retries_cases() -> Vec<Value> {
             2,
             true,
             vec![
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-1", 0, FATAL),
-                Failed("evt-1", 0, FATAL),
-                Attempt("evt-1", 0),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, FATAL),
+                Failed("evt-1", None, 0, FATAL),
+                Attempt("evt-1", None, 0),
                 Tracked,
-                Failed("evt-1", 0, TRANSIENT),
-                Taken("evt-1", 2),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Taken("evt-1", None, 2),
             ],
         ),
         (
             "with_no_sink_a_fatal_failure_still_stops",
             0,
             false,
-            vec![Failed("evt-1", 0, FATAL), Tracked],
+            vec![Failed("evt-1", None, 0, FATAL), Tracked],
         ),
         (
             "ids_are_counted_apart",
             2,
             true,
             vec![
-                Failed("evt-1", 0, TRANSIENT),
-                Failed("evt-2", 0, TRANSIENT),
-                Failed("evt-1", 0, TRANSIENT),
-                Attempt("evt-2", 0),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Failed("evt-2", None, 0, TRANSIENT),
+                Failed("evt-1", None, 0, TRANSIENT),
+                Attempt("evt-2", None, 0),
+                Tracked,
+            ],
+        ),
+        (
+            // Two tenants' stores may mint one id; one consumer serving both counts each apart.
+            "one_id_of_two_tenants_is_counted_apart",
+            2,
+            true,
+            vec![
+                Failed("cmd-1", Some("acme"), 0, TRANSIENT),
+                Failed("cmd-1", Some("globex"), 0, TRANSIENT),
+                Attempt("cmd-1", None, 0),
+                Succeeded("cmd-1", Some("globex")),
+                Attempt("cmd-1", Some("acme"), 0),
+                Failed("cmd-1", Some("acme"), 0, TRANSIENT),
+                Taken("cmd-1", Some("acme"), 2),
                 Tracked,
             ],
         ),
@@ -1110,9 +1130,9 @@ fn retries_cases() -> Vec<Value> {
             0,
             true,
             vec![
-                Attempt("evt-1", u32::MAX),
-                Failed("evt-1", u32::MAX, TRANSIENT),
-                Attempt("evt-1", 0),
+                Attempt("evt-1", None, u32::MAX),
+                Failed("evt-1", None, u32::MAX, TRANSIENT),
+                Attempt("evt-1", None, 0),
             ],
         ),
     ];
@@ -1123,22 +1143,25 @@ fn retries_cases() -> Vec<Value> {
             let ops: Vec<Value> = ops
                 .into_iter()
                 .map(|op| match op {
-                    Attempt(id, broker) => json!({ "op": "attempt", "id": id, "broker_attempt": broker, "want": retries.attempt(id, broker) }),
-                    Failed(id, broker, code) => json!({
-                        "op": "failed", "id": id, "broker_attempt": broker, "code": code.map(ErrorCode::as_str),
-                        "want": verdict_json(retries.failed(id, broker, edax_event::Failure::of(code))),
+                    Attempt(id, tenant, broker) => json!({
+                        "op": "attempt", "id": id, "tenant": tenant, "broker_attempt": broker,
+                        "want": retries.attempt(id, tenant, broker),
                     }),
-                    Succeeded(id) => {
-                        retries.succeeded(id);
-                        json!({ "op": "succeeded", "id": id })
+                    Failed(id, tenant, broker, code) => json!({
+                        "op": "failed", "id": id, "tenant": tenant, "broker_attempt": broker, "code": code.map(ErrorCode::as_str),
+                        "want": verdict_json(retries.failed(id, tenant, broker, edax_event::Failure::of(code))),
+                    }),
+                    Succeeded(id, tenant) => {
+                        retries.succeeded(id, tenant);
+                        json!({ "op": "succeeded", "id": id, "tenant": tenant })
                     }
-                    Taken(id, attempt) => json!({
-                        "op": "sunk", "id": id, "attempt": attempt, "taken": true, "code": null,
-                        "want": retries.sunk(id, attempt, None),
+                    Taken(id, tenant, attempt) => json!({
+                        "op": "sunk", "id": id, "tenant": tenant, "attempt": attempt, "taken": true, "code": null,
+                        "want": retries.sunk(id, tenant, attempt, None),
                     }),
-                    Refused(id, attempt, code) => json!({
-                        "op": "sunk", "id": id, "attempt": attempt, "taken": false, "code": code.map(ErrorCode::as_str),
-                        "want": retries.sunk(id, attempt, Some(edax_event::Failure::of(code))),
+                    Refused(id, tenant, attempt, code) => json!({
+                        "op": "sunk", "id": id, "tenant": tenant, "attempt": attempt, "taken": false, "code": code.map(ErrorCode::as_str),
+                        "want": retries.sunk(id, tenant, attempt, Some(edax_event::Failure::of(code))),
                     }),
                     Tracked => {
                         let t = retries.tracked();

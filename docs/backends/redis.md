@@ -30,8 +30,10 @@ claim; begin; run; commit; complete
 ```
 
 That ordering is what `idempotent(..., unit_of_work=)` runs. Pass no `unit_of_work` and the middle
-is just the handler. The host then owns any commit. The claim still lands on its own, so the
-compensation below is the same.
+is just the handler, so the handler's writes must commit on their own. Inside the host's
+`transaction`, the guard refuses this store with `BadHandle`. The store would record success before
+the host commits. A host rollback would then leave that success cached over work that never landed.
+When the handler writes to a database, pass that database as `unit_of_work`.
 
 Two independent commits, which no ordering can make atomic. The guarantee is therefore
 at-least-once over an idempotent handler, with a dedup window the width of `ttl_ms`. This store runs

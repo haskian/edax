@@ -249,6 +249,20 @@ func TestPoisonAndDeadLetter(t *testing.T) {
 			if len(b.sent) != 1 || b.sent[0].Topic != "invoices.dead" || string(b.sent[0].Record.Value) != string(record.Record.Value) {
 				t.Fatalf("lost raw dead letter: %+v", b.sent)
 			}
+			// The kernel renders "<code>: <message>", so the sink passes the bare message.
+			var wrapped *edax.Error
+			if !errors.As(poison.Failure, &wrapped) {
+				t.Fatalf("poison failure %T", poison.Failure)
+			}
+			rendered := ""
+			for _, header := range b.sent[0].Record.Headers {
+				if header.Key == "edax-dlq-error" {
+					rendered = string(header.Value)
+				}
+			}
+			if want := "codec: " + wrapped.Message; rendered != want {
+				t.Fatalf("dead-letter error header %q want %q", rendered, want)
+			}
 			if err = poison.Ack(context.Background()); err != nil {
 				t.Fatal(err)
 			}

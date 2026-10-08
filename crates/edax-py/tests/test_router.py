@@ -9,7 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import edax
 import pytest
@@ -286,6 +286,9 @@ async def test_idempotent_by_id_keys_the_claim_by_scope_and_tenant(
 class TxIdempotencyStore:
     """An ``IdempotencyStore`` that is its own ``Transactor``: writes made under a tx stage in
     that tx and land only on commit, so a rollback drops the claim like a database would."""
+
+    # The guard refuses an undeclared store inside a transaction: it cannot tell that the store joins.
+    joins_transaction: ClassVar[bool] = True
 
     # `None` is a released key, which `release` writes straight into `records` when no tx is open.
     records: dict[str, Record | None] = field(default_factory=dict)

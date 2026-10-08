@@ -45,13 +45,13 @@ def is_stale(stored: int | None = None, incoming: int | None = None) -> bool:
     """Whether a message at sequence ``incoming`` is older than the watermark ``stored``. Ordering, not
     dedup: ``is_stale(5, 5)`` is ``False``, because an ordinal cannot tell a redelivery from a re-send.
     :func:`~edax.idempotent_by_id` is the dedup. See ``docs/kernels/event.md``."""
-    return _native.is_stale(stored, incoming)
+    return _native.is_stale(stored is not None, stored or 0, incoming is not None, incoming or 0)
 
 
 def advance(stored: int | None = None, incoming: int | None = None) -> int | None:
     """The watermark after a message at ``incoming`` applies: the higher sequence, so an unsequenced message
     never erases it. Pair it with :func:`is_stale`."""
-    return _native.advance(stored, incoming)
+    return _native.advance(stored is not None, stored or 0, incoming is not None, incoming or 0)
 
 
 def guid() -> str:

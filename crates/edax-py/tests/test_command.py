@@ -905,15 +905,32 @@ async def test_retry_inside_idempotent_shares_one_claim() -> None:
 # =========================================================================
 
 
-def test_register_duplicate_type_raises() -> None:
-    bus = C.CommandBus()
+@pytest.mark.parametrize("first_by", ["register", "a_middleware_while_wrapping"])
+async def test_register_duplicate_type_raises(first_by: str) -> None:
+    """A second handler for one command type is refused. So is the outer one when a middleware registers
+    the type while it wraps that outer handler: the outer must not silently replace the first."""
+    wrapping = False
 
-    async def handler(cmd: CreateUser) -> str:
-        return f"user:{cmd.email}"
+    def registers_while_wrapping(handler: C.Next) -> C.Next:
+        nonlocal wrapping
+        if first_by == "a_middleware_while_wrapping" and not wrapping:
+            wrapping = True
+            bus.register(CreateUser, first)
+        return handler
 
-    bus.register(CreateUser, handler)
+    bus = C.CommandBus(registers_while_wrapping)
+
+    async def first(cmd: CreateUser) -> str:
+        return "first"
+
+    async def second(cmd: CreateUser) -> str:
+        return "second"
+
+    if first_by == "register":
+        bus.register(CreateUser, first)
     with pytest.raises(C.AlreadyRegistered, match=r"user\.create"):
-        bus.register(CreateUser, handler)
+        bus.register(CreateUser, second)
+    assert await bus.dispatch(CreateUser("ada@example.com")) == "first"
 
 
 class DeclaredTerminal(Exception):

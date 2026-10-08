@@ -7,20 +7,21 @@ Two-valued semantics: a path predicate matches only when the path is present, no
 comparison holds; a missing or null path makes that leaf false. So ``ne(p, x)`` does not match a
 document missing ``p``, while ``not_(eq(p, x))`` does.
 
-A ``Decimal`` comparand compares by exact value. ``eq``, ``ne``, ``gt``, ``gte``, ``lt``, ``lte`` and ``in_``
-set the kernel's decimal collation for it, so ``gt("price", Decimal("10"))`` reads the document's decimal
-text as a number: ``"9.5"`` is below it, and ``"9.50"`` equals ``Decimal("9.5")``. A document value that is
-not decimal text then compares as a mismatched type does. Every member of a collated ``in_`` must be a
-``Decimal`` or decimal text, else the kernel refuses the filter. ``contains`` and ``starts_with`` compare
+A decimal comparand, an :class:`edax.Decimal` or a ``decimal.Decimal``, compares by exact value. ``eq``,
+``ne``, ``gt``, ``gte``, ``lt``, ``lte`` and ``in_`` set the kernel's decimal collation for it, so
+``gt("price", Decimal("10"))`` reads the document's decimal text as a number: ``"9.5"`` is below it, and
+``"9.50"`` equals ``Decimal("9.5")``. A document value that is not decimal text then compares as a
+mismatched type does. Every member of a collated ``in_`` must be a decimal or decimal text, else the kernel
+refuses the filter. ``contains`` and ``starts_with`` compare
 the text.
 """
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypedDict
 
 from . import _json, _native
+from .host_value import DECIMAL_TYPES
 
 if TYPE_CHECKING:  # `query` imports this module for `Filter`
     from .query import Document
@@ -60,7 +61,7 @@ Operator = Literal["eq", "ne", "gt", "gte", "lt", "lte", "starts_with"]
 
 
 class _Collated(TypedDict, total=False):
-    #: Set for a ``Decimal`` comparand: decimal text then compares by exact value.
+    #: Set for a decimal comparand: decimal text then compares by exact value.
     collation: Literal["decimal"]
 
 
@@ -113,8 +114,8 @@ Filter: TypeAlias = (
 
 
 def _collation(*values: Any) -> _Collated:
-    # A Decimal encodes as decimal text, which orders by value only under the decimal collation.
-    return {"collation": "decimal"} if any(isinstance(value, Decimal) for value in values) else {}
+    # A decimal encodes as decimal text, which orders by value only under the decimal collation.
+    return {"collation": "decimal"} if any(isinstance(value, DECIMAL_TYPES) for value in values) else {}
 
 
 def _compare(path: str, op: Operator, value: Any) -> Filter:

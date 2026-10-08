@@ -10,8 +10,6 @@ import asyncio
 import base64
 import logging
 import sys
-from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 import edax
@@ -22,13 +20,13 @@ from conftest import (
     build_command,
     build_message,
     golden,
-    host_values,
+    host_text,
     message_as_obj,
     message_from_obj,
     recording_pacing,
     wire_code,
 )
-from edax import _edax
+from edax import _edax, _json
 from edax._observer import wrap
 from edax._settle import dead_letter
 from edax._values import replace
@@ -62,14 +60,15 @@ def test_golden_retries() -> None:
             name = op["op"]
             where = f"{scenario['name']}: {op}"
             if name == "attempt":
-                assert policy.attempt(op["id"], op["broker_attempt"]) == op["want"], where
+                assert policy.attempt(op["id"], op["broker_attempt"], op["tenant"]) == op["want"], where
             elif name == "failed":
-                verdict = policy.failed(op["id"], op["broker_attempt"], op["code"])
+                verdict = policy.failed(op["id"], op["broker_attempt"], op["code"], op["tenant"])
                 assert _verdict(verdict) == op["want"], where
             elif name == "succeeded":
-                policy.succeeded(op["id"])
+                policy.succeeded(op["id"], op["tenant"])
             elif name == "sunk":
-                assert policy.sunk(op["id"], op["attempt"], op["taken"], op["code"]) == op["want"], where
+                sunk = policy.sunk(op["id"], op["attempt"], op["taken"], op["code"], op["tenant"])
+                assert sunk == op["want"], where
             else:
                 tracked = policy.tracked()
                 assert {"attempts": tracked.attempts, "contended": tracked.contended} == op["want"], where
@@ -861,8 +860,8 @@ class Relocated(msgspec.Struct):
 
 class Priced(msgspec.Struct):
     account_id: str
-    amount: Decimal
-    at: datetime
+    amount: edax.Decimal
+    at: edax.Instant
 
 
 class Frozen(msgspec.Struct):
@@ -894,7 +893,8 @@ def test_golden_event_codec(fmt: str) -> None:
                 codec.unmarshal(stored)
             assert refused.value.code == wire_code(row["error"]), row["case"]
             continue
-        built = msgspec.convert(host_values(row["fields"]), EVENTS[row["name"]])
+        # As the Rust suite reads the row: the markers' text, read into the host types by the codec's rule.
+        built = msgspec.convert(host_text(row["fields"]), EVENTS[row["name"]], dec_hook=_json.decode_hook)
         written = codec.marshal(built)
         assert (written.name, written.version, bytes(written.data)) == (row["name"], row["version"], wire), (
             row["case"]

@@ -3,6 +3,7 @@ package edax
 import (
 	"encoding"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -26,8 +27,8 @@ func hasMessagePackDecoder(typ reflect.Type) bool {
 	return false
 }
 
-// The library accepts arrays as positional structs without an opt-out. Check only
-// automatic struct conversion here; custom decoders retain their own wire contract.
+// The library reads an array as a positional struct, nil as any zero value, and truncates integers.
+// Check only automatic conversion here; custom decoders keep their own wire contract.
 func checkMessagePackShape(decoder *msgpack.Decoder, typ reflect.Type) error {
 	if hasMessagePackDecoder(typ) {
 		return decoder.Skip()
@@ -36,13 +37,18 @@ func checkMessagePackShape(decoder *msgpack.Decoder, typ reflect.Type) error {
 	if err != nil {
 		return err
 	}
-	if typ.Kind() == reflect.Pointer {
-		if code == msgpcode.Nil {
+	if code == msgpcode.Nil {
+		if nullable(typ) {
 			return decoder.Skip()
 		}
-		return checkMessagePackShape(decoder, typ.Elem())
+		return fmt.Errorf("%s cannot decode from nil", typ)
 	}
 	switch typ.Kind() {
+	case reflect.Pointer:
+		return checkMessagePackShape(decoder, typ.Elem())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return checkMessagePackInteger(decoder, code, typ)
 	case reflect.Struct:
 		if !msgpcode.IsFixedMap(code) && code != msgpcode.Map16 && code != msgpcode.Map32 {
 			return fmt.Errorf("%s must decode from a MessagePack map", typ)
@@ -67,7 +73,7 @@ func checkMessagePackShape(decoder *msgpack.Decoder, typ reflect.Type) error {
 			}
 		}
 	case reflect.Array, reflect.Slice:
-		if typ.Elem().Kind() == reflect.Uint8 || code == msgpcode.Nil {
+		if typ.Elem().Kind() == reflect.Uint8 {
 			return decoder.Skip()
 		}
 		size, err := decoder.DecodeArrayLen()
@@ -80,9 +86,6 @@ func checkMessagePackShape(decoder *msgpack.Decoder, typ reflect.Type) error {
 			}
 		}
 	case reflect.Map:
-		if code == msgpcode.Nil {
-			return decoder.Skip()
-		}
 		size, err := decoder.DecodeMapLen()
 		if err != nil {
 			return err
@@ -97,6 +100,68 @@ func checkMessagePackShape(decoder *msgpack.Decoder, typ reflect.Type) error {
 		}
 	default:
 		return decoder.Skip()
+	}
+	return nil
+}
+
+// The library truncates an integer to fit its field: 256 reads as uint8 0, and -1 as uint8 255.
+// encoding/json refuses both, so this check does too.
+func checkMessagePackInteger(decoder *msgpack.Decoder, code byte, typ reflect.Type) error {
+	if !msgpcode.IsFixedNum(code) && (code < msgpcode.Uint8 || code > msgpcode.Int64) {
+		return decoder.Skip()
+	}
+	value, err := decoder.DecodeInterface()
+	if err != nil {
+		return err
+	}
+	number, field := reflect.ValueOf(value), reflect.New(typ).Elem()
+	var fits bool
+	switch {
+	case number.CanInt() && field.CanInt():
+		fits = !field.OverflowInt(number.Int())
+	case number.CanInt():
+		fits = number.Int() >= 0 && !field.OverflowUint(uint64(number.Int()))
+	case field.CanInt():
+		fits = number.Uint() <= math.MaxInt64 && !field.OverflowInt(int64(number.Uint()))
+	default:
+		fits = !field.OverflowUint(number.Uint())
+	}
+	if !fits {
+		return fmt.Errorf("%v overflows %s", value, typ)
+	}
+	return nil
+}
+
+// positionalStruct finds a struct whose `_msgpack` field sets as_array. The library writes such a
+// struct as an array, and every SDK reads a struct from a map only, so no reader would accept it.
+func positionalStruct(typ reflect.Type, seen map[reflect.Type]bool) reflect.Type {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if seen[typ] || hasMessagePackDecoder(typ) {
+		return nil
+	}
+	seen[typ] = true
+	switch typ.Kind() {
+	case reflect.Struct:
+		if field, ok := typ.FieldByName("_msgpack"); ok && len(field.Index) == 1 {
+			tag := field.Tag.Get("msgpack")
+			if tag == "" {
+				tag = field.Tag.Get("json")
+			}
+			for _, option := range strings.Split(tag, ",")[1:] {
+				if option == "as_array" || option == "asArray" {
+					return typ
+				}
+			}
+		}
+		for _, field := range messagePackFields(typ, map[reflect.Type]bool{}) {
+			if found := positionalStruct(field, seen); found != nil {
+				return found
+			}
+		}
+	case reflect.Array, reflect.Slice, reflect.Map:
+		return positionalStruct(typ.Elem(), seen)
 	}
 	return nil
 }

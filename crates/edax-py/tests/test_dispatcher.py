@@ -122,6 +122,36 @@ async def test_terminal_dead_letters_on_first_failure(slept: list[int]) -> None:
     assert not dlq.empty()
 
 
+async def test_one_id_of_two_tenants_keeps_two_retry_budgets(slept: list[int]) -> None:
+    """Bridge tenancy: two tenants' saga stores mint the same command id, and one shared dispatcher
+    serves both. The second tenant's first failure is its own first attempt, not the first tenant's
+    second, and the kernel counts each tenant's attempts until its own ceiling."""
+    settled: list[str] = []
+    dead: list[tuple[str | None, int]] = []
+
+    async def handler(cmd: edax.CommandMessage) -> None:
+        raise edax.StoreError("shipping API down")
+
+    async def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append((letter.message.tenant, letter.attempt))
+
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler, max_attempts=2, on_dead=on_dead)
+    dispatcher.start()
+    for tenant in ("acme", "globex", "acme"):
+        cmd = build_command("Ship", id="shipping-cmd-1", aggregate_id="order-7", tenant=tenant)
+        await dispatcher.submit(
+            edax.Delivery(
+                cmd, lambda t=tenant: settled.append(f"{t}:ack"), lambda t=tenant: settled.append(f"{t}:nack")
+            )
+        )
+        await dispatcher._queues[dispatcher._worker_index(cmd)].join()
+    await dispatcher.stop()
+
+    assert settled == ["acme:nack", "globex:nack", "acme:ack"]
+    assert dead == [("acme", 2)]
+    assert slept == [0, 0], "each tenant's first nack waits the first step"
+
+
 @pytest.mark.parametrize(
     "handler_error, sink_error, want_dead, want_raised",
     [
@@ -656,6 +686,37 @@ async def test_stop_settles_a_submit_blocked_on_a_full_queue(
     assert dispatcher.stats().queue_depth == [0]
 
 
+@pytest.mark.parametrize("nack_yields", [False, True], ids=["sync_nack", "async_nack_that_yields"])
+async def test_stop_before_start_hands_back_every_submitted_delivery(nack_yields: bool) -> None:
+    """A submit before ``start()`` waits in its queue, and a startup abandoned with ``stop()`` starts no
+    worker to take it. ``stop()`` must hand back the queued delivery and the submits still waiting for room,
+    or they stay unsettled until the consumer restarts."""
+    settled: list[int] = []
+
+    def delivery(sequence: int) -> edax.Delivery:
+        async def async_nack() -> None:
+            await asyncio.sleep(0)
+            settled.append(sequence)
+
+        message = build_message("acct-1", "Deposited", sequence, data=b'{"amount": 10}')
+        return edax.Delivery(
+            message, lambda: None, async_nack if nack_yields else lambda: settled.append(sequence)
+        )
+
+    observer = mock.Mock(spec=edax.Observer)
+    dispatcher = edax.KeyOrderedDispatcher(
+        workers=1, handler=handling(lambda env: None), max_queue=1, observer=observer
+    )
+    await dispatcher.submit(delivery(1))
+    blocked = [asyncio.create_task(dispatcher.submit(delivery(n))) for n in (2, 3)]
+    await asyncio.sleep(0)  # both pass the stop check and wait on the full queue
+    await asyncio.wait_for(dispatcher.stop(), 1)
+    assert all(task.done() and task.exception() is None for task in blocked), "every admitted submit landed"
+    assert settled == [1, 2, 3]
+    assert [c.args[3] for c in observer.delivery.call_args_list] == ["stopped"] * 3
+    assert dispatcher.stats().queue_depth == [0]
+
+
 async def test_a_consumer_loop_hands_back_a_delivery_the_stopped_dispatcher_refuses() -> None:
     """``stop()`` under a running consumer loop: the next poll's delivery is refused by ``submit``. The loop
     nacks it and ends, rather than raising out with the delivery booked and never settled."""
@@ -1067,6 +1128,57 @@ async def test_a_worker_cancelled_while_settling_hands_the_delivery_back(where: 
     await asyncio.wait_for(parked.wait(), 1)
     await dispatcher.stop(timeout=0.01)
     assert settled == want
+
+
+@pytest.mark.parametrize("settle", ["ack", "nack"])
+@pytest.mark.parametrize("reply_fails", [False, True], ids=["reply_arrives", "reply_fails"])
+async def test_a_settlement_cancelled_before_its_effect_still_lands(
+    settle: str, reply_fails: bool, slept: list[int], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A transport's async ack or nack may await a round trip before its effect lands. A stop that cancels
+    the worker there must not cut the call short: the delivery already reads settled, so nothing hands it
+    back, and the broker would hold it unsettled until the consumer restarts."""
+    broker = MemoryBroker()
+    await broker.publish(build_message("acct-1", "Deposited", 1))
+    delivery = delivered(await broker.poll())
+    entered, answered = asyncio.Event(), asyncio.Event()
+    effects: list[str] = []
+    failure = edax.StoreError("settlement reply lost")
+
+    def in_flight(name: str, effect: edax.delivery.AckFn) -> edax.delivery.AckFn:
+        async def call() -> None:
+            entered.set()
+            await answered.wait()  # the round trip
+            effects.append(name)
+            await maybe_await(effect())
+            if reply_fails:
+                raise failure
+
+        return call
+
+    delivery.on_ack, delivery.on_nack = in_flight("ack", delivery.on_ack), in_flight("nack", delivery.on_nack)
+
+    async def handler(env: edax.EventMessage) -> None:
+        if settle == "nack":
+            raise edax.StoreError("db")
+
+    dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handler)
+    dispatcher.start()
+    await dispatcher.submit(delivery)
+    await asyncio.wait_for(entered.wait(), 1)
+    await dispatcher.stop(timeout=0.01)
+    answered.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert effects == [settle], "the call ran to its end, and nothing settled it twice"
+    # The ack committed the message. The nack made it fetchable again.
+    assert broker.empty() is (settle == "ack")
+    errors = [record for record in caplog.records if record.name == "edax.delivery"]
+    assert len(errors) == int(reply_fails), "a detached failure must be reported once"
+    assert not any("Task exception was never retrieved" in record.message for record in caplog.records)
+    if reply_fails:
+        assert errors[0].message == "edax delivery: settlement failed after cancellation"
+        assert errors[0].exc_info is not None and errors[0].exc_info[1] is failure
 
 
 @pytest.mark.parametrize(

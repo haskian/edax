@@ -37,14 +37,18 @@ pub fn partition(aggregate_id: &str, n: u32) -> u32 {
 /// Whether an event with sequence `incoming` is older than the watermark `stored`, so an ordered
 /// consumer skips it. Ordering, not dedup: an equal sequence is not stale. See
 /// [`edax_event::is_stale`] and `docs/kernels/event.md`.
-pub fn is_stale(stored: Option<u64>, incoming: Option<u64>) -> bool {
-    edax_event::is_stale(stored, incoming)
+///
+/// Each sequence crosses as a presence bit and a value, read only when present. The C interface
+/// encodes an absent `Option<u64>` as `u64::MAX`, which is a valid sequence: `staleness.json` pins it.
+pub fn is_stale(stored_present: bool, stored: u64, incoming_present: bool, incoming: u64) -> bool {
+    edax_event::is_stale(stored_present.then_some(stored), incoming_present.then_some(incoming))
 }
 
 /// The watermark after an event with sequence `incoming` applied over `stored`: the higher of the
-/// two, so an unsequenced event never erases it. See [`edax_event::advance`].
-pub fn advance(stored: Option<u64>, incoming: Option<u64>) -> Option<u64> {
-    edax_event::advance(stored, incoming)
+/// two, so an unsequenced event never erases it. See [`edax_event::advance`]. The sequences cross as
+/// in [`is_stale`].
+pub fn advance(stored_present: bool, stored: u64, incoming_present: bool, incoming: u64) -> Option<u64> {
+    edax_event::advance(stored_present.then_some(stored), incoming_present.then_some(incoming))
 }
 
 /// Check an append batch against the dense-sequence rule: every event carries a sequence and the
@@ -443,23 +447,45 @@ mod tests {
         assert!(partition("invoice-7", 8) < 8);
         assert_eq!(partition("invoice-7", 0), 0, "n is clamped to at least one partition");
 
-        // (stored, incoming): each swap changes the answer.
-        assert!(!is_stale(Some(4), Some(5)), "newer than stored -> apply");
-        assert!(is_stale(Some(5), Some(4)), "older than stored -> skip");
-        assert!(!is_stale(None, Some(4)), "nothing stored -> apply");
-        assert!(!is_stale(Some(5), None), "unsequenced -> apply");
-        assert_eq!(advance(Some(4), Some(5)), Some(5));
+        // (stored, incoming), each as its presence bit and value: each swap changes the answer.
+        let stale = |stored: Option<u64>, incoming: Option<u64>| {
+            is_stale(
+                stored.is_some(),
+                stored.unwrap_or(0),
+                incoming.is_some(),
+                incoming.unwrap_or(0),
+            )
+        };
+        let advanced = |stored: Option<u64>, incoming: Option<u64>| {
+            advance(
+                stored.is_some(),
+                stored.unwrap_or(0),
+                incoming.is_some(),
+                incoming.unwrap_or(0),
+            )
+        };
+        assert!(!stale(Some(4), Some(5)), "newer than stored -> apply");
+        assert!(stale(Some(5), Some(4)), "older than stored -> skip");
+        assert!(!stale(None, Some(4)), "nothing stored -> apply");
+        assert!(!stale(Some(5), None), "unsequenced -> apply");
+        assert!(
+            stale(Some(u64::MAX), Some(u64::MAX - 1)),
+            "the ceiling is a sequence, not absence"
+        );
+        assert_eq!(advanced(Some(4), Some(5)), Some(5));
         assert_eq!(
-            advance(Some(5), Some(4)),
+            advanced(Some(5), Some(4)),
             Some(5),
             "a stale sequence never lowers the mark"
         );
         assert_eq!(
-            advance(Some(5), None),
+            advanced(Some(5), None),
             Some(5),
             "an unsequenced event never erases the mark"
         );
-        assert_eq!(advance(None, Some(4)), Some(4));
+        assert_eq!(advanced(None, Some(4)), Some(4));
+        assert_eq!(advanced(Some(u64::MAX), None), Some(u64::MAX));
+        assert!(!is_stale(false, 9, true, 4), "an absent value is never read");
     }
 
     #[test]

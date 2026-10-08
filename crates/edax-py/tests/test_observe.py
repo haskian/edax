@@ -977,6 +977,7 @@ class TimingCase:
     error: BaseException | None
     want: tuple[str, str, str | None]  # (name, outcome, error_type)
     record_raises: bool = False
+    label_raises: bool = False
 
 
 @pytest.mark.parametrize(
@@ -995,6 +996,19 @@ class TimingCase:
             TimingCase("command", None, ("user.create", "ok", None), record_raises=True),
             id="a_raising_recorder_is_logged_and_the_result_still_returns",
         ),
+        pytest.param(
+            TimingCase("command", None, ("edax.unlabelled", "ok", None), label_raises=True),
+            id="a_raising_label_is_logged_and_the_result_still_returns",
+        ),
+        pytest.param(
+            TimingCase(
+                "event",
+                ValueError("bad"),
+                ("edax.unlabelled", "error", "builtins.ValueError"),
+                label_raises=True,
+            ),
+            id="a_raising_label_leaves_the_handler_error_unchanged",
+        ),
     ],
 )
 async def test_timing_records_the_handler_outcome(case: TimingCase, caplog: pytest.LogCaptureFixture) -> None:
@@ -1010,16 +1024,21 @@ async def test_timing_records_the_handler_outcome(case: TimingCase, caplog: pyte
             raise case.error
         return "done"
 
+    def label(msg: Any) -> str:
+        if case.label_raises:
+            raise KeyError(msg.name)  # a label table that misses a newer message name
+        return str(msg.name)
+
     async def dispatch() -> Any:
         if case.bus == "command":
-            bus = edax.CommandBus(timing(record, lambda msg: msg.name))
+            bus = edax.CommandBus(timing(record, label))
 
             async def handler(cmd: CreateUser) -> str:
                 return run(cmd)
 
             bus.register(CreateUser, handler)
             return await bus.dispatch(CreateUser("a@b.c"))
-        router = edax.EventRouter(timing(record, lambda env: env.name))
+        router = edax.EventRouter(timing(record, label))
 
         async def event_handler(env: edax.EventMessage) -> None:
             run(env)
@@ -1031,8 +1050,9 @@ async def test_timing_records_the_handler_outcome(case: TimingCase, caplog: pyte
         if case.error is None:
             assert await dispatch() == "done"
         else:
-            with pytest.raises(type(case.error)):
+            with pytest.raises(type(case.error)) as caught:
                 await dispatch()
+            assert caught.value is case.error
 
     [(name, outcome, error_type, duration_ns)] = rows
     assert (name, outcome, error_type) == case.want
@@ -1040,7 +1060,9 @@ async def test_timing_records_the_handler_outcome(case: TimingCase, caplog: pyte
     assert_logged(
         caplog,
         "edax.observe",
-        [f"edax observe: {record.__qualname__} raised; the failure is ignored"] if case.record_raises else [],
+        [f"edax observe: {record.__qualname__} raised; the failure is ignored"] * case.record_raises
+        + ["edax observe: the timing label raised; the row is recorded as 'edax.unlabelled'"]
+        * case.label_raises,
     )
 
 

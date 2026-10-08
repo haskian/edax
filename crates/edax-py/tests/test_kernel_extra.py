@@ -387,6 +387,17 @@ class Noted(msgspec.Struct):
     note: Any
 
 
+class Line(msgspec.Struct, array_like=True):
+    """A struct msgspec writes as an array, not a map."""
+
+    sku: str
+
+
+class Shipped(msgspec.Struct):
+    order_id: str
+    lines: list[Line]
+
+
 REGISTRY: dict[str, type] = {"Deposited": Deposited, "Withdrawn": Withdrawn, "Noted": Noted}
 DEPOSITED = Deposited("acct-1", 4200, "EUR", "2024-05-01T12:00:00Z")
 WITHDRAWN = Withdrawn("acct-1", 999, "GBP", "2024-05-02T09:30:00Z")
@@ -440,6 +451,19 @@ def test_marshal_branches(
     "branch, events, upcasters, want_error",
     [
         ("distinct_types", REGISTRY, CURRENCY_STEP, None),
+        # Every SDK reads a struct from a map only, so an array_like one would store bytes only Python reads.
+        (
+            "a_positional_struct",
+            {**REGISTRY, "Line": Line},
+            None,
+            r"'Line' holds array_like structs \['Line'\]",
+        ),
+        (
+            "a_nested_positional_struct",
+            {**REGISTRY, "Shipped": Shipped},
+            None,
+            r"'Shipped' holds .* \['Line'\]",
+        ),
         # Two names for one type: inverting the map would keep only the last, and every Deposited
         # would then be stored under "Credited". The store keeps that wrong name forever.
         (

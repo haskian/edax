@@ -395,7 +395,7 @@ impl<M: Message> Worker<M> {
             return;
         }
         let Some(failure) = outcome else {
-            self.retries.succeeded(message.id());
+            self.retries.succeeded(message.id(), message.tenant());
             run_settler(on_ack);
             return;
         };
@@ -404,8 +404,8 @@ impl<M: Message> Worker<M> {
         // transient one. The kernel reads the code: another consumer holding the key's claim is
         // contention, not a failed attempt, so it never dead-letters a message whose holder is slow.
         let kind = failure.error().map_or(Failure::of(None), |e| failure_of(&**e));
-        let id = message.id().to_owned();
-        match self.retries.failed(&id, broker_attempt, kind) {
+        let (id, tenant) = (message.id().to_owned(), message.tenant().map(ToOwned::to_owned));
+        match self.retries.failed(&id, tenant.as_deref(), broker_attempt, kind) {
             Verdict::Nack { step } => self.nack_after_backoff(step, on_nack),
             Verdict::Stop => self.stop(failure.error(), on_nack),
             Verdict::Dead { attempt } => {
@@ -420,7 +420,7 @@ impl<M: Message> Worker<M> {
                     failure,
                 };
                 let sink = self.on_dead.as_ref().map(|on_dead| || on_dead(dead));
-                match dead_letter(&mut self.retries, &id, attempt, sink) {
+                match dead_letter(&mut self.retries, &id, tenant.as_deref(), attempt, sink) {
                     Sunk::Taken => run_settler(on_ack),
                     Sunk::Nack(step) => self.nack_after_backoff(step, on_nack),
                     Sunk::Stop(refusal) => self.stop(refusal.as_ref(), on_nack),
@@ -472,17 +472,18 @@ enum Sunk {
     Stop(Option<HandlerError>),
 }
 
-/// Hand the message `id`, which the retry policy declared dead at `attempt`, to the dead-letter `sink`,
-/// and tell the policy how that went. A refused message keeps its attempt, so the next try dead-letters
-/// again; a fatal refusal stops the consumer as the kernel answers.
+/// Hand the message `id` of `tenant`, which the retry policy declared dead at `attempt`, to the
+/// dead-letter `sink`, and tell the policy how that went. A refused message keeps its attempt, so the
+/// next try dead-letters again; a fatal refusal stops the consumer as the kernel answers.
 fn dead_letter(
     retries: &mut Retries,
     id: &str,
+    tenant: Option<&str>,
     attempt: u32,
     sink: Option<impl FnOnce() -> Result<(), HandlerError>>,
 ) -> Sunk {
     let answer = run_sink(sink);
-    match (answer.failure, retries.sunk(id, attempt, answer.failure)) {
+    match (answer.failure, retries.sunk(id, tenant, attempt, answer.failure)) {
         (None, _) => Sunk::Taken,
         (Some(_), Some(step)) => Sunk::Nack(step),
         (Some(_), None) => Sunk::Stop(answer.refusal),
@@ -1072,6 +1073,41 @@ mod tests {
             let want_slept: Vec<Duration> = c.want_slept.iter().map(|&step| kernel_wait(step)).collect();
             assert_eq!(*slept.lock().unwrap(), want_slept, "{}: backoff steps", c.name);
         }
+    }
+
+    #[test]
+    fn one_id_of_two_tenants_keeps_two_retry_budgets() {
+        // Bridge tenancy: two tenants' stores mint the same id, and one shared dispatcher serves both.
+        // The second tenant's first failure is its first attempt, not the first tenant's second.
+        let settled: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let dead: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sunk = Arc::clone(&dead);
+        let consumer =
+            KeyOrderedDispatcher::builder(1, |_: &EventMessage| Err(Error::store("shipping API down").into()))
+                .max_attempts(2)
+                .pacing(Pacing::recording().0)
+                .on_dead(move |letter: DeadLetter| {
+                    let tenant = letter.message.tenant.as_deref().unwrap_or_default();
+                    sunk.lock().unwrap().push(format!("{tenant}@{}", letter.attempt));
+                    Ok(())
+                })
+                .build()
+                .expect("the dispatcher's workers spawn");
+        for tenant in ["acme", "globex", "acme"] {
+            let mut message = event("order-7", "OrderPaid", 1);
+            message.tenant = Some(tenant.to_owned());
+            let (a, k) = (Arc::clone(&settled), Arc::clone(&settled));
+            consumer
+                .submit(Delivery::new(
+                    message,
+                    move || a.lock().unwrap().push(format!("{tenant}:ack")),
+                    move || k.lock().unwrap().push(format!("{tenant}:nack")),
+                ))
+                .expect("the dispatcher is running");
+        }
+        consumer.stop();
+        assert_eq!(*settled.lock().unwrap(), ["acme:nack", "globex:nack", "acme:ack"]);
+        assert_eq!(*dead.lock().unwrap(), ["acme@2"]);
     }
 
     #[test]

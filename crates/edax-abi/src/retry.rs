@@ -78,44 +78,57 @@ impl From<edax_event::Tracked> for RetriesTracked {
     }
 }
 
-/// The consumer's retry and dead-letter policy, keyed by message id. Every decision is data the host
-/// performs: the handler, the sink, the wait and the ack or nack stay the host's. Construct it with
-/// [`retries`]. See [`edax_event::Retries`].
+/// The consumer's retry and dead-letter policy, keyed by message id inside its tenant. Every
+/// decision is data the host performs: the handler, the sink, the wait and the ack or nack stay the
+/// host's. Construct it with [`retries`]. See [`edax_event::Retries`].
+// `tenant` is optional, so it trails every method: alef moves optional parameters to the end.
 pub struct Retries {
     inner: Arc<Mutex<edax_event::Retries>>,
 }
 
 impl Retries {
-    /// The attempt a run of `id` is: `max(broker_attempt, recorded) + 1`.
-    pub fn attempt(&self, id: &str, broker_attempt: u32) -> u32 {
-        edax_core::lock(&self.inner).attempt(id, broker_attempt)
+    /// The attempt a run of `id` of `tenant` is: `max(broker_attempt, recorded) + 1`.
+    pub fn attempt(&self, id: &str, broker_attempt: u32, tenant: Option<String>) -> u32 {
+        edax_core::lock(&self.inner).attempt(id, tenant.as_deref(), broker_attempt)
     }
 
-    /// `id` succeeded: forget its counts.
-    pub fn succeeded(&self, id: &str) {
-        edax_core::lock(&self.inner).succeeded(id);
+    /// `id` of `tenant` succeeded: forget its counts.
+    pub fn succeeded(&self, id: &str, tenant: Option<String>) {
+        edax_core::lock(&self.inner).succeeded(id, tenant.as_deref());
     }
 
-    /// `id` failed with a failure carrying the taxonomy code `code`, `None` for one no code classifies;
-    /// the kernel reads the kind off the code ([`edax_event::Failure::of`]). An unknown code is a
-    /// `codec:` error.
-    pub fn failed(&self, id: &str, broker_attempt: u32, code: Option<String>) -> Result<RetryVerdict, String> {
+    /// `id` of `tenant` failed with a failure carrying the taxonomy code `code`, `None` for one no code
+    /// classifies; the kernel reads the kind off the code ([`edax_event::Failure::of`]). An unknown code
+    /// is a `codec:` error.
+    pub fn failed(
+        &self,
+        id: &str,
+        broker_attempt: u32,
+        code: Option<String>,
+        tenant: Option<String>,
+    ) -> Result<RetryVerdict, String> {
         let failure = failure_of(code)?;
         Ok(retry_verdict(
-            edax_core::lock(&self.inner).failed(id, broker_attempt, failure),
+            edax_core::lock(&self.inner).failed(id, tenant.as_deref(), broker_attempt, failure),
             failure,
         ))
     }
 
-    /// The sink's answer for the message `id`, dead at `attempt`: `taken`, or refused with a failure
+    /// The sink's answer for the message `id` of `tenant`, dead at `attempt`: `taken`, or refused with a failure
     /// carrying the taxonomy `code` (`None` for one no code classifies; read only when not `taken`).
     /// Returns the backoff step to wait before the nack of a refused message, or `None` when nothing
     /// waits: the sink took it (ack it), or refused it fatally (stop the consumer). An unknown code is a
     /// `codec:` error. See [`edax_event::Retries::sunk`].
-    // `code` is optional, so it trails: alef moves optional parameters to the end of the signature.
-    pub fn sunk(&self, id: &str, attempt: u32, taken: bool, code: Option<String>) -> Result<Option<u64>, String> {
+    pub fn sunk(
+        &self,
+        id: &str,
+        attempt: u32,
+        taken: bool,
+        code: Option<String>,
+        tenant: Option<String>,
+    ) -> Result<Option<u64>, String> {
         let refusal = refusal(taken, code)?;
-        Ok(edax_core::lock(&self.inner).sunk(id, attempt, refusal))
+        Ok(edax_core::lock(&self.inner).sunk(id, tenant.as_deref(), attempt, refusal))
     }
 
     /// How many messages the policy tracks.
@@ -333,46 +346,46 @@ mod tests {
     fn retries_cross_their_decisions_structurally() {
         let code = |c: &str| Some(c.to_owned());
         let policy = retries(2, true);
-        let nack = policy.failed("evt-1", 0, code("store")).unwrap();
+        let nack = policy.failed("evt-1", 0, code("store"), None).unwrap();
         assert_eq!((nack.action.as_str(), nack.attempt, nack.step), ("nack", None, Some(0)));
-        let dead = policy.failed("evt-1", 0, None).unwrap();
+        let dead = policy.failed("evt-1", 0, None, None).unwrap();
         assert_eq!(
             (dead.action.as_str(), dead.attempt, dead.step),
             ("dead", Some(2), None),
             "an unclassified failure is transient and counts"
         );
         assert_eq!(
-            policy.sunk("evt-1", 2, false, None),
+            policy.sunk("evt-1", 2, false, None, None),
             Ok(Some(1)),
             "a refusal with no code is transient"
         );
-        assert_eq!(policy.attempt("evt-1", 0), 3);
+        assert_eq!(policy.attempt("evt-1", 0, None), 3);
         assert_eq!(
-            policy.sunk("evt-1", 3, true, None),
+            policy.sunk("evt-1", 3, true, None, None),
             Ok(None),
             "a taken message waits nothing"
         );
         assert_eq!(
-            policy.sunk("evt-1", 3, true, code("poison")).err().as_deref(),
+            policy.sunk("evt-1", 3, true, code("poison"), None).err().as_deref(),
             Some("codec: unknown error code: poison")
         );
-        let contended = policy.failed("evt-2", 0, code("in_progress")).unwrap();
+        let contended = policy.failed("evt-2", 0, code("in_progress"), None).unwrap();
         assert_eq!((contended.action.as_str(), contended.step), ("nack", Some(0)));
         let tracked = policy.tracked();
         assert_eq!((tracked.attempts, tracked.contended), (0, 1));
-        policy.succeeded("evt-2");
+        policy.succeeded("evt-2", None);
         assert_eq!(policy.tracked().contended, 0);
         assert_eq!(
-            policy.failed("evt-1", 0, code("poison")).err().as_deref(),
+            policy.failed("evt-1", 0, code("poison"), None).err().as_deref(),
             Some("codec: unknown error code: poison")
         );
-        let terminal = retries(2, false).failed("evt-3", 0, code("codec")).unwrap();
+        let terminal = retries(2, false).failed("evt-3", 0, code("codec"), None).unwrap();
         assert_eq!(
             (terminal.action.as_str(), terminal.step),
             ("nack", Some(0)),
             "no sink: a terminal failure nacks"
         );
-        let fatal = retries(2, true).failed("evt-4", 0, code("bad_handle")).unwrap();
+        let fatal = retries(2, true).failed("evt-4", 0, code("bad_handle"), None).unwrap();
         assert_eq!(
             (fatal.action.as_str(), fatal.attempt, fatal.step),
             ("stop", None, None),

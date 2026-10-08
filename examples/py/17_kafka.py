@@ -77,23 +77,25 @@ async def run(
     print(f"relay published {await Relay(store, publish).drain()} events")
 
     # 2. The handler, and a dead-letter route that records what it forwards.
-    packed: list[str] = []
+    # A set: delivery is at-least-once, so a nack that rewinds the partition can hand an order over again.
+    packed: set[str] = set()
     dead: list[str] = []
 
     async def pack(event: EventMessage) -> None:
         order: OrderPlaced = events.unmarshal(event)
         if order.quantity < 1:
             raise InvalidOrder(f"{event.aggregate_id} has no items")
-        packed.append(event.aggregate_id)
+        packed.add(event.aggregate_id)
         print(f"  packed {event.aggregate_id}")
 
     async def to_dead_letters(letter: DeadLetter[EventMessage | Undecodable]) -> None:
         order = letter.message
         assert isinstance(order, EventMessage), "every record decoded"
-        dead.append(order.aggregate_id)
-        print(f"  dead-lettered {order.aggregate_id} at attempt {letter.attempt}: {letter.failure}")
         if sink is not None:
             await sink(letter)
+        # Recorded only once the sink took it: a sink that raises leaves the order for a redelivery.
+        dead.append(order.aggregate_id)
+        print(f"  dead-lettered {order.aggregate_id} at attempt {letter.attempt}: {letter.failure}")
 
     # 3. Consume until every order is packed or dead-lettered, then shut down.
     dispatcher = KeyOrderedDispatcher(workers=2, handler=pack, on_dead=to_dead_letters)

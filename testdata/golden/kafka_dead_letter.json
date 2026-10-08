@@ -834,6 +834,66 @@
     "headers": [
       {
         "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      },
+      {
+        "key": "edax-dlq-dropped",
+        "value_hex": "ff"
+      }
+    ],
+    "name": "a_dropped_count_that_is_not_utf8",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
+        "value_hex": "74"
+      },
+      {
+        "key": "edax-dlq-partition",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-offset",
+        "value_hex": "30"
+      },
+      {
+        "key": "edax-dlq-error",
+        "value_hex": "78"
+      },
+      {
+        "key": "edax-dlq-dropped",
+        "value_hex": "333337"
+      },
+      {
+        "key": "edax-dlq-dropped",
+        "value_hex": "ff"
+      }
+    ],
+    "name": "a_last_dropped_count_that_is_not_utf8",
+    "want": {
+      "source": null
+    }
+  },
+  {
+    "headers": [
+      {
+        "key": "edax-dlq-topic",
         "value_hex": "ff"
       },
       {

@@ -38,7 +38,7 @@ it in `edax::Terminal`.
 | `Error::codec(..)` | `CodecError` | `codec` | terminal | codecs, every kernel refusal of a value; see below | `retry` gives up at once; the guard caches a `failed` record; the dispatcher dead-letters at once |
 | `Error::store(..)` | `StoreError` | `store` | transient | any backend failure that is not a version conflict; also the Python class for an unknown wire code | `retry` re-runs; the guard releases; the dispatcher nacks |
 | `ErrorCode::AlreadyRegistered` | `AlreadyRegistered` | `already_registered` | terminal | `CommandBus.register`, `EventRouter.register`, the codec registry, `Upcaster.step` | nothing at runtime: it is a startup wiring error |
-| `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; a nested `transaction`; `retry` inside an open transaction; a misconfigured store | the dispatcher dead-letters: retrying cannot rewire the store |
+| `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; a nested `transaction`; `retry` inside an open transaction; an idempotency guard inside a transaction its ledger does not join; a misconfigured store | fatal, see [`is_fatal`](#is_fatal-the-failures-that-stop-a-consumer): the dispatcher stops, nacks the delivery uncounted and hands back the work it has not run; the relay stops too; nothing is dead-lettered, because retrying cannot rewire the store |
 | `ErrorCode::PayloadMismatch` | `PayloadMismatch` | `payload_mismatch` | terminal | the guard, when the key's stored hash differs from this payload's | the dispatcher dead-letters; the guard never re-runs the handler |
 | `ErrorCode::InProgress` | `InProgress` | `in_progress` | transient | the guard, when the winner holds the claim and has not completed | `retry` re-runs; the dispatcher waits one backoff step and nacks without spending an attempt |
 | `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal failure, or a stored record no reader can decode (`original_code` `codec`); the message is the original failure's wire form and `original_code` its code | the dispatcher dead-letters instead of redelivering forever |
@@ -51,12 +51,14 @@ Every row is a code of the kernel; the second column names the constructor where
 
 ### Who raises `CodecError`
 
-- a codec that cannot marshal or unmarshal an event.
+- a codec that cannot marshal or unmarshal an event. A codec built over a type that holds a
+  `datetime` or a `decimal.Decimal` field raises it too: declare `edax.Instant` and `edax.Decimal`.
 - a command that will not serialize.
 - a filter operand, a projection document or a saga state the SDK's one JSON encoder cannot encode.
   Python encodes all of them with the encoder the command hash uses, so a value that hashes in a
-  command also encodes in a filter. That encoder writes a `Decimal` as the kernel's canonical decimal
-  text, and an aware `datetime` as the kernel's fixed-width UTC text. Both then compare by value
+  command also encodes in a filter. That encoder writes an `edax.Decimal` or a `decimal.Decimal` as the
+  kernel's canonical decimal text. It writes an `edax.Instant` or an aware `datetime` as the kernel's
+  fixed-width UTC text. Both then compare by value
   ([the filter kernel](../kernels/filter.md#host-values-every-sdk-writes-alike)). It refuses a naive
   `datetime`, whose instant is unknown, and a `Decimal` that is `NaN`, infinite or past 1000 digits.
 - an idempotency record that will not encode, or that the strict `decode_record` will not decode. A

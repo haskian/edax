@@ -123,26 +123,32 @@ func (t *transport) takeError() error {
 	return err
 }
 func (t *transport) Poll(ctx context.Context) (*kafka.Fetched, error) {
-	if err := t.takeError(); err != nil {
-		return nil, err
-	}
-	fetches := t.client.PollRecords(ctx, 1)
+	var records []*kgo.Record
 	var failure error
-	fetches.EachError(func(_ string, _ int32, err error) {
-		if errors.Is(err, kgo.ErrClientClosed) {
-			err = io.EOF
+	for {
+		if err := t.takeError(); err != nil {
+			return nil, err
 		}
-		failure = errors.Join(failure, brokerError(err))
-	})
-	records := fetches.Records()
-	if len(records) == 0 {
+		fetches := t.client.PollRecords(ctx, 1)
+		failure = nil
+		fetches.EachError(func(_ string, _ int32, err error) {
+			if errors.Is(err, kgo.ErrClientClosed) {
+				err = io.EOF
+			}
+			failure = errors.Join(failure, brokerError(err))
+		})
+		records = fetches.Records()
+		if len(records) > 0 {
+			break
+		}
 		if failure != nil {
 			return nil, failure
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return nil, io.EOF
+		// An idle partition yields an empty, error-free fetch. Only client
+		// closure (io.EOF above) or cancellation ends the stream.
 	}
 	// Fetches may carry a record and unrelated partition errors together. Deliver
 	// the record first so its offset is booked before reporting those errors.

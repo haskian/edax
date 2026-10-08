@@ -7,16 +7,19 @@ command also matches in a filter and reads the same in an event. It uses msgspec
 ``UUID``, ``date`` and ``Enum`` all encode, deterministically. A type whose declared fields hold no
 ``datetime``, ``Decimal`` or dataclass is written by msgspec as it is, with no walk, decided once per type.
 
-Two host types get the form every SDK writes, so they compare by value and hash alike across languages
+The host types :class:`edax.Decimal` and :class:`edax.Instant` (:mod:`edax.host_value`) are written as
+their canonical text, and the typed decoders (:func:`decode_json`, :func:`decode_msgpack`) read them from the
+text the wire carries, through the kernel. A plain ``Decimal`` or ``datetime`` in a value an encoder writes
+gets the same text through the kernel, so the two compare by value and hash alike across languages
 (``testdata/golden/host_values.json`` pins both):
 
-- A ``Decimal`` becomes the kernel's canonical decimal text, a JSON string: ``Decimal("9.50")`` and
+- A decimal becomes the kernel's canonical decimal text, a JSON string: ``Decimal("9.50")`` and
   ``Decimal("9.5")`` are both ``"9.5"``, at any precision, and no double is involved. Equality and the hash
   see one value. A range filter or a sort orders decimal text by value only under the decimal collation.
-  :mod:`edax.filter` sets it for a ``Decimal`` comparand, and ``sort_key(..., decimal=True)`` for a sort.
+  :mod:`edax.filter` sets it for a decimal comparand, and ``sort_key(..., decimal=True)`` for a sort.
   ``NaN``, an infinity and a value past 1000 digits are refused.
-- A ``datetime`` becomes the kernel's fixed-width UTC text (``2024-01-01T00:30:00.000000Z``), so string order
-  is instant order: ``+01:00`` is converted, and a whole second gets ``.000000``. A naive ``datetime`` is
+- An instant becomes the kernel's fixed-width UTC text (``2024-01-01T00:30:00.000000Z``), so string order is
+  instant order: ``+01:00`` is converted, and a whole second gets ``.000000``. A naive ``datetime`` is
   refused: its instant is unknown, and guessing UTC would misplace it silently.
 
 Every failure is deterministic, so it is a terminal :class:`~edax.errors.CodecError`, never a bare
@@ -41,6 +44,7 @@ import msgspec
 
 from . import _native
 from .errors import CodecError
+from .host_value import HOST_TYPES, Instant
 
 T = TypeVar("T")
 
@@ -71,39 +75,70 @@ _ENCODE_ERRORS = (TypeError, ValueError, OverflowError, RecursionError)
 def encode_bytes(value: Any) -> bytes:
     """``value`` as UTF-8 JSON bytes, for a kernel call that takes bytes."""
     try:
-        return msgspec.json.encode(value if _plan(type(value)).direct else _builtins(value, _OWN_FORM))
+        return _JSON_ENCODER.encode(value if _plan(type(value)).direct else _builtins(value, _OWN_FORM))
     except _ENCODE_ERRORS as e:
         raise CodecError(f"value is not JSON-encodable: {e}") from e
 
 
 def encode_msgpack(value: Any) -> bytes:
-    """``value`` as MessagePack, with every ``datetime`` and ``Decimal`` in the shared form JSON writes and
-    bytes kept native: what the MessagePack event codec writes. A value msgspec cannot encode is a
+    """``value`` as MessagePack, with every host value in the shared form JSON writes and bytes kept native:
+    what the MessagePack event codec writes. A value msgspec cannot encode is a
     :class:`~edax.errors.CodecError`."""
     try:
-        return msgspec.msgpack.encode(
+        return _MSGPACK_ENCODER.encode(
             value if _plan(type(value)).direct else _builtins(value, _OWN_FORM_BINARY)
         )
     except _ENCODE_ERRORS as e:
         raise CodecError(f"value is not encodable: {e}") from e
 
 
-def check_read(value: T, decoded_as: type) -> T:
-    """``value``, a payload a decoder just built as ``decoded_as``, once every ``datetime`` and ``Decimal`` in
-    it has a shared form: a naive ``datetime``, ``NaN``, an infinity or a decimal past 1000 digits is a
-    :class:`~edax.errors.CodecError`, as the Rust SDK's ``edax::Instant`` and ``edax::Decimal`` refuse it on
-    read. A decoder reads such text into the host type without asking, so the check runs the shared form
-    once more over what it built. A type that holds neither is never walked."""
-    if _plan(decoded_as).host_values:
+def decode_json(data: bytes, type_: type[T]) -> T:
+    """``data``, JSON, read as ``type_``, each host value read from its wire text by :func:`decode_hook`."""
+    return msgspec.json.decode(data, type=type_, dec_hook=decode_hook)
+
+
+def decode_msgpack(data: bytes, type_: type[T]) -> T:
+    """``data``, MessagePack, read as ``type_``, each host value read from its wire text by
+    :func:`decode_hook`."""
+    return msgspec.msgpack.decode(data, type=type_, dec_hook=decode_hook)
+
+
+def _encode_hook(value: Any) -> str:
+    """A host value's canonical text, what msgspec writes for it. Any other type is one msgspec cannot
+    encode."""
+    if isinstance(value, HOST_TYPES):
+        return str(value)
+    raise TypeError(f"Encoding objects of type {type(value).__name__} is unsupported")
+
+
+_JSON_ENCODER = msgspec.json.Encoder(enc_hook=_encode_hook)
+_MSGPACK_ENCODER = msgspec.msgpack.Encoder(enc_hook=_encode_hook)
+
+
+def decode_hook(type_: type, value: Any) -> Any:
+    """``value``, what msgspec found on the wire for a field of ``type_`` it cannot build itself, as
+    ``type_``. A host value is read from its text by the kernel, so a refusal is the kernel's, and an
+    instance passes as it is. A MessagePack timestamp, which an earlier release wrote for a ``datetime``,
+    reads as an :class:`~edax.Instant`: msgspec has already rounded it to a microsecond, so a finer one is
+    not refused as the text form is. Anything else is a ``TypeError``, which msgspec reports with the
+    field's path."""
+    if type_ in HOST_TYPES:
+        if isinstance(value, type_):
+            return value
         try:
-            _builtins(value, _OWN_FORM_BINARY)
-        except _ENCODE_ERRORS as e:
-            raise CodecError(f"value is not encodable: {e}") from e
-    return value
+            if isinstance(value, str):
+                return type_(value)
+            if type_ is Instant and isinstance(value, datetime):
+                return Instant.from_datetime(value)
+        except CodecError as e:
+            raise ValueError(str(e)) from e  # msgspec adds the path to a ValueError, not to a CodecError
+    raise TypeError(f"Expected `{type_.__name__}`, got `{type(value).__name__}`")
 
 
 def _builtins(value: Any, own_form: tuple[type, ...]) -> Any:
-    return _shared_form(msgspec.to_builtins(_materialized(value), builtin_types=own_form))
+    return _shared_form(
+        msgspec.to_builtins(_materialized(value), builtin_types=own_form, enc_hook=_encode_hook)
+    )
 
 
 @dataclass(frozen=True)
@@ -111,7 +146,7 @@ class _Plan:
     """What a value of one type needs before an encoder writes it in the shared form, read off its declared
     field types once: msgspec itself trusts them to encode and decode."""
 
-    #: It may hold a ``datetime`` or a ``Decimal``: each is rewritten on encode, and checked on read.
+    #: It may hold a plain ``datetime`` or ``Decimal``, rewritten to its shared form on encode.
     host_values: bool
     #: It may hold a dataclass, whose defaulted fields must be read through ``dataclasses.fields()``.
     dataclasses: bool
@@ -135,18 +170,22 @@ def _plan(type_: type) -> _Plan:
 
 def _plan_of(type_: type) -> _Plan:
     try:
-        kinds = _kinds(msgspec.inspect.type_info(type_))
+        nodes = type_nodes(msgspec.inspect.type_info(type_))
     except Exception:  # noqa: BLE001 - a type msgspec cannot inspect gets the full walk
         return _Plan(host_values=True, dataclasses=True)
-    # `Any` and a type msgspec does not know may hold anything at run time.
-    opaque = bool(kinds & {msgspec.inspect.AnyType, msgspec.inspect.CustomType})
+    kinds = {type(node) for node in nodes}
+    # `Any` and a type msgspec does not know may hold anything at run time. A host type is known: the encoder
+    # writes it through its hook.
+    opaque = msgspec.inspect.AnyType in kinds or any(
+        isinstance(node, msgspec.inspect.CustomType) and node.cls not in HOST_TYPES for node in nodes
+    )
     host_values = bool(kinds & {msgspec.inspect.DateTimeType, msgspec.inspect.DecimalType})
     return _Plan(opaque or host_values, opaque or msgspec.inspect.DataclassType in kinds)
 
 
-def _kinds(root: msgspec.inspect.Type) -> set[type]:
-    """The kind of every node in ``root``'s type tree. A recursive type points back at a node already seen."""
-    kinds: set[type] = set()
+def type_nodes(root: msgspec.inspect.Type) -> list[msgspec.inspect.Type]:
+    """Every node in ``root``'s type tree, once. A recursive type points back at a node already seen."""
+    nodes: list[msgspec.inspect.Type] = []
     seen: set[int] = set()
     stack = [root]
     while stack:
@@ -154,14 +193,14 @@ def _kinds(root: msgspec.inspect.Type) -> set[type]:
         if id(node) in seen:
             continue
         seen.add(id(node))
-        kinds.add(type(node))
+        nodes.append(node)
         for name in node.__struct_fields__:
             value = getattr(node, name)
             for child in value if isinstance(value, tuple) else (value,):
                 child_type = child.type if isinstance(child, msgspec.inspect.Field) else child
                 if isinstance(child_type, msgspec.inspect.Type):
                     stack.append(child_type)
-    return kinds
+    return nodes
 
 
 def decode(text: str | bytes) -> Any:
@@ -173,14 +212,13 @@ def decode(text: str | bytes) -> Any:
 
 
 def _shared_form(value: Any) -> Any:
-    """``value``, the builtins ``to_builtins`` made, with every ``datetime`` and ``Decimal`` in its shared
-    form, dictionary keys included."""
+    """``value``, the builtins ``to_builtins`` made, with every plain ``datetime`` and ``Decimal`` in the
+    shared form its host type writes, dictionary keys included."""
     if isinstance(value, dict):
         return {_shared_form(key): _shared_form(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_shared_form(item) for item in value]
     if isinstance(value, datetime):
-        # The kernel refuses a naive value: its text has no offset.
         return _native.canonical_timestamp(value.isoformat())
     if isinstance(value, Decimal):
         return _native.canonical_decimal(str(value))

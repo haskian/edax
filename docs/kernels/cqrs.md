@@ -167,7 +167,10 @@ The command hash reads the host's serialized value as it is. So in Rust the fiel
 the text: a decimal field must be `edax_cqrs::Decimal` and an instant field `edax_cqrs::Instant`
 (both re-exported as `edax::Decimal` and `edax::Instant`). Each canonicalizes when it is built,
 through `FromStr` or `Deserialize`, and refuses what the text function refuses. An `f64`, or a
-`String` that holds `9.50`, hashes as another command than Python's `Decimal`.
+`String` that holds `9.50`, hashes as another command than Python's `Decimal`. Python has the same
+two types, `edax.Decimal` and `edax.Instant`, and the encoder writes them as their text. A command
+read by a Python codec must declare them, since the codecs refuse a `decimal.Decimal` or `datetime`
+field.
 
 ### The golden vectors that hold this
 

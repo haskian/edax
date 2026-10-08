@@ -80,6 +80,22 @@ async def issue_untyped(cmd):  # type: ignore[no-untyped-def]
     return invoice()
 
 
+class Receipt(msgspec.Struct):
+    total: edax.Decimal
+    issued_at: edax.Instant
+
+
+RECEIPT = Receipt(edax.Decimal("50.00"), edax.Instant("2026-10-03T10:30:00+01:00"))
+
+
+async def issue_receipt(cmd: IssueInvoice) -> Receipt:
+    return RECEIPT
+
+
+async def issue_total(cmd: IssueInvoice) -> edax.Decimal:
+    return RECEIPT.total
+
+
 async def issue_object(cmd: IssueInvoice) -> object:
     return {"invoice_id": "inv-7"}
 
@@ -107,6 +123,8 @@ CASES = [
     Case("explicit_result_type_wins", issue_untyped, Invoice, invoice(), Invoice),
     Case("a_struct_annotation", issue_struct, None, InvoiceStruct("inv-7", 5000), InvoiceStruct),
     Case("an_optional_annotation_replays_none", issue_optional, None, None, type(None)),
+    Case("host_type_fields_replay_from_their_text", issue_receipt, None, RECEIPT, Receipt),
+    Case("a_host_type_annotation", issue_total, None, edax.Decimal("50"), edax.Decimal),
     Case(
         "no_annotation_replays_plain_json",
         issue_untyped,

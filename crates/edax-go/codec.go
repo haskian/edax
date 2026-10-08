@@ -1,7 +1,7 @@
 package edax
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
 	"reflect"
 
@@ -20,7 +20,7 @@ type JSONCodec struct {
 // NewJSONCodec takes constructors so decoding returns the application's concrete pointer types.
 // Constructors must return fresh values and support concurrent calls after configuration.
 func NewJSONCodec(registry map[string]func() any) (*JSONCodec, error) {
-	codec := &JSONCodec{encode: json.Marshal, decode: json.Unmarshal, types: make(map[string]func() any), names: make(map[reflect.Type]string), upcasters: make(map[string]*Upcaster)}
+	codec := &JSONCodec{encode: encodeJSON, decode: decodeShapedJSON, types: make(map[string]func() any), names: make(map[reflect.Type]string), upcasters: make(map[string]*Upcaster)}
 	for name, makeValue := range registry {
 		if name == "" || makeValue == nil {
 			return nil, &Error{Code: CodeCodec, Message: "payload registration needs a name and constructor"}
@@ -132,7 +132,8 @@ func (u *Upcaster) versions() []uint32 {
 func (u *Upcaster) Target() (uint32, error) { return kernel.UpcastTarget(u.versions()) }
 
 // Apply runs the kernel-selected transforms from the supplied version to Target.
-// Transform functions receive raw bytes and may return an error to stop the sequence.
+// Transforms receive a copy of the raw bytes and may change it in place. An error stops the
+// sequence; one with no taxonomy code becomes a terminal codec error.
 func (u *Upcaster) Apply(from uint32, data []byte) ([]byte, error) {
 	target, err := u.Target()
 	if err != nil {
@@ -142,14 +143,22 @@ func (u *Upcaster) Apply(from uint32, data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(plan) > 0 {
+		// A transform may change its input in place. The caller's payload keeps its old version,
+		// so it must keep its old bytes too.
+		data = bytes.Clone(data)
+	}
 	for _, version := range plan {
 		step := u.Steps[version]
 		if step == nil {
 			return nil, &Error{Code: CodeCodec, Message: fmt.Sprintf("upcast transform %d is nil", version)}
 		}
-		data, err = step(data)
-		if err != nil {
-			return nil, err
+		if data, err = step(data); err != nil {
+			if errorCode(err) != nil {
+				return nil, err
+			}
+			// A failure with no code repeats on every retry. Untyped, it would read as transient.
+			return nil, WrapError(CodeCodec, fmt.Sprintf("upcast transform %d: %v", version, err), err)
 		}
 	}
 	return data, nil

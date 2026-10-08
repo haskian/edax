@@ -44,11 +44,13 @@ func (b *CommandBus) Register(name string, handler CommandHandler) error {
 	if name == "" || handler == nil {
 		return &Error{Code: CodeBadHandle, Message: "command registration needs a name and handler"}
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, exists := b.handlers[name]; exists {
+	b.mu.RLock()
+	_, exists := b.handlers[name]
+	b.mu.RUnlock()
+	if exists {
 		return &Error{Code: CodeAlreadyRegistered, Message: name}
 	}
+	// Factories run outside the lock, so one may register or dispatch on this bus.
 	for i := len(b.middleware) - 1; i >= 0; i-- {
 		if b.middleware[i] == nil {
 			return &Error{Code: CodeBadHandle, Message: "nil command middleware"}
@@ -57,6 +59,11 @@ func (b *CommandBus) Register(name string, handler CommandHandler) error {
 		if handler == nil {
 			return &Error{Code: CodeBadHandle, Message: "middleware returned a nil command handler"}
 		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.handlers[name]; exists {
+		return &Error{Code: CodeAlreadyRegistered, Message: name}
 	}
 	if b.handlers == nil {
 		b.handlers = make(map[string]CommandHandler)

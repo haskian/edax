@@ -228,9 +228,9 @@ typedef struct EDAXRedisDefaults EDAXRedisDefaults;
  */
 typedef struct EDAXRedisScripts EDAXRedisScripts;
 /**
- * The consumer's retry and dead-letter policy, keyed by message id. Every decision is data the host
- * performs: the handler, the sink, the wait and the ack or nack stay the host's. Construct it with
- * `retries`. See `edax_event.Retries`.
+ * The consumer's retry and dead-letter policy, keyed by message id inside its tenant. Every
+ * decision is data the host performs: the handler, the sink, the wait and the ack or nack stay the
+ * host's. Construct it with `retries`. See `edax_event.Retries`.
  */
 typedef uint64_t EDAXRetries;
 /**
@@ -2735,36 +2735,40 @@ char *edax_redis_scripts_forget(EDAXAlefHandle handle);
 void edax_retries_free(EDAXAlefHandle handle);
 
 /**
- * The attempt a run of `id` is: `max(broker_attempt, recorded) + 1`.
+ * The attempt a run of `id` of `tenant` is: `max(broker_attempt, recorded) + 1`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 uint32_t edax_retries_attempt(EDAXAlefHandle this_,
                               const char *id,
-                              uint32_t broker_attempt);
+                              uint32_t broker_attempt,
+                              const char *tenant);
 
 /**
- * `id` succeeded: forget its counts.
+ * `id` of `tenant` succeeded: forget its counts.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 void edax_retries_succeeded(EDAXAlefHandle this_,
-                            const char *id);
+                            const char *id,
+                            const char *tenant);
 
 /**
- * `id` failed with a failure carrying the taxonomy code `code`, `None` for one no code classifies;
- * the kernel reads the kind off the code (`edax_event.Failure.of`). An unknown code is a
- * `codec:` error.
+ * `id` of `tenant` failed with a failure carrying the taxonomy code `code`, `None` for one no code
+ * classifies; the kernel reads the kind off the code (`edax_event.Failure.of`). An unknown code
+ * is a `codec:` error.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_retries_failed(EDAXAlefHandle this_,
                                    const char *id,
                                    uint32_t broker_attempt,
-                                   const char *code);
+                                   const char *code,
+                                   const char *tenant);
 
 /**
- * The sink's answer for the message `id`, dead at `attempt`: `taken`, or refused with a failure
+ * The sink's answer for the message `id` of `tenant`, dead at `attempt`: `taken`, or refused with a
+ * failure
  * carrying the taxonomy `code` (`None` for one no code classifies; read only when not `taken`).
  * Returns the backoff step to wait before the nack of a refused message, or `None` when nothing
  * waits: the sink took it (ack it), or refused it fatally (stop the consumer). An unknown code is a
@@ -2776,7 +2780,8 @@ uint64_t edax_retries_sunk(EDAXAlefHandle this_,
                            const char *id,
                            uint32_t attempt,
                            int32_t taken,
-                           const char *code);
+                           const char *code,
+                           const char *tenant);
 
 /**
  * Report whether `Retries::sunk` returned `Some`.
@@ -2792,7 +2797,8 @@ int32_t edax_retries_sunk_has_result(EDAXAlefHandle this_,
                                      const char *id,
                                      uint32_t attempt,
                                      int32_t taken,
-                                     const char *code);
+                                     const char *code,
+                                     const char *tenant);
 
 /**
  * How many messages the policy tracks.
@@ -3308,11 +3314,14 @@ int32_t edax_tenancy_rules_composes_keys(EDAXAlefHandle handle);
 
 /**
  * The watermark after an event with sequence `incoming` applied over `stored`: the higher of the
- * two, so an unsequenced event never erases it. See `edax_event.advance`.
+ * two, so an unsequenced event never erases it. See `edax_event.advance`. The sequences cross as
+ * in `is_stale`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-uint64_t edax_advance(uint64_t stored,
+uint64_t edax_advance(int32_t stored_present,
+                      uint64_t stored,
+                      int32_t incoming_present,
                       uint64_t incoming);
 
 /**
@@ -3325,7 +3334,9 @@ uint64_t edax_advance(uint64_t stored,
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-int32_t edax_advance_has_result(uint64_t stored,
+int32_t edax_advance_has_result(int32_t stored_present,
+                                uint64_t stored,
+                                int32_t incoming_present,
                                 uint64_t incoming);
 
 /**
@@ -3857,10 +3868,15 @@ uintptr_t edax_idempotency_states_len(void);
  * Whether an event with sequence `incoming` is older than the watermark `stored`, so an ordered
  * consumer skips it. Ordering, not dedup: an equal sequence is not stale. See
  * `edax_event.is_stale` and `docs/kernels/event.md`.
+ *
+ * Each sequence crosses as a presence bit and a value, read only when present. The C interface
+ * encodes an absent `Option<u64>` as `u64::MAX`, which is a valid sequence: `staleness.json` pins it.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-int32_t edax_is_stale(uint64_t stored,
+int32_t edax_is_stale(int32_t stored_present,
+                      uint64_t stored,
+                      int32_t incoming_present,
                       uint64_t incoming);
 
 /**

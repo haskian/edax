@@ -453,6 +453,10 @@ class _OffsetCommitter:
         self._commit_timeout_s = commit_timeout_s
         # Built by its first use, on the thread that runs the consumer, which need not be the one building it.
         self.tracker = ThreadBound.lazy(_native.offset_tracker, "KafkaConsumer")
+        # aiokafka frees its own commit lock while a commit backs off to retry, so a newer watermark could
+        # land first and the older one, retried, would move the broker back. So one commit runs at a time,
+        # and each reads what is due only after the one before it ended.
+        self._serial = asyncio.Lock()
 
     # Neither builds the tracker: a gauge scraped on another thread before the first poll would bind it
     # to that thread, and the consumer's own poll would then refuse it. Unbuilt, it has booked nothing.
@@ -466,16 +470,19 @@ class _OffsetCommitter:
         if tracker is not None:
             tracker.reset(tp.topic, tp.partition)
 
-    def revoke(self, revoked: Collection[TopicPartition]) -> list[_native.KafkaDue]:
-        """Give up ``revoked``: each partition's last due watermark, its bookkeeping dropped in the same
-        kernel step, so nothing settles between the read and the drop."""
-        tracker = self.tracker.get()
-        return [due for tp in revoked if (due := tracker.revoke(tp.topic, tp.partition)) is not None]
+    async def revoke(self, revoked: Collection[TopicPartition]) -> None:
+        """Give up ``revoked`` and commit each partition's last due watermark. The kernel drops the
+        bookkeeping in the step that reads the watermark, so nothing settles between the read and the drop."""
+        async with self._serial:
+            tracker = self.tracker.get()
+            last = [due for tp in revoked if (due := tracker.revoke(tp.topic, tp.partition)) is not None]
+            await self._commit(last)
 
     async def flush(self) -> None:
-        await self.commit(self.tracker.get().due())
+        async with self._serial:
+            await self._commit(self.tracker.get().due())
 
-    async def commit(self, due: Sequence[_native.KafkaDue]) -> None:
+    async def _commit(self, due: Sequence[_native.KafkaDue]) -> None:
         """Commit ``due`` in one call, under the commit deadline, and report each row back. A row of a
         partition given up already reports nothing: the kernel tracks it no more."""
         if not due:
@@ -726,7 +733,7 @@ class KafkaConsumer:
         # once: the queued deliveries are skipped rather than drained, so a deep queue cannot outlast the
         # rebalance. The new owner fetches them again from the commit, made while the partitions are
         # still ours. A failed commit only means more redelivery there.
-        await self._quietly(self._offsets.commit(self._offsets.revoke(revoked)))
+        await self._quietly(self._offsets.revoke(revoked))
         # A handler already running finishes, and its ack settles nothing. Wait for it, so the new owner
         # never runs a key this member is still running.
         dispatcher = self._dispatcher

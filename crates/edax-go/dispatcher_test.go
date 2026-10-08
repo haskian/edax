@@ -64,6 +64,58 @@ func TestDispatcherSettlesByKernelVerdict(t *testing.T) {
 		})
 	}
 }
+
+// Bridge tenancy: two tenants' stores mint the same id, and one shared dispatcher serves both.
+// The second tenant's first failure is its own first attempt, not the first tenant's second.
+func TestDispatcherCountsEachTenantsAttemptsApart(t *testing.T) {
+	var mu sync.Mutex
+	var settled []string
+	var dead []string
+	dispatcher, err := NewKeyOrderedDispatcher(func(context.Context, EventMessage) error { return ErrStore }, DispatcherOptions[EventMessage]{
+		Workers: 1, MaxAttempts: 2, Pacing: instantPacing(),
+		OnDead: func(_ context.Context, letter DeadLetter[EventMessage]) error {
+			mu.Lock()
+			defer mu.Unlock()
+			dead = append(dead, fmt.Sprintf("%s@%d", *letter.Message.Tenant, letter.Attempt))
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dispatcher.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	record := func(outcome string) func(context.Context) error {
+		return func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			settled = append(settled, outcome)
+			return nil
+		}
+	}
+	for _, tenant := range []string{"acme", "globex", "acme"} {
+		message := consumeEvent("shipping-cmd-1", "order-7", 1)
+		message.Tenant = Ptr(tenant)
+		delivery := &Delivery[EventMessage]{Message: message, OnAck: record(tenant + ":ack"), OnNack: record(tenant + ":nack")}
+		if err := dispatcher.Submit(ctx, delivery); err != nil {
+			t.Fatal(err)
+		}
+		if err := dispatcher.WaitIdle(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"acme:nack", "globex:nack", "acme:ack"}; fmt.Sprint(settled) != fmt.Sprint(want) {
+		t.Fatalf("settled %v want %v", settled, want)
+	}
+	if want := []string{"acme@2"}; fmt.Sprint(dead) != fmt.Sprint(want) {
+		t.Fatalf("dead %v want %v", dead, want)
+	}
+}
+
 func TestDispatcherOrderingAndRetirement(t *testing.T) {
 	var mu sync.Mutex
 	seen := make(map[string][]uint64)
@@ -146,11 +198,83 @@ func TestDispatcherCancellationHandsBackAcceptedWork(t *testing.T) {
 		t.Fatalf("submit: %v", err)
 	}
 }
+func TestDispatcherCancellationAfterSuccessStillAcks(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+		sink    bool
+	}{
+		{name: "during handler success ack"},
+		{name: "during dead-letter sink", failure: ErrCodec, sink: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var acks, nacks, dead atomic.Int32
+			entered := make(chan struct{})
+			// Stop's deadline cancels the worker while the success is being settled.
+			awaitStop := func(ctx context.Context) { close(entered); <-ctx.Done() }
+			options := DispatcherOptions[EventMessage]{Workers: 1, MaxAttempts: 1, Pacing: instantPacing()}
+			if test.sink {
+				options.OnDead = func(ctx context.Context, _ DeadLetter[EventMessage]) error { awaitStop(ctx); dead.Add(1); return nil }
+			}
+			dispatcher, err := NewKeyOrderedDispatcher(func(context.Context, EventMessage) error { return test.failure }, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dispatcher.Close()
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			blocked := false
+			delivery := &Delivery[EventMessage]{Message: consumeEvent("credit-1", "account-1", 1), OnAck: func(ctx context.Context) error {
+				if !test.sink && !blocked {
+					blocked = true
+					awaitStop(ctx)
+				}
+				// Like the memory broker, the acknowledgement honors cancellation.
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				acks.Add(1)
+				return nil
+			}, OnNack: func(context.Context) error { nacks.Add(1); return nil }}
+			if err := dispatcher.Submit(context.Background(), delivery); err != nil {
+				t.Fatal(err)
+			}
+			<-entered
+			stop, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer cancel()
+			if err := dispatcher.Stop(stop); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("stop: %v", err)
+			}
+			drained, done := context.WithTimeout(context.Background(), time.Second)
+			defer done()
+			if err := dispatcher.WaitIdle(drained); err != nil {
+				t.Fatal(err)
+			}
+			wantDead := int32(0)
+			if test.sink {
+				wantDead = 1
+			}
+			if acks.Load() != 1 || nacks.Load() != 0 || dead.Load() != wantDead || !delivery.Settled() {
+				t.Fatalf("ack=%d nack=%d dead=%d settled=%v", acks.Load(), nacks.Load(), dead.Load(), delivery.Settled())
+			}
+		})
+	}
+}
 func TestPoisonSettlement(t *testing.T) {
-	for _, take := range []bool{false, true} {
-		t.Run(fmt.Sprint(take), func(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		take, cancel bool
+	}{{name: "false"}, {name: "true", take: true}, {name: "cancelled during sink", take: true, cancel: true}} {
+		take := test.take
+		t.Run(test.name, func(t *testing.T) {
 			var ack, nack atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			dispatcher, err := NewKeyOrderedDispatcher(func(context.Context, EventMessage) error { t.Error("poison reached handler"); return nil }, DispatcherOptions[EventMessage]{Workers: 1, Pacing: instantPacing(), OnPoison: func(context.Context, *Undecodable) error {
+				if test.cancel {
+					cancel()
+				}
 				if take {
 					return nil
 				}
@@ -163,8 +287,15 @@ func TestPoisonSettlement(t *testing.T) {
 			if err := dispatcher.Start(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			poison := &Undecodable{ID: "poison-1", Failure: ErrCodec, Raw: []byte("malformed event"), OnAck: func(context.Context) error { ack.Add(1); return nil }, OnNack: func(context.Context) error { nack.Add(1); return nil }}
-			if err := dispatcher.SettlePoison(context.Background(), poison); err != nil {
+			// Like the memory broker, the acknowledgement honors cancellation.
+			poison := &Undecodable{ID: "poison-1", Failure: ErrCodec, Raw: []byte("malformed event"), OnAck: func(ctx context.Context) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				ack.Add(1)
+				return nil
+			}, OnNack: func(context.Context) error { nack.Add(1); return nil }}
+			if err := dispatcher.SettlePoison(ctx, poison); err != nil {
 				t.Fatal(err)
 			}
 			if take && (ack.Load() != 1 || nack.Load() != 0) || !take && (ack.Load() != 0 || nack.Load() != 1) {

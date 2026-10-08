@@ -111,6 +111,8 @@ class Repository(Generic[A, TxT]):
             base, agg = cached if cached is not None else (0, self._aggregates.load(aggregate_id, 0, None))
             stored = await self._store.load(tx, key, after=base)
             version = check_sequence_batch(base, [msg.sequence for msg in stored])
+            # Before the fold, so a replayed transition sees the tenant a live apply() sees.
+            stand_at(agg, base, tenant=tenant)
             for msg in stored:
                 # transition(), not apply(): a replayed event must not be re-queued as pending
                 agg.transition(self._events.unmarshal(msg))

@@ -297,8 +297,8 @@ func (h *Streak) Close() error {
 type TenancyRules = native.TenancyRules
 
 // Advance calls the shared kernel.
-func Advance(stored *uint64, incoming *uint64) *uint64 {
-	nativeValue := native.Advance(stored, incoming)
+func Advance(storedPresent bool, stored uint64, incomingPresent bool, incoming uint64) *uint64 {
+	nativeValue := native.Advance(storedPresent, stored, incomingPresent, incoming)
 	return nativeValue
 }
 
@@ -708,8 +708,8 @@ func IdempotencyStates() []string {
 }
 
 // IsStale calls the shared kernel.
-func IsStale(stored *uint64, incoming *uint64) bool {
-	nativeValue := native.IsStale(stored, incoming)
+func IsStale(storedPresent bool, stored uint64, incomingPresent bool, incoming uint64) bool {
+	nativeValue := native.IsStale(storedPresent, stored, incomingPresent, incoming)
 	return nativeValue
 }
 
@@ -2702,7 +2702,7 @@ func (h *OffsetTracker) RevokeResult(topic string, partition int32) (*KafkaRevok
 }
 
 // Attempt calls the shared kernel.
-func (h *Retries) Attempt(id string, brokerAttempt uint32) (uint32, error) {
+func (h *Retries) Attempt(id string, brokerAttempt uint32, tenant *string) (uint32, error) {
 	var zero uint32
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("Retries")
@@ -2716,12 +2716,17 @@ func (h *Retries) Attempt(id string, brokerAttempt uint32) (uint32, error) {
 	if err := checkNativeString("id", id); err != nil {
 		return zero, err
 	}
-	nativeValue := h.inner.Attempt(id, brokerAttempt)
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue := h.inner.Attempt(id, brokerAttempt, tenant)
 	return nativeValue, nil
 }
 
 // Succeeded calls the shared kernel.
-func (h *Retries) Succeeded(id string) error {
+func (h *Retries) Succeeded(id string, tenant *string) error {
 	if h == nil || h.nativeState == nil {
 		return ClosedHandle("Retries")
 	}
@@ -2734,12 +2739,17 @@ func (h *Retries) Succeeded(id string) error {
 	if err := checkNativeString("id", id); err != nil {
 		return err
 	}
-	h.inner.Succeeded(id)
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return err
+		}
+	}
+	h.inner.Succeeded(id, tenant)
 	return nil
 }
 
 // Failed calls the shared kernel.
-func (h *Retries) Failed(id string, brokerAttempt uint32, code *string) (*RetryVerdict, error) {
+func (h *Retries) Failed(id string, brokerAttempt uint32, code *string, tenant *string) (*RetryVerdict, error) {
 	var zero *RetryVerdict
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("Retries")
@@ -2758,12 +2768,17 @@ func (h *Retries) Failed(id string, brokerAttempt uint32, code *string) (*RetryV
 			return zero, err
 		}
 	}
-	nativeValue, nativeError := h.inner.Failed(id, brokerAttempt, code)
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := h.inner.Failed(id, brokerAttempt, code, tenant)
 	return nativeValue, mapNativeError(nativeError)
 }
 
 // Sunk calls the shared kernel.
-func (h *Retries) Sunk(id string, attempt uint32, taken bool, code *string) (*uint64, error) {
+func (h *Retries) Sunk(id string, attempt uint32, taken bool, code *string, tenant *string) (*uint64, error) {
 	var zero *uint64
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("Retries")
@@ -2782,7 +2797,12 @@ func (h *Retries) Sunk(id string, attempt uint32, taken bool, code *string) (*ui
 			return zero, err
 		}
 	}
-	nativeValue, nativeError := h.inner.Sunk(id, attempt, taken, code)
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := h.inner.Sunk(id, attempt, taken, code, tenant)
 	return nativeValue, mapNativeError(nativeError)
 }
 

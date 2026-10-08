@@ -42,7 +42,7 @@ type ProducerClient interface {
 
 // ConsumerClient owns subscription and rebalance notifications. Disable auto
 // commit and set a consumer group. Calls must honor their context. Poll returns
-// io.EOF when the client stops. Notify Consumer.Revoke before releasing partitions
+// io.EOF when the client stops, and keeps waiting through empty fetches. Notify Consumer.Revoke before releasing partitions
 // and Consumer.Assign before delivering records from a new assignment.
 type ConsumerClient interface {
 	Poll(context.Context) (*Fetched, error)
@@ -242,11 +242,7 @@ func (s *DeadLetterSink) Publish(ctx context.Context, origin any, failure error)
 		return &edax.Error{Code: edax.CodeBadHandle, Message: "Kafka dead letter requires its fetched origin"}
 	}
 	code := kernel.CodeOf(failure)
-	message := ""
-	if failure != nil {
-		message = failure.Error()
-	}
-	record, err := kernel.KafkaDeadLetterRecord(fetched.Record, fetched.Topic, fetched.Partition, fetched.Offset, message, code)
+	record, err := kernel.KafkaDeadLetterRecord(fetched.Record, fetched.Topic, fetched.Partition, fetched.Offset, kernel.MessageOf(failure), code)
 	if err != nil {
 		return err
 	}

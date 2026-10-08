@@ -13,7 +13,7 @@ only when a shared decision needs a second implementation to pin it, never to ma
 |---|---|---|
 | aggregate | `Aggregate`, `Root` | `Aggregate`, `Version` |
 | event codec | `RegistryCodec<T, F>`, `SerdeCodec<T, F>` with `F` the marker `Json` or `Msgpack`, `Upcaster` | `json_codec()`, `msgpack_codec()`, `Upcaster` |
-| host values | a field declared as `Decimal` or `Instant` (from `edax_cqrs`) | `Decimal` and an aware `datetime`, through the SDK's one encoder |
+| host values | a field declared as `Decimal` or `Instant` (from `edax_cqrs`) | a field declared as `edax.Decimal` or `edax.Instant` (`edax.host_value`); the encoder also writes a `decimal.Decimal` and an aware `datetime` outside a codec |
 | repository | `Repository` (`load(tenant, id)` and `save(aggregate, SaveOptions)` in a unit of work of their own, `load_in` / `save_in` inside the caller's; `SaveOptions` carries the lineage, extensions, metadata and `occurred_at`) | `Repository` (`tx=None` joins the ambient unit of work; `save(commands=...)` stages a command outbox; `load(tenant=...)` for a tenant) |
 | tenancy | `Repository::tenancy(Tenancy)`, a `Tenancy` argument on `idempotent`, `idempotent_by_id`, `forget`, `forget_event` and `MemoryBroker::with_partitions`, and `edax_core::tenant_key` where a host keys | `tenancy=` on `Repository`, `idempotent`, `idempotent_by_id`, `forget`, `forget_event`, `KafkaProducer` and `MemoryBroker`; `edax.tenant_key` where a host keys |
 | outbox drain | `Relay::drain` over any `Outbox<R>` of messages, the kernel's `Drain` deciding; the host's loop stops on an `is_fatal` error; `CountedOutbox` for the backlog depth | `Relay.drain` over `_edax.Drain`, and `Relay.run`, which ends on an `is_fatal` error, plus `pump`; `CountedOutbox` |
@@ -41,12 +41,15 @@ two loops only differ in how they wait and unwind:
 | an event payload's bytes | `edax_event::Format::encode_payload` / `decode_payload` (a struct from a map only, at every depth) | `event_codec.json` |
 
 A Rust host must declare a decimal field as `edax::Decimal` and an instant field as `edax::Instant`.
-Python's encoder writes every `Decimal` and `datetime` in the kernel's canonical text, so a command
-hash, a document and an event payload carry one text per value. A Rust field of another type does not:
+A Python host declares `edax.Decimal` and `edax.Instant`, the same two types. Python's encoder writes
+them, and every `decimal.Decimal` and `datetime`, in the kernel's canonical text. So a command hash,
+a document and an event payload carry one text per value. A Rust field of another type does not:
 an `f64`, a `String` that holds `9.50`, or a timestamp type that keeps its offset writes other bytes.
 Its command then hashes apart from the same command sent from Python, which the shared ledger reads
-as a payload mismatch. `Decimal` and `Instant` canonicalize when they are built and refuse what the
-kernel refuses (`NaN`, an instant without an offset). The `Withdraw` rows of `command_hash.json` and
+as a payload mismatch. In both SDKs `Decimal` and `Instant`
+canonicalize when they are built and refuse what the kernel refuses (`NaN`, an instant without an
+offset). Both read a payload field from its text, so a fraction finer than a microsecond is refused,
+not rounded. The `Withdraw` rows of `command_hash.json` and
 the `Priced` row of `event_codec.json` pin them.
 
 ## Where the model differs

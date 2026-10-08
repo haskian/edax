@@ -59,6 +59,11 @@ From `examples/py/03_snapshots.py`. `transition` is a pure fold: no I/O, no vali
 raising. The decision to emit an event belongs to the handler. `transition` only applies one that
 has already been decided. It also runs on every replay of history that was valid once.
 
+A transition must depend only on the event and the prior domain state. Never read the version, the
+clock or any I/O in it. Replay folds the same event at a different version than the live `apply` did,
+and a snapshot restores state without calling `transition` at all. `Repository` sets the tenant
+before it folds a loaded stream, so `tenant` reads the same on replay as on a live `apply`.
+
 ## Two codecs, not one
 
 They are different seams with different jobs, and confusing them is a common mistake.
@@ -84,13 +89,44 @@ binary MessagePack instead. Both accept `upcasters=`, so an older stored payload
 current shape on load.
 
 Both write a payload through the SDK's one encoder, the one a command hash and a projection document
-use. A `Decimal` is written as the kernel's canonical decimal text (`Decimal("9.50")` as `"9.5"`). An
-aware `datetime` is written as fixed-width UTC text (`"2024-01-01T00:30:00.000000Z"`), in MessagePack
-too, never as a MessagePack timestamp. A naive `datetime` raises `CodecError`: its instant is unknown.
-A payload an earlier release stored, with `"9.50"` or a MessagePack timestamp, still reads as the same value. On read, a struct comes
-from a map only, at every depth: a positional array is a `CodecError` in the Rust and Python SDKs. A host value is
-read as strictly as it is written. A stored instant with no offset is a `CodecError` in the Rust and Python SDKs, and
-so is a decimal that is `NaN` or an infinity. `event_codec.json` pins both.
+use. Declare a decimal field as `edax.Decimal` and an instant field as `edax.Instant`:
+
+<!-- doclint: check -->
+```python
+import edax
+import msgspec
+
+
+class Withdrawn(msgspec.Struct):
+    amount: edax.Decimal
+    at: edax.Instant
+
+
+event = Withdrawn(edax.Decimal("9.50"), edax.Instant("2024-01-01T01:30:00+01:00"))
+total = event.amount.to_decimal() * 2  # decimal.Decimal arithmetic, then edax.Decimal.from_decimal(total)
+```
+
+Each is built from text by the kernel, so it always holds the canonical text: `"9.5"` for `9.50`, and
+fixed-width UTC (`"2024-01-01T00:30:00.000000Z"`) for an instant. The codecs write that text, in
+MessagePack too, never as a MessagePack timestamp. On read, each value is built from the text the
+payload carries, before anything rounds it. `"+9.5"` and `"9.50"` read as `9.5`. `"1_000"`, `" 9.5 "`,
+a JSON number, an instant with no offset and a fraction finer than a microsecond are each a
+`CodecError`, as in the Rust and Go SDKs. A `decimal.Decimal` or `datetime` field raises `CodecError`
+when the codec is built, at any depth: msgspec would convert its text before the kernel could check
+it. `to_decimal()`, `to_datetime()`, `Decimal.from_decimal()` and `Instant.from_datetime()` convert
+for arithmetic.
+
+A command you dispatch in-process only may keep a plain `decimal.Decimal` or aware `datetime` field:
+no codec reads it, and the command hash writes it as the host type's text. A type that
+`json_codec` or `msgpack_codec` carries must declare `edax.Decimal` and `edax.Instant`: the codec
+refuses the plain types when it is built.
+
+A payload an earlier release stored, with `"9.50"` or a MessagePack timestamp, still reads as the
+same value. msgspec rounds a MessagePack timestamp to the microsecond before the codec sees it, so a
+finer timestamp from another writer is rounded rather than refused. On read, a struct comes from a
+map only, at every depth: a positional array is a `CodecError` in the Rust and Python SDKs. Python's
+codecs also refuse a type that holds an `array_like` msgspec `Struct` when they are built.
+`event_codec.json` pins the host-value and map-only rules.
 
 Each event name has its own schema version, and its upcaster is the only place it is set. A name with
 no upcaster writes version 1. A name with one writes one past its highest step, as the kernel's
@@ -119,7 +155,7 @@ the event enum (`Deposited(Deposited)`), the variant's own value as the payload,
 registry writes the same name and bytes as Python's `json_codec` for the same event, pinned by
 `testdata/golden/event_codec.json`, so a stream reads the same from either SDK. Declare a decimal
 field as `edax::Decimal` and an instant field as `edax::Instant`, so the Rust payload carries the
-same text as Python's `Decimal` and `datetime`. The payload rules (map-only structs, no trailing bytes)
+same text as Python's `edax.Decimal` and `edax.Instant`. The payload rules (map-only structs, no trailing bytes)
 are the kernel's `Format::encode_payload` and `Format::decode_payload`; `Json` and `Msgpack` only name
 the format.
 `JsonCodec::<T>::new(name)` remains for one event type under one name. Its
@@ -168,6 +204,7 @@ sequenceDiagram
     AC-->>R: aggregate rebuilt at version N
     R->>S: load tx, aggregate_id, after equals N
     S-->>R: event messages with sequence greater than N
+    R->>R: set the tenant the load names
     loop each event message, in sequence order
         R->>EC: unmarshal event
         EC-->>R: domain event

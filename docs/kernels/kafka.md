@@ -163,7 +163,8 @@ failure with no code is `"unclassified: <message>"`. So every SDK on one dead-le
 vocabulary, and a republish job groups by the prefix. A republish to the source topic after the fix
 then routes and decodes as the original did: the content type, a middleware's key id and a
 `traceparent` all survive. `dead_letter_source(headers)` is the reader. It takes the last set, the
-most recent dead-lettering, and answers nothing when a coordinate is missing or unreadable.
+most recent dead-lettering, and answers nothing when a coordinate is missing or unreadable. A present
+`edax-dlq-dropped` that is not UTF-8 counts as unreadable, not missing.
 
 A dead-letter topic may refuse the record itself: the original plus four headers can pass the
 broker's size limit. `dead_letter_stub(dead)` drops the value, keeps the key and every header, and

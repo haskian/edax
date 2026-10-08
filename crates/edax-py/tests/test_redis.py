@@ -741,7 +741,8 @@ async def test_a_hash_under_the_key_is_a_terminal_wrongtype(ledger: Ledger) -> N
 
 async def test_a_client_that_decodes_replies_reads_the_same_ledger() -> None:
     """``decode_responses=True`` answers ``str``; the store reads it back as the kernel's bytes, so a prior
-    record, an own re-sent claim and a value that is not UTF-8 get the same verdicts as with bytes."""
+    record, an own re-sent claim and a value that is not UTF-8 get the same verdicts as with bytes. A
+    forget reads the raw bytes, so it still deletes a value that is not UTF-8."""
     server = fakeredis.FakeServer()
     raw = fakeredis.FakeAsyncRedis(server=server)
     text = fakeredis.FakeAsyncRedis(server=server, decode_responses=True)
@@ -758,6 +759,9 @@ async def test_a_client_that_decodes_replies_reads_the_same_ledger() -> None:
     with pytest.raises(edax.CodecError, match="not UTF-8") as caught:
         await store.claim("binary", HASH)
     assert caught.value.terminal is True
+    await store.forget("binary")
+    assert await raw.get(b"idem:binary") is None
+    assert isinstance(await store.claim("binary", HASH), Won)
 
 
 async def test_each_script_is_registered_once_and_sent_by_digest(ledger: Ledger) -> None:

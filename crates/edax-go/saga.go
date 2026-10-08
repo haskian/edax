@@ -81,11 +81,7 @@ func (r *SagaRunner) OnEvent(ctx context.Context, message EventMessage) error {
 
 // CommandFailed converts a failed saga command into the kernel failure event and folds it.
 func (r *SagaRunner) CommandFailed(ctx context.Context, dead DeadLetter[CommandMessage]) error {
-	text := ""
-	if dead.Failure != nil {
-		text = dead.Failure.Error()
-	}
-	message, err := kernel.SagaCommandFailed(dead.Message, text, r.options.Now(), errorCode(dead.Failure))
+	message, err := kernel.SagaCommandFailed(dead.Message, errorMessage(dead.Failure), r.options.Now(), errorCode(dead.Failure))
 	if err != nil {
 		return err
 	}

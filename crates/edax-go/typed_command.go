@@ -33,7 +33,7 @@ func ExecuteAs[R any](ctx context.Context, bus *CommandBus, message CommandMessa
 	if typed, ok := value.(R); ok {
 		return typed, nil
 	}
-	raw, err := json.Marshal(value)
+	raw, err := encodeJSON(value)
 	if err == nil {
 		err = json.Unmarshal(raw, &result)
 	}

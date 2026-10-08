@@ -46,8 +46,10 @@ class Account(Aggregate):
     def __init__(self, id: str, initial: int = 0) -> None:
         super().__init__(id, initial)
         self.balance = 0
+        self.tenants_seen: list[str | None] = []
 
     def transition(self, event: Any) -> None:
+        self.tenants_seen.append(self.tenant)
         if isinstance(event, Deposited):
             self.balance += event.amount
 
@@ -161,6 +163,17 @@ async def test_a_pool_keeps_two_tenants_streams_apart() -> None:
         account = await repo.load("order-1", tenant=tenant)
         assert (account.balance, account.version) == (amount, Version(1)), tenant
         assert account.tenant == tenant, "the aggregate carries the tenant it was loaded for"
+
+
+async def test_a_replayed_transition_sees_the_loaded_tenant() -> None:
+    """No snapshot, so the load folds both events: each must see the tenant a live apply saw."""
+    repo = repository(Tenancy.POOL, MemoryEventStore(), snapshot_every=0)
+    live = await repo.load("order-1", tenant="acme")
+    live.apply(Deposited(10), Deposited(5))
+    await repo.save(live)
+
+    replayed = await repo.load("order-1", tenant="acme")
+    assert replayed.tenants_seen == live.tenants_seen == ["acme", "acme"]
 
 
 async def test_a_pool_stamps_the_tenant_on_every_event_it_saves() -> None:

@@ -35,3 +35,4 @@ func IsTerminal(err error) bool { return kernel.IsTerminal(err) }
 func IsFatal(err error) bool         { return kernel.IsFatal(err) }
 func closedHandle(name string) error { return kernel.ClosedHandle(name) }
 func errorCode(err error) *string    { return kernel.CodeOf(err) }
+func errorMessage(err error) string  { return kernel.MessageOf(err) }

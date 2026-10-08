@@ -196,8 +196,8 @@ func (d *KeyOrderedDispatcher[M]) worker(ctx context.Context, index int) {
 	}
 }
 func (d *KeyOrderedDispatcher[M]) settle(ctx context.Context, delivery *Delivery[M]) (result error) {
-	id, _, _, _, correlation := messageFields(delivery.Message)
-	attempt, err := d.retries.Attempt(id, delivery.Attempt)
+	id, _, _, tenant, correlation := messageFields(delivery.Message)
+	attempt, err := d.retries.Attempt(id, delivery.Attempt, tenant)
 	if err != nil {
 		return errors.Join(err, d.handBack(ctx, delivery))
 	}
@@ -228,10 +228,10 @@ func (d *KeyOrderedDispatcher[M]) settle(ctx context.Context, delivery *Delivery
 	}
 	if err == nil {
 		outcome = "ack"
-		ackErr := delivery.Ack(ctx)
-		return errors.Join(ackErr, d.retries.Succeeded(id))
+		ackErr := ackDetached(ctx, delivery)
+		return errors.Join(ackErr, d.retries.Succeeded(id, tenant))
 	}
-	verdict, failure := d.retries.Failed(id, delivery.Attempt, errorCode(err))
+	verdict, failure := d.retries.Failed(id, delivery.Attempt, errorCode(err), tenant)
 	if failure != nil {
 		return errors.Join(failure, d.handBack(ctx, delivery))
 	}
@@ -261,13 +261,13 @@ func (d *KeyOrderedDispatcher[M]) settle(ctx context.Context, delivery *Delivery
 			return errors.Join(invalidDecision("dead-letter attempt"), d.handBack(ctx, delivery))
 		}
 		sinkErr := d.options.OnDead(ctx, DeadLetter[M]{Message: delivery.Message, Attempt: *verdict.Attempt, Failure: err, Origin: delivery.Origin})
-		step, decisionErr := d.retries.Sunk(id, *verdict.Attempt, sinkErr == nil, errorCode(sinkErr))
+		step, decisionErr := d.retries.Sunk(id, *verdict.Attempt, sinkErr == nil, errorCode(sinkErr), tenant)
 		if decisionErr != nil {
 			return errors.Join(decisionErr, d.handBack(ctx, delivery))
 		}
 		if sinkErr == nil {
 			outcome = "dead"
-			return delivery.Ack(ctx)
+			return ackDetached(ctx, delivery)
 		}
 		outcome = "sink_failed"
 		if step == nil {
@@ -291,9 +291,27 @@ func invalidDecision(name string) error {
 	return &Error{Code: CodeBadHandle, Message: "missing or unknown kernel " + name}
 }
 func (d *KeyOrderedDispatcher[M]) handBack(parent context.Context, delivery *Delivery[M]) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(WithoutTransaction(parent)), 5*time.Second)
+	ctx, cancel := settlementContext(parent)
 	defer cancel()
 	return delivery.Nack(ctx)
+}
+
+// settlementContext bounds settlement that must finish after the worker is cancelled.
+func settlementContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(WithoutTransaction(parent)), 5*time.Second)
+}
+
+// ackDetached acknowledges finished work. When cancellation interrupts the
+// acknowledgement, it retries under the settlement context: a nack would
+// redeliver work that already succeeded.
+func ackDetached(ctx context.Context, delivery interface{ Ack(context.Context) error }) error {
+	err := delivery.Ack(ctx)
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	detached, cancel := settlementContext(ctx)
+	defer cancel()
+	return delivery.Ack(detached)
 }
 func (d *KeyOrderedDispatcher[M]) stopOn(err error) {
 	d.mu.Lock()
@@ -397,7 +415,8 @@ func (d *KeyOrderedDispatcher[M]) SettlePoison(ctx context.Context, poison *Unde
 		return nil
 	}
 	code := "codec"
-	verdict, err := d.poisonRetries.Failed(poison.ID, poison.Attempt, &code)
+	// No tenant: it lives inside the payload that would not decode.
+	verdict, err := d.poisonRetries.Failed(poison.ID, poison.Attempt, &code, nil)
 	if err != nil {
 		return err
 	}
@@ -415,12 +434,12 @@ func (d *KeyOrderedDispatcher[M]) SettlePoison(ctx context.Context, poison *Unde
 			return invalidDecision("poison sink")
 		}
 		sinkErr := d.options.OnPoison(ctx, poison)
-		step, err := d.poisonRetries.Sunk(poison.ID, *verdict.Attempt, sinkErr == nil, errorCode(sinkErr))
+		step, err := d.poisonRetries.Sunk(poison.ID, *verdict.Attempt, sinkErr == nil, errorCode(sinkErr), nil)
 		if err != nil {
 			return err
 		}
 		if sinkErr == nil {
-			return poison.Ack(ctx)
+			return ackDetached(ctx, poison)
 		}
 		if step == nil {
 			d.stopOn(sinkErr)
@@ -438,7 +457,7 @@ func (d *KeyOrderedDispatcher[M]) SettlePoison(ctx context.Context, poison *Unde
 	}
 }
 func (d *KeyOrderedDispatcher[M]) handBackPoison(parent context.Context, poison *Undecodable) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(WithoutTransaction(parent)), 5*time.Second)
+	ctx, cancel := settlementContext(parent)
 	defer cancel()
 	return poison.Nack(ctx)
 }

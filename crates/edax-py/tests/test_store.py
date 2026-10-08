@@ -537,6 +537,111 @@ async def test_a_drain_reads_a_page_of_one_kind(
         assert (published, outbox.marked) == (want_marked, want_marked)
 
 
+class FailsOneMark(MemoryEventStore):
+    """The memory outbox whose next ``mark_published`` fails with nothing marked, once armed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_mark = False
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        if self.fail_next_mark:
+            self.fail_next_mark = False
+            raise edax.StoreError("mark_published: connection reset")
+        await super().mark_published(ids)
+
+
+#: What one drain ended with (its count, or the message it raised), how many times the publisher had
+#: been called by then, and every (row id, attempt) the sink had taken by then.
+DrainTrace = tuple[int | str, int, list[tuple[str, int]]]
+
+BROKER_DOWN = "broker unavailable"
+MARK_FAILED = "mark_published: connection reset"
+
+
+@dataclass
+class LostMarkCase:
+    name: str
+    publish_fails: list[bool]  # per publisher call: whether it raises the transient BROKER_DOWN
+    trace: list[DrainTrace]  # one entry per drain
+    published: list[str]  # what reached the transport in the end
+
+
+LOST_MARK_SHARED_PREFIX: list[DrainTrace] = [
+    (BROKER_DOWN, 1, []),  # attempt 1 of 2: handed back
+    (MARK_FAILED, 2, [("e2", 2)]),  # attempt 2: the sink takes the row, then its mark fails
+]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        LostMarkCase(
+            "a_recovered_publish_sends_the_dead_lettered_row_to_the_transport_too",
+            publish_fails=[True, True, False],
+            trace=[*LOST_MARK_SHARED_PREFIX, (1, 3, [("e2", 2)])],
+            published=["e2"],
+        ),
+        LostMarkCase(
+            # The sink sees the row again at attempt 2, not 3: the count restarted when it first took it.
+            "a_failing_publish_spends_a_fresh_budget_before_the_sink_takes_it_again",
+            publish_fails=[True, True, True, True],
+            trace=[
+                *LOST_MARK_SHARED_PREFIX,
+                (BROKER_DOWN, 3, [("e2", 2)]),
+                (1, 4, [("e2", 2), ("e2", 2)]),  # the sink took it and the mark landed: settled
+            ],
+            published=[],
+        ),
+    ],
+    ids=lambda c: c.name,
+)
+async def test_a_dead_letter_whose_mark_fails_is_published_again_with_its_attempts_forgotten(
+    case: LostMarkCase,
+) -> None:
+    """Transient failures up to ``max_attempts``, the sink takes the row, then its ``mark_published``
+    fails. The relay forgot the row's attempts when the sink took it, so the next drain does not go
+    straight to the sink: it publishes the row first, with a fresh budget (``docs/sdk/outbox.md``, *The sink
+    is at-least-once too*). Either the row reaches the transport after the sink, or the sink takes it again
+    after ``max_attempts`` more failures. Both end with the row marked."""
+    store = FailsOneMark()
+    repo = counter_repo(store, iter(range(1, 1000)))
+    account = Counter("acct-1")
+    account.apply(Tick(1))
+    await repo.save(account)
+    assert [row.id for row in await store.unpublished(100)] == ["e2"]
+
+    calls = 0
+    published: list[str] = []
+    dead: list[tuple[str, int]] = []
+
+    def publish(row: edax.EventMessage) -> None:
+        nonlocal calls
+        calls += 1
+        if case.publish_fails[calls - 1]:
+            raise edax.StoreError(BROKER_DOWN)
+        published.append(row.id)
+
+    def on_dead(letter: edax.DeadLetter[Any]) -> None:
+        dead.append((letter.message.id, letter.attempt))
+        store.fail_next_mark = len(dead) == 1  # only the first dead letter loses its mark
+
+    relay = Relay(store, publish, max_attempts=2, on_dead=on_dead, pacing=NO_WAIT)
+    trace: list[DrainTrace] = []
+    for _ in case.trace:
+        outcome: int | str
+        try:
+            outcome = await relay.drain()
+        except edax.StoreError as e:
+            outcome = str(e)
+        trace.append((outcome, calls, list(dead)))
+
+    assert trace == case.trace, case.name
+    assert published == case.published, case.name
+    assert await store.unpublished(100) == [], "the last drain marked the row"
+    assert await relay.drain() == 0 and calls == len(case.publish_fails), "nothing is left to publish"
+
+
 def test_aggregate_apply_zero_events_leaves_sequence_and_pending() -> None:
     a = Counter("acct-9", initial=4)
     a.apply()
@@ -720,6 +825,23 @@ async def test_run_drains_back_to_back_until_stopped() -> None:
     relay = edax.Relay(store, publish)
     await asyncio.wait_for(relay.run(batch=2, idle_s=60, stop=stop), 5)  # never idles while rows flow
     assert len(sent) == 5 and await store.unpublished(100) == []
+
+
+async def test_run_yields_to_the_event_loop_between_batches() -> None:
+    """The memory store and a sync publisher never suspend. The loop still hands the event loop back after
+    each batch, so a stop scheduled by the first publish ends it before the backlog is gone."""
+    store = await _outbox_with(5)
+    sent: list[str] = []
+    stop = asyncio.Event()
+
+    def publish(env: edax.EventMessage) -> None:
+        sent.append(env.id)
+        if len(sent) == 1:
+            asyncio.get_running_loop().call_soon(stop.set)
+
+    await asyncio.wait_for(edax.Relay(store, publish).run(batch=1, idle_s=60, stop=stop), 5)
+    assert len(sent) == 1
+    assert len(await store.unpublished(100)) == 4
 
 
 async def test_run_returns_at_once_when_already_stopped() -> None:

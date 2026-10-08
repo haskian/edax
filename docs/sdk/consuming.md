@@ -227,9 +227,10 @@ An attempt is one handler run of a delivery, counted as
 attempt = max(Delivery.attempt, in-process counter) + 1
 ```
 
-The in-process counter belongs to the dispatcher and is keyed by message id. It resets on restart,
-so a crash mid-retry grants a fresh `max_attempts`. A broker-supplied `Delivery.attempt` makes the
-ceiling survive a restart. Neither in-tree backend reads one from its client, so both report `0`.
+The in-process counter belongs to the dispatcher and is keyed by message id inside its tenant. Two
+tenants' stores may mint the same id, so each tenant's message counts toward its own ceiling. The
+counter resets on restart, so a crash mid-retry grants a fresh `max_attempts`. A broker-supplied
+`Delivery.attempt` makes the ceiling survive a restart. Neither in-tree backend reads one from its client, so both report `0`.
 
 | Outcome of a handler run | `on_dead` set | `on_dead` unset |
 |---|---|---|

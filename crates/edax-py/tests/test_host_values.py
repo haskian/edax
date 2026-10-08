@@ -5,7 +5,10 @@ makes."""
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
+import pickle
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -41,6 +44,36 @@ def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date | float
         return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     assert kind == "date", kind
     return dt.date.fromisoformat(text)
+
+
+_HOST_TYPE_OF: dict[str, type[edax.Decimal] | type[edax.Instant]] = {
+    "decimal": edax.Decimal,
+    "datetime": edax.Instant,
+}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [case for case in golden("host_values.json") if case["kind"] in _HOST_TYPE_OF],
+    ids=lambda case: case["name"],
+)
+@pytest.mark.parametrize("fmt", ["json", "msgpack"])
+def test_golden_host_values_read_from_the_wire_text(fmt: str, case: dict[str, Any]) -> None:
+    """Each decimal and instant row read as its host type from the row's own text, as a payload carries it:
+    the vector's text, or the kernel's refusal, in both formats. The host type's constructor gives the same
+    answer, and writes the same text."""
+    host_type = _HOST_TYPE_OF[case["kind"]]
+    decode = _json.decode_json if fmt == "json" else _json.decode_msgpack
+    wire = _ENCODE[fmt](case["input"])
+    if case["error"] is not None:
+        with pytest.raises(edax.CodecError) as built:
+            host_type(case["input"])
+        assert wire_of(built.value) == case["error"]
+        with pytest.raises(msgspec.ValidationError, match=re.escape(str(built.value))):
+            decode(wire, host_type)
+        return
+    read = decode(wire, host_type)
+    assert read == host_type(case["input"]) and _json.encode(read) == case["json"]
 
 
 @pytest.mark.parametrize("case", golden("host_values.json"), ids=lambda case: case["name"])
@@ -99,6 +132,9 @@ WIDE = Decimal("12345678901234567890.12")
         ("datetime_whole_second_before_a_later_fraction", F.lt("at", dt.datetime(2024, 1, 1, 0, 0, 0, 500000, tzinfo=UTC)), {}, True),
         ("datetime_microsecond_after_the_whole_second", F.gt("at", dt.datetime(2024, 1, 1, tzinfo=UTC)), {"at": dt.datetime(2024, 1, 1, 0, 0, 0, 1, tzinfo=UTC)}, True),
         ("datetime_in_by_instant", F.in_("at", dt.datetime(2023, 12, 31, 19, 0, tzinfo=MINUS_FIVE)), {}, True),
+        ("host_decimal_lt_by_value", F.lt("price", edax.Decimal("10")), {}, True),
+        ("host_decimal_document_value", F.eq("price", Decimal("9.5")), {"price": edax.Decimal("9.50")}, True),
+        ("host_instant_eq_across_offsets", F.eq("at", edax.Instant("2024-01-01T00:00:00Z")), {}, True),
     ],
 )  # fmt: skip
 def test_filter_compares_host_values_by_value(
@@ -112,6 +148,8 @@ def test_filter_compares_host_values_by_value(
     [
         ("a_decimal_comparand_sets_the_collation", F.gt("price", Decimal("10")), True),
         ("a_decimal_member_sets_the_collation", F.in_("price", "1", Decimal("2")), True),
+        ("a_host_decimal_comparand_sets_the_collation", F.gt("price", edax.Decimal("10")), True),
+        ("a_host_instant_comparand_sets_none", F.gt("at", edax.Instant("2024-01-01T00:00:00Z")), False),
         ("a_str_comparand_sets_none", F.gt("price", "10"), False),
         ("a_datetime_comparand_sets_none", F.gt("at", dt.datetime(2024, 1, 1, tzinfo=UTC)), False),
         ("starts_with_sets_none", F.starts_with("price", "9"), False),
@@ -254,48 +292,35 @@ async def test_command_refusals_are_codec_errors_before_the_handler(branch: str,
 class Settled(msgspec.Struct):
     """An event with both host values and raw bytes."""
 
-    amount: Decimal
-    at: dt.datetime
+    amount: edax.Decimal
+    at: edax.Instant
     receipt: bytes
 
 
-SETTLED = Settled(Decimal("9.50"), dt.datetime(2024, 1, 1, 1, 30, tzinfo=PLUS_ONE), b"\x00\xff")
+SETTLED = Settled(edax.Decimal("9.50"), edax.Instant("2024-01-01T01:30:00+01:00"), b"\x00\xff")
 _CODECS: dict[str, Callable[..., RegistryCodec]] = {"json": json_codec, "msgpack": msgpack_codec}
+_ENCODE: dict[str, Callable[[Any], bytes]] = {"json": msgspec.json.encode, "msgpack": msgspec.msgpack.encode}
 
 
 @pytest.mark.parametrize("fmt", ["json", "msgpack"])
-@pytest.mark.parametrize(
-    "branch, event, refused",
-    [
-        ("host_values_written_in_the_shared_form", SETTLED, False),
-        ("a_naive_datetime_is_refused", msgspec.structs.replace(SETTLED, at=dt.datetime(2024, 1, 1)), True),
-        ("a_nan_decimal_is_refused", msgspec.structs.replace(SETTLED, amount=Decimal("NaN")), True),
-    ],
-)
-def test_event_codecs_write_host_values_in_the_shared_form(
-    fmt: str, branch: str, event: Settled, refused: bool
-) -> None:
+def test_event_codecs_write_host_values_in_the_shared_form(fmt: str) -> None:
     """The event codecs write what every other path writes: the decimal and instant texts the Rust SDK's
     ``edax::Decimal`` / ``edax::Instant`` write, so a stream reads alike from both SDKs. MessagePack keeps
     bytes native and writes the instant as text, never as a MessagePack timestamp."""
     codec = _CODECS[fmt]({"Settled": Settled})
-    if refused:
-        with pytest.raises(edax.CodecError) as caught:
-            codec.marshal(event)
-        assert caught.value.terminal, branch
-        return
-    written = codec.marshal(event)
+    written = codec.marshal(SETTLED)
     payload = (msgspec.json.decode if fmt == "json" else msgspec.msgpack.decode)(bytes(written.data))
     receipt = "AP8=" if fmt == "json" else b"\x00\xff"
-    assert payload == {"amount": "9.5", "at": "2024-01-01T00:30:00.000000Z", "receipt": receipt}, branch
-    assert codec.unmarshal(written) == event, "read back as the same value"
+    assert payload == {"amount": "9.5", "at": "2024-01-01T00:30:00.000000Z", "receipt": receipt}
+    assert codec.unmarshal(written) == SETTLED, "read back as the same value"
 
 
 @pytest.mark.parametrize(
     "branch, fmt, data",
     [
         ("json_decimal_with_trailing_zeros", "json", b'{"amount":"9.50","at":"2024-01-01T01:30:00+01:00","receipt":"AP8="}'),
-        ("msgpack_timestamp_extension", "msgpack", msgspec.msgpack.encode(msgspec.structs.asdict(SETTLED))),
+        # What an earlier release wrote for a `datetime` field: a MessagePack timestamp, not text.
+        ("msgpack_timestamp_extension", "msgpack", msgspec.msgpack.encode({"amount": "9.50", "at": dt.datetime(2024, 1, 1, 0, 30, tzinfo=UTC), "receipt": b"\x00\xff"})),
     ],
 )  # fmt: skip
 def test_event_codecs_read_payloads_written_before_the_shared_form(
@@ -304,6 +329,87 @@ def test_event_codecs_read_payloads_written_before_the_shared_form(
     """A payload stored before the codecs wrote the shared form still reads, as the same value."""
     codec = _CODECS[fmt]({"Settled": Settled})
     assert codec.unmarshal(edax.Payload("Settled", 1, data)) == SETTLED, branch
+
+
+class Ledger(msgspec.Struct):
+    """A payload with each place a host value is read from: a field, an optional field, a map key and a
+    field of a struct nested in a list."""
+
+    amount: edax.Decimal
+    at: edax.Instant | None = None
+    by_price: dict[edax.Decimal, int] = {}
+    lines: list[Settled] = []
+
+
+#: A valid payload; each case below overrides the one field it probes.
+LEDGER_WIRE: dict[str, Any] = {"amount": "9.5", "at": "2024-01-01T00:30:00.000000Z"}
+LEDGER_READ = Ledger(edax.Decimal("9.5"), edax.Instant("2024-01-01T00:30:00.000000Z"))
+
+
+@pytest.mark.parametrize("fmt", ["json", "msgpack"])
+@pytest.mark.parametrize(
+    "branch, override, want",
+    [
+        ("canonical_text_is_kept", {}, LEDGER_READ),
+        ("a_plus_sign_is_read", {"amount": "+9.5"}, LEDGER_READ),
+        ("trailing_zeros_are_read", {"amount": "9.50"}, LEDGER_READ),
+        ("an_offset_converts_to_utc", {"at": "2024-01-01T01:30:00+01:00"}, LEDGER_READ),
+        ("a_nine_digit_whole_microsecond_is_read", {"at": "2024-01-01T00:30:00.000001000Z"}, msgspec.structs.replace(LEDGER_READ, at=edax.Instant("2024-01-01T00:30:00.000001Z"))),
+        ("null_for_an_optional_field_is_none", {"at": None}, msgspec.structs.replace(LEDGER_READ, at=None)),
+        ("a_map_key_is_read_from_its_text", {"by_price": {"9.50": 1}}, msgspec.structs.replace(LEDGER_READ, by_price={edax.Decimal("9.5"): 1})),
+        ("a_finer_fraction_is_refused", {"at": "2024-01-01T00:30:00.0000001Z"}, "finer than a microsecond"),
+        ("a_fraction_that_would_round_up_a_second_is_refused", {"at": "2024-01-01T00:30:00.9999999Z"}, "finer than a microsecond"),
+        ("an_underscore_is_refused", {"amount": "1_000"}, "is not decimal text"),
+        ("surrounding_whitespace_is_refused", {"amount": " 9.5 "}, "is not decimal text"),
+        ("a_number_is_refused", {"amount": 9.5}, "Expected `Decimal`, got `float`"),
+        ("an_integer_instant_is_refused", {"at": 1704069000}, "Expected `Instant`, got `int`"),
+        ("null_for_a_required_field_is_refused", {"amount": None}, "Expected `Decimal`, got `NoneType`"),
+        ("a_refused_map_key", {"by_price": {"1_000": 1}}, "is not decimal text"),
+        ("a_refused_value_in_a_nested_struct", {"lines": [{"amount": "NaN", "at": "2024-01-01T00:30:00Z", "receipt": ""}]}, "is not decimal text"),
+    ],
+)  # fmt: skip
+def test_event_codecs_read_host_values_from_the_wire_text(
+    fmt: str, branch: str, override: dict[str, Any], want: Ledger | str
+) -> None:
+    """Each host value is read from the text the payload carries, through the kernel, before anything rounds
+    it: the spellings the kernel reads are read, and what it refuses is the terminal ``CodecError``, as in the
+    Rust and Go SDKs. A ``datetime`` / ``Decimal`` field read every refused row here as a value."""
+    codec = _CODECS[fmt]({"Ledger": Ledger})
+    stored = edax.Payload("Ledger", 1, _ENCODE[fmt]({**LEDGER_WIRE, **override}))
+    if isinstance(want, str):
+        with pytest.raises(edax.CodecError, match=re.escape(want)) as caught:
+            codec.unmarshal(stored)
+        assert caught.value.terminal, branch
+        return
+    assert codec.unmarshal(stored) == want, branch
+
+
+class _Line(msgspec.Struct):
+    at: dt.datetime
+
+
+@pytest.mark.parametrize("fmt", ["json", "msgpack"])
+@pytest.mark.parametrize(
+    "branch, registered, refused",
+    [
+        ("host_types_register", Ledger, None),
+        ("a_datetime_field_is_refused", _Line, "datetime.datetime (declare edax.Instant)"),
+        ("a_decimal_in_a_dict_is_refused", dict[str, Decimal], "decimal.Decimal (declare edax.Decimal)"),
+        ("a_datetime_in_a_nested_struct_is_refused", list[_Line], "datetime.datetime (declare edax.Instant)"),
+    ],
+)  # fmt: skip
+def test_event_codecs_refuse_a_plain_host_value_at_registration(
+    fmt: str, branch: str, registered: Any, refused: str | None
+) -> None:
+    """msgspec converts a ``datetime`` or ``decimal.Decimal`` field before the kernel sees its text, so the
+    codec could not refuse what the other SDKs refuse. Such a type is refused when the codec is built, at any
+    depth."""
+    if refused is None:
+        assert _CODECS[fmt]({"Event": registered}).type_of("Event") is registered, branch
+        return
+    with pytest.raises(edax.CodecError, match=re.escape(refused)) as caught:
+        _CODECS[fmt]({"Event": registered})
+    assert caught.value.terminal, branch
 
 
 @dataclass
@@ -475,6 +581,12 @@ class _Timed(msgspec.Struct):
     at: dt.datetime
 
 
+class _Stamped(msgspec.Struct):
+    sku: str
+    at: edax.Instant
+    price: dict[edax.Decimal, int]
+
+
 class _Loose(msgspec.Struct):
     sku: str
     price: Any
@@ -491,6 +603,7 @@ class _Line:
     [
         pytest.param(_Plain("sku-42", 3), True, b'{"sku":"sku-42","quantity":3,"tags":[]}', id="a_type_with_no_host_value_is_written_as_it_is"),
         pytest.param(_Timed("sku-42", dt.datetime(2024, 1, 1, 0, 30, tzinfo=dt.timezone.utc)), False, b'{"sku":"sku-42","at":"2024-01-01T00:30:00.000000Z"}', id="a_declared_datetime_is_walked_to_its_shared_form"),
+        pytest.param(_Stamped("sku-42", edax.Instant("2024-01-01T01:30:00+01:00"), {edax.Decimal("9.50"): 1}), True, b'{"sku":"sku-42","at":"2024-01-01T00:30:00.000000Z","price":{"9.5":1}}', id="a_host_type_is_written_as_its_text_with_no_walk"),
         pytest.param(_Loose("sku-42", Decimal("9.50")), False, b'{"sku":"sku-42","price":"9.5"}', id="an_any_field_may_hold_a_decimal_so_it_is_walked"),
         pytest.param(_Line("sku-42"), False, b'{"sku":"sku-42","currency":"EUR"}', id="a_dataclass_is_walked_for_its_defaulted_fields"),
         pytest.param({"price": Decimal("9.50")}, False, b'{"price":"9.5"}', id="a_dict_holds_anything_so_it_is_walked"),
@@ -505,20 +618,73 @@ def test_the_encode_plan_is_decided_per_type(value: Any, direct: bool, want: byt
 
 
 @pytest.mark.parametrize(
-    "decoded_as, payload, refused",
+    "branch, build, want",
     [
-        pytest.param(_Plain, b'{"sku":"sku-42","quantity":3}', False, id="a_type_with_no_host_value_is_never_walked"),
-        pytest.param(_Timed, b'{"sku":"sku-42","at":"2024-01-01T00:30:00"}', True, id="a_naive_datetime_is_refused_on_read"),
-        pytest.param(_Timed, b'{"sku":"sku-42","at":"2024-01-01T00:30:00Z"}', False, id="an_aware_datetime_reads"),
+        ("decimal_canonical_text_is_kept", lambda: edax.Decimal("9.5"), "9.5"),
+        ("decimal_another_spelling_is_canonicalized", lambda: edax.Decimal("+0.95E+1"), "9.5"),
+        ("decimal_refused_text_is_a_codec_error", lambda: edax.Decimal("1_000"), edax.CodecError),
+        ("decimal_from_text_only", lambda: edax.Decimal(cast(Any, 9.5)), TypeError),
+        ("decimal_from_decimal", lambda: edax.Decimal.from_decimal(Decimal("1E+2")), "100"),
+        ("decimal_from_a_nan_decimal_is_refused", lambda: edax.Decimal.from_decimal(Decimal("NaN")), edax.CodecError),
+        ("decimal_from_decimal_takes_a_decimal_only", lambda: edax.Decimal.from_decimal(cast(Any, "9.5")), TypeError),
+        ("decimal_to_decimal_is_exact", lambda: edax.Decimal(str(WIDE)).to_decimal(), WIDE),
+        ("instant_canonical_text_is_kept", lambda: edax.Instant("2024-01-01T00:30:00.000000Z"), "2024-01-01T00:30:00.000000Z"),
+        ("instant_an_offset_converts_to_utc", lambda: edax.Instant("2024-01-01T01:30:00+01:00"), "2024-01-01T00:30:00.000000Z"),
+        ("instant_refused_text_is_a_codec_error", lambda: edax.Instant("2024-01-01T00:30:00"), edax.CodecError),
+        ("instant_from_text_only", lambda: edax.Instant(cast(Any, AT)), TypeError),
+        ("instant_from_datetime", lambda: edax.Instant.from_datetime(AT.astimezone(MINUS_FIVE)), "2024-01-01T00:00:00.000000Z"),
+        ("instant_from_a_naive_datetime_is_refused", lambda: edax.Instant.from_datetime(dt.datetime(2024, 1, 1)), edax.CodecError),
+        ("instant_from_datetime_takes_a_datetime_only", lambda: edax.Instant.from_datetime(cast(Any, dt.date(2024, 1, 1))), TypeError),
+        ("instant_to_datetime_is_aware_utc", lambda: edax.Instant("2024-01-01T01:30:00+01:00").to_datetime(), dt.datetime(2024, 1, 1, 0, 30, tzinfo=UTC)),
+        # The kernel reads year 0000, which a Python datetime cannot hold.
+        ("instant_year_zero_has_no_datetime", lambda: edax.Instant("0001-01-01T00:30:00+01:00").to_datetime(), edax.CodecError),
     ],
 )  # fmt: skip
-def test_check_read_walks_only_a_type_that_holds_a_host_value(
-    decoded_as: type, payload: bytes, refused: bool
-) -> None:
-    """``check_read`` decides by the decoded type whether a payload can hold a host value to check."""
-    value = msgspec.json.decode(payload, type=decoded_as)
-    if refused:
-        with pytest.raises(edax.CodecError):
-            _json.check_read(value, decoded_as)
+def test_host_type_construction_and_conversion(branch: str, build: Callable[[], Any], want: Any) -> None:
+    """A host value is built from text by the kernel, or converted from and to the Python type that does the
+    arithmetic. Refused text is the kernel's terminal ``CodecError``; a value that is not text is a
+    ``TypeError``, a programming error."""
+    if isinstance(want, type) and issubclass(want, Exception):
+        with pytest.raises(want):
+            build()
         return
-    assert _json.check_read(value, decoded_as) is value
+    got = build()
+    assert (str(got) if isinstance(want, str) else got) == want, branch
+    if isinstance(got, dt.datetime):
+        assert got.tzinfo is not None, branch
+
+
+@pytest.mark.parametrize(
+    "branch, low, high",
+    [
+        # Text order is the other way round: "10" < "9.5".
+        ("decimal_orders_by_value_not_text", edax.Decimal("9.5"), edax.Decimal("10")),
+        ("decimal_negative_below_positive", edax.Decimal("-10"), edax.Decimal("-9.5")),
+        ("instant_orders_by_instant_not_wall_time", edax.Instant("2024-01-01T01:00:00+01:00"), edax.Instant("2023-12-31T19:30:00-05:00")),
+    ],
+)  # fmt: skip
+def test_host_types_order(branch: str, low: Any, high: Any) -> None:
+    assert low < high and high > low and low <= high and not high <= low, branch
+    assert sorted([high, low]) == [low, high], branch
+
+
+@pytest.mark.parametrize(
+    "branch, value, same, other",
+    [
+        ("decimal", edax.Decimal("9.50"), edax.Decimal("9.5"), edax.Decimal("9.51")),
+        ("instant", edax.Instant("2024-01-01T01:30:00+01:00"), edax.Instant("2024-01-01T00:30:00Z"), edax.Instant("2024-01-01T00:30:00.000001Z")),
+    ],
+)  # fmt: skip
+def test_host_types_are_immutable_value_objects(branch: str, value: Any, same: Any, other: Any) -> None:
+    """Equal by value, hashed alike, never equal to their text or to the Python type, unchangeable, and
+    rebuilt through the kernel by copy and pickle."""
+    assert value == same and hash(value) == hash(same) and value != other, branch
+    assert value != str(value) and len({value, same, other}) == 2, branch
+    assert value != (value.to_decimal() if isinstance(value, edax.Decimal) else value.to_datetime()), branch
+    with pytest.raises(AttributeError):
+        value._text = "0"
+    with pytest.raises(AttributeError):
+        del value._text
+    for copied in (copy.copy(value), copy.deepcopy(value), pickle.loads(pickle.dumps(value))):
+        assert copied == value and type(copied) is type(value), branch
+    assert repr(value) == f"edax.{type(value).__name__}({str(value)!r})", branch

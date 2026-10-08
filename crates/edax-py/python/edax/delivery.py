@@ -4,11 +4,14 @@ the :class:`DeadLetter` a dispatcher and a relay alike hand their sink."""
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, Generic, TypeVar
 
-from ._async import MaybeAwaitable, maybe_await
+from ._async import MaybeAwaitable
 from .message import CommandMessage, EventMessage
 
 __all__ = [
@@ -41,9 +44,38 @@ def always_live() -> bool:
     return True
 
 
+# Settle callbacks a cancel no longer awaits. The loop keeps only weak references to tasks, so these hold
+# each one until it ends.
+_SETTLING: set[asyncio.Future[None]] = set()
+logger = logging.getLogger(__name__)
+
+
+def _log_detached_failure(running: asyncio.Future[None]) -> None:
+    if not running.cancelled() and (error := running.exception()) is not None:
+        logger.error("edax delivery: settlement failed after cancellation", exc_info=error)
+
+
+async def _run_to_end(outcome: MaybeAwaitable[None]) -> None:
+    """Await a settle callback's ``outcome`` so that a cancel of the caller does not cut it short. The
+    cancel still reaches the caller at once. Cut short before its transport effect, an ack or a nack
+    would leave the item marked settled with nothing done, and nothing would hand it back."""
+    if not inspect.isawaitable(outcome):
+        return
+    running = asyncio.ensure_future(outcome)
+    _SETTLING.add(running)
+    running.add_done_callback(_SETTLING.discard)
+    try:
+        await asyncio.shield(running)
+    except asyncio.CancelledError:
+        # Nobody awaits the callback now. Consume and report its eventual failure ourselves.
+        running.add_done_callback(_log_detached_failure)
+        raise
+
+
 class _Settles:
     """The settle handles a polled item carries: ``ack`` once it is done with, ``nack`` to have it
-    redelivered. ``settled`` records that either ran, so a stopped worker hands back only what is left."""
+    redelivered. ``settled`` records that either was called, so a stopped worker hands back only what is
+    left. A cancel during the call does not stop the callback: it runs to its end."""
 
     on_ack: AckFn
     on_nack: AckFn
@@ -51,11 +83,11 @@ class _Settles:
 
     async def ack(self) -> None:
         self.settled = True
-        await maybe_await(self.on_ack())
+        await _run_to_end(self.on_ack())
 
     async def nack(self) -> None:
         self.settled = True
-        await maybe_await(self.on_nack())
+        await _run_to_end(self.on_nack())
 
 
 @dataclass
@@ -86,8 +118,14 @@ class Delivery(_Settles, Generic[M]):
     # The dispatcher reads a delivery and a poison record through these, with no switch on which it holds.
     @property
     def id(self) -> str:
-        """The message's id: what the retry policy counts attempts by."""
+        """The message's id: what the retry policy counts attempts by, inside :attr:`tenant`."""
         return self.message.id
+
+    @property
+    def tenant(self) -> str | None:
+        """The message's tenant: two tenants' stores may mint the same id, so the retry policy counts
+        each tenant's message apart."""
+        return self.message.tenant
 
     @property
     def name(self) -> str:
@@ -123,6 +161,11 @@ class Undecodable(_Settles):
     def attempt(self) -> int:
         """``0``: a poison record has no broker count, and dies on its first, terminal, attempt."""
         return 0
+
+    @property
+    def tenant(self) -> None:
+        """``None``: the tenant lives inside the payload that would not decode."""
+        return None
 
     @property
     def name(self) -> str:
