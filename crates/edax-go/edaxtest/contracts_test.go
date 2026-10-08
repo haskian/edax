@@ -3,60 +3,33 @@ package edaxtest_test
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	edax "github.com/haskian/edax/crates/edax-go"
 	"github.com/haskian/edax/crates/edax-go/backend/memory"
+	"github.com/haskian/edax/crates/edax-go/backend/redis"
 	"github.com/haskian/edax/crates/edax-go/edaxtest"
+	goredis "github.com/redis/go-redis/v9"
 )
 
-func fixture(t testing.TB) edaxtest.TransactionFixture {
-	t.Helper()
-	db := memory.New()
-	t.Cleanup(func() { _ = db.Close() })
-	events, err := db.EventStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = events.Close() })
-	ledger, err := db.IdempotencyStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ledger.Close() })
-	commands, err := db.CommandOutbox()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = commands.Close() })
-	projections, err := db.ProjectionStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = projections.Close() })
-	sagas, err := db.SagaStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sagas.Close() })
-	return edaxtest.TransactionFixture{Owner: db, Events: events, Ledger: ledger, Commands: commands, Projections: projections, Sagas: sagas}
-}
 func TestMemoryContracts(t *testing.T) {
 	t.Run("events", func(t *testing.T) {
-		edaxtest.EventStore(t, func(t testing.TB) edaxtest.EventBackend { return fixture(t).Events })
+		edaxtest.EventStore(t, func(t testing.TB) edaxtest.EventBackend { return edaxtest.MemoryFixture(t).Events })
 	})
 	t.Run("ledger", func(t *testing.T) {
-		edaxtest.IdempotencyStore(t, func(t testing.TB) edax.IdempotencyStore { return fixture(t).Ledger })
+		edaxtest.IdempotencyStore(t, func(t testing.TB) edax.IdempotencyStore { return edaxtest.MemoryFixture(t).Ledger })
 	})
 	t.Run("projection", func(t *testing.T) {
-		edaxtest.ProjectionStore(t, func(t testing.TB) edax.ProjectionStore { return fixture(t).Projections })
+		edaxtest.ProjectionStore(t, func(t testing.TB) edax.ProjectionStore { return edaxtest.MemoryFixture(t).Projections })
 	})
 	t.Run("command_outbox", func(t *testing.T) {
-		edaxtest.CommandOutbox(t, func(t testing.TB) edax.CommandOutbox { return fixture(t).Commands })
+		edaxtest.CommandOutbox(t, func(t testing.TB) edax.CommandOutbox { return edaxtest.MemoryFixture(t).Commands })
 	})
 	t.Run("saga", func(t *testing.T) {
-		edaxtest.SagaStore(t, func(t testing.TB) edax.SagaStore { return fixture(t).Sagas })
+		edaxtest.SagaStore(t, func(t testing.TB) edax.SagaStore { return edaxtest.MemoryFixture(t).Sagas })
 	})
-	t.Run("atomicity", func(t *testing.T) { edaxtest.Transactions(t, fixture) })
+	t.Run("atomicity", func(t *testing.T) { edaxtest.Transactions(t, edaxtest.MemoryFixture) })
 	t.Run("broker", func(t *testing.T) {
 		edaxtest.EventBroker(t, func(t testing.TB) edaxtest.EventBrokerFixture {
 			broker, err := memory.NewBroker(1, "silo")
@@ -69,5 +42,19 @@ func TestMemoryContracts(t *testing.T) {
 				return event, err
 			}}
 		})
+	})
+}
+
+func TestRedisLedgerContract(t *testing.T) {
+	edaxtest.IdempotencyStore(t, func(t testing.TB) edax.IdempotencyStore {
+		server := miniredis.RunT(t)
+		client := goredis.NewClient(&goredis.Options{Addr: server.Addr(), ContextTimeoutEnabled: true})
+		t.Cleanup(func() { _ = client.Close() })
+		store, err := redis.New(redis.NewClient(client), redis.Config{Prefix: "billing:contract:idem:", TTL: time.Hour, ClaimTTL: time.Minute, OpTimeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
 	})
 }

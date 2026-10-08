@@ -379,7 +379,8 @@ def timing(record: TimingRecorder, name: Callable[[Any], str]) -> Callable[[_Ste
     """A middleware that times the step it wraps and hands ``record`` one row per call:
     ``(name(msg), "ok", None, duration_ns)`` on success, ``(name(msg), "error", error_type(e),
     duration_ns)`` when the step raises, which it then re-raises. ``record`` is guarded like an
-    observer call. Structurally a :data:`~edax.command.Middleware` and an
+    observer call. A ``name`` that raises is logged, and the row is recorded under ``"edax.unlabelled"``.
+    Structurally a :data:`~edax.command.Middleware` and an
     :data:`~edax.router.EventMiddleware`: both hand the message first, so ``lambda msg: msg.name`` names a
     command and an event alike. This is the one place command latency is measured.
     A host tracer wraps the same seam to start the span the handler's own calls nest under."""
@@ -390,11 +391,25 @@ def timing(record: TimingRecorder, name: Callable[[Any], str]) -> Callable[[_Ste
             try:
                 result = await next_(msg, *rest)
             except Exception as e:
-                safely(record, name(msg), "error", error_type(e), perf_counter_ns() - started)
+                safely(record, _label(name, msg), "error", error_type(e), perf_counter_ns() - started)
                 raise
-            safely(record, name(msg), "ok", None, perf_counter_ns() - started)
+            safely(record, _label(name, msg), "ok", None, perf_counter_ns() - started)
             return result
 
         return step
 
     return mw
+
+
+#: The label of a ``timing`` row whose ``name`` callback raised.
+_UNLABELLED: Final[str] = "edax.unlabelled"
+
+
+def _label(name: Callable[[Any], str], msg: Any) -> str:
+    """``name(msg)``, or :data:`_UNLABELLED` when ``name`` raises. The label runs after the step, so a raise
+    here would replace the step's own outcome, and its effects have already happened."""
+    try:
+        return name(msg)
+    except Exception:
+        logger.exception("edax observe: the timing label raised; the row is recorded as %r", _UNLABELLED)
+        return _UNLABELLED

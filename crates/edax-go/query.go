@@ -22,9 +22,21 @@ type comparison struct {
 	Collation string `json:"collation,omitempty"`
 }
 
+// isDecimal reports whether a comparand selects decimal collation. A nil *Decimal writes null,
+// which the kernel refuses as a comparand, so it selects none.
+func isDecimal(value any) bool {
+	switch value := value.(type) {
+	case Decimal:
+		return true
+	case *Decimal:
+		return value != nil
+	}
+	return false
+}
+
 func compare(path, operator string, value any) Filter {
 	collation := ""
-	if _, ok := value.(Decimal); ok {
+	if isDecimal(value) {
 		collation = "decimal"
 	}
 	return Filter{"compare": comparison{path, operator, value, collation}}
@@ -61,14 +73,14 @@ func Exists(path string, present bool) Filter {
 	return Filter{"exists": map[string]any{"path": path, "exists": present}}
 }
 
-// In matches path against any supplied value; Decimal values select decimal collation.
+// In matches path against any supplied value; a Decimal or *Decimal value selects decimal collation.
 func In(path string, values ...any) Filter {
 	if values == nil {
 		values = []any{}
 	}
 	node := map[string]any{"path": path, "values": values}
 	for _, value := range values {
-		if _, ok := value.(Decimal); ok {
+		if isDecimal(value) {
 			node["collation"] = "decimal"
 		}
 	}
@@ -207,13 +219,15 @@ func QueryEntities(ctx context.Context, store ProjectionStore, spec QuerySpec) (
 	err = decodeJSON([]byte(result), &page)
 	return page, err
 }
+
 func marshalText(value any) (string, error) {
-	wire, err := json.Marshal(value)
+	wire, err := encodeJSON(value)
 	if err != nil {
 		return "", &Error{Code: CodeCodec, Message: err.Error()}
 	}
 	return string(wire), nil
 }
+
 func decodeJSON(wire []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(wire))
 	decoder.UseNumber()

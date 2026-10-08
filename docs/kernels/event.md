@@ -181,7 +181,7 @@ by it. A decode of the wrong kind then fails on the kind, not on whichever field
 
 Determinism rests on two things. Sorted map keys: `Extensions` and `Metadata` are `BTreeMap`, so
 whatever order a host filled them in, the encoding sorts them by UTF-8 bytes. That puts `"Z"` before
-`"a"`, and U+FF71 after U+1F980, although JavaScript, Java and C# sort that pair the other way by
+`"a"`, and U+FF71 before U+1F980, although JavaScript, Java and C# sort that pair the other way by
 UTF-16 code units. Field order is fixed. Both formats write a message as a map keyed by field name.
 The golden `msgpack_hex` of the `base` event starts `8d`, a 13-entry map, then `a2 6964`, the key
 `id`. A command starts `8c`, a 12-entry map.
@@ -349,9 +349,10 @@ is refused at wiring: `Upcaster.step` raises `BadHandle`, before any message is 
 `Retries` is the policy a consumer runs on a failed message, sans-IO in the `OffsetTracker` style.
 The host builds it with `Retries::new(max_attempts, sink)`, where `sink` is whether a dead-letter
 sink is wired. The host runs the handler, the sink, the wait and the ack or nack. It asks
-`failed(id, broker_attempt, failure)` what to do, with `failure = Failure::of(code)`. `code` is the
-failure's error code, `None` for one no code classifies. `in_progress` reads as `Contended`: another
-consumer holds the message's idempotency claim. `bad_handle` reads as `Fatal`: a wiring fault, such as
+`failed(id, tenant, broker_attempt, failure)` what to do, with `failure = Failure::of(code)`. A
+message is its id inside its tenant: two tenants' stores may mint one id, and one consumer serving
+both counts each apart. `code` is the failure's error code, `None` for one no code classifies.
+`in_progress` reads as `Contended`: another consumer holds the message's idempotency claim. `bad_handle` reads as `Fatal`: a wiring fault, such as
 a refused credential or topic, that fails every message alike. Another terminal code reads as
 `Terminal`, anything else as `Transient`. The ABI takes the code itself, so no SDK maps an error to a
 kind; `retry_failure(code)` names the kind for a host loop that must stop on a fatal one. The answer,
@@ -364,12 +365,12 @@ kind; `retry_failure(code)` names the kind for a host loop that must stop on a f
 | it dies | a `Terminal` failure, or `0 < max_attempts <= attempt`, and only with a sink |
 | it is handed back | everything else, after backoff step `attempt - 1`; the attempt is recorded, so the wait grows |
 | contention | its own growing step; never counts toward `max_attempts` |
-| the sink answers | `sunk(id, attempt, refusal)` is one call for either answer. A taken message (`refusal` is `None`) is forgotten and answers no step. A refused one keeps the attempt and answers the step; the redelivery dies again. A `Fatal` refusal answers no step either: the sink's wiring fails every dead message alike, so the host stops on it as on a fatal handler failure |
+| the sink answers | `sunk(id, tenant, attempt, refusal)` is one call for either answer. A taken message (`refusal` is `None`) is forgotten and answers no step. A refused one keeps the attempt and answers the step; the redelivery dies again. A `Fatal` refusal answers no step either: the sink's wiring fails every dead message alike, so the host stops on it as on a fatal handler failure |
 | it succeeds | `succeeded` forgets its counts |
 
 Two SDKs consuming one topic agree on when a message dies, so a poison message is not dead-lettered
 by one service and retried forever by the other. Both `KeyOrderedDispatcher`s run it, and both
-`Relay`s through `Drain`, keyed by outbox row id. `retries.json` holds operation scripts, each op with
+`Relay`s through `Drain`, keyed by outbox row id alone. `retries.json` holds operation scripts, each op with
 the answer the kernel gave; both suites replay them. `retry_failure.json` pins `Failure::of` for every
 code and for none.
 

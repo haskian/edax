@@ -42,6 +42,20 @@ written against them. Pin a minor in your dependency declaration
 
 ## Upgrade notes
 
+### 0.7 to 0.8
+
+- **Payload host values are `edax.Decimal` and `edax.Instant`.** `json_codec` and `msgpack_codec`
+  refuse a `datetime` or `decimal.Decimal` field at any depth. They raise `CodecError` when they are
+  built. msgspec converted such a field before the kernel saw its text. So a fraction finer than a
+  microsecond was rounded, and `"1_000"`, `" 9.5 "` or a JSON number read as a decimal.
+  The Rust and Go SDKs refuse all of them. Declare the field as `edax.Decimal` or `edax.Instant`
+  instead. Each is built from text through the kernel. Convert with `to_decimal()`, `to_datetime()`,
+  `Decimal.from_decimal()` and `Instant.from_datetime()`. Stored payloads keep their bytes: a value
+  an earlier release wrote reads as before, a MessagePack timestamp included. A stored value the
+  kernel refuses now raises `CodecError` on read, so a consumer dead-letters it.
+- **Plain values outside a codec.** A filter, a document, a saga state and a command hash still
+  accept a `decimal.Decimal` and an aware `datetime`. They are written as the host types' text.
+
 ### 0.5 to 0.6
 
 - **Saga store seam keyed by the saga's name.** Every `SagaStore` method takes the saga's `name`

@@ -39,10 +39,23 @@ func Guid() string { return kernel.Guid() }
 func CurrentTimestamp() int64 { return kernel.CurrentTimestamp() }
 
 // IsStale reports whether an incoming sequence precedes the stored mark.
-func IsStale(stored, incoming *uint64) bool { return kernel.IsStale(stored, incoming) }
+func IsStale(stored, incoming *uint64) bool {
+	return kernel.IsStale(stored != nil, sequenceValue(stored), incoming != nil, sequenceValue(incoming))
+}
 
 // Advance returns the larger available sequence mark.
-func Advance(stored, incoming *uint64) *uint64 { return kernel.Advance(stored, incoming) }
+func Advance(stored, incoming *uint64) *uint64 {
+	return kernel.Advance(stored != nil, sequenceValue(stored), incoming != nil, sequenceValue(incoming))
+}
+
+// sequenceValue is the value half of a sequence's presence pair. The ABI crosses presence
+// separately because its absent sentinel, the maximum uint64, is a valid sequence.
+func sequenceValue(sequence *uint64) uint64 {
+	if sequence == nil {
+		return 0
+	}
+	return *sequence
+}
 
 // PayloadHashJSON hashes canonical JSON through the kernel's shared rules.
 func PayloadHashJSON(payload []byte) (uint64, error) { return kernel.PayloadHashJSON(payload) }

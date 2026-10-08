@@ -18,14 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar
 
 import edax
+import fakeredis
 import pytest
 from conftest import SCOPE, RefusingLedger, build_message, claimed, event_claimed
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryProjectionStore, MemoryTransactor
+from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
 from edax.command import CommandBus, _payload_hash, idempotent
 from edax.idempotency import Claimed, Done, Pending, Record, Won, joins_transaction
 from edax.projection import Entity
@@ -344,10 +347,229 @@ async def test_a_nested_unit_of_work_is_refused() -> None:
     async with edax.transaction(rig.db):
         with pytest.raises(edax.BadHandle, match="unit_of_work") as caught:
             await rig.dispatch()
-    # Terminal: the wiring fails the same way on every redelivery, so a transient StoreError here
-    # would have the dispatcher redeliver a misconfiguration forever instead of dead-lettering it.
+    # Terminal and fatal: the wiring fails the same way on every redelivery, so a transient StoreError
+    # here would have the dispatcher redeliver a misconfiguration forever instead of stopping on it.
     assert caught.value.terminal is True
     assert rig.runs == 0, "the handler must not run once the wiring is known to be wrong"
+
+
+@dataclass
+class AmbientCase:
+    name: str
+    ledger: Callable[[MemoryTransactor], Any]  # the ledger, given the host's database
+    refused: bool  # whether the guard refuses to run inside the host's transaction
+
+
+AMBIENT_CASES = [
+    # The README's wiring: the claim stages in the host's transaction and rolls back with the work.
+    AmbientCase("same_database_ledger_joins_so_the_rollback_frees_the_key", MemoryIdempotencyStore, False),
+    # Each of these would complete before the host commits, so a rollback would leave a cached success.
+    AmbientCase("ledger_of_its_own_is_refused", lambda db: MemoryLedger(), True),
+    AmbientCase(
+        "joining_ledger_over_another_database_is_refused",
+        lambda db: MemoryIdempotencyStore(MemoryTransactor()),
+        True,
+    ),
+    AmbientCase("redis_ledger_is_refused", lambda db: redis_ledger(), True),
+]
+
+
+def redis_ledger() -> RedisIdempotencyStore:
+    """The Redis ledger on fakeredis, which runs the kernel's Lua: a ledger of its own that no host
+    transaction can enlist."""
+    return RedisIdempotencyStore(AsyncRedisClient(fakeredis.FakeAsyncRedis()), "billing:test:idem:")
+
+
+@pytest.mark.parametrize("guard", ["idempotent", "idempotent_by_id"])
+@pytest.mark.parametrize("case", AMBIENT_CASES, ids=lambda c: c.name)
+async def test_a_guard_inside_the_hosts_transaction_runs_only_on_a_ledger_that_joins_it(
+    case: AmbientCase, guard: str
+) -> None:
+    """The host opens the transaction around the dispatch and passes no ``unit_of_work``. Only a ledger
+    that stages in that transaction may run there. Any other ledger records success before the host
+    commits: a later step that aborts the transaction leaves the key replaying a result whose work never
+    landed. The guard refuses it with the fatal ``BadHandle`` before the claim, so the redelivery outside
+    the transaction runs the work once and it lands."""
+    db = MemoryTransactor()
+    projections = MemoryProjectionStore(db)
+    ledger = case.ledger(db)
+    runs = 0
+
+    async def handler(message: Any) -> None:
+        nonlocal runs
+        runs += 1
+        await projections.save(Entity(DOC, 0, {"id": DOC, "balance": 100}))
+
+    if guard == "idempotent":
+        bus = CommandBus(idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
+        bus.register(Deposit, handler)
+
+        async def dispatch() -> Any:
+            return await bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A")
+    else:
+        router = edax.EventRouter(idempotent_by_id(ledger, scope=SCOPE, tenancy=edax.Tenancy.SILO))
+        router.register("Deposited", handler)
+        env = build_message(
+            DOC, "Deposited", 1, id="evt-1", data=b'{"amount":100}', recorded_at=1_714_564_800_000_000_000
+        )
+
+        async def dispatch() -> Any:
+            return await router.dispatch(env)
+
+    with pytest.raises((edax.BadHandle, RuntimeError)) as caught:
+        async with edax.transaction(db):
+            await dispatch()
+            raise RuntimeError("a later step aborts the host's transaction")
+    if case.refused:
+        assert isinstance(caught.value, edax.BadHandle) and edax.is_fatal(caught.value), case.name
+        assert runs == 0, "refused before the claim, so the handler never ran"
+    else:
+        assert not isinstance(caught.value, edax.BadHandle), case.name
+        assert runs == 1
+
+    await dispatch()  # the redelivery, outside any transaction
+    assert runs == (1 if case.refused else 2), "the key was free, so the work ran again"
+    assert await projections.get(DOC) is not None, "the redelivered work landed"
+
+
+@dataclass
+class CommitFailureCase:
+    name: str
+    ledger: Callable[[MemoryTransactor], Any]  # the ledger, given the business database
+    host_owns_the_transaction: bool  # the host's `transaction` around the dispatch, or `unit_of_work=`
+    error: type[BaseException]  # what the first dispatch raises
+    runs: int  # handler invocations in the first dispatch
+
+
+COMMIT_FAILURE_CASES = [
+    # --- the host's transaction around the dispatch, no `unit_of_work` --------------------------------
+    CommitFailureCase(
+        "host_same_database_ledger_rolls_back_the_claim_with_the_work",
+        MemoryIdempotencyStore,
+        host_owns_the_transaction=True,
+        error=edax.StoreError,
+        runs=1,
+    ),
+    # The F01 refusals: each ledger would have completed before the commit that then failed.
+    CommitFailureCase(
+        "host_ledger_of_its_own_is_refused_before_the_claim",
+        lambda db: MemoryLedger(),
+        host_owns_the_transaction=True,
+        error=edax.BadHandle,
+        runs=0,
+    ),
+    CommitFailureCase(
+        "host_joining_ledger_over_another_database_is_refused_before_the_claim",
+        lambda db: MemoryIdempotencyStore(MemoryTransactor()),
+        host_owns_the_transaction=True,
+        error=edax.BadHandle,
+        runs=0,
+    ),
+    CommitFailureCase(
+        "host_redis_ledger_is_refused_before_the_claim",
+        lambda db: redis_ledger(),
+        host_owns_the_transaction=True,
+        error=edax.BadHandle,
+        runs=0,
+    ),
+    # --- the guard owns the transaction through `unit_of_work=` ---------------------------------------
+    # A ledger over another database is refused before the commit is reached; see the test below.
+    CommitFailureCase(
+        "guard_shared_ledger_rolls_back_the_claim_with_the_work",
+        MemoryIdempotencyStore,
+        host_owns_the_transaction=False,
+        error=edax.StoreError,
+        runs=1,
+    ),
+    CommitFailureCase(
+        "guard_ledger_of_its_own_releases_the_claim_after_the_failed_commit",
+        lambda db: MemoryLedger(),
+        host_owns_the_transaction=False,
+        error=edax.StoreError,
+        runs=1,
+    ),
+]
+
+
+async def record_of(ledger: Any, key: str) -> Any:
+    """The key's stored state: ``None`` when the key is free, else its record's state. A free key is read
+    by claiming it, so the probe releases that claim again and leaves the ledger as it found it."""
+    claim = await ledger.claim(key, 0)
+    if isinstance(claim, Won):
+        await ledger.release(key, claim.handle)
+        return None
+    return claim.state
+
+
+@pytest.mark.parametrize("guard", ["idempotent", "idempotent_by_id"])
+@pytest.mark.parametrize("case", COMMIT_FAILURE_CASES, ids=lambda c: c.name)
+async def test_a_failed_commit_after_the_handler_leaves_no_cached_success(
+    case: CommitFailureCase, guard: str
+) -> None:
+    """The commit itself fails, after the guarded handler ran and returned. Nothing landed, so the key must
+    stay free: a cached success there would replay a result whose work rolled back, and the redelivery would
+    never redo it. A ledger that joins the transaction rolls its claim back with the work; a ledger of its
+    own under ``unit_of_work=`` releases it after the failed commit; under the host's transaction it is
+    refused before the claim, because it would complete before the commit."""
+    db = MemoryTransactor()
+    projections = MemoryProjectionStore(db)
+    ledger = case.ledger(db)
+    unit = BrokenCommit(db, "nothing_landed")
+    guard_unit = None if case.host_owns_the_transaction else unit
+    runs = 0
+
+    async def handler(message: Any) -> int:
+        nonlocal runs
+        runs += 1
+        await projections.save(Entity(DOC, 0, {"id": DOC, "balance": 100}))
+        return 100
+
+    if guard == "idempotent":
+        bus = CommandBus(idempotent(ledger, scope=SCOPE, unit_of_work=guard_unit, tenancy=edax.Tenancy.SILO))
+        bus.register(Deposit, handler)
+        key = claimed("req-A")
+
+        async def dispatch() -> Any:
+            return await bus.dispatch(Deposit(100, "req-A"), idempotency_key="req-A")
+    else:
+        router = edax.EventRouter(
+            idempotent_by_id(ledger, unit_of_work=guard_unit, scope=SCOPE, tenancy=edax.Tenancy.SILO)
+        )
+
+        async def on_deposited(message: edax.EventMessage) -> None:
+            await handler(message)
+
+        router.register("Deposited", on_deposited)
+        env = build_message(
+            DOC, "Deposited", 1, id="evt-1", data=b'{"amount":100}', recorded_at=1_714_564_800_000_000_000
+        )
+        key = event_claimed(env.id)
+
+        async def dispatch() -> Any:
+            return await router.dispatch(env)
+
+    with pytest.raises(case.error) as caught:
+        if case.host_owns_the_transaction:
+            async with edax.transaction(unit):
+                await dispatch()
+        else:
+            await dispatch()
+    assert type(caught.value) is case.error, case.name
+    assert runs == case.runs, case.name
+    assert await projections.get(DOC) is None, "the failed commit left no business write"
+    assert await record_of(ledger, key) is None, "no cached success over work that rolled back"
+
+    unit.arm = None  # the redelivery commits cleanly: outside any transaction, or in the guard's own
+    await dispatch()
+    assert runs == case.runs + 1, "the key was free, so the redelivery ran the work"
+    assert await projections.get(DOC) == Entity(DOC, 1, {"id": DOC, "balance": 100}), (
+        "the redelivered work landed"
+    )
+    stored = await record_of(ledger, key)
+    expected_result = 100 if guard == "idempotent" else None
+    assert isinstance(stored, Done) and stored.result == expected_result, (
+        "only now does the key record the success"
+    )
 
 
 async def test_losing_the_claim_never_releases_the_winners_key() -> None:
@@ -630,7 +852,7 @@ async def test_a_ledger_over_another_database_than_the_unit_of_work_is_refused(
     its own, the store would auto-commit: a success would leave a ``done`` record the guard's commit never
     covered, and a failed handler would roll back its work and leave the key pending for good. The guard
     hands the store its transaction, which the store refuses with the terminal ``BadHandle`` before the
-    handler runs, so the dispatcher dead-letters the wiring mistake."""
+    handler runs, so the dispatcher stops on the wiring mistake and hands the message back."""
     db, other = MemoryTransactor(), MemoryTransactor()
     ledger = MemoryIdempotencyStore(other)
     runs = 0

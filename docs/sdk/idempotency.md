@@ -70,12 +70,21 @@ cannot detect; absent, the answer is `False`.
 
 | `unit_of_work` | `joins_transaction` | Function | Ordering |
 |---|---|---|---|
-| not given | either | `_guarded_around_the_work` | `claim; run; complete`; all three enlist in the host's ambient `current_tx` if one is open |
+| not given, no transaction open | either | `_guarded_around_the_work` | `claim; run; complete`, each on its own |
+| not given, inside the host's `transaction` | `True`, and the ledger's own database has the open tx | `_guarded_around_the_work` | `claim; run; complete`, all three staged in the host's `current_tx`; the host's commit is the one commit |
+| not given, inside the host's `transaction` | `False`, or a ledger over another database | refused | `BadHandle` before the claim |
 | given | `True` | `_guarded_in_one_commit` | `begin; claim; run; complete; commit` |
 | given | `False` | `_guarded_around_the_work` | `claim; begin; run; commit; complete` |
 
 `MemoryIdempotencyStore` declares `True`; `RedisIdempotencyStore` declares `False`, because Redis
 cannot enlist in another database's transaction.
+
+Inside the host's transaction, a ledger that does not join it would complete before the host commits.
+A later step that aborts the transaction would then leave a cached success over work that never
+landed. So the guard refuses that composition with the fatal `BadHandle`. For a ledger of its own,
+pass `unit_of_work` to the guard and let it open the transaction. The guard finds the ledger's
+database through its `transactor` attribute, as `current_tx` does. A joining store without that
+attribute is refused inside a transaction too.
 
 A store that declares `True` must refuse a handle belonging to another database: it raises
 `BadHandle` instead of auto-committing. The guard skips its compensation on that store's word,
@@ -362,6 +371,13 @@ Pinned by `test_a_done_record_never_covers_work_that_did_not_land` and its Rust 
 would commit the claim independently of the writes it guards. That is the split-store failure inside
 what looks like a shared store. `test_a_nested_unit_of_work_is_refused` pins it. Pass
 `unit_of_work`, or open the transaction around the dispatch, never both.
+
+**A ledger must join the transaction around the dispatch.** Say the host opens `transaction` and
+passes no `unit_of_work`. The guard then runs only on a ledger that declares `joins_transaction`, and
+only when that ledger's own database has the open tx. A ledger of its own, or a joining store over another database, raises
+`BadHandle` before the claim: it would cache a success before the host commits the work.
+`test_a_guard_inside_the_hosts_transaction_runs_only_on_a_ledger_that_joins_it` pins it, and Go's
+`Guard` refuses the same composition.
 
 **Many SQL databases abort the transaction on the first failed statement.** Every statement after
 that failure is refused. An attempt made inside such an aborted transaction cannot reach the data,

@@ -194,9 +194,9 @@ filter without a store.
 ### Sort, offset, limit
 
 `sort_key(path, desc=False, *, decimal=False)` builds one ordering key. `sort` is a list of them,
-applied in order. Set `decimal=True` for a field that holds `Decimal` values. Their canonical text
+applied in order. Set `decimal=True` for a field that holds decimal values (`edax.Decimal` or `decimal.Decimal`). Their canonical text
 then sorts by exact value, so `"9.5"` comes before `"10"`. Other strings in that field sort after
-the decimals, by code point. A `datetime` field needs no flag: the SDK writes it as fixed-width UTC
+the decimals, by code point. An instant field (`edax.Instant` or `datetime`) needs no flag: the SDK writes it as fixed-width UTC
 text, which sorts by instant.
 
 The kernel fixes a total order across JSON types. The comparator never reports "incomparable", so a

@@ -17,6 +17,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from typing import ClassVar
+from urllib.parse import urlsplit
 
 from edax import CachedFailure, CommandBus, IdempotencyStore, Rejected, Tenancy, guid, idempotent
 from edax.backend.memory import MemoryLedger
@@ -80,7 +81,8 @@ async def main() -> None:
     try:
         # The prefix names the service and environment. A fresh one per run keeps runs apart.
         ledger = RedisIdempotencyStore(AsyncRedisClient(client), prefix=f"examples:{guid()}:", ttl_ms=60_000)
-        print(f"using Redis at {url}\n")
+        # The URL may carry a password, so only its host is printed.
+        print(f"using Redis at {urlsplit(url).hostname}\n")
         await charge_twice(ledger)
     finally:
         await client.aclose()

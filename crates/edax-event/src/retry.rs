@@ -120,14 +120,24 @@ pub struct Tracked {
 }
 
 /// The retry and dead-letter policy over the messages one consumer has seen fail. Keyed by message
-/// id (a message id, an outbox row id). An entry stays until the id succeeds or dies; one whose
-/// message never comes back (a broker-side dead-letter took it) stays for the life of the value.
+/// id (a message id, an outbox row id) inside its tenant: two tenants' stores may mint the same id (a
+/// saga command's id derives from a bare instance key under bridge tenancy), and one consumer serving
+/// both must not spend one tenant's attempts on the other's message. An entry stays until the message
+/// succeeds or dies; one whose message never comes back (a broker-side dead-letter took it) stays for
+/// the life of the value.
 #[derive(Debug, Clone, Default)]
 pub struct Retries {
     max_attempts: u32,
     sink: bool,
-    attempts: HashMap<String, u32>,
-    contended: HashMap<String, u32>,
+    attempts: HashMap<MessageKey, u32>,
+    contended: HashMap<MessageKey, u32>,
+}
+
+/// The identity [`Retries`] counts by: a message's tenant and its id, exact under every tenancy mode.
+type MessageKey = (Option<String>, String);
+
+fn message_key(id: &str, tenant: Option<&str>) -> MessageKey {
+    (tenant.map(ToOwned::to_owned), id.to_owned())
 }
 
 impl Retries {
@@ -142,47 +152,53 @@ impl Retries {
         }
     }
 
-    /// The attempt a run of `id` is: `max(broker_attempt, recorded) + 1`, saturating.
-    pub fn attempt(&self, id: &str, broker_attempt: u32) -> u32 {
+    /// The attempt a run of `id` of `tenant` is: `max(broker_attempt, recorded) + 1`, saturating.
+    pub fn attempt(&self, id: &str, tenant: Option<&str>, broker_attempt: u32) -> u32 {
+        self.attempt_of(&message_key(id, tenant), broker_attempt)
+    }
+
+    fn attempt_of(&self, key: &MessageKey, broker_attempt: u32) -> u32 {
         broker_attempt
-            .max(self.attempts.get(id).copied().unwrap_or(0))
+            .max(self.attempts.get(key).copied().unwrap_or(0))
             .saturating_add(1)
     }
 
-    /// `id` succeeded: forget its counts.
-    pub fn succeeded(&mut self, id: &str) {
-        self.attempts.remove(id);
-        self.contended.remove(id);
+    /// `id` of `tenant` succeeded: forget its counts.
+    pub fn succeeded(&mut self, id: &str, tenant: Option<&str>) {
+        let key = message_key(id, tenant);
+        self.attempts.remove(&key);
+        self.contended.remove(&key);
     }
 
-    /// `id` failed with `failure`, at the broker's own redelivery count `broker_attempt`.
-    pub fn failed(&mut self, id: &str, broker_attempt: u32, failure: Failure) -> Verdict {
+    /// `id` of `tenant` failed with `failure`, at the broker's own redelivery count `broker_attempt`.
+    pub fn failed(&mut self, id: &str, tenant: Option<&str>, broker_attempt: u32, failure: Failure) -> Verdict {
         if failure == Failure::Fatal {
             // Not an attempt of this message: the wiring failed it, and fixing the wiring must not
             // find it one step nearer its ceiling.
             return Verdict::Stop;
         }
+        let key = message_key(id, tenant);
         if failure == Failure::Contended {
-            let entry = self.contended.entry(id.to_owned()).or_insert(0);
+            let entry = self.contended.entry(key).or_insert(0);
             let step = *entry;
             *entry = entry.saturating_add(1);
             return Verdict::Nack { step: u64::from(step) };
         }
-        self.contended.remove(id);
-        let attempt = self.attempt(id, broker_attempt);
+        self.contended.remove(&key);
+        let attempt = self.attempt_of(&key, broker_attempt);
         let exhausted = self.max_attempts > 0 && attempt >= self.max_attempts;
         if self.sink && (failure == Failure::Terminal || exhausted) {
             return Verdict::Dead { attempt };
         }
         // Recorded whatever the ceiling, so the wait grows across redeliveries: unrecorded, every
         // attempt would be the first and every wait the first step.
-        self.attempts.insert(id.to_owned(), attempt);
+        self.attempts.insert(key, attempt);
         Verdict::Nack {
             step: u64::from(attempt.saturating_sub(1)),
         }
     }
 
-    /// The sink's answer for the message `id`, dead at `attempt`: `None` if it took the message, else
+    /// The sink's answer for the message `id` of `tenant`, dead at `attempt`: `None` if it took the message, else
     /// the failure it refused it with. Returns the backoff step to wait before the nack when the
     /// message goes back, `None` when nothing waits.
     ///
@@ -190,15 +206,15 @@ impl Retries {
     /// - refused: the attempt is kept, so the redelivery dies again at the next one;
     /// - refused fatally: `None`, as for a taken message, but the host stops on the sink's failure and
     ///   hands the message back uncounted, since the sink's wiring fails every dead message alike.
-    pub fn sunk(&mut self, id: &str, attempt: u32, refusal: Option<Failure>) -> Option<u64> {
+    pub fn sunk(&mut self, id: &str, tenant: Option<&str>, attempt: u32, refusal: Option<Failure>) -> Option<u64> {
         match refusal {
             None => {
-                self.succeeded(id);
+                self.succeeded(id, tenant);
                 None
             }
             Some(Failure::Fatal) => None,
             Some(_) => {
-                self.attempts.insert(id.to_owned(), attempt);
+                self.attempts.insert(message_key(id, tenant), attempt);
                 Some(u64::from(attempt.saturating_sub(1)))
             }
         }
@@ -477,16 +493,16 @@ mod tests {
         for c in cases {
             let mut retries = Retries::new(c.max_attempts, c.sink);
             if let Some(n) = c.recorded {
-                let _ = retries.sunk("evt-1", n, Some(Failure::Transient));
+                let _ = retries.sunk("evt-1", None, n, Some(Failure::Transient));
             }
             assert_eq!(
-                retries.failed("evt-1", c.broker_attempt, c.failure),
+                retries.failed("evt-1", None, c.broker_attempt, c.failure),
                 c.want,
                 "{}",
                 c.name
             );
             assert_eq!(
-                retries.attempts.get("evt-1").copied(),
+                retries.attempts.get(&message_key("evt-1", None)).copied(),
                 c.want_recorded,
                 "{}: recorded",
                 c.name
@@ -498,7 +514,10 @@ mod tests {
     fn contention_grows_its_own_step_until_a_real_outcome_clears_it() {
         let mut retries = Retries::new(3, true);
         for step in 0..3 {
-            assert_eq!(retries.failed("evt-1", 0, Failure::Contended), Verdict::Nack { step });
+            assert_eq!(
+                retries.failed("evt-1", None, 0, Failure::Contended),
+                Verdict::Nack { step }
+            );
         }
         assert_eq!(
             retries.tracked(),
@@ -509,7 +528,7 @@ mod tests {
         );
         // A real failure clears the contention count and starts the attempt count at 1.
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Transient),
+            retries.failed("evt-1", None, 0, Failure::Transient),
             Verdict::Nack { step: 0 }
         );
         assert_eq!(
@@ -520,11 +539,11 @@ mod tests {
             }
         );
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Contended),
+            retries.failed("evt-1", None, 0, Failure::Contended),
             Verdict::Nack { step: 0 },
             "contention starts over"
         );
-        retries.succeeded("evt-1");
+        retries.succeeded("evt-1", None);
         assert_eq!(retries.tracked(), Tracked::default(), "success forgets both");
     }
 
@@ -532,20 +551,24 @@ mod tests {
     fn a_failed_sink_keeps_the_attempt_and_the_redelivery_dies_again() {
         let mut retries = Retries::new(2, true);
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Transient),
+            retries.failed("evt-1", None, 0, Failure::Transient),
             Verdict::Nack { step: 0 }
         );
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Transient),
+            retries.failed("evt-1", None, 0, Failure::Transient),
             Verdict::Dead { attempt: 2 }
         );
-        assert_eq!(retries.sunk("evt-1", 2, Some(Failure::Transient)), Some(1));
-        assert_eq!(retries.attempt("evt-1", 0), 3);
+        assert_eq!(retries.sunk("evt-1", None, 2, Some(Failure::Transient)), Some(1));
+        assert_eq!(retries.attempt("evt-1", None, 0), 3);
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Transient),
+            retries.failed("evt-1", None, 0, Failure::Transient),
             Verdict::Dead { attempt: 3 }
         );
-        assert_eq!(retries.sunk("evt-1", 3, None), None, "a taken message waits nothing");
+        assert_eq!(
+            retries.sunk("evt-1", None, 3, None),
+            None,
+            "a taken message waits nothing"
+        );
         assert_eq!(retries.tracked(), Tracked::default());
     }
 
@@ -553,14 +576,35 @@ mod tests {
     fn a_fatal_sink_failure_stops_and_keeps_no_attempt() {
         let mut retries = Retries::new(2, true);
         assert_eq!(
-            retries.failed("evt-1", 0, Failure::Terminal),
+            retries.failed("evt-1", None, 0, Failure::Terminal),
             Verdict::Dead { attempt: 1 }
         );
-        assert_eq!(retries.sunk("evt-1", 1, Some(Failure::Fatal)), None);
+        assert_eq!(retries.sunk("evt-1", None, 1, Some(Failure::Fatal)), None);
         assert_eq!(
-            retries.attempt("evt-1", 0),
+            retries.attempt("evt-1", None, 0),
             1,
             "the sink's wiring failed it, not the message"
+        );
+    }
+
+    #[test]
+    fn one_id_of_two_tenants_is_two_messages() {
+        let mut retries = Retries::new(2, true);
+        assert_eq!(
+            retries.failed("cmd-1", Some("acme"), 0, Failure::Transient),
+            Verdict::Nack { step: 0 }
+        );
+        assert_eq!(
+            retries.failed("cmd-1", Some("globex"), 0, Failure::Transient),
+            Verdict::Nack { step: 0 },
+            "another tenant's message starts at its own first attempt"
+        );
+        assert_eq!(retries.attempt("cmd-1", None, 0), 1, "no tenant is a tenant of its own");
+        retries.succeeded("cmd-1", Some("globex"));
+        assert_eq!(
+            retries.attempt("cmd-1", Some("acme"), 0),
+            2,
+            "a success forgets its tenant's count only"
         );
     }
 }

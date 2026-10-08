@@ -901,6 +901,29 @@ fn kafka_dead_letter_cases() -> Vec<Value> {
             ],
         ),
         (
+            // A count that is there but not text is unreadable, not absent.
+            "a_dropped_count_that_is_not_utf8",
+            vec![
+                KafkaHeader::new("edax-dlq-topic", b"t"),
+                KafkaHeader::new("edax-dlq-partition", b"0"),
+                KafkaHeader::new("edax-dlq-offset", b"0"),
+                KafkaHeader::new("edax-dlq-error", b"x"),
+                KafkaHeader::new("edax-dlq-dropped", &[0xff]),
+            ],
+        ),
+        (
+            // The last count decides: an earlier readable one does not stand in for it.
+            "a_last_dropped_count_that_is_not_utf8",
+            vec![
+                KafkaHeader::new("edax-dlq-topic", b"t"),
+                KafkaHeader::new("edax-dlq-partition", b"0"),
+                KafkaHeader::new("edax-dlq-offset", b"0"),
+                KafkaHeader::new("edax-dlq-error", b"x"),
+                KafkaHeader::new("edax-dlq-dropped", b"337"),
+                KafkaHeader::new("edax-dlq-dropped", &[0xff]),
+            ],
+        ),
+        (
             "a_topic_that_is_not_utf8",
             vec![
                 KafkaHeader::new("edax-dlq-topic", &[0xff]),

@@ -25,6 +25,9 @@ type EventRouter struct {
 func NewEventRouter(middleware ...EventMiddleware) *EventRouter {
 	return &EventRouter{handlers: make(map[string]EventHandler), middleware: append([]EventMiddleware(nil), middleware...)}
 }
+
+// wrap runs the factories outside the lock, so one may register or dispatch on
+// this router. The middleware list never changes after construction.
 func (r *EventRouter) wrap(handler EventHandler) (EventHandler, error) {
 	for i := len(r.middleware) - 1; i >= 0; i-- {
 		if r.middleware[i] == nil {
@@ -43,14 +46,20 @@ func (r *EventRouter) Register(name string, handler EventHandler) error {
 	if name == "" || handler == nil {
 		return &Error{Code: CodeBadHandle, Message: "event registration needs a name and handler"}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.handlers[name]; ok {
+	r.mu.RLock()
+	_, exists := r.handlers[name]
+	r.mu.RUnlock()
+	if exists {
 		return &Error{Code: CodeAlreadyRegistered, Message: name}
 	}
 	wrapped, err := r.wrap(handler)
 	if err != nil {
 		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.handlers[name]; exists {
+		return &Error{Code: CodeAlreadyRegistered, Message: name}
 	}
 	if r.handlers == nil {
 		r.handlers = make(map[string]EventHandler)
@@ -61,16 +70,15 @@ func (r *EventRouter) Register(name string, handler EventHandler) error {
 
 // OnUnhandled sets a middleware-wrapped fallback; nil restores silent skipping.
 func (r *EventRouter) OnUnhandled(handler EventHandler) error {
+	var wrapped EventHandler
+	if handler != nil {
+		var err error
+		if wrapped, err = r.wrap(handler); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if handler == nil {
-		r.unhandled = nil
-		return nil
-	}
-	wrapped, err := r.wrap(handler)
-	if err != nil {
-		return err
-	}
 	r.unhandled = wrapped
 	return nil
 }

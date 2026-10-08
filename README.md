@@ -122,6 +122,9 @@ async def main() -> None:
     published: list[str] = []
     await Relay(store, publish=lambda msg: published.append(msg.id)).drain()
     print(len(published))  # 1, because the replay wrote nothing
+
+
+asyncio.run(main())
 ```
 
 Dispatch `req-A` twice and the second call replays the first outcome. Reuse the key with a

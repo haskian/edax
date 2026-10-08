@@ -262,22 +262,24 @@ pub struct DeadLetterSource {
 }
 
 /// Read the source a dead-letter record names, from the last set of `edax-dlq-*` headers: the most
-/// recent dead-lettering. `None` when any of the four is missing or unreadable, or a [`DLQ_DROPPED`] is
-/// unreadable, so a republish job never guesses a coordinate. A stub republished and dead-lettered again
-/// still reads as dropped: its value is empty either way.
+/// recent dead-lettering. `None` when any of the four is missing or unreadable, or the last
+/// [`DLQ_DROPPED`] is unreadable, so a republish job never guesses a coordinate. A stub republished and
+/// dead-lettered again still reads as dropped: its value is empty either way.
 pub fn dead_letter_source(headers: &[KafkaHeader]) -> Option<DeadLetterSource> {
-    let last = |name: &str| -> Option<&str> {
+    // The outer `None` is a missing header, the inner one a header that is not UTF-8: the optional
+    // `DLQ_DROPPED` may be missing, but never unreadable.
+    let last = |name: &str| -> Option<Option<&str>> {
         let header = headers.iter().rev().find(|header| header.key == name)?;
-        std::str::from_utf8(&header.value).ok()
+        Some(std::str::from_utf8(&header.value).ok())
     };
     Some(DeadLetterSource {
-        topic: last(DLQ_TOPIC)?.to_owned(),
-        partition: last(DLQ_PARTITION)?.parse().ok()?,
-        offset: last(DLQ_OFFSET)?.parse().ok()?,
-        error: last(DLQ_ERROR)?.to_owned(),
+        topic: last(DLQ_TOPIC)??.to_owned(),
+        partition: last(DLQ_PARTITION)??.parse().ok()?,
+        offset: last(DLQ_OFFSET)??.parse().ok()?,
+        error: last(DLQ_ERROR)??.to_owned(),
         dropped: match last(DLQ_DROPPED) {
             None => None,
-            Some(dropped) => Some(dropped.parse().ok()?),
+            Some(dropped) => Some(dropped?.parse().ok()?),
         },
     })
 }

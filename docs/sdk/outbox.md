@@ -267,7 +267,7 @@ runs, keyed by row id:
 | terminal (an over-size message, a codec error) | yes | dead-lettered and marked; its key's later rows go out in the same drain |
 | transient, at the `max_attempts`-th failure of that row | yes | dead-lettered and marked |
 | transient, below the ceiling (or `max_attempts=0`) | either | handed back with its key; the other keys go on |
-| a second transient failure, with no successful publish since the first | either | handed back (or dead-lettered at the ceiling), and the drain stops: the broker is likely down. It waits that row's step and raises its error even when the sink took every failed row |
+| a second transient failure within one drain, with no successful publish since the first | either | handed back (or dead-lettered at the ceiling), and the drain stops: the broker is likely down. It waits that row's step and raises its error even when the sink took every failed row |
 | terminal | no | handed back with its key and a growing wait, on every drain |
 | `InProgress` (a guarded command another dispatcher holds) | either | handed back with its key, without spending an attempt |
 | fatal (`edax.is_fatal`) | either | handed back uncounted; the drain stops and raises at once, with no wait |
@@ -283,8 +283,11 @@ the publish error as `failure`, the same value a `KeyOrderedDispatcher` sink tak
 them, `DeadLetter<&R, &HandlerError>`.
 
 **The sink is at-least-once too.** A drain marks a dead-lettered row with the rows it published. When
-that `mark_published` fails, the next drain reads the row again and hands it to `on_dead` again. A
-sink deduplicates by row id, as a downstream consumer does.
+that `mark_published` fails, the next drain reads the row again. The relay forgot the row's attempts
+when the sink took it, so the drain publishes the row again with a fresh budget, not straight to the
+sink. If that publish succeeds, the row reaches the transport as well as the sink. If it fails, the row
+reaches `on_dead` again on a terminal failure or after `max_attempts` more transient ones. The sink
+deduplicates by row id, as a downstream consumer does.
 
 **Why a second transient failure stops the drain.** A transient failure is usually the transport's,
 not the row's: the broker is down for every key. Publishing the rest of the batch would spend each

@@ -315,6 +315,10 @@ together, so treat that pair as a [saga](./sagas.md).
 
 The idempotency guard enforces its own case. Given `unit_of_work=` while any `transaction` is already
 set, it raises `BadHandle` rather than committing the claim independently of the writes it guards.
+Given no `unit_of_work` inside an open `transaction`, it runs only on a ledger that declares
+`joins_transaction` and whose own database has the ambient tx. Any other ledger would complete
+before the host commits, so it raises `BadHandle` too. `joins_transaction` alone is not enough: a
+joining store over another database finds no ambient tx of its own and would auto-commit.
 
 **Isolation in the memory backend is by exclusion, not by blocking.** A key one open transaction
 staged is held until that transaction ends. A second writer gets `ConcurrencyError` at once rather

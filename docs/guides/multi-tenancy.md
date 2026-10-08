@@ -235,8 +235,10 @@ One consumer can serve many topics, and many consumers can feed one dispatcher.
   its origin record. A handler reads `msg.tenant`, never the topic it arrived on.
 - **A shared dispatcher shares its blast radius.** A handler retrying with backoff holds its worker,
   and every key that hashes to it waits. The worker hashes the bare ordering key, not the composed
-  one, so two tenants' aggregates with one id always share a worker. One consumer and one dispatcher
-  per tenant is the isolating arrangement.
+  one, so two tenants' aggregates with one id always share a worker. The retry count is the tenant's
+  own. The dispatcher keys it by message id inside its tenant. So a bridge saga command id that two
+  tenants share spends two retry budgets, not one. One consumer and one dispatcher per tenant is the
+  isolating arrangement.
 - **A poison message is confined** to the topic or partition it arrives on. Wire `on_dead` so it is
   dead-lettered and acked, or it redelivers and pins the position behind it.
 

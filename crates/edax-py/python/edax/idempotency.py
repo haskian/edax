@@ -21,7 +21,7 @@ from ._units import in_unit_of_work, open_transaction
 from .errors import BadHandle, CachedFailure
 from .observe import CLAIM_VERDICTS, ClaimVerdict, Observer, Settlement
 from .tenancy import Tenancy
-from .unit_of_work import Transactor, TxT, TxT_contra
+from .unit_of_work import Transactor, TxT, TxT_contra, current_tx
 
 __all__ = [
     "Claimed",
@@ -132,7 +132,10 @@ class IdempotencyStore(Protocol[TxT_contra]):
     - *Declaration.* ``joins_transaction: ClassVar[bool]`` names which of the two you are; absent is
       ``False``. ``True`` obliges you to raise terminal :class:`~edax.errors.BadHandle` for a handle from
       another database, never to auto-commit. The guard hands such a store its transaction's handle
-      explicitly, so a store over another database than ``unit_of_work`` fails at the claim.
+      explicitly, so a store over another database than ``unit_of_work`` fails at the claim. Such a store
+      names its transactor as its ``transactor`` attribute (the :class:`~edax.unit_of_work.Transactor`
+      *Identity* clause): inside the host's transaction, the guard runs only when that transactor has the
+      ambient tx, and raises :class:`~edax.errors.BadHandle` otherwise.
     - *A loser inside a transaction* must block on the winner's row and then read it, or raise transient
       :class:`~edax.errors.StoreError`; it must never read a stale snapshot and report a win, which runs the
       handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
@@ -220,6 +223,12 @@ def joins_transaction(store: IdempotencyStore[Any]) -> bool:
     return bool(getattr(store, "joins_transaction", False))
 
 
+def _joins_ambient(store: IdempotencyStore[Any]) -> bool:
+    """Whether ``store`` joins a transaction open now: it declares :func:`joins_transaction` and its own
+    database has the ambient :func:`~edax.unit_of_work.current_tx`."""
+    return joins_transaction(store) and current_tx(store) is not None
+
+
 @asynccontextmanager
 async def _unit(unit_of_work: Transactor[TxT] | None, observe: Observer) -> AsyncIterator[TxT | None]:
     if unit_of_work is None:
@@ -249,7 +258,7 @@ class Guard(Generic[TxT]):
         replayed = prior.state.result if isinstance(prior.state, Done) else None
         if verdict == "succeeded" and self.replay_as is not None:
             try:
-                replayed = msgspec.convert(replayed, self.replay_as)
+                replayed = msgspec.convert(replayed, self.replay_as, dec_hook=_json.decode_hook)
             except msgspec.ValidationError as e:
                 # A cached result that does not read back as the result type is an unreadable record, as the
                 # Rust SDK's typed decode finds it: the kernel's terminal codec failure, replayed as cached.
@@ -273,26 +282,37 @@ async def guarded(
     to ``replay_as`` when that is set.
 
     The one claim/complete/release orchestration behind :func:`~edax.command.idempotent` (commands) and
-    :func:`~edax.router.idempotent_by_id` (events). Without ``unit_of_work`` the store enlists in the ambient
-    :func:`~edax.unit_of_work.current_tx` and the host owns the commit. With it, the guard owns the
-    transaction and
-    :func:`joins_transaction` picks the ordering. A shared ledger runs ``begin; claim; run; complete;
-    commit``: one atomic commit, effectively-once, and a terminal failure is not cached because the record
-    would roll back with the work. A ledger of its own runs ``claim; begin; run; commit; complete``: two
-    commits, at-least-once within the store's retention, ``complete`` last so the worst case is a re-run and
-    not a ``done`` record for work that never landed. Any failure up to and including the commit releases the
-    claim. Failure windows: ``docs/sdk/idempotency.md``.
+    :func:`~edax.router.idempotent_by_id` (events). Without ``unit_of_work`` there are two cases. With no
+    transaction open, the guard runs ``claim; run; complete`` and the handler's writes commit on their own.
+    Inside the host's :func:`~edax.unit_of_work.transaction`, the store must enlist in the ambient
+    :func:`~edax.unit_of_work.current_tx` of its own database, and the host owns the one commit. Any other
+    ledger raises :class:`~edax.errors.BadHandle`: it would cache a success before the host commits the work.
+    With ``unit_of_work``, the guard owns the transaction and :func:`joins_transaction` picks the ordering. A
+    shared ledger runs ``begin; claim; run; complete; commit``: one atomic commit, effectively-once, and a
+    terminal failure is not cached because the record would roll back with the work. A ledger of its own
+    runs ``claim; begin; run; commit; complete``: two commits, at-least-once within the store's retention,
+    ``complete`` last so the worst case is a re-run and not a ``done`` record for work that never landed. Any
+    failure up to and including the commit releases the claim. Failure windows: ``docs/sdk/idempotency.md``.
 
     ``observe`` is the factory's already-guarded observer: a lost claim reports its verdict through
     ``claim``, a won one reports how it ended through ``settled``, both under ``name``, the command type
     or event name the guarded handler serves."""
     if unit_of_work is not None and in_unit_of_work():
         # The Transactor contract says the SDK never nests: a second unit of work would commit the claim
-        # independently of the writes it guards. BadHandle, not StoreError, so the dispatcher dead-letters
-        # the wiring mistake instead of redelivering it forever.
+        # independently of the writes it guards. BadHandle, not StoreError: the wiring mistake is fatal, so
+        # a dispatcher stops on it and hands the message back instead of redelivering it forever.
         raise BadHandle(
             "idempotency guard was given a unit_of_work while a transaction is already open: "
             "either pass unit_of_work or open the transaction around the dispatch, not both"
+        )
+    if unit_of_work is None and in_unit_of_work() and not _joins_ambient(guard.store):
+        # The ledger would complete before the host commits, and a host rollback would leave a cached
+        # success over work that never landed. The flag alone is not proof: a joining store over another
+        # database finds no ambient tx of its own and auto-commits.
+        raise BadHandle(
+            "idempotency guard runs inside a transaction its ledger does not join: the ledger would "
+            "record success before the work commits. Pass unit_of_work to the guard instead of opening "
+            "the transaction around the dispatch, or keep the ledger in the transaction's database"
         )
     if unit_of_work is not None and joins_transaction(guard.store):
         return await _guarded_in_one_commit(guard, run, unit_of_work)

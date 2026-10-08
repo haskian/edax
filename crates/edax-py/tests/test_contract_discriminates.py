@@ -908,12 +908,15 @@ class LockingEventStore:
 class LockingLedger(OverlayLedger):
     """The overlay ledger with row locks: a claimant of a key another open unit of work claimed waits for it
     to end, then reads what it committed. Correct, and blocking. ``timeout`` makes the wait end in the
-    contract's other allowed answer, a ``StoreError`` (a lock timeout)."""
+    contract's other allowed answer, a ``StoreError`` (a lock timeout). ``deferred`` is the mistake of a
+    unique check deferred to the commit: a claimant of a held key wins at once, and only its commit waits
+    for the holder. The guard runs the handler before that commit, so the handler runs twice."""
 
-    def __init__(self, *, timeout: bool = False) -> None:
+    def __init__(self, *, timeout: bool = False, deferred: bool = False) -> None:
         super().__init__(release_shadows=False)
         self.locks = RowLocks()
         self.timeout = timeout
+        self.deferred = deferred
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[int]:
@@ -922,6 +925,9 @@ class LockingLedger(OverlayLedger):
             async with super().begin() as tx:
                 opened.append(tx)
                 yield tx
+                if self.deferred:  # the commit checks every key it staged
+                    for key in list(self.open[tx]):
+                        await self._lock(tx, key)
         finally:
             # Released once the overlay settled: after the commit applied, or the rollback dropped it.
             for tx in opened:
@@ -932,7 +938,8 @@ class LockingLedger(OverlayLedger):
         held_elsewhere = any(key in overlay for other, overlay in self.open.items() if other != tx)
         if held_elsewhere and self.timeout:
             raise StoreError("lock wait timeout exceeded")
-        await self._lock(tx, key)
+        if not (held_elsewhere and self.deferred):
+            await self._lock(tx, key)
         return await super().claim(key, payload_hash, tx)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
@@ -1354,6 +1361,16 @@ BROKEN: list[Broken] = [
         IdempotencyStoreContract,
         "test_a_claim_staged_in_an_open_transaction_is_never_won_by_another",
         lambda db: OverlayLedger(release_shadows=False),
+        lambda db, store: {"transactor": store},
+        expect="won a key another open transaction held",
+    ),
+    Broken(
+        # The commit waits for the holder, so the contender's unit of work ends only after the rollback:
+        # the clause must judge when the claim answered, not when its unit of work ended.
+        "ledger_wins_a_held_key_at_once_and_defers_its_check_to_the_commit",
+        IdempotencyStoreContract,
+        "test_a_claim_staged_in_an_open_transaction_is_never_won_by_another",
+        lambda db: LockingLedger(deferred=True),
         lambda db, store: {"transactor": store},
         expect="won a key another open transaction held",
     ),

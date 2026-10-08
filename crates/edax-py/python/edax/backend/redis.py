@@ -294,7 +294,9 @@ class AsyncRedisClient:
         return await self._classified(registered(keys=list(keys), args=list(args)))
 
     async def get(self, key: bytes) -> Any:
-        return await self._classified(self._client.get(key))
+        # Raw bytes even from a client built with `decode_responses=True`: a forget must read a value that
+        # is not UTF-8 to delete it, and its compare-and-delete sends the same bytes back.
+        return await self._classified(self._client.execute_command("GET", key, NEVER_DECODE=[]))
 
     async def _classified(self, reply: Awaitable[Any]) -> Any:
         try:

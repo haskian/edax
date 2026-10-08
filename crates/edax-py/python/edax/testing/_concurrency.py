@@ -94,27 +94,36 @@ async def while_held(
     hold: Callable[[Tx], Awaitable[object]],
     other: Callable[[Tx], Awaitable[T]],
     refused: type[BaseException] | tuple[type[BaseException], ...] = (),
-) -> tuple[T | Literal["refused"], bool]:
+) -> tuple[T | Literal["refused"], bool, bool]:
     """Stage ``hold`` in one unit of work and keep it open; meanwhile run ``other`` in another. Return what
-    ``other`` returned, or :data:`REFUSED` if it raised ``refused``, and whether the holder had already ended
-    by then.
+    ``other`` returned, or :data:`REFUSED` if it raised ``refused``; whether the holder was already rolling
+    back when ``other`` itself returned; and whether the holder had ended once ``other``'s unit of work
+    ended.
+
+    The two flags differ for a store that answers at once and defers its check to the commit: its
+    ``other`` returns while the holder is open, and its commit then waits for the holder to end. A clause
+    about what ``other`` returns reads the first flag, a clause about what lands reads the second.
 
     ``other`` runs in a task of its own, so a store that blocks it on the holder's row lock does not
     deadlock this coroutine. The holder stays open until ``other`` answered, or for :data:`BLOCKED_S` if the
     store parks it, and then always rolls back. Once it has, ``other`` gets :data:`POLL_S` to answer."""
-    holder_open, holder_ended, other_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    holder_open, holder_leaving, holder_ended, other_done = (asyncio.Event() for _ in range(4))
 
-    async def contend() -> tuple[T | Literal["refused"], bool]:
+    async def contend() -> tuple[T | Literal["refused"], bool, bool]:
         await holder_open.wait()
         got: T | Literal["refused"]
+        answered_after_holder = False
         try:
             async with unit_of_work() as tx:
-                got = await other(tx)
+                try:
+                    got = await other(tx)
+                finally:
+                    answered_after_holder = holder_leaving.is_set()
         except refused:
             got = REFUSED
         finally:
             other_done.set()
-        return got, holder_ended.is_set()
+        return got, answered_after_holder, holder_ended.is_set()
 
     contender = asyncio.create_task(contend())
     try:
@@ -122,6 +131,9 @@ async def while_held(
             await hold(tx)
             holder_open.set()
             await until_answered(other_done, contender)
+            # Set before the rollback, not after it: a store that blocks `other` on the holder's row lock
+            # may answer it before the holder's own rollback call returns.
+            holder_leaving.set()
             raise RolledBack
     except RolledBack:
         pass
@@ -140,7 +152,7 @@ async def staged_then_read(
 ) -> T | Literal["refused"]:
     """Stage ``write`` in one unit of work and, while it is open, ``read`` in another; return what the
     reader saw. A store whose reader blocks on the writer's lock answers once the writer rolls back."""
-    seen, _ = await while_held(unit_of_work, write, read)
+    seen, _, _ = await while_held(unit_of_work, write, read)
     return seen
 
 

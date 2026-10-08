@@ -152,6 +152,21 @@ func CodeOf(err error) *string {
 	return nil
 }
 
+// MessageOf is what a failure records beside its code, like Rust's
+// failure_message: a top-level *Error gives its Message, a bare sentinel gives
+// none, and anything else gives its full text. Only the top level counts, so a
+// wrapper's own context stays in the message.
+func MessageOf(err error) string {
+	switch typed := err.(type) {
+	case nil, sentinel:
+		return ""
+	case *Error:
+		return typed.Message
+	default:
+		return err.Error()
+	}
+}
+
 // IsTerminal asks the kernel whether this failure repeats on retry.
 func IsTerminal(err error) bool {
 	if err == nil {

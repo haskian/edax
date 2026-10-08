@@ -135,17 +135,33 @@ as JSON. Raw `bus.Execute` and `Guard` results therefore use `map[string]any` fo
 for arrays and `json.Number` for numbers, on both the first call and replay. An unguarded handler
 keeps its original result type. `Dispatch` without an idempotency key also bypasses the guard.
 
-With MessagePack payloads, pass the payload codec as `IdempotentOptions.Codec`; the guard must
-decode the payload before the kernel hashes its canonical JSON value. JSON commands do not need
-this option.
+Pass the handler's payload codec as `IdempotentOptions.Codec` whenever the handler decodes with
+MessagePack or upcasts. The guard then hashes the decoded, upcast value, which is what the handler
+runs on. Without the codec, the guard hashes the raw bytes. A renamed field then reads as a
+different request, and the same bytes under a changed upcast replay the old result. Only a JSON
+command that no upcaster touches can omit the option.
 
 Declare exact decimal and timestamp fields as `edax.Decimal` and `edax.Instant`. These types use
 the kernel's canonical text in JSON and MessagePack. A plain `float64` or `time.Time` field can
 encode different bytes from a Python decimal or timestamp. Upcast transforms receive raw payload
 bytes in the codec's chosen encoding.
 
+The SDK writes every host value it hands to the kernel as JSON in one form. That covers the JSON
+codec's payloads, filters, query and projection documents, the hashed command value and the cached
+command result. It writes what `encoding/json` writes, except a `float64` or `float32`. Those keep
+a fraction or an exponent, as in the Python SDK: `2.0` and `9007199254740992.0`, never `2` and
+`9007199254740992`. So the kernel reads a whole float as a float. It neither refuses one past 2^53
+nor sorts it as an integer. NaN and the infinities are written as `null`, as in every SDK. A float
+`,string` field keeps Go's spelling. `ExecuteAs` converts through the same form, so a float result
+never decodes into an integer type, guarded or not.
+
 Place `Retry` outside the guard that owns the transaction. Each retry then starts a fresh unit of
 work. Calling retry inside an existing transaction returns `ErrBadHandle`.
+
+A guard with no `UnitOfWork` may run inside the host's `WithinTransaction` only when its ledger
+joins that transaction: a `TransactionalStore` whose database has the context's open transaction.
+Any other ledger would record success before the host commits, so `Guard` returns the fatal
+`ErrBadHandle` before the claim. For a ledger of its own, set `IdempotentOptions.UnitOfWork`.
 
 `WithinTransaction` passes a transaction through the context. Store methods use
 `CurrentTransaction(ctx, owner)` to join the right database. Opening another transaction on that

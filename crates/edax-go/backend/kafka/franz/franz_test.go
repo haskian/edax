@@ -9,12 +9,14 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	edax "github.com/haskian/edax/crates/edax-go"
 	"github.com/haskian/edax/crates/edax-go/backend/kafka"
 	"github.com/twmb/franz-go/pkg/kerr"
+	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -309,5 +311,73 @@ func TestRebalanceUsesInjectedLogger(t *testing.T) {
 				t.Fatalf("injected log=%s", output)
 			}
 		})
+	}
+}
+
+// An idle partition returns an empty, error-free fetch. Run must keep polling
+// until cancellation instead of treating that fetch as the end of the stream.
+func TestRunKeepsPollingIdlePartitions(t *testing.T) {
+	cluster, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(4, "invoices"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Close()
+	seeds := kgo.SeedBrokers(cluster.ListenAddrs()...)
+	client, err := NewProducer(seeds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	producer, err := kafka.NewProducer[edax.EventMessage](client, "invoices", kafka.ProducerOptions[edax.EventMessage]{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	issue := func(id string) {
+		t.Helper()
+		// One aggregate lands on one partition, so the other three stay idle.
+		event := edax.EventMessage{ID: id, AggregateID: "invoice:1042", Name: "InvoiceIssued", Version: 1, Data: []byte(`{"invoice_id":"1042","total":"49.90","currency":"EUR"}`), CorrelationID: "checkout:1042", CausationID: "issue:1042", RecordedAt: 1760000000000}
+		if err := producer.Publish(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue("invoice:1042:issued")
+	consumer, err := NewConsumer[edax.EventMessage]("billing", []string{"invoices"}, kafka.ConsumerOptions[edax.EventMessage]{}, seeds, kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()), kgo.FetchMaxWait(50*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	var handled atomic.Int64
+	dispatcher, err := edax.NewKeyOrderedDispatcher(func(context.Context, edax.EventMessage) error { handled.Add(1); return nil },
+		edax.DispatcherOptions[edax.EventMessage]{Workers: 1, OnDead: func(context.Context, edax.DeadLetter[edax.EventMessage]) error { return nil }, OnPoison: func(context.Context, *edax.Undecodable) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dispatcher.Close()
+	running, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- consumer.Run(running, dispatcher) }()
+	await := func(want int64) {
+		t.Helper()
+		for handled.Load() < want {
+			select {
+			case err := <-done:
+				t.Fatalf("Run returned err=%v with %d of %d handled", err, handled.Load(), want)
+			case <-ctx.Done():
+				t.Fatalf("handled %d of %d", handled.Load(), want)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+	await(1)
+	// Several fetch waits pass with no records before the next one arrives.
+	time.Sleep(300 * time.Millisecond)
+	issue("invoice:1042:paid")
+	await(2)
+	stop()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run=%v", err)
 	}
 }

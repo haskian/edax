@@ -131,7 +131,9 @@ class Relay(Generic[R]):
     transient one at the ``max_attempts``-th attempt (``0``: never), goes to ``on_dead`` and is marked, so one
     poison row cannot stall its key. ``on_dead`` takes the row as a :class:`~edax.delivery.DeadLetter`, with
     the attempt that killed it and the publish failure. A row the sink took but the drain could not mark
-    comes back to the sink on the next drain, so the sink deduplicates by row id as downstream does. A drain
+    starts over on the next drain: the relay forgot its attempts, so it publishes the row again with a fresh
+    budget. The row may then reach the transport as well as the sink, or the sink a second time, so the sink
+    deduplicates by row id as downstream does. A drain
     that handed a row back waits the largest step of ``pacing`` among those rows before it re-raises the
     first one's failure, and the step grows each time the same row fails, so a host looping on
     :meth:`drain` does not spin. With no ``on_dead`` a poison row is handed back on every drain. A second
@@ -228,7 +230,11 @@ class Relay(Generic[R]):
                     raise
                 logger.warning("edax relay: drain failed; the next drain retries it", exc_info=True)
                 continue
-            if not settled:
+            if settled:
+                # A store and a publisher that never suspend would drain a whole backlog without handing
+                # the event loop back, so timers, a cancel and `stop` would all wait for the last row.
+                await asyncio.sleep(0)
+            else:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(stop.wait(), idle_s)
 

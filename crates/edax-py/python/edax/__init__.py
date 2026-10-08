@@ -9,6 +9,7 @@ from . import (
     delivery,
     dispatcher,
     errors,
+    host_value,
     idempotency,
     kernel,
     message,
@@ -52,6 +53,7 @@ from .errors import (
     is_fatal,
     is_terminal,
 )
+from .host_value import Decimal, Instant
 from .idempotency import Claimed, IdempotencyStore, Record, Won, claim_key, forget
 from .kernel import (
     advance,
@@ -100,6 +102,7 @@ __all__ = [
     "delivery",
     "dispatcher",
     "errors",
+    "host_value",
     "idempotency",
     "kernel",
     "message",
@@ -143,6 +146,9 @@ __all__ = [
     "PayloadCodec",
     "Serializer",
     "Version",
+    # host values (edax.host_value: the kernel's canonical decimal and instant)
+    "Decimal",
+    "Instant",
     "json_codec",
     "msgpack_codec",
     "Upcaster",

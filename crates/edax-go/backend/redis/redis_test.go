@@ -184,7 +184,7 @@ func TestDeadlineAndHeartbeat(t *testing.T) {
 			t.Fatalf("deadline taxonomy: %v", err)
 		}
 	})
-	for _, name := range []string{"lease_lost", "terminal_failure", "transient_then_lost", "close"} {
+	for _, name := range []string{"lease_lost", "close_in_lease_lost", "terminal_failure", "transient_then_lost", "close"} {
 		t.Run(name, func(t *testing.T) {
 			base, _, _ := ledger(t)
 			var logs bytes.Buffer
@@ -211,7 +211,17 @@ func TestDeadlineAndHeartbeat(t *testing.T) {
 				}
 				return base.conn.Eval(ctx, s, k, args...)
 			}}
-			store, err := New(conn, Config{Logger: logger, Prefix: "heartbeat:", ClaimTTL: 300 * time.Millisecond, OpTimeout: 30 * time.Millisecond, Heartbeat: true, LeaseLost: func(_ string, err error) { lost <- err }})
+			var store *Store
+			leaseLost := func(_ string, err error) {
+				if name == "close_in_lease_lost" {
+					// Shutting down on a lost lease must not wait for this worker.
+					if closed := store.Close(); closed != nil {
+						err = closed
+					}
+				}
+				lost <- err
+			}
+			store, err := New(conn, Config{Logger: logger, Prefix: "heartbeat:", ClaimTTL: 300 * time.Millisecond, OpTimeout: 30 * time.Millisecond, Heartbeat: true, LeaseLost: leaseLost})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,6 +272,37 @@ func TestDeadlineAndHeartbeat(t *testing.T) {
 			}
 			if strings.Contains(output, string(claim.Handle)) {
 				t.Fatal("log leaked claim handle")
+			}
+		})
+	}
+}
+func TestHeartbeatValidatesAppliedDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		claimTTL, timeout time.Duration
+		applied           time.Duration
+		refused           bool
+	}{
+		{name: "whole_ms_over_third", claimTTL: 4 * time.Millisecond, timeout: 2 * time.Millisecond, refused: true},
+		{name: "fraction_rounds_over_third", claimTTL: 4 * time.Millisecond, timeout: 1900 * time.Microsecond, refused: true},
+		{name: "fraction_over_third_at_scale", claimTTL: 3 * time.Second, timeout: 1000900 * time.Microsecond, refused: true},
+		{name: "fraction_rounds_up", claimTTL: 10 * time.Millisecond, timeout: 2100 * time.Microsecond, applied: 3 * time.Millisecond},
+		{name: "whole_ms_kept", claimTTL: 10 * time.Millisecond, timeout: 3 * time.Millisecond, applied: 3 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := New(controlledConn{}, Config{Prefix: "heartbeat:", ClaimTTL: test.claimTTL, OpTimeout: test.timeout, Heartbeat: true})
+			if test.refused {
+				if !errors.Is(err, edax.ErrBadHandle) {
+					t.Fatalf("accepted claimTTL=%v timeout=%v: %v", test.claimTTL, test.timeout, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if store.config.OpTimeout != test.applied {
+				t.Fatalf("applied deadline %v want %v", store.config.OpTimeout, test.applied)
 			}
 		})
 	}

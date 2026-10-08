@@ -52,7 +52,7 @@ func WithinTransaction(ctx context.Context, owner UnitOfWork, run func(context.C
 		if committed {
 			outcome = "committed"
 		}
-		Observe(CurrentObserver(ctx), Observation{Operation: "transaction", Outcome: outcome, Duration: time.Since(started), Err: err})
+		ObserveContext(ctx, CurrentObserver(ctx), Observation{Operation: "transaction", Outcome: outcome, Duration: time.Since(started), Err: err})
 	}()
 	defer func() {
 		if !committed {

@@ -9,6 +9,7 @@ import enum
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from time import perf_counter_ns
 from typing import Any, Generic
 
@@ -264,7 +265,7 @@ class KeyOrderedDispatcher(Generic[M]):
         """Run the handler, settle the delivery by its outcome, and report that outcome once. The
         duration is taken before any settlement, so it covers the handler only and a latency histogram
         over it is not polluted by the backoff wait."""
-        attempt = self._retries.get().attempt(delivery.message.id, delivery.attempt)
+        attempt = self._retries.get().attempt(delivery.id, delivery.attempt, delivery.tenant)
         if not delivery.live():
             # A rewind or a rebalance retired it before this worker took it: the transport fetches it
             # again behind the earlier event of its key, so running it now would reorder the key.
@@ -327,7 +328,7 @@ class KeyOrderedDispatcher(Generic[M]):
         an ack that did not land (a raising nack propagates instead)."""
         if error is None:
             acked = await self._ack_or_log(delivery)
-            self._retries.get().succeeded(delivery.message.id)
+            self._retries.get().succeeded(delivery.id, delivery.tenant)
             return "ack" if acked else "unsettled"
         # The kernel reads the failure's code: `in_progress` is contention, which waits its own step and
         # never counts toward the ceiling, since nacking at once would poll the broker until the claim's
@@ -339,7 +340,7 @@ class KeyOrderedDispatcher(Generic[M]):
         dead-letter then ack, nack after one backoff step, or stop the dispatcher and nack at once. Returns
         ``dead``, ``nack``, ``in_progress``, ``sink_failed``, ``stopped``, or ``unsettled`` for an ack that
         did not land; a raising nack propagates."""
-        match retry_verdict(self._retries.get().failed(item.id, item.attempt, code)):
+        match retry_verdict(self._retries.get().failed(item.id, item.attempt, code, item.tenant)):
             case Dead(attempt=attempt):
                 return await self._dead_letter(item, error, attempt)
             case Stop():
@@ -362,7 +363,8 @@ class KeyOrderedDispatcher(Generic[M]):
         while its consumer lives. A sink that raises a fatal error stops the dispatcher like a fatal handler
         failure: ``stopped``."""
         dead = DeadLetter(item.dead_message, attempt, error, item.origin)
-        refusal, step = await dead_letter(logger, self._on_dead, dead, item.id, self._retries.get().sunk)
+        sunk = partial(self._retries.get().sunk, tenant=item.tenant)
+        refusal, step = await dead_letter(logger, self._on_dead, dead, item.id, sunk)
         if refusal is None:
             acked = await self._ack_or_log(item)
             return "dead" if acked else "unsettled"
@@ -545,11 +547,14 @@ class KeyOrderedDispatcher(Generic[M]):
         """Refuse further submits, let the workers finish what is queued, and wait up to ``timeout``
         seconds (``None`` waits for the drain). At the deadline, or if ``stop`` itself is cancelled, the
         workers still running are cancelled: a delivery a handler held is nacked, and so is every
-        delivery still queued, so nothing submitted is left unsettled. Returns only once no worker is
-        left, so a :meth:`start` after it never runs two workers on one queue. Idempotent."""
+        delivery still queued, so nothing submitted is left unsettled. A stop before :meth:`start` nacks
+        every delivery submitted so far, a submit still waiting on a full queue included. Returns only once
+        no worker is left, so a :meth:`start` after it never runs two workers on one queue. Idempotent."""
         self._stopping = True
         tasks = self._tasks
         if not tasks:
+            # Never started, or stopped already: no worker takes what was submitted meanwhile.
+            await self._nack_queued()
             return
         drain = asyncio.ensure_future(self._drain(tasks))
         try:
@@ -586,7 +591,7 @@ class KeyOrderedDispatcher(Generic[M]):
                     item = queue.get_nowait()
                     queue.task_done()
                     if isinstance(item, Delivery):
-                        attempt = self._retries.get().attempt(item.message.id, item.attempt)
+                        attempt = self._retries.get().attempt(item.id, item.attempt, item.tenant)
                         outcome: DeliveryOutcome = (
                             "stopped" if await self._nack_quietly(item) else "unsettled"
                         )

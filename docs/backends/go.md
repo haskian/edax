@@ -37,9 +37,11 @@ defer store.Close()
 ```
 
 Zero durations select the kernel defaults. The kernel validates all configured durations.
+The kernel counts whole milliseconds, so the store rounds `OpTimeout` up to the next millisecond.
 With heartbeats, the operation timeout must stay below one third of the claim lifetime.
 The store renews a claim until completion, release, lease loss or `Close`.
 `LeaseLost` reports a refused renewal or terminal renewal failure. Transient failures retry on the next scheduled beat.
+The callback runs after its renewal stops, so it may call `Close`.
 Set `Config.Logger` to route renewal warnings to your service logger. Nil captures `slog.Default()` when the store is built.
 The store logs the ledger key and failure, but never the claim handle.
 
@@ -158,6 +160,7 @@ type ConsumerClient interface {
 Disable automatic commits and configure a consumer group.
 Report those settings through `ConsumerOptions.AutoCommit` and `HasGroup`.
 All client calls must honor their contexts. Poll returns `io.EOF` when the client stops.
+An empty fetch from an idle partition is not the end of the stream, so Poll keeps waiting for a record.
 Convert Kafka protocol errors with `kafka.BrokerError(code, err)` so the kernel supplies their retry classification.
 Leave network and context errors unchanged.
 

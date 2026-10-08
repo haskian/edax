@@ -7,13 +7,17 @@ cannot depend on a broker.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
+from edax import DeadLetter
+from edax.backend.memory import MemoryBroker
 
 EXAMPLES = sorted((Path(__file__).resolve().parents[3] / "examples" / "py").glob("*.py"))
 
@@ -63,3 +67,42 @@ async def test_every_example_runs_to_its_ok_marker(path: Path, capsys: pytest.Ca
     CI's test job does."""
     await load(path).main()
     assert "\nok:" in capsys.readouterr().out, f"{path.name} did not reach its ok: marker"
+
+
+def example(stem: str) -> ModuleType:
+    [path] = [p for p in EXAMPLES if p.stem == stem]
+    return load(path)
+
+
+async def test_the_kafka_example_counts_a_dead_letter_once_the_sink_took_it() -> None:
+    """A dead-letter topic that answers late and fails once. The example waits until the sink took the
+    letter. Counted before the sink returned, the example would report success with the letter lost."""
+    taken: list[str] = []
+    failed = False
+
+    async def flaky_sink(letter: DeadLetter[Any]) -> None:
+        nonlocal failed
+        await asyncio.sleep(0.05)
+        if not failed:
+            failed = True
+            raise ConnectionError("dead-letter topic unavailable")
+        taken.append(letter.message.aggregate_id)
+
+    broker = MemoryBroker()
+    await example("17_kafka").run(broker.publish, broker, flaky_sink)
+    assert taken == ["order-2"]
+
+
+async def test_the_redis_example_prints_no_credentials(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``EDAX_REDIS_URL`` may carry a password, and an example's output lands in CI logs."""
+    import fakeredis
+    from redis.asyncio import Redis
+
+    monkeypatch.setenv("EDAX_REDIS_URL", "redis://ledger:s3cret@redis.internal:6379/0")
+    monkeypatch.setattr(Redis, "from_url", lambda url: fakeredis.FakeAsyncRedis())
+    await example("16_redis_ledger").main()
+    out = capsys.readouterr().out
+    assert "using Redis at redis.internal" in out and "\nok:" in out
+    assert "s3cret" not in out

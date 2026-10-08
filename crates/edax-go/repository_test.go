@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/haskian/edax/crates/edax-go"
@@ -15,10 +17,190 @@ type invoiceIssued struct {
 	Total      int    `json:"total"`
 	CustomerID string `json:"customer_id"`
 }
+
+func TestRepositorySnapshotFallbackAndEmptySaves(t *testing.T) {
+	for _, test := range []struct {
+		name, snapshot string
+		folds          int
+	}{
+		{name: "no_snapshot", folds: 2},
+		{name: "snapshot_then_later_event", snapshot: `{"Total":1250,"CustomerID":"customer-17"}`, folds: 1},
+		{name: "unreadable_snapshot_replays_from_zero", snapshot: `{"Total":`, folds: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := memory.New()
+			defer db.Close()
+			store, err := db.EventStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return new(invoiceIssued) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := edax.NewRepository[*invoice](store, codec, invoiceCodec{}, edax.RepositoryOptions{SnapshotEvery: edax.Ptr(uint64(0))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			empty, err := repo.Load(ctx, "invoice-42", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if empty.ID() != "invoice-42" || empty.Total != 0 || empty.Version() != (edax.Version{}) || len(empty.Pending()) != 0 {
+				t.Fatalf("missing aggregate: %+v", empty)
+			}
+			rows, err := repo.Save(ctx, empty, edax.SaveOptions{})
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("empty save: %v %v", rows, err)
+			}
+			for index, total := range []int{1250, 1500} {
+				if err := edax.Apply(empty, &invoiceIssued{Total: total, CustomerID: "customer-17"}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := repo.Save(ctx, empty, edax.SaveOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				if index == 0 && test.snapshot != "" {
+					if err := store.SaveSnapshot(ctx, edax.Snapshot{AggregateID: "invoice-42", TypeName: "Invoice", Version: 1, Data: []byte(test.snapshot)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			loaded, err := repo.Load(ctx, "invoice-42", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Total != 1500 || loaded.CustomerID != "customer-17" || loaded.Version() != (edax.Version{Initial: 2}) || len(loaded.Pending()) != 0 || len(loaded.TenantsSeen) != test.folds {
+				t.Fatalf("replayed aggregate: %+v version=%+v", loaded, loaded.Version())
+			}
+			before, err := store.Unpublished(ctx, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err = repo.Save(ctx, loaded, edax.SaveOptions{})
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("unchanged save: %v %v", rows, err)
+			}
+			stale := &invoice{Aggregate: edax.NewAggregate("invoice-42")}
+			if _, err := repo.Save(ctx, stale, edax.SaveOptions{}); !errors.Is(err, edax.ErrConcurrency) {
+				t.Fatalf("empty stale save: %v", err)
+			}
+			after, err := store.Unpublished(ctx, 10)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("empty save changed outbox: %v %v", after, err)
+			}
+			if err := store.SaveSnapshot(ctx, edax.Snapshot{AggregateID: "invoice-42", TypeName: "Invoice", Version: 3, Data: []byte(`{"Total":9999}`)}); !errors.Is(err, edax.ErrCodec) {
+				t.Fatalf("snapshot ahead of stream: %v", err)
+			}
+		})
+	}
+}
+
+type interruptedAppend struct {
+	edax.EventStore
+	interrupt bool
+}
+
+func (s *interruptedAppend) Append(ctx context.Context, key string, expected uint64, drafts []edax.EventDraft) ([]edax.EventMessage, error) {
+	rows, err := s.EventStore.Append(ctx, key, expected, drafts)
+	if err == nil && s.interrupt {
+		// Lose the staged transaction before the repository attempts its commit.
+		tx, ok := edax.CurrentTransaction(ctx, s.UnitOfWork())
+		if !ok {
+			return nil, edax.ErrBadHandle
+		}
+		err = tx.Rollback(ctx)
+	}
+	return rows, err
+}
+
+func TestRepositoryFailedSaveKeepsPendingUntilCommit(t *testing.T) {
+	for _, ambient := range []bool{false, true} {
+		name := "own_commit_fails"
+		if ambient {
+			name = "host_rolls_back_after_save"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := memory.New()
+			defer db.Close()
+			store, err := db.EventStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			wrapped := &interruptedAppend{EventStore: store, interrupt: !ambient}
+			codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return new(invoiceIssued) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := edax.NewRepository[*invoice](wrapped, codec, invoiceCodec{}, edax.RepositoryOptions{SnapshotEvery: edax.Ptr(uint64(0))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			aggregate := &invoice{Aggregate: edax.NewAggregate("invoice-42")}
+			event := &invoiceIssued{Total: 1250, CustomerID: "customer-17"}
+			if err := edax.Apply(aggregate, event); err != nil {
+				t.Fatal(err)
+			}
+			if ambient {
+				err = edax.WithinTransaction(ctx, db, func(txctx context.Context) error {
+					if _, err := repo.Save(txctx, aggregate, edax.SaveOptions{}); err != nil {
+						return err
+					}
+					return edax.ErrStore
+				})
+				if !errors.Is(err, edax.ErrStore) || aggregate.Version() != (edax.Version{Initial: 1}) || len(aggregate.Pending()) != 0 {
+					t.Fatalf("ambient result: %v %+v", err, aggregate.Version())
+				}
+			} else {
+				rows, saveErr := repo.Save(ctx, aggregate, edax.SaveOptions{})
+				if !errors.Is(saveErr, edax.ErrBadHandle) || len(rows) != 0 || aggregate.Version() != (edax.Version{Updates: 1}) || !reflect.DeepEqual(aggregate.Pending(), []any{event}) {
+					t.Fatalf("failed save: %v %+v pending=%v", saveErr, aggregate.Version(), aggregate.Pending())
+				}
+			}
+			rows, err := store.Load(ctx, "invoice-42", 0)
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("rolled-back events: %v %v", rows, err)
+			}
+			outbox, err := store.Unpublished(ctx, 10)
+			if err != nil || len(outbox) != 0 {
+				t.Fatalf("rolled-back outbox: %v %v", outbox, err)
+			}
+			wrapped.interrupt = false
+			if ambient {
+				// Caller-owned rollback requires discarding the aggregate before retry.
+				aggregate, err = repo.Load(ctx, "invoice-42", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if aggregate.Version() != (edax.Version{}) || aggregate.Total != 0 {
+					t.Fatalf("reload: %+v", aggregate)
+				}
+				if err := edax.Apply(aggregate, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows, err = repo.Save(ctx, aggregate, edax.SaveOptions{})
+			if err != nil || len(rows) != 1 || aggregate.Version() != (edax.Version{Initial: 1}) || len(aggregate.Pending()) != 0 {
+				t.Fatalf("retry: %v %v %+v", rows, err, aggregate.Version())
+			}
+			loaded, err := repo.Load(ctx, "invoice-42", nil)
+			if err != nil || loaded.Total != event.Total || loaded.CustomerID != event.CustomerID {
+				t.Fatalf("persisted retry: %+v %v", loaded, err)
+			}
+		})
+	}
+}
+
 type invoice struct {
 	edax.Aggregate
 	Total      int
 	CustomerID string
+	// TenantsSeen records the tenant each Transition saw, or "" for none.
+	TenantsSeen []string `json:"-"`
 }
 
 func (aggregate *invoice) Transition(event any) error {
@@ -26,6 +208,11 @@ func (aggregate *invoice) Transition(event any) error {
 	if !ok {
 		return edax.ErrCodec
 	}
+	seen := ""
+	if tenant := aggregate.Tenant(); tenant != nil {
+		seen = *tenant
+	}
+	aggregate.TenantsSeen = append(aggregate.TenantsSeen, seen)
 	aggregate.Total = issued.Total
 	aggregate.CustomerID = issued.CustomerID
 	return nil
@@ -115,6 +302,42 @@ func TestRepositorySnapshotReplayAndConflict(t *testing.T) {
 	}
 	if _, err = repository.Load(ctx, "invoice-42", nil); !errors.Is(err, edax.ErrCodec) {
 		t.Fatalf("missing tenant: %v", err)
+	}
+}
+
+func TestRepositoryReplayedTransitionSeesTheLoadedTenant(t *testing.T) {
+	// No snapshot, so the load folds both events: each must see the tenant a live Apply saw.
+	database := memory.New()
+	defer database.Close()
+	store, _ := database.EventStore()
+	defer store.Close()
+	codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return &invoiceIssued{} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := edax.NewRepository[*invoice](store, codec, invoiceCodec{}, edax.RepositoryOptions{Tenancy: "pool", SnapshotEvery: edax.Ptr(uint64(0))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	tenant := edax.Ptr("tenant-acme")
+	live, err := repository.Load(ctx, "invoice-42", tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = edax.Apply(live, &invoiceIssued{Total: 1250}, &invoiceIssued{Total: 1500}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.Save(ctx, live, edax.SaveOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := repository.Load(ctx, "invoice-42", tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{*tenant, *tenant}
+	if !slices.Equal(live.TenantsSeen, want) || !slices.Equal(replayed.TenantsSeen, want) {
+		t.Fatalf("live saw %q, replay saw %q, want %q", live.TenantsSeen, replayed.TenantsSeen, want)
 	}
 }
 

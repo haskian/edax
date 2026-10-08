@@ -186,6 +186,11 @@ func (r *Relay[M]) Drain(ctx context.Context, batch uint64) (count uint64, resul
 			return 0, err
 		}
 		if err := r.publish(ctx, row); err != nil {
+			// Parent cancellation is a host lifecycle event, not a failed
+			// attempt. A publisher's own timeout still counts as a failure.
+			if cancelled := ctx.Err(); cancelled != nil {
+				return 0, cancelled
+			}
 			failures[id] = err
 			verdict, failure := r.policy.Failed(id, errorCode(err))
 			if failure != nil {

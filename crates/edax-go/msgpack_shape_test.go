@@ -33,6 +33,8 @@ type shipmentPayload struct {
 	Token        trackingToken              `json:"token"`
 	Amount       Decimal                    `json:"amount"`
 	At           Instant                    `json:"at"`
+	Quantity     uint8                      `json:"quantity"`
+	Delta        int8                       `json:"delta"`
 }
 
 func TestMessagePackStructShapes(t *testing.T) {
@@ -47,6 +49,13 @@ func TestMessagePackStructShapes(t *testing.T) {
 	}{
 		{name: "maps, slices and custom scalars", change: func(value map[string]any) any { return value }},
 		{name: "nullable pointer", change: func(value map[string]any) any { value["address"] = nil; return value }},
+		{name: "nullable slice and map", change: func(value map[string]any) any { value["previous"], value["destinations"] = nil, nil; return value }},
+		{name: "unsigned overflow", change: func(value map[string]any) any { value["quantity"] = 256; return value }, reject: true},
+		{name: "negative into unsigned", change: func(value map[string]any) any { value["quantity"] = -1; return value }, reject: true},
+		{name: "signed overflow", change: func(value map[string]any) any { value["delta"] = 200; return value }, reject: true},
+		{name: "wide unsigned into signed", change: func(value map[string]any) any { value["delta"] = uint64(1) << 63; return value }, reject: true},
+		{name: "scalar nil", change: func(value map[string]any) any { value["order_id"] = nil; return value }, reject: true},
+		{name: "slice element nil", change: func(value map[string]any) any { value["previous"] = []any{nil}; return value }, reject: true},
 		{name: "root positional array", change: func(map[string]any) any {
 			return []any{"order-1", nil, nil, nil, nil, "tracking-1", "9.5", "2024-01-01T00:30:00.000000Z"}
 		}, reject: true},
@@ -60,7 +69,7 @@ func TestMessagePackStructShapes(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			address := map[string]any{"city": "Ljubljana", "postcode": "1000"}
-			base := map[string]any{"order_id": "order-1", "address": address, "previous": []any{address}, "destinations": map[string]any{"home": address}, "tags": []string{"insured", "express"}, "token": "tracking-1", "amount": "9.50", "at": "2024-01-01T01:30:00+01:00"}
+			base := map[string]any{"order_id": "order-1", "address": address, "previous": []any{address}, "destinations": map[string]any{"home": address}, "tags": []string{"insured", "express"}, "token": "tracking-1", "amount": "9.50", "at": "2024-01-01T01:30:00+01:00", "quantity": 255, "delta": -128}
 			wire, err := msgpack.Marshal(test.change(base))
 			if err != nil {
 				t.Fatal(err)
@@ -76,7 +85,10 @@ func TestMessagePackStructShapes(t *testing.T) {
 				t.Fatal(err)
 			}
 			value := result.(*shipmentPayload)
-			if value.OrderID != "order-1" || value.Amount.String() != "9.5" || value.At.String() != "2024-01-01T00:30:00.000000Z" || value.Token.text != "tracking-1" || !reflect.DeepEqual(value.Tags, []string{"insured", "express"}) || len(value.Previous) != 1 || value.Destinations["home"].City != "Ljubljana" {
+			if value.OrderID != "order-1" || value.Amount.String() != "9.5" || value.At.String() != "2024-01-01T00:30:00.000000Z" || value.Token.text != "tracking-1" || value.Quantity != 255 || value.Delta != -128 || !reflect.DeepEqual(value.Tags, []string{"insured", "express"}) {
+				t.Fatalf("decoded=%+v", value)
+			}
+			if test.name == "maps, slices and custom scalars" && (len(value.Previous) != 1 || value.Destinations["home"].City != "Ljubljana") {
 				t.Fatalf("decoded=%+v", value)
 			}
 			if test.name == "nullable pointer" && value.Address != nil {
@@ -165,6 +177,34 @@ func TestMessagePackLegacyTimestamp(t *testing.T) {
 			}
 			if value.(*checkpoint).At.String() != expected {
 				t.Fatalf("value=%v expected=%v", value, expected)
+			}
+		})
+	}
+}
+
+type positionalAddress struct {
+	_msgpack struct{} `msgpack:",as_array"`
+	City     string   `json:"city"`
+}
+type positionalHistory struct {
+	OrderID  string              `json:"order_id"`
+	Previous []positionalAddress `json:"previous"`
+}
+
+func TestMessagePackRefusesPositionalStructs(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		constructor func() any
+		reject      bool
+	}{
+		{"named fields", func() any { return new(shipmentPayload) }, false},
+		{"root as_array", func() any { return new(positionalAddress) }, true},
+		{"nested as_array", func() any { return new(positionalHistory) }, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			codec, err := NewMessagePackCodec(map[string]func() any{"Shipment": test.constructor})
+			if test.reject != errors.Is(err, ErrCodec) || test.reject != (codec == nil) {
+				t.Fatalf("codec=%v err=%v", codec, err)
 			}
 		})
 	}

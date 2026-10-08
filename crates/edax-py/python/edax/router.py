@@ -95,8 +95,10 @@ def idempotent_by_id(
     an event that names no tenant raises :class:`~edax.errors.CodecError` before any claim.
 
     Without ``unit_of_work`` the store enlists in the ambient :func:`~edax.unit_of_work.current_tx`, which
-    exists only if the host opened it outside this guard: a dispatcher worker has none. ``unit_of_work``
-    closes that gap, so a failure of the commit releases the claim.
+    exists only if the host opened it outside this guard: a dispatcher worker has none. Inside that
+    transaction a ledger that does not join it raises :class:`~edax.errors.BadHandle` (see
+    :func:`~edax.idempotency.guarded`). ``unit_of_work`` closes that gap, so a failure of the commit
+    releases the claim.
 
     Unlike :func:`~edax.command.idempotent`, no caller awaits an event handler's result, so a redelivery of
     a completed event skips silently. A redelivery while another worker holds the claim raises transient

@@ -349,10 +349,11 @@ class _GatedCommitClient(FakeKafkaClient):
         await super().commit(offsets)
 
 
-async def test_the_commit_guard_never_steps_backwards() -> None:
-    """Two flushes in flight at once — the committer's and a rebalance's — the higher watermark's
-    commit returning first. The guard records the highest watermark committed, not the last one
-    written, or the lower one would be due, and sent, again."""
+@pytest.mark.parametrize("second", ["flush", "revoke"])
+async def test_a_newer_commit_waits_for_the_older_one_so_the_broker_never_steps_back(second: str) -> None:
+    """A flush in flight, then a second commit of a higher watermark — a flush, or a rebalance's revoke.
+    aiokafka frees its commit lock while a commit backs off, so the higher one could land first and the
+    older one, retried, would move the broker back. The second commit waits for the first to end."""
     c = _GatedCommitClient()
     producer = KafkaProducer(c, "t", serializer=IdSerializer())
     for i in range(4):
@@ -363,21 +364,22 @@ async def test_the_commit_guard_never_steps_backwards() -> None:
     await d0.ack()
     lower = asyncio.create_task(k.flush())  # watermark 1: offsets 1..3 are still in flight
     await asyncio.sleep(0)  # let it read what is due and park on the gate
-    await d1.ack()
-    higher = asyncio.create_task(k.flush())  # watermark 2: offset 1 settled, 2 is now the lowest
-    await asyncio.sleep(0)
-
-    c.gates[2].set()
-    await higher
+    await d1.ack()  # watermark 2: offset 1 settled, 2 is now the lowest
+    higher = asyncio.create_task(
+        k.flush() if second == "flush" else k.rebalance_listener().on_partitions_revoked([TP0])
+    )
+    c.gates[2].set()  # the higher round trip would return first
+    for _ in range(5):
+        await asyncio.sleep(0)
     c.gates[1].set()
-    await lower
-    assert c.commits == [2, 1], "the two round trips really did return out of order"
-    assert k.stats()[TP0].committed == 2
+    await asyncio.gather(lower, higher)
+    assert c.commits == [1, 2]
+    assert c.cluster.committed[TP0] == 2
 
     # Offset 2 is still in flight, so the watermark is 2 again — already committed, so nothing is due.
     await d3.ack()
     await k.flush()
-    assert c.commits == [2, 1], "re-committed a watermark the guard had already recorded"
+    assert c.commits == [1, 2], "re-committed a watermark the guard had already recorded"
 
 
 class _SchemaSerializer:

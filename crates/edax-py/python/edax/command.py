@@ -30,6 +30,7 @@ from .errors import (  # re-exported: the command errors are part of this module
     InProgress,
     PayloadMismatch,
 )
+from .host_value import HOST_TYPES
 from .idempotency import Guard, IdempotencyStore, claim_key, guarded
 from .message import CommandMessage, Lineage
 from .observe import Observer
@@ -494,7 +495,8 @@ def _replay_type(explicit: Any, handler: Next) -> Any:
             return None
     if chosen is None or chosen is Any or chosen is object:
         return None
-    if isinstance(msgspec.inspect.type_info(chosen), msgspec.inspect.CustomType):
+    info = msgspec.inspect.type_info(chosen)
+    if isinstance(info, msgspec.inspect.CustomType) and info.cls not in HOST_TYPES:
         raise TypeError(
             f"a cached result cannot be replayed as {chosen!r}: msgspec has no conversion for it. "
             "Return a dataclass, a msgspec.Struct or a JSON type, or pass result_type=typing.Any"

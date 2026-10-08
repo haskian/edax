@@ -325,13 +325,16 @@ class IdempotencyStoreContract:
             assert isinstance(await idempotency_store.claim(key, 1234, tx=tx), Won)
 
         # A lock or statement timeout, `StoreError`, is the contract's other allowed answer.
-        contended, after_rollback = await while_held(
+        contended, answered_after_rollback, _ = await while_held(
             unit_of_work.begin, hold, lambda tx: idempotency_store.claim(key, 1234, tx=tx), StoreError
         )
         if isinstance(contended, Won):
             # A store that parked the contender on the holder's row lock answers after the rollback freed
-            # the key: that win is correct. A win while the holder was open runs the handler twice.
-            assert after_rollback, "won a key another open transaction held: the handler would run twice"
+            # the key: that win is correct. A win while the holder was open runs the handler twice, even
+            # when the store's commit then waits for the holder: the guard runs the handler before it.
+            assert answered_after_rollback, (
+                "won a key another open transaction held: the handler would run twice"
+            )
             return
         assert contended in (REFUSED, Record.pending(1234)), contended
 
@@ -427,7 +430,9 @@ class IdempotencyStoreContract:
 
         # The seam's one transient refusal for a held key. A `StoreError` there fails the clause: the guard
         # would read it as a store fault, not a conflict to retry.
-        got, after_rollback = await while_held(unit_of_work.begin, hold, settle_meanwhile, ConcurrencyError)
+        got, _, after_rollback = await while_held(
+            unit_of_work.begin, hold, settle_meanwhile, ConcurrencyError
+        )
         stored = await idempotency_store.claim(key, payload)
         if got == REFUSED:
             assert stored == Record.pending(payload), f"{settle}: the refusal wrote nothing"

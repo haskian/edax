@@ -2,6 +2,7 @@ package edax
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"time"
@@ -21,6 +22,11 @@ func NewMessagePackCodec(registry map[string]func() any) (*MessagePackCodec, err
 	codec, err := NewJSONCodec(registry)
 	if err != nil {
 		return nil, err
+	}
+	for typ := range codec.names {
+		if positional := positionalStruct(typ, map[reflect.Type]bool{}); positional != nil {
+			return nil, &Error{Code: CodeCodec, Message: fmt.Sprintf("%s sets msgpack as_array, but payloads read from a map only", positional)}
+		}
 	}
 	codec.encode = func(value any) ([]byte, error) {
 		var buffer bytes.Buffer

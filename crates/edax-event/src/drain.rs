@@ -111,6 +111,7 @@ struct Batch {
 /// store's step grow.
 #[derive(Debug, Clone, Default)]
 pub struct Drain {
+    /// Keyed by row id with no tenant: a row id is unique within the one outbox a relay drains.
     retries: Retries,
     store: Streak,
     batch: Batch,
@@ -159,7 +160,7 @@ impl Drain {
 
     /// The row `id` was published.
     pub fn published(&mut self, id: &str) {
-        self.retries.succeeded(id);
+        self.retries.succeeded(id, None);
         self.batch.transient.answered();
         self.batch.drained.published = self.batch.drained.published.saturating_add(1);
         self.batch.drained.settled.push(id.to_owned());
@@ -167,7 +168,7 @@ impl Drain {
 
     /// The row `id` failed to publish with `failure`.
     pub fn failed(&mut self, id: &str, failure: Failure) -> RowFailed {
-        let verdict = self.retries.failed(id, 0, failure);
+        let verdict = self.retries.failed(id, None, 0, failure);
         if failure == Failure::Transient {
             // `failed` answers the failures before this one, so this one makes it one more.
             let streak = self.batch.transient.failed().saturating_add(1);
@@ -199,7 +200,7 @@ impl Drain {
     /// A refused row is `HandBack`, or `Stop` for a fatal refusal, whose failure the host then raises
     /// for `id`; never `DeadLetter`, since the sink just answered for the row.
     pub fn sunk(&mut self, id: &str, attempt: u32, refusal: Option<Failure>) -> Option<RowFailed> {
-        let step = self.retries.sunk(id, attempt, refusal);
+        let step = self.retries.sunk(id, None, attempt, refusal);
         match (refusal, step) {
             (None, _) => {
                 self.batch.drained.dead_lettered = self.batch.drained.dead_lettered.saturating_add(1);

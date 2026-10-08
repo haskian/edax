@@ -97,14 +97,27 @@ _HOST_VALUE_MARKERS: dict[str, Callable[[str], Any]] = {
 def host_values(value: Any) -> Any:
     """``value`` from a golden vector with each ``{"$decimal": text}`` built as a ``Decimal`` and each
     ``{"$instant": text}`` as a ``datetime`` (naive when the text has no offset), at any depth."""
+    return _map_markers(value, lambda marker, text: _HOST_VALUE_MARKERS[marker](text))
+
+
+def host_text(value: Any) -> Any:
+    """``value`` from a golden vector with each host-value marker replaced by its text, at any depth: what a
+    payload carries, for a decoder to read into ``edax.Decimal`` / ``edax.Instant``. The twin of
+    ``edax_golden::host_text``."""
+    return _map_markers(value, lambda marker, text: text)
+
+
+def _map_markers(value: Any, leaf: Callable[[str, str], Any]) -> Any:
+    """``value`` with each host-value marker (``{"<marker>": "<text>"}``) replaced by ``leaf(marker, text)``:
+    the one walk over the markers every reader shares, as in ``edax_golden::map_markers``."""
     if isinstance(value, dict):
         if len(value) == 1:
             [(marker, text)] = value.items()
             if marker in _HOST_VALUE_MARKERS and isinstance(text, str):
-                return _HOST_VALUE_MARKERS[marker](text)
-        return {key: host_values(item) for key, item in value.items()}
+                return leaf(marker, text)
+        return {key: _map_markers(item, leaf) for key, item in value.items()}
     if isinstance(value, list):
-        return [host_values(item) for item in value]
+        return [_map_markers(item, leaf) for item in value]
     return value
 
 
@@ -200,6 +213,7 @@ def build_command(
     issued_at: int = 0,
     extensions: dict[str, str] | None = None,
     metadata: dict[str, str] | None = None,
+    tenant: str | None = None,
 ) -> edax.CommandMessage:
     """A native :class:`edax.CommandMessage` with sensible defaults."""
     return edax.CommandMessage(
@@ -214,6 +228,7 @@ def build_command(
         issued_at=issued_at,
         extensions=extensions or {},
         metadata=metadata or {},
+        tenant=tenant,
     )
 
 

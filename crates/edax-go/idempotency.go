@@ -13,8 +13,24 @@ import (
 // Guard claims a key and either runs next or replays the stored result.
 // Results must encode as JSON. Both execution and replay return decoded JSON values:
 // objects are map[string]any, arrays are []any and numbers are json.Number.
+// Inside a transaction, the store must join that context's transaction for its own database.
+// Any other ledger would record success before the host commits, so Guard returns ErrBadHandle.
 func Guard(ctx context.Context, store IdempotencyStore, key string, hash uint64, next func(context.Context) (any, error)) (any, error) {
+	if InTransaction(ctx) && !joinsOpenTransaction(ctx, store) {
+		return nil, &Error{Code: CodeBadHandle, Message: "idempotency guard runs inside a transaction its ledger does not join; pass the database as UnitOfWork instead"}
+	}
 	return guard(ctx, store, key, hash, next, true)
+}
+
+// joinsOpenTransaction reports whether store stages its writes in a transaction open in ctx.
+// Implementing TransactionalStore is not enough: a store over another database has none open.
+func joinsOpenTransaction(ctx context.Context, store IdempotencyStore) bool {
+	transactional, ok := store.(TransactionalStore)
+	if !ok {
+		return false
+	}
+	_, active := CurrentTransaction(ctx, transactional.UnitOfWork())
+	return active
 }
 
 // GuardWithUnitOfWork commits work and its claim together when both share a database.
@@ -100,12 +116,8 @@ func guard(ctx context.Context, store IdempotencyStore, key string, hash uint64,
 			}
 			err = errors.Join(err, releaseErr)
 		}
-		if settled {
-			if transactional, ok := store.(TransactionalStore); ok {
-				if _, active := CurrentTransaction(ctx, transactional.UnitOfWork()); active {
-					outcome = "staged"
-				}
-			}
+		if settled && joinsOpenTransaction(ctx, store) {
+			outcome = "staged"
 		}
 		ObserveContext(ctx, CurrentObserver(ctx), Observation{Operation: "idempotency.settle", Name: key, Outcome: outcome, Duration: time.Since(started), Err: err})
 	}()
@@ -122,7 +134,7 @@ func guard(ctx context.Context, store IdempotencyStore, key string, hash uint64,
 	}
 	if err != nil {
 		if cacheFailures && ctx.Err() == nil {
-			cached, decisionErr := kernel.IdempotencySettleFailure(hash, err.Error(), errorCode(err))
+			cached, decisionErr := kernel.IdempotencySettleFailure(hash, errorMessage(err), errorCode(err))
 			if decisionErr != nil {
 				return nil, errors.Join(err, decisionErr)
 			}
@@ -161,7 +173,7 @@ func decodeRecordResult(record *IdempotencyRecord) (any, error) {
 }
 
 func doneRecord(hash uint64, value any) (*IdempotencyRecord, error) {
-	encoded, err := json.Marshal(value)
+	encoded, err := encodeJSON(value)
 	if err != nil {
 		return nil, WrapError(CodeCodec, err.Error(), err)
 	}
@@ -178,7 +190,9 @@ type IdempotentOptions struct {
 	Scope      string
 	Tenancy    Tenancy
 	UnitOfWork UnitOfWork
-	// Codec decodes non-JSON payloads before the kernel hashes their JSON value.
+	// Codec decodes and upcasts the payload before the kernel hashes its JSON
+	// value. Pass the handler's codec whenever it uses MessagePack or upcasts;
+	// without it the guard hashes the raw bytes.
 	Codec PayloadCodec
 }
 
@@ -217,7 +231,7 @@ func Idempotent(store IdempotencyStore, options IdempotentOptions) (Middleware, 
 				if decodeErr != nil {
 					return nil, decodeErr
 				}
-				payload, decodeErr = json.Marshal(value)
+				payload, decodeErr = encodeJSON(value)
 				if decodeErr != nil {
 					return nil, WrapError(CodeCodec, decodeErr.Error(), decodeErr)
 				}

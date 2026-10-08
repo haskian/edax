@@ -96,7 +96,7 @@ error rather than a wildcard's silent default.
 
 Ordering is defined only *within* a type. Numbers compare numerically, so `1` and `1.0` are equal;
 two integers compare exactly, with no `f64` promotion above 2^53. Strings compare by Unicode code
-point, which is UTF-8 byte order. `"Z"` sorts before `"a"`, and U+FF71 sorts after U+1F980.
+point, which is UTF-8 byte order. `"Z"` sorts before `"a"`, and U+FF71 sorts before U+1F980.
 JavaScript, Java and C# order that last pair the other way, by UTF-16 code units. Strings are not
 normalized, so the NFC and NFD spellings of `café` are unequal. Bools order `false < true`, the rank
 the read side's sort gives them, so a sort and a range filter agree on every orderable pair. Under
@@ -134,8 +134,8 @@ parses, so a filter over untrusted text costs bounded time per comparison.
 `canonical_decimal` writes the one canonical form: `9.50` becomes `9.5`, `1E+2` becomes `100`, and
 `-0.0` becomes `0`. `bigdecimal` does the parsing and the comparison.
 
-The Python SDK sets the collation for you. A `Decimal` comparand to `eq`, `ne`, `gt`, `gte`, `lt`,
-`lte` or `in_` adds it. The Rust constructors are `filter::decimal::{eq, ne, gt, gte, lt, lte,
+The Python SDK sets the collation for you. An `edax.Decimal` or `decimal.Decimal` comparand to `eq`,
+`ne`, `gt`, `gte`, `lt`, `lte` or `in_` adds it. The Rust constructors are `filter::decimal::{eq, ne, gt, gte, lt, lte,
 is_in}`, which take the decimal text.
 
 ## Timestamps
@@ -163,15 +163,18 @@ kernel fixes one. A Rust SDK, or a third one, must emit exactly this:
 
 | Host type | JSON | Kernel function | Rust host type | Refused, as `codec` |
 |---|---|---|---|---|
-| exact decimal (Python `Decimal`) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `edax_cqrs::Decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
-| instant (Python aware `datetime`) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | `edax_cqrs::Instant` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
+| exact decimal (Python `edax.Decimal`, or a `decimal.Decimal` the encoder writes) | a string of `canonical_decimal`'s text: `"9.5"` | `canonical_decimal` | `edax_cqrs::Decimal` | `NaN`, an infinity, more than 1000 digits, more than 2000 bytes |
+| instant (Python `edax.Instant`, or an aware `datetime` the encoder writes) | a string of `canonical_timestamp`'s text: `"2024-01-01T00:30:00.000000Z"` | `canonical_timestamp` | `edax_cqrs::Instant` | no offset, a fraction finer than a microsecond, a UTC year outside 0000 to 9999 |
 | calendar date (Python `date`) | ISO `"YYYY-MM-DD"`, already one width | — | a `String` | — |
 
 A time without an offset is refused rather than read as UTC: its instant is unknown.
-`testdata/golden/host_values.json` pins every row, and the Python suite replays it with real
-`Decimal` and `datetime` values. Python's one encoder applies the forms to every host value. A Rust
-host gets them by declaring the field as `Decimal` or `Instant`, which canonicalize when they are
-built. A float, a `String` that holds `9.50`, or a third-party timestamp that keeps its offset
+`testdata/golden/host_values.json` pins every row. The Python suite replays it with real
+`Decimal` and `datetime` values, and reads each decimal and instant row from its text as an
+`edax.Decimal` or `edax.Instant`. Python's one encoder applies the forms to every host value. A
+payload field reads back exactly only as a host type. In Rust that is `Decimal` or `Instant`. In Go
+and Python it is `edax.Decimal` or `edax.Instant`. Each reads the text through the kernel, so a fraction finer than a microsecond is
+refused, not rounded. The Python codecs refuse to register a `datetime` or `decimal.Decimal` field,
+because msgspec would convert its text before the kernel sees it. A float, a `String` that holds `9.50`, or a third-party timestamp that keeps its offset
 writes another JSON value, so it hashes and stores apart. The host-value rows of
 `testdata/golden/command_hash.json` and `testdata/golden/event_codec.json` hold the Rust and Python SDKs to this. The decimal text orders by value only under the decimal collation.
 So a range filter or a sort over a decimal field must set it.

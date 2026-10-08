@@ -95,9 +95,7 @@ where
     /// appends, so a save then a load in one unit of work agree (read-your-writes).
     pub fn load_in(&self, tx: &mut S::Tx, tenant: Option<&str>, aggregate_id: &str) -> Result<AC::Aggregate, Error> {
         let key = tenant_key(self.tenancy, tenant, aggregate_id)?;
-        let mut agg = self.replay(tx, &key, aggregate_id)?;
-        agg.root_mut().set_tenant(tenant);
-        Ok(agg)
+        self.replay(tx, &key, tenant, aggregate_id)
     }
 
     /// Persist the aggregate's pending events in a unit of work of its own, with the context `options`
@@ -204,7 +202,7 @@ where
     /// format no longer loads — is ignored and the stream replays from version 0. The loaded tail is
     /// held to the kernel's dense-run rule, so a store that returns a gap or a repeat fails the load
     /// instead of folding the wrong state.
-    fn replay(&self, tx: &mut S::Tx, key: &str, id: &str) -> Result<AC::Aggregate, Error> {
+    fn replay(&self, tx: &mut S::Tx, key: &str, tenant: Option<&str>, id: &str) -> Result<AC::Aggregate, Error> {
         let cached = self
             .store
             .load_snapshot(tx, key)?
@@ -219,6 +217,8 @@ where
             Some(found) => found,
             None => (0, self.aggregates.load(id, 0, None)?),
         };
+        // Before the fold, so a replayed transition sees the tenant a live `apply` sees.
+        agg.root_mut().set_tenant(tenant);
         let events = self.store.load(tx, key, base)?;
         let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
         let version = edax_event::check_batch(base, &sequences)?;
@@ -526,6 +526,60 @@ mod tests {
                 (amount, 1, Some(tenant))
             );
         }
+    }
+
+    /// An account whose transition records the tenant it sees.
+    struct TenantWitness {
+        account: Account,
+        seen: Vec<Option<String>>,
+    }
+
+    impl Aggregate for TenantWitness {
+        type Event = AccountEvent;
+        fn root(&self) -> &Root<Self::Event> {
+            &self.account.root
+        }
+        fn root_mut(&mut self) -> &mut Root<Self::Event> {
+            &mut self.account.root
+        }
+        fn transition(&mut self, event: &Self::Event) {
+            self.account.transition(event);
+            self.seen.push(self.account.root.tenant().map(ToOwned::to_owned));
+        }
+    }
+
+    struct TenantWitnessCodec;
+
+    impl AggregateCodec for TenantWitnessCodec {
+        type Aggregate = TenantWitness;
+        fn type_name(&self) -> &str {
+            AccountCodec.type_name()
+        }
+        fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<TenantWitness, Error> {
+            Ok(TenantWitness {
+                account: AccountCodec.load(id, version, data)?,
+                seen: Vec::new(),
+            })
+        }
+        fn dump(&self, agg: &TenantWitness) -> Result<Vec<u8>, Error> {
+            AccountCodec.dump(&agg.account)
+        }
+    }
+
+    #[test]
+    fn a_replayed_transition_sees_the_loaded_tenant() {
+        // No snapshot, so the load folds both events: each must see the tenant a live apply saw.
+        let r = Repository::new(MemoryEventStore::new(), AccountEvents, TenantWitnessCodec)
+            .with_ids(next_id)
+            .tenancy(Tenancy::Pool)
+            .snapshot_every(0);
+        let mut live = r.load(Some("acme"), "acct-1").unwrap();
+        live.apply(AccountEvent::Deposited(10));
+        live.apply(AccountEvent::Deposited(5));
+        r.save(&mut live, SaveOptions::default()).unwrap();
+        let replayed = r.load(Some("acme"), "acct-1").unwrap();
+        assert_eq!(replayed.seen, live.seen);
+        assert_eq!(replayed.seen, vec![Some("acme".to_owned()); 2]);
     }
 
     #[test]

@@ -31,6 +31,8 @@ type Config struct {
 	ClaimTTL  time.Duration
 	OpTimeout time.Duration
 	Heartbeat bool
+	// LeaseLost runs after its renewal stops. Close does not wait for it, so
+	// the callback may call Close.
 	LeaseLost func(key string, failure error)
 }
 
@@ -63,6 +65,11 @@ func New(conn Conn, config Config) (*Store, error) {
 	}
 	if config.OpTimeout == 0 {
 		config.OpTimeout = time.Duration(defaults.OpTimeoutMs) * time.Millisecond
+	}
+	// The kernel validates whole milliseconds. Round the deadline up, so each
+	// call applies exactly the budget the kernel checked against the lease.
+	if whole := config.OpTimeout.Truncate(time.Millisecond); whole < config.OpTimeout {
+		config.OpTimeout = whole + time.Millisecond
 	}
 	if err := kernel.RedisCheckConfig(config.Prefix, config.TTL.Milliseconds(), config.ClaimTTL.Milliseconds(), config.OpTimeout.Milliseconds(), config.Heartbeat); err != nil {
 		return nil, err
@@ -218,20 +225,31 @@ func (s *Store) Forget(ctx context.Context, key string) error {
 }
 
 func (s *Store) renew(ctx context.Context, key string, handle []byte, sentAt time.Time) {
-	defer s.workers.Done()
-	defer func() { s.mu.Lock(); delete(s.renewals, string(handle)); s.mu.Unlock() }()
+	lost, failure := s.heartbeat(ctx, key, handle, sentAt)
+	s.mu.Lock()
+	delete(s.renewals, string(handle))
+	s.mu.Unlock()
+	// Release the worker before notifying, so the callback may call Close.
+	s.workers.Done()
+	if lost && s.config.LeaseLost != nil {
+		s.config.LeaseLost(key, failure)
+	}
+}
+
+// heartbeat extends the claim until cancellation or lease loss.
+func (s *Store) heartbeat(ctx context.Context, key string, handle []byte, sentAt time.Time) (lost bool, failure error) {
 	for beat := uint32(1); ; beat++ {
 		due := kernel.RedisHeartbeatDueMs(0, s.config.ClaimTTL.Milliseconds(), beat)
 		timer := time.NewTimer(time.Until(sentAt.Add(time.Duration(due) * time.Millisecond)))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return
+			return false, nil
 		case <-timer.C:
 		}
 		renewed, err := s.Extend(ctx, key, handle)
 		if ctx.Err() != nil {
-			return
+			return false, nil
 		}
 		if err != nil && !edax.IsTerminal(err) {
 			s.config.Logger.WarnContext(ctx, "edax Redis claim renewal failed", "key", key, "error", err)
@@ -239,10 +257,7 @@ func (s *Store) renew(ctx context.Context, key string, handle []byte, sentAt tim
 		}
 		if err != nil || !renewed {
 			s.config.Logger.WarnContext(ctx, "edax Redis claim lease lost", "key", key, "error", err)
-			if s.config.LeaseLost != nil {
-				s.config.LeaseLost(key, err)
-			}
-			return
+			return true, err
 		}
 	}
 }

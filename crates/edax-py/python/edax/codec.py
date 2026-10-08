@@ -69,6 +69,8 @@ class RegistryCodec:
                 raise AlreadyRegistered(
                     f"{type_.__name__} is registered under two event names: {first!r} and {name!r}"
                 )
+        for name, type_ in events.items():
+            _check_registered(name, type_)
         # Without an upcaster an older payload decodes as it is, fine only while the shape is unchanged;
         # a newer writer's payload is refused either way.
         self._upcasters = dict(upcasters or {})
@@ -113,30 +115,50 @@ class RegistryCodec:
             return self._decode(data, type_)
 
 
-def json_codec(events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None) -> RegistryCodec:
-    """A PayloadCodec that serializes payloads as JSON (via msgspec), through the SDK's one encoder: a
-    ``Decimal`` is written as the kernel's canonical decimal text and a ``datetime`` as its fixed-width UTC
-    text, as the Rust SDK's ``edax::Decimal`` / ``edax::Instant`` write them, and a naive ``datetime`` is
-    refused, on write and on read, as is a ``NaN`` or infinite ``Decimal``. A struct reads from a map only, at
-    every depth. A name writes version 1, or one past
-    the highest step of its upcaster in ``upcasters``. The upcaster raises that name's older stored
-    payloads on load (see :class:`~edax.upcast.Upcaster`). A hole in a chain raises
-    :class:`~edax.errors.CodecError` here, not on the first event."""
-    return RegistryCodec(
-        events,
-        _json.encode_bytes,
-        lambda b, t: _json.check_read(msgspec.json.decode(b, type=t), t),
-        upcasters,
+#: What a plain host-library type declares, and the host type that reads the wire text in its place.
+_PLAIN_HOST_VALUES: dict[type[msgspec.inspect.Type], str] = {
+    msgspec.inspect.DateTimeType: "datetime.datetime (declare edax.Instant)",
+    msgspec.inspect.DecimalType: "decimal.Decimal (declare edax.Decimal)",
+}
+
+
+def _check_registered(name: str, type_: type) -> None:
+    """Refuse a type no other SDK reads alike, at any depth, when the codec is built rather than on the first
+    payload. An ``array_like`` Struct is written and read as an array, while every SDK reads a struct from a
+    map only. A ``datetime`` or ``Decimal`` field is converted by msgspec before the kernel sees its text, so
+    a fraction finer than a microsecond is rounded and ``1_000`` reads as a number, where the other SDKs
+    refuse both."""
+    with _as_codec_error(f"the type registered for {name!r}"):
+        nodes = _json.type_nodes(msgspec.inspect.type_info(type_))
+    positional = sorted(
+        node.cls.__name__
+        for node in nodes
+        if isinstance(node, msgspec.inspect.StructType) and node.array_like
     )
+    if positional:
+        raise CodecError(f"{name!r} holds array_like structs {positional}: a struct is a map only")
+    plain = sorted({_PLAIN_HOST_VALUES[type(node)] for node in nodes if type(node) in _PLAIN_HOST_VALUES})
+    if plain:
+        raise CodecError(f"{name!r} holds {', '.join(plain)}: only a host type reads the wire text exactly")
+
+
+def json_codec(events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None) -> RegistryCodec:
+    """A PayloadCodec that serializes payloads as JSON (via msgspec), through the SDK's one encoder. An
+    :class:`~edax.Decimal` or :class:`~edax.Instant` field is written as its canonical text and read from the
+    text the payload carries, through the kernel, as the Rust and Go SDKs read it: ``"9.50"`` reads as
+    ``9.5``, and ``"1_000"``, a number or a fraction finer than a microsecond is refused. A struct reads from
+    a map only, at every depth. A name writes version 1, or one past the highest step of its upcaster in
+    ``upcasters``. The upcaster raises that name's older stored payloads on load (see
+    :class:`~edax.upcast.Upcaster`). A hole in a chain, or a type that holds an ``array_like`` Struct, a
+    ``datetime`` or a ``decimal.Decimal`` at any depth, raises :class:`~edax.errors.CodecError` here, not on
+    the first event."""
+    return RegistryCodec(events, _json.encode_bytes, _json.decode_json, upcasters)
 
 
 def msgpack_codec(events: dict[str, type], *, upcasters: dict[str, Upcaster] | None = None) -> RegistryCodec:
     """A PayloadCodec that serializes payloads as MessagePack (via msgspec), smaller and binary. Host values,
-    versions and ``upcasters`` work as in :func:`json_codec`: a ``datetime`` is the same UTC text, not a
-    MessagePack timestamp, so the Rust SDK reads it. Bytes stay a native byte string."""
-    return RegistryCodec(
-        events,
-        _json.encode_msgpack,
-        lambda b, t: _json.check_read(msgspec.msgpack.decode(b, type=t), t),
-        upcasters,
-    )
+    versions, ``upcasters`` and the refusals at registration work as in :func:`json_codec`: an
+    :class:`~edax.Instant` is the same UTC text, not a MessagePack timestamp, so the Rust SDK reads it. A
+    MessagePack timestamp an earlier release stored still reads as an :class:`~edax.Instant`, rounded to the
+    microsecond by msgspec before the kernel sees it. Bytes stay a native byte string."""
+    return RegistryCodec(events, _json.encode_msgpack, _json.decode_msgpack, upcasters)

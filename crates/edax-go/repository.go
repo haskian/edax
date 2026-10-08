@@ -112,6 +112,8 @@ func (r *Repository[A]) Load(ctx context.Context, id string, tenant *string) (ag
 		if loadErr != nil {
 			return loadErr
 		}
+		// Before the fold, so a replayed Transition sees the tenant a live Apply sees.
+		standAt(aggregate, base, tenant)
 		for _, message := range messages {
 			event, decodeErr := r.events.Unmarshal(Payload{Name: message.Name, Version: message.Version, Data: message.Data})
 			if decodeErr != nil {

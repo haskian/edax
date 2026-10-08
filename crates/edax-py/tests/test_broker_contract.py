@@ -194,9 +194,10 @@ class RunCase:
             id="cancelled_while_polling_stops_the_loop",
         ),
         # Queue of one that nobody drains: the second submit parks, so the cancel lands with the
-        # delivery polled but unsettled, and it must be nacked rather than dropped.
+        # delivery polled but unsettled, and it must be nacked rather than dropped. The stop that
+        # follows nacks the first one, still queued: no worker ever started to take it.
         pytest.param(
-            RunCase(["d", "d"], True, [], ["nack"], False, [], max_queue=1, start=False),
+            RunCase(["d", "d"], True, [], ["nack", "nack"], False, [], max_queue=1, start=False),
             id="cancelled_between_poll_and_submit_nacks_the_delivery",
         ),
         pytest.param(

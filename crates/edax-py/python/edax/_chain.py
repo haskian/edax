@@ -41,7 +41,11 @@ class Registry(Generic[H]):
         terminal :class:`~edax.errors.AlreadyRegistered`, naming it, as the Rust registry does."""
         if name in self._handlers:
             raise AlreadyRegistered(name)
-        self._handlers[name] = self.wrap(handler)
+        wrapped = self.wrap(handler)
+        # Checked again: a middleware may register under the same name while it wraps this handler.
+        if name in self._handlers:
+            raise AlreadyRegistered(name)
+        self._handlers[name] = wrapped
 
     def wrap(self, handler: H) -> H:
         """``handler`` wrapped in the chain without registering it, for a fallback handler."""
