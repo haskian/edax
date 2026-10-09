@@ -66,7 +66,7 @@ mod value;
 
 pub use canonical::canonical_json;
 pub use collation::Collation;
-pub use decimal_text::{canonical_decimal, MAX_DECIMAL_DIGITS};
+pub use decimal_text::{canonical_decimal, MAX_DECIMAL_DIGITS, MAX_DECIMAL_TEXT};
 pub use edax_core::payload_hash;
 use edax_core::Error;
 pub use host_value::{Decimal, Instant};

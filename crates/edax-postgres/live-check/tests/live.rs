@@ -60,6 +60,11 @@ impl Live {
                 &[&name],
             )
             .unwrap();
+        self.add(name, docs)
+    }
+
+    /// Add `docs` to projection `name` as [`Live::store`] does, and return every document it now holds.
+    fn add(&mut self, name: &str, docs: &[Value]) -> Vec<Value> {
         for (i, doc) in docs.iter().enumerate() {
             let id = doc
                 .get("id")
@@ -125,6 +130,88 @@ fn walk(live: &mut Live, name: &str, docs: &[Value], spec: &Value, limit: usize,
         match want {
             Ok(Page { next: Some(next), .. }) => spec["after"] = json!(next),
             _ => return,
+        }
+    }
+    panic!("{label}: the walk did not end");
+}
+
+fn ids(page: &Page) -> Vec<String> {
+    page.rows
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// What a walk saw of the documents inserted during it, among those its query keeps.
+#[derive(Default)]
+struct Landed {
+    /// Inserted after the cursor, so a later page returned them.
+    after: usize,
+    /// Inserted before the cursor, so no page returned them.
+    before: usize,
+}
+
+/// Walk every page of `spec` with `limit` rows each while documents land between pages, sorting before
+/// and after the cursor. Each page must be the reference's page, under the same cursor, over the
+/// documents the table holds when the page is read, and each document the walk started with that the
+/// query keeps must come back exactly once.
+fn walk_while_inserting(
+    live: &mut Live,
+    seeded: &mut Seeded,
+    name: &str,
+    docs: &[Value],
+    spec: &Value,
+    limit: usize,
+    label: &str,
+) -> Landed {
+    let originals = ids(&reference(spec, docs).unwrap());
+    let mut spec = spec.clone();
+    spec["limit"] = json!(limit);
+    let mut current = docs.to_vec();
+    let mut inserted = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for step in 0..200 {
+        let got = live.get_many(name, &spec);
+        let want = reference(&spec, &current);
+        assert_eq!(got, want, "{label}: page {step} of {spec}");
+        // A cursor the kernel cannot mint ends both walks with the same refusal.
+        let Ok(page) = want else {
+            return Landed::default();
+        };
+        for id in ids(&page) {
+            assert!(!seen.contains(&id), "{label}: {id} came back twice");
+            seen.push(id);
+        }
+        let Some(next) = page.next else {
+            for id in &originals {
+                assert!(seen.contains(id), "{label}: {id} never came back");
+            }
+            let mut every = json!({});
+            if let Some(filter) = spec.get("filter") {
+                every["filter"] = filter.clone();
+            }
+            let kept = ids(&reference(&every, &current).unwrap());
+            let landed: Vec<&String> = inserted.iter().filter(|id| kept.contains(id)).collect();
+            let after = landed.iter().filter(|id| seen.contains(id)).count();
+            return Landed {
+                after,
+                before: landed.len() - after,
+            };
+        };
+        spec["after"] = json!(next);
+        // A few pages of inserts keep the walk finite. Each new row key sits between two original ones, so
+        // an `id` sort sees it land on either side of the cursor too.
+        if step < 8 {
+            let docs: Vec<Value> = (0..2)
+                .map(|k| {
+                    let mut doc = seeded.doc(0);
+                    let id = format!("d{:03}+{step}{k}", seeded.next() % 40);
+                    doc["id"] = json!(id);
+                    inserted.push(id);
+                    doc
+                })
+                .collect();
+            current = live.add(name, &docs);
         }
     }
     panic!("{label}: the walk did not end");
@@ -354,6 +441,31 @@ fn seeded_differential() {
             }
         }
     }
+}
+
+#[test]
+fn keyset_walks_survive_inserts_between_pages() {
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut live) = live() else { return };
+    let mut seeded = Seeded(0x2545_f491_4f6c_dd1d);
+    let mut landed = Landed::default();
+    for round in 0..6 {
+        let docs: Vec<Value> = (0..40).map(|i| seeded.doc(i)).collect();
+        for case in 0..15 {
+            let stored = live.store("growing", &docs);
+            let mut spec = json!({"sort": seeded.sort()});
+            if seeded.next().is_multiple_of(3) {
+                spec["filter"] = seeded.filter(1);
+            }
+            let limit = 2 + (seeded.next() % 5) as usize;
+            let label = format!("round {round} case {case}");
+            let walk = walk_while_inserting(&mut live, &mut seeded, "growing", &stored, &spec, limit, &label);
+            landed.after += walk.after;
+            landed.before += walk.before;
+        }
+    }
+    assert!(landed.after > 0, "some inserts landed after the cursor");
+    assert!(landed.before > 0, "some inserts landed before the cursor");
 }
 
 #[test]

@@ -120,11 +120,9 @@ fn identifier(what: &str, name: &str) -> Result<String, Error> {
 
 /// Where a store's tables live: the schema, and a name per role. A role the host does not name takes its
 /// default (`edax_events`, ...). The wire form is `{"schema": "public", "names": {"events": "..."}}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Tables {
     schema: String,
-    #[serde(default)]
     names: BTreeMap<Logical, String>,
 }
 
@@ -284,6 +282,9 @@ pub struct TableContract {
     pub columns: Vec<Column>,
     /// Every unique key, by its columns.
     pub unique: Vec<UniqueColumns>,
+    /// The reference schema's primary key, by its columns: the first unique key, or the `position` of an
+    /// outbox that has none. Never checked: the host may key its table as it likes.
+    pub primary_key: Vec<&'static str>,
     /// Indexes the reference schema adds for speed, by their columns; never checked.
     pub suggested_indexes: Vec<Vec<&'static str>>,
 }
@@ -374,11 +375,7 @@ pub fn table_contract(role: Logical) -> TableContract {
             vec![(UniqueKey::SnapshotsStream, vec!["stream"])],
             vec![],
         ),
-        Logical::EventOutbox => (
-            vec![position(), key("event_id")],
-            vec![],
-            vec![vec!["position"], vec!["event_id"]],
-        ),
+        Logical::EventOutbox => (vec![position(), key("event_id")], vec![], vec![vec!["event_id"]]),
         Logical::CommandOutbox => (
             [vec![position(), key("id")], command_columns()].concat(),
             vec![(UniqueKey::CommandOutboxId, vec!["id"])],
@@ -430,10 +427,15 @@ pub fn table_contract(role: Logical) -> TableContract {
             vec![],
         ),
     };
+    // An outbox keyed by nothing else is keyed by the order its relay reads it in.
+    let primary_key = unique
+        .first()
+        .map_or_else(|| vec!["position"], |(_, columns)| columns.clone());
     TableContract {
         role,
         columns,
         unique,
+        primary_key,
         suggested_indexes,
     }
 }
@@ -444,7 +446,7 @@ pub fn contract() -> Vec<TableContract> {
 }
 
 /// A schema that meets the contract, for the tables `tables` names: a starting point for the host's own
-/// migration, never run by edax. The first unique key of a table is its primary key. Storage settings,
+/// migration, never run by edax. Each table is keyed by its contract's `primary_key`. Storage settings,
 /// foreign keys and query indexes are the host's to add; `docs/backends/postgres.md` suggests some.
 pub fn reference_ddl(tables: &Tables) -> String {
     let mut ddl = format!(
@@ -469,18 +471,12 @@ pub fn reference_ddl(tables: &Tables) -> String {
                 line
             })
             .collect();
-        for (index, (_, columns)) in table.unique.iter().enumerate() {
-            let kind = if index == 0 { "PRIMARY KEY" } else { "UNIQUE" };
-            lines.push(format!("  {kind} ({})", columns.join(", ")));
-        }
-        if table.unique.is_empty() && table.columns.iter().any(|c| c.name == "position") {
-            lines.push("  PRIMARY KEY (position)".to_owned());
+        lines.push(format!("  PRIMARY KEY ({})", table.primary_key.join(", ")));
+        for (_, columns) in table.unique.iter().filter(|(_, columns)| *columns != table.primary_key) {
+            lines.push(format!("  UNIQUE ({})", columns.join(", ")));
         }
         ddl.push_str(&format!("\nCREATE TABLE {name} (\n{}\n);\n", lines.join(",\n")));
         for columns in &table.suggested_indexes {
-            if columns == &["position"] && table.unique.is_empty() {
-                continue; // the primary key already
-            }
             let index = format!("{}_{}", tables.name(table.role), columns.join("_"));
             ddl.push_str(&format!(
                 "CREATE INDEX \"{}\" ON {name} ({});\n",
@@ -619,29 +615,34 @@ fn check_table(
         }
     }
     for (unique_key, columns) in &contract.unique {
-        let guards = found.unique.iter().find(|index| {
-            let mut have: Vec<&str> = index.columns.iter().map(String::as_str).collect();
-            let mut want = columns.clone();
-            have.sort_unstable();
-            want.sort_unstable();
-            have == want
-                && !index.partial
-                && !index.expressions
-                && !index.deferrable
-                && index.valid
-                && index
-                    .collations
-                    .iter()
-                    .all(|c| c.is_empty() || KEY_COLLATIONS.contains(&c.as_str()))
-        });
-        match guards {
-            Some(index) => {
-                compatibility.unique.insert(index.name.clone(), *unique_key);
-            }
-            None => problems.push(format!(
+        // Every index that guards the key, not just the first: a violation names the one that caught it.
+        let guards: Vec<&CatalogUnique> = found
+            .unique
+            .iter()
+            .filter(|index| {
+                let mut have: Vec<&str> = index.columns.iter().map(String::as_str).collect();
+                let mut want = columns.clone();
+                have.sort_unstable();
+                want.sort_unstable();
+                have == want
+                    && !index.partial
+                    && !index.expressions
+                    && !index.deferrable
+                    && index.valid
+                    && index
+                        .collations
+                        .iter()
+                        .all(|c| c.is_empty() || KEY_COLLATIONS.contains(&c.as_str()))
+            })
+            .collect();
+        if guards.is_empty() {
+            problems.push(format!(
                 "{name} has no unique index on exactly ({}): not partial, not deferrable, collating as \"C\"",
                 columns.join(", ")
-            )),
+            ));
+        }
+        for index in guards {
+            compatibility.unique.insert(index.name.clone(), *unique_key);
         }
     }
 }
@@ -700,10 +701,16 @@ mod tests {
         assert!(Tables::from_json(r#"{"schema":"public","extra":1}"#).is_err());
     }
 
-    /// A catalog row for the ledger, as the reference schema creates it, with `edit` applied.
-    fn ledger(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+    /// The compatibility map names every index that guards a key, so a violation the server reports on
+    /// any of them reads as that key. The refusals are `postgres_contract.json`'s, in `tests/golden.rs`.
+    #[test]
+    fn check_catalog_records_every_guarding_index() {
         let column = |name: &str, ty: &str, not_null: bool, collation: Option<&str>| json!({"name": name, "type": ty, "not_null": not_null, "default": false, "collation": collation});
-        let mut row = json!({
+        let unique = |name: &str| {
+            json!({"name": name, "columns": ["key"], "collations": ["C"],
+                                         "partial": false, "expressions": false, "deferrable": false, "valid": true})
+        };
+        let catalog = json!([{
             "table": "ledger", "kind": "r",
             "columns": [
                 column("key", "text", true, Some("C")),
@@ -713,83 +720,14 @@ mod tests {
                 column("claimed_at", "timestamp with time zone", true, None),
                 column("settled_at", "timestamp with time zone", false, None),
             ],
-            "unique": [{"name": "my_ledger_pkey", "columns": ["key"], "collations": ["C"],
-                        "partial": false, "expressions": false, "deferrable": false, "valid": true}],
-        });
-        edit(&mut row);
-        json!([row]).to_string()
-    }
-
-    #[test]
-    fn check_catalog_branches() {
-        let tables = Tables::default();
-        let check = |catalog: String| check_catalog(&tables, &[Logical::Ledger], &catalog).map_err(|e| e.message);
+            "unique": [unique("my_ledger_pkey"), unique("my_ledger_key_again")],
+        }]);
         assert_eq!(
-            check(ledger(|_| {})).map(|c| c.unique),
-            Ok(BTreeMap::from([("my_ledger_pkey".to_owned(), UniqueKey::LedgerKey)]))
-        );
-        type Edit = Box<dyn FnOnce(&mut serde_json::Value)>;
-        let refused: [(&str, Edit, &str); 9] = [
-            ("missing_table", Box::new(|r| r["kind"] = json!(null)), "does not exist"),
-            (
-                "missing_column",
-                Box::new(|r| drop(r["columns"].as_array_mut().unwrap().remove(3))),
-                "record is missing",
-            ),
-            (
-                "wrong_type",
-                Box::new(|r| r["columns"][3]["type"] = json!("json")),
-                "record is json, needs text",
-            ),
-            (
-                "not_null_on_nullable",
-                Box::new(|r| r["columns"][1]["not_null"] = json!(true)),
-                "owner is NOT NULL",
-            ),
-            (
-                "key_collation",
-                Box::new(|r| r["columns"][0]["collation"] = json!("en_US")),
-                "collates as en_US",
-            ),
-            (
-                "extra_required_column",
-                Box::new(|r| {
-                    r["columns"].as_array_mut().unwrap().push(
-                        json!({"name": "x", "type": "text", "not_null": true, "default": false, "collation": null}),
-                    )
-                }),
-                "x is NOT NULL with no default",
-            ),
-            (
-                "partial_unique",
-                Box::new(|r| r["unique"][0]["partial"] = json!(true)),
-                "no unique index on exactly (key)",
-            ),
-            (
-                "deferrable_unique",
-                Box::new(|r| r["unique"][0]["deferrable"] = json!(true)),
-                "no unique index",
-            ),
-            (
-                "unique_collation",
-                Box::new(|r| r["unique"][0]["collations"] = json!(["en_US"])),
-                "no unique index",
-            ),
-        ];
-        for (name, edit, want) in refused {
-            let got = check(ledger(edit)).unwrap_err();
-            assert!(got.contains(want), "{name}: {got}");
-        }
-        let varchar_and_extra = ledger(|r| {
-            r["columns"][3]["type"] = json!("character varying");
-            r["columns"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"name": "note", "type": "text", "not_null": true, "default": true, "collation": null}));
-        });
-        assert!(
-            check(varchar_and_extra).is_ok(),
-            "varchar and a defaulted extra column are accepted"
+            check_catalog(&Tables::default(), &[Logical::Ledger], &catalog.to_string()).map(|c| c.unique),
+            Ok(BTreeMap::from([
+                ("my_ledger_pkey".to_owned(), UniqueKey::LedgerKey),
+                ("my_ledger_key_again".to_owned(), UniqueKey::LedgerKey),
+            ]))
         );
     }
 

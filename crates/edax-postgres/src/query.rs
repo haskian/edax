@@ -27,7 +27,7 @@
 
 use edax_core::Error;
 use edax_cqrs::filter::{Filter, Operator};
-use edax_cqrs::{canonical_decimal, Collation, Page, SortKey, TIEBREAK_PATH};
+use edax_cqrs::{canonical_decimal, Collation, Page, SortKey, MAX_DECIMAL_DIGITS, MAX_DECIMAL_TEXT, TIEBREAK_PATH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -133,27 +133,50 @@ pub fn page(spec: &[u8], rows: Vec<String>) -> Result<Page, Error> {
 
 /// The exact value of decimal text, as SQL over the text expression `text`: `numeric`, or `NULL` for text
 /// the kernel does not read as decimal text. The kernel's grammar and bounds (`edax_cqrs::canonical_decimal`):
-/// at most 2000 bytes, an optional sign, ASCII digits with at most one point and at least one digit, an
-/// optional exponent within 32 bits, at most 1000 significant digits and at most 1000 digits in plain
-/// notation. The mantissa and exponent are normalized before the cast, so `"0E+999999999"` reads as `0`, as
+/// at most [`MAX_DECIMAL_TEXT`] bytes, an optional sign, ASCII digits with at most one point and at least
+/// one digit, an optional exponent within 32 bits, at most [`MAX_DECIMAL_DIGITS`] significant digits and at
+/// most as many digits in plain notation. The mantissa and exponent are normalized before the cast, so `"0E+999999999"` reads as `0`, as
 /// the kernel reads it, and no cast ever sees a value it would refuse. Plain SQL, so the contract needs no
 /// database object but tables; `text` is evaluated once.
 pub fn decimal_sql(text: &str) -> String {
+    let (max_text, max_digits) = (MAX_DECIMAL_TEXT, MAX_DECIMAL_DIGITS);
+    let (min_exponent, max_exponent) = (i32::MIN, i32::MAX);
+    // The most digits a 32-bit exponent has once its leading zeros are trimmed.
+    let exponent_digits = max_exponent.to_string().len();
     format!(
-        "(SELECT CASE WHEN c.coefficient = '' THEN 0::numeric \
-WHEN greatest(length(c.coefficient) - 1 + c.scale, 0) + 1 + greatest(-c.scale, 0) > 1000 THEN NULL \
-ELSE (c.sign || c.coefficient || 'e' || c.scale)::numeric END \
-FROM (SELECT b.sign, rtrim(b.digits, '0') AS coefficient, \
-b.exponent - b.fraction + (length(b.digits) - length(rtrim(b.digits, '0'))) AS scale \
-FROM (SELECT a.m[1] AS sign, ltrim(a.m[2] || coalesce(a.m[3], ''), '0') AS digits, \
-length(coalesce(a.m[3], '')) AS fraction, \
-CASE WHEN a.m[5] IS NULL THEN 0::bigint WHEN length(ltrim(a.m[5], '0')) > 10 THEN NULL \
-ELSE (a.m[4] || '0' || ltrim(a.m[5], '0'))::bigint END AS exponent \
-FROM (SELECT regexp_match(t.x, '^([+-]?)([0-9]*)(?:\\.([0-9]*))?(?:[eE]([+-]?)([0-9]+))?$') AS m \
-FROM (SELECT {text} AS x) AS t WHERE octet_length(t.x) <= 2000) AS a \
-WHERE a.m IS NOT NULL AND (a.m[2] <> '' OR coalesce(a.m[3], '') <> '') \
-AND length(ltrim(a.m[2], '0')) + length(rtrim(coalesce(a.m[3], ''), '0')) <= 1000) AS b \
-WHERE b.exponent BETWEEN -2147483648 AND 2147483647) AS c)"
+        r"(
+  SELECT CASE
+    WHEN c.coefficient = '' THEN 0::numeric
+    WHEN greatest(length(c.coefficient) - 1 + c.scale, 0) + 1 + greatest(-c.scale, 0) > {max_digits} THEN NULL
+    ELSE (c.sign || c.coefficient || 'e' || c.scale)::numeric
+  END
+  FROM (
+    SELECT
+      b.sign,
+      rtrim(b.digits, '0') AS coefficient,
+      b.exponent - b.fraction + (length(b.digits) - length(rtrim(b.digits, '0'))) AS scale
+    FROM (
+      SELECT
+        a.m[1] AS sign,
+        ltrim(a.m[2] || coalesce(a.m[3], ''), '0') AS digits,
+        length(coalesce(a.m[3], '')) AS fraction,
+        CASE
+          WHEN a.m[5] IS NULL THEN 0::bigint
+          WHEN length(ltrim(a.m[5], '0')) > {exponent_digits} THEN NULL
+          ELSE (a.m[4] || '0' || ltrim(a.m[5], '0'))::bigint
+        END AS exponent
+      FROM (
+        SELECT regexp_match(t.x, '^([+-]?)([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?)([0-9]+))?$') AS m
+        FROM (SELECT {text} AS x) AS t
+        WHERE octet_length(t.x) <= {max_text}
+      ) AS a
+      WHERE a.m IS NOT NULL
+        AND (a.m[2] <> '' OR coalesce(a.m[3], '') <> '')
+        AND length(ltrim(a.m[2], '0')) + length(rtrim(coalesce(a.m[3], ''), '0')) <= {max_digits}
+    ) AS b
+    WHERE b.exponent BETWEEN {min_exponent} AND {max_exponent}
+  ) AS c
+)"
     )
 }
 

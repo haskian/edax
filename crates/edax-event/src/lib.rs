@@ -59,9 +59,9 @@ pub use message::{
 pub use partition::partition;
 pub use retry::{retry_attempts, retry_step, Failure, Retries, Streak, Tracked, Verdict, VerdictKind};
 pub use saga::{
-    check_saga_commands, saga_admit, saga_command, saga_command_failed, saga_command_id, saga_write, Cause, Loaded,
-    SagaAdmit, SagaAdmitKind, SagaCommandFailed, SagaWrite, SagaWriteKind, SAGA_COMMAND_FAILED,
+    check_saga_commands, saga_admit, saga_command, saga_command_failed, saga_command_id, saga_completed, saga_write,
+    Cause, Loaded, SagaAdmit, SagaAdmitKind, SagaCommandFailed, SagaWrite, SagaWriteKind, SAGA_COMMAND_FAILED,
 };
-pub use sequence::{check_batch, draft_batch, snapshot_due, DraftBatch, SaveContext};
+pub use sequence::{check_batch, check_snapshot, draft_batch, snapshot_due, DraftBatch, SaveContext};
 pub use staleness::{advance, is_stale};
 pub use upcast::{upcast_plan, upcast_target, FIRST_VERSION};

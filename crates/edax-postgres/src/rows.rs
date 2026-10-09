@@ -9,7 +9,9 @@
 //! transaction.
 
 use edax_core::{Error, ErrorCode};
-use edax_event::{check_saga_commands, CommandMessage, EventDraft, EventMessage, Metadata};
+use edax_event::{
+    check_saga_commands, check_snapshot, saga_completed, CommandMessage, EventDraft, EventMessage, Metadata,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{check_bigint, clamp_bigint};
@@ -160,13 +162,7 @@ pub fn snapshot_params(stream: &str, type_name: &str, version: u64, data: &[u8])
 /// What `save_snapshot` returned, the stream's version, read against the snapshot's: one past the
 /// stream is a `codec` error (nothing was stored), as every store refuses it.
 pub fn snapshot_result(stream: &str, version: u64, stream_version: i64) -> Result<(), Error> {
-    let stream_version = unsigned("stream version", stream_version)?;
-    if version > stream_version {
-        return Err(Error::codec(format_args!(
-            "snapshot of {stream} at version {version} leads its stream at version {stream_version}"
-        )));
-    }
-    Ok(())
+    check_snapshot(stream, version, unsigned("stream version", stream_version)?)
 }
 
 /// What a projection write returned: the new version, or `None` when the row was not at `expected`, a
@@ -242,12 +238,7 @@ pub fn saga_result(saga: &str, id: &str, expected: u64, result: &str) -> Result<
     let stored = written.stored.unwrap_or(0);
     match (written.written, written.completed) {
         (Some(version), _) => unsigned("saga version", version),
-        (None, Some(true)) => Err(Error::new(
-            ErrorCode::Concurrency,
-            format_args!(
-                "saga {saga} instance {id} completed at version {stored}: a completed instance takes no write"
-            ),
-        )),
+        (None, Some(true)) => Err(saga_completed(saga, id, unsigned("saga version", stored)?)),
         (None, _) => Err(Error::new(
             ErrorCode::Concurrency,
             format_args!("saga {saga} instance {id} is not at version {expected}"),

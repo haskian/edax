@@ -310,6 +310,16 @@ pub fn check_saga_commands(saga: &str, id: &str, version: u64, commands: &[Comma
     Ok(())
 }
 
+/// The refusal of a write to instance `id` of `saga`, completed at `version`: completion is final, so a
+/// tombstone takes no write. A `concurrency` error, as for any write that loses to another: the runner
+/// redelivers the event, which then finds the tombstone. Every saga store raises it the same way.
+pub fn saga_completed(saga: &str, id: &str, version: u64) -> Error {
+    Error::new(
+        ErrorCode::Concurrency,
+        format_args!("saga {saga} instance {id} completed at version {version}: a completed instance takes no write"),
+    )
+}
+
 /// The id of the `index`-th command a step of the saga `saga` committed at `version` (the version the
 /// write produced) of the instance `instance_id`: `"{instance_id}:{version}:{index}"` [`scoped`] by the
 /// saga's name, `"{len(saga)}:{saga}:{instance_id}:{version}:{index}"`. Deterministic, so a durable store

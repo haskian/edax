@@ -102,6 +102,9 @@
             "type": "text"
           }
         ],
+        "primary_key": [
+          "id"
+        ],
         "role": "events",
         "suggested_indexes": [],
         "unique": [
@@ -151,6 +154,9 @@
             "type": "bytea"
           }
         ],
+        "primary_key": [
+          "stream"
+        ],
         "role": "snapshots",
         "suggested_indexes": [],
         "unique": [
@@ -179,11 +185,11 @@
             "type": "text"
           }
         ],
+        "primary_key": [
+          "position"
+        ],
         "role": "event_outbox",
         "suggested_indexes": [
-          [
-            "position"
-          ],
           [
             "event_id"
           ]
@@ -284,6 +290,9 @@
             "type": "text"
           }
         ],
+        "primary_key": [
+          "id"
+        ],
         "role": "command_outbox",
         "suggested_indexes": [
           [
@@ -329,6 +338,10 @@
             "nullable": false,
             "type": "jsonb"
           }
+        ],
+        "primary_key": [
+          "projection",
+          "id"
         ],
         "role": "projections",
         "suggested_indexes": [],
@@ -386,6 +399,9 @@
             "nullable": true,
             "type": "timestamptz"
           }
+        ],
+        "primary_key": [
+          "key"
         ],
         "role": "ledger",
         "suggested_indexes": [],
@@ -449,6 +465,10 @@
             "nullable": true,
             "type": "timestamptz"
           }
+        ],
+        "primary_key": [
+          "saga",
+          "id"
         ],
         "role": "saga_instances",
         "suggested_indexes": [],
@@ -563,6 +583,10 @@
             "type": "text"
           }
         ],
+        "primary_key": [
+          "saga",
+          "id"
+        ],
         "role": "saga_outbox",
         "suggested_indexes": [
           [
@@ -603,6 +627,9 @@
             "nullable": false,
             "type": "timestamptz"
           }
+        ],
+        "primary_key": [
+          "outbox"
         ],
         "role": "relay_leases",
         "suggested_indexes": [],
@@ -910,6 +937,32 @@
     "name": "catalog_several_mismatches_listed",
     "roles": [
       "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":null,\"default\":false,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"event_id\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"event_outbox\",\"unique\":[]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_event_outbox\".position needs a default (an identity or a sequence)",
+    "name": "catalog_position_without_default",
+    "roles": [
+      "event_outbox"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"stream\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"sequence\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"occurred_at\",\"not_null\":false,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"recorded_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"events\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_events_pkey\",\"partial\":false,\"valid\":true},{\"collations\":[\"C\",\"\"],\"columns\":[\"stream\",\"sequence\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_events_stream_sequence_key\",\"partial\":false,\"valid\":true},{\"collations\":[\"C\",\"\"],\"columns\":[\"stream\",\"sequence\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_events_stream_sequence_again\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_events_pkey": "events_id",
+        "edax_events_stream_sequence_again": "events_stream_sequence",
+        "edax_events_stream_sequence_key": "events_stream_sequence"
+      }
+    },
+    "error": null,
+    "name": "catalog_two_indexes_on_one_key",
+    "roles": [
+      "events"
     ],
     "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
   },

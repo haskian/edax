@@ -5009,22 +5009,6 @@ char *edax_postgres_tables(const char *tables_json);
 uintptr_t edax_postgres_tables_len(const char *_tables_json);
 
 /**
- * The unique keys the table contract requires. See `edax_postgres.UniqueKey`.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_postgres_unique_keys(void);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_postgres_unique_keys` on this
- * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
- * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_unique_keys`.
- */
-uintptr_t edax_postgres_unique_keys_len(void);
-
-/**
  * The verdict on a server error, in its wire form. `unique` names the key the violated unique index
  * guards, read from the table check's answer; `None` when none. An unknown `op` or key is a `codec:`
  * error. See `edax_postgres.verdict`.

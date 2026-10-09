@@ -367,7 +367,8 @@ Three traps:
   transient fault is never retried. A loser inside a transaction has two correct outcomes and one
   bug; see [idempotency](../sdk/idempotency.md#rules-and-constraints).
 - **Bound the blocking wait.** A claim is a remote call. Give it a lock or statement timeout and
-  surface the expiry as `StoreError`.
+  surface the expiry as `StoreError`, or as `InProgress` when the store knows another unit of work
+  holds the key.
 - **Keep the hash lossless.** `payload_hash` is an unsigned 64-bit number. A signed `BIGINT` column
   reads every value at or above `2**63` back as negative, and the SDK rejects that as a terminal
   `CodecError` rather than looping forever.

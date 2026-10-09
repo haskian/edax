@@ -88,7 +88,8 @@ Each parameter is declared `text` and cast in the statement. Each statement open
 `/* edax:<op> */` tag, so `pg_stat_statements` groups it. Four shapes carry a decision.
 
 - **`append` is a plain `INSERT`.** It checks the stream's last sequence in the same statement. The
-  `edax_events_stream_sequence` constraint catches a writer that raced past the check. That
+  unique index on `(stream, sequence)`, the `events_stream_sequence` key, catches a writer that raced
+  past the check. That
   violation aborts the transaction on purpose. An `ON CONFLICT DO NOTHING` would land the rest of a
   batch on top of the winner's event, and a caller that caught the conflict could commit it.
 - **Outbox rows follow the batch.** Each write inserts its outbox rows in sequence order, in the same
@@ -101,6 +102,8 @@ Each parameter is declared `text` and cast in the statement. Each statement open
   in the same statement. A relay that does not hold it reads no rows. Leasing single rows would let two
   relays send one aggregate's events out of order. The holder renews the lease only when less than
   half of it remains. A poll by a fresh holder or by a non-holder writes nothing to the lease row.
+  The statement names the lease after its schema-qualified outbox table, plus the saga name for a
+  saga outbox. So two outboxes never share a lease, and no SDK chooses the name.
 
 ## Numbers
 
@@ -161,14 +164,18 @@ as the kernel reads it. It answers `NULL` for any other text.
 
 ## The verdict
 
-`verdict(op, sqlstate, constraint, message)` reads a server error against the operation that ran.
+`verdict(op, sqlstate, unique, message)` reads a server error against the operation that ran.
+`unique` is the contract key the violated unique index guards: the adapter maps the index name the
+server reports through the `Compatibility` the table check answered. It is `None` when no key of the
+contract was violated.
 
 | SQLSTATE | Verdict |
 |---|---|
-| `23505` on `edax_events_stream_sequence` | `concurrency`: another writer appended first |
-| `23505` on any other constraint | `codec`: a reused id, which fails the same way again |
-| `55P03`, `57014` on a claim | `in_progress`: another unit of work holds the key, and a dispatcher retries it uncounted |
-| `55P03`, `57014` elsewhere | `concurrency` |
+| `23505` on the `events_stream_sequence` key | `concurrency`: another writer appended first |
+| `23505` on any other key, or on none | `codec`: a reused id, which fails the same way again |
+| `55P03`, `57014` on a `claim` | `in_progress`: another unit of work holds the key, and a dispatcher retries it uncounted |
+| `55P03` on an `append`, `projection_save`, `saga_write` or `settle` | `concurrency`: another unit of work holds the row this write compares or fences |
+| `55P03` on any other operation, `57014` on any but a `claim` | `store`, transient: a read or an unversioned write ran out of time, which is no version conflict |
 | `40001`, `40P01`, `25006`, `25P02`, the `08` and `53` classes | `store`, transient |
 | `22P05`, `22021`, `22P02`, `22003`, `2201W`, `54000` | `codec`: data the server cannot store |
 | `42P01`, `42703`, `42883`, `3F000`, `42501`, `28P01` | `bad_handle`: a wiring mistake no retry fixes |

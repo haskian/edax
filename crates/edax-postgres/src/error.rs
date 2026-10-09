@@ -2,9 +2,10 @@
 //! read against the operation that ran), and on a failure the client reports without a SQLSTATE.
 //!
 //! The operation matters. A lock wait that runs out is contention on a ledger claim, which a
-//! dispatcher retries without counting an attempt (`in_progress`), but a lost race on a versioned
-//! write elsewhere (`concurrency`). A unique violation is a version conflict on an event stream and a
-//! reused id on an outbox row. `testdata/golden/postgres_error.json` pins every row.
+//! dispatcher retries without counting an attempt (`in_progress`). On a compare-and-set write it is a
+//! lost race (`concurrency`). Anywhere else it is a transient `store` failure, because the store
+//! contracts keep `concurrency` for a version conflict. A unique violation is a version conflict on an
+//! event stream and a reused id on an outbox row. `testdata/golden/postgres_error.json` pins every row.
 
 use edax_core::{Error, ErrorCode};
 
@@ -48,6 +49,14 @@ impl Op {
     pub fn from_name(name: &str) -> Result<Op, Error> {
         Op::by_name(name).ok_or_else(|| Error::codec(format_args!("unknown postgres operation: {name}")))
     }
+
+    /// Whether a lock wait that runs out here means another writer holds the row: an append, a projection
+    /// save and a saga write compare a version, and a settle is refused a key another open transaction
+    /// holds (the idempotency store contract). A read, even a locking one, compares no version, and a
+    /// snapshot, an outbox row or an enqueued command carries none, so their lock waits are `store`.
+    fn waits_on_a_writer(self) -> bool {
+        matches!(self, Op::Append | Op::ProjectionSave | Op::SagaWrite | Op::Settle)
+    }
 }
 
 /// The verdict on a server error: the kernel error for SQLSTATE `sqlstate`, raised by `op`, with the
@@ -57,8 +66,11 @@ impl Op {
 ///
 /// - `23505`, a unique violation: of the events' `(stream, sequence)` a `concurrency` conflict (another
 ///   writer appended first); of any other key a reused id, `codec`, which fails the same way again.
-/// - `55P03` (a lock wait ran out) and `57014` (a statement ran out): on a claim `in_progress`, since
-///   another unit of work holds the key; elsewhere `concurrency`.
+/// - `55P03` (a lock wait ran out) and `57014` (a statement ran out) on a claim: `in_progress`, since
+///   another unit of work holds the key.
+/// - `55P03` on an append, a projection save, a saga write or a settle: `concurrency`, since another unit
+///   of work holds the row it would write. Elsewhere, and `57014` everywhere but a claim, `store`: a read
+///   or an unversioned write that ran out of time is transient, not a version conflict.
 /// - `40001`, `40P01`, the `08` connection class, the `53` resource class, `25006` (a read-only server
 ///   after a failover) and `25P02` (an earlier statement aborted the transaction): `store`, transient.
 /// - Data the server cannot store (`22P05`, `22021`, `22P02`, `22003`, `2201W`, `54000`): `codec`.
@@ -70,7 +82,7 @@ pub fn verdict(op: Op, sqlstate: &str, unique: Option<UniqueKey>, message: &str)
         ("23505", _) if unique == Some(UniqueKey::EventsStreamSequence) => ErrorCode::Concurrency,
         ("23505", _) => ErrorCode::Codec,
         ("55P03" | "57014", Op::Claim) => ErrorCode::InProgress,
-        ("55P03" | "57014", _) => ErrorCode::Concurrency,
+        ("55P03", _) if op.waits_on_a_writer() => ErrorCode::Concurrency,
         ("40001" | "40P01" | "25006" | "25P02", _) => ErrorCode::Store,
         ("22P05" | "22021" | "22P02" | "22003" | "2201W" | "54000", _) => ErrorCode::Codec,
         ("42P01" | "42703" | "42883" | "3F000" | "42501" | "28P01", _) => ErrorCode::BadHandle,
@@ -122,7 +134,7 @@ mod tests {
 
     #[test]
     fn verdict_branches() {
-        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 12] = [
+        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 14] = [
             (
                 "stream_race",
                 Op::Append,
@@ -147,6 +159,8 @@ mod tests {
                 ErrorCode::InProgress,
             ),
             ("settle_lock_wait", Op::Settle, "55P03", None, ErrorCode::Concurrency),
+            ("read_lock_wait", Op::ProjectionRead, "55P03", None, ErrorCode::Store),
+            ("append_statement_timeout", Op::Append, "57014", None, ErrorCode::Store),
             ("serialization", Op::ProjectionSave, "40001", None, ErrorCode::Store),
             ("aborted_earlier", Op::Load, "25P02", None, ErrorCode::Store),
             ("nul_text", Op::ProjectionSave, "22P05", None, ErrorCode::Codec),

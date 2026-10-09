@@ -26,12 +26,48 @@
     "result": "{\"stored\":3,\"events\":[]}"
   },
   {
+    "draft_rows": [
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-2",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 2,
+        "tenant": "acme",
+        "version": 2
+      }
+    ],
     "error": "codec: event 0 has sequence 2, expected 1",
-    "name": "append_refuses_a_gap"
+    "expected": 0,
+    "name": "append_refuses_a_gap",
+    "stream": "s"
   },
   {
+    "draft_rows": [
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "c\u0000",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-1",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 1,
+        "tenant": "acme",
+        "version": 2
+      }
+    ],
     "error": "codec: correlation id holds a NUL character, which Postgres cannot store",
-    "name": "append_refuses_nul"
+    "expected": 0,
+    "name": "append_refuses_nul",
+    "stream": "s"
   },
   {
     "decoded": 1,
@@ -98,8 +134,29 @@
     ]
   },
   {
+    "command_rows": [
+      {
+        "aggregate_id": "order-1",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "0001ff",
+        "extensions": "{}",
+        "id": "x",
+        "idempotency_key": "req-7",
+        "issued_at": 1700000000000000000,
+        "metadata": "{\"note\":\"a\\u0000b\"}",
+        "name": "ShipOrder",
+        "tenant": null,
+        "version": 1
+      }
+    ],
     "error": "codec: saga command 0 of order-1 at version 1 is \"x\" for instance Some(\"order-1\"), expected \"4:ship:order-1:1:0\"",
-    "name": "saga_foreign_command"
+    "folded": "",
+    "id": "order-1",
+    "name": "saga_foreign_command",
+    "saga": "ship",
+    "state": null,
+    "version": 0
   },
   {
     "error": "concurrency: saga ship instance order-1 completed at version 4: a completed instance takes no write",
@@ -118,7 +175,9 @@
     "stored": "{\"id\":\"acct-1\",\"m\":0.3,\"n\":58088200776852272.0}"
   },
   {
+    "document": "{\"s\":\"\\u0000\"}",
     "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
+    "id": "acct-1",
     "name": "stored_document_nul"
   }
 ]

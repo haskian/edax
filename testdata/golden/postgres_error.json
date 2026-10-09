@@ -1,5 +1,37 @@
 [
   {
+    "error": "store: postgres check failed with 55P03: server text",
+    "message": "server text",
+    "name": "check_55P03_none",
+    "op": "check",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres check failed with 57014: server text",
+    "message": "server text",
+    "name": "check_57014_none",
+    "op": "check",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres transaction failed with 55P03: server text",
+    "message": "server text",
+    "name": "transaction_55P03_none",
+    "op": "transaction",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres transaction failed with 57014: server text",
+    "message": "server text",
+    "name": "transaction_57014_none",
+    "op": "transaction",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
     "error": "concurrency: postgres append failed with 23505 on events_stream_sequence: server text",
     "message": "server text",
     "name": "append_23505_events_stream_sequence",
@@ -40,7 +72,7 @@
     "unique": null
   },
   {
-    "error": "concurrency: postgres append failed with 57014: server text",
+    "error": "store: postgres append failed with 57014: server text",
     "message": "server text",
     "name": "append_57014_none",
     "op": "append",
@@ -140,6 +172,230 @@
     "message": "server text",
     "name": "append_XX000_none",
     "op": "append",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "store: postgres load failed with 55P03: server text",
+    "message": "server text",
+    "name": "load_55P03_none",
+    "op": "load",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres load failed with 57014: server text",
+    "message": "server text",
+    "name": "load_57014_none",
+    "op": "load",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres save_snapshot failed with 55P03: server text",
+    "message": "server text",
+    "name": "save_snapshot_55P03_none",
+    "op": "save_snapshot",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres save_snapshot failed with 57014: server text",
+    "message": "server text",
+    "name": "save_snapshot_57014_none",
+    "op": "save_snapshot",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres outbox failed with 55P03: server text",
+    "message": "server text",
+    "name": "outbox_55P03_none",
+    "op": "outbox",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres outbox failed with 57014: server text",
+    "message": "server text",
+    "name": "outbox_57014_none",
+    "op": "outbox",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres enqueue failed with 55P03: server text",
+    "message": "server text",
+    "name": "enqueue_55P03_none",
+    "op": "enqueue",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres enqueue failed with 57014: server text",
+    "message": "server text",
+    "name": "enqueue_57014_none",
+    "op": "enqueue",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_read failed with 55P03: server text",
+    "message": "server text",
+    "name": "projection_read_55P03_none",
+    "op": "projection_read",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_read failed with 57014: server text",
+    "message": "server text",
+    "name": "projection_read_57014_none",
+    "op": "projection_read",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_save failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "projection_save_23505_events_stream_sequence",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "projection_save_23505_events_id",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "projection_save_23505_command_outbox_id",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505: server text",
+    "message": "server text",
+    "name": "projection_save_23505_none",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_save failed with 55P03: server text",
+    "message": "server text",
+    "name": "projection_save_55P03_none",
+    "op": "projection_save",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 57014: server text",
+    "message": "server text",
+    "name": "projection_save_57014_none",
+    "op": "projection_save",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 40001: server text",
+    "message": "server text",
+    "name": "projection_save_40001_none",
+    "op": "projection_save",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 40P01: server text",
+    "message": "server text",
+    "name": "projection_save_40P01_none",
+    "op": "projection_save",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 25006: server text",
+    "message": "server text",
+    "name": "projection_save_25006_none",
+    "op": "projection_save",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 25P02: server text",
+    "message": "server text",
+    "name": "projection_save_25P02_none",
+    "op": "projection_save",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 08006: server text",
+    "message": "server text",
+    "name": "projection_save_08006_none",
+    "op": "projection_save",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 53300: server text",
+    "message": "server text",
+    "name": "projection_save_53300_none",
+    "op": "projection_save",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 22P05: server text",
+    "message": "server text",
+    "name": "projection_save_22P05_none",
+    "op": "projection_save",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 22021: server text",
+    "message": "server text",
+    "name": "projection_save_22021_none",
+    "op": "projection_save",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 54000: server text",
+    "message": "server text",
+    "name": "projection_save_54000_none",
+    "op": "projection_save",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 42P01: server text",
+    "message": "server text",
+    "name": "projection_save_42P01_none",
+    "op": "projection_save",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 42501: server text",
+    "message": "server text",
+    "name": "projection_save_42501_none",
+    "op": "projection_save",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with XX000: server text",
+    "message": "server text",
+    "name": "projection_save_XX000_none",
+    "op": "projection_save",
     "sqlstate": "XX000",
     "unique": null
   },
@@ -288,147 +544,51 @@
     "unique": null
   },
   {
-    "error": "concurrency: postgres projection_save failed with 23505 on events_stream_sequence: server text",
+    "error": "concurrency: postgres settle failed with 55P03: server text",
     "message": "server text",
-    "name": "projection_save_23505_events_stream_sequence",
-    "op": "projection_save",
-    "sqlstate": "23505",
-    "unique": "events_stream_sequence"
-  },
-  {
-    "error": "codec: postgres projection_save failed with 23505 on events_id: server text",
-    "message": "server text",
-    "name": "projection_save_23505_events_id",
-    "op": "projection_save",
-    "sqlstate": "23505",
-    "unique": "events_id"
-  },
-  {
-    "error": "codec: postgres projection_save failed with 23505 on command_outbox_id: server text",
-    "message": "server text",
-    "name": "projection_save_23505_command_outbox_id",
-    "op": "projection_save",
-    "sqlstate": "23505",
-    "unique": "command_outbox_id"
-  },
-  {
-    "error": "codec: postgres projection_save failed with 23505: server text",
-    "message": "server text",
-    "name": "projection_save_23505_none",
-    "op": "projection_save",
-    "sqlstate": "23505",
-    "unique": null
-  },
-  {
-    "error": "concurrency: postgres projection_save failed with 55P03: server text",
-    "message": "server text",
-    "name": "projection_save_55P03_none",
-    "op": "projection_save",
+    "name": "settle_55P03_none",
+    "op": "settle",
     "sqlstate": "55P03",
     "unique": null
   },
   {
-    "error": "concurrency: postgres projection_save failed with 57014: server text",
+    "error": "store: postgres settle failed with 57014: server text",
     "message": "server text",
-    "name": "projection_save_57014_none",
-    "op": "projection_save",
+    "name": "settle_57014_none",
+    "op": "settle",
     "sqlstate": "57014",
     "unique": null
   },
   {
-    "error": "store: postgres projection_save failed with 40001: server text",
+    "error": "store: postgres saga_load failed with 55P03: server text",
     "message": "server text",
-    "name": "projection_save_40001_none",
-    "op": "projection_save",
-    "sqlstate": "40001",
+    "name": "saga_load_55P03_none",
+    "op": "saga_load",
+    "sqlstate": "55P03",
     "unique": null
   },
   {
-    "error": "store: postgres projection_save failed with 40P01: server text",
+    "error": "store: postgres saga_load failed with 57014: server text",
     "message": "server text",
-    "name": "projection_save_40P01_none",
-    "op": "projection_save",
-    "sqlstate": "40P01",
+    "name": "saga_load_57014_none",
+    "op": "saga_load",
+    "sqlstate": "57014",
     "unique": null
   },
   {
-    "error": "store: postgres projection_save failed with 25006: server text",
+    "error": "concurrency: postgres saga_write failed with 55P03: server text",
     "message": "server text",
-    "name": "projection_save_25006_none",
-    "op": "projection_save",
-    "sqlstate": "25006",
+    "name": "saga_write_55P03_none",
+    "op": "saga_write",
+    "sqlstate": "55P03",
     "unique": null
   },
   {
-    "error": "store: postgres projection_save failed with 25P02: server text",
+    "error": "store: postgres saga_write failed with 57014: server text",
     "message": "server text",
-    "name": "projection_save_25P02_none",
-    "op": "projection_save",
-    "sqlstate": "25P02",
-    "unique": null
-  },
-  {
-    "error": "store: postgres projection_save failed with 08006: server text",
-    "message": "server text",
-    "name": "projection_save_08006_none",
-    "op": "projection_save",
-    "sqlstate": "08006",
-    "unique": null
-  },
-  {
-    "error": "store: postgres projection_save failed with 53300: server text",
-    "message": "server text",
-    "name": "projection_save_53300_none",
-    "op": "projection_save",
-    "sqlstate": "53300",
-    "unique": null
-  },
-  {
-    "error": "codec: postgres projection_save failed with 22P05: server text",
-    "message": "server text",
-    "name": "projection_save_22P05_none",
-    "op": "projection_save",
-    "sqlstate": "22P05",
-    "unique": null
-  },
-  {
-    "error": "codec: postgres projection_save failed with 22021: server text",
-    "message": "server text",
-    "name": "projection_save_22021_none",
-    "op": "projection_save",
-    "sqlstate": "22021",
-    "unique": null
-  },
-  {
-    "error": "codec: postgres projection_save failed with 54000: server text",
-    "message": "server text",
-    "name": "projection_save_54000_none",
-    "op": "projection_save",
-    "sqlstate": "54000",
-    "unique": null
-  },
-  {
-    "error": "bad_handle: postgres projection_save failed with 42P01: server text",
-    "message": "server text",
-    "name": "projection_save_42P01_none",
-    "op": "projection_save",
-    "sqlstate": "42P01",
-    "unique": null
-  },
-  {
-    "error": "bad_handle: postgres projection_save failed with 42501: server text",
-    "message": "server text",
-    "name": "projection_save_42501_none",
-    "op": "projection_save",
-    "sqlstate": "42501",
-    "unique": null
-  },
-  {
-    "error": "store: postgres projection_save failed with XX000: server text",
-    "message": "server text",
-    "name": "projection_save_XX000_none",
-    "op": "projection_save",
-    "sqlstate": "XX000",
+    "name": "saga_write_57014_none",
+    "op": "saga_write",
+    "sqlstate": "57014",
     "unique": null
   },
   {

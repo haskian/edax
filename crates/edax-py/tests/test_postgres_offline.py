@@ -4,6 +4,7 @@ settings, the relay lease, and the wiring refusals. The live suite (``test_postg
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -288,11 +289,19 @@ def test_rows_vector(case: dict[str, Any]) -> None:
             == case["error"]
         )
     elif name == "saga_foreign_command":
-        assert case["error"].startswith("codec:")
+        commands = [_command(row) for row in case["command_rows"]]
+        args = (case["saga"], case["id"], case["version"], case["state"], case["folded"])
+        assert _refusal(lambda: _native.postgres_saga_params(*args, commands)) == case["error"]
     elif name == "stored_document_exact":
         assert _native.postgres_stored_document(case["id"], case["document"]) == case["stored"]
-    elif name in ("append_refuses_a_gap", "append_refuses_nul", "stored_document_nul"):
-        assert case["error"].startswith("codec:")
+    elif name in ("append_refuses_a_gap", "append_refuses_nul"):
+        drafts = [_draft(row) for row in case["draft_rows"]]
+        append_params = lambda: _native.postgres_append_params(case["stream"], case["expected"], drafts)  # noqa: E731
+        assert _refusal(append_params) == case["error"]
+    elif name == "stored_document_nul":
+        assert (
+            _refusal(lambda: _native.postgres_stored_document(case["id"], case["document"])) == case["error"]
+        )
     else:
         raise AssertionError(f"a postgres_rows.json case no replay covers: {name}")
 
@@ -361,3 +370,155 @@ async def test_second_cancellation_during_rollback_terminates_connection() -> No
     with pytest.raises(asyncio.CancelledError):
         await task
     assert conn.terminated
+
+
+# --- The adapter's I/O paths a live server does not reach on demand: a connection that answers each kernel
+# --- statement by its tag, as a script says.
+
+#: A scripted reply that never comes: the call waits until its deadline cancels it.
+HANG = object()
+
+
+class ScriptedTransaction:
+    def __init__(self, log: list[str]) -> None:
+        self._log = log
+
+    async def start(self) -> None:
+        self._log.append("start")
+
+    async def commit(self) -> None:
+        self._log.append("commit")
+
+    async def rollback(self) -> None:
+        self._log.append("rollback")
+
+
+class ScriptedConnection:
+    """Answers each kernel statement by its tag (``/* edax:<tag> */``) with the next reply ``script`` lists
+    for that tag, and records the tags it ran and how each transaction ended. The table check reads a server
+    and a catalog that meet the contract: the kernel's ``compatible_default`` vector."""
+
+    def __init__(self, script: dict[str, list[Any]]) -> None:
+        compatible = next(c for c in golden("postgres_contract.json") if c["name"] == "compatible_default")
+        # deadlock_timeout 1 ms: below every lock wait the tests set.
+        self._fixed: dict[str, Any] = {
+            "server": ("UTF8", 170004, 1),
+            "catalog": compatible["catalog"],
+            "settings": ("", "", ""),
+        }
+        self._script = {tag: list(replies) for tag, replies in script.items()}
+        self.ran: list[str] = []
+        self.transactions: list[list[str]] = []
+
+    async def _reply(self, query: str) -> Any:
+        tag = query.split("*/", 1)[0].removeprefix("/* edax:").strip()
+        if tag in self._fixed:
+            return self._fixed[tag]
+        self.ran.append(tag)
+        replies = self._script.get(tag)
+        assert replies, f"no scripted reply left for {tag}"
+        reply = replies.pop(0)
+        if reply is HANG:
+            await asyncio.Event().wait()
+        return reply
+
+    async def fetch(self, query: str, *args: Any) -> Any:
+        return await self._reply(query)
+
+    async def fetchrow(self, query: str, *args: Any) -> Any:
+        return await self._reply(query)
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        return await self._reply(query)
+
+    async def execute(self, query: str, *args: Any) -> Any:
+        return await self._reply(query)
+
+    def transaction(self, *, isolation: str | None = None) -> ScriptedTransaction:
+        self.transactions.append([])
+        return ScriptedTransaction(self.transactions[-1])
+
+    def terminate(self) -> None:
+        self.transactions[-1].append("terminated")
+
+
+class ScriptedPool:
+    """A pool that lends its one scripted connection."""
+
+    def __init__(self, conn: ScriptedConnection) -> None:
+        self.conn = conn
+
+    def acquire(self, *, timeout: float | None = None) -> Any:
+        return contextlib.nullcontext(self.conn)
+
+
+def _ledger_row(name: str) -> str:
+    """The row ``claim_read`` answers for the kernel's ledger vector ``name``."""
+    case = next(c for c in golden("postgres_ledger.json") if c["name"] == name)
+    return json.dumps(case["row"])
+
+
+@pytest.mark.parametrize(
+    ("name", "script", "want", "error", "ran"),
+    [
+        (
+            "vanished_then_free",
+            {"claim_insert": [None, True], "claim_read": [None]},
+            pg.Won,
+            None,
+            ["claim_insert", "claim_read", "claim_insert"],
+        ),
+        (
+            "take_over_lost_then_prior",
+            {
+                "claim_insert": [None, None],
+                "claim_read": ["lapsed_claim", "other_record"],
+                "claim_take_over": [None],
+            },
+            pg.Record.done(7, 1),
+            None,
+            ["claim_insert", "claim_read", "claim_take_over", "claim_insert", "claim_read"],
+        ),
+        (
+            "vanished_every_read",
+            {"claim_insert": [None] * 3, "claim_read": [None] * 3},
+            None,
+            "kept changing under 3 reads",
+            ["claim_insert", "claim_read"] * 3,
+        ),
+    ],
+)
+async def test_the_claim_loop(
+    name: str, script: dict[str, list[Any]], want: Any, error: str | None, ran: list[str]
+) -> None:
+    """A claim that loses its insert reads the row again, at most the kernel's three times: a row that
+    vanished is claimed afresh, a lapsed one is taken over (or, lost to another claimant, read again), and a
+    key that keeps changing is the transient StoreError, rolled back."""
+    reads = {"claim_read": [None if r is None else _ledger_row(r) for r in script.get("claim_read", [])]}
+    conn = ScriptedConnection({**script, **reads})
+    ledger = pg.PostgresIdempotencyStore(pg.PostgresTransactor(ScriptedPool(conn)))
+    if error is not None:
+        with pytest.raises(StoreError, match=error):
+            await ledger.claim("order-7", 7)
+        assert conn.transactions[-1] == ["start", "rollback"]
+    else:
+        got = await ledger.claim("order-7", 7)
+        assert isinstance(got, pg.Won) if want is pg.Won else got == want
+        assert conn.transactions[-1] == ["start", "commit"]
+    assert conn.ran == ran, name
+
+
+async def test_a_missed_deadline_inside_a_unit_of_work_aborts_it() -> None:
+    """A call cancelled at its deadline may have reached the server, so the transaction is in an unknown
+    state: the unit of work is rolled back and the block raises, even when the host caught the timeout."""
+    conn = ScriptedConnection({"claim_insert": [HANG]})
+    settings = pg.default_settings(lock_timeout_ms=10, statement_timeout_ms=20, op_timeout_ms=40)
+    db = pg.PostgresTransactor(ScriptedPool(conn), settings=settings)
+    ledger = pg.PostgresIdempotencyStore(db)
+    with pytest.raises(StoreError, match="aborted the transaction"):
+        async with transaction(db) as tx:
+            with pytest.raises(StoreError, match="no reply within 40 ms"):
+                await ledger.claim("order-7", 7, tx=tx)
+    assert conn.transactions == [["start", "commit"], ["start", "rollback"]], (
+        "the check, then the unit of work"
+    )

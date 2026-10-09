@@ -499,12 +499,13 @@ class _OutboxReads(_StoreView):
         if lease is not None:
             transactor.use(("relay_leases",))
 
-    async def _unpublished(self, statement: str, scope: list[str], lease_name: str, limit: int) -> list[str]:
+    async def _unpublished(self, statement: str, scope: list[str], limit: int) -> list[str]:
         limit_text = _native.postgres_bound_param(wiring_int(limit, "limit"))
         args: list[str] = [*scope, limit_text]
         if self._lease is not None:
+            # The kernel names the lease for the outbox table, so only the relay's owner and TTL bind.
             statement += "_leased"
-            args += [lease_name, self._lease.owner, str(self._lease.ttl_ms)]
+            args += [self._lease.owner, str(self._lease.ttl_ms)]
 
         async def read(conn: PgConnection) -> list[str]:
             return [row[0] for row in await conn.fetch(self._sql(statement), *args)]
@@ -590,7 +591,7 @@ class PostgresEventStore(_OutboxReads):
         return _native.postgres_append_result(expected_version, len(drafts), result)
 
     async def unpublished(self, limit: int) -> list[EventMessage]:
-        rows = await self._unpublished("event_unpublished", [], "events", limit)
+        rows = await self._unpublished("event_unpublished", [], limit)
         return _native.postgres_decode_events(rows)
 
     async def mark_published(self, ids: Sequence[str]) -> None:
@@ -621,7 +622,7 @@ class PostgresCommandOutbox(_OutboxReads):
         await self._transactor.run("enqueue", tx, enqueue)
 
     async def unpublished(self, limit: int) -> list[CommandMessage]:
-        rows = await self._unpublished("command_unpublished", [], "commands", limit)
+        rows = await self._unpublished("command_unpublished", [], limit)
         return _native.postgres_decode_commands(rows)
 
     async def mark_published(self, ids: Sequence[str]) -> None:
@@ -826,7 +827,7 @@ class PostgresSagaStore(_OutboxReads):
         return await self._write(saga, id, version, None, "", commands, tx)
 
     async def unpublished(self, saga: str, limit: int) -> list[CommandMessage]:
-        rows = await self._unpublished("saga_unpublished", [saga], f"saga:{saga}", limit)
+        rows = await self._unpublished("saga_unpublished", [saga], limit)
         return _native.postgres_decode_commands(rows)
 
     async def mark_published(self, saga: str, ids: Sequence[str]) -> None:

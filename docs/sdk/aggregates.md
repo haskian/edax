@@ -304,7 +304,7 @@ writers meet.
 |---|---|---|---|
 | stored version differs from `expected_version` | `ConcurrencyError` / `Error::concurrency(expected, stored)` | transient | reload the aggregate, re-decide, save again |
 | a payload will not marshal | `CodecError` / code `codec` | terminal | dead-letter; a retry fails identically |
-| the backend is down, a lock wait times out | `StoreError` / code `store` | transient | retry with backoff |
+| the backend is down, a statement times out | `StoreError` / code `store` | transient | retry with backoff |
 
 `ConcurrencyError` means a version conflict and nothing else. A store that
 reports a connection failure as a concurrency conflict makes the caller retry a decision it should

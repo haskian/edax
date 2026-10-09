@@ -225,6 +225,34 @@ fn golden_contract() {
             "catalog": catalog, "compatibility": checked.as_ref().ok(), "error": refusal(&checked),
         }));
     }
+    // Mismatches on other tables: an outbox position edax never writes, and a second index on one key,
+    // which the compatibility map must name too, or a violation on it reads as no key at all.
+    let role_edits: Vec<(&str, Logical, Edit)> = vec![
+        (
+            "position_without_default",
+            Logical::EventOutbox,
+            Box::new(|r| r["columns"][0]["default"] = json!(false)),
+        ),
+        (
+            "two_indexes_on_one_key",
+            Logical::Events,
+            Box::new(|r| {
+                let mut again = r["unique"][1].clone();
+                again["name"] = json!("edax_events_stream_sequence_again");
+                r["unique"].as_array_mut().unwrap().push(again);
+            }),
+        ),
+    ];
+    for (name, role, edit) in role_edits {
+        let mut row = reference_catalog(&Tables::default(), role);
+        edit(&mut row);
+        let catalog = Value::Array(vec![row]).to_string();
+        let checked = check_catalog(&Tables::default(), &[role], &catalog);
+        cases.push(json!({
+            "name": format!("catalog_{name}"), "tables": Tables::default().to_json(), "roles": [role],
+            "catalog": catalog, "compatibility": checked.as_ref().ok(), "error": refusal(&checked),
+        }));
+    }
     for (name, encoding, version) in [
         ("utf8_17", "UTF8", 170_004),
         ("latin1", "LATIN1", 170_004),
@@ -304,14 +332,29 @@ fn golden_rows() {
     )];
     let mut nul = draft(1);
     nul.correlation_id = "c\0".into();
+    // The refused inputs as rows a replay rebuilds its messages from: a draft row is the one an accepted
+    // append binds, edited where the refusal needs a value no append binds.
+    let draft_row = |expected: u64, draft: &EventDraft| -> Value {
+        let params = rows::append_params("s", expected, std::slice::from_ref(draft)).unwrap();
+        serde_json::from_str::<Vec<Value>>(params[2].as_deref().unwrap())
+            .unwrap()
+            .remove(0)
+    };
+    let mut nul_row = draft_row(0, &draft(1));
+    nul_row["correlation_id"] = json!("c\u{0}");
+    let foreign = [command("x", "order-1")];
+    let foreign_rows: Value = serde_json::from_str(&rows::commands_param(&foreign).unwrap()).unwrap();
+    let nul_document = r#"{"s":"\u0000"}"#;
     let cases = vec![
         json!({"name": "append_params", "stream": "acme:invoice-7", "expected": 0, "drafts": drafts.len(), "params": append}),
         json!({"name": "append_result", "expected": 0, "result": result,
                "events": rows::append_result(0, 2, &result).unwrap().iter().map(|e| e.id.clone()).collect::<Vec<_>>()}),
         json!({"name": "append_result_conflict", "expected": 0, "result": r#"{"stored":3,"events":[]}"#,
                "error": refusal(&rows::append_result(0, 1, r#"{"stored":3,"events":[]}"#))}),
-        json!({"name": "append_refuses_a_gap", "error": refusal(&rows::append_params("s", 0, &[draft(2)]))}),
-        json!({"name": "append_refuses_nul", "error": refusal(&rows::append_params("s", 0, &[nul]))}),
+        json!({"name": "append_refuses_a_gap", "stream": "s", "expected": 0, "draft_rows": [draft_row(1, &draft(2))],
+               "error": refusal(&rows::append_params("s", 0, &[draft(2)]))}),
+        json!({"name": "append_refuses_nul", "stream": "s", "expected": 0, "draft_rows": [nul_row],
+               "error": refusal(&rows::append_params("s", 0, &[nul]))}),
         json!({"name": "event_row", "row": event_row, "decoded": rows::decode_events(std::slice::from_ref(&event_row)).unwrap().len()}),
         json!({"name": "commands_param", "params": rows::commands_param(&commands).unwrap(),
                "decoded": rows::decode_commands(&command_rows).unwrap().iter().map(|c| c.id.clone()).collect::<Vec<_>>()}),
@@ -322,14 +365,16 @@ fn golden_rows() {
         json!({"name": "projection_conflict", "error": refusal(&rows::projection_result("acct-1", 2, None))}),
         json!({"name": "saga_insert_params", "params": rows::saga_params("ship", "order-1", 0, Some(r#"{"step":1}"#), "", &saga_commands).unwrap()}),
         json!({"name": "saga_complete_params", "params": rows::saga_params("ship", "order-1", 3, None, "m", &[]).unwrap()}),
-        json!({"name": "saga_foreign_command", "error": refusal(&rows::saga_params("ship", "order-1", 0, None, "", &[command("x", "order-1")]))}),
+        json!({"name": "saga_foreign_command", "saga": "ship", "id": "order-1", "version": 0, "state": null, "folded": "",
+               "command_rows": foreign_rows, "error": refusal(&rows::saga_params("ship", "order-1", 0, None, "", &foreign))}),
         json!({"name": "saga_completed", "result": r#"{"written":null,"stored":4,"completed":true}"#,
                "error": refusal(&rows::saga_result("ship", "order-1", 3, r#"{"written":null,"stored":4,"completed":true}"#))}),
         json!({"name": "saga_conflict", "result": r#"{"written":null,"stored":4,"completed":false}"#,
                "error": refusal(&rows::saga_result("ship", "order-1", 3, r#"{"written":null,"stored":4,"completed":false}"#))}),
         json!({"name": "stored_document_exact", "id": "acct-1", "document": r#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#,
                "stored": stored_document("acct-1", br#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#).unwrap()}),
-        json!({"name": "stored_document_nul", "error": refusal(&stored_document("acct-1", br#"{"s":"\u0000"}"#))}),
+        json!({"name": "stored_document_nul", "id": "acct-1", "document": nul_document,
+               "error": refusal(&stored_document("acct-1", nul_document.as_bytes()))}),
     ];
     write_or_check("postgres_rows.json", cases);
 }
@@ -358,8 +403,16 @@ fn golden_error() {
         ("42501", None),
         ("XX000", None),
     ];
-    for op in [Op::Append, Op::Claim, Op::ProjectionSave] {
-        for (state, constraint) in states {
+    // Every state on three operations, and the two timeout states, whose verdict turns on the operation,
+    // on every operation.
+    let full = [Op::Append, Op::Claim, Op::ProjectionSave];
+    for op in Op::ALL.iter().copied() {
+        let states: &[(&str, Option<UniqueKey>)] = if full.contains(&op) {
+            &states
+        } else {
+            &[("55P03", None), ("57014", None)]
+        };
+        for &(state, constraint) in states {
             cases.push(json!({
                 "name": format!("{}_{state}_{}", op.as_str(), constraint.map_or("none", UniqueKey::as_str)),
                 "op": op.as_str(), "sqlstate": state, "unique": constraint.map(UniqueKey::as_str), "message": "server text",

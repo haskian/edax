@@ -77,11 +77,6 @@ pub fn postgres_table_roles() -> Vec<String> {
     names(edax_postgres::Logical::NAMES)
 }
 
-/// The unique keys the table contract requires. See [`edax_postgres::UniqueKey`].
-pub fn postgres_unique_keys() -> Vec<String> {
-    names(edax_postgres::UniqueKey::NAMES)
-}
-
 /// The version of the table contract this build requires. See [`edax_postgres::CONTRACT_VERSION`].
 pub fn postgres_contract_version() -> u32 {
     edax_postgres::CONTRACT_VERSION

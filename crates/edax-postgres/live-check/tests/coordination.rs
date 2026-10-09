@@ -7,6 +7,22 @@ fn connect() -> Option<Client> {
     Some(Client::connect(&url, NoTls).unwrap())
 }
 
+/// Wait until the backend `pid` waits on a lock another session holds.
+fn wait_until_blocked(client: &mut Client, pid: i32, who: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let blocked: bool = client
+            .query_one("SELECT cardinality(pg_blocking_pids($1)) > 0", &[&pid])
+            .unwrap()
+            .get(0);
+        if blocked {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "{who} did not reach the lock");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn relay_lease_writes_only_for_acquisition_renewal_or_takeover() {
     let Some(mut client) = connect() else { return };
@@ -40,7 +56,7 @@ fn relay_lease_writes_only_for_acquisition_renewal_or_takeover() {
             .map(|r| r.get(0));
         let mut tx = client.transaction().unwrap();
         assert_eq!(
-            tx.query(&sql.command_unpublished_leased, &[&"10", &"commands", &owner, &"60000"])
+            tx.query(&sql.command_unpublished_leased, &[&"10", &owner, &"60000"])
                 .unwrap()
                 .len(),
             rows,
@@ -59,6 +75,61 @@ fn relay_lease_writes_only_for_acquisition_renewal_or_takeover() {
         tx.commit().unwrap();
     }
     client.batch_execute("DROP SCHEMA edax_lease_check CASCADE").unwrap();
+}
+
+/// Two relays race for one lease: worker-a's leased read sits in an open transaction while worker-b's
+/// waits on it. Once worker-a commits, the conflict fence keeps worker-a's lease, and worker-b reads
+/// nothing, whether the lease was free or had lapsed.
+#[test]
+fn racing_relays_leave_the_lease_with_the_first_writer() {
+    let Some(mut client) = connect() else { return };
+    let tables = Tables::from_json(r#"{"schema":"edax_lease_race_check"}"#).unwrap();
+    client
+        .batch_execute("DROP SCHEMA IF EXISTS edax_lease_race_check CASCADE; CREATE SCHEMA edax_lease_race_check")
+        .unwrap();
+    client.batch_execute(&reference_ddl(&tables)).unwrap();
+    let sql = statements(&tables);
+    let leases = tables.qualified(Logical::RelayLeases);
+    client.execute(&sql.command_enqueue, &[&r#"[{"id":"cmd-invoice-7","idempotency_key":"req-7","aggregate_id":"invoice-7","tenant":"acme","name":"SendInvoice","version":1,"data":"7b7d","correlation_id":"corr-7","causation_id":"invoice-issued-7","issued_at":1700000000000000000,"extensions":"{}","metadata":"{}"}]"#]).unwrap();
+    for (name, lapsed_holder) in [("free", None), ("lapsed", Some("worker-z"))] {
+        client.batch_execute(&format!("DELETE FROM {leases}")).unwrap();
+        if let Some(holder) = lapsed_holder {
+            client
+                .query(&sql.command_unpublished_leased, &[&"10", &holder, &"60000"])
+                .unwrap();
+            client
+                .batch_execute(&format!(
+                    "UPDATE {leases} SET expires_at = clock_timestamp() - interval '1 second'"
+                ))
+                .unwrap();
+        }
+        let mut first = connect().unwrap();
+        let mut tx = first.transaction().unwrap();
+        let rows = tx
+            .query(&sql.command_unpublished_leased, &[&"10", &"worker-a", &"60000"])
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{name}: worker-a takes the lease");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let read = sql.command_unpublished_leased.clone();
+        let second = std::thread::spawn(move || {
+            let mut client = connect().unwrap();
+            client.batch_execute("SET statement_timeout = '5s'").unwrap();
+            let pid: i32 = client.query_one("SELECT pg_backend_pid()", &[]).unwrap().get(0);
+            sender.send(pid).unwrap();
+            client.query(&read, &[&"10", &"worker-b", &"60000"]).unwrap().len()
+        });
+        wait_until_blocked(&mut client, receiver.recv().unwrap(), "worker-b");
+        tx.commit().unwrap();
+        assert_eq!(second.join().unwrap(), 0, "{name}: worker-b reads nothing");
+        let owner: String = client
+            .query_one(&format!("SELECT owner FROM {leases}"), &[])
+            .unwrap()
+            .get(0);
+        assert_eq!(owner, "worker-a", "{name}: the lease stays worker-a's");
+    }
+    client
+        .batch_execute("DROP SCHEMA edax_lease_race_check CASCADE")
+        .unwrap();
 }
 
 #[test]
@@ -106,19 +177,7 @@ fn racing_saga_write_does_not_report_a_stale_stored_version() {
             .unwrap()
             .get::<_, String>(0)
     });
-    let pid = receiver.recv().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let blocked: bool = client
-            .query_one("SELECT cardinality(pg_blocking_pids($1)) > 0", &[&pid])
-            .unwrap()
-            .get(0);
-        if blocked {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "loser did not reach the row lock");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_until_blocked(&mut client, receiver.recv().unwrap(), "the loser");
     tx.commit().unwrap();
     let result = loser.join().unwrap();
     let row: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -152,4 +211,91 @@ fn server_deadlock_timeout_is_checked_in_milliseconds() {
             assert_eq!(result.unwrap_err().to_string(), format!("bad_handle: lock_timeout_ms 2000 must exceed deadlock_timeout_ms {millis}, so deadlocks are detected before lock waits expire"));
         }
     }
+}
+
+/// Two stores in one schema whose outboxes have different names share the default `relay_leases`
+/// table: a relay draining one outbox must not hold the lease of the other.
+#[test]
+fn relay_leases_are_per_outbox_table() {
+    let Some(mut client) = connect() else { return };
+    let schema = "edax_lease_tables_check";
+    let first = Tables::from_json(&format!(r#"{{"schema":"{schema}"}}"#)).unwrap();
+    let second = Tables::from_json(&format!(
+        r#"{{"schema":"{schema}","names":{{"events":"billing_events","event_outbox":"billing_event_outbox","command_outbox":"billing_command_outbox","saga_instances":"billing_saga_instances","saga_outbox":"billing_saga_outbox"}}}}"#
+    ))
+    .unwrap();
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+        ))
+        .unwrap();
+    client.batch_execute(&reference_ddl(&first)).unwrap();
+    for role in [
+        Logical::Events,
+        Logical::EventOutbox,
+        Logical::CommandOutbox,
+        Logical::SagaInstances,
+        Logical::SagaOutbox,
+    ] {
+        client
+            .batch_execute(&format!(
+                "CREATE TABLE {} (LIKE {} INCLUDING ALL)",
+                second.qualified(role),
+                first.qualified(role)
+            ))
+            .unwrap();
+    }
+    let command = r#"[{"id":"cmd-invoice-7","idempotency_key":"req-7","aggregate_id":"invoice-7","tenant":"acme","name":"SendInvoice","version":1,"data":"7b7d","correlation_id":"corr-7","causation_id":"invoice-issued-7","issued_at":1700000000000000000,"extensions":"{}","metadata":"{\"origin\":\"web\"}"}]"#;
+    let event = r#"[{"id":"evt-1","aggregate_id":"invoice-7","tenant":"acme","sequence":1,"name":"InvoiceIssued","version":2,"data":"7b22746f74616c223a22392e3530227d","correlation_id":"corr-1","causation_id":"cmd-1","occurred_at":1700000000123456000,"extensions":"{\"traceparent\":\"00-4bf9-00f0-01\"}","metadata":"{\"origin\":\"web\"}"}]"#;
+    for tables in [&first, &second] {
+        let sql = statements(tables);
+        client
+            .query_one(&sql.append, &[&"acme:invoice-7", &"0", &event])
+            .unwrap();
+        client.execute(&sql.command_enqueue, &[&command]).unwrap();
+        client
+            .query_one(
+                &sql.saga_insert,
+                &[&"ship", &"order-7", &r#"{"step":"allocated"}"#, &"", &"false", &command],
+            )
+            .unwrap();
+    }
+    let (first_sql, second_sql) = (statements(&first), statements(&second));
+    for outbox in [Logical::EventOutbox, Logical::CommandOutbox, Logical::SagaOutbox] {
+        let name = outbox.as_str();
+        assert_eq!(
+            leased_read(&mut client, &first_sql, outbox, "relay-a"),
+            1,
+            "{name}: relay-a takes the first lease"
+        );
+        assert_eq!(
+            leased_read(&mut client, &second_sql, outbox, "relay-b"),
+            1,
+            "{name}: relay-b takes the second lease"
+        );
+        assert_eq!(
+            leased_read(&mut client, &first_sql, outbox, "relay-b"),
+            0,
+            "{name}: relay-a still holds the first"
+        );
+    }
+    let held: i64 = client
+        .query_one(
+            &format!("SELECT count(*) FROM {}", first.qualified(Logical::RelayLeases)),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(held, 6, "one lease per outbox table and saga");
+    client.batch_execute(&format!("DROP SCHEMA {schema} CASCADE")).unwrap();
+}
+
+/// The rows relay `owner` reads from `outbox` through its leased read, saga `ship` for the saga outbox.
+fn leased_read(client: &mut Client, sql: &edax_postgres::Statements, outbox: Logical, owner: &str) -> usize {
+    let rows = match outbox {
+        Logical::EventOutbox => client.query(&sql.event_unpublished_leased, &[&"10", &owner, &"60000"]),
+        Logical::CommandOutbox => client.query(&sql.command_unpublished_leased, &[&"10", &owner, &"60000"]),
+        _ => client.query(&sql.saga_unpublished_leased, &[&"ship", &"10", &owner, &"60000"]),
+    };
+    rows.unwrap().len()
 }

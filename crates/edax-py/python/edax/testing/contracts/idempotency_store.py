@@ -314,9 +314,10 @@ class IdempotencyStoreContract:
     ) -> None:
         """ "A loser inside a transaction must block on the winner's row and then read it, or raise
         transient ``StoreError``; it must never read a stale snapshot and report a win, which runs the handler
-        twice." The first unit of work holds an uncommitted claim; a claimant in another one must not win
-        while it is open. Run in a task of its own, so a store that blocks the claimant answers once the
-        holder rolls back."""
+        twice. Bound the wait with a lock or statement timeout, which raises ``StoreError`` or
+        ``InProgress``." The first unit of work holds an uncommitted claim; a claimant in another one must
+        not win while it is open. Run in a task of its own, so a store that blocks the claimant answers once
+        the holder rolls back."""
         requires(joins_transaction(idempotency_store), _JOINS)
         unit_of_work = transactor(request)
         key = unique_id("req")
@@ -324,9 +325,12 @@ class IdempotencyStoreContract:
         async def hold(tx: Tx) -> None:
             assert isinstance(await idempotency_store.claim(key, 1234, tx=tx), Won)
 
-        # A lock or statement timeout, `StoreError`, is the contract's other allowed answer.
+        # A lock or statement timeout, `StoreError` or `InProgress`, is the contract's other allowed answer.
         contended, answered_after_rollback, _ = await while_held(
-            unit_of_work.begin, hold, lambda tx: idempotency_store.claim(key, 1234, tx=tx), StoreError
+            unit_of_work.begin,
+            hold,
+            lambda tx: idempotency_store.claim(key, 1234, tx=tx),
+            (StoreError, InProgress),
         )
         if isinstance(contended, Won):
             # A store that parked the contender on the holder's row lock answers after the rollback freed

@@ -1415,12 +1415,6 @@ func PostgresTables(tablesJSON string) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
-// PostgresUniqueKeys calls the shared kernel.
-func PostgresUniqueKeys() []string {
-	nativeValue := native.PostgresUniqueKeys()
-	return nativeValue
-}
-
 // PostgresVerdict calls the shared kernel.
 func PostgresVerdict(op string, sqlstate string, unique *string, message string) (string, error) {
 	var zero string

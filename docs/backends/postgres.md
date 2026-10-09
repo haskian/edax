@@ -142,6 +142,13 @@ The kernel types every failure. A version conflict is `ConcurrencyError`. A reus
 the server cannot store, is `CodecError`. A missing table or a refused privilege is `BadHandle`, a
 wiring mistake. Anything else is `StoreError`.
 
+A timeout is typed by the operation that ran. A lock wait that runs out on a claim is `InProgress`,
+and so is a statement timeout there. A lock wait that runs out is `ConcurrencyError` on an `append`,
+a projection `save`, a saga write and a ledger `complete`, `release` or `forget`. There another unit
+of work holds the row this write compares or fences. Everywhere else, including a `get_many` or a `load`
+that runs past the statement timeout, a timeout is `StoreError`. A read compares no version, so it
+never raises `ConcurrencyError`.
+
 A statement the server refuses aborts the transaction. The handle remembers it: a block that catches
 the error and exits cleanly is rolled back, and raises `StoreError`, rather than report a commit
 that never happened. A refusal the kernel makes before any statement runs, such as a document that is
@@ -225,7 +232,9 @@ Run one relay per outbox, or give each relay a `RelayLease`:
 events = PostgresEventStore(db, lease=RelayLease(owner=f"{hostname}:{pid}", ttl_ms=30_000))
 ```
 
-Only the relay holding an outbox's lease reads rows. It renews when less than half the lease remains.
+Only the relay holding an outbox's lease reads rows. Each outbox table has its own lease, named after
+the table, so stores over different tables never block each other. The holder renews when less than
+half the lease remains.
 Earlier polls read without updating the lease row, as do polls by a relay that does not hold it.
 When the holder stops, another relay takes the lease over once it lapses. Rows are never leased one by one: two
 relays could then publish one aggregate's events out of order.

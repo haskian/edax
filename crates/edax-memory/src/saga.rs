@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use edax_core::{lock, Error, ErrorCode};
-use edax_event::{check_saga_commands, CommandMessage};
+use edax_core::{lock, Error};
+use edax_event::{check_saga_commands, saga_completed, CommandMessage};
 use serde_json::Value;
 
 use crate::tx::{store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
@@ -76,14 +76,6 @@ fn key(saga: &str, id: &str) -> SagaKey {
     (saga.to_owned(), id.to_owned())
 }
 
-/// The refusal of any write to a completed instance: completion is final.
-fn completed(saga: &str, id: &str, version: u64) -> Error {
-    Error::new(
-        ErrorCode::Concurrency,
-        format_args!("saga {saga} instance {id} completed at version {version}: a completed instance takes no write"),
-    )
-}
-
 impl MemorySagaStore {
     /// The stored instance `id` of `saga` and its version as `tx` sees it — running with its state, or
     /// the tombstone of a completed one — or `None` if there is none.
@@ -141,7 +133,7 @@ impl MemorySagaStore {
             let key = key(saga, id);
             let held = others.values().map(|set| &set.sagas);
             let admit = |stored: u64, row: &SagaRow| match row {
-                SagaRow::Completed => Err(completed(saga, id, stored)),
+                SagaRow::Completed => Err(saga_completed(saga, id, stored)),
                 SagaRow::Active { .. } => Ok(()),
             };
             let next = committed.sagas.next(

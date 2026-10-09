@@ -16,8 +16,12 @@
 //! No value is refused for its size. A document written to the table by anything but this function is
 //! outside the guarantee.
 
+use std::io;
+
 use edax_core::Error;
-use serde_json::{Map, Number, Value};
+use serde::Serialize;
+use serde_json::ser::{CompactFormatter, Formatter, Serializer};
+use serde_json::{Number, Value};
 
 /// The magnitude from which a double's shortest text may misorder against an integer.
 const EXACT_FROM: f64 = 9_007_199_254_740_992.0; // 2^53
@@ -36,94 +40,33 @@ pub fn stored_document(id: &str, document: &[u8]) -> Result<String, Error> {
 /// `value` as JSON text, with every non-integer number of magnitude 2^53 or more written as its exact
 /// integer digits and a `.0`, at every depth. Every other number keeps `serde_json`'s shortest text.
 pub fn exact_json(value: &Value) -> String {
-    let mut out = String::new();
-    write_exact(value, &mut out);
-    out
-}
-
-fn write_exact(value: &Value, out: &mut String) {
-    match value {
-        Value::Number(n) => out.push_str(&exact_number(n)),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_exact(item, out);
-            }
-            out.push(']');
-        }
-        Value::Object(fields) => write_object(fields, out),
-        // Strings, bools and null have one text, `serde_json`'s.
-        other => out.push_str(&other.to_string()),
+    let mut out = Vec::new();
+    // Writing a `Value` into memory fails on no input, and the writer emits only UTF-8.
+    let written = value.serialize(&mut Serializer::with_formatter(&mut out, ExactFormatter));
+    match written {
+        Ok(()) => String::from_utf8(out).unwrap_or_default(),
+        Err(_) => String::new(),
     }
 }
 
-fn write_object(fields: &Map<String, Value>, out: &mut String) {
-    out.push('{');
-    for (i, (key, item)) in fields.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&Value::String(key.clone()).to_string());
-        out.push(':');
-        write_exact(item, out);
-    }
-    out.push('}');
-}
-
-/// A number's text: exact digits for a double of magnitude 2^53 or more, else `serde_json`'s.
+/// A number's text, as [`exact_json`] writes it.
 pub(crate) fn exact_number(n: &Number) -> String {
-    match n.as_f64() {
-        Some(double) if !n.is_i64() && !n.is_u64() && double.abs() >= EXACT_FROM => exact_digits(double),
-        _ => n.to_string(),
-    }
+    exact_json(&Value::Number(n.clone()))
 }
 
-/// The exact decimal digits of a whole-number double (every double of magnitude 2^53 or more is one),
-/// with a `.0` so a reader keeps reading it as a double.
-fn exact_digits(double: f64) -> String {
-    // A double is mantissa * 2^exponent with a 53-bit mantissa; a whole one has a non-negative exponent
-    // once the mantissa's trailing bits are folded in. Long multiplication in base 10^9 keeps it exact
-    // up to the largest double (about 1.8e308, 309 digits).
-    let bits = double.to_bits();
-    let negative = bits >> 63 == 1;
-    let exponent_bits = (bits >> 52) & 0x7ff;
-    let fraction = bits & ((1 << 52) - 1);
-    let (mantissa, exponent) = if exponent_bits == 0 {
-        (fraction, -1074_i64)
-    } else {
-        (fraction | (1 << 52), i64::from(exponent_bits as u16) - 1075)
-    };
-    let mut limbs: Vec<u64> = vec![mantissa % 1_000_000_000, mantissa / 1_000_000_000];
-    for _ in 0..exponent.max(0) {
-        let mut carry = 0u64;
-        for limb in limbs.iter_mut() {
-            let product = *limb * 2 + carry;
-            *limb = product % 1_000_000_000;
-            carry = product / 1_000_000_000;
-        }
-        if carry > 0 {
-            limbs.push(carry);
+/// `serde_json`'s compact text, but a double of magnitude 2^53 or more, always a whole number, is
+/// written as its exact digits with a `.0`, so a reader keeps reading it as a double. Rust's fixed
+/// precision formatting prints a double's exact decimal value.
+struct ExactFormatter;
+
+impl Formatter for ExactFormatter {
+    fn write_f64<W: ?Sized + io::Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
+        if value.abs() >= EXACT_FROM {
+            write!(writer, "{value:.0}.0")
+        } else {
+            CompactFormatter.write_f64(writer, value)
         }
     }
-    while limbs.len() > 1 && limbs.last() == Some(&0) {
-        limbs.pop();
-    }
-    let mut digits = String::new();
-    if negative {
-        digits.push('-');
-    }
-    let mut rest = limbs.iter().rev();
-    if let Some(top) = rest.next() {
-        digits.push_str(&top.to_string());
-    }
-    for limb in rest {
-        digits.push_str(&format!("{limb:09}"));
-    }
-    digits.push_str(".0");
-    digits
 }
 
 /// Refuse a string or object key holding NUL, which `jsonb` cannot store, as `codec`.
@@ -179,7 +122,50 @@ mod tests {
             let Value::Number(n) = &value else { unreachable!() };
             assert_eq!(exact_number(n), want, "{name}");
         }
-        assert_eq!(exact_json(&json!(f64::MAX)).len(), 311, "309 digits, `.0`");
+        assert_eq!(
+            exact_json(&json!(f64::MAX)),
+            "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878\
+             171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075\
+             868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026\
+             184124858368.0",
+            "the largest double, exact"
+        );
+    }
+
+    /// Every double of magnitude 2^53 or more prints as whole digits and `.0` that read back as the same
+    /// double; below 2^128 the digits are the integer's own, which `u128` prints exactly.
+    #[test]
+    fn exact_number_is_the_double_exactly() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let doubles = (0..50_000).map(|i: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // A biased exponent from 1076 (2^53) to 2046 (the largest), either sign.
+            let exponent = 1076 + seed % 971;
+            f64::from_bits(((i & 1) << 63) | (exponent << 52) | (seed >> 12))
+        });
+        for double in doubles.chain([f64::MAX, -f64::MAX, EXACT_FROM, -EXACT_FROM]) {
+            let text = exact_json(&json!(double));
+            let digits = text.strip_suffix(".0").unwrap();
+            let unsigned = digits.strip_prefix('-').unwrap_or(digits);
+            assert!(unsigned.bytes().all(|b| b.is_ascii_digit()), "{text}");
+            assert_eq!(digits.starts_with('-'), double < 0.0, "{text}");
+            assert_eq!(text.parse::<f64>().unwrap(), double, "{text} reads back");
+            if double.abs() < 2f64.powi(128) {
+                assert_eq!(unsigned, (double.abs() as u128).to_string(), "{text}");
+            }
+        }
+    }
+
+    /// Below 2^53, and for everything but numbers, the text is `serde_json`'s own, byte for byte.
+    #[test]
+    fn exact_json_is_serde_json_text_below_2_53() {
+        let value = json!({
+            "b": [1, -1, 0.1, -0.0, 1e-7, 9_007_199_254_740_991.0_f64, u64::MAX, i64::MIN],
+            "a": {"s": "é \u{1f980} \"q\" \\ \n \u{7f}", "t": true, "n": null, "e": [], "o": {}},
+        });
+        assert_eq!(exact_json(&value), value.to_string());
     }
 
     #[test]

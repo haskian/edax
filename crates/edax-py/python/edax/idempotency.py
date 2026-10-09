@@ -138,8 +138,9 @@ class IdempotencyStore(Protocol[TxT_contra]):
       ambient tx, and raises :class:`~edax.errors.BadHandle` otherwise.
     - *A loser inside a transaction* must block on the winner's row and then read it, or raise transient
       :class:`~edax.errors.StoreError`; it must never read a stale snapshot and report a win, which runs the
-      handler twice. Bound the wait with a lock or statement timeout, also ``StoreError``. A backend that
-      cannot block returns the holder's record as pending, reported as :class:`~edax.errors.InProgress`.
+      handler twice. Bound the wait with a lock or statement timeout, which raises ``StoreError`` or
+      :class:`~edax.errors.InProgress`: the holder may still complete. A backend that cannot block returns
+      the holder's record as pending, reported as ``InProgress``.
     - *Forget.* ``forget`` deletes a completed or failed record, so a command taken back from a dead-letter
       queue runs its handler again. It reads the record with the kernel: a pending claim raises
       :class:`~edax.errors.InProgress` and stays, because its run may still complete. An absent key is a
