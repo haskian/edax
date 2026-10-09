@@ -4,7 +4,7 @@
 //! A message travels as one JSON object per row: `data` as hex (Postgres `bytea` text without line
 //! breaks), `extensions` and `metadata` as the JSON text of their sorted map, which the table stores as
 //! `text` so it is kept exactly as written. Versions and sequences are `bigint`, so a value past
-//! `i64::MAX` is refused ([`crate::check_bigint`]). A string field holding NUL is refused as `codec`
+//! `i64::MAX` is refused (`config::check_bigint`). A string field holding NUL is refused as `codec`
 //! before any I/O: Postgres `text` cannot hold it, and a server refusal would abort the caller's
 //! transaction.
 
