@@ -1,0 +1,124 @@
+[
+  {
+    "drafts": 2,
+    "expected": 0,
+    "name": "append_params",
+    "params": [
+      "acme:invoice-7",
+      "0",
+      "[{\"id\":\"evt-1\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"sequence\":1,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"7b22746f74616c223a22392e3530227d\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\"},{\"id\":\"evt-2\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"sequence\":2,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"7b22746f74616c223a22392e3530227d\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\"}]"
+    ],
+    "stream": "acme:invoice-7"
+  },
+  {
+    "events": [
+      "evt-1",
+      "evt-2"
+    ],
+    "expected": 0,
+    "name": "append_result",
+    "result": "{\"events\":[{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"id\":\"evt-1\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\",\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"tenant\":\"acme\",\"version\":2},{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"id\":\"evt-2\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\",\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":2,\"tenant\":\"acme\",\"version\":2}],\"stored\":0}"
+  },
+  {
+    "error": "concurrency: expected 0, stored 3",
+    "expected": 0,
+    "name": "append_result_conflict",
+    "result": "{\"stored\":3,\"events\":[]}"
+  },
+  {
+    "error": "codec: event 0 has sequence 2, expected 1",
+    "name": "append_refuses_a_gap"
+  },
+  {
+    "error": "codec: correlation id holds a NUL character, which Postgres cannot store",
+    "name": "append_refuses_nul"
+  },
+  {
+    "decoded": 1,
+    "name": "event_row",
+    "row": "{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"id\":\"evt-1\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\",\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"tenant\":\"acme\",\"version\":2}"
+  },
+  {
+    "decoded": [
+      "cmd-1",
+      "cmd-2"
+    ],
+    "name": "commands_param",
+    "params": "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"},{\"id\":\"cmd-2\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-2\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
+  },
+  {
+    "name": "ids_param_drops_nul",
+    "params": "[\"a\"]"
+  },
+  {
+    "name": "bound_param_clamps",
+    "params": [
+      "5",
+      "9223372036854775807"
+    ]
+  },
+  {
+    "name": "snapshot_params",
+    "params": [
+      "invoice-7",
+      "Invoice",
+      "3",
+      "0102"
+    ]
+  },
+  {
+    "error": "codec: snapshot of invoice-7 at version 4 leads its stream at version 3",
+    "name": "snapshot_leads"
+  },
+  {
+    "error": "concurrency: projection acct-1 is not at version 2",
+    "name": "projection_conflict"
+  },
+  {
+    "name": "saga_insert_params",
+    "params": [
+      "ship",
+      "order-1",
+      "{\"step\":1}",
+      "",
+      "false",
+      "[{\"id\":\"4:ship:order-1:1:0\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
+    ]
+  },
+  {
+    "name": "saga_complete_params",
+    "params": [
+      "ship",
+      "order-1",
+      "3",
+      null,
+      "m",
+      "true",
+      "[]"
+    ]
+  },
+  {
+    "error": "codec: saga command 0 of order-1 at version 1 is \"x\" for instance Some(\"order-1\"), expected \"4:ship:order-1:1:0\"",
+    "name": "saga_foreign_command"
+  },
+  {
+    "error": "concurrency: saga ship instance order-1 completed at version 4: a completed instance takes no write",
+    "name": "saga_completed",
+    "result": "{\"written\":null,\"stored\":4,\"completed\":true}"
+  },
+  {
+    "error": "concurrency: saga ship instance order-1 is not at version 3",
+    "name": "saga_conflict",
+    "result": "{\"written\":null,\"stored\":4,\"completed\":false}"
+  },
+  {
+    "document": "{\"n\":5.808820077685227e16,\"m\":0.30000000000000000001}",
+    "id": "acct-1",
+    "name": "stored_document_exact",
+    "stored": "{\"id\":\"acct-1\",\"m\":0.3,\"n\":58088200776852272.0}"
+  },
+  {
+    "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
+    "name": "stored_document_nul"
+  }
+]

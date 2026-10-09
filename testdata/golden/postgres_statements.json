@@ -1,0 +1,138 @@
+[
+  {
+    "name": "append",
+    "sql": "/* edax:append */ WITH clock AS (SELECT floor(extract(epoch FROM clock_timestamp()) * 1000000)::bigint * 1000 AS recorded_at), current AS (SELECT coalesce(max(sequence), 0) AS version FROM \"public\".\"edax_events\" WHERE stream = $1::text), inserted AS (INSERT INTO \"public\".\"edax_events\" (id, stream, sequence, aggregate_id, tenant, name, version, data, correlation_id, causation_id, occurred_at, recorded_at, extensions, metadata) SELECT d.id, $1::text, d.sequence, d.aggregate_id, d.tenant, d.name, d.version, decode(d.data, 'hex'), d.correlation_id, d.causation_id, d.occurred_at, clock.recorded_at, d.extensions, d.metadata FROM jsonb_array_elements(($3::text)::jsonb) WITH ORDINALITY AS r(value, n) CROSS JOIN LATERAL jsonb_to_record(r.value) AS d(id text, aggregate_id text, tenant text, sequence bigint, name text, version bigint, data text, correlation_id text, causation_id text, occurred_at bigint, extensions text, metadata text) CROSS JOIN clock CROSS JOIN current WHERE current.version = ($2::text)::bigint ORDER BY r.n RETURNING *), outbox AS (INSERT INTO \"public\".\"edax_event_outbox\" (event_id) SELECT id FROM inserted ORDER BY sequence) SELECT json_build_object('stored', (SELECT version FROM current), 'events', coalesce((SELECT json_agg(json_build_object('id', e.id, 'aggregate_id', e.aggregate_id, 'tenant', e.tenant, 'sequence', e.sequence, 'name', e.name, 'version', e.version, 'data', encode(e.data, 'hex'), 'correlation_id', e.correlation_id, 'causation_id', e.causation_id, 'occurred_at', e.occurred_at, 'recorded_at', e.recorded_at, 'extensions', e.extensions, 'metadata', e.metadata) ORDER BY e.sequence) FROM inserted AS e), '[]'::json))::text"
+  },
+  {
+    "name": "catalog",
+    "sql": "/* edax:catalog */ SELECT coalesce(json_agg(json_build_object('table', w.logical, 'kind', c.relkind, 'columns', coalesce((SELECT json_agg(json_build_object('name', a.attname, 'type', format_type(a.atttypid, NULL), 'not_null', a.attnotnull, 'default', a.atthasdef OR a.attidentity <> '' OR a.attgenerated <> '', 'collation', co.collname) ORDER BY a.attnum) FROM pg_attribute AS a LEFT JOIN pg_collation AS co ON co.oid = a.attcollation WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), '[]'::json), 'unique', coalesce((SELECT json_agg(json_build_object('name', ic.relname, 'columns', (SELECT coalesce(json_agg(ka.attname ORDER BY k.n), '[]'::json) FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, n) JOIN pg_attribute AS ka ON ka.attrelid = c.oid AND ka.attnum = k.attnum WHERE k.n <= i.indnkeyatts), 'collations', (SELECT coalesce(json_agg(coalesce(kc.collname, '') ORDER BY k.n), '[]'::json) FROM unnest(i.indcollation::oid[]) WITH ORDINALITY AS k(oid, n) LEFT JOIN pg_collation AS kc ON kc.oid = k.oid), 'partial', i.indpred IS NOT NULL, 'expressions', i.indexprs IS NOT NULL, 'valid', i.indisvalid, 'deferrable', EXISTS (SELECT 1 FROM pg_constraint AS pc WHERE pc.conindid = i.indexrelid AND pc.condeferrable))) FROM pg_index AS i JOIN pg_class AS ic ON ic.oid = i.indexrelid WHERE i.indrelid = c.oid AND i.indisunique), '[]'::json))), '[]'::json)::text FROM jsonb_to_recordset(($1::text)::jsonb) AS w(logical text, schema text, name text) LEFT JOIN pg_namespace AS n ON n.nspname = w.schema LEFT JOIN pg_class AS c ON c.relnamespace = n.oid AND c.relname = w.name AND c.relkind IN ('r', 'p')"
+  },
+  {
+    "name": "claim_insert",
+    "sql": "/* edax:claim_insert */ INSERT INTO \"public\".\"edax_ledger\" (key, owner, record, claimed_at) VALUES ($1::text, $2::text, $3::text, clock_timestamp()) ON CONFLICT (key) DO NOTHING RETURNING true"
+  },
+  {
+    "name": "claim_read",
+    "sql": "/* edax:claim_read */ SELECT json_build_object('owner', l.owner, 'settled_by', l.settled_by, 'record', l.record, 'lapsed', l.owner IS NOT NULL AND l.claimed_at < clock_timestamp() - ($2::text)::bigint * interval '1 millisecond')::text FROM \"public\".\"edax_ledger\" AS l WHERE l.key = $1::text"
+  },
+  {
+    "name": "claim_take_over",
+    "sql": "/* edax:claim_take_over */ UPDATE \"public\".\"edax_ledger\" SET owner = $2::text, record = $3::text, claimed_at = clock_timestamp() WHERE key = $1::text AND owner = $4::text RETURNING true"
+  },
+  {
+    "name": "command_enqueue",
+    "sql": "/* edax:command_enqueue */ INSERT INTO \"public\".\"edax_command_outbox\" (id, idempotency_key, aggregate_id, tenant, name, version, data, correlation_id, causation_id, issued_at, extensions, metadata) SELECT c.id, c.idempotency_key, c.aggregate_id, c.tenant, c.name, c.version, decode(c.data, 'hex'), c.correlation_id, c.causation_id, c.issued_at, c.extensions, c.metadata FROM jsonb_array_elements(($1::text)::jsonb) WITH ORDINALITY AS r(value, n) CROSS JOIN LATERAL jsonb_to_record(r.value) AS c(id text, idempotency_key text, aggregate_id text, tenant text, name text, version bigint, data text, correlation_id text, causation_id text, issued_at bigint, extensions text, metadata text) ORDER BY r.n"
+  },
+  {
+    "name": "command_mark_published",
+    "sql": "/* edax:command_mark_published */ DELETE FROM \"public\".\"edax_command_outbox\" WHERE id IN (SELECT jsonb_array_elements_text(($1::text)::jsonb))"
+  },
+  {
+    "name": "command_unpublished",
+    "sql": "/* edax:command_unpublished */ SELECT json_build_object('id', c.id, 'idempotency_key', c.idempotency_key, 'aggregate_id', c.aggregate_id, 'tenant', c.tenant, 'name', c.name, 'version', c.version, 'data', encode(c.data, 'hex'), 'correlation_id', c.correlation_id, 'causation_id', c.causation_id, 'issued_at', c.issued_at, 'extensions', c.extensions, 'metadata', c.metadata)::text FROM \"public\".\"edax_command_outbox\" AS c WHERE true ORDER BY c.position LIMIT ($1::text)::bigint"
+  },
+  {
+    "name": "command_unpublished_count",
+    "sql": "/* edax:command_unpublished_count */ SELECT count(*) FROM \"public\".\"edax_command_outbox\""
+  },
+  {
+    "name": "command_unpublished_leased",
+    "sql": "/* edax:command_unpublished */ WITH lease_clock AS MATERIALIZED (SELECT clock_timestamp() AS now), held AS MATERIALIZED (SELECT owner, expires_at FROM \"public\".\"edax_relay_leases\" WHERE outbox = $2::text), renewed AS (INSERT INTO \"public\".\"edax_relay_leases\" AS l (outbox, owner, expires_at) SELECT $2::text, $3::text, now + ($4::text)::bigint * interval '1 millisecond' FROM lease_clock WHERE NOT EXISTS (SELECT 1 FROM held) OR EXISTS (SELECT 1 FROM held WHERE expires_at <= now OR (owner = $3::text AND expires_at < now + ($4::text)::bigint * interval '0.5 millisecond')) ON CONFLICT (outbox) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at WHERE l.owner = EXCLUDED.owner OR l.expires_at <= clock_timestamp() RETURNING l.owner), lease AS (SELECT owner FROM renewed UNION ALL SELECT owner FROM held CROSS JOIN lease_clock WHERE owner = $3::text AND expires_at >= now + ($4::text)::bigint * interval '0.5 millisecond') SELECT json_build_object('id', c.id, 'idempotency_key', c.idempotency_key, 'aggregate_id', c.aggregate_id, 'tenant', c.tenant, 'name', c.name, 'version', c.version, 'data', encode(c.data, 'hex'), 'correlation_id', c.correlation_id, 'causation_id', c.causation_id, 'issued_at', c.issued_at, 'extensions', c.extensions, 'metadata', c.metadata)::text FROM \"public\".\"edax_command_outbox\" AS c WHERE EXISTS (SELECT 1 FROM lease) ORDER BY c.position LIMIT ($1::text)::bigint"
+  },
+  {
+    "name": "event_mark_published",
+    "sql": "/* edax:event_mark_published */ DELETE FROM \"public\".\"edax_event_outbox\" WHERE event_id IN (SELECT jsonb_array_elements_text(($1::text)::jsonb))"
+  },
+  {
+    "name": "event_unpublished",
+    "sql": "/* edax:event_unpublished */ SELECT json_build_object('id', e.id, 'aggregate_id', e.aggregate_id, 'tenant', e.tenant, 'sequence', e.sequence, 'name', e.name, 'version', e.version, 'data', encode(e.data, 'hex'), 'correlation_id', e.correlation_id, 'causation_id', e.causation_id, 'occurred_at', e.occurred_at, 'recorded_at', e.recorded_at, 'extensions', e.extensions, 'metadata', e.metadata)::text FROM \"public\".\"edax_event_outbox\" AS o JOIN \"public\".\"edax_events\" AS e ON e.id = o.event_id WHERE true ORDER BY o.position LIMIT ($1::text)::bigint"
+  },
+  {
+    "name": "event_unpublished_count",
+    "sql": "/* edax:event_unpublished_count */ SELECT count(*) FROM \"public\".\"edax_event_outbox\""
+  },
+  {
+    "name": "event_unpublished_leased",
+    "sql": "/* edax:event_unpublished */ WITH lease_clock AS MATERIALIZED (SELECT clock_timestamp() AS now), held AS MATERIALIZED (SELECT owner, expires_at FROM \"public\".\"edax_relay_leases\" WHERE outbox = $2::text), renewed AS (INSERT INTO \"public\".\"edax_relay_leases\" AS l (outbox, owner, expires_at) SELECT $2::text, $3::text, now + ($4::text)::bigint * interval '1 millisecond' FROM lease_clock WHERE NOT EXISTS (SELECT 1 FROM held) OR EXISTS (SELECT 1 FROM held WHERE expires_at <= now OR (owner = $3::text AND expires_at < now + ($4::text)::bigint * interval '0.5 millisecond')) ON CONFLICT (outbox) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at WHERE l.owner = EXCLUDED.owner OR l.expires_at <= clock_timestamp() RETURNING l.owner), lease AS (SELECT owner FROM renewed UNION ALL SELECT owner FROM held CROSS JOIN lease_clock WHERE owner = $3::text AND expires_at >= now + ($4::text)::bigint * interval '0.5 millisecond') SELECT json_build_object('id', e.id, 'aggregate_id', e.aggregate_id, 'tenant', e.tenant, 'sequence', e.sequence, 'name', e.name, 'version', e.version, 'data', encode(e.data, 'hex'), 'correlation_id', e.correlation_id, 'causation_id', e.causation_id, 'occurred_at', e.occurred_at, 'recorded_at', e.recorded_at, 'extensions', e.extensions, 'metadata', e.metadata)::text FROM \"public\".\"edax_event_outbox\" AS o JOIN \"public\".\"edax_events\" AS e ON e.id = o.event_id WHERE EXISTS (SELECT 1 FROM lease) ORDER BY o.position LIMIT ($1::text)::bigint"
+  },
+  {
+    "name": "ledger_delete",
+    "sql": "/* edax:ledger_delete */ DELETE FROM \"public\".\"edax_ledger\" WHERE key = $1::text"
+  },
+  {
+    "name": "ledger_hold",
+    "sql": "/* edax:ledger_hold */ SELECT json_build_object('owner', l.owner, 'settled_by', l.settled_by, 'record', l.record, 'lapsed', l.owner IS NOT NULL AND l.claimed_at < clock_timestamp() - 0 * interval '1 millisecond')::text FROM \"public\".\"edax_ledger\" AS l WHERE l.key = $1::text FOR UPDATE"
+  },
+  {
+    "name": "ledger_settle",
+    "sql": "/* edax:ledger_settle */ UPDATE \"public\".\"edax_ledger\" SET owner = NULL, settled_by = $2::text, record = $3::text, settled_at = clock_timestamp() WHERE key = $1::text"
+  },
+  {
+    "name": "load",
+    "sql": "/* edax:load */ SELECT json_build_object('id', e.id, 'aggregate_id', e.aggregate_id, 'tenant', e.tenant, 'sequence', e.sequence, 'name', e.name, 'version', e.version, 'data', encode(e.data, 'hex'), 'correlation_id', e.correlation_id, 'causation_id', e.causation_id, 'occurred_at', e.occurred_at, 'recorded_at', e.recorded_at, 'extensions', e.extensions, 'metadata', e.metadata)::text FROM \"public\".\"edax_events\" AS e WHERE e.stream = $1::text AND e.sequence > ($2::text)::bigint ORDER BY e.sequence"
+  },
+  {
+    "name": "load_snapshot",
+    "sql": "/* edax:load_snapshot */ SELECT json_build_object('type_name', s.type_name, 'version', s.version, 'data', encode(s.data, 'hex'))::text FROM \"public\".\"edax_snapshots\" AS s WHERE s.stream = $1::text"
+  },
+  {
+    "name": "projection_get",
+    "sql": "/* edax:projection_get */ SELECT p.version, p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND p.id = $2::text"
+  },
+  {
+    "name": "projection_get_locked",
+    "sql": "/* edax:projection_get */ SELECT p.version, p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND p.id = $2::text FOR NO KEY UPDATE"
+  },
+  {
+    "name": "projection_insert",
+    "sql": "/* edax:projection_insert */ INSERT INTO \"public\".\"edax_projections\" (projection, id, version, document) VALUES ($1::text, $2::text, 1, ($3::text)::jsonb) ON CONFLICT (projection, id) DO NOTHING RETURNING version"
+  },
+  {
+    "name": "projection_update",
+    "sql": "/* edax:projection_update */ UPDATE \"public\".\"edax_projections\" SET version = version + 1, document = ($4::text)::jsonb WHERE projection = $1::text AND id = $2::text AND version = ($3::text)::bigint RETURNING version"
+  },
+  {
+    "name": "saga_insert",
+    "sql": "/* edax:saga_insert */ WITH written AS (INSERT INTO \"public\".\"edax_saga_instances\" (saga, id, version, state, folded, completed, completed_at) VALUES ($1::text, $2::text, 1, $3::text, $4::text, ($5::text)::boolean, CASE WHEN ($5::text)::boolean THEN clock_timestamp() END) ON CONFLICT (saga, id) DO NOTHING RETURNING version), sent AS (INSERT INTO \"public\".\"edax_saga_outbox\" (saga, id, idempotency_key, aggregate_id, tenant, name, version, data, correlation_id, causation_id, issued_at, extensions, metadata) SELECT $1::text, c.id, c.idempotency_key, c.aggregate_id, c.tenant, c.name, c.version, decode(c.data, 'hex'), c.correlation_id, c.causation_id, c.issued_at, c.extensions, c.metadata FROM written CROSS JOIN jsonb_array_elements(($6::text)::jsonb) WITH ORDINALITY AS r(value, n) CROSS JOIN LATERAL jsonb_to_record(r.value) AS c(id text, idempotency_key text, aggregate_id text, tenant text, name text, version bigint, data text, correlation_id text, causation_id text, issued_at bigint, extensions text, metadata text) ORDER BY r.n) SELECT json_build_object('written', (SELECT version FROM written), 'stored', (SELECT i.version FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text), 'completed', (SELECT i.completed FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text))::text"
+  },
+  {
+    "name": "saga_load",
+    "sql": "/* edax:saga_load */ SELECT json_build_object('version', i.version, 'state', i.state, 'folded', i.folded, 'completed', i.completed)::text FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text"
+  },
+  {
+    "name": "saga_load_locked",
+    "sql": "/* edax:saga_load */ SELECT json_build_object('version', i.version, 'state', i.state, 'folded', i.folded, 'completed', i.completed)::text FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text FOR NO KEY UPDATE"
+  },
+  {
+    "name": "saga_mark_published",
+    "sql": "/* edax:saga_mark_published */ DELETE FROM \"public\".\"edax_saga_outbox\" WHERE saga = $1::text AND id IN (SELECT jsonb_array_elements_text(($2::text)::jsonb))"
+  },
+  {
+    "name": "saga_unpublished",
+    "sql": "/* edax:saga_unpublished */ SELECT json_build_object('id', c.id, 'idempotency_key', c.idempotency_key, 'aggregate_id', c.aggregate_id, 'tenant', c.tenant, 'name', c.name, 'version', c.version, 'data', encode(c.data, 'hex'), 'correlation_id', c.correlation_id, 'causation_id', c.causation_id, 'issued_at', c.issued_at, 'extensions', c.extensions, 'metadata', c.metadata)::text FROM \"public\".\"edax_saga_outbox\" AS c WHERE c.saga = $1::text AND true ORDER BY c.position LIMIT ($2::text)::bigint"
+  },
+  {
+    "name": "saga_unpublished_count",
+    "sql": "/* edax:saga_unpublished_count */ SELECT count(*) FROM \"public\".\"edax_saga_outbox\" WHERE saga = $1::text"
+  },
+  {
+    "name": "saga_unpublished_leased",
+    "sql": "/* edax:saga_unpublished */ WITH lease_clock AS MATERIALIZED (SELECT clock_timestamp() AS now), held AS MATERIALIZED (SELECT owner, expires_at FROM \"public\".\"edax_relay_leases\" WHERE outbox = $3::text), renewed AS (INSERT INTO \"public\".\"edax_relay_leases\" AS l (outbox, owner, expires_at) SELECT $3::text, $4::text, now + ($5::text)::bigint * interval '1 millisecond' FROM lease_clock WHERE NOT EXISTS (SELECT 1 FROM held) OR EXISTS (SELECT 1 FROM held WHERE expires_at <= now OR (owner = $4::text AND expires_at < now + ($5::text)::bigint * interval '0.5 millisecond')) ON CONFLICT (outbox) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at WHERE l.owner = EXCLUDED.owner OR l.expires_at <= clock_timestamp() RETURNING l.owner), lease AS (SELECT owner FROM renewed UNION ALL SELECT owner FROM held CROSS JOIN lease_clock WHERE owner = $4::text AND expires_at >= now + ($5::text)::bigint * interval '0.5 millisecond') SELECT json_build_object('id', c.id, 'idempotency_key', c.idempotency_key, 'aggregate_id', c.aggregate_id, 'tenant', c.tenant, 'name', c.name, 'version', c.version, 'data', encode(c.data, 'hex'), 'correlation_id', c.correlation_id, 'causation_id', c.causation_id, 'issued_at', c.issued_at, 'extensions', c.extensions, 'metadata', c.metadata)::text FROM \"public\".\"edax_saga_outbox\" AS c WHERE c.saga = $1::text AND EXISTS (SELECT 1 FROM lease) ORDER BY c.position LIMIT ($2::text)::bigint"
+  },
+  {
+    "name": "saga_update",
+    "sql": "/* edax:saga_update */ WITH written AS (UPDATE \"public\".\"edax_saga_instances\" SET version = version + 1, state = $4::text, folded = $5::text, completed = ($6::text)::boolean, completed_at = CASE WHEN ($6::text)::boolean THEN clock_timestamp() END WHERE saga = $1::text AND id = $2::text AND version = ($3::text)::bigint AND NOT completed RETURNING version), sent AS (INSERT INTO \"public\".\"edax_saga_outbox\" (saga, id, idempotency_key, aggregate_id, tenant, name, version, data, correlation_id, causation_id, issued_at, extensions, metadata) SELECT $1::text, c.id, c.idempotency_key, c.aggregate_id, c.tenant, c.name, c.version, decode(c.data, 'hex'), c.correlation_id, c.causation_id, c.issued_at, c.extensions, c.metadata FROM written CROSS JOIN jsonb_array_elements(($7::text)::jsonb) WITH ORDINALITY AS r(value, n) CROSS JOIN LATERAL jsonb_to_record(r.value) AS c(id text, idempotency_key text, aggregate_id text, tenant text, name text, version bigint, data text, correlation_id text, causation_id text, issued_at bigint, extensions text, metadata text) ORDER BY r.n) SELECT json_build_object('written', (SELECT version FROM written), 'stored', (SELECT i.version FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text), 'completed', (SELECT i.completed FROM \"public\".\"edax_saga_instances\" AS i WHERE i.saga = $1::text AND i.id = $2::text))::text"
+  },
+  {
+    "name": "save_snapshot",
+    "sql": "/* edax:save_snapshot */ WITH current AS (SELECT coalesce(max(sequence), 0) AS version FROM \"public\".\"edax_events\" WHERE stream = $1::text), saved AS (INSERT INTO \"public\".\"edax_snapshots\" AS s (stream, type_name, version, data) SELECT $1::text, $2::text, ($3::text)::bigint, decode($4::text, 'hex') FROM current WHERE ($3::text)::bigint <= current.version ON CONFLICT (stream) DO UPDATE SET type_name = EXCLUDED.type_name, version = EXCLUDED.version, data = EXCLUDED.data WHERE s.version <= EXCLUDED.version) SELECT version FROM current"
+  },
+  {
+    "name": "server",
+    "sql": "/* edax:server */ SELECT current_setting('server_encoding'), current_setting('server_version_num')::bigint, (extract(epoch FROM current_setting('deadlock_timeout')::interval) * 1000)::bigint"
+  },
+  {
+    "name": "settings",
+    "sql": "/* edax:settings */ SELECT set_config('lock_timeout', $1::text, true), set_config('statement_timeout', $2::text, true), set_config('idle_in_transaction_session_timeout', $3::text, true)"
+  }
+]

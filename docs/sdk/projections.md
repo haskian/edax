@@ -9,8 +9,9 @@ store, one document per id under an optimistic version check. `ProjectionQuery` 
 which a store implements beside it to page the documents by the kernel's rules. It is not a projector. It keeps no
 record of which events a row has folded, so it cannot skip a redelivered one by itself. Deduplication
 comes from the consume-path guard, [`idempotent_by_id`](./consuming.md#idempotent_by_id), in front of
-the handler. A projector that folds events and keeps per-row marks is a deferred feature. No durable
-store ships with edax; you bring one.
+the handler. A projector that folds events and keeps per-row marks is a deferred feature. Python
+ships a durable store, [`PostgresProjectionStore`](../backends/postgres.md); in Go and Rust you bring
+one.
 
 A redelivered event can reload the current row version, fold again, and pass the next version check.
 Commit the consume guard and projection write in the same transaction to close that replay window.

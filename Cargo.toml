@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-abi", "crates/edax-abi-ffi"]
+members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-postgres", "crates/edax-abi", "crates/edax-abi-ffi"]
 # Its own workspace: it turns on serde_json features that must never reach the main build.
 exclude = ["crates/edax-cqrs/feature-check"]
 
@@ -27,6 +27,7 @@ edax-cqrs = { path = "crates/edax-cqrs" }
 edax-memory = { path = "crates/edax-memory" }
 edax-kafka = { path = "crates/edax-kafka" }
 edax-redis = { path = "crates/edax-redis" }
+edax-postgres = { path = "crates/edax-postgres" }
 edax = { path = "crates/edax" }
 serde = { version = "1", features = ["derive"] }
 # Exact decimal text: the canonical form and the value order of the decimal collation (`edax-cqrs`).

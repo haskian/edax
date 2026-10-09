@@ -1,0 +1,1808 @@
+[
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        }
+      ]
+    },
+    "name": "all_unsorted",
+    "page_error": null,
+    "params": [
+      "accounts"
+    ],
+    "query": {},
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        }
+      ]
+    },
+    "name": "eq_number_matches_double",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "n",
+      "1"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "eq",
+          "path": "n",
+          "value": 1
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce((p.document -> $2::text) = ($3::text)::jsonb, false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        }
+      ]
+    },
+    "name": "ne_skips_missing_and_null",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "s",
+      "s",
+      "\"a\""
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "ne",
+          "path": "s",
+          "value": "a"
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND (coalesce(jsonb_typeof((p.document -> $2::text)) <> 'null', false) AND NOT coalesce((p.document -> $3::text) = ($4::text)::jsonb, false)) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        }
+      ]
+    },
+    "name": "not_eq_keeps_missing_and_null",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "s",
+      "\"a\""
+    ],
+    "query": {
+      "filter": {
+        "not": {
+          "compare": {
+            "op": "eq",
+            "path": "s",
+            "value": "a"
+          }
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND (NOT coalesce((p.document -> $2::text) = ($3::text)::jsonb, false)) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        }
+      ]
+    },
+    "name": "gt_number_past_2_53",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "n",
+      "58088200776852271"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "gt",
+          "path": "n",
+          "value": 58088200776852271
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce(jsonb_typeof((p.document -> $2::text)) = 'number' AND ((p.document -> $2::text))::numeric > ($3::text)::numeric, false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        },
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        }
+      ]
+    },
+    "name": "strings_by_code_point",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "s"
+    ],
+    "query": {
+      "sort": [
+        {
+          "path": "s"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT (p.document -> $2::text) AS v0, to_jsonb(p.id) AS v1) AS k WHERE p.projection = $1::text ORDER BY (CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END), (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END), (CASE WHEN jsonb_typeof(k.v0) = 'string' THEN k.v0 #>> '{}' END) COLLATE \"C\", (CASE WHEN jsonb_typeof(k.v0) = 'boolean' THEN (k.v0)::boolean END), p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        }
+      ]
+    },
+    "name": "decimal_collation_sort",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "p"
+    ],
+    "query": {
+      "sort": [
+        {
+          "collation": "decimal",
+          "path": "p"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT (p.document -> $2::text) AS v0, to_jsonb(p.id) AS v1) AS k CROSS JOIN LATERAL (SELECT (SELECT CASE WHEN c.coefficient = '' THEN 0::numeric WHEN greatest(length(c.coefficient) - 1 + c.scale, 0) + 1 + greatest(-c.scale, 0) > 1000 THEN NULL ELSE (c.sign || c.coefficient || 'e' || c.scale)::numeric END FROM (SELECT b.sign, rtrim(b.digits, '0') AS coefficient, b.exponent - b.fraction + (length(b.digits) - length(rtrim(b.digits, '0'))) AS scale FROM (SELECT a.m[1] AS sign, ltrim(a.m[2] || coalesce(a.m[3], ''), '0') AS digits, length(coalesce(a.m[3], '')) AS fraction, CASE WHEN a.m[5] IS NULL THEN 0::bigint WHEN length(ltrim(a.m[5], '0')) > 10 THEN NULL ELSE (a.m[4] || '0' || ltrim(a.m[5], '0'))::bigint END AS exponent FROM (SELECT regexp_match(t.x, '^([+-]?)([0-9]*)(?:\\.([0-9]*))?(?:[eE]([+-]?)([0-9]+))?$') AS m FROM (SELECT CASE WHEN jsonb_typeof(k.v0) = 'string' THEN k.v0 #>> '{}' END AS x) AS t WHERE octet_length(t.x) <= 2000) AS a WHERE a.m IS NOT NULL AND (a.m[2] <> '' OR coalesce(a.m[3], '') <> '') AND length(ltrim(a.m[2], '0')) + length(rtrim(coalesce(a.m[3], ''), '0')) <= 1000) AS b WHERE b.exponent BETWEEN -2147483648 AND 2147483647) AS c) AS d0) AS kd WHERE p.projection = $1::text ORDER BY (CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END), (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END), (kd.d0 IS NULL), kd.d0, (CASE WHEN jsonb_typeof(k.v0) = 'string' AND kd.d0 IS NULL THEN k.v0 #>> '{}' END) COLLATE \"C\", (CASE WHEN jsonb_typeof(k.v0) = 'boolean' THEN (k.v0)::boolean END), p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        }
+      ]
+    },
+    "name": "decimal_collation_filter",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "p",
+      "10"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "collation": "decimal",
+          "op": "lt",
+          "path": "p",
+          "value": "10"
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce((SELECT CASE WHEN c.coefficient = '' THEN 0::numeric WHEN greatest(length(c.coefficient) - 1 + c.scale, 0) + 1 + greatest(-c.scale, 0) > 1000 THEN NULL ELSE (c.sign || c.coefficient || 'e' || c.scale)::numeric END FROM (SELECT b.sign, rtrim(b.digits, '0') AS coefficient, b.exponent - b.fraction + (length(b.digits) - length(rtrim(b.digits, '0'))) AS scale FROM (SELECT a.m[1] AS sign, ltrim(a.m[2] || coalesce(a.m[3], ''), '0') AS digits, length(coalesce(a.m[3], '')) AS fraction, CASE WHEN a.m[5] IS NULL THEN 0::bigint WHEN length(ltrim(a.m[5], '0')) > 10 THEN NULL ELSE (a.m[4] || '0' || ltrim(a.m[5], '0'))::bigint END AS exponent FROM (SELECT regexp_match(t.x, '^([+-]?)([0-9]*)(?:\\.([0-9]*))?(?:[eE]([+-]?)([0-9]+))?$') AS m FROM (SELECT (CASE WHEN jsonb_typeof((p.document -> $2::text)) = 'string' THEN (p.document -> $2::text) #>> '{}' END) AS x) AS t WHERE octet_length(t.x) <= 2000) AS a WHERE a.m IS NOT NULL AND (a.m[2] <> '' OR coalesce(a.m[3], '') <> '') AND length(ltrim(a.m[2], '0')) + length(rtrim(coalesce(a.m[3], ''), '0')) <= 1000) AS b WHERE b.exponent BETWEEN -2147483648 AND 2147483647) AS c) < ($3::text)::numeric, false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "e",
+          "p": "7",
+          "s": "🦀",
+          "tags": []
+        },
+        {
+          "id": "f",
+          "n": "3",
+          "p": 7,
+          "s": "ｱ"
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        },
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        },
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        }
+      ]
+    },
+    "name": "type_rank_desc",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "n"
+    ],
+    "query": {
+      "sort": [
+        {
+          "desc": true,
+          "path": "n"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT (p.document -> $2::text) AS v0, to_jsonb(p.id) AS v1) AS k WHERE p.projection = $1::text ORDER BY (CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END) DESC, (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END) DESC, (CASE WHEN jsonb_typeof(k.v0) = 'string' THEN k.v0 #>> '{}' END) COLLATE \"C\" DESC, (CASE WHEN jsonb_typeof(k.v0) = 'boolean' THEN (k.v0)::boolean END) DESC, p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a",
+          "n": 3,
+          "p": "9.5",
+          "s": "Z",
+          "tags": [
+            "x",
+            1
+          ]
+        }
+      ]
+    },
+    "name": "contains_array_element",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "tags",
+      "1.0"
+    ],
+    "query": {
+      "filter": {
+        "contains": {
+          "path": "tags",
+          "value": 1.0
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce(jsonb_typeof((p.document -> $2::text)) = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements((p.document -> $2::text)) AS e(x) WHERE e.x = ($3::text)::jsonb), false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": []
+    },
+    "name": "nested_path_is_object_only",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "tags",
+      "0"
+    ],
+    "query": {
+      "filter": {
+        "exists": {
+          "exists": true,
+          "path": "tags.0"
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce(jsonb_typeof((p.document -> $2::text -> $3::text)) <> 'null', false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "b",
+          "n": 1.0,
+          "nested": {
+            "k": true
+          },
+          "p": "10",
+          "s": "a"
+        }
+      ]
+    },
+    "name": "starts_with",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "s",
+      "a"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "s",
+          "value": "a"
+        }
+      }
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p WHERE p.projection = $1::text AND coalesce(starts_with((CASE WHEN jsonb_typeof((p.document -> $2::text)) = 'string' THEN (p.document -> $2::text) #>> '{}' END), $3::text), false) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOls1ODA4ODIwMDc3Njg1MjI3MCwiYyJdfQ",
+      "rows": [
+        {
+          "id": "d",
+          "n": 58088200776852271,
+          "p": "07",
+          "s": null
+        },
+        {
+          "id": "c",
+          "n": 5.808820077685227e+16,
+          "p": "n/a",
+          "s": "é"
+        }
+      ]
+    },
+    "name": "keyset_after_first",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "n",
+      "3",
+      "3",
+      "a",
+      "3"
+    ],
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlszLCJhIl19",
+      "limit": 2,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT (p.document -> $2::text) AS v0, to_jsonb(p.id) AS v1) AS k WHERE p.projection = $1::text AND ((coalesce((CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END) > 0 OR ((CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END) = 0 AND (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END) > ($3::text)::numeric), false)) OR (coalesce(((CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END) = 0 AND (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END) = ($4::text)::numeric), false) AND p.id > $5::text COLLATE \"C\")) ORDER BY (CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END), (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END), (CASE WHEN jsonb_typeof(k.v0) = 'string' THEN k.v0 #>> '{}' END) COLLATE \"C\", (CASE WHEN jsonb_typeof(k.v0) = 'boolean' THEN (k.v0)::boolean END), p.id LIMIT ($6::text)::bigint"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": null,
+    "expected_page": null,
+    "name": "offset_and_limit",
+    "page_error": "codec: integer at byte 29 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "params": [
+      "accounts",
+      "n",
+      "1",
+      "3"
+    ],
+    "query": {
+      "limit": 2,
+      "offset": 1,
+      "sort": [
+        {
+          "path": "n"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT (p.document -> $2::text) AS v0, to_jsonb(p.id) AS v1) AS k WHERE p.projection = $1::text ORDER BY (CASE jsonb_typeof(k.v0) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END), (CASE WHEN jsonb_typeof(k.v0) = 'number' THEN (k.v0)::numeric END), (CASE WHEN jsonb_typeof(k.v0) = 'string' THEN k.v0 #>> '{}' END) COLLATE \"C\", (CASE WHEN jsonb_typeof(k.v0) = 'boolean' THEN (k.v0)::boolean END), p.id OFFSET ($3::text)::bigint LIMIT ($4::text)::bigint"
+  },
+  {
+    "documents": [
+      {
+        "id": "a",
+        "n": 3,
+        "p": "9.5",
+        "s": "Z",
+        "tags": [
+          "x",
+          1
+        ]
+      },
+      {
+        "id": "b",
+        "n": 1.0,
+        "nested": {
+          "k": true
+        },
+        "p": "10",
+        "s": "a"
+      },
+      {
+        "id": "c",
+        "n": 5.808820077685227e+16,
+        "p": "n/a",
+        "s": "é"
+      },
+      {
+        "id": "d",
+        "n": 58088200776852271,
+        "p": "07",
+        "s": null
+      },
+      {
+        "id": "e",
+        "p": "7",
+        "s": "🦀",
+        "tags": []
+      },
+      {
+        "id": "f",
+        "n": "3",
+        "p": 7,
+        "s": "ｱ"
+      }
+    ],
+    "error": "codec: an unsorted query has no order to resume from, so it takes no cursor",
+    "expected_page": null,
+    "name": "refused_cursor_unsorted",
+    "page_error": null,
+    "params": null,
+    "query": {
+      "after": "eyJzIjoiNjM0Yzc2N2U0Y2NlNTE2MiIsInYiOlszLCJhIl19"
+    },
+    "sql": null
+  },
+  {
+    "documents": [
+      {
+        "id": ""
+      },
+      {
+        "id": "a"
+      },
+      {
+        "id": "􏿿"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": ""
+        },
+        {
+          "id": "a"
+        },
+        {
+          "id": "􏿿"
+        }
+      ]
+    },
+    "name": "id_prefix_empty",
+    "page_error": null,
+    "params": [
+      "accounts"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": ""
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND true ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "account"
+      },
+      {
+        "id": "account-"
+      },
+      {
+        "id": "account-7"
+      },
+      {
+        "id": "account."
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "account-"
+        },
+        {
+          "id": "account-7"
+        }
+      ]
+    },
+    "name": "id_prefix_ascii",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "account-",
+      "account."
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "account-"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a%_"
+      },
+      {
+        "id": "a%_\\"
+      },
+      {
+        "id": "a%_\\7"
+      },
+      {
+        "id": "a%_]"
+      },
+      {
+        "id": "aaaa"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a%_\\"
+        },
+        {
+          "id": "a%_\\7"
+        }
+      ]
+    },
+    "name": "id_prefix_wildcards",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "a%_\\",
+      "a%_]"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "a%_\\"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "è"
+      },
+      {
+        "id": "é"
+      },
+      {
+        "id": "é7"
+      },
+      {
+        "id": "ê"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "é"
+        },
+        {
+          "id": "é7"
+        }
+      ]
+    },
+    "name": "id_prefix_unicode",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "é",
+      "ê"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "é"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "퟾"
+      },
+      {
+        "id": "퟿"
+      },
+      {
+        "id": "퟿7"
+      },
+      {
+        "id": ""
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "퟿"
+        },
+        {
+          "id": "퟿7"
+        }
+      ]
+    },
+    "name": "id_prefix_surrogate_gap",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "퟿",
+      ""
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "퟿"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "￾"
+      },
+      {
+        "id": "￿"
+      },
+      {
+        "id": "￿7"
+      },
+      {
+        "id": "𐀀"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "￿"
+        },
+        {
+          "id": "￿7"
+        }
+      ]
+    },
+    "name": "id_prefix_scalar_width",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "￿",
+      "𐀀"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "￿"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a􏿿"
+      },
+      {
+        "id": "a􏿿􏿿"
+      },
+      {
+        "id": "a􏿿􏿿7"
+      },
+      {
+        "id": "b"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "a􏿿􏿿"
+        },
+        {
+          "id": "a􏿿􏿿7"
+        }
+      ]
+    },
+    "name": "id_prefix_max_suffix",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "a􏿿􏿿",
+      "b"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "a􏿿􏿿"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text AND p.id < $3::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "􏿾"
+      },
+      {
+        "id": "􏿿"
+      },
+      {
+        "id": "􏿿7"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "􏿿"
+        },
+        {
+          "id": "􏿿7"
+        }
+      ]
+    },
+    "name": "id_prefix_only_max",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "􏿿"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "􏿿"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "􏿿"
+      },
+      {
+        "id": "􏿿7"
+      },
+      {
+        "id": "􏿿􏿿"
+      },
+      {
+        "id": "􏿿􏿿7"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": [
+        {
+          "id": "􏿿􏿿"
+        },
+        {
+          "id": "􏿿􏿿7"
+        }
+      ]
+    },
+    "name": "id_prefix_all_max",
+    "page_error": null,
+    "params": [
+      "accounts",
+      "􏿿􏿿"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "􏿿􏿿"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND (p.id >= $2::text) ORDER BY p.id"
+  },
+  {
+    "documents": [
+      {
+        "id": "a"
+      },
+      {
+        "id": "a7"
+      },
+      {
+        "id": "b"
+      }
+    ],
+    "error": null,
+    "expected_page": {
+      "next": null,
+      "rows": []
+    },
+    "name": "id_prefix_nul",
+    "page_error": null,
+    "params": [
+      "accounts"
+    ],
+    "query": {
+      "filter": {
+        "compare": {
+          "op": "starts_with",
+          "path": "id",
+          "value": "a\u0000"
+        }
+      },
+      "sort": [
+        {
+          "path": "id"
+        }
+      ]
+    },
+    "sql": "/* edax:get_many */ SELECT p.document::text FROM \"public\".\"edax_projections\" AS p CROSS JOIN LATERAL (SELECT to_jsonb(p.id) AS v0) AS k WHERE p.projection = $1::text AND false ORDER BY p.id"
+  }
+]

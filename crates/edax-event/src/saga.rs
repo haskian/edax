@@ -292,6 +292,24 @@ fn is_command_id_of(id: &str, saga: &str, instance_id: &str) -> bool {
         .is_some_and(|(version, index)| saga_command_id(saga, instance_id, version, index) == id)
 }
 
+/// Refuse a command that does not belong to the write of instance `id` of `saga` at `version`: every id
+/// must be the kernel's for its saga and index, and every command must target the instance.
+/// Every saga store runs it before its write. Deterministic, so `codec`. The instance is the command's `aggregate_id`, so a command without one
+/// belongs to no instance.
+pub fn check_saga_commands(saga: &str, id: &str, version: u64, commands: &[CommandMessage]) -> Result<(), Error> {
+    for (index, command) in (0u64..).zip(commands) {
+        let want = saga_command_id(saga, id, version, index);
+        let instance = command.aggregate_id.as_deref();
+        if command.id != want || instance != Some(id) {
+            return Err(Error::codec(format_args!(
+                "saga command {index} of {id} at version {version} is {:?} for instance {instance:?}, expected {want:?}",
+                command.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The id of the `index`-th command a step of the saga `saga` committed at `version` (the version the
 /// write produced) of the instance `instance_id`: `"{instance_id}:{version}:{index}"` [`scoped`] by the
 /// saga's name, `"{len(saga)}:{saga}:{instance_id}:{version}:{index}"`. Deterministic, so a durable store

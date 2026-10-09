@@ -43,6 +43,7 @@ sources = [
   "crates/edax-abi/src/memory.rs",
   "crates/edax-abi/src/kafka.rs",
   "crates/edax-abi/src/redis.rs",
+  "crates/edax-abi/src/postgres.rs",
 ]
 version_from = "crates/edax-abi/Cargo.toml"
 

@@ -1,0 +1,469 @@
+[
+  {
+    "error": "concurrency: postgres append failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "append_23505_events_stream_sequence",
+    "op": "append",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "codec: postgres append failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "append_23505_events_id",
+    "op": "append",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "codec: postgres append failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "append_23505_command_outbox_id",
+    "op": "append",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "codec: postgres append failed with 23505: server text",
+    "message": "server text",
+    "name": "append_23505_none",
+    "op": "append",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres append failed with 55P03: server text",
+    "message": "server text",
+    "name": "append_55P03_none",
+    "op": "append",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres append failed with 57014: server text",
+    "message": "server text",
+    "name": "append_57014_none",
+    "op": "append",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 40001: server text",
+    "message": "server text",
+    "name": "append_40001_none",
+    "op": "append",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 40P01: server text",
+    "message": "server text",
+    "name": "append_40P01_none",
+    "op": "append",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 25006: server text",
+    "message": "server text",
+    "name": "append_25006_none",
+    "op": "append",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 25P02: server text",
+    "message": "server text",
+    "name": "append_25P02_none",
+    "op": "append",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 08006: server text",
+    "message": "server text",
+    "name": "append_08006_none",
+    "op": "append",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with 53300: server text",
+    "message": "server text",
+    "name": "append_53300_none",
+    "op": "append",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres append failed with 22P05: server text",
+    "message": "server text",
+    "name": "append_22P05_none",
+    "op": "append",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres append failed with 22021: server text",
+    "message": "server text",
+    "name": "append_22021_none",
+    "op": "append",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres append failed with 54000: server text",
+    "message": "server text",
+    "name": "append_54000_none",
+    "op": "append",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres append failed with 42P01: server text",
+    "message": "server text",
+    "name": "append_42P01_none",
+    "op": "append",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres append failed with 42501: server text",
+    "message": "server text",
+    "name": "append_42501_none",
+    "op": "append",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres append failed with XX000: server text",
+    "message": "server text",
+    "name": "append_XX000_none",
+    "op": "append",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres claim failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "claim_23505_events_stream_sequence",
+    "op": "claim",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "codec: postgres claim failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "claim_23505_events_id",
+    "op": "claim",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "codec: postgres claim failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "claim_23505_command_outbox_id",
+    "op": "claim",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "codec: postgres claim failed with 23505: server text",
+    "message": "server text",
+    "name": "claim_23505_none",
+    "op": "claim",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres claim failed with 55P03: server text",
+    "message": "server text",
+    "name": "claim_55P03_none",
+    "op": "claim",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres claim failed with 57014: server text",
+    "message": "server text",
+    "name": "claim_57014_none",
+    "op": "claim",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 40001: server text",
+    "message": "server text",
+    "name": "claim_40001_none",
+    "op": "claim",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 40P01: server text",
+    "message": "server text",
+    "name": "claim_40P01_none",
+    "op": "claim",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 25006: server text",
+    "message": "server text",
+    "name": "claim_25006_none",
+    "op": "claim",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 25P02: server text",
+    "message": "server text",
+    "name": "claim_25P02_none",
+    "op": "claim",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 08006: server text",
+    "message": "server text",
+    "name": "claim_08006_none",
+    "op": "claim",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with 53300: server text",
+    "message": "server text",
+    "name": "claim_53300_none",
+    "op": "claim",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres claim failed with 22P05: server text",
+    "message": "server text",
+    "name": "claim_22P05_none",
+    "op": "claim",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres claim failed with 22021: server text",
+    "message": "server text",
+    "name": "claim_22021_none",
+    "op": "claim",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres claim failed with 54000: server text",
+    "message": "server text",
+    "name": "claim_54000_none",
+    "op": "claim",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres claim failed with 42P01: server text",
+    "message": "server text",
+    "name": "claim_42P01_none",
+    "op": "claim",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres claim failed with 42501: server text",
+    "message": "server text",
+    "name": "claim_42501_none",
+    "op": "claim",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres claim failed with XX000: server text",
+    "message": "server text",
+    "name": "claim_XX000_none",
+    "op": "claim",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_save failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "projection_save_23505_events_stream_sequence",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "projection_save_23505_events_id",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "projection_save_23505_command_outbox_id",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "codec: postgres projection_save failed with 23505: server text",
+    "message": "server text",
+    "name": "projection_save_23505_none",
+    "op": "projection_save",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_save failed with 55P03: server text",
+    "message": "server text",
+    "name": "projection_save_55P03_none",
+    "op": "projection_save",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_save failed with 57014: server text",
+    "message": "server text",
+    "name": "projection_save_57014_none",
+    "op": "projection_save",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 40001: server text",
+    "message": "server text",
+    "name": "projection_save_40001_none",
+    "op": "projection_save",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 40P01: server text",
+    "message": "server text",
+    "name": "projection_save_40P01_none",
+    "op": "projection_save",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 25006: server text",
+    "message": "server text",
+    "name": "projection_save_25006_none",
+    "op": "projection_save",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 25P02: server text",
+    "message": "server text",
+    "name": "projection_save_25P02_none",
+    "op": "projection_save",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 08006: server text",
+    "message": "server text",
+    "name": "projection_save_08006_none",
+    "op": "projection_save",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with 53300: server text",
+    "message": "server text",
+    "name": "projection_save_53300_none",
+    "op": "projection_save",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 22P05: server text",
+    "message": "server text",
+    "name": "projection_save_22P05_none",
+    "op": "projection_save",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 22021: server text",
+    "message": "server text",
+    "name": "projection_save_22021_none",
+    "op": "projection_save",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 54000: server text",
+    "message": "server text",
+    "name": "projection_save_54000_none",
+    "op": "projection_save",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 42P01: server text",
+    "message": "server text",
+    "name": "projection_save_42P01_none",
+    "op": "projection_save",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 42501: server text",
+    "message": "server text",
+    "name": "projection_save_42501_none",
+    "op": "projection_save",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_save failed with XX000: server text",
+    "message": "server text",
+    "name": "projection_save_XX000_none",
+    "op": "projection_save",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "store: postgres load failed on the client (timeout): client text",
+    "kind": "timeout",
+    "message": "client text",
+    "name": "client_timeout",
+    "op": "load"
+  },
+  {
+    "error": "store: postgres load failed on the client (connection): client text",
+    "kind": "connection",
+    "message": "client text",
+    "name": "client_connection",
+    "op": "load"
+  },
+  {
+    "error": "codec: postgres load failed on the client (encode): client text",
+    "kind": "encode",
+    "message": "client text",
+    "name": "client_encode",
+    "op": "load"
+  },
+  {
+    "error": "store: postgres load failed on the client (other): client text",
+    "kind": "other",
+    "message": "client text",
+    "name": "client_other",
+    "op": "load"
+  },
+  {
+    "error": "codec: unknown postgres client failure: bogus",
+    "kind": "bogus",
+    "message": "client text",
+    "name": "client_bogus",
+    "op": "load"
+  }
+]

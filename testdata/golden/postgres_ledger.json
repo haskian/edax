@@ -1,0 +1,179 @@
+[
+  {
+    "name": "pending_record",
+    "payload_hash": 7,
+    "record": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+  },
+  {
+    "claim": "vanished",
+    "complete": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record",
+      "write": null
+    },
+    "forget": {
+      "error": null,
+      "write": false
+    },
+    "handle": "me",
+    "name": "free",
+    "release": {
+      "write": false
+    },
+    "row": null,
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "prior": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    },
+    "complete": {
+      "error": null,
+      "write": true
+    },
+    "forget": {
+      "error": "in_progress: idempotency key order-7 is claimed by a run that has not completed: forget it once the claim settles or lapses",
+      "write": null
+    },
+    "handle": "me",
+    "name": "own_claim",
+    "release": {
+      "write": true
+    },
+    "row": {
+      "lapsed": false,
+      "owner": "me",
+      "record": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "settled_by": null
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "take_over": "other"
+    },
+    "complete": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record",
+      "write": null
+    },
+    "forget": {
+      "error": "in_progress: idempotency key order-7 is claimed by a run that has not completed: forget it once the claim settles or lapses",
+      "write": null
+    },
+    "handle": "me",
+    "name": "lapsed_claim",
+    "release": {
+      "write": false
+    },
+    "row": {
+      "lapsed": true,
+      "owner": "other",
+      "record": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "settled_by": null
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "prior": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
+    },
+    "complete": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record",
+      "write": null
+    },
+    "forget": {
+      "error": "in_progress: idempotency key order-7 is claimed by a run that has not completed: forget it once the claim settles or lapses",
+      "write": null
+    },
+    "handle": "me",
+    "name": "other_claim",
+    "release": {
+      "write": false
+    },
+    "row": {
+      "lapsed": false,
+      "owner": "other",
+      "record": "{\"payload_hash\":7,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+      "settled_by": null
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "prior": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+    },
+    "complete": {
+      "error": null,
+      "write": false
+    },
+    "forget": {
+      "error": null,
+      "write": true
+    },
+    "handle": "me",
+    "name": "same_record",
+    "release": {
+      "write": false
+    },
+    "row": {
+      "lapsed": false,
+      "owner": null,
+      "record": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}",
+      "settled_by": "me"
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "prior": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+    },
+    "complete": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record",
+      "write": null
+    },
+    "forget": {
+      "error": null,
+      "write": true
+    },
+    "handle": "me",
+    "name": "other_record",
+    "release": {
+      "write": false
+    },
+    "row": {
+      "lapsed": false,
+      "owner": null,
+      "record": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}",
+      "settled_by": "other"
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "claim": {
+      "prior": "not a record"
+    },
+    "complete": {
+      "error": "store: idempotency key order-7 no longer holds the claim this handle names: it lapsed and was taken over, or was settled with another record",
+      "write": null
+    },
+    "forget": {
+      "error": null,
+      "write": true
+    },
+    "handle": "me",
+    "name": "unreadable",
+    "release": {
+      "write": false
+    },
+    "row": {
+      "lapsed": false,
+      "owner": null,
+      "record": "not a record",
+      "settled_by": null
+    },
+    "settling": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+  },
+  {
+    "error": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record",
+    "name": "pending_cannot_settle"
+  }
+]

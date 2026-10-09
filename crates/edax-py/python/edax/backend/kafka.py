@@ -705,8 +705,9 @@ class KafkaConsumer:
         """An ``aiokafka`` rebalance listener for ``subscribe([...], listener=...)``. On revoke the kernel
         hands back each revoked partition's last due watermark as it drops the partition, and it commits
         them, so the deliveries still queued are skipped rather than drained. It then waits, up to
-        ``drain_timeout_s``, until no handler of the dispatcher :meth:`run` feeds is running, so no key is
-        handled by two members at once. The new owner starts
+        ``drain_timeout_s``, until no handler of the dispatcher :meth:`run` feeds is running, so the new
+        owner rarely runs a key this member still runs. A member the group evicts loses its partitions
+        before this listener runs, and no wait covers that. The new owner starts
         from the commit, so the skipped work and the handlers that were still running run again there:
         at-least-once. A handler still running at the deadline overlaps the new owner, so keep the
         deadline above the slowest handler and below the client's ``max_poll_interval_ms``. On assign it

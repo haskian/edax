@@ -1,0 +1,23 @@
+# Replays the kernel's filter, query and Postgres vectors against a real server: the proof that the SQL
+# `edax-postgres` emits answers as the kernel's reference applier does. Its own workspace, so the main
+# build never links a Postgres client. Skips unless `EDAX_POSTGRES_URL` names a throwaway database.
+#
+#   EDAX_POSTGRES_URL=postgresql://postgres:edax@localhost:55433/postgres \
+#     cargo test --manifest-path crates/edax-postgres/live-check/Cargo.toml
+[package]
+name = "edax-postgres-live-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+edax-core = { path = "../../edax-core" }
+edax-cqrs = { path = "../../edax-cqrs" }
+edax-postgres = { path = ".." }
+serde_json = "1"
+
+[dev-dependencies]
+edax-golden = { path = "../../edax-golden" }
+postgres = "0.19"

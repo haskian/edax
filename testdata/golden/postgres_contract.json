@@ -1,0 +1,1006 @@
+[
+  {
+    "contract": [
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "stream",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "sequence",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "aggregate_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "tenant",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "name",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "data",
+            "nullable": false,
+            "type": "bytea"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "correlation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "causation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "occurred_at",
+            "nullable": true,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "recorded_at",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "extensions",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "metadata",
+            "nullable": false,
+            "type": "text"
+          }
+        ],
+        "role": "events",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "events_id",
+            [
+              "id"
+            ]
+          ],
+          [
+            "events_stream_sequence",
+            [
+              "stream",
+              "sequence"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "stream",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "type_name",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "data",
+            "nullable": false,
+            "type": "bytea"
+          }
+        ],
+        "role": "snapshots",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "snapshots_stream",
+            [
+              "stream"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": true,
+            "key": false,
+            "name": "position",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "event_id",
+            "nullable": false,
+            "type": "text"
+          }
+        ],
+        "role": "event_outbox",
+        "suggested_indexes": [
+          [
+            "position"
+          ],
+          [
+            "event_id"
+          ]
+        ],
+        "unique": []
+      },
+      {
+        "columns": [
+          {
+            "defaulted": true,
+            "key": false,
+            "name": "position",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "idempotency_key",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "aggregate_id",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "tenant",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "name",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "data",
+            "nullable": false,
+            "type": "bytea"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "correlation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "causation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "issued_at",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "extensions",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "metadata",
+            "nullable": false,
+            "type": "text"
+          }
+        ],
+        "role": "command_outbox",
+        "suggested_indexes": [
+          [
+            "position"
+          ]
+        ],
+        "unique": [
+          [
+            "command_outbox_id",
+            [
+              "id"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "projection",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "document",
+            "nullable": false,
+            "type": "jsonb"
+          }
+        ],
+        "role": "projections",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "projections_key",
+            [
+              "projection",
+              "id"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "key",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "owner",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "settled_by",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "record",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "claimed_at",
+            "nullable": false,
+            "type": "timestamptz"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "settled_at",
+            "nullable": true,
+            "type": "timestamptz"
+          }
+        ],
+        "role": "ledger",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "ledger_key",
+            [
+              "key"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "saga",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "state",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "folded",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "completed",
+            "nullable": false,
+            "type": "boolean"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "completed_at",
+            "nullable": true,
+            "type": "timestamptz"
+          }
+        ],
+        "role": "saga_instances",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "saga_instances_key",
+            [
+              "saga",
+              "id"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": true,
+            "key": false,
+            "name": "position",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "saga",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "idempotency_key",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "aggregate_id",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "tenant",
+            "nullable": true,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "name",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "version",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "data",
+            "nullable": false,
+            "type": "bytea"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "correlation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "causation_id",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "issued_at",
+            "nullable": false,
+            "type": "bigint"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "extensions",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "metadata",
+            "nullable": false,
+            "type": "text"
+          }
+        ],
+        "role": "saga_outbox",
+        "suggested_indexes": [
+          [
+            "saga",
+            "position"
+          ]
+        ],
+        "unique": [
+          [
+            "saga_outbox_command",
+            [
+              "saga",
+              "id"
+            ]
+          ]
+        ]
+      },
+      {
+        "columns": [
+          {
+            "defaulted": false,
+            "key": true,
+            "name": "outbox",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "owner",
+            "nullable": false,
+            "type": "text"
+          },
+          {
+            "defaulted": false,
+            "key": false,
+            "name": "expires_at",
+            "nullable": false,
+            "type": "timestamptz"
+          }
+        ],
+        "role": "relay_leases",
+        "suggested_indexes": [],
+        "unique": [
+          [
+            "relay_leases_outbox",
+            [
+              "outbox"
+            ]
+          ]
+        ]
+      }
+    ],
+    "name": "contract",
+    "version": 1
+  },
+  {
+    "ddl": "-- edax Postgres table contract 1: a reference schema. Copy it into your own migration.\n\nCREATE TABLE \"public\".\"edax_events\" (\n  id text COLLATE \"C\" NOT NULL,\n  stream text COLLATE \"C\" NOT NULL,\n  sequence bigint NOT NULL,\n  aggregate_id text NOT NULL,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  occurred_at bigint,\n  recorded_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (id),\n  UNIQUE (stream, sequence)\n);\n\nCREATE TABLE \"public\".\"edax_snapshots\" (\n  stream text COLLATE \"C\" NOT NULL,\n  type_name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  PRIMARY KEY (stream)\n);\n\nCREATE TABLE \"public\".\"edax_event_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  event_id text COLLATE \"C\" NOT NULL,\n  PRIMARY KEY (position)\n);\nCREATE INDEX \"edax_event_outbox_event_id\" ON \"public\".\"edax_event_outbox\" (event_id);\n\nCREATE TABLE \"public\".\"edax_command_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  idempotency_key text,\n  aggregate_id text,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  issued_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (id)\n);\nCREATE INDEX \"edax_command_outbox_position\" ON \"public\".\"edax_command_outbox\" (position);\n\nCREATE TABLE \"public\".\"edax_projections\" (\n  projection text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  version bigint NOT NULL,\n  document jsonb NOT NULL,\n  PRIMARY KEY (projection, id)\n);\n\nCREATE TABLE \"public\".\"edax_ledger\" (\n  key text COLLATE \"C\" NOT NULL,\n  owner text,\n  settled_by text,\n  record text NOT NULL,\n  claimed_at timestamptz NOT NULL,\n  settled_at timestamptz,\n  PRIMARY KEY (key)\n);\n\nCREATE TABLE \"public\".\"edax_saga_instances\" (\n  saga text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  version bigint NOT NULL,\n  state text,\n  folded text NOT NULL,\n  completed boolean NOT NULL,\n  completed_at timestamptz,\n  PRIMARY KEY (saga, id)\n);\n\nCREATE TABLE \"public\".\"edax_saga_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  saga text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  idempotency_key text,\n  aggregate_id text,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  issued_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (saga, id)\n);\nCREATE INDEX \"edax_saga_outbox_saga_position\" ON \"public\".\"edax_saga_outbox\" (saga, position);\n\nCREATE TABLE \"public\".\"edax_relay_leases\" (\n  outbox text COLLATE \"C\" NOT NULL,\n  owner text NOT NULL,\n  expires_at timestamptz NOT NULL,\n  PRIMARY KEY (outbox)\n);\n",
+    "name": "reference_ddl_default",
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "ddl": "-- edax Postgres table contract 1: a reference schema. Copy it into your own migration.\n\nCREATE TABLE \"billing\".\"billing_events\" (\n  id text COLLATE \"C\" NOT NULL,\n  stream text COLLATE \"C\" NOT NULL,\n  sequence bigint NOT NULL,\n  aggregate_id text NOT NULL,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  occurred_at bigint,\n  recorded_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (id),\n  UNIQUE (stream, sequence)\n);\n\nCREATE TABLE \"billing\".\"edax_snapshots\" (\n  stream text COLLATE \"C\" NOT NULL,\n  type_name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  PRIMARY KEY (stream)\n);\n\nCREATE TABLE \"billing\".\"edax_event_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  event_id text COLLATE \"C\" NOT NULL,\n  PRIMARY KEY (position)\n);\nCREATE INDEX \"edax_event_outbox_event_id\" ON \"billing\".\"edax_event_outbox\" (event_id);\n\nCREATE TABLE \"billing\".\"edax_command_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  idempotency_key text,\n  aggregate_id text,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  issued_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (id)\n);\nCREATE INDEX \"edax_command_outbox_position\" ON \"billing\".\"edax_command_outbox\" (position);\n\nCREATE TABLE \"billing\".\"edax_projections\" (\n  projection text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  version bigint NOT NULL,\n  document jsonb NOT NULL,\n  PRIMARY KEY (projection, id)\n);\n\nCREATE TABLE \"billing\".\"idem\" (\n  key text COLLATE \"C\" NOT NULL,\n  owner text,\n  settled_by text,\n  record text NOT NULL,\n  claimed_at timestamptz NOT NULL,\n  settled_at timestamptz,\n  PRIMARY KEY (key)\n);\n\nCREATE TABLE \"billing\".\"edax_saga_instances\" (\n  saga text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  version bigint NOT NULL,\n  state text,\n  folded text NOT NULL,\n  completed boolean NOT NULL,\n  completed_at timestamptz,\n  PRIMARY KEY (saga, id)\n);\n\nCREATE TABLE \"billing\".\"edax_saga_outbox\" (\n  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,\n  saga text COLLATE \"C\" NOT NULL,\n  id text COLLATE \"C\" NOT NULL,\n  idempotency_key text,\n  aggregate_id text,\n  tenant text,\n  name text NOT NULL,\n  version bigint NOT NULL,\n  data bytea NOT NULL,\n  correlation_id text NOT NULL,\n  causation_id text NOT NULL,\n  issued_at bigint NOT NULL,\n  extensions text NOT NULL,\n  metadata text NOT NULL,\n  PRIMARY KEY (saga, id)\n);\nCREATE INDEX \"edax_saga_outbox_saga_position\" ON \"billing\".\"edax_saga_outbox\" (saga, position);\n\nCREATE TABLE \"billing\".\"edax_relay_leases\" (\n  outbox text COLLATE \"C\" NOT NULL,\n  owner text NOT NULL,\n  expires_at timestamptz NOT NULL,\n  PRIMARY KEY (outbox)\n);\n",
+    "name": "reference_ddl_named",
+    "tables": "{\"schema\":\"billing\",\"names\":{\"events\":\"billing_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"idem\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "error": "bad_handle: postgres schema \"Edax\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "tables_refused_schema_upper_case",
+    "tables": "{\"schema\":\"Edax\"}"
+  },
+  {
+    "error": "bad_handle: postgres schema \"a\\\"b\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "tables_refused_schema_quote",
+    "tables": "{\"schema\":\"a\\\"b\"}"
+  },
+  {
+    "error": "bad_handle: postgres table name \"my-events\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "tables_refused_table_name_dash",
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"my-events\"}}"
+  },
+  {
+    "error": "bad_handle: postgres tables events and ledger are both named \"edax_events\"",
+    "name": "tables_refused_two_roles_one_name",
+    "tables": "{\"schema\":\"public\",\"names\":{\"ledger\":\"edax_events\"}}"
+  },
+  {
+    "error": "bad_handle: unknown postgres table role: evnts",
+    "name": "tables_refused_unknown_role",
+    "tables": "{\"schema\":\"public\",\"names\":{\"evnts\":\"x\"}}"
+  },
+  {
+    "error": "bad_handle: postgres tables are not the wire form: unknown field `prefix`, expected `schema` or `names` at line 1 column 27",
+    "name": "tables_refused_unknown_field",
+    "tables": "{\"schema\":\"public\",\"prefix\":\"x\"}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"stream\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"sequence\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"occurred_at\",\"not_null\":false,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"recorded_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"events\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_events_pkey\",\"partial\":false,\"valid\":true},{\"collations\":[\"C\",\"\"],\"columns\":[\"stream\",\"sequence\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_events_stream_sequence_key\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"stream\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"type_name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"}],\"kind\":\"r\",\"table\":\"snapshots\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"stream\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_snapshots_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"event_id\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"event_outbox\",\"unique\":[]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"idempotency_key\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"issued_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"command_outbox\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_command_outbox_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"projection\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"document\",\"not_null\":true,\"type\":\"jsonb\"}],\"kind\":\"r\",\"table\":\"projections\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"projection\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_projections_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"saga\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"state\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"folded\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"completed\",\"not_null\":true,\"type\":\"boolean\"},{\"collation\":null,\"default\":false,\"name\":\"completed_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"saga_instances\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"saga\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_saga_instances_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"saga\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"idempotency_key\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"issued_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"saga_outbox\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"saga\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_saga_outbox_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"outbox\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"expires_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"relay_leases\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"outbox\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_relay_leases_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_command_outbox_pkey": "command_outbox_id",
+        "edax_events_pkey": "events_id",
+        "edax_events_stream_sequence_key": "events_stream_sequence",
+        "edax_ledger_pkey": "ledger_key",
+        "edax_projections_pkey": "projections_key",
+        "edax_relay_leases_pkey": "relay_leases_outbox",
+        "edax_saga_instances_pkey": "saga_instances_key",
+        "edax_saga_outbox_pkey": "saga_outbox_command",
+        "edax_snapshots_pkey": "snapshots_stream"
+      }
+    },
+    "name": "compatible_default",
+    "roles": [
+      "events",
+      "snapshots",
+      "event_outbox",
+      "command_outbox",
+      "projections",
+      "ledger",
+      "saga_instances",
+      "saga_outbox",
+      "relay_leases"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"stream\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"sequence\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"occurred_at\",\"not_null\":false,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"recorded_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"events\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"billing_events_pkey\",\"partial\":false,\"valid\":true},{\"collations\":[\"C\",\"\"],\"columns\":[\"stream\",\"sequence\"],\"deferrable\":false,\"expressions\":false,\"name\":\"billing_events_stream_sequence_key\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"stream\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"type_name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"}],\"kind\":\"r\",\"table\":\"snapshots\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"stream\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_snapshots_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"event_id\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"event_outbox\",\"unique\":[]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"idempotency_key\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"issued_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"command_outbox\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_command_outbox_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"projection\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"document\",\"not_null\":true,\"type\":\"jsonb\"}],\"kind\":\"r\",\"table\":\"projections\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"projection\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_projections_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"idem_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"saga\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"state\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"folded\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"completed\",\"not_null\":true,\"type\":\"boolean\"},{\"collation\":null,\"default\":false,\"name\":\"completed_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"saga_instances\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"saga\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_saga_instances_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":null,\"default\":true,\"name\":\"position\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"C\",\"default\":false,\"name\":\"saga\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"C\",\"default\":false,\"name\":\"id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"idempotency_key\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"aggregate_id\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"tenant\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"name\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"version\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":null,\"default\":false,\"name\":\"data\",\"not_null\":true,\"type\":\"bytea\"},{\"collation\":\"default\",\"default\":false,\"name\":\"correlation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"causation_id\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"issued_at\",\"not_null\":true,\"type\":\"bigint\"},{\"collation\":\"default\",\"default\":false,\"name\":\"extensions\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"metadata\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"saga_outbox\",\"unique\":[{\"collations\":[\"C\",\"C\"],\"columns\":[\"saga\",\"id\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_saga_outbox_pkey\",\"partial\":false,\"valid\":true}]},{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"outbox\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"expires_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"relay_leases\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"outbox\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_relay_leases_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "billing_events_pkey": "events_id",
+        "billing_events_stream_sequence_key": "events_stream_sequence",
+        "edax_command_outbox_pkey": "command_outbox_id",
+        "edax_projections_pkey": "projections_key",
+        "edax_relay_leases_pkey": "relay_leases_outbox",
+        "edax_saga_instances_pkey": "saga_instances_key",
+        "edax_saga_outbox_pkey": "saga_outbox_command",
+        "edax_snapshots_pkey": "snapshots_stream",
+        "idem_pkey": "ledger_key"
+      }
+    },
+    "name": "compatible_named",
+    "roles": [
+      "events",
+      "snapshots",
+      "event_outbox",
+      "command_outbox",
+      "projections",
+      "ledger",
+      "saga_instances",
+      "saga_outbox",
+      "relay_leases"
+    ],
+    "tables": "{\"schema\":\"billing\",\"names\":{\"events\":\"billing_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"idem\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":null,\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: table \"public\".\"edax_ledger\" (ledger) does not exist",
+    "name": "catalog_missing_table",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"p\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_ledger_pkey": "ledger_key"
+      }
+    },
+    "error": null,
+    "name": "catalog_partitioned_table_accepted",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".record is missing",
+    "name": "catalog_missing_column",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"json\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".record is json, needs text or character varying",
+    "name": "catalog_wrong_type",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"character varying\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_ledger_pkey": "ledger_key"
+      }
+    },
+    "error": null,
+    "name": "catalog_varchar_accepted",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".owner is NOT NULL, but edax writes NULL into it",
+    "name": "catalog_not_null_where_edax_writes_null",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"en_US\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".key collates as en_US, needs \"C\"",
+    "name": "catalog_key_collation",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"POSIX\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_ledger_pkey": "ledger_key"
+      }
+    },
+    "error": null,
+    "name": "catalog_posix_collation_accepted",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"},{\"collation\":\"default\",\"default\":false,\"name\":\"region\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".region is NOT NULL with no default, so edax's inserts would fail",
+    "name": "catalog_extra_not_null_column",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"},{\"collation\":\"default\",\"default\":true,\"name\":\"region\",\"not_null\":true,\"type\":\"text\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": {
+      "unique": {
+        "edax_ledger_pkey": "ledger_key"
+      }
+    },
+    "error": null,
+    "name": "catalog_extra_defaulted_column_accepted",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_missing_unique",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":true,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_partial_unique",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":true,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_expression_unique",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":true,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_deferrable_unique",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":false}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_invalid_unique",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"C\"],\"columns\":[\"key\",\"owner\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_unique_over_more_columns",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"text\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[{\"collations\":[\"en_US\"],\"columns\":[\"key\"],\"deferrable\":false,\"expressions\":false,\"name\":\"edax_ledger_pkey\",\"partial\":false,\"valid\":true}]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_unique_collation",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "catalog": "[{\"columns\":[{\"collation\":\"C\",\"default\":false,\"name\":\"key\",\"not_null\":true,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"owner\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"settled_by\",\"not_null\":false,\"type\":\"text\"},{\"collation\":\"default\",\"default\":false,\"name\":\"record\",\"not_null\":true,\"type\":\"json\"},{\"collation\":null,\"default\":false,\"name\":\"claimed_at\",\"not_null\":true,\"type\":\"timestamp with time zone\"},{\"collation\":null,\"default\":false,\"name\":\"settled_at\",\"not_null\":false,\"type\":\"timestamp with time zone\"}],\"kind\":\"r\",\"table\":\"ledger\",\"unique\":[]}]",
+    "compatibility": null,
+    "error": "bad_handle: postgres tables do not meet edax table contract 1: \"public\".\"edax_ledger\".record is json, needs text or character varying; \"public\".\"edax_ledger\" has no unique index on exactly (key): not partial, not deferrable, collating as \"C\"",
+    "name": "catalog_several_mismatches_listed",
+    "roles": [
+      "ledger"
+    ],
+    "tables": "{\"schema\":\"public\",\"names\":{\"events\":\"edax_events\",\"snapshots\":\"edax_snapshots\",\"event_outbox\":\"edax_event_outbox\",\"command_outbox\":\"edax_command_outbox\",\"projections\":\"edax_projections\",\"ledger\":\"edax_ledger\",\"saga_instances\":\"edax_saga_instances\",\"saga_outbox\":\"edax_saga_outbox\",\"relay_leases\":\"edax_relay_leases\"}}"
+  },
+  {
+    "deadlock_timeout_ms": 1000,
+    "error": null,
+    "name": "server_utf8_17",
+    "server_encoding": "UTF8",
+    "server_version_num": 170004,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  },
+  {
+    "deadlock_timeout_ms": 1000,
+    "error": "bad_handle: postgres server_encoding is LATIN1, edax needs UTF8",
+    "name": "server_latin1",
+    "server_encoding": "LATIN1",
+    "server_version_num": 170004,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  },
+  {
+    "deadlock_timeout_ms": 1000,
+    "error": "bad_handle: postgres 130011 is older than 14",
+    "name": "server_pg_13",
+    "server_encoding": "UTF8",
+    "server_version_num": 130011,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  },
+  {
+    "deadlock_timeout_ms": 1999,
+    "error": null,
+    "name": "server_deadlock_timeout_1999",
+    "server_encoding": "UTF8",
+    "server_version_num": 170004,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  },
+  {
+    "deadlock_timeout_ms": 2000,
+    "error": "bad_handle: lock_timeout_ms 2000 must exceed deadlock_timeout_ms 2000, so deadlocks are detected before lock waits expire",
+    "name": "server_deadlock_timeout_2000",
+    "server_encoding": "UTF8",
+    "server_version_num": 170004,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  },
+  {
+    "deadlock_timeout_ms": 2001,
+    "error": "bad_handle: lock_timeout_ms 2000 must exceed deadlock_timeout_ms 2001, so deadlocks are detected before lock waits expire",
+    "name": "server_deadlock_timeout_2001",
+    "server_encoding": "UTF8",
+    "server_version_num": 170004,
+    "settings": {
+      "acquire_timeout_ms": 5000,
+      "claim_ttl_ms": 300000,
+      "idle_in_transaction_ms": 60000,
+      "lock_timeout_ms": 2000,
+      "op_timeout_ms": 10000,
+      "statement_timeout_ms": 5000
+    }
+  }
+]

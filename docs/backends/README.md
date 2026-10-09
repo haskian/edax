@@ -2,7 +2,8 @@
 
 How to plug your own database or broker into edax, and what each seam demands in return.
 
-No durable event, projection or saga store ships. You supply those database adapters. Every seam is a `Protocol` in the Python software development
+Postgres ships for every durable seam, in Python; see [postgres](./postgres.md). For any other
+database you supply the adapter. Every seam is a `Protocol` in the Python software development
 kit (SDK) and a trait in the Rust SDK. That docstring is the specification. This page indexes the
 seams and adds the checklist for writing one. A backend supplies the I/O and nothing else; the
 decisions stay in the [kernels](../kernels/README.md).
@@ -12,7 +13,7 @@ flowchart LR
     K["kernel: hash, verdict, filter, order"] -->|"decides"| S
     S["SDK: bus, guard, Repository, Relay, dispatcher"] -->|"calls the seam"| P
     P["seam: Protocol or trait"] -->|"implemented by"| B
-    B["backend: memory, redis, kafka, yours"] -->|"speaks to"| D["your database or broker"]
+    B["backend: memory, postgres, redis, kafka, yours"] -->|"speaks to"| D["your database or broker"]
 ```
 
 ## The seam contracts
@@ -234,12 +235,18 @@ classDiagram
         +mark_published()
     }
     Transactor <|.. MemoryTransactor : memory
+    Transactor <|.. PostgresTransactor : postgres
     EventStore <|.. MemoryEventStore : memory
+    EventStore <|.. PostgresEventStore : postgres
     IdempotencyStore <|.. MemoryIdempotencyStore : memory
+    IdempotencyStore <|.. PostgresIdempotencyStore : postgres
     IdempotencyStore <|.. RedisIdempotencyStore : redis
     ProjectionStore <|.. MemoryProjectionStore : memory
+    ProjectionStore <|.. PostgresProjectionStore : postgres
     ProjectionQuery <|.. MemoryProjectionStore : memory
+    ProjectionQuery <|.. PostgresProjectionStore : postgres
     SagaStore <|.. MemorySagaStore : memory
+    SagaStore <|.. PostgresSagaStore : postgres
     MemoryTransactor <.. MemoryEventStore : shares one database
     MemoryTransactor <.. MemoryIdempotencyStore : shares one database
 ```
@@ -261,10 +268,12 @@ classDiagram
     Consumer <|.. KafkaConsumer : kafka
 ```
 
-`memory` covers every seam and is the reference implementation; see [memory](./memory.md). `redis`
-covers the ledger only, as the worked example of a store that cannot join your transaction; see
+`memory` covers every seam and is the reference implementation; see [memory](./memory.md).
+`postgres` covers every durable seam over an `asyncpg` pool, with the query pushed down to SQL; see
+[postgres](./postgres.md). `redis` covers the ledger only, as the worked example of a store that cannot join your transaction; see
 [redis](./redis.md). `kafka` covers the broker seam; see [kafka](./kafka.md). The base package
-depends on no broker or database library; `redis` and `kafka` wrap a client you own and construct.
+depends on no broker or database library; `postgres`, `redis` and `kafka` wrap a client you own and
+construct.
 
 ## Adding a backend
 
@@ -286,7 +295,7 @@ seam-by-seam checklist that follows.
    technology can get wrong.
 4. **Ship it as its own wheel when it needs its own release cadence.** Until then the base package
    ships the module, and an extra installs the client. `edax[kafka]` and `edax[redis]` work that way
-   today. At the split the base wheel drops the module and `edax/backend/__init__.py` together.
+   today, and `edax[postgres]` the same way. At the split the base wheel drops the module and `edax/backend/__init__.py` together.
    That leaves `edax.backend` a namespace package, so the import path `edax.backend.<tech>` survives
    the move. A namespace package buys nothing before that point, while one wheel ships both halves.
 
@@ -303,11 +312,15 @@ followed by a write in Python holds only until two writers interleave.
 | `IdempotencyStore.claim` | insert only if absent, and tell the loser it lost | `INSERT ... ON CONFLICT DO NOTHING`, then read the existing row |
 | `ProjectionStore.save` | write at `version + 1` only from `version` | `UPDATE ... WHERE version = ?`, checking the row count; a unique insert for version 1 |
 | `SagaStore.save` / `complete` | the same compare-and-set on the instance version, refusing a tombstone, with the commands inserted in the same transaction | as above, keyed by `(saga, id)`, plus an outbox table keyed by `(saga, command id)` |
-| `Outbox.unpublished` with N relays | hand each row to one relay | `SELECT ... WHERE published_at IS NULL FOR UPDATE SKIP LOCKED`, or a `leased_until` column |
+| `Outbox.unpublished` with N relays | let one relay read the outbox at a time | one lease row per outbox, taken or renewed in the same statement as the read (see [postgres](./postgres.md#outboxes-and-relays)) |
 
-The last row is a choice, not a requirement. The polling contract does not lease rows, so run one
-relay per store unless you add leasing; two unleased relays return the same rows and publish them
-twice. The alternative is change data capture: `append` already wrote the outbox row inside the
+The last row is a choice, not a requirement. The polling contract does not lease rows. So run one
+relay per store unless you add a lease. Two relays without one return the same rows and publish
+them twice. Lease the whole outbox, never single rows. With `FOR UPDATE SKIP LOCKED` or a
+`leased_until` column per row, relay A can hold event 1 of an aggregate. Relay B then publishes
+event 2 first, which breaks the per-key order the relay promises.
+
+The alternative is change data capture: `append` already wrote the outbox row inside the
 transaction, so a write-ahead-log consumer sees it when it commits. Feed those event messages to
 `edax.outbox.pump` and let your change data capture (CDC) client's committed position be the
 acknowledgement.
@@ -475,6 +488,7 @@ Three smaller prohibitions follow from the same rule.
 
 - [memory](./memory.md) — the reference backend for every seam, and the transaction it keeps for
   real.
+- [postgres](./postgres.md) — every durable seam on Postgres, the query pushed down to SQL.
 - [redis](./redis.md) — a ledger that cannot join your transaction, and the fence that follows.
 - [kafka](./kafka.md) — the broker seam over a client you own.
 - [kernels](../kernels/README.md) — what a backend must never re-decide.

@@ -406,9 +406,12 @@ bus = CommandBus(
 - A third outcome is a bug. Swallowing the failure and then reading under a stale snapshot finds no
   row. It reports a win and runs the handler twice.
 - Which of the two outcomes a database gives depends on its isolation level. Establishing that is
-  the backend author's job, and no durable backend ships here to establish it for you.
-- The blocking wait must be bounded by a lock or statement timeout, and the expiry must also surface
-  as `StoreError`. A claim is a remote call like any other.
+  the backend author's job. The [Postgres ledger](../backends/postgres.md#the-idempotency-ledger)
+  blocks, under the `READ COMMITTED` it forces.
+- The blocking wait must be bounded by a lock or statement timeout. A claim is a remote call like any
+  other. The expiry surfaces as `StoreError`. A store that knows another unit of work holds the key
+  may raise `InProgress` instead. The Postgres ledger reports its lock wait that way, and a
+  dispatcher retries it without counting an attempt.
 - A backend that cannot block may instead return the holder's record as pending, which the guard
   reports as `InProgress`. The in-memory store does that: it re-masks a holder's staged
   record as pending, because the holder may still roll back. Both outcomes are correct, so a caller

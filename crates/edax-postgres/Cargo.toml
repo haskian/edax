@@ -1,0 +1,20 @@
+[package]
+name = "edax-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Postgres store kernel of edax: schema, statements, row layout, query compiler, ledger fence, SQLSTATE verdict"
+
+[dependencies]
+edax-core.workspace = true
+edax-event.workspace = true
+edax-cqrs.workspace = true
+serde.workspace = true
+serde_json = "1"
+
+[dev-dependencies]
+edax-golden.workspace = true
+
+[lints]
+workspace = true

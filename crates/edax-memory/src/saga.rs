@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error, ErrorCode};
-use edax_event::{saga_command_id, CommandMessage};
+use edax_event::{check_saga_commands, CommandMessage};
 use serde_json::Value;
 
 use crate::tx::{store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
@@ -57,7 +57,7 @@ pub enum SagaRow {
 ///   never goes back to 0 and a stale writer that loaded the old instance cannot re-create it (ABA);
 /// - the commands a step decided are staged with its state in the same write, so they commit or
 ///   roll back together. Each is the kernel's `saga_command` row: its id is the kernel's
-///   [`saga_command_id`] for that write and its `aggregate_id` is the instance, or the write is a
+///   [`saga_command_id`](edax_event::saga_command_id) for that write and its `aggregate_id` is the instance, or the write is a
 ///   `codec` error and stages nothing;
 /// - [`unpublished`](Self::unpublished) shows a saga's committed commands only, oldest commit first,
 ///   until [`mark_published`](Self::mark_published) prunes them.
@@ -74,24 +74,6 @@ store_view!(MemorySagaStore, saga_store);
 /// The key of instance `id` of `saga`.
 fn key(saga: &str, id: &str) -> SagaKey {
     (saga.to_owned(), id.to_owned())
-}
-
-/// Refuse a command that does not belong to the write of instance `id` of `saga` at `version`: every id
-/// must be the kernel's for its saga and index, and every command must target the instance.
-/// Deterministic, so `codec`. The instance is the command's `aggregate_id`, so a command without one
-/// belongs to no instance.
-fn check_commands(saga: &str, id: &str, version: u64, commands: &[CommandMessage]) -> Result<(), Error> {
-    for (index, command) in (0u64..).zip(commands) {
-        let want = saga_command_id(saga, id, version, index);
-        let instance = command.aggregate_id.as_deref();
-        if command.id != want || instance != Some(id) {
-            return Err(Error::codec(format_args!(
-                "saga command {index} of {id} at version {version} is {:?} for instance {instance:?}, expected {want:?}",
-                command.id
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// The refusal of any write to a completed instance: completion is final.
@@ -170,7 +152,7 @@ impl MemorySagaStore {
                 &format!("saga {saga} instance {id}"),
                 admit,
             )?;
-            check_commands(saga, id, next, &commands)?;
+            check_saga_commands(saga, id, next, &commands)?;
             stage_commands(committed.saga_outbox.get(saga), others, own, saga, commands)?;
             own.sagas.insert(
                 key,

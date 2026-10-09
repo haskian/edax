@@ -222,6 +222,18 @@ type PollLookup = native.PollLookup
 // PollResult is the kernel's binding record.
 type PollResult = native.PollResult
 
+// PostgresClaimRead is the kernel's binding record.
+type PostgresClaimRead = native.PostgresClaimRead
+
+// PostgresQuery is the kernel's binding record.
+type PostgresQuery = native.PostgresQuery
+
+// PostgresSagaRow is the kernel's binding record.
+type PostgresSagaRow = native.PostgresSagaRow
+
+// PostgresSettings is the kernel's binding record.
+type PostgresSettings = native.PostgresSettings
+
 // ProjectionLookup is the kernel's binding record.
 type ProjectionLookup = native.ProjectionLookup
 
@@ -992,6 +1004,441 @@ func PayloadHash(payload []byte) uint64 {
 // PayloadHashJSON calls the shared kernel.
 func PayloadHashJSON(payload []byte) (uint64, error) {
 	nativeValue, nativeError := native.PayloadHashJSON(normalizeNative(payload))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresAppendParams calls the shared kernel.
+func PostgresAppendParams(stream string, expected uint64, drafts []EventDraft) (string, error) {
+	var zero string
+	if err := checkNativeString("stream", stream); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("drafts", drafts); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresAppendParams(stream, expected, normalizeNative(drafts))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresAppendResult calls the shared kernel.
+func PostgresAppendResult(expected uint64, drafts uint64, resultArg string) ([]EventMessage, error) {
+	var zero []EventMessage
+	if err := checkNativeString("resultArg", resultArg); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresAppendResult(expected, drafts, resultArg)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresBoundParam calls the shared kernel.
+func PostgresBoundParam(value uint64) string {
+	nativeValue := native.PostgresBoundParam(value)
+	return nativeValue
+}
+
+// PostgresCatalogParam calls the shared kernel.
+func PostgresCatalogParam(tablesJSON string, rolesNamed []string) (string, error) {
+	var zero string
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("rolesNamed", rolesNamed); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresCatalogParam(tablesJSON, normalizeNative(rolesNamed))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresCheckCatalog calls the shared kernel.
+func PostgresCheckCatalog(tablesJSON string, rolesNamed []string, catalogJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("catalogJSON", catalogJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("rolesNamed", rolesNamed); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresCheckCatalog(tablesJSON, normalizeNative(rolesNamed), catalogJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresCheckConfig calls the shared kernel.
+func PostgresCheckConfig(settings PostgresSettings) error {
+	if err := checkNativeValue("settings", settings); err != nil {
+		return err
+	}
+	return mapNativeError(native.PostgresCheckConfig(normalizeNative(settings)))
+}
+
+// PostgresCheckServer calls the shared kernel.
+func PostgresCheckServer(serverEncoding string, serverVersionNum int64, deadlockTimeoutMs int64, settings PostgresSettings) error {
+	if err := checkNativeString("serverEncoding", serverEncoding); err != nil {
+		return err
+	}
+	if err := checkNativeValue("settings", settings); err != nil {
+		return err
+	}
+	return mapNativeError(native.PostgresCheckServer(serverEncoding, serverVersionNum, deadlockTimeoutMs, normalizeNative(settings)))
+}
+
+// PostgresClaimParams calls the shared kernel.
+func PostgresClaimParams(key string, owner string, payloadHash uint64) (string, error) {
+	var zero string
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("owner", owner); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresClaimParams(key, owner, payloadHash)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// GetPostgresClaimRead calls the shared kernel.
+func GetPostgresClaimRead(row *string) (*PostgresClaimRead, error) {
+	var zero *PostgresClaimRead
+	if row != nil {
+		if err := checkNativeString("row", *row); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.GetPostgresClaimRead(row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresClaimReads calls the shared kernel.
+func PostgresClaimReads() uint32 {
+	nativeValue := native.PostgresClaimReads()
+	return nativeValue
+}
+
+// PostgresClientFailures calls the shared kernel.
+func PostgresClientFailures() []string {
+	nativeValue := native.PostgresClientFailures()
+	return nativeValue
+}
+
+// PostgresClientVerdict calls the shared kernel.
+func PostgresClientVerdict(op string, kind string, message string) (string, error) {
+	var zero string
+	if err := checkNativeString("op", op); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("kind", kind); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresClientVerdict(op, kind, message)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresCommandsParam calls the shared kernel.
+func PostgresCommandsParam(commands []CommandMessage) (string, error) {
+	var zero string
+	if err := checkNativeValue("commands", commands); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresCommandsParam(normalizeNative(commands))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresCompileQuery calls the shared kernel.
+func PostgresCompileQuery(tablesJSON string, projection string, spec string) (*PostgresQuery, error) {
+	var zero *PostgresQuery
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("projection", projection); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("spec", spec); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresCompileQuery(tablesJSON, projection, spec)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresCompleteWrite calls the shared kernel.
+func PostgresCompleteWrite(key string, row *string, handle []byte, record string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	if row != nil {
+		if err := checkNativeString("row", *row); err != nil {
+			return zero, err
+		}
+	}
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresCompleteWrite(key, row, normalizeNative(handle), record)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresContractVersion calls the shared kernel.
+func PostgresContractVersion() uint32 {
+	nativeValue := native.PostgresContractVersion()
+	return nativeValue
+}
+
+// PostgresDecodeCommands calls the shared kernel.
+func PostgresDecodeCommands(rows []string) ([]CommandMessage, error) {
+	var zero []CommandMessage
+	if err := checkNativeValue("rows", rows); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresDecodeCommands(normalizeNative(rows))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresDecodeEvents calls the shared kernel.
+func PostgresDecodeEvents(rows []string) ([]EventMessage, error) {
+	var zero []EventMessage
+	if err := checkNativeValue("rows", rows); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresDecodeEvents(normalizeNative(rows))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresDecodeSaga calls the shared kernel.
+func PostgresDecodeSaga(row string) (*PostgresSagaRow, error) {
+	var zero *PostgresSagaRow
+	if err := checkNativeString("row", row); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresDecodeSaga(row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresDecodeSnapshot calls the shared kernel.
+func PostgresDecodeSnapshot(row string) (*SnapshotResult, error) {
+	var zero *SnapshotResult
+	if err := checkNativeString("row", row); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresDecodeSnapshot(row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresDefaultSettings calls the shared kernel.
+func PostgresDefaultSettings() *PostgresSettings {
+	nativeValue := native.PostgresDefaultSettings()
+	return nativeValue
+}
+
+// PostgresForgetWrite calls the shared kernel.
+func PostgresForgetWrite(key string, row *string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	if row != nil {
+		if err := checkNativeString("row", *row); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.PostgresForgetWrite(key, row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresIdsParam calls the shared kernel.
+func PostgresIdsParam(ids []string) (string, error) {
+	var zero string
+	if err := checkNativeValue("ids", ids); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresIdsParam(normalizeNative(ids))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresNewOwner calls the shared kernel.
+func PostgresNewOwner() string {
+	nativeValue := native.PostgresNewOwner()
+	return nativeValue
+}
+
+// PostgresOps calls the shared kernel.
+func PostgresOps() []string {
+	nativeValue := native.PostgresOps()
+	return nativeValue
+}
+
+// PostgresPage calls the shared kernel.
+func PostgresPage(spec string, rows []string) (string, error) {
+	var zero string
+	if err := checkNativeString("spec", spec); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("rows", rows); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresPage(spec, normalizeNative(rows))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresProjectionResult calls the shared kernel.
+func PostgresProjectionResult(id string, expected uint64, written *int64) (uint64, error) {
+	var zero uint64
+	if err := checkNativeString("id", id); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresProjectionResult(id, expected, written)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresReferenceDdl calls the shared kernel.
+func PostgresReferenceDdl(tablesJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresReferenceDdl(tablesJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresReleaseWrite calls the shared kernel.
+func PostgresReleaseWrite(row *string, handle []byte) (bool, error) {
+	var zero bool
+	if row != nil {
+		if err := checkNativeString("row", *row); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.PostgresReleaseWrite(row, normalizeNative(handle))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresSagaParams calls the shared kernel.
+func PostgresSagaParams(saga string, id string, version uint64, stateJSON *string, folded string, commands []CommandMessage) (string, error) {
+	var zero string
+	if err := checkNativeString("saga", saga); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("id", id); err != nil {
+		return zero, err
+	}
+	if stateJSON != nil {
+		if err := checkNativeString("stateJSON", *stateJSON); err != nil {
+			return zero, err
+		}
+	}
+	if err := checkNativeString("folded", folded); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("commands", commands); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresSagaParams(saga, id, version, stateJSON, folded, normalizeNative(commands))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresSagaResult calls the shared kernel.
+func PostgresSagaResult(saga string, id string, expected uint64, resultArg string) (uint64, error) {
+	var zero uint64
+	if err := checkNativeString("saga", saga); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("id", id); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("resultArg", resultArg); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresSagaResult(saga, id, expected, resultArg)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresSnapshotParams calls the shared kernel.
+func PostgresSnapshotParams(stream string, typeName string, version uint64, data []byte) (string, error) {
+	var zero string
+	if err := checkNativeString("stream", stream); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("typeName", typeName); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresSnapshotParams(stream, typeName, version, normalizeNative(data))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresSnapshotResult calls the shared kernel.
+func PostgresSnapshotResult(stream string, version uint64, streamVersion int64) error {
+	if err := checkNativeString("stream", stream); err != nil {
+		return err
+	}
+	return mapNativeError(native.PostgresSnapshotResult(stream, version, streamVersion))
+}
+
+// PostgresStatements calls the shared kernel.
+func PostgresStatements(tablesJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresStatements(tablesJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresStoredDocument calls the shared kernel.
+func PostgresStoredDocument(id string, documentJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("id", id); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("documentJSON", documentJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresStoredDocument(id, documentJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresTableRoles calls the shared kernel.
+func PostgresTableRoles() []string {
+	nativeValue := native.PostgresTableRoles()
+	return nativeValue
+}
+
+// PostgresTables calls the shared kernel.
+func PostgresTables(tablesJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("tablesJSON", tablesJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresTables(tablesJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresUniqueKeys calls the shared kernel.
+func PostgresUniqueKeys() []string {
+	nativeValue := native.PostgresUniqueKeys()
+	return nativeValue
+}
+
+// PostgresVerdict calls the shared kernel.
+func PostgresVerdict(op string, sqlstate string, unique *string, message string) (string, error) {
+	var zero string
+	if err := checkNativeString("op", op); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("sqlstate", sqlstate); err != nil {
+		return zero, err
+	}
+	if unique != nil {
+		if err := checkNativeString("unique", *unique); err != nil {
+			return zero, err
+		}
+	}
+	if err := checkNativeString("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresVerdict(op, sqlstate, unique, message)
 	return nativeValue, mapNativeError(nativeError)
 }
 

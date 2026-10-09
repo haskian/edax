@@ -1,6 +1,6 @@
 # The kernels
 
-What the five pure Rust kernels own, why the boundary sits exactly there, and how each software
+What the six pure Rust kernels own, why the boundary sits exactly there, and how each software
 development kit (SDK) reaches them.
 
 The SDK wires; the kernel decides. A decision that must be identical in
@@ -28,6 +28,7 @@ flowchart LR
         CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query"]
         KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
         RED["edax-redis<br/>ledger · scripts"]
+        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger"]
     end
 
     APP -->|"calls a seam"| RS
@@ -45,19 +46,23 @@ flowchart LR
     ABI --> CQ
     ABI --> KAF
     ABI --> RED
+    ABI --> PG
     EV -->|"reuses hash and the error taxonomy"| CORE
     CQ -->|"reuses hash and the error taxonomy"| CORE
     KAF -->|"reuses the message codec"| EV
     KAF --> CORE
     RED -->|"reuses the idempotency record"| CQ
     RED --> CORE
+    PG -->|"reuses the query, the record and the fence"| CQ
+    PG -->|"reuses the messages"| EV
 ```
 
 Each node lists its crate's modules. The table at the top of each kernel's page ([core](./core.md),
-[event](./event.md), [cqrs](./cqrs.md), [kafka](./kafka.md), [redis](./redis.md)) is the one complete
+[event](./event.md), [cqrs](./cqrs.md), [kafka](./kafka.md), [redis](./redis.md),
+[postgres](./postgres.md)) is the one complete
 description of what each module owns.
 
-`edax-kafka` and `edax-redis` are the two per-technology kernels. Each one owns the bytes, names and
+`edax-kafka`, `edax-redis` and `edax-postgres` are the three per-technology kernels. Each one owns the bytes, names and
 state decisions a backend forces two SDKs to share, and each SDK ships only the client calls around
 it. The [glossary](../glossary.md) calls this a protocol module in Rust with an input and output
 (I/O) shell per SDK.
@@ -156,23 +161,27 @@ assert it, and a byte of drift fails the build.
 | Is a broker error one record's, the client's, or passing? | `edax-kafka` | `kafka_error.json` | One SDK dead-letters a record the broker refused while the other retries it forever, or one drains the outbox into the dead-letter queue over an ACL mistake |
 | What bytes sit under an idempotency key in Redis? | `edax-redis` | `redis_value.json` | A ledger written by one SDK is unreadable by another sharing it, so both run the same command |
 | Which Lua does a fenced write or a forget run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
+| Which tables, statements and row layout does a Postgres store use? | `edax-postgres` | `postgres_contract.json`, `postgres_statements.json`, `postgres_rows.json` | One SDK writes a row the other cannot read, or appends events past the other's version check |
+| What SQL does a read-model query become? | `edax-postgres` | `postgres_query.json` | A Postgres read model answers a filter or cuts a page differently from the memory store, so two services disagree on one row |
+| What does a Postgres error mean? | `edax-postgres` | `postgres_error.json` | One SDK retries a reused id forever while the other refuses it, or counts a held claim toward the dead-letter limit |
 
 The table shows the main decisions. [Golden vectors](./golden-vectors.md) lists every file.
 
 Every vector is derived by the golden test of the crate that owns the code it pins. The harness
 itself is one crate, so the rule enforcing the contract cannot drift between kernels.
 
-## Deterministic, and the three functions that are not
+## Deterministic, and the four functions that are not
 
-Kernel decisions are deterministic given their inputs and any caller-owned state. Three functions also read ambient state:
+Kernel decisions are deterministic given their inputs and any caller-owned state. Four functions also read ambient state:
 
 | Function | Source | Why it is not deterministic | What it guarantees instead |
 |---|---|---|---|
 | `guid` | `crates/edax-core/src/guid.rs` | Reads the clock and a random source to generate a universally unique identifier (UUID) v7 | Structural only: 8-4-4-4-12 lowercase hyphenated, version 7, RFC4122 variant, time-ordered prefix |
 | `current_timestamp` | `crates/edax-core/src/clock.rs` | Reads the wall clock, then bumps a process-local high-water mark | Strictly greater than every prior return in this process, even across a Network Time Protocol (NTP) step backwards |
 | `new_claim` | `crates/edax-redis/src/ledger.rs` | Mints a fresh UUID v7 owner token for the claim value from the clock and a random source | Structural only: the token is 32 lowercase hexadecimal characters, version 7, and distinct per call |
+| `new_owner` | `crates/edax-postgres/src/ledger.rs` | Mints a fresh UUID v7 owner token for a Postgres claim, as `new_claim` does | Structural only, as `new_claim` |
 
-None of the three carries a golden vector, and each docstring says so. They still belong in a kernel
+None of the four carries a golden vector, and each docstring says so. They still belong in a kernel
 because the shape of what they produce is a cross-language contract. A token of the wrong width
 cannot fence a claim any other SDK wrote. These functions do not establish delivery order:
 aggregate sequences do that. The Rust and Python SDKs accept overrides for identifier and timestamp
@@ -227,6 +236,8 @@ waiting.
   and the token-settled offset watermark.
 - [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the five fenced
   scripts.
+- [postgres.md](./postgres.md) — `edax-postgres`: the schema, the statements, the row layout, the query
+  compiler, the error verdict and the ledger fence.
 - [golden-vectors.md](./golden-vectors.md) — how the contract is generated, asserted and
   regenerated.
 - [../architecture.md](../architecture.md) — the full layering and build pipeline these crates sit

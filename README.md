@@ -148,7 +148,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
   layers, and what each one owns.
 - [Delivery guarantees](docs/guides/delivery-guarantees.md) — at-least-once, dedup windows, and
   both idempotency guard modes.
-- [Backends](docs/backends/README.md) — the seam contracts, and the memory, Redis and Kafka
+- [Backends](docs/backends/README.md) — the seam contracts, and the memory, Postgres, Redis and Kafka
   implementations. The `edax-kafka` kernel owns a Kafka record, its header, its partition and the
   offset watermark that settles it. The adapter only makes the client calls.
 
@@ -163,6 +163,7 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 | `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
 | `crates/edax-kafka` | Kafka kernel: `record` (key, header, route, dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`). [Scope](docs/kernels/kafka.md) |
 | `crates/edax-redis` | Redis kernel: `ledger` (the idempotency ledger's key, settings, value layout, claim handle, reply outcomes), `scripts` (the five fence scripts, the reply verdict). [Scope](docs/kernels/redis.md) |
+| `crates/edax-postgres` | Postgres kernel: `config`, `error` (the SQLSTATE verdict), `schema` (the table contract and its catalog check), `statements`, `rows` (the row layout), `documents` (exact number text), `query` (the query compiled to SQL), `ledger` (the fence). [Scope](docs/kernels/postgres.md) |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source both native bindings are generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
@@ -180,8 +181,8 @@ Early alpha. The API is not yet stable. Build from source; see
 See [release setup](docs/releasing.md). The version literal lives in `Cargo.toml` alone,
 so this page does not restate it; [stability](docs/stability.md) says what a version promises.
 
-Deliberately out of scope: durable event- and projection-store backends, transports beyond the
-Kafka adapter, and upcast transforms. The kernel plans an upcast, and your code rewrites the
+Deliberately out of scope: durable stores beyond the Postgres backend (Python only), transports
+beyond the Kafka adapter, and upcast transforms. The kernel plans an upcast, and your code rewrites the
 payload.
 
 ## License
