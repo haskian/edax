@@ -15,6 +15,7 @@ from edax.backend import postgres as pg
 from edax.errors import BadHandle, CodecError, ConcurrencyError, EdaxError, InProgress, StoreError
 from edax.message import CommandMessage, EventDraft
 from edax.query import Query
+from edax.testing.messages import drafted
 from edax.unit_of_work import transaction
 
 _PUBLIC = '{"schema": "public"}'
@@ -27,10 +28,6 @@ class ServerError(Exception):
         super().__init__(f"server says {sqlstate}")
         self.sqlstate = sqlstate
         self.constraint_name = constraint
-
-
-class ConnectionDoesNotExistError(Exception):
-    """Named like asyncpg's client error for a closed connection."""
 
 
 @pytest.mark.parametrize(
@@ -48,7 +45,6 @@ class ConnectionDoesNotExistError(Exception):
         ("missing_table", "load", ServerError("42P01"), BadHandle),
         ("serialization", "projection_save", ServerError("40001"), StoreError),
         ("client_timeout", "load", asyncio.TimeoutError(), StoreError),
-        ("closed_connection", "load", ConnectionDoesNotExistError("gone"), StoreError),
         ("os_error", "load", OSError("refused"), StoreError),
         ("unencodable_parameter", "load", ValueError("bad text"), CodecError),
         ("anything_else", "load", RuntimeError("?"), StoreError),
@@ -130,37 +126,20 @@ def test_a_unique_violation_is_read_by_the_key_its_index_guards() -> None:
 
 
 def _draft(row: dict[str, Any]) -> EventDraft:
-    return EventDraft(
-        id=row["id"],
-        aggregate_id=row["aggregate_id"],
-        name=row["name"],
-        version=row["version"],
-        data=bytes.fromhex(row["data"]),
-        correlation_id=row["correlation_id"],
-        causation_id=row["causation_id"],
-        extensions=json.loads(row["extensions"]),
-        metadata=json.loads(row["metadata"]),
-        tenant=row["tenant"],
-        sequence=row["sequence"],
-        occurred_at=row["occurred_at"],
-    )
+    """The draft a vector's event row holds, read back by the kernel."""
+    return drafted(_native.postgres_decode_events([json.dumps(row)])[0])
 
 
 def _command(row: dict[str, Any]) -> CommandMessage:
-    return CommandMessage(
-        id=row["id"],
-        name=row["name"],
-        version=row["version"],
-        data=bytes.fromhex(row["data"]),
-        correlation_id=row["correlation_id"],
-        causation_id=row["causation_id"],
-        issued_at=row["issued_at"],
-        extensions=json.loads(row["extensions"]),
-        metadata=json.loads(row["metadata"]),
-        idempotency_key=row["idempotency_key"],
-        aggregate_id=row["aggregate_id"],
-        tenant=row["tenant"],
-    )
+    """The command a vector's command row holds, read back by the kernel."""
+    return _native.postgres_decode_commands([json.dumps(row)])[0]
+
+
+def _answer(answer: str | _native.PostgresCall) -> dict[str, Any]:
+    """A parameter call's answer as its vector holds it: the parameters, and the statement when it chose one."""
+    if isinstance(answer, str):
+        return {"params": json.loads(answer)}
+    return {"statement": answer.statement, "params": json.loads(answer.params_json)}
 
 
 def _refusal(call: Any) -> str | None:
@@ -172,8 +151,12 @@ def _refusal(call: Any) -> str | None:
 
 
 def test_statements_vector() -> None:
-    want = {case["name"]: case["sql"] for case in golden("postgres_statements.json")}
+    cases = golden("postgres_statements.json")
+    want = {case["name"]: case["sql"] for case in cases if "settings" not in case}
     assert json.loads(_native.postgres_statements(_PUBLIC)) == want
+    for case in cases:
+        if "settings" in case:
+            assert _native.postgres_begin(pg.PostgresSettings(**case["settings"])) == case["sql"]
 
 
 @pytest.mark.parametrize("case", golden("postgres_contract.json"), ids=lambda c: c["name"])
@@ -181,7 +164,7 @@ def test_contract_vector(case: dict[str, Any]) -> None:
     """The table contract, the reference schema, the table names a host may choose, the verdict on catalog
     replies and the server checks, as the kernel answers them through the binding."""
     if "contract" in case:
-        assert case["version"] == _native.postgres_contract_version()
+        assert f"table contract {case['version']}:" in _native.postgres_reference_ddl(_PUBLIC)
     elif "ddl" in case:
         assert _native.postgres_reference_ddl(case["tables"]) == case["ddl"]
     elif "catalog" in case:
@@ -220,11 +203,21 @@ def test_ledger_vector(case: dict[str, Any]) -> None:
         params = json.loads(_native.postgres_claim_params("k", "o", case["payload_hash"]))
         assert params[2] == case["record"]
         return
+    if "attempt" in case:
+        read = lambda: _native.postgres_claim_read(case["key"], case["attempt"], None)  # noqa: E731
+        assert _refusal(read) == case["error"]
+        if case["error"] is None:
+            assert read().action == case["action"]
+        return
+    if case["name"] == "settle_params":
+        settle = _native.postgres_settle_params(case["key"], case["handle"].encode(), case["record"])
+        assert json.loads(settle) == case["params"]
+        return
     if "row" not in case:
         return  # pending_cannot_settle: replayed by the own_claim row below
     row = None if case["row"] is None else json.dumps(case["row"])
     handle = case["handle"].encode()
-    read = _native.postgres_claim_read(row)
+    read = _native.postgres_claim_read("order-7", 1, row)
     claim = {"vanished": "vanished", "prior": {"prior": read.value}, "take_over": {"take_over": read.value}}
     assert claim[read.action] == case["claim"]
     complete = case["complete"]
@@ -244,29 +237,30 @@ def test_ledger_vector(case: dict[str, Any]) -> None:
 @pytest.mark.parametrize("case", golden("postgres_rows.json"), ids=lambda c: c["name"])
 def test_rows_vector(case: dict[str, Any]) -> None:
     name = case["name"]
-    if name == "append_params":
+    if "call" in case:
+        call = getattr(_native, f"postgres_{case['call']}")
+        assert _refusal(lambda: call(*case["args"])) == case["error"]
+        if case["error"] is None:
+            assert _answer(call(*case["args"])) == case["want"]
+    elif name == "append_params":
         drafts = [_draft(row) for row in json.loads(case["params"][2])]
         got = json.loads(_native.postgres_append_params(case["params"][0], case["expected"], drafts))
         assert got == case["params"]
     elif name == "append_result":
-        events = _native.postgres_append_result(case["expected"], len(case["events"]), case["result"])
-        assert [e.id for e in events] == case["events"]
+        drafts = [_draft(row) for row in case["draft_rows"]]
+        events = _native.postgres_append_result(case["expected"], drafts, case["result"])
+        assert [{"id": e.id, "recorded_at": e.recorded_at} for e in events] == case["events"]
     elif name == "append_result_conflict":
-        assert (
-            _refusal(lambda: _native.postgres_append_result(case["expected"], 1, case["result"]))
-            == case["error"]
-        )
+        drafts = [_draft(row) for row in case["draft_rows"]]
+        result = lambda: _native.postgres_append_result(case["expected"], drafts, case["result"])  # noqa: E731
+        assert _refusal(result) == case["error"]
     elif name == "event_row":
         assert len(_native.postgres_decode_events([case["row"]])) == case["decoded"]
-    elif name == "commands_param":
-        commands = [_command(row) for row in json.loads(case["params"])]
-        assert _native.postgres_commands_param(commands) == case["params"]
-        rows = [json.dumps(row) for row in json.loads(case["params"])]
-        assert [c.id for c in _native.postgres_decode_commands(rows)] == case["decoded"]
-    elif name == "ids_param_drops_nul":
-        assert _native.postgres_ids_param(["a", "b\x00"]) == case["params"]
-    elif name == "bound_param_clamps":
-        assert [_native.postgres_bound_param(5), _native.postgres_bound_param(2**64 - 1)] == case["params"]
+    elif name == "enqueue_params":
+        rows = json.loads(case["params"][0])
+        assert json.loads(_native.postgres_enqueue_params([_command(row) for row in rows])) == case["params"]
+        decoded = _native.postgres_decode_commands([json.dumps(row) for row in rows])
+        assert [c.id for c in decoded] == case["decoded"]
     elif name == "snapshot_params":
         assert (
             json.loads(_native.postgres_snapshot_params("invoice-7", "Invoice", 3, b"\x01\x02"))
@@ -276,32 +270,27 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _refusal(lambda: _native.postgres_snapshot_result("invoice-7", 4, 3)) == case["error"]
     elif name == "projection_conflict":
         assert _refusal(lambda: _native.postgres_projection_result("acct-1", 2, None)) == case["error"]
-    elif name in ("saga_insert_params", "saga_complete_params"):
-        saga, instance, *rest = case["params"]
-        version = 0 if name == "saga_insert_params" else int(rest.pop(0))
-        state, folded, _completed, commands_json = rest
-        commands = [_command(row) for row in json.loads(commands_json)]
-        got = json.loads(_native.postgres_saga_params(saga, instance, version, state, folded, commands))
-        assert got == case["params"]
+    elif name in ("saga_insert", "saga_complete", "saga_foreign_command"):
+        commands = [_command(row) for row in case["command_rows"]]
+        args = (case["saga"], case["id"], case["version"], case["state"], case["folded"])
+        assert _refusal(lambda: _native.postgres_saga_write(*args, commands)) == case.get("error")
+        if case.get("error") is None:
+            assert _answer(_native.postgres_saga_write(*args, commands)) == case["want"]
     elif name in ("saga_completed", "saga_conflict"):
         assert (
             _refusal(lambda: _native.postgres_saga_result("ship", "order-1", 3, case["result"]))
             == case["error"]
         )
-    elif name == "saga_foreign_command":
-        commands = [_command(row) for row in case["command_rows"]]
-        args = (case["saga"], case["id"], case["version"], case["state"], case["folded"])
-        assert _refusal(lambda: _native.postgres_saga_params(*args, commands)) == case["error"]
-    elif name == "stored_document_exact":
-        assert _native.postgres_stored_document(case["id"], case["document"]) == case["stored"]
+    elif name in ("stored_document_exact", "stored_document_nul"):
+        # A projection save binds the document as the kernel stores it, last.
+        save = lambda: _native.postgres_projection_save("accounts", case["id"], 0, case["document"])  # noqa: E731
+        assert _refusal(save) == case.get("error")
+        if case.get("error") is None:
+            assert json.loads(save().params_json)[-1] == case["stored"]
     elif name in ("append_refuses_a_gap", "append_refuses_nul"):
         drafts = [_draft(row) for row in case["draft_rows"]]
         append_params = lambda: _native.postgres_append_params(case["stream"], case["expected"], drafts)  # noqa: E731
         assert _refusal(append_params) == case["error"]
-    elif name == "stored_document_nul":
-        assert (
-            _refusal(lambda: _native.postgres_stored_document(case["id"], case["document"])) == case["error"]
-        )
     else:
         raise AssertionError(f"a postgres_rows.json case no replay covers: {name}")
 
@@ -322,18 +311,18 @@ async def test_failed_termination_preserves_the_original_store_error() -> None:
     db = pg.PostgresTransactor(FakePool())
 
     class ReleasedConnection:
+        async def execute(self, query: str) -> str:
+            raise asyncpg.InterfaceError("connection is closed")
+
         def terminate(self) -> None:
             raise asyncpg.InterfaceError("connection has been released back to the pool")
-
-    async def rollback() -> None:
-        raise asyncpg.InterfaceError("connection is closed")
 
     original = StoreError("postgres load: connection is closed")
     with pytest.raises(StoreError) as caught:
         try:
             raise original
         except StoreError:
-            await db._end(ReleasedConnection(), rollback)  # ty: ignore[invalid-argument-type]
+            await db._end(ReleasedConnection())  # ty: ignore[invalid-argument-type]
             raise
     assert caught.value is original
 
@@ -345,21 +334,22 @@ async def test_second_cancellation_during_rollback_terminates_connection() -> No
     class Connection:
         terminated = False
 
+        async def execute(self, query: str) -> str:
+            rolling_back.set()
+            await asyncio.Event().wait()
+            return "ROLLBACK"
+
         def terminate(self) -> None:
             self.terminated = True
 
     conn = Connection()
-
-    async def rollback() -> None:
-        rolling_back.set()
-        await asyncio.Event().wait()
 
     async def work() -> None:
         try:
             running.set()
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            await db._end(conn, rollback)  # ty: ignore[invalid-argument-type]
+            await db._end(conn)  # ty: ignore[invalid-argument-type]
             raise
 
     task = asyncio.create_task(work())
@@ -379,24 +369,11 @@ async def test_second_cancellation_during_rollback_terminates_connection() -> No
 HANG = object()
 
 
-class ScriptedTransaction:
-    def __init__(self, log: list[str]) -> None:
-        self._log = log
-
-    async def start(self) -> None:
-        self._log.append("start")
-
-    async def commit(self) -> None:
-        self._log.append("commit")
-
-    async def rollback(self) -> None:
-        self._log.append("rollback")
-
-
 class ScriptedConnection:
     """Answers each kernel statement by its tag (``/* edax:<tag> */``) with the next reply ``script`` lists
-    for that tag, and records the tags it ran and how each transaction ended. The table check reads a server
-    and a catalog that meet the contract: the kernel's ``compatible_default`` vector."""
+    for that tag, and records every tag sent (one per round trip), the tags it ran and how each transaction
+    ended. The table check reads a server and a catalog that meet the contract: the kernel's
+    ``compatible_default`` vector."""
 
     def __init__(self, script: dict[str, list[Any]]) -> None:
         compatible = next(c for c in golden("postgres_contract.json") if c["name"] == "compatible_default")
@@ -404,14 +381,21 @@ class ScriptedConnection:
         self._fixed: dict[str, Any] = {
             "server": ("UTF8", 170004, 1),
             "catalog": compatible["catalog"],
-            "settings": ("", "", ""),
         }
         self._script = {tag: list(replies) for tag, replies in script.items()}
+        self.sent: list[str] = []
         self.ran: list[str] = []
         self.transactions: list[list[str]] = []
 
     async def _reply(self, query: str) -> Any:
         tag = query.split("*/", 1)[0].removeprefix("/* edax:").strip()
+        self.sent.append(tag)
+        if tag == "begin":
+            self.transactions.append([tag])
+            return "SET"
+        if tag in ("commit", "rollback"):
+            self.transactions[-1].append(tag)
+            return tag.upper()
         if tag in self._fixed:
             return self._fixed[tag]
         self.ran.append(tag)
@@ -433,10 +417,6 @@ class ScriptedConnection:
 
     async def execute(self, query: str, *args: Any) -> Any:
         return await self._reply(query)
-
-    def transaction(self, *, isolation: str | None = None) -> ScriptedTransaction:
-        self.transactions.append([])
-        return ScriptedTransaction(self.transactions[-1])
 
     def terminate(self) -> None:
         self.transactions[-1].append("terminated")
@@ -500,11 +480,11 @@ async def test_the_claim_loop(
     if error is not None:
         with pytest.raises(StoreError, match=error):
             await ledger.claim("order-7", 7)
-        assert conn.transactions[-1] == ["start", "rollback"]
+        assert conn.transactions[-1] == ["begin", "rollback"]
     else:
         got = await ledger.claim("order-7", 7)
         assert isinstance(got, pg.Won) if want is pg.Won else got == want
-        assert conn.transactions[-1] == ["start", "commit"]
+        assert conn.transactions[-1] == ["begin", "commit"]
     assert conn.ran == ran, name
 
 
@@ -519,6 +499,36 @@ async def test_a_missed_deadline_inside_a_unit_of_work_aborts_it() -> None:
         async with transaction(db) as tx:
             with pytest.raises(StoreError, match="no reply within 40 ms"):
                 await ledger.claim("order-7", 7, tx=tx)
-    assert conn.transactions == [["start", "commit"], ["start", "rollback"]], (
+    assert conn.transactions == [["begin", "commit"], ["begin", "rollback"]], (
         "the check, then the unit of work"
     )
+
+
+async def test_a_call_alone_takes_three_round_trips() -> None:
+    """A store's call outside any unit of work sends the kernel's ``begin`` (the transaction and its timeouts
+    in one simple query), its statement and the commit: nothing else."""
+    conn = ScriptedConnection({"claim_insert": [True]})
+    ledger = pg.PostgresIdempotencyStore(pg.PostgresTransactor(ScriptedPool(conn)))
+    await ledger.transactor.check()
+    conn.sent.clear()
+    assert isinstance(await ledger.claim("order-7", 7), pg.Won)
+    assert conn.sent == ["begin", "claim_insert", "commit"]
+
+
+async def test_a_transaction_that_fails_to_open_is_rolled_back() -> None:
+    """A ``begin`` the server refuses part way may leave the transaction open: it is rolled back before the
+    connection goes back to the pool, and the failure is typed by the kernel."""
+
+    class RefusedBegin(ScriptedConnection):
+        async def _reply(self, query: str) -> Any:
+            reply = await super()._reply(query)
+            if self.sent[-1] == "begin":
+                raise ServerError("22023")
+            return reply
+
+    conn = RefusedBegin({})
+    db = pg.PostgresTransactor(ScriptedPool(conn))
+    with pytest.raises(EdaxError):
+        async with transaction(db):
+            pass
+    assert conn.transactions == [["begin", "rollback"]]

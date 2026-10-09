@@ -72,7 +72,7 @@ use edax_core::Error;
 pub use host_value::{Decimal, Instant};
 pub use ledger::{complete_fence, release_fence, Claimed, Fence, Holder};
 pub use timestamp::canonical_timestamp;
-pub use value::read_json;
+pub use value::{read_json, type_rank, TYPE_ORDER};
 
 pub use filter::{eval, eval_json, Filter, Operator};
 pub use query::{

@@ -15,6 +15,7 @@ publish = false
 [dependencies]
 edax-core = { path = "../../edax-core" }
 edax-cqrs = { path = "../../edax-cqrs" }
+edax-event = { path = "../../edax-event" }
 edax-postgres = { path = ".." }
 serde_json = "1"
 

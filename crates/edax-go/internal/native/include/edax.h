@@ -209,6 +209,10 @@ typedef struct EDAXPollLookup EDAXPollLookup;
  */
 typedef struct EDAXPollResult EDAXPollResult;
 /**
+ * A statement to run, by its name in the statements, and the JSON text of its parameters.
+ */
+typedef struct EDAXPostgresCall EDAXPostgresCall;
+/**
  * What a claim that lost the insert does with the row it read: `action` is `prior` (`value` the
  * record), `take_over` (`value` the lapsed owner) or `vanished`.
  */
@@ -2562,6 +2566,47 @@ EDAXAlefHandle edax_poll_result_event(EDAXAlefHandle handle);
 EDAXAlefHandle edax_poll_result_command(EDAXAlefHandle handle);
 
 /**
+ * Create a `PostgresCall` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_postgres_call_free`.
+ */
+EDAXAlefHandle edax_postgres_call_from_json(const char *json);
+
+/**
+ * Serialize a `PostgresCall` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_postgres_call_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `PostgresCall` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_postgres_call_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `statement` field from a `PostgresCall`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_postgres_call_statement(EDAXAlefHandle handle);
+
+/**
+ * Get the `params_json` field from a `PostgresCall`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_postgres_call_params_json(EDAXAlefHandle handle);
+
+/**
  * Create a `PostgresClaimRead` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -4486,13 +4531,13 @@ uintptr_t edax_postgres_append_params_len(const char *_stream,
                                           const char *_drafts);
 
 /**
- * The stored events `append` returned, or its `concurrency:` error. See
+ * `drafts`, the batch `append` bound, as the store recorded them, or its `concurrency:` error. See
  * `edax_postgres.rows.append_result`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 char *edax_postgres_append_result(uint64_t expected,
-                                  uint64_t drafts,
+                                  const char *drafts,
                                   const char *result);
 
 /**
@@ -4503,24 +4548,26 @@ char *edax_postgres_append_result(uint64_t expected,
  * with `edax_postgres_append_result`.
  */
 uintptr_t edax_postgres_append_result_len(uint64_t _expected,
-                                          uint64_t _drafts,
+                                          const char *_drafts,
                                           const char *_result);
 
 /**
- * A limit or a load's `after` as `bigint` text. See `edax_postgres.rows.bound_param`.
+ * What opens a transaction with `settings`' timeouts, sent as one simple query; settings the kernel
+ * refuses
+ * are its `bad_handle:` error. See `edax_postgres.begin`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_bound_param(uint64_t value);
+char *edax_postgres_begin(EDAXAlefHandle settings);
 
 /**
- * Return the byte length of the C string most recently returned by `edax_postgres_bound_param` on this
+ * Return the byte length of the C string most recently returned by `edax_postgres_begin` on this
  * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
  * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_bound_param`.
+ * with `edax_postgres_begin`.
  */
-uintptr_t edax_postgres_bound_param_len(uint64_t _value);
+uintptr_t edax_postgres_begin_len(EDAXAlefHandle _settings);
 
 /**
  * The parameter of the `catalog` statement for the tables of `roles`. See
@@ -4574,6 +4621,14 @@ uintptr_t edax_postgres_check_catalog_len(const char *_tables_json,
 int32_t edax_postgres_check_config(EDAXAlefHandle settings);
 
 /**
+ * Refuse a relay lease, as a `bad_handle:` error. See `edax_postgres.check_lease`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_postgres_check_lease(const char *owner,
+                                  int64_t ttl_ms);
+
+/**
  * Refuse a server the statements cannot run on. See `edax_postgres.check_server`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4584,7 +4639,25 @@ int32_t edax_postgres_check_server(const char *server_encoding,
                                    EDAXAlefHandle settings);
 
 /**
- * The parameters of `claim_insert`. See `edax_postgres.ledger.claim_params`.
+ * What a claim that lost the insert does with the row it read, by name. See
+ * `edax_postgres.ClaimAction`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_claim_actions(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_claim_actions` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_claim_actions`.
+ */
+uintptr_t edax_postgres_claim_actions_len(void);
+
+/**
+ * The parameters of `claim_insert`, and of `claim_take_over` before the lapsed owner. See
+ * `edax_postgres.ledger.claim_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
@@ -4604,20 +4677,33 @@ uintptr_t edax_postgres_claim_params_len(const char *_key,
                                          uint64_t _payload_hash);
 
 /**
- * What a claim does with `row`, the JSON row `claim_read` returned, `None` when none. See
+ * What a claim of `key` does with `row`, the JSON row its `attempt`-th `claim_read` returned, `None`
+ * when none; past the kernel's last read a row still gone is its `store:` error. See
  * `edax_postgres.claim_read`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-EDAXAlefHandle edax_postgres_claim_read(const char *row);
+EDAXAlefHandle edax_postgres_claim_read(const char *key,
+                                        uint32_t attempt,
+                                        const char *row);
 
 /**
- * How many times a claim reads a key again when the row it lost to vanished before the read. A call
- * because the generator binds functions, not constants. See `edax_postgres.config.CLAIM_READS`.
+ * The parameters of `claim_read`. See `edax_postgres.ledger.claim_read_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-uint32_t edax_postgres_claim_reads(void);
+char *edax_postgres_claim_read_params(const char *key,
+                                      int64_t claim_ttl_ms);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_claim_read_params`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_claim_read_params`.
+ */
+uintptr_t edax_postgres_claim_read_params_len(const char *_key,
+                                              int64_t _claim_ttl_ms);
 
 /**
  * The failures a client reports without a SQLSTATE. See `edax_postgres.ClientFailure`.
@@ -4657,22 +4743,6 @@ uintptr_t edax_postgres_client_verdict_len(const char *_op,
                                            const char *_message);
 
 /**
- * The parameter holding `commands`. See `edax_postgres.rows.commands_param`.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_postgres_commands_param(const char *commands);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_postgres_commands_param` on
- * this thread. Returns 0 when the primary call returned null or failed before producing a string.
- * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_commands_param`.
- */
-uintptr_t edax_postgres_commands_param_len(const char *_commands);
-
-/**
  * The query `spec` compiled for projection `projection` in the projections table `tables_json` names.
  * See
  * `edax_postgres.compile`.
@@ -4694,13 +4764,6 @@ int32_t edax_postgres_complete_write(const char *key,
                                      const uint8_t *handle,
                                      uintptr_t handle_len,
                                      const char *record);
-
-/**
- * The version of the table contract this build requires. See `edax_postgres.CONTRACT_VERSION`.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-uint32_t edax_postgres_contract_version(void);
 
 /**
  * The commands a read returned. See `edax_postgres.rows.decode_commands`.
@@ -4749,11 +4812,20 @@ EDAXAlefHandle edax_postgres_decode_saga(const char *row);
 EDAXAlefHandle edax_postgres_decode_snapshot(const char *row);
 
 /**
- * The kernel's default settings. See `edax_postgres.config.DEFAULT`.
+ * The parameters of `command_enqueue`. See `edax_postgres.rows.enqueue_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-EDAXAlefHandle edax_postgres_default_settings(void);
+char *edax_postgres_enqueue_params(const char *commands);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_enqueue_params` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_enqueue_params`.
+ */
+uintptr_t edax_postgres_enqueue_params_len(const char *_commands);
 
 /**
  * Whether a `forget` of `key` deletes `row`. See `edax_postgres.forget_write`.
@@ -4764,20 +4836,64 @@ int32_t edax_postgres_forget_write(const char *key,
                                    const char *row);
 
 /**
- * The parameter holding the ids a `mark_published` deletes. See `edax_postgres.rows.ids_param`.
+ * The parameters of `ledger_hold` and `ledger_delete`. See `edax_postgres.ledger.key_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_ids_param(const char *ids);
+char *edax_postgres_ledger_key_params(const char *key);
 
 /**
- * Return the byte length of the C string most recently returned by `edax_postgres_ids_param` on this
+ * Return the byte length of the C string most recently returned by `edax_postgres_ledger_key_params`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_ledger_key_params`.
+ */
+uintptr_t edax_postgres_ledger_key_params_len(const char *_key);
+
+/**
+ * The parameters of `load`. See `edax_postgres.rows.load_params`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_load_params(const char *stream,
+                                uint64_t after);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_load_params` on this
  * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
  * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_ids_param`.
+ * with `edax_postgres_load_params`.
  */
-uintptr_t edax_postgres_ids_param_len(const char *_ids);
+uintptr_t edax_postgres_load_params_len(const char *_stream,
+                                        uint64_t _after);
+
+/**
+ * The parameters of `load_snapshot`. See `edax_postgres.rows.load_snapshot_params`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_load_snapshot_params(const char *stream);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_load_snapshot_params` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_load_snapshot_params`.
+ */
+uintptr_t edax_postgres_load_snapshot_params_len(const char *_stream);
+
+/**
+ * The delete of an outbox's published rows. See `edax_postgres.rows.mark_published`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_mark_published(const char *outbox_named,
+                                            const char *ids,
+                                            const char *saga);
 
 /**
  * A fresh claim owner token, also its handle. See `edax_postgres.new_owner`.
@@ -4812,6 +4928,22 @@ char *edax_postgres_ops(void);
 uintptr_t edax_postgres_ops_len(void);
 
 /**
+ * The outboxes a relay drains. See `edax_postgres.Outbox`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_outboxes(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_outboxes` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_outboxes`.
+ */
+uintptr_t edax_postgres_outboxes_len(void);
+
+/**
  * The page the rows of a compiled `spec` make, as `{"rows": [...], "next": cursor|null}`. See
  * `edax_postgres.page`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -4831,6 +4963,15 @@ uintptr_t edax_postgres_page_len(const char *_spec,
                                  const char *_rows);
 
 /**
+ * The read of a projection row, holding it when `locked`. See `edax_postgres.rows.projection_get`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_projection_get(const char *projection,
+                                            const char *id,
+                                            int32_t locked);
+
+/**
  * What a projection write returned: the new version, or a `concurrency:` error when none was written.
  * See `edax_postgres.rows.projection_result`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -4839,6 +4980,16 @@ uintptr_t edax_postgres_page_len(const char *_spec,
 uint64_t edax_postgres_projection_result(const char *id,
                                          uint64_t expected,
                                          int64_t written);
+
+/**
+ * The write of a projection document at version `expected`. See `edax_postgres.rows.projection_save`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_projection_save(const char *projection,
+                                             const char *id,
+                                             uint64_t expected,
+                                             const char *document_json);
 
 /**
  * A schema that meets the table contract, for the tables `tables_json` names: a starting point for the
@@ -4867,31 +5018,13 @@ int32_t edax_postgres_release_write(const char *row,
                                     uintptr_t handle_len);
 
 /**
- * The parameters of a saga write: `saga_insert` at version 0, else `saga_update`. See
- * `edax_postgres.rows.saga_params`.
+ * The read of a saga instance, holding it when `locked`. See `edax_postgres.rows.saga_load`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_saga_params(const char *saga,
-                                const char *id,
-                                uint64_t version,
-                                const char *state_json,
-                                const char *folded,
-                                const char *commands);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_postgres_saga_params` on this
- * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
- * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_saga_params`.
- */
-uintptr_t edax_postgres_saga_params_len(const char *_saga,
-                                        const char *_id,
-                                        uint64_t _version,
-                                        const char *_state_json,
-                                        const char *_folded,
-                                        const char *_commands);
+EDAXAlefHandle edax_postgres_saga_load(const char *saga,
+                                       const char *id,
+                                       int32_t locked);
 
 /**
  * What a saga write returned: the new version, or its `concurrency:` error. See
@@ -4903,6 +5036,50 @@ uint64_t edax_postgres_saga_result(const char *saga,
                                    const char *id,
                                    uint64_t expected,
                                    const char *result);
+
+/**
+ * A saga write at `version`: `saga_insert` at 0, else `saga_update`; `state_json` is `None` for a
+ * completion. See `edax_postgres.rows.saga_write`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_saga_write(const char *saga,
+                                        const char *id,
+                                        uint64_t version,
+                                        const char *state_json,
+                                        const char *folded,
+                                        const char *commands);
+
+/**
+ * The kernel's default settings with `overrides_json`, a JSON object of fields by name, applied. An
+ * unknown field or a value that is not an integer is a `bad_handle:` error. See
+ * `edax_postgres.Settings.with_overrides`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_settings(const char *overrides_json);
+
+/**
+ * The parameters of `ledger_settle`. See `edax_postgres.ledger.settle_params`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_settle_params(const char *key,
+                                  const uint8_t *handle,
+                                  uintptr_t handle_len,
+                                  const char *record);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_settle_params` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_settle_params`.
+ */
+uintptr_t edax_postgres_settle_params_len(const char *_key,
+                                          const uint8_t *_handle,
+                                          uintptr_t _handle_len,
+                                          const char *_record);
 
 /**
  * The parameters of `save_snapshot`. See `edax_postgres.rows.snapshot_params`.
@@ -4956,24 +5133,6 @@ char *edax_postgres_statements(const char *tables_json);
 uintptr_t edax_postgres_statements_len(const char *_tables_json);
 
 /**
- * The text projection `id`'s document is stored as. See `edax_postgres.stored_document`.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_postgres_stored_document(const char *id,
-                                    const char *document_json);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_postgres_stored_document` on
- * this thread. Returns 0 when the primary call returned null or failed before producing a string.
- * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_stored_document`.
- */
-uintptr_t edax_postgres_stored_document_len(const char *_id,
-                                            const char *_document_json);
-
-/**
  * The table roles a host names. See `edax_postgres.Logical`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5007,6 +5166,26 @@ char *edax_postgres_tables(const char *tables_json);
  * with `edax_postgres_tables`.
  */
 uintptr_t edax_postgres_tables_len(const char *_tables_json);
+
+/**
+ * The read of an outbox's oldest rows: with `lease_owner`, the leased read for that relay, whose lease
+ * lasts `lease_ttl_ms` (an owner without one is refused). See `edax_postgres.rows.unpublished`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_unpublished(const char *outbox_named,
+                                         uint64_t limit,
+                                         const char *saga,
+                                         const char *lease_owner,
+                                         int64_t lease_ttl_ms);
+
+/**
+ * The count of an outbox's waiting rows. See `edax_postgres.rows.unpublished_count`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_postgres_unpublished_count(const char *outbox_named,
+                                               const char *saga);
 
 /**
  * The verdict on a server error, in its wire form. `unique` names the key the violated unique index

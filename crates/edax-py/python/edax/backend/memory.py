@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 
 from .. import _json, _native
 from .._owned import ThreadBound
+from .._units import enlisted
 from ..broker import consume
 from ..delivery import Delivery
 from ..dispatcher import KeyOrderedDispatcher
@@ -31,7 +32,7 @@ from ..query import Page, Query
 from ..saga import CompletedInstance, RunningInstance, SagaInstance
 from ..store import Snapshot
 from ..tenancy import Tenancy
-from ..unit_of_work import Tx, current_tx
+from ..unit_of_work import Tx
 
 __all__ = [
     "MemoryBroker",
@@ -111,19 +112,9 @@ class MemoryTransactor:
         database, else the auto-commit token. A handle of another transactor is refused: a store cannot
         enlist in a unit of work its database knows nothing about, and going on would silently drop the
         atomicity the caller asked for."""
-        if tx is None:
-            tx = current_tx(self)
-        if tx is None:
-            return _NO_TX
-        if isinstance(tx, MemoryTx) and tx.transactor is self:
-            return tx.token
-        # `BadHandle`, not `StoreError`: the same handle fails the same way on every retry, so a
-        # transient verdict would have a host redeliver a wiring mistake forever. The Rust store
-        # refuses an unknown token with the same terminal code (`edax_memory::unknown_tx`).
-        raise BadHandle(
-            f"tx {tx!r} is not a transaction of this MemoryTransactor: build every memory store "
-            "that must commit together over one MemoryTransactor"
-        )
+        # The Rust store refuses an unknown token with the same terminal code (`edax_memory::unknown_tx`).
+        handle = enlisted(self, tx, MemoryTx, "MemoryTransactor")
+        return _NO_TX if handle is None else handle.token
 
 
 class _StoreView:

@@ -11,13 +11,14 @@
     reason = "a test"
 )]
 
+mod common;
+
 use std::sync::Mutex;
 
+use common::{bind, connect, provision};
 use edax_cqrs::Page;
-use edax_postgres::{
-    check_catalog, compile, decimal_sql, page, reference_ddl, statements, stored_document, Logical, Statements, Tables,
-};
-use postgres::{Client, NoTls};
+use edax_postgres::{check_catalog, compile, decimal_sql, page, stored_document, Logical, Statements, Tables};
+use postgres::Client;
 use serde_json::{json, Value};
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -29,22 +30,10 @@ struct Live {
 }
 
 fn live() -> Option<Live> {
-    let url = std::env::var("EDAX_POSTGRES_URL").ok()?;
-    let mut client = Client::connect(&url, NoTls).expect("EDAX_POSTGRES_URL connects");
+    let mut client = connect()?;
     let tables = Tables::from_json(r#"{"schema":"edax_live_check"}"#).unwrap();
-    client
-        .batch_execute(&format!(
-            "DROP SCHEMA IF EXISTS \"{0}\" CASCADE; CREATE SCHEMA \"{0}\"",
-            tables.schema()
-        ))
-        .unwrap();
-    // What a host's migration tool runs: the reference schema, nothing else.
-    client.batch_execute(&reference_ddl(&tables)).unwrap();
-    Some(Live {
-        client,
-        sql: statements(&tables),
-        tables,
-    })
+    let sql = provision(&mut client, &tables);
+    Some(Live { client, sql, tables })
 }
 
 impl Live {
@@ -70,13 +59,11 @@ impl Live {
                 .get("id")
                 .and_then(Value::as_str)
                 .map_or_else(|| format!("row-{i:04}"), str::to_owned);
-            let text = stored_document(&id, doc.to_string().as_bytes()).unwrap();
+            let call = edax_postgres::rows::projection_save(name, &id, 0, doc.to_string().as_bytes()).unwrap();
+            assert_eq!(call.statement, "projection_insert");
             let rows = self
                 .client
-                .execute(
-                    &self.sql.projection_insert,
-                    &[&Some(name), &Some(id.as_str()), &Some(text.as_str())],
-                )
+                .execute(&self.sql.projection_insert, &bind(&call.params))
                 .unwrap();
             assert_eq!(rows, 1, "row keys are unique");
         }
@@ -99,14 +86,9 @@ impl Live {
     fn get_many(&mut self, name: &str, spec: &Value) -> Result<Page, String> {
         let spec = spec.to_string();
         let compiled = compile(&self.tables, name, spec.as_bytes()).map_err(|e| e.to_string())?;
-        let params: Vec<&(dyn postgres::types::ToSql + Sync)> = compiled
-            .params
-            .iter()
-            .map(|p| p as &(dyn postgres::types::ToSql + Sync))
-            .collect();
         let rows = self
             .client
-            .query(&compiled.sql, &params)
+            .query(&compiled.sql, &bind(&compiled.params))
             .map_err(|e| format!("{e}: {}", compiled.sql))?;
         let rows: Vec<String> = rows.iter().map(|row| row.get::<_, String>(0)).collect();
         page(spec.as_bytes(), rows).map_err(|e| e.to_string())
@@ -495,6 +477,25 @@ fn decimal_sql_matches_the_kernel() {
         "1E+2147483648",
         "0.001E+1001",
         "1e+0000000002",
+        "1e5e3",
+        "1E5e3",
+        "1ee2",
+        "1e+-2",
+        "1e2.5",
+        "5e3.",
+        "1e1.",
+        "..5",
+        "1..",
+        "+-1",
+        "-+1",
+        "-.5",
+        "+.e1",
+        "-e1",
+        "e",
+        "E",
+        "1e٣",
+        "１e2",
+        "1e２",
         "",
         ".",
         "-",
@@ -554,13 +555,9 @@ fn postgres_query_vectors() {
             .unwrap()
             .replace("\"public\".", &format!("{live_schema}."));
         let params: Vec<Option<String>> = serde_json::from_value(case["params"].clone()).unwrap();
-        let bound: Vec<&(dyn postgres::types::ToSql + Sync)> = params
-            .iter()
-            .map(|p| p as &(dyn postgres::types::ToSql + Sync))
-            .collect();
         let rows: Vec<String> = live
             .client
-            .query(&sql, &bound)
+            .query(&sql, &bind(&params))
             .unwrap()
             .iter()
             .map(|row| row.get::<_, String>(0))

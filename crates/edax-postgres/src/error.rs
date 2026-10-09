@@ -100,27 +100,23 @@ edax_core::closed_names! {
     /// A failure a client reports without a SQLSTATE.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ClientFailure {
-        /// The call, or the wait for a pooled connection, ran out of time on the client.
-        Timeout = "timeout",
-        /// The connection broke or closed.
-        Connection = "connection",
         /// The client refused to encode a parameter.
         Encode = "encode",
-        /// Any other client-side failure.
+        /// Any other client-side failure: a timeout, a broken connection.
         Other = "other",
     }
 }
 
 /// The verdict on a failure the client reports without a SQLSTATE, by its `kind` name. A parameter the
-/// client cannot encode fails the same way again: `codec`. A timeout, a broken connection or anything
-/// else is `store`, transient. An unknown kind is a `codec` error.
+/// client cannot encode fails the same way again: `codec`. Anything else, a timeout or a broken connection
+/// among them, is `store`, transient. An unknown kind is a `codec` error.
 pub fn client_verdict(op: Op, kind: &str, message: &str) -> Error {
     let Some(failure) = ClientFailure::by_name(kind) else {
         return Error::codec(format_args!("unknown postgres client failure: {kind}"));
     };
     let code = match failure {
         ClientFailure::Encode => ErrorCode::Codec,
-        ClientFailure::Timeout | ClientFailure::Connection | ClientFailure::Other => ErrorCode::Store,
+        ClientFailure::Other => ErrorCode::Store,
     };
     Error::new(
         code,
@@ -179,8 +175,6 @@ mod tests {
 
     #[test]
     fn client_verdict_branches() {
-        assert_eq!(client_verdict(Op::Load, "timeout", "t").code, ErrorCode::Store);
-        assert_eq!(client_verdict(Op::Load, "connection", "c").code, ErrorCode::Store);
         assert_eq!(client_verdict(Op::Load, "other", "o").code, ErrorCode::Store);
         assert_eq!(client_verdict(Op::Load, "encode", "e").code, ErrorCode::Codec);
         assert_eq!(

@@ -92,17 +92,21 @@ pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
-/// A value's place in the total type order a sort gives: number < string < bool < array < object <
-/// null.
-pub(crate) fn type_rank(v: &Value) -> u8 {
-    match v {
-        Value::Number(_) => 0,
-        Value::String(_) => 1,
-        Value::Bool(_) => 2,
-        Value::Array(_) => 3,
-        Value::Object(_) => 4,
-        Value::Null => 5,
-    }
+/// The JSON types in the total order a sort gives them, each by the name JSON gives it: number < string <
+/// bool < array < object < null. A store that sorts in its own engine ranks types by this list.
+pub const TYPE_ORDER: [&str; 6] = ["number", "string", "boolean", "array", "object", "null"];
+
+/// A value's place in [`TYPE_ORDER`].
+pub fn type_rank(v: &Value) -> usize {
+    let name = match v {
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Bool(_) => "boolean",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+        Value::Null => "null",
+    };
+    TYPE_ORDER.iter().position(|t| *t == name).unwrap_or(TYPE_ORDER.len())
 }
 
 /// A path is one or more dot-delimited object keys, none of them empty.

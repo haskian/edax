@@ -11,14 +11,14 @@ is one JSON text column. Each SDK ships only the client calls around it.
 
 | Module | Owns | Golden vectors |
 |---|---|---|
-| `config` | the settings a store refuses, their defaults, the claim read bound, the `bigint` bound | (unit tests) |
+| `config` | the settings a store refuses, their defaults and overrides, the relay lease, the claim read bound, the `bigint` bound | (unit tests) |
 | `error` | the verdict on a server error, per operation, and on a client-side failure | `postgres_error.json` |
 | `schema` | the table contract, the table names a host chooses, the catalog check, the reference schema and the server check | `postgres_contract.json` |
-| `statements` | every statement, byte for byte, rendered for the host's table names | `postgres_statements.json` |
-| `rows` | the parameters each write binds and the values each read decodes | `postgres_rows.json` |
+| `statements` | every statement, byte for byte, rendered for the host's table names, and the text that opens a transaction with the settings' timeouts | `postgres_statements.json` |
+| `rows` | the parameters each statement binds, the statement a call chooses, and the values each read decodes | `postgres_rows.json` |
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
-| `ledger` | the claim owner, what a row is to a claimant, and the fence on each settling write | `postgres_ledger.json` |
+| `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,
 `query.json` and `postgres_query.json`, walks every page of every sorted query, and runs a seeded
@@ -85,13 +85,24 @@ that schema for the default names, regenerated with the golden vectors.
 ## The statements
 
 Each parameter is declared `text` and cast in the statement. Each statement opens with an
-`/* edax:<op> */` tag, so `pg_stat_statements` groups it. Four shapes carry a decision.
+`/* edax:<op> */` tag, so `pg_stat_statements` groups it. A kernel function gives every statement its
+parameters, and NUL in any text parameter is refused as `codec` before any I/O. Where the statement
+turns on the input, the function names it too. It picks an insert or a compare-and-set by the
+expected version, a locked or a plain read, and a leased or an unleased outbox read. The adapter only
+runs what it is handed. Five shapes carry a decision.
 
+- **A transaction opens in one round trip.** `begin` renders `BEGIN ISOLATION LEVEL READ COMMITTED`
+  and the lock, statement and idle timeouts as `SET LOCAL`, from settings `check_config` accepts. The
+  text binds no parameter, so a client sends it as one simple query. A store call alone costs three
+  round trips: `begin`, its statement, `commit`.
 - **`append` is a plain `INSERT`.** It checks the stream's last sequence in the same statement. The
   unique index on `(stream, sequence)`, the `events_stream_sequence` key, catches a writer that raced
   past the check. That
   violation aborts the transaction on purpose. An `ON CONFLICT DO NOTHING` would land the rest of a
-  batch on top of the winner's event, and a caller that caught the conflict could commit it.
+  batch on top of the winner's event, and a caller that caught the conflict could commit it. It
+  returns the stream's version before the write and its clock reading, not the events: every other
+  stored field is the draft's own. `append_result` stamps the drafts the caller bound with that
+  reading, as the memory store does.
 - **Outbox rows follow the batch.** Each write inserts its outbox rows in sequence order, in the same
   statement, so a relay reads them in that order.
 - **The ledger fence is one step.** `ledger_hold` locks the key's row with `FOR UPDATE`. The settling
@@ -159,8 +170,10 @@ and never for an unsorted query.
 `decimal_sql(text)` reads decimal text in plain SQL, inline in the statement, so the contract needs
 no function. It reads the kernel's decimal grammar. That is an optional sign, ASCII digits with at
 most one point, and an optional exponent within 32 bits. The text is at most 2000 bytes, with at most
-1000 digits. It normalizes the mantissa and exponent before the cast, so `"0E+999999999"` reads as 0,
-as the kernel reads it. It answers `NULL` for any other text.
+1000 digits. It reads the text with plain string functions, as the kernel does: one sign, a split on
+the one `e` or `E`, then on the one point. It normalizes the mantissa and exponent before the cast, so
+`"0E+999999999"` reads as 0, as the kernel reads it. It answers `NULL` for any other text, and text
+outside the grammar reaches each cast as `NULL`, even when the server folds a bound value while it plans.
 
 ## The verdict
 
@@ -181,15 +194,16 @@ contract was violated.
 | `42P01`, `42703`, `42883`, `3F000`, `42501`, `28P01` | `bad_handle`: a wiring mistake no retry fixes |
 | anything else | `store` |
 
-`client_verdict(op, kind, message)` reads a failure the client reports without a SQLSTATE. A
-parameter the client cannot encode is `codec`. A timeout, a broken connection or anything else is
-`store`.
+`client_verdict(op, kind, message)` reads a failure the client reports without a SQLSTATE: its kind
+is `encode` or `other`. A parameter the client cannot encode is `codec`. Anything else, a timeout or a
+broken connection among them, is `store`.
 
 ## The ledger
 
 A ledger row holds the kernel's record text, the `owner` while it is a pending claim, and the
-`settled_by` owner once a claim settled it. A claimant's handle is its owner token. `holder` reads a
-row as the kernel's `Holder` class, and the kernel's `complete_fence` and `release_fence` decide.
+`settled_by` owner once a claim settled it. A claimant's handle is its owner token. Each settling
+write reads the row as the kernel's `Holder` class, and the kernel's `complete_fence` and
+`release_fence` decide.
 `postgres_ledger.json` replays every class through every write, and `idempotency_fence.json` is
 replayed through the same code.
 
@@ -197,6 +211,10 @@ Inside a unit of work a pending claim never commits: the claim and its record co
 roll back together. A claim made outside one commits pending. `claim_read` lets another claimant
 take it over once it is older than the claim time to live (TTL), so a crashed claimant does not hold
 its key forever. That mode is at-least-once: a handler slower than the TTL can run twice.
+
+A claim that lost its insert reads the row, and `claim_read` names what it does next: `prior`,
+`take_over` or `vanished`. A lost take-over counts as a vanished row. The kernel bounds the loop: a
+row still gone on the third read gives the claim up as the transient `store` error.
 
 ## See also
 

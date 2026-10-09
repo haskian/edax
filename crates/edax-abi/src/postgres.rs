@@ -36,17 +36,26 @@ impl From<PostgresSettings> for edax_postgres::Settings {
     }
 }
 
-/// The kernel's default settings. See [`edax_postgres::config::DEFAULT`].
-pub fn postgres_default_settings() -> PostgresSettings {
-    let d = edax_postgres::config::DEFAULT;
-    PostgresSettings {
-        acquire_timeout_ms: d.acquire_timeout_ms,
-        lock_timeout_ms: d.lock_timeout_ms,
-        statement_timeout_ms: d.statement_timeout_ms,
-        op_timeout_ms: d.op_timeout_ms,
-        idle_in_transaction_ms: d.idle_in_transaction_ms,
-        claim_ttl_ms: d.claim_ttl_ms,
+impl From<edax_postgres::Settings> for PostgresSettings {
+    fn from(s: edax_postgres::Settings) -> Self {
+        Self {
+            acquire_timeout_ms: s.acquire_timeout_ms,
+            lock_timeout_ms: s.lock_timeout_ms,
+            statement_timeout_ms: s.statement_timeout_ms,
+            op_timeout_ms: s.op_timeout_ms,
+            idle_in_transaction_ms: s.idle_in_transaction_ms,
+            claim_ttl_ms: s.claim_ttl_ms,
+        }
     }
+}
+
+/// The kernel's default settings with `overrides_json`, a JSON object of fields by name, applied. An
+/// unknown field or a value that is not an integer is a `bad_handle:` error. See
+/// [`edax_postgres::Settings::with_overrides`].
+pub fn postgres_settings(overrides_json: &str) -> Result<PostgresSettings, String> {
+    edax_postgres::Settings::with_overrides(overrides_json)
+        .map(Into::into)
+        .map_err(to_wire)
 }
 
 /// Refuse the settings a store is built with, as a `bad_handle:` error naming the first one refused.
@@ -55,10 +64,9 @@ pub fn postgres_check_config(settings: PostgresSettings) -> Result<(), String> {
     edax_postgres::check_config(&settings.into()).map_err(to_wire)
 }
 
-/// How many times a claim reads a key again when the row it lost to vanished before the read. A call
-/// because the generator binds functions, not constants. See [`edax_postgres::config::CLAIM_READS`].
-pub fn postgres_claim_reads() -> u32 {
-    edax_postgres::config::CLAIM_READS
+/// Refuse a relay lease, as a `bad_handle:` error. See [`edax_postgres::check_lease`].
+pub fn postgres_check_lease(owner: &str, ttl_ms: i64) -> Result<(), String> {
+    edax_postgres::check_lease(owner, ttl_ms).map_err(to_wire)
 }
 
 fn tables(tables_json: &str) -> Result<edax_postgres::Tables, String> {
@@ -75,11 +83,6 @@ pub fn postgres_tables(tables_json: &str) -> Result<String, String> {
 /// The table roles a host names. See [`edax_postgres::Logical`].
 pub fn postgres_table_roles() -> Vec<String> {
     names(edax_postgres::Logical::NAMES)
-}
-
-/// The version of the table contract this build requires. See [`edax_postgres::CONTRACT_VERSION`].
-pub fn postgres_contract_version() -> u32 {
-    edax_postgres::CONTRACT_VERSION
 }
 
 /// A schema that meets the table contract, for the tables `tables_json` names: a starting point for the
@@ -134,6 +137,12 @@ pub fn postgres_check_server(
     .map_err(to_wire)
 }
 
+/// What opens a transaction with `settings`' timeouts, sent as one simple query; settings the kernel refuses
+/// are its `bad_handle:` error. See [`edax_postgres::begin`].
+pub fn postgres_begin(settings: PostgresSettings) -> Result<String, String> {
+    edax_postgres::begin(&settings.into()).map_err(to_wire)
+}
+
 /// Every statement rendered for the tables `tables_json` names, as the JSON text of an object from
 /// statement name to SQL. See [`edax_postgres::Statements`].
 pub fn postgres_statements(tables_json: &str) -> Result<String, String> {
@@ -176,21 +185,50 @@ fn params_json(params: Vec<Option<String>>) -> Result<String, String> {
     serde_json::to_string(&params).map_err(|e| to_wire(edax_core::Error::codec(e)))
 }
 
+/// A statement to run, by its name in the statements, and the JSON text of its parameters.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct PostgresCall {
+    pub statement: String,
+    pub params_json: String,
+}
+
+fn call(call: Result<edax_postgres::Call, edax_core::Error>) -> Result<PostgresCall, String> {
+    let call = call.map_err(to_wire)?;
+    Ok(PostgresCall {
+        statement: call.statement.to_owned(),
+        params_json: params_json(call.params)?,
+    })
+}
+
 /// The parameters of `append`. See [`edax_postgres::rows::append_params`].
 pub fn postgres_append_params(stream: &str, expected: u64, drafts: Vec<EventDraft>) -> Result<String, String> {
     let drafts: Vec<edax_event::EventDraft> = drafts.into_iter().map(Into::into).collect();
     params_json(edax_postgres::rows::append_params(stream, expected, &drafts).map_err(to_wire)?)
 }
 
-/// The stored events `append` returned, or its `concurrency:` error. See
+/// `drafts`, the batch `append` bound, as the store recorded them, or its `concurrency:` error. See
 /// [`edax_postgres::rows::append_result`].
-pub fn postgres_append_result(expected: u64, drafts: u64, result: &str) -> Result<Vec<EventMessage>, String> {
-    let drafts = usize::try_from(drafts).unwrap_or(usize::MAX);
+pub fn postgres_append_result(
+    expected: u64,
+    drafts: Vec<EventDraft>,
+    result: &str,
+) -> Result<Vec<EventMessage>, String> {
+    let drafts: Vec<edax_event::EventDraft> = drafts.into_iter().map(Into::into).collect();
     Ok(edax_postgres::rows::append_result(expected, drafts, result)
         .map_err(to_wire)?
         .into_iter()
         .map(Into::into)
         .collect())
+}
+
+/// The parameters of `load`. See [`edax_postgres::rows::load_params`].
+pub fn postgres_load_params(stream: &str, after: u64) -> Result<String, String> {
+    params_json(edax_postgres::rows::load_params(stream, after).map_err(to_wire)?)
+}
+
+/// The parameters of `load_snapshot`. See [`edax_postgres::rows::load_snapshot_params`].
+pub fn postgres_load_snapshot_params(stream: &str) -> Result<String, String> {
+    params_json(edax_postgres::rows::load_snapshot_params(stream).map_err(to_wire)?)
 }
 
 /// The events a read returned. See [`edax_postgres::rows::decode_events`].
@@ -211,20 +249,58 @@ pub fn postgres_decode_commands(rows: Vec<String>) -> Result<Vec<CommandMessage>
         .collect())
 }
 
-/// The parameter holding `commands`. See [`edax_postgres::rows::commands_param`].
-pub fn postgres_commands_param(commands: Vec<CommandMessage>) -> Result<String, String> {
+/// The parameters of `command_enqueue`. See [`edax_postgres::rows::enqueue_params`].
+pub fn postgres_enqueue_params(commands: Vec<CommandMessage>) -> Result<String, String> {
     let commands: Vec<edax_event::CommandMessage> = commands.into_iter().map(Into::into).collect();
-    edax_postgres::rows::commands_param(&commands).map_err(to_wire)
+    params_json(edax_postgres::rows::enqueue_params(&commands).map_err(to_wire)?)
 }
 
-/// The parameter holding the ids a `mark_published` deletes. See [`edax_postgres::rows::ids_param`].
-pub fn postgres_ids_param(ids: Vec<String>) -> Result<String, String> {
-    edax_postgres::rows::ids_param(&ids).map_err(to_wire)
+/// The outboxes a relay drains. See [`edax_postgres::Outbox`].
+pub fn postgres_outboxes() -> Vec<String> {
+    names(edax_postgres::Outbox::NAMES)
 }
 
-/// A limit or a load's `after` as `bigint` text. See [`edax_postgres::rows::bound_param`].
-pub fn postgres_bound_param(value: u64) -> String {
-    edax_postgres::rows::bound_param(value)
+fn outbox(name: &str) -> Result<edax_postgres::Outbox, String> {
+    edax_postgres::Outbox::from_name(name).map_err(to_wire)
+}
+
+/// The read of an outbox's oldest rows: with `lease_owner`, the leased read for that relay, whose lease
+/// lasts `lease_ttl_ms` (an owner without one is refused). See [`edax_postgres::rows::unpublished`].
+pub fn postgres_unpublished(
+    outbox_named: &str,
+    limit: u64,
+    saga: Option<String>,
+    lease_owner: Option<String>,
+    lease_ttl_ms: Option<i64>,
+) -> Result<PostgresCall, String> {
+    let lease = lease_owner.as_deref().map(|owner| (owner, lease_ttl_ms.unwrap_or(0)));
+    call(edax_postgres::rows::unpublished(
+        outbox(outbox_named)?,
+        saga.as_deref(),
+        limit,
+        lease,
+    ))
+}
+
+/// The delete of an outbox's published rows. See [`edax_postgres::rows::mark_published`].
+pub fn postgres_mark_published(
+    outbox_named: &str,
+    ids: Vec<String>,
+    saga: Option<String>,
+) -> Result<PostgresCall, String> {
+    call(edax_postgres::rows::mark_published(
+        outbox(outbox_named)?,
+        saga.as_deref(),
+        &ids,
+    ))
+}
+
+/// The count of an outbox's waiting rows. See [`edax_postgres::rows::unpublished_count`].
+pub fn postgres_unpublished_count(outbox_named: &str, saga: Option<String>) -> Result<PostgresCall, String> {
+    call(edax_postgres::rows::unpublished_count(
+        outbox(outbox_named)?,
+        saga.as_deref(),
+    ))
 }
 
 /// The parameters of `save_snapshot`. See [`edax_postgres::rows::snapshot_params`].
@@ -248,9 +324,24 @@ pub fn postgres_snapshot_result(stream: &str, version: u64, stream_version: i64)
     edax_postgres::rows::snapshot_result(stream, version, stream_version).map_err(to_wire)
 }
 
-/// The text projection `id`'s document is stored as. See [`edax_postgres::stored_document`].
-pub fn postgres_stored_document(id: &str, document_json: &str) -> Result<String, String> {
-    edax_postgres::stored_document(id, document_json.as_bytes()).map_err(to_wire)
+/// The read of a projection row, holding it when `locked`. See [`edax_postgres::rows::projection_get`].
+pub fn postgres_projection_get(projection: &str, id: &str, locked: bool) -> Result<PostgresCall, String> {
+    call(edax_postgres::rows::projection_get(projection, id, locked))
+}
+
+/// The write of a projection document at version `expected`. See [`edax_postgres::rows::projection_save`].
+pub fn postgres_projection_save(
+    projection: &str,
+    id: &str,
+    expected: u64,
+    document_json: &str,
+) -> Result<PostgresCall, String> {
+    call(edax_postgres::rows::projection_save(
+        projection,
+        id,
+        expected,
+        document_json.as_bytes(),
+    ))
 }
 
 /// What a projection write returned: the new version, or a `concurrency:` error when none was written.
@@ -289,9 +380,31 @@ pub fn postgres_new_owner() -> String {
     edax_postgres::new_owner()
 }
 
-/// The parameters of `claim_insert`. See [`edax_postgres::ledger::claim_params`].
+/// The parameters of `claim_insert`, and of `claim_take_over` before the lapsed owner. See
+/// [`edax_postgres::ledger::claim_params`].
 pub fn postgres_claim_params(key: &str, owner: &str, payload_hash: u64) -> Result<String, String> {
     params_json(edax_postgres::ledger::claim_params(key, owner, payload_hash).map_err(to_wire)?)
+}
+
+/// The parameters of `claim_read`. See [`edax_postgres::ledger::claim_read_params`].
+pub fn postgres_claim_read_params(key: &str, claim_ttl_ms: i64) -> Result<String, String> {
+    params_json(edax_postgres::ledger::claim_read_params(key, claim_ttl_ms).map_err(to_wire)?)
+}
+
+/// The parameters of `ledger_hold` and `ledger_delete`. See [`edax_postgres::ledger::key_params`].
+pub fn postgres_ledger_key_params(key: &str) -> Result<String, String> {
+    params_json(edax_postgres::ledger::key_params(key).map_err(to_wire)?)
+}
+
+/// The parameters of `ledger_settle`. See [`edax_postgres::ledger::settle_params`].
+pub fn postgres_settle_params(key: &str, handle: &[u8], record: &str) -> Result<String, String> {
+    params_json(edax_postgres::ledger::settle_params(key, handle, record).map_err(to_wire)?)
+}
+
+/// What a claim that lost the insert does with the row it read, by name. See
+/// [`edax_postgres::ClaimAction`].
+pub fn postgres_claim_actions() -> Vec<String> {
+    names(edax_postgres::ClaimAction::NAMES)
 }
 
 /// What a claim that lost the insert does with the row it read: `action` is `prior` (`value` the
@@ -309,24 +422,18 @@ fn ledger_row(row: Option<String>) -> Result<Option<edax_postgres::LedgerRow>, S
         .map_err(to_wire)
 }
 
-/// What a claim does with `row`, the JSON row `claim_read` returned, `None` when none. See
+/// What a claim of `key` does with `row`, the JSON row its `attempt`-th `claim_read` returned, `None`
+/// when none; past the kernel's last read a row still gone is its `store:` error. See
 /// [`edax_postgres::claim_read`].
-pub fn postgres_claim_read(row: Option<String>) -> Result<PostgresClaimRead, String> {
-    let row = ledger_row(row)?;
-    Ok(match edax_postgres::claim_read(row.as_ref()) {
-        edax_postgres::ClaimRead::Prior(record) => PostgresClaimRead {
-            action: "prior".to_owned(),
-            value: Some(record),
-        },
-        edax_postgres::ClaimRead::TakeOver(owner) => PostgresClaimRead {
-            action: "take_over".to_owned(),
-            value: Some(owner),
-        },
-        edax_postgres::ClaimRead::Vanished => PostgresClaimRead {
-            action: "vanished".to_owned(),
-            value: None,
-        },
-    })
+pub fn postgres_claim_read(key: &str, attempt: u32, row: Option<String>) -> Result<PostgresClaimRead, String> {
+    let read = edax_postgres::claim_read(key, ledger_row(row)?.as_ref(), attempt).map_err(to_wire)?;
+    let action = read.action().as_str().to_owned();
+    let value = match read {
+        edax_postgres::ClaimRead::Prior(record) => Some(record),
+        edax_postgres::ClaimRead::TakeOver(owner) => Some(owner),
+        edax_postgres::ClaimRead::Vanished => None,
+    };
+    Ok(PostgresClaimRead { action, value })
 }
 
 /// Whether a `complete` writes `record` over `row`, the JSON row `ledger_hold` locked. See
@@ -354,6 +461,11 @@ pub struct PostgresSagaRow {
     pub completed: bool,
 }
 
+/// The read of a saga instance, holding it when `locked`. See [`edax_postgres::rows::saga_load`].
+pub fn postgres_saga_load(saga: &str, id: &str, locked: bool) -> Result<PostgresCall, String> {
+    call(edax_postgres::rows::saga_load(saga, id, locked))
+}
+
 /// The instance row `saga_load` returned. See [`edax_postgres::rows::decode_saga`].
 pub fn postgres_decode_saga(row: &str) -> Result<PostgresSagaRow, String> {
     let row = edax_postgres::rows::decode_saga(row).map_err(to_wire)?;
@@ -365,21 +477,25 @@ pub fn postgres_decode_saga(row: &str) -> Result<PostgresSagaRow, String> {
     })
 }
 
-/// The parameters of a saga write: `saga_insert` at version 0, else `saga_update`. See
-/// [`edax_postgres::rows::saga_params`].
-pub fn postgres_saga_params(
+/// A saga write at `version`: `saga_insert` at 0, else `saga_update`; `state_json` is `None` for a
+/// completion. See [`edax_postgres::rows::saga_write`].
+pub fn postgres_saga_write(
     saga: &str,
     id: &str,
     version: u64,
     state_json: Option<String>,
     folded: &str,
     commands: Vec<CommandMessage>,
-) -> Result<String, String> {
+) -> Result<PostgresCall, String> {
     let commands: Vec<edax_event::CommandMessage> = commands.into_iter().map(Into::into).collect();
-    params_json(
-        edax_postgres::rows::saga_params(saga, id, version, state_json.as_deref(), folded, &commands)
-            .map_err(to_wire)?,
-    )
+    call(edax_postgres::rows::saga_write(
+        saga,
+        id,
+        version,
+        state_json.as_deref(),
+        folded,
+        &commands,
+    ))
 }
 
 /// What a saga write returned: the new version, or its `concurrency:` error. See
@@ -396,7 +512,8 @@ mod tests {
     /// strings with the kernel's codes.
     #[test]
     fn postgres_surface_crosses_the_kernel_layout() {
-        assert_eq!(postgres_check_config(postgres_default_settings()), Ok(()));
+        assert_eq!(postgres_check_config(postgres_settings("{}").unwrap()), Ok(()));
+        assert!(postgres_settings(r#"{"bogus_ms":1}"#).is_err_and(|e| e.starts_with("bad_handle:")));
         let public = r#"{"schema":"public"}"#;
         assert!(postgres_statements(public).unwrap().contains("\"append\""));
         assert!(postgres_statements(r#"{"schema":"Bad"}"#)
@@ -417,7 +534,20 @@ mod tests {
         assert!(postgres_verdict("bogus", "40001", None, "x")
             .unwrap_err()
             .starts_with("codec:"));
-        assert_eq!(postgres_bound_param(u64::MAX), i64::MAX.to_string());
+        let leased = postgres_unpublished(
+            "saga",
+            u64::MAX,
+            Some("ship".into()),
+            Some("relay-a".into()),
+            Some(1_000),
+        )
+        .unwrap();
+        assert_eq!(leased.statement, "saga_unpublished_leased");
+        assert_eq!(
+            leased.params_json,
+            format!(r#"["ship","{}","relay-a","1000"]"#, i64::MAX)
+        );
+        assert!(postgres_unpublished("evnt", 1, None, None, None).is_err_and(|e| e.starts_with("bad_handle:")));
         let compiled = postgres_compile_query(public, "accounts", "{}").unwrap();
         assert_eq!(compiled.params_json, r#"["accounts"]"#);
         let page = postgres_page(r#"{"limit":1}"#, vec![r#"{"id":"a"}"#.into(), r#"{"id":"b"}"#.into()]).unwrap();
@@ -425,6 +555,7 @@ mod tests {
         let owner = postgres_new_owner();
         let held = format!(r#"{{"owner":"{owner}","settled_by":null,"record":"x","lapsed":false}}"#);
         assert!(postgres_release_write(Some(held), owner.as_bytes()).unwrap());
-        assert_eq!(postgres_claim_read(None).unwrap().action, "vanished");
+        assert_eq!(postgres_claim_read("k", 1, None).unwrap().action, "vanished");
+        assert!(postgres_claim_read("k", 3, None).is_err_and(|e| e.starts_with("store:")));
     }
 }

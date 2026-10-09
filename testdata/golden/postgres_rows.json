@@ -11,19 +11,85 @@
     "stream": "acme:invoice-7"
   },
   {
+    "draft_rows": [
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-1",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 1,
+        "tenant": "acme",
+        "version": 2
+      },
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-2",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 2,
+        "tenant": "acme",
+        "version": 2
+      }
+    ],
     "events": [
-      "evt-1",
-      "evt-2"
+      {
+        "id": "evt-1",
+        "recorded_at": 1700000001000000000
+      },
+      {
+        "id": "evt-2",
+        "recorded_at": 1700000001000000000
+      }
     ],
     "expected": 0,
     "name": "append_result",
-    "result": "{\"events\":[{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"id\":\"evt-1\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\",\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"tenant\":\"acme\",\"version\":2},{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"extensions\":\"{\\\"traceparent\\\":\\\"00-4bf9-00f0-01\\\"}\",\"id\":\"evt-2\",\"metadata\":\"{\\\"origin\\\":\\\"web\\\"}\",\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":2,\"tenant\":\"acme\",\"version\":2}],\"stored\":0}"
+    "result": "{\"recorded_at\":1700000001000000000,\"stored\":0}"
   },
   {
+    "draft_rows": [
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-1",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 1,
+        "tenant": "acme",
+        "version": 2
+      },
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "extensions": "{\"traceparent\":\"00-4bf9-00f0-01\"}",
+        "id": "evt-2",
+        "metadata": "{\"origin\":\"web\"}",
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 2,
+        "tenant": "acme",
+        "version": 2
+      }
+    ],
     "error": "concurrency: expected 0, stored 3",
     "expected": 0,
     "name": "append_result_conflict",
-    "result": "{\"stored\":3,\"events\":[]}"
+    "result": "{\"stored\":3,\"recorded_at\":5}"
   },
   {
     "draft_rows": [
@@ -79,18 +145,9 @@
       "cmd-1",
       "cmd-2"
     ],
-    "name": "commands_param",
-    "params": "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"},{\"id\":\"cmd-2\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-2\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
-  },
-  {
-    "name": "ids_param_drops_nul",
-    "params": "[\"a\"]"
-  },
-  {
-    "name": "bound_param_clamps",
+    "name": "enqueue_params",
     "params": [
-      "5",
-      "9223372036854775807"
+      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"},{\"id\":\"cmd-2\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-2\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
     ]
   },
   {
@@ -111,27 +168,58 @@
     "name": "projection_conflict"
   },
   {
-    "name": "saga_insert_params",
-    "params": [
-      "ship",
-      "order-1",
-      "{\"step\":1}",
-      "",
-      "false",
-      "[{\"id\":\"4:ship:order-1:1:0\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
-    ]
+    "command_rows": [
+      {
+        "aggregate_id": "order-1",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "0001ff",
+        "extensions": "{}",
+        "id": "4:ship:order-1:1:0",
+        "idempotency_key": "req-7",
+        "issued_at": 1700000000000000000,
+        "metadata": "{\"note\":\"a\\u0000b\"}",
+        "name": "ShipOrder",
+        "tenant": null,
+        "version": 1
+      }
+    ],
+    "folded": "",
+    "id": "order-1",
+    "name": "saga_insert",
+    "saga": "ship",
+    "state": "{\"step\":1}",
+    "version": 0,
+    "want": {
+      "params": [
+        "ship",
+        "order-1",
+        "{\"step\":1}",
+        "",
+        "[{\"id\":\"4:ship:order-1:1:0\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":\"{}\",\"metadata\":\"{\\\"note\\\":\\\"a\\\\u0000b\\\"}\"}]"
+      ],
+      "statement": "saga_insert"
+    }
   },
   {
-    "name": "saga_complete_params",
-    "params": [
-      "ship",
-      "order-1",
-      "3",
-      null,
-      "m",
-      "true",
-      "[]"
-    ]
+    "command_rows": [],
+    "folded": "m",
+    "id": "order-1",
+    "name": "saga_complete",
+    "saga": "ship",
+    "state": null,
+    "version": 3,
+    "want": {
+      "params": [
+        "ship",
+        "order-1",
+        "3",
+        null,
+        "m",
+        "[]"
+      ],
+      "statement": "saga_update"
+    }
   },
   {
     "command_rows": [
@@ -179,5 +267,373 @@
     "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
     "id": "acct-1",
     "name": "stored_document_nul"
+  },
+  {
+    "args": [
+      "acme:invoice-7",
+      18446744073709551615
+    ],
+    "call": "load_params",
+    "error": null,
+    "name": "load_clamps_after",
+    "want": {
+      "params": [
+        "acme:invoice-7",
+        "9223372036854775807"
+      ]
+    }
+  },
+  {
+    "args": [
+      "s\u0000",
+      0
+    ],
+    "call": "load_params",
+    "error": "codec: stream holds a NUL character, which Postgres cannot store",
+    "name": "load_refuses_nul",
+    "want": null
+  },
+  {
+    "args": [
+      "acme:invoice-7"
+    ],
+    "call": "load_snapshot_params",
+    "error": null,
+    "name": "load_snapshot",
+    "want": {
+      "params": [
+        "acme:invoice-7"
+      ]
+    }
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      false
+    ],
+    "call": "projection_get",
+    "error": null,
+    "name": "projection_get",
+    "want": {
+      "params": [
+        "accounts",
+        "acct-1"
+      ],
+      "statement": "projection_get"
+    }
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      true
+    ],
+    "call": "projection_get",
+    "error": null,
+    "name": "projection_get_locked",
+    "want": {
+      "params": [
+        "accounts",
+        "acct-1"
+      ],
+      "statement": "projection_get_locked"
+    }
+  },
+  {
+    "args": [
+      "accounts",
+      "a\u0000",
+      false
+    ],
+    "call": "projection_get",
+    "error": "codec: projection id holds a NUL character, which Postgres cannot store",
+    "name": "projection_get_refuses_nul",
+    "want": null
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      0,
+      "{\"n\":5.808820077685227e16,\"m\":0.30000000000000000001}"
+    ],
+    "call": "projection_save",
+    "error": null,
+    "name": "projection_insert",
+    "want": {
+      "params": [
+        "accounts",
+        "acct-1",
+        "{\"id\":\"acct-1\",\"m\":0.3,\"n\":58088200776852272.0}"
+      ],
+      "statement": "projection_insert"
+    }
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      2,
+      "{\"n\":1}"
+    ],
+    "call": "projection_save",
+    "error": null,
+    "name": "projection_update",
+    "want": {
+      "params": [
+        "accounts",
+        "acct-1",
+        "2",
+        "{\"id\":\"acct-1\",\"n\":1}"
+      ],
+      "statement": "projection_update"
+    }
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      18446744073709551615,
+      "{}"
+    ],
+    "call": "projection_save",
+    "error": "codec: expected version 18446744073709551615 does not fit a Postgres bigint",
+    "name": "projection_update_refuses_a_version_past_bigint",
+    "want": null
+  },
+  {
+    "args": [
+      "accounts",
+      "acct-1",
+      0,
+      "{\"s\":\"\\u0000\"}"
+    ],
+    "call": "projection_save",
+    "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
+    "name": "projection_save_refuses_nul",
+    "want": null
+  },
+  {
+    "args": [
+      "ship",
+      "order-1",
+      false
+    ],
+    "call": "saga_load",
+    "error": null,
+    "name": "saga_load",
+    "want": {
+      "params": [
+        "ship",
+        "order-1"
+      ],
+      "statement": "saga_load"
+    }
+  },
+  {
+    "args": [
+      "ship",
+      "order-1",
+      true
+    ],
+    "call": "saga_load",
+    "error": null,
+    "name": "saga_load_locked",
+    "want": {
+      "params": [
+        "ship",
+        "order-1"
+      ],
+      "statement": "saga_load_locked"
+    }
+  },
+  {
+    "args": [
+      "event",
+      10,
+      null,
+      null,
+      null
+    ],
+    "call": "unpublished",
+    "error": null,
+    "name": "event_unpublished",
+    "want": {
+      "params": [
+        "10"
+      ],
+      "statement": "event_unpublished"
+    }
+  },
+  {
+    "args": [
+      "command",
+      18446744073709551615,
+      null,
+      "relay-a",
+      30000
+    ],
+    "call": "unpublished",
+    "error": null,
+    "name": "command_unpublished_leased",
+    "want": {
+      "params": [
+        "9223372036854775807",
+        "relay-a",
+        "30000"
+      ],
+      "statement": "command_unpublished_leased"
+    }
+  },
+  {
+    "args": [
+      "saga",
+      10,
+      "ship",
+      "relay-a",
+      30000
+    ],
+    "call": "unpublished",
+    "error": null,
+    "name": "saga_unpublished_leased",
+    "want": {
+      "params": [
+        "ship",
+        "10",
+        "relay-a",
+        "30000"
+      ],
+      "statement": "saga_unpublished_leased"
+    }
+  },
+  {
+    "args": [
+      "event",
+      10,
+      null,
+      "",
+      30000
+    ],
+    "call": "unpublished",
+    "error": "bad_handle: lease owner \"\" must be non-empty text without NUL",
+    "name": "unpublished_refuses_a_lease_without_owner",
+    "want": null
+  },
+  {
+    "args": [
+      "saga",
+      10,
+      null,
+      null,
+      null
+    ],
+    "call": "unpublished",
+    "error": "bad_handle: the saga outbox is read one saga at a time",
+    "name": "unpublished_refuses_a_saga_outbox_without_saga",
+    "want": null
+  },
+  {
+    "args": [
+      "evnt",
+      10,
+      null,
+      null,
+      null
+    ],
+    "call": "unpublished",
+    "error": "bad_handle: unknown postgres outbox: evnt",
+    "name": "unpublished_refuses_an_unknown_outbox",
+    "want": null
+  },
+  {
+    "args": [
+      "event",
+      [
+        "a",
+        "b\u0000"
+      ],
+      null
+    ],
+    "call": "mark_published",
+    "error": null,
+    "name": "mark_published_drops_nul",
+    "want": {
+      "params": [
+        "[\"a\"]"
+      ],
+      "statement": "event_mark_published"
+    }
+  },
+  {
+    "args": [
+      "saga",
+      [
+        "cmd-1"
+      ],
+      "ship"
+    ],
+    "call": "mark_published",
+    "error": null,
+    "name": "saga_mark_published",
+    "want": {
+      "params": [
+        "ship",
+        "[\"cmd-1\"]"
+      ],
+      "statement": "saga_mark_published"
+    }
+  },
+  {
+    "args": [
+      "saga",
+      "ship"
+    ],
+    "call": "unpublished_count",
+    "error": null,
+    "name": "saga_unpublished_count",
+    "want": {
+      "params": [
+        "ship"
+      ],
+      "statement": "saga_unpublished_count"
+    }
+  },
+  {
+    "args": [
+      "order-7",
+      300000
+    ],
+    "call": "claim_read_params",
+    "error": null,
+    "name": "claim_read_params",
+    "want": {
+      "params": [
+        "order-7",
+        "300000"
+      ]
+    }
+  },
+  {
+    "args": [
+      "order-7"
+    ],
+    "call": "ledger_key_params",
+    "error": null,
+    "name": "ledger_key_params",
+    "want": {
+      "params": [
+        "order-7"
+      ]
+    }
+  },
+  {
+    "args": [
+      "o\u0000"
+    ],
+    "call": "ledger_key_params",
+    "error": "codec: idempotency key holds a NUL character, which Postgres cannot store",
+    "name": "ledger_key_refuses_nul",
+    "want": null
   }
 ]

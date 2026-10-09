@@ -592,20 +592,6 @@
     "unique": null
   },
   {
-    "error": "store: postgres load failed on the client (timeout): client text",
-    "kind": "timeout",
-    "message": "client text",
-    "name": "client_timeout",
-    "op": "load"
-  },
-  {
-    "error": "store: postgres load failed on the client (connection): client text",
-    "kind": "connection",
-    "message": "client text",
-    "name": "client_connection",
-    "op": "load"
-  },
-  {
     "error": "codec: postgres load failed on the client (encode): client text",
     "kind": "encode",
     "message": "client text",
@@ -620,10 +606,10 @@
     "op": "load"
   },
   {
-    "error": "codec: unknown postgres client failure: bogus",
-    "kind": "bogus",
+    "error": "codec: unknown postgres client failure: timeout",
+    "kind": "timeout",
     "message": "client text",
-    "name": "client_bogus",
+    "name": "client_timeout",
     "op": "load"
   }
 ]

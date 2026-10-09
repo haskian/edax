@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Literal, Protocol, TypeVar, get_args
 
 from .. import _json, _names, _native, errors
 from .._deadline import within
+from .._units import enlisted
 from .._wiring import wiring_int, wiring_str
 from ..errors import BadHandle, EdaxError, StoreError
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
@@ -30,7 +31,7 @@ from ..projection import Entity
 from ..query import Page, Query
 from ..saga import CompletedInstance, RunningInstance, SagaInstance
 from ..store import Snapshot
-from ..unit_of_work import Tx, current_tx
+from ..unit_of_work import Tx
 
 __all__ = [
     "PgConnection",
@@ -75,8 +76,17 @@ _Op = Literal[
 _names.check(get_args(_Op), _native.postgres_ops(), "postgres operations")
 
 #: The failures a client reports without a SQLSTATE: the kernel's, checked at import.
-_ClientFailure = Literal["timeout", "connection", "encode", "other"]
+_ClientFailure = Literal["encode", "other"]
 _names.check(get_args(_ClientFailure), _native.postgres_client_failures(), "postgres client failures")
+
+#: What a claim that lost its insert does with the row it then read: the kernel's, checked at import.
+_ClaimAction = Literal["prior", "take_over", "vanished"]
+_CLAIM_ACTIONS: tuple[_ClaimAction, ...] = get_args(_ClaimAction)
+_names.check(_CLAIM_ACTIONS, _native.postgres_claim_actions(), "postgres claim actions")
+
+#: The outboxes a relay drains: the kernel's, checked at import.
+_Outbox = Literal["event", "command", "saga"]
+_names.check(get_args(_Outbox), _native.postgres_outboxes(), "postgres outboxes")
 
 #: The tables a host names, by role: the kernel's, checked at import. A role the host does not name takes its
 #: default, ``edax_`` and the role.
@@ -110,42 +120,23 @@ def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = Non
     return _native.postgres_reference_ddl(_tables_json(schema, tables))
 
 
-# How many times a claim reads a key again when the row it lost to vanished first: the kernel's.
-_CLAIM_READS: int = _native.postgres_claim_reads()
-
-
 def default_settings(**overrides: int) -> PostgresSettings:
     """The kernel's default settings, with ``overrides`` by field name: a two-second lock wait inside a
     five-second statement inside a ten-second call, a minute idle in a transaction, a five-second wait for a
     pooled connection and a five-minute claim TTL. An unknown field raises :class:`~edax.errors.BadHandle`."""
-    defaults = _native.postgres_default_settings()
-    # Every setting is a duration in milliseconds, named `*_ms`: read the fields off the kernel's record.
-    fields = {name: getattr(defaults, name) for name in dir(defaults) if name.endswith("_ms")}
-    unknown = sorted(set(overrides) - set(fields))
-    if unknown:
-        raise BadHandle(f"postgres settings have no field {unknown[0]!r}")
-    for name, value in overrides.items():
-        fields[name] = wiring_int(value, name)
-    return PostgresSettings(**fields)
-
-
-class PgTransaction(Protocol):
-    """The part of an ``asyncpg`` transaction a unit of work drives."""
-
-    async def start(self) -> None: ...
-    async def commit(self) -> None: ...
-    async def rollback(self) -> None: ...
+    checked = {name: wiring_int(value, name) for name, value in overrides.items()}
+    return _native.postgres_settings(json.dumps(checked))
 
 
 class PgConnection(Protocol):
     """The part of an ``asyncpg.Connection`` the stores use. Every statement binds text parameters and
-    ``None``, which the kernel's statements cast."""
+    ``None``, which the kernel's statements cast. ``execute`` with no parameters sends a simple query, which
+    may hold several statements: how a transaction opens in one round trip."""
 
     async def fetch(self, query: str, *args: Any) -> list[Any]: ...
     async def fetchrow(self, query: str, *args: Any) -> Any: ...
     async def fetchval(self, query: str, *args: Any) -> Any: ...
     async def execute(self, query: str, *args: Any) -> str: ...
-    def transaction(self, *, isolation: str | None = None) -> PgTransaction: ...
     def terminate(self) -> None: ...
 
 
@@ -168,9 +159,9 @@ class RelayLease:
     ttl_ms: int = 30_000
 
     def __post_init__(self) -> None:
-        wiring_str(self.owner, "lease owner")
-        if wiring_int(self.ttl_ms, "lease ttl_ms") <= 0:
-            raise BadHandle(f"lease ttl_ms must be positive, got {self.ttl_ms}")
+        _native.postgres_check_lease(
+            wiring_str(self.owner, "lease owner"), wiring_int(self.ttl_ms, "lease ttl_ms")
+        )
 
 
 @dataclass(eq=False)
@@ -214,7 +205,8 @@ class PostgresTransactor:
         settings: PostgresSettings | None = None,
     ) -> None:
         settings = settings if settings is not None else default_settings()
-        _native.postgres_check_config(settings)
+        # What opens each transaction, its timeouts rendered in; the kernel refuses settings out of order.
+        self._begin = _native.postgres_begin(settings)
         # The kernel refuses a name outside its rule, an unknown role or two roles under one name.
         self._tables = _tables_json(schema, tables)
         self._sql: dict[str, str] = json.loads(_native.postgres_statements(self._tables))
@@ -226,7 +218,6 @@ class PostgresTransactor:
             )
         _TRANSACTORS[id(pool)] = weakref.ref(self, lambda _: _TRANSACTORS.pop(id(pool), None))
         self._pool = pool
-        self._schema = schema
         self._settings = settings
         self._op_timeout_s = settings.op_timeout_ms / 1000
         self._acquire_timeout_s = settings.acquire_timeout_ms / 1000
@@ -236,11 +227,6 @@ class PostgresTransactor:
         self._checked: set[str] = set()
         self._unique: dict[str, str] = {}
         self._checking: asyncio.Lock | None = None
-
-    @property
-    def schema(self) -> str:
-        """The Postgres schema the tables live in."""
-        return self._schema
 
     @property
     def tables(self) -> str:
@@ -260,67 +246,77 @@ class PostgresTransactor:
         """Hold the server and every table the stores over this transactor use to edax's table contract,
         now: what a service runs at startup to fail fast. Every mismatch is listed in one
         :class:`~edax.errors.BadHandle`. Read-only; a store checks its tables before its first call anyway."""
-        await self._ensure(force=True)
+        async with self._lock():
+            await self._check(sorted(self._roles))
 
-    async def _ensure(self, *, force: bool = False) -> None:
+    async def _ensure(self) -> None:
         """Check the roles not checked yet, once, before any statement on them runs."""
-        if not force and self._roles <= self._checked:
+        if self._roles <= self._checked:
             return
+        async with self._lock():
+            pending = sorted(self._roles - self._checked)
+            if pending:
+                await self._check(pending)
+
+    def _lock(self) -> asyncio.Lock:
+        """The lock one table check at a time holds, made on first use inside the running loop."""
         if self._checking is None:
             self._checking = asyncio.Lock()
-        async with self._checking:
-            pending = sorted(self._roles - self._checked) if not force else sorted(self._roles)
-            if not pending and not force:
-                return
+        return self._checking
 
-            async def checked(conn: PgConnection) -> str:
-                row = await conn.fetchrow(self._sql["server"])
-                _native.postgres_check_server(row[0], row[1], row[2], self._settings)
-                param = _native.postgres_catalog_param(self._tables, pending)
-                catalog: str = await conn.fetchval(self._sql["catalog"], param)
-                return _native.postgres_check_catalog(self._tables, pending, catalog)
+    async def _check(self, roles: list[str]) -> None:
+        """Hold the server and the tables of ``roles`` to the contract, in a transaction of its own."""
 
-            compatibility = json.loads(await self._alone("check", checked, ensure=False))
-            self._unique.update(compatibility["unique"])
-            self._checked.update(pending)
+        async def checked(conn: PgConnection) -> str:
+            row = await conn.fetchrow(self._sql["server"])
+            _native.postgres_check_server(row[0], row[1], row[2], self._settings)
+            param = _native.postgres_catalog_param(self._tables, roles)
+            catalog: str = await conn.fetchval(self._sql["catalog"], param)
+            return _native.postgres_check_catalog(self._tables, roles, catalog)
+
+        async with self._transact() as tx:
+            compatibility = json.loads(await self._call("check", tx, lambda: checked(tx.connection)))
+        self._unique.update(compatibility["unique"])
+        self._checked.update(roles)
 
     @asynccontextmanager
     async def begin(self) -> AsyncIterator[PostgresTx]:
         await self._ensure()
+        async with self._transact() as tx:
+            yield tx
+
+    @asynccontextmanager
+    async def _transact(self) -> AsyncIterator[PostgresTx]:
+        """One transaction on a pooled connection, with the kernel's timeouts set for it alone: committed on a
+        clean exit, rolled back when the block raises, a statement inside it failed or it did not open. Holds
+        no table to the contract.
+
+        The kernel's ``begin`` opens it and sets its timeouts in one simple query, so a call alone costs three
+        round trips. asyncpg reads the open transaction from the server's reply, as it does one it opened
+        itself."""
         async with self._acquire() as conn:
-            transaction = conn.transaction(isolation="read_committed")
             tx = PostgresTx(self, conn, asyncio.current_task())
-            await self._call("transaction", tx, lambda: self._start(transaction, conn))
             try:
+                await self._call("transaction", tx, lambda: conn.execute(self._begin))
                 yield tx
             except BaseException:
                 tx.closed = True
-                await self._end(conn, transaction.rollback)
+                await self._end(conn)
                 raise
             tx.closed = True
             if tx.aborted:
-                await self._end(conn, transaction.rollback)
+                await self._end(conn)
                 raise StoreError(
                     "postgres unit of work: a statement inside it failed, which aborted the transaction; "
                     "it was rolled back and nothing was committed"
                 )
-            await self._guarded("transaction", transaction.commit())
+            await self._call("transaction", tx, lambda: conn.execute(self._sql["commit"]))
 
-    async def _start(self, transaction: PgTransaction, conn: PgConnection) -> None:
-        await transaction.start()
-        settings = self._settings
-        await conn.fetchrow(
-            self._sql["settings"],
-            str(settings.lock_timeout_ms),
-            str(settings.statement_timeout_ms),
-            str(settings.idle_in_transaction_ms),
-        )
-
-    async def _end(self, conn: PgConnection, rollback: Callable[[], Awaitable[None]]) -> None:
+    async def _end(self, conn: PgConnection) -> None:
         """Roll back; a connection that cannot (a cancel landed mid-statement) is closed instead, which the
         server reads as a rollback, and the pool replaces it."""
         try:
-            await within(rollback(), self._op_timeout_s, "postgres rollback")
+            await within(conn.execute(self._sql["rollback"]), self._op_timeout_s, "postgres rollback")
         except (Exception, asyncio.CancelledError) as error:
             logger.warning("edax postgres: rollback failed; closing the connection", exc_info=True)
             try:
@@ -339,79 +335,50 @@ class PostgresTransactor:
         transactor, else ``None`` for a call of its own. A handle of another transactor, a closed one, or one
         used from another task raises :class:`~edax.errors.BadHandle`: enlisting anyway would drop the
         atomicity the caller asked for, or share one connection between two tasks."""
-        if tx is None:
-            tx = current_tx(self)
-        if tx is None:
+        handle = enlisted(self, tx, PostgresTx, "PostgresTransactor")
+        if handle is None:
             return None
-        if not isinstance(tx, PostgresTx) or tx.transactor is not self:
-            raise BadHandle(
-                f"tx {tx!r} is not a transaction of this PostgresTransactor: build every Postgres store that "
-                "must commit together over one transactor"
-            )
-        if tx.closed:
+        if handle.closed:
             raise BadHandle("this Postgres unit of work has ended: its handle takes no more calls")
-        if tx.task is not asyncio.current_task():
+        if handle.task is not asyncio.current_task():
             raise BadHandle(
                 "a Postgres unit of work is used from the task that opened it, one call at a time"
             )
-        return tx
+        return handle
 
     async def run(self, op: _Op, tx: Tx | None, call: Callable[[PgConnection], Awaitable[T]]) -> T:
         """Run ``call`` on the connection of ``tx`` (or the ambient unit of work), else in a short transaction
         of its own, so a call that reads then writes holds its row lock for both. Store-internal."""
         handle = self._handle(tx)
-        if handle is not None:
-            await self._ensure()
-            return await self._call(op, handle, lambda: call(handle.connection))
-        return await self._alone(op, call)
+        if handle is None:
+            return await self._alone(op, call)
+        await self._ensure()
+        return await self._call(op, handle, lambda: call(handle.connection))
 
-    async def _alone(
-        self, op: _Op, call: Callable[[PgConnection], Awaitable[T]], *, ensure: bool = True
-    ) -> T:
+    async def _alone(self, op: _Op, call: Callable[[PgConnection], Awaitable[T]]) -> T:
         """Run ``call`` in a transaction of its own on a pooled connection, outside any unit of work."""
-        if ensure:
-            await self._ensure()
-        async with self._acquire() as conn:
-            transaction = conn.transaction(isolation="read_committed")
-            await self._guarded("transaction", self._start(transaction, conn))
-            try:
-                result = await self._guarded(op, call(conn))
-            except BaseException:
-                await self._end(conn, transaction.rollback)
-                raise
-            await self._guarded("transaction", transaction.commit())
-            return result
+        async with self.begin() as tx:
+            return await self._call(op, tx, lambda: call(tx.connection))
 
     async def _call(self, op: _Op, tx: PostgresTx, call: Callable[[], Awaitable[T]]) -> T:
-        """``call`` inside the unit of work ``tx``. A failure the server or the client reported, a missed
-        deadline or a cancel aborts the transaction, so ``tx`` remembers it. A kernel decision raised between
-        statements (a lapsed claim, a version conflict read from a row) leaves it usable."""
+        """``call`` inside the transaction ``tx``, under the transactor's deadline, every failure the server
+        or the client reports typed by the kernel: a server error by its SQLSTATE and constraint, a client one
+        by its kind. Such a failure, a missed deadline or a cancel aborts the transaction, so ``tx`` remembers
+        it. A kernel decision raised between statements (a lapsed claim, a version conflict read from a row)
+        leaves it usable."""
         try:
-            return await self._guarded(op, call(), tx)
+            return await within(call(), self._op_timeout_s, f"postgres {op}")
         except EdaxError as e:
+            # The deadline's own error: the cancelled call may have reached the server.
             if isinstance(e.__cause__, asyncio.TimeoutError | TimeoutError):
                 tx.aborted = True
             raise
+        except Exception as e:
+            tx.aborted = True
+            raise _typed(op, e, self._unique) from e
         except BaseException:
             tx.aborted = True
             raise
-
-    async def _guarded(self, op: _Op, call: Awaitable[T], tx: PostgresTx | None = None) -> T:
-        """``call`` under the transactor's deadline, every failure the server or the client reports typed by
-        the kernel: a server error by its SQLSTATE and constraint, a client one by its kind."""
-        what = f"postgres {op}"
-
-        async def sent() -> T:
-            try:
-                return await call
-            except EdaxError:
-                raise
-            except Exception as e:
-                if tx is not None:
-                    tx.aborted = True
-                raise _typed(op, e, self._unique) from e
-
-        return await within(sent(), self._op_timeout_s, what)
 
 
 class _Acquired:
@@ -447,15 +414,9 @@ def _typed(op: _Op, e: Exception, unique: Mapping[str, str] | None = None) -> Ed
 
 
 def _client_failure(e: Exception) -> _ClientFailure:
-    """The kind of a failure the client reports without a SQLSTATE."""
-    if isinstance(e, asyncio.TimeoutError | TimeoutError):
-        return "timeout"
-    if isinstance(e, OSError | ConnectionError) or "Connection" in type(e).__name__:
-        return "connection"
-    # asyncpg's client-side DataError (a parameter it cannot encode) is a ValueError.
-    if isinstance(e, ValueError | UnicodeError):
-        return "encode"
-    return "other"
+    """The kind of a failure the client reports without a SQLSTATE. asyncpg's client-side ``DataError``, a
+    parameter it cannot encode, is a ``ValueError``."""
+    return "encode" if isinstance(e, ValueError) else "other"
 
 
 def _params(params_json: str) -> list[str | None]:
@@ -486,12 +447,24 @@ class _StoreView:
     def _sql(self, name: str) -> str:
         return self._transactor.statement(name)
 
+    async def _fetch(self, op: _Op, tx: Tx | None, name: str, *params: str | None) -> list[Any]:
+        """The rows statement ``name`` returns for ``params``, run under ``tx`` as the transactor runs a
+        call."""
+        sql = self._sql(name)
+        return await self._transactor.run(op, tx, lambda conn: conn.fetch(sql, *params))
+
+    async def _fetchval(self, op: _Op, tx: Tx | None, name: str, *params: str | None) -> Any:
+        """The first column of the first row statement ``name`` returns for ``params``, as :meth:`_fetch`
+        runs it."""
+        sql = self._sql(name)
+        return await self._transactor.run(op, tx, lambda conn: conn.fetchval(sql, *params))
+
 
 class _OutboxReads(_StoreView):
     """An outbox read side: run on a connection of its own, never inside a unit of work, so it sees only
     committed rows; with a :class:`RelayLease`, only while this relay holds the outbox's lease."""
 
-    _outbox: ClassVar[str]
+    _outbox: ClassVar[_Outbox]
 
     def __init__(self, transactor: PostgresTransactor, *, lease: RelayLease | None = None) -> None:
         super().__init__(transactor)
@@ -499,35 +472,25 @@ class _OutboxReads(_StoreView):
         if lease is not None:
             transactor.use(("relay_leases",))
 
-    async def _unpublished(self, statement: str, scope: list[str], limit: int) -> list[str]:
-        limit_text = _native.postgres_bound_param(wiring_int(limit, "limit"))
-        args: list[str] = [*scope, limit_text]
-        if self._lease is not None:
-            # The kernel names the lease for the outbox table, so only the relay's owner and TTL bind.
-            statement += "_leased"
-            args += [self._lease.owner, str(self._lease.ttl_ms)]
+    async def _rows(self, call: _native.PostgresCall) -> list[Any]:
+        """The rows the kernel's ``call`` returns, run in a transaction of its own."""
+        sql, params = self._sql(call.statement), _params(call.params_json)
+        return await self._transactor._alone("outbox", lambda conn: conn.fetch(sql, *params))
 
-        async def read(conn: PgConnection) -> list[str]:
-            return [row[0] for row in await conn.fetch(self._sql(statement), *args)]
+    async def _unpublished(self, saga: str | None, limit: int) -> list[str]:
+        lease = self._lease
+        owner, ttl_ms = (None, None) if lease is None else (lease.owner, lease.ttl_ms)
+        call = _native.postgres_unpublished(self._outbox, wiring_int(limit, "limit"), saga, owner, ttl_ms)
+        return [row[0] for row in await self._rows(call)]
 
-        return await self._transactor._alone("outbox", read)
+    async def _mark(self, saga: str | None, ids: Sequence[str]) -> None:
+        if ids:
+            await self._rows(_native.postgres_mark_published(self._outbox, list(ids), saga))
 
-    async def _mark(self, statement: str, scope: list[str], ids: Sequence[str]) -> None:
-        if not ids:
-            return
-        ids_param = _native.postgres_ids_param(list(ids))
-
-        async def mark(conn: PgConnection) -> None:
-            await conn.execute(self._sql(statement), *scope, ids_param)
-
-        await self._transactor._alone("outbox", mark)
-
-    async def _count(self, statement: str, scope: list[str]) -> int:
-        async def count(conn: PgConnection) -> int:
-            n: int = await conn.fetchval(self._sql(statement), *scope)
-            return n
-
-        return await self._transactor._alone("outbox", count)
+    async def _count(self, saga: str | None) -> int:
+        rows = await self._rows(_native.postgres_unpublished_count(self._outbox, saga))
+        count: int = rows[0][0]
+        return count
 
 
 class PostgresEventStore(_OutboxReads):
@@ -539,25 +502,19 @@ class PostgresEventStore(_OutboxReads):
     the same statement, in sequence order. ``begin()`` is the transactor's."""
 
     _roles: ClassVar[tuple[TableRole, ...]] = ("events", "snapshots", "event_outbox")
+    _outbox: ClassVar[_Outbox] = "event"
 
     def begin(self) -> AbstractAsyncContextManager[PostgresTx]:
         return self._transactor.begin()
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
-        after_text = _native.postgres_bound_param(after)
-
-        async def load(conn: PgConnection) -> list[str]:
-            return [row[0] for row in await conn.fetch(self._sql("load"), aggregate_id, after_text)]
-
-        rows = await self._transactor.run("load", tx, load)
-        return _native.postgres_decode_events(rows)
+        params = _params(_native.postgres_load_params(aggregate_id, after))
+        rows = await self._fetch("load", tx, "load", *params)
+        return _native.postgres_decode_events([row[0] for row in rows])
 
     async def load_snapshot(self, tx: Tx, aggregate_id: str) -> Snapshot | None:
-        async def load(conn: PgConnection) -> str | None:
-            row: str | None = await conn.fetchval(self._sql("load_snapshot"), aggregate_id)
-            return row
-
-        row = await self._transactor.run("load", tx, load)
+        params = _params(_native.postgres_load_snapshot_params(aggregate_id))
+        row: str | None = await self._fetchval("load", tx, "load_snapshot", *params)
         if row is None:
             return None
         snapshot = _native.postgres_decode_snapshot(row)
@@ -569,37 +526,28 @@ class PostgresEventStore(_OutboxReads):
                 snapshot.aggregate_id, snapshot.type_name, snapshot.version, snapshot.data
             )
         )
-
-        async def save(conn: PgConnection) -> int:
-            stream_version: int = await conn.fetchval(self._sql("save_snapshot"), *params)
-            return stream_version
-
-        stream_version = await self._transactor.run("save_snapshot", tx, save)
+        stream_version: int = await self._fetchval("save_snapshot", tx, "save_snapshot", *params)
         _native.postgres_snapshot_result(snapshot.aggregate_id, snapshot.version, stream_version)
 
     async def append(
         self, tx: Tx, aggregate_id: str, expected_version: int, drafts: Sequence[EventDraft]
     ) -> list[EventMessage]:
         # The dense-batch rule, the bigint bound and the NUL refusal are the kernel's, before any I/O.
-        params = _params(_native.postgres_append_params(aggregate_id, expected_version, list(drafts)))
-
-        async def append(conn: PgConnection) -> str:
-            result: str = await conn.fetchval(self._sql("append"), *params)
-            return result
-
-        result = await self._transactor.run("append", tx, append)
-        return _native.postgres_append_result(expected_version, len(drafts), result)
+        batch = list(drafts)
+        params = _params(_native.postgres_append_params(aggregate_id, expected_version, batch))
+        result: str = await self._fetchval("append", tx, "append", *params)
+        # The statement returns its clock reading, not the events: the kernel stamps the drafts with it.
+        return _native.postgres_append_result(expected_version, batch, result)
 
     async def unpublished(self, limit: int) -> list[EventMessage]:
-        rows = await self._unpublished("event_unpublished", [], limit)
-        return _native.postgres_decode_events(rows)
+        return _native.postgres_decode_events(await self._unpublished(None, limit))
 
     async def mark_published(self, ids: Sequence[str]) -> None:
-        await self._mark("event_mark_published", [], ids)
+        await self._mark(None, ids)
 
     async def unpublished_count(self) -> int:
         """How many committed unmarked outbox rows wait, counted without paging them."""
-        return await self._count("event_unpublished_count", [])
+        return await self._count(None)
 
 
 class PostgresCommandOutbox(_OutboxReads):
@@ -609,28 +557,24 @@ class PostgresCommandOutbox(_OutboxReads):
     :class:`~edax.errors.BadHandle`; a command id already waiting raises :class:`~edax.errors.CodecError`."""
 
     _roles: ClassVar[tuple[TableRole, ...]] = ("command_outbox",)
+    _outbox: ClassVar[_Outbox] = "command"
 
     async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
         if not commands:
             self._transactor._handle(tx)  # a foreign handle is refused even for an empty batch
             return
-        param = _native.postgres_commands_param(list(commands))
-
-        async def enqueue(conn: PgConnection) -> None:
-            await conn.execute(self._sql("command_enqueue"), param)
-
-        await self._transactor.run("enqueue", tx, enqueue)
+        params = _params(_native.postgres_enqueue_params(list(commands)))
+        await self._fetchval("enqueue", tx, "command_enqueue", *params)
 
     async def unpublished(self, limit: int) -> list[CommandMessage]:
-        rows = await self._unpublished("command_unpublished", [], limit)
-        return _native.postgres_decode_commands(rows)
+        return _native.postgres_decode_commands(await self._unpublished(None, limit))
 
     async def mark_published(self, ids: Sequence[str]) -> None:
-        await self._mark("command_mark_published", [], ids)
+        await self._mark(None, ids)
 
     async def unpublished_count(self) -> int:
         """How many committed unsent commands wait, counted without paging them."""
-        return await self._count("command_unpublished_count", [])
+        return await self._count(None)
 
 
 class PostgresProjectionStore(_StoreView):
@@ -648,38 +592,21 @@ class PostgresProjectionStore(_StoreView):
         self._projection = wiring_str(projection, "projection")
         self._lock_reads = lock_reads
 
-    @property
-    def projection(self) -> str:
-        """The read model this store holds."""
-        return self._projection
-
     async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
         locked = self._lock_reads and self._transactor._handle(tx) is not None
-        statement = self._sql("projection_get_locked" if locked else "projection_get")
-
-        async def get(conn: PgConnection) -> Any:
-            return await conn.fetchrow(statement, self._projection, id)
-
-        row = await self._transactor.run("projection_read", tx, get)
-        return None if row is None else Entity(id, row[0], _json.decode(row[1]))
+        call = _native.postgres_projection_get(self._projection, id, locked)
+        rows = await self._fetch("projection_read", tx, call.statement, *_params(call.params_json))
+        return Entity(id, rows[0][0], _json.decode(rows[0][1])) if rows else None
 
     async def save(self, entity: Entity, tx: Tx | None = None) -> int:
-        document = _native.postgres_stored_document(entity.id, _json.encode(entity.document))
-        version = _native.postgres_bound_param(wiring_int(entity.version, "version"))
-
-        async def save(conn: PgConnection) -> int | None:
-            written: int | None
-            if entity.version == 0:
-                written = await conn.fetchval(
-                    self._sql("projection_insert"), self._projection, entity.id, document
-                )
-            else:
-                written = await conn.fetchval(
-                    self._sql("projection_update"), self._projection, entity.id, version, document
-                )
-            return written
-
-        written = await self._transactor.run("projection_save", tx, save)
+        version = wiring_int(entity.version, "version")
+        # The kernel picks the insert or the compare-and-set, and binds the document as it stores it.
+        call = _native.postgres_projection_save(
+            self._projection, entity.id, version, _json.encode(entity.document)
+        )
+        written: int | None = await self._fetchval(
+            "projection_save", tx, call.statement, *_params(call.params_json)
+        )
         return _native.postgres_projection_result(entity.id, entity.version, written)
 
     async def get_many(self, query: Query = Query(), *, tx: Tx | None = None) -> Page:
@@ -712,50 +639,68 @@ class PostgresIdempotencyStore(_StoreView):
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         owner = _native.postgres_new_owner()
         params = _params(_native.postgres_claim_params(key, owner, payload_hash))
-        pending = params[2]
-        ttl = str(self._transactor._settings.claim_ttl_ms)
+        read_params = _params(
+            _native.postgres_claim_read_params(key, self._transactor._settings.claim_ttl_ms)
+        )
 
         async def claim(conn: PgConnection) -> Claimed:
-            for _ in range(_CLAIM_READS):
+            attempt = 0
+            while True:
+                attempt += 1
                 if await conn.fetchval(self._sql("claim_insert"), *params):
                     return Won(owner.encode())
-                read = _native.postgres_claim_read(await conn.fetchval(self._sql("claim_read"), key, ttl))
-                if read.action == "prior":
-                    return decode_prior(_names.given(read.value, "prior record"), payload_hash)
-                if read.action == "take_over":
-                    lapsed = _names.given(read.value, "lapsed owner")
-                    if await conn.fetchval(self._sql("claim_take_over"), key, owner, pending, lapsed):
-                        return Won(owner.encode())
-            raise StoreError(f"postgres claim of {key!r}: the key kept changing under {_CLAIM_READS} reads")
+                row = await conn.fetchval(self._sql("claim_read"), *read_params)
+                # The kernel gives the claim up once the key kept changing under its last read.
+                read = _native.postgres_claim_read(key, attempt, row)
+                action = _names.named(read.action, _CLAIM_ACTIONS, "postgres claim action")
+                match action:
+                    case "prior":
+                        return decode_prior(_names.given(read.value, "prior record"), payload_hash)
+                    case "take_over":
+                        lapsed = _names.given(read.value, "lapsed owner")
+                        if await conn.fetchval(self._sql("claim_take_over"), *params, lapsed):
+                            return Won(owner.encode())
+                        # Another claimant took the lapsed claim first: the row this claim read is gone.
+                        _native.postgres_claim_read(key, attempt, None)
+                    case "vanished":
+                        pass
+                    case _:
+                        _names.unreachable(action)
 
         return await self._transactor.run("claim", tx, claim)
 
-    async def _hold(self, conn: PgConnection, key: str) -> str | None:
-        row: str | None = await conn.fetchval(self._sql("ledger_hold"), key)
+    async def _hold(self, conn: PgConnection, key_params: list[str | None]) -> str | None:
+        row: str | None = await conn.fetchval(self._sql("ledger_hold"), *key_params)
         return row
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         body = encode_record(record)
+        key_params = _params(_native.postgres_ledger_key_params(key))
 
         async def complete(conn: PgConnection) -> None:
             # A pending record is the kernel's BadHandle and a lapsed claim its StoreError: nothing written.
-            if _native.postgres_complete_write(key, await self._hold(conn, key), handle, body):
-                await conn.execute(self._sql("ledger_settle"), key, handle.decode(), body)
+            if _native.postgres_complete_write(key, await self._hold(conn, key_params), handle, body):
+                settle = _params(_native.postgres_settle_params(key, handle, body))
+                await conn.execute(self._sql("ledger_settle"), *settle)
 
         await self._transactor.run("settle", tx, complete)
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
+        key_params = _params(_native.postgres_ledger_key_params(key))
+
         async def release(conn: PgConnection) -> None:
-            if _native.postgres_release_write(await self._hold(conn, key), handle):
-                await conn.execute(self._sql("ledger_delete"), key)
+            if _native.postgres_release_write(await self._hold(conn, key_params), handle):
+                await conn.execute(self._sql("ledger_delete"), *key_params)
 
         await self._transactor.run("settle", tx, release)
 
     async def forget(self, key: str, tx: Tx | None = None) -> None:
+        key_params = _params(_native.postgres_ledger_key_params(key))
+
         async def forget(conn: PgConnection) -> None:
             # A pending claim is the kernel's InProgress, and stays.
-            if _native.postgres_forget_write(key, await self._hold(conn, key)):
-                await conn.execute(self._sql("ledger_delete"), key)
+            if _native.postgres_forget_write(key, await self._hold(conn, key_params)):
+                await conn.execute(self._sql("ledger_delete"), *key_params)
 
         await self._transactor.run("settle", tx, forget)
 
@@ -767,19 +712,12 @@ class PostgresSagaStore(_OutboxReads):
     steps of one instance wait for each other instead of failing their write. State crosses as JSON."""
 
     _roles: ClassVar[tuple[TableRole, ...]] = ("saga_instances", "saga_outbox")
-
-    def __init__(self, transactor: PostgresTransactor, *, lease: RelayLease | None = None) -> None:
-        super().__init__(transactor, lease=lease)
+    _outbox: ClassVar[_Outbox] = "saga"
 
     async def load(self, saga: str, id: str, tx: Tx | None = None) -> SagaInstance | None:
-        locked = self._transactor._handle(tx) is not None
-        statement = self._sql("saga_load_locked" if locked else "saga_load")
-
-        async def load(conn: PgConnection) -> str | None:
-            row: str | None = await conn.fetchval(statement, saga, id)
-            return row
-
-        row = await self._transactor.run("saga_load", tx, load)
+        # Inside a unit of work the read holds the row, so two steps of one instance wait for each other.
+        call = _native.postgres_saga_load(saga, id, self._transactor._handle(tx) is not None)
+        row: str | None = await self._fetchval("saga_load", tx, call.statement, *_params(call.params_json))
         if row is None:
             return None
         instance = _native.postgres_decode_saga(row)
@@ -798,14 +736,8 @@ class PostgresSagaStore(_OutboxReads):
         commands: Sequence[CommandMessage],
         tx: Tx | None,
     ) -> int:
-        params = _params(_native.postgres_saga_params(saga, id, version, state, folded, list(commands)))
-        statement = self._sql("saga_insert" if version == 0 else "saga_update")
-
-        async def write(conn: PgConnection) -> str:
-            result: str = await conn.fetchval(statement, *params)
-            return result
-
-        result = await self._transactor.run("saga_write", tx, write)
+        call = _native.postgres_saga_write(saga, id, version, state, folded, list(commands))
+        result: str = await self._fetchval("saga_write", tx, call.statement, *_params(call.params_json))
         return _native.postgres_saga_result(saga, id, version, result)
 
     async def save(
@@ -827,12 +759,11 @@ class PostgresSagaStore(_OutboxReads):
         return await self._write(saga, id, version, None, "", commands, tx)
 
     async def unpublished(self, saga: str, limit: int) -> list[CommandMessage]:
-        rows = await self._unpublished("saga_unpublished", [saga], limit)
-        return _native.postgres_decode_commands(rows)
+        return _native.postgres_decode_commands(await self._unpublished(saga, limit))
 
     async def mark_published(self, saga: str, ids: Sequence[str]) -> None:
-        await self._mark("saga_mark_published", [saga], ids)
+        await self._mark(saga, ids)
 
     async def unpublished_count(self, saga: str) -> int:
         """How many of ``saga``'s committed unsent commands wait, counted without paging them."""
-        return await self._count("saga_unpublished_count", [saga])
+        return await self._count(saga)

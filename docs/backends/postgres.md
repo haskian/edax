@@ -122,6 +122,11 @@ timeouts with `SET LOCAL`, so they hold for that transaction only and survive a 
 pooler. The client gives up on a call only after the server would have, so a timeout reports what
 ran out.
 
+The kernel renders the `BEGIN` and the three `SET LOCAL` into one text, which the transactor sends
+as one simple query. A store call outside a unit of work therefore costs three round trips: that
+text, its statement, and `COMMIT`. A transaction that fails to open is rolled back before its
+connection returns to the pool.
+
 | Setting | Default | What it bounds |
 |---|---|---|
 | `lock_timeout_ms` | 2 s | a wait on another unit of work's row |
@@ -157,6 +162,10 @@ such as a projection `save` at a stale version.
 
 `append` keeps its unique violation on purpose. A batch that lost the race must not land half of
 itself on top of the winner's events.
+
+`append` sends no event back. Its statement returns the stream's version before the write and its
+clock reading. The kernel stamps the drafts with that reading, which gives the events `load` reads
+back later.
 
 A unit of work belongs to the task that opened it. A store call with its handle from another task
 raises `BadHandle`, because one connection cannot run two statements at once.
@@ -265,7 +274,8 @@ A transaction left open for long holds back cleanup everywhere, so set
   Size the pool for your dispatcher workers plus your relays, plus one.
 - **PgBouncer.** In transaction mode, build the pool with `statement_cache_size=0`, or use PgBouncer
   1.21 or later with `max_prepared_statements`. The timeouts use `SET LOCAL`, which transaction mode
-  keeps.
+  keeps. The text that opens a transaction is one simple query with no parameters, which transaction
+  mode passes through whole.
 - **Failover.** Connect with `target_session_attrs="read-write"`. A write that reaches a read-only
   server is a transient `StoreError`.
 - **Lock order.** A handler that writes several aggregates or projection rows writes them in sorted

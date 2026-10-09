@@ -7,10 +7,14 @@
 //!
 //! The shapes that carry a decision:
 //!
+//! - [`begin`] opens a transaction and sets its timeouts in one round trip, so a store's call alone costs
+//!   three: open, the statement, [`Statements::commit`].
 //! - `append` is a plain `INSERT`. Its version check reads the stream's last sequence in the same
 //!   statement, and the unique index on `(stream, sequence)` catches the writer that raced past it.
 //!   That violation aborts the transaction on purpose: an `ON CONFLICT DO NOTHING` would land the rest
 //!   of a batch on top of the winner's event, and a caller that caught the conflict could commit it.
+//!   It returns the stream's version before the write and its clock reading, not the events: the caller
+//!   holds the drafts, and [`crate::rows::append_result`] stamps them.
 //! - Each write inserts its outbox rows in the order of its batch, so a relay reads them in sequence.
 //! - `ledger_hold` locks the key's row (`FOR UPDATE`) and the settling write follows in the same
 //!   transaction, so the fence and the write are one step. A store that runs outside a unit of work
@@ -20,9 +24,11 @@
 //!   one aggregate's events out of order. The lease is named for the schema-qualified outbox table (and
 //!   the saga, for the saga outbox), so stores whose outboxes differ never share one, and no SDK names it.
 
+use edax_core::Error;
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{table_contract, ColumnType, Logical, Tables};
+use crate::config::{check_config, Settings};
+use crate::schema::{table_contract, Column, ColumnType, Logical, Tables};
 
 /// Every statement, rendered for one schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,9 +38,12 @@ pub struct Statements {
     pub catalog: String,
     /// The server's encoding, version number and deadlock timeout in milliseconds.
     pub server: String,
-    /// `$1..$3` the lock, statement and idle timeouts in milliseconds, for this transaction only.
-    pub settings: String,
-    /// `$1` stream, `$2` expected version, `$3` the drafts: `{"stored", "events"}`.
+    /// Ends the transaction [`begin`] opened and keeps its writes.
+    pub commit: String,
+    /// Ends the transaction [`begin`] opened and drops its writes.
+    pub rollback: String,
+    /// `$1` stream, `$2` expected version, `$3` the drafts: `{"stored", "recorded_at"}`, the stream's
+    /// version before the write and the clock reading every event of the batch is stamped with.
     pub append: String,
     /// `$1` stream, `$2` after: one event row each.
     pub load: String,
@@ -84,9 +93,10 @@ pub struct Statements {
     pub saga_load: String,
     /// `saga_load`, holding the row until the transaction ends.
     pub saga_load_locked: String,
-    /// `$1` saga, `$2` id, `$3` state, `$4` folded, `$5` completed, `$6` commands.
+    /// `$1` saga, `$2` id, `$3` state (`NULL` completes the instance), `$4` folded, `$5` commands.
     pub saga_insert: String,
-    /// `$1` saga, `$2` id, `$3` expected version, `$4` state, `$5` folded, `$6` completed, `$7` commands.
+    /// `$1` saga, `$2` id, `$3` expected version, `$4` state (`NULL` completes the instance), `$5` folded,
+    /// `$6` commands.
     pub saga_update: String,
     /// `$1` saga, `$2` limit: command rows, oldest first.
     pub saga_unpublished: String,
@@ -173,27 +183,11 @@ SELECT current_setting('server_encoding'),
        current_setting('server_version_num')::bigint,
        (extract(epoch FROM current_setting('deadlock_timeout')::interval) * 1000)::bigint";
 
-const SETTINGS: &str = r"/* edax:settings */
-SELECT set_config('lock_timeout', $1::text, true),
-       set_config('statement_timeout', $2::text, true),
-       set_config('idle_in_transaction_session_timeout', $3::text, true)";
+const COMMIT: &str = r"/* edax:commit */
+COMMIT";
 
-/// An event row as one JSON object, from the events table alias `e`.
-const EVENT_JSON: &str = r"json_build_object(
-  'id', e.id,
-  'aggregate_id', e.aggregate_id,
-  'tenant', e.tenant,
-  'sequence', e.sequence,
-  'name', e.name,
-  'version', e.version,
-  'data', encode(e.data, 'hex'),
-  'correlation_id', e.correlation_id,
-  'causation_id', e.causation_id,
-  'occurred_at', e.occurred_at,
-  'recorded_at', e.recorded_at,
-  'extensions', e.extensions,
-  'metadata', e.metadata
-)";
+const ROLLBACK: &str = r"/* edax:rollback */
+ROLLBACK";
 
 const APPEND: &str = r"/* edax:append */
 WITH clock AS (
@@ -206,22 +200,16 @@ current AS (
 ),
 inserted AS (
   INSERT INTO {events} (
-    id, stream, sequence, aggregate_id, tenant, name, version, data,
-    correlation_id, causation_id, occurred_at, recorded_at, extensions, metadata
+    {event_columns}
   )
   SELECT
-    d.id, $1::text, d.sequence, d.aggregate_id, d.tenant, d.name, d.version, decode(d.data, 'hex'),
-    d.correlation_id, d.causation_id, d.occurred_at, clock.recorded_at, d.extensions, d.metadata
-  FROM jsonb_array_elements(($3::text)::jsonb) WITH ORDINALITY AS r(value, n)
-  CROSS JOIN LATERAL jsonb_to_record(r.value) AS d(
-    id text, aggregate_id text, tenant text, sequence bigint, name text, version bigint, data text,
-    correlation_id text, causation_id text, occurred_at bigint, extensions text, metadata text
-  )
+    {event_values}
+  FROM {event_input}
   CROSS JOIN clock
   CROSS JOIN current
   WHERE current.version = ($2::text)::bigint
   ORDER BY r.n
-  RETURNING *
+  RETURNING id, sequence
 ),
 outbox AS (
   INSERT INTO {event_outbox} (event_id)
@@ -230,18 +218,11 @@ outbox AS (
   ORDER BY sequence
 )
 SELECT json_build_object(
-  'stored', (SELECT version FROM current),
-  'events', coalesce(
-    (
-      SELECT json_agg(
-        {event_json}
-        ORDER BY e.sequence
-      )
-      FROM inserted AS e
-    ),
-    '[]'::json
-  )
-)::text";
+  'stored', current.version,
+  'recorded_at', clock.recorded_at
+)::text
+FROM current
+CROSS JOIN clock";
 
 const LOAD: &str = r"/* edax:load */
 SELECT {event_json}::text
@@ -442,23 +423,23 @@ WHERE i.saga = $1::text
 /// The saga step's commands, inserted only when `written` wrote the instance.
 const SAGA_SENT: &str = r"sent AS (
   INSERT INTO {saga_outbox} (
-    saga,
-    {command_columns}
+    {saga_columns}
   )
   SELECT
-    $1::text,
-    {command_values}
+    {saga_values}
   FROM written
-  CROSS JOIN {command_input}
+  CROSS JOIN {saga_input}
   ORDER BY r.n
 )";
 
-/// What a saga write returns: the version it wrote, or the instance it found instead.
+/// What a saga write returns: the version it wrote, or the instance it found instead, read once.
 const SAGA_RESULT: &str = r"SELECT json_build_object(
   'written', (SELECT version FROM written),
-  'stored', (SELECT i.version FROM {saga_instances} AS i WHERE i.saga = $1::text AND i.id = $2::text),
-  'completed', (SELECT i.completed FROM {saga_instances} AS i WHERE i.saga = $1::text AND i.id = $2::text)
-)::text";
+  'stored', i.version,
+  'completed', i.completed
+)::text
+FROM (SELECT 1) AS one
+LEFT JOIN {saga_instances} AS i ON i.saga = $1::text AND i.id = $2::text";
 
 const SAGA_INSERT: &str = r"/* edax:saga_insert */
 WITH written AS (
@@ -469,8 +450,8 @@ WITH written AS (
     1,
     $3::text,
     $4::text,
-    ($5::text)::boolean,
-    CASE WHEN ($5::text)::boolean THEN clock_timestamp() END
+    $3::text IS NULL,
+    CASE WHEN $3::text IS NULL THEN clock_timestamp() END
   )
   ON CONFLICT (saga, id) DO NOTHING
   RETURNING version
@@ -484,8 +465,8 @@ WITH written AS (
   SET version = version + 1,
       state = $4::text,
       folded = $5::text,
-      completed = ($6::text)::boolean,
-      completed_at = CASE WHEN ($6::text)::boolean THEN clock_timestamp() END
+      completed = $4::text IS NULL,
+      completed_at = CASE WHEN $4::text IS NULL THEN clock_timestamp() END
   WHERE saga = $1::text
     AND id = $2::text
     AND version = ($3::text)::bigint
@@ -498,7 +479,7 @@ WITH written AS (
 const SAGA_UNPUBLISHED: OutboxRead = OutboxRead {
     tag: "saga_unpublished",
     role: Logical::SagaOutbox,
-    select: r"SELECT {command_json}::text
+    select: r"SELECT {saga_json}::text
 FROM {saga_outbox} AS c",
     scope: &["c.saga = $1::text"],
     lease_scope: Some("$1::text"),
@@ -516,67 +497,81 @@ SELECT count(*)
 FROM {saga_outbox}
 WHERE saga = $1::text";
 
-/// The SQL fragments of a command row, built from the command outbox's contract columns, so the
-/// statements and the contract name the same columns.
-struct CommandSql {
+/// A contract column a write fills from the statement itself rather than from its input rows.
+struct Filled {
+    column: &'static str,
+    /// The SQL value the write stores.
+    value: &'static str,
+    /// Whether a row a read returns carries it.
+    returned: bool,
+}
+
+/// The SQL fragments of a message row, built from a table's contract columns, so the statements and the
+/// contract name the same columns. One alias names the input record a write reads and the row a read
+/// returns.
+struct RowSql {
     /// The columns edax writes, one per line.
     columns: String,
-    /// A row as one JSON object, from the alias `c`.
+    /// A row as one JSON object, from the alias.
     json: String,
-    /// The column values of the record `c`, in column order.
+    /// The column values a write stores, in column order.
     values: String,
-    /// The rows of the JSON array parameter `{commands}`, in array order, as `r.n` and the record `c`.
+    /// The rows of the JSON array parameter `{rows}`, in array order, as `r.n` and the record.
     input: String,
 }
 
-impl CommandSql {
-    fn from_contract() -> CommandSql {
-        let columns: Vec<(&str, ColumnType)> = table_contract(Logical::CommandOutbox)
+impl RowSql {
+    /// The fragments of `role`'s table under `alias`, each column of `filled` written from its value.
+    fn from_contract(role: Logical, alias: &str, filled: &[Filled]) -> RowSql {
+        let columns: Vec<Column> = table_contract(role)
             .columns
             .into_iter()
             .filter(|column| !column.defaulted)
-            .map(|column| (column.name, column.column_type))
             .collect();
-        let lines = |line: &dyn Fn(&str, ColumnType) -> String, separator: &str| {
-            columns
-                .iter()
-                .map(|(name, column_type)| line(name, *column_type))
-                .collect::<Vec<_>>()
-                .join(separator)
-        };
-        let fields = lines(
-            &|name, column_type| format!("'{name}', {}", read(name, column_type)),
-            ",\n  ",
-        );
-        CommandSql {
-            columns: lines(&|name, _| name.to_owned(), ",\n"),
-            json: format!("json_build_object(\n  {fields}\n)"),
-            values: lines(&|name, column_type| write(name, column_type), ",\n"),
+        let fill = |column: &Column| filled.iter().find(|f| f.column == column.name);
+        let names: Vec<&str> = columns.iter().map(|column| column.name).collect();
+        let fields: Vec<String> = columns
+            .iter()
+            .filter(|column| fill(column).is_none_or(|f| f.returned))
+            .map(|column| format!("'{}', {}", column.name, read(alias, column.name, column.column_type)))
+            .collect();
+        let values: Vec<String> = columns
+            .iter()
+            .map(|column| {
+                fill(column).map_or_else(|| write(alias, column.name, column.column_type), |f| f.value.to_owned())
+            })
+            .collect();
+        let record: Vec<String> = columns
+            .iter()
+            .filter(|column| fill(column).is_none())
+            .map(|column| format!("{} {}", column.name, wire_type(column.column_type)))
+            .collect();
+        RowSql {
+            columns: names.join(",\n"),
+            json: format!("json_build_object(\n  {}\n)", fields.join(",\n  ")),
+            values: values.join(",\n"),
             input: format!(
-                "jsonb_array_elements(({{commands}}::text)::jsonb) WITH ORDINALITY AS r(value, n)\n\
-                 CROSS JOIN LATERAL jsonb_to_record(r.value) AS c(\n  {}\n)",
-                lines(
-                    &|name, column_type| format!("{name} {}", wire_type(column_type)),
-                    ",\n  "
-                )
+                "jsonb_array_elements(({{rows}}::text)::jsonb) WITH ORDINALITY AS r(value, n)\n\
+                 CROSS JOIN LATERAL jsonb_to_record(r.value) AS {alias}(\n  {}\n)",
+                record.join(",\n  ")
             ),
         }
     }
 }
 
-/// A column of the record `c` as a row returns it: bytes as hex text.
-fn read(name: &str, column_type: ColumnType) -> String {
+/// A column of the row `alias` as a read returns it: bytes as hex text.
+fn read(alias: &str, name: &str, column_type: ColumnType) -> String {
     match column_type {
-        ColumnType::Bytea => format!("encode(c.{name}, 'hex')"),
-        _ => format!("c.{name}"),
+        ColumnType::Bytea => format!("encode({alias}.{name}, 'hex')"),
+        _ => format!("{alias}.{name}"),
     }
 }
 
-/// A field of the record `c` as its column stores it: hex text as bytes.
-fn write(name: &str, column_type: ColumnType) -> String {
+/// A field of the record `alias` as its column stores it: hex text as bytes.
+fn write(alias: &str, name: &str, column_type: ColumnType) -> String {
     match column_type {
-        ColumnType::Bytea => format!("decode(c.{name}, 'hex')"),
-        _ => format!("c.{name}"),
+        ColumnType::Bytea => format!("decode({alias}.{name}, 'hex')"),
+        _ => format!("{alias}.{name}"),
     }
 }
 
@@ -649,19 +644,70 @@ fn outbox_read(outbox: &OutboxRead, lease: Option<&str>) -> String {
     text
 }
 
+/// What opens a transaction: `READ COMMITTED` whatever the server's default, and the lock, statement and
+/// idle timeouts of `settings` for this transaction only (`SET LOCAL`). Several statements without
+/// parameters, so a client sends them as one simple query, in one round trip. The values are the checked
+/// integers rendered here, never host text; settings [`check_config`] refuses are its error.
+pub fn begin(settings: &Settings) -> Result<String, Error> {
+    check_config(settings)?;
+    Ok(format!(
+        "/* edax:begin */\n\
+         BEGIN ISOLATION LEVEL READ COMMITTED;\n\
+         SET LOCAL lock_timeout = '{}ms';\n\
+         SET LOCAL statement_timeout = '{}ms';\n\
+         SET LOCAL idle_in_transaction_session_timeout = '{}ms'",
+        settings.lock_timeout_ms, settings.statement_timeout_ms, settings.idle_in_transaction_ms
+    ))
+}
+
 /// Every statement, rendered for the tables `tables` names.
 pub fn statements(tables: &Tables) -> Statements {
-    let command = CommandSql::from_contract();
+    // An event's stream is the append's own parameter, and its time the store's clock: no input row has
+    // either, and a returned row carries only the time.
+    let event = RowSql::from_contract(
+        Logical::Events,
+        "e",
+        &[
+            Filled {
+                column: "stream",
+                value: "$1::text",
+                returned: false,
+            },
+            Filled {
+                column: "recorded_at",
+                value: "clock.recorded_at",
+                returned: true,
+            },
+        ],
+    );
+    let command = RowSql::from_contract(Logical::CommandOutbox, "c", &[]);
+    // A saga step's commands carry the saga the write names.
+    let saga = RowSql::from_contract(
+        Logical::SagaOutbox,
+        "c",
+        &[Filled {
+            column: "saga",
+            value: "$1::text",
+            returned: false,
+        }],
+    );
     // Each fragment, in the order they nest: a fragment may hold the placeholders of those after it.
-    let fragments: [(&str, &str); 8] = [
+    let fragments: [(&str, &str); 15] = [
         ("saga_sent", SAGA_SENT),
         ("saga_result", SAGA_RESULT),
-        ("event_json", EVENT_JSON),
         ("ledger_fields", LEDGER_FIELDS),
+        ("event_json", &event.json),
+        ("event_columns", &event.columns),
+        ("event_values", &event.values),
+        ("event_input", &event.input),
         ("command_json", &command.json),
         ("command_columns", &command.columns),
         ("command_values", &command.values),
         ("command_input", &command.input),
+        ("saga_json", &saga.json),
+        ("saga_columns", &saga.columns),
+        ("saga_values", &saga.values),
+        ("saga_input", &saga.input),
     ];
     // `template` with every fragment, then each of `params`, then every table filled in.
     let render = |template: &str, params: &[(&str, &str)]| {
@@ -688,8 +734,9 @@ pub fn statements(tables: &Tables) -> Statements {
     Statements {
         catalog: CATALOG.to_owned(),
         server: SERVER.to_owned(),
-        settings: SETTINGS.to_owned(),
-        append: render(APPEND, &[]),
+        commit: COMMIT.to_owned(),
+        rollback: ROLLBACK.to_owned(),
+        append: render(APPEND, &[("rows", "$3")]),
         load: render(LOAD, &[]),
         load_snapshot: render(LOAD_SNAPSHOT, &[]),
         save_snapshot: render(SAVE_SNAPSHOT, &[]),
@@ -697,7 +744,7 @@ pub fn statements(tables: &Tables) -> Statements {
         event_unpublished_leased: leased(&EVENT_UNPUBLISHED),
         event_mark_published: render(EVENT_MARK_PUBLISHED, &[]),
         event_unpublished_count: render(EVENT_UNPUBLISHED_COUNT, &[]),
-        command_enqueue: render(COMMAND_ENQUEUE, &[("commands", "$1")]),
+        command_enqueue: render(COMMAND_ENQUEUE, &[("rows", "$1")]),
         command_unpublished: render(&outbox_read(&COMMAND_UNPUBLISHED, None), &[]),
         command_unpublished_leased: leased(&COMMAND_UNPUBLISHED),
         command_mark_published: render(COMMAND_MARK_PUBLISHED, &[]),
@@ -714,8 +761,8 @@ pub fn statements(tables: &Tables) -> Statements {
         ledger_delete: render(LEDGER_DELETE, &[]),
         saga_load: render(SAGA_LOAD, &[]),
         saga_load_locked: render(&format!("{SAGA_LOAD}\nFOR NO KEY UPDATE"), &[]),
-        saga_insert: render(SAGA_INSERT, &[("commands", "$6")]),
-        saga_update: render(SAGA_UPDATE, &[("commands", "$7")]),
+        saga_insert: render(SAGA_INSERT, &[("rows", "$5")]),
+        saga_update: render(SAGA_UPDATE, &[("rows", "$6")]),
         saga_unpublished: render(&outbox_read(&SAGA_UNPUBLISHED, None), &[]),
         saga_unpublished_leased: leased(&SAGA_UNPUBLISHED),
         saga_mark_published: render(SAGA_MARK_PUBLISHED, &[]),
@@ -765,6 +812,26 @@ mod tests {
                 assert!(!text.contains("\n\n"), "{name} has no empty line");
             }
         }
+    }
+
+    #[test]
+    fn begin_renders_checked_settings() {
+        let settings = Settings {
+            lock_timeout_ms: 250,
+            ..Settings::default()
+        };
+        let text = begin(&settings).unwrap();
+        assert!(text.starts_with("/* edax:begin */\nBEGIN ISOLATION LEVEL READ COMMITTED;"));
+        assert!(text.contains("SET LOCAL lock_timeout = '250ms';"));
+        assert!(text.contains("SET LOCAL idle_in_transaction_session_timeout = '60000ms'"));
+        let refused = Settings {
+            lock_timeout_ms: -1,
+            ..Settings::default()
+        };
+        assert_eq!(
+            begin(&refused).map_err(|e| e.to_string()),
+            Err("bad_handle: lock_timeout_ms must be positive, got -1".to_owned())
+        );
     }
 
     #[test]
@@ -855,5 +922,42 @@ mod tests {
         }
         assert!(rendered.command_unpublished.contains("'data', encode(c.data, 'hex')"));
         assert!(rendered.command_enqueue.contains("decode(c.data, 'hex')"));
+        assert!(
+            !rendered.saga_unpublished.contains("'saga', "),
+            "a saga's command row carries no saga"
+        );
+    }
+
+    #[test]
+    fn event_fragments_name_every_contract_column() {
+        let rendered = statements(&Tables::default());
+        let (input, _) = rendered.append.split_once("CROSS JOIN clock").unwrap();
+        let (_, record) = input.split_once("jsonb_to_record").unwrap();
+        for column in table_contract(Logical::Events).columns {
+            let name = column.name;
+            assert!(
+                rendered.append.contains(&format!("\n    {name},"))
+                    || rendered.append.contains(&format!("\n    {name}\n")),
+                "{name} in the insert"
+            );
+            let filled = matches!(name, "stream" | "recorded_at");
+            assert_eq!(
+                record.contains(&format!("\n    {name} ")),
+                !filled,
+                "{name} in the input record"
+            );
+            assert_eq!(
+                rendered.load.contains(&format!("'{name}', ")),
+                name != "stream",
+                "{name} in a read row"
+            );
+        }
+        assert!(
+            rendered.append.contains("$1::text,\n    e.sequence"),
+            "the stream is the append's own"
+        );
+        assert!(rendered.append.contains("clock.recorded_at"));
+        assert!(rendered.load.contains("'data', encode(e.data, 'hex')"));
+        assert!(rendered.append.contains("decode(e.data, 'hex')"));
     }
 }

@@ -19,9 +19,10 @@ use std::collections::BTreeMap;
 use edax_event::{CommandMessage, EventDraft};
 use edax_golden::{refusal, write_or_check};
 use edax_postgres::ledger::{claim_read, complete_write, forget_write, release_write, LedgerRow};
+use edax_postgres::rows::{Call, Outbox, Param};
 use edax_postgres::{
-    check_catalog, compile, error, reference_ddl, rows, statements, stored_document, verdict, Logical, Op, Tables,
-    UniqueKey, CONTRACT_VERSION,
+    begin, check_catalog, compile, error, ledger, reference_ddl, rows, statements, stored_document, verdict, Logical,
+    Op, Settings, Tables, UniqueKey, CONTRACT_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -292,34 +293,49 @@ fn reference_schema_document() {
     }
 }
 
-/// `postgres_statements.json`: every statement, byte for byte, for the `public` schema.
+/// `postgres_statements.json`: every statement, byte for byte, for the `public` schema, and what opens a
+/// transaction under the default settings.
 #[test]
 fn golden_statements() {
     let rendered = serde_json::to_value(statements(&schema())).unwrap();
-    let cases = rendered
+    let mut cases: Vec<Value> = rendered
         .as_object()
         .unwrap()
         .iter()
         .map(|(name, sql)| json!({"name": name, "sql": sql}))
         .collect();
+    let settings = Settings::default();
+    cases.push(json!({"name": "begin", "settings": settings, "sql": begin(&settings).unwrap()}));
     write_or_check("postgres_statements.json", cases);
 }
 
-/// `postgres_rows.json`: the parameters each write binds and the values each read decodes.
+/// A parameter call's case: `call`, named as the binding names it without its `postgres_` prefix, given
+/// `args` in the binding's order, answers its statement (when it chooses one) and parameters, or `error`.
+fn call_case(name: &str, call: &str, args: Value, answer: Result<Value, edax_core::Error>) -> Value {
+    let error = refusal(&answer);
+    json!({"name": name, "call": call, "args": args, "want": answer.ok(), "error": error})
+}
+
+fn params(answer: Result<Vec<Param>, edax_core::Error>) -> Result<Value, edax_core::Error> {
+    answer.map(|params| json!({"params": params}))
+}
+
+fn chosen(answer: Result<Call, edax_core::Error>) -> Result<Value, edax_core::Error> {
+    answer.map(|call| json!({"statement": call.statement, "params": call.params}))
+}
+
+/// `postgres_rows.json`: the parameters each statement binds, the statement a call chooses, and the values
+/// each read decodes.
 #[test]
 fn golden_rows() {
     let drafts = [draft(1), draft(2)];
     let append = rows::append_params("acme:invoice-7", 0, &drafts).unwrap();
-    let stored: Vec<Value> = serde_json::from_str::<Vec<Value>>(append[2].as_deref().unwrap())
-        .unwrap()
-        .into_iter()
-        .map(|mut row| {
-            row["recorded_at"] = json!(1_700_000_001_000_000_000_i64);
-            row
-        })
-        .collect();
-    let result = json!({"stored": 0, "events": stored}).to_string();
-    let event_row = stored[0].to_string();
+    let draft_rows: Vec<Value> = serde_json::from_str(append[2].as_deref().unwrap()).unwrap();
+    let recorded_at = 1_700_000_001_000_000_000_i64;
+    let result = json!({"stored": 0, "recorded_at": recorded_at}).to_string();
+    let mut event_row = draft_rows[0].clone();
+    event_row["recorded_at"] = json!(recorded_at);
+    let event_row = event_row.to_string();
     let commands = [command("cmd-1", "order-1"), command("cmd-2", "order-2")];
     let command_rows: Vec<String> = serde_json::from_str::<Vec<Value>>(&rows::commands_param(&commands).unwrap())
         .unwrap()
@@ -330,6 +346,7 @@ fn golden_rows() {
         &edax_event::saga_command_id("ship", "order-1", 1, 0),
         "order-1",
     )];
+    let saga_command_rows: Value = serde_json::from_str(&rows::commands_param(&saga_commands).unwrap()).unwrap();
     let mut nul = draft(1);
     nul.correlation_id = "c\0".into();
     // The refused inputs as rows a replay rebuilds its messages from: a draft row is the one an accepted
@@ -345,37 +362,193 @@ fn golden_rows() {
     let foreign = [command("x", "order-1")];
     let foreign_rows: Value = serde_json::from_str(&rows::commands_param(&foreign).unwrap()).unwrap();
     let nul_document = r#"{"s":"\u0000"}"#;
-    let cases = vec![
+    let exact_document = r#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#;
+    let mut cases = vec![
         json!({"name": "append_params", "stream": "acme:invoice-7", "expected": 0, "drafts": drafts.len(), "params": append}),
-        json!({"name": "append_result", "expected": 0, "result": result,
-               "events": rows::append_result(0, 2, &result).unwrap().iter().map(|e| e.id.clone()).collect::<Vec<_>>()}),
-        json!({"name": "append_result_conflict", "expected": 0, "result": r#"{"stored":3,"events":[]}"#,
-               "error": refusal(&rows::append_result(0, 1, r#"{"stored":3,"events":[]}"#))}),
+        json!({"name": "append_result", "expected": 0, "draft_rows": draft_rows, "result": result,
+               "events": rows::append_result(0, drafts.to_vec(), &result).unwrap()
+                   .iter().map(|e| json!({"id": e.id, "recorded_at": e.recorded_at})).collect::<Vec<_>>()}),
+        json!({"name": "append_result_conflict", "expected": 0, "draft_rows": draft_rows, "result": r#"{"stored":3,"recorded_at":5}"#,
+               "error": refusal(&rows::append_result(0, drafts.to_vec(), r#"{"stored":3,"recorded_at":5}"#))}),
         json!({"name": "append_refuses_a_gap", "stream": "s", "expected": 0, "draft_rows": [draft_row(1, &draft(2))],
                "error": refusal(&rows::append_params("s", 0, &[draft(2)]))}),
         json!({"name": "append_refuses_nul", "stream": "s", "expected": 0, "draft_rows": [nul_row],
                "error": refusal(&rows::append_params("s", 0, &[nul]))}),
         json!({"name": "event_row", "row": event_row, "decoded": rows::decode_events(std::slice::from_ref(&event_row)).unwrap().len()}),
-        json!({"name": "commands_param", "params": rows::commands_param(&commands).unwrap(),
+        json!({"name": "enqueue_params", "params": rows::enqueue_params(&commands).unwrap(),
                "decoded": rows::decode_commands(&command_rows).unwrap().iter().map(|c| c.id.clone()).collect::<Vec<_>>()}),
-        json!({"name": "ids_param_drops_nul", "params": rows::ids_param(&["a".into(), "b\0".into()]).unwrap()}),
-        json!({"name": "bound_param_clamps", "params": [rows::bound_param(5), rows::bound_param(u64::MAX)]}),
         json!({"name": "snapshot_params", "params": rows::snapshot_params("invoice-7", "Invoice", 3, &[1, 2]).unwrap()}),
         json!({"name": "snapshot_leads", "error": refusal(&rows::snapshot_result("invoice-7", 4, 3))}),
         json!({"name": "projection_conflict", "error": refusal(&rows::projection_result("acct-1", 2, None))}),
-        json!({"name": "saga_insert_params", "params": rows::saga_params("ship", "order-1", 0, Some(r#"{"step":1}"#), "", &saga_commands).unwrap()}),
-        json!({"name": "saga_complete_params", "params": rows::saga_params("ship", "order-1", 3, None, "m", &[]).unwrap()}),
+        json!({"name": "saga_insert", "saga": "ship", "id": "order-1", "version": 0, "state": r#"{"step":1}"#, "folded": "",
+               "command_rows": saga_command_rows,
+               "want": chosen(rows::saga_write("ship", "order-1", 0, Some(r#"{"step":1}"#), "", &saga_commands)).unwrap()}),
+        json!({"name": "saga_complete", "saga": "ship", "id": "order-1", "version": 3, "state": null, "folded": "m",
+               "command_rows": [],
+               "want": chosen(rows::saga_write("ship", "order-1", 3, None, "m", &[])).unwrap()}),
         json!({"name": "saga_foreign_command", "saga": "ship", "id": "order-1", "version": 0, "state": null, "folded": "",
-               "command_rows": foreign_rows, "error": refusal(&rows::saga_params("ship", "order-1", 0, None, "", &foreign))}),
+               "command_rows": foreign_rows, "error": refusal(&rows::saga_write("ship", "order-1", 0, None, "", &foreign))}),
         json!({"name": "saga_completed", "result": r#"{"written":null,"stored":4,"completed":true}"#,
                "error": refusal(&rows::saga_result("ship", "order-1", 3, r#"{"written":null,"stored":4,"completed":true}"#))}),
         json!({"name": "saga_conflict", "result": r#"{"written":null,"stored":4,"completed":false}"#,
                "error": refusal(&rows::saga_result("ship", "order-1", 3, r#"{"written":null,"stored":4,"completed":false}"#))}),
-        json!({"name": "stored_document_exact", "id": "acct-1", "document": r#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#,
-               "stored": stored_document("acct-1", br#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#).unwrap()}),
+        json!({"name": "stored_document_exact", "id": "acct-1", "document": exact_document,
+               "stored": stored_document("acct-1", exact_document.as_bytes()).unwrap()}),
         json!({"name": "stored_document_nul", "id": "acct-1", "document": nul_document,
                "error": refusal(&stored_document("acct-1", nul_document.as_bytes()))}),
     ];
+    let lease = Some(("relay-a", 30_000));
+    cases.extend([
+        call_case(
+            "load_clamps_after",
+            "load_params",
+            json!(["acme:invoice-7", u64::MAX]),
+            params(rows::load_params("acme:invoice-7", u64::MAX)),
+        ),
+        call_case(
+            "load_refuses_nul",
+            "load_params",
+            json!(["s\u{0}", 0]),
+            params(rows::load_params("s\0", 0)),
+        ),
+        call_case(
+            "load_snapshot",
+            "load_snapshot_params",
+            json!(["acme:invoice-7"]),
+            params(rows::load_snapshot_params("acme:invoice-7")),
+        ),
+        call_case(
+            "projection_get",
+            "projection_get",
+            json!(["accounts", "acct-1", false]),
+            chosen(rows::projection_get("accounts", "acct-1", false)),
+        ),
+        call_case(
+            "projection_get_locked",
+            "projection_get",
+            json!(["accounts", "acct-1", true]),
+            chosen(rows::projection_get("accounts", "acct-1", true)),
+        ),
+        call_case(
+            "projection_get_refuses_nul",
+            "projection_get",
+            json!(["accounts", "a\u{0}", false]),
+            chosen(rows::projection_get("accounts", "a\0", false)),
+        ),
+        call_case(
+            "projection_insert",
+            "projection_save",
+            json!(["accounts", "acct-1", 0, exact_document]),
+            chosen(rows::projection_save(
+                "accounts",
+                "acct-1",
+                0,
+                exact_document.as_bytes(),
+            )),
+        ),
+        call_case(
+            "projection_update",
+            "projection_save",
+            json!(["accounts", "acct-1", 2, r#"{"n":1}"#]),
+            chosen(rows::projection_save("accounts", "acct-1", 2, br#"{"n":1}"#)),
+        ),
+        call_case(
+            "projection_update_refuses_a_version_past_bigint",
+            "projection_save",
+            json!(["accounts", "acct-1", u64::MAX, "{}"]),
+            chosen(rows::projection_save("accounts", "acct-1", u64::MAX, b"{}")),
+        ),
+        call_case(
+            "projection_save_refuses_nul",
+            "projection_save",
+            json!(["accounts", "acct-1", 0, nul_document]),
+            chosen(rows::projection_save("accounts", "acct-1", 0, nul_document.as_bytes())),
+        ),
+        call_case(
+            "saga_load",
+            "saga_load",
+            json!(["ship", "order-1", false]),
+            chosen(rows::saga_load("ship", "order-1", false)),
+        ),
+        call_case(
+            "saga_load_locked",
+            "saga_load",
+            json!(["ship", "order-1", true]),
+            chosen(rows::saga_load("ship", "order-1", true)),
+        ),
+        call_case(
+            "event_unpublished",
+            "unpublished",
+            json!(["event", 10, null, null, null]),
+            chosen(rows::unpublished(Outbox::Event, None, 10, None)),
+        ),
+        call_case(
+            "command_unpublished_leased",
+            "unpublished",
+            json!(["command", u64::MAX, null, "relay-a", 30_000]),
+            chosen(rows::unpublished(Outbox::Command, None, u64::MAX, lease)),
+        ),
+        call_case(
+            "saga_unpublished_leased",
+            "unpublished",
+            json!(["saga", 10, "ship", "relay-a", 30_000]),
+            chosen(rows::unpublished(Outbox::Saga, Some("ship"), 10, lease)),
+        ),
+        call_case(
+            "unpublished_refuses_a_lease_without_owner",
+            "unpublished",
+            json!(["event", 10, null, "", 30_000]),
+            chosen(rows::unpublished(Outbox::Event, None, 10, Some(("", 30_000)))),
+        ),
+        call_case(
+            "unpublished_refuses_a_saga_outbox_without_saga",
+            "unpublished",
+            json!(["saga", 10, null, null, null]),
+            chosen(rows::unpublished(Outbox::Saga, None, 10, None)),
+        ),
+        call_case(
+            "unpublished_refuses_an_unknown_outbox",
+            "unpublished",
+            json!(["evnt", 10, null, null, null]),
+            chosen(Outbox::from_name("evnt").and_then(|o| rows::unpublished(o, None, 10, None))),
+        ),
+        call_case(
+            "mark_published_drops_nul",
+            "mark_published",
+            json!(["event", ["a", "b\u{0}"], null]),
+            chosen(rows::mark_published(Outbox::Event, None, &["a".into(), "b\0".into()])),
+        ),
+        call_case(
+            "saga_mark_published",
+            "mark_published",
+            json!(["saga", ["cmd-1"], "ship"]),
+            chosen(rows::mark_published(Outbox::Saga, Some("ship"), &["cmd-1".into()])),
+        ),
+        call_case(
+            "saga_unpublished_count",
+            "unpublished_count",
+            json!(["saga", "ship"]),
+            chosen(rows::unpublished_count(Outbox::Saga, Some("ship"))),
+        ),
+        call_case(
+            "claim_read_params",
+            "claim_read_params",
+            json!(["order-7", 300_000]),
+            params(ledger::claim_read_params("order-7", 300_000)),
+        ),
+        call_case(
+            "ledger_key_params",
+            "ledger_key_params",
+            json!(["order-7"]),
+            params(ledger::key_params("order-7")),
+        ),
+        call_case(
+            "ledger_key_refuses_nul",
+            "ledger_key_params",
+            json!(["o\u{0}"]),
+            params(ledger::key_params("o\0")),
+        ),
+    ]);
     write_or_check("postgres_rows.json", cases);
 }
 
@@ -420,7 +593,7 @@ fn golden_error() {
             }));
         }
     }
-    for kind in ["timeout", "connection", "encode", "other", "bogus"] {
+    for kind in ["encode", "other", "timeout"] {
         cases.push(json!({
             "name": format!("client_{kind}"), "op": "load", "kind": kind, "message": "client text",
             "error": error::client_verdict(Op::Load, kind, "client text").to_string(),
@@ -454,7 +627,7 @@ fn golden_ledger() {
         let held = held.as_ref();
         let row_json =
             held.map(|r| json!({"owner": r.owner, "settled_by": r.settled_by, "record": r.record, "lapsed": r.lapsed}));
-        let read = match claim_read(held) {
+        let read = match claim_read("order-7", held, 1).unwrap() {
             edax_postgres::ClaimRead::Prior(record) => json!({"prior": record}),
             edax_postgres::ClaimRead::TakeOver(owner) => json!({"take_over": owner}),
             edax_postgres::ClaimRead::Vanished => json!("vanished"),
@@ -471,6 +644,19 @@ fn golden_ledger() {
     }
     let pending_settle = complete_write("order-7", rows_by_class[1].1.as_ref(), b"me", &pending);
     cases.push(json!({"name": "pending_cannot_settle", "error": refusal(&pending_settle)}));
+    // A row still gone on the last read gives the claim up; a row read then still answers.
+    for attempt in 1..=edax_postgres::config::CLAIM_READS {
+        let read = claim_read("order-7", None, attempt).map(|read| read.action().as_str());
+        cases.push(
+            json!({"name": format!("vanished_on_read_{attempt}"), "key": "order-7", "attempt": attempt,
+                          "action": read.as_ref().ok(), "error": refusal(&read)}),
+        );
+    }
+    let settle = ledger::settle_params("order-7", b"me", DONE);
+    cases.push(
+        json!({"name": "settle_params", "key": "order-7", "handle": "me", "record": DONE,
+                      "params": settle.as_ref().ok(), "error": refusal(&settle)}),
+    );
     write_or_check("postgres_ledger.json", cases);
 }
 

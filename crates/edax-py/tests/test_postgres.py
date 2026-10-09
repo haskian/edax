@@ -14,8 +14,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 import pytest
-from edax import _native
+from conftest import golden
 from edax._units import leave_every_unit_of_work
+from edax._values import fields_of
 from edax.backend.postgres import (
     PostgresCommandOutbox,
     PostgresEventStore,
@@ -31,7 +32,7 @@ from edax.backend.postgres import (
 from edax.errors import BadHandle, CodecError, ConcurrencyError, EdaxError, InProgress, StoreError, from_wire
 from edax.filter import gte
 from edax.idempotency import Claimed, Record, Won
-from edax.message import CommandMessage, EventDraft, Payload
+from edax.message import EventDraft
 from edax.projection import Entity
 from edax.query import Page, Query, sort_key
 from edax.query import query as kernel_query
@@ -45,7 +46,8 @@ from edax.testing import (
     SagaOutboxContract,
     SagaStoreContract,
 )
-from edax.testing.messages import command
+from edax.testing._concurrency import RolledBack, unique_id
+from edax.testing.messages import command, saga_command
 from edax.unit_of_work import transaction
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -61,18 +63,6 @@ if URL is None:
 asyncpg = pytest.importorskip("asyncpg")
 
 SCHEMA = "edax_test"
-TABLES = (
-    "edax_event_outbox",
-    "edax_events",
-    "edax_snapshots",
-    "edax_command_outbox",
-    "edax_projections",
-    "edax_ledger",
-    "edax_saga_outbox",
-    "edax_saga_instances",
-    "edax_relay_leases",
-)
-GOLDEN = os.path.join(os.path.dirname(__file__), "..", "..", "..", "testdata", "golden")
 
 
 async def provision(pool: Any, schema: str, tables: dict[str, str] | None = None) -> None:
@@ -106,11 +96,17 @@ async def pool(provisioned: None) -> AsyncIterator[Any]:
         await pool.close()
 
 
+def tables(db: PostgresTransactor) -> dict[str, str]:
+    """Each table ``db`` resolved, schema-qualified, by its role: the names the kernel renders its
+    statements over."""
+    resolved = json.loads(db.tables)
+    return {role: f'"{resolved["schema"]}"."{name}"' for role, name in resolved["names"].items()}
+
+
 @pytest.fixture
 async def db(pool: Any) -> AsyncIterator[PostgresTransactor]:
     transactor = PostgresTransactor(pool, schema=SCHEMA, settings=default_settings(lock_timeout_ms=1_000))
-    tables = ", ".join(f'"{SCHEMA}".{table}' for table in TABLES)
-    await pool.execute(f"TRUNCATE {tables}")
+    await pool.execute(f"TRUNCATE {', '.join(tables(transactor).values())}")
     yield transactor
 
 
@@ -185,16 +181,17 @@ class TestPostgresIdempotencyStore(IdempotencyStoreContract):
     stores_raw_records = True
 
     async def expire_claim(self, idempotency_store: Any, key: str) -> None:
-        pool = idempotency_store.transactor._pool
-        await pool.execute(f'DELETE FROM "{SCHEMA}".edax_ledger WHERE key = $1 AND owner IS NULL', key)
-        await pool.execute(
-            f"UPDATE \"{SCHEMA}\".edax_ledger SET claimed_at = '-infinity' WHERE key = $1 AND owner IS NOT NULL",
-            key,
+        db = idempotency_store.transactor
+        ledger = tables(db)["ledger"]
+        await db._pool.execute(f"DELETE FROM {ledger} WHERE key = $1 AND owner IS NULL", key)
+        await db._pool.execute(
+            f"UPDATE {ledger} SET claimed_at = '-infinity' WHERE key = $1 AND owner IS NOT NULL", key
         )
 
     async def put_raw_record(self, idempotency_store: Any, key: str, raw: str) -> None:
-        await idempotency_store.transactor._pool.execute(
-            f'INSERT INTO "{SCHEMA}".edax_ledger (key, record, claimed_at) VALUES ($1, $2, now())', key, raw
+        db = idempotency_store.transactor
+        await db._pool.execute(
+            f"INSERT INTO {tables(db)['ledger']} (key, record, claimed_at) VALUES ($1, $2, now())", key, raw
         )
 
     @pytest.fixture
@@ -222,27 +219,6 @@ def draft(aggregate: str, sequence: int, **fields: Any) -> EventDraft:
     return EventDraft(**{**base, **fields})
 
 
-def saga_command(saga: str, instance: str, version: int, index: int) -> CommandMessage:
-    """The ``index``-th command a step of ``saga`` sends when it commits ``version`` of ``instance``: the
-    kernel's row, with a real ``Fulfill`` payload, caused by the event that step folded."""
-    payload = Payload("Fulfill", 1, f'{{"order_id":"{instance}"}}'.encode())
-    return _native.saga_command(
-        saga,
-        instance,
-        version,
-        index,
-        payload,
-        f"evt-{instance}-{version}",
-        f"flow-{instance}",
-        1_714_564_800_000_000_001,
-        "acme",
-    )
-
-
-class Abandon(Exception):
-    """Raised inside a unit of work to roll it back."""
-
-
 async def contender(
     db: PostgresTransactor, work: Callable[[PostgresTx], Awaitable[T]]
 ) -> tuple[asyncio.Task[T], int]:
@@ -261,14 +237,15 @@ async def contender(
     return task, await asyncio.wait_for(opened, 3)
 
 
-async def wait_for_lock(pool: Any, pid: int, statement: str) -> None:
-    """Wait, three seconds at most, until session ``pid`` waits on a lock in the kernel statement tagged
-    ``statement``: the order a race needs, read from the server rather than guessed with a sleep."""
+async def wait_for_lock(pool: Any, statement: str, pid: int | None = None) -> None:
+    """Wait, three seconds at most, until session ``pid`` (any session when ``None``) waits on a lock in the
+    kernel statement tagged ``statement``: the order a race needs, read from the server rather than guessed
+    with a sleep."""
 
     async def waiting() -> None:
         while not await pool.fetchval(
-            "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock' "
-            "AND query LIKE $2)",
+            "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE ($1::int IS NULL OR pid = $1) "
+            "AND wait_event_type = 'Lock' AND query LIKE $2)",
             pid,
             f"/* edax:{statement} */%",
         ):
@@ -283,12 +260,16 @@ async def test_append_stamps_the_database_clock_and_keeps_every_field(
     store = PostgresEventStore(db)
     async with transaction(store) as tx:
         before = await pool.fetchval("SELECT floor(extract(epoch FROM clock_timestamp()) * 1e9)::bigint")
-        stored = await store.append(tx, "acct-1", 0, [draft("acct-1", 1), draft("acct-1", 2, occurred_at=7)])
+        drafts = [draft("acct-1", 1, tenant="acme"), draft("acct-1", 2, occurred_at=7)]
+        stored = await store.append(tx, "acct-1", 0, drafts)
     assert stored[0].recorded_at == stored[1].recorded_at, "one clock reading per append"
     assert stored[0].recorded_at >= before - 1_000
     async with transaction(store) as tx:
         loaded = await store.load(tx, "acct-1")
-    assert loaded == stored
+    # The append returns only its clock reading and the kernel stamps the drafts with it, so every field it
+    # hands back must be what the rows hold.
+    assert [fields_of(event) for event in stored] == [fields_of(event) for event in loaded]
+    assert loaded[0].tenant == "acme"
     assert loaded[0].metadata == {"note": "a\x00b"}, "a NUL survives inside the metadata text"
     assert loaded[1].occurred_at == 7
 
@@ -373,7 +354,7 @@ async def _complete_done(ledger: PostgresIdempotencyStore, key: str, won: Won, t
 
 
 async def _abandon(ledger: PostgresIdempotencyStore, key: str, won: Won, tx: PostgresTx) -> None:
-    raise Abandon
+    raise RolledBack
 
 
 async def _release(ledger: PostgresIdempotencyStore, key: str, won: Won, tx: PostgresTx) -> None:
@@ -399,8 +380,8 @@ async def test_a_claim_waiting_on_an_open_holder(
     """A contender's claim waits on the row a holder's open unit of work inserted, within the lock wait, and
     reads how the holder ended: its outcome once committed, or the key free once rolled back or released."""
     ledger = PostgresIdempotencyStore(db)
-    key = f"req-{os.urandom(4).hex()}"
-    with contextlib.suppress(Abandon):
+    key = unique_id("req")
+    with contextlib.suppress(RolledBack):
         async with transaction(db) as tx:
             won = await ledger.claim(key, 7, tx=tx)
             assert isinstance(won, Won)
@@ -409,7 +390,7 @@ async def test_a_claim_waiting_on_an_open_holder(
                 return await ledger.claim(key, 7, tx=other)
 
             contending, pid = await contender(db, claim)
-            await wait_for_lock(pool, pid, "claim_insert")
+            await wait_for_lock(pool, "claim_insert", pid)
             assert not contending.done(), "the contender waits on the holder's row"
             await settle(ledger, key, won, tx)
     got = await asyncio.wait_for(contending, 3)
@@ -426,7 +407,7 @@ async def test_a_claim_waiting_on_an_open_holder_is_in_progress_then_replays(poo
     outcome the contender replays it."""
     db = PostgresTransactor(pool, schema=SCHEMA, settings=default_settings(lock_timeout_ms=200))
     ledger = PostgresIdempotencyStore(db)
-    key = f"req-{os.urandom(4).hex()}"
+    key = unique_id("req")
     async with transaction(db) as tx:
         won = await ledger.claim(key, 7, tx=tx)
         assert isinstance(won, Won)
@@ -535,7 +516,7 @@ async def test_lock_reads(db: PostgresTransactor, pool: Any, in_unit_of_work: bo
                 return seen, await store.save(Entity("acct-1", seen.version, topped), tx=other)
 
             reading, pid = await contender(db, read_then_save)
-            await wait_for_lock(pool, pid, "projection_get")
+            await wait_for_lock(pool, "projection_get", pid)
             assert not reading.done(), "the second reader waits on the held row"
             assert await store.save(Entity("acct-1", 1, {"balance": 6}), tx=tx) == 2
         else:
@@ -578,7 +559,7 @@ async def test_two_steps_of_one_saga_instance_wait_and_both_land(db: PostgresTra
             )
 
         stepping, pid = await contender(db, step)
-        await wait_for_lock(pool, pid, "saga_load")
+        await wait_for_lock(pool, "saga_load", pid)
         assert not stepping.done(), "the second step waits on the held instance"
         assert await sagas.save("order", "order-1", {"step": "paid"}, 1, "", [first], tx=tx) == 2
     instance, written = await asyncio.wait_for(stepping, 3)
@@ -622,7 +603,7 @@ async def test_the_hosts_names_and_constraint_names_are_its_own(pool: Any) -> No
             return await store.append(other, "acct-1", 0, batch)
 
         losing, pid = await contender(db, append)
-        await wait_for_lock(pool, pid, "append")
+        await wait_for_lock(pool, "append", pid)
         assert not losing.done(), "the loser waits on the winner's index entry"
     with pytest.raises(ConcurrencyError, match="23505 on events_stream_sequence"):
         await asyncio.wait_for(losing, 3)
@@ -646,25 +627,12 @@ async def test_a_table_off_the_contract_is_refused_before_any_statement(pool: An
         await PostgresProjectionStore(db, "p").get("x")
 
 
-def _golden(name: str) -> list[dict[str, Any]]:
-    with open(os.path.join(GOLDEN, name), encoding="utf-8") as f:
-        cases: list[dict[str, Any]] = json.load(f)
-    return cases
-
-
-@pytest.mark.parametrize("case", _golden("postgres_query.json"), ids=lambda c: c["name"])
+@pytest.mark.parametrize("case", golden("postgres_query.json"), ids=lambda c: c["name"])
 async def test_query_vectors_through_get_many(db: PostgresTransactor, case: dict[str, Any]) -> None:
     store = PostgresProjectionStore(db, "golden")
     for document in case["documents"]:
         await store.save(Entity(document["id"], 0, document))
-    spec = case["query"]
-    query = Query(
-        filter=spec.get("filter"),
-        sort=spec.get("sort", ()),
-        offset=spec.get("offset", 0),
-        limit=spec.get("limit"),
-        after=spec.get("after"),
-    )
+    query = Query(**case["query"])
     if case["error"] is not None or case["page_error"] is not None:
         with pytest.raises(type(from_wire(case["error"] or case["page_error"]))):
             await store.get_many(query)
@@ -716,7 +684,7 @@ def test_get_many_pages_as_the_kernel_does(
         pool = await asyncpg.create_pool(URL, min_size=1, max_size=2)
         try:
             db = PostgresTransactor(pool, schema=SCHEMA)
-            store = PostgresProjectionStore(db, f"h-{os.urandom(6).hex()}")
+            store = PostgresProjectionStore(db, unique_id("h"))
             for i, doc in enumerate(docs):
                 await store.save(Entity(f"d{i:02}", 0, doc))
             stored = [e.document for i in range(len(docs)) if (e := await store.get(f"d{i:02}")) is not None]
@@ -774,7 +742,7 @@ async def test_idle_timeout_frees_lock_and_restores_pooled_settings(provisioned:
         db = PostgresTransactor(pool, schema=SCHEMA, settings=default_settings(idle_in_transaction_ms=100))
         ledger = PostgresIdempotencyStore(db)
         await db.check()
-        key = f"idle-{os.urandom(4).hex()}"
+        key = unique_id("idle")
         disconnected = asyncio.Event()
         with pytest.raises(StoreError):
             async with transaction(db) as tx:
@@ -799,18 +767,10 @@ async def test_completion_waiting_on_takeover_rollback_keeps_original_owner(db: 
     async with pool.acquire() as conn:
         takeover = conn.transaction()
         await takeover.start()
-        await conn.execute(f'UPDATE "{SCHEMA}".edax_ledger SET owner = $2 WHERE key = $1', key, "new-owner")
+        await conn.execute(f"UPDATE {tables(db)['ledger']} SET owner = $2 WHERE key = $1", key, "new-owner")
         completing = asyncio.create_task(ledger.complete(key, won.handle, Record.done(7, {"paid": True})))
-
-        async def wait_for_lock() -> None:
-            while not await pool.fetchval(
-                "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
-                "AND query LIKE '/* edax:ledger_hold */%')"
-            ):
-                await asyncio.sleep(0.01)
-
         try:
-            await asyncio.wait_for(wait_for_lock(), 2)
+            await wait_for_lock(pool, "ledger_hold")
             assert not completing.done()
         finally:
             await takeover.rollback()

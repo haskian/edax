@@ -22,17 +22,20 @@
 //!   ([`crate::documents::stored_document`]), so it is folded to the answer the kernel gives every stored
 //!   document: equality false, a string ordering against the text before the NUL.
 //!
-//! Numbers are bound as [`crate::exact_json`] number text, so a double past 2^53 compares at its
+//! Numbers are bound as [`crate::documents::exact_json`] number text, so a double past 2^53 compares at its
 //! exact value, as the kernel compares it.
 
 use edax_core::Error;
 use edax_cqrs::filter::{Filter, Operator};
-use edax_cqrs::{canonical_decimal, Collation, Page, SortKey, MAX_DECIMAL_DIGITS, MAX_DECIMAL_TEXT, TIEBREAK_PATH};
+use edax_cqrs::{
+    canonical_decimal, type_rank, Collation, Page, SortKey, MAX_DECIMAL_DIGITS, MAX_DECIMAL_TEXT, TIEBREAK_PATH,
+    TYPE_ORDER,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::clamp_bigint;
-use crate::documents::{exact_json, exact_number};
+use crate::documents::{exact_json, exact_number, holds_nul};
 use crate::schema::{Logical, Tables};
 
 /// A query compiled to SQL: the statement and its parameters, every one bound as text (`None` binds
@@ -50,13 +53,8 @@ pub struct CompiledQuery {
 /// kernel's applier gives.
 pub fn compile(tables: &Tables, projection: &str, spec: &[u8]) -> Result<CompiledQuery, Error> {
     let query = edax_cqrs::query_spec(spec)?;
-    if projection.contains('\0') {
-        return Err(Error::codec(
-            "a projection name holds a NUL character, which Postgres cannot store",
-        ));
-    }
     let mut sql = Sql::new();
-    let projection = sql.bind(projection);
+    let projection = sql.bind(crate::rows::text("projection name", projection)?);
     let keys = edax_cqrs::effective_sort(&query.sort);
     let sorted: Vec<Key> = keys
         .iter()
@@ -135,14 +133,23 @@ pub fn page(spec: &[u8], rows: Vec<String>) -> Result<Page, Error> {
 /// the kernel does not read as decimal text. The kernel's grammar and bounds (`edax_cqrs::canonical_decimal`):
 /// at most [`MAX_DECIMAL_TEXT`] bytes, an optional sign, ASCII digits with at most one point and at least
 /// one digit, an optional exponent within 32 bits, at most [`MAX_DECIMAL_DIGITS`] significant digits and at
-/// most as many digits in plain notation. The mantissa and exponent are normalized before the cast, so `"0E+999999999"` reads as `0`, as
-/// the kernel reads it, and no cast ever sees a value it would refuse. Plain SQL, so the contract needs no
-/// database object but tables; `text` is evaluated once.
+/// most as many digits in plain notation. The text is read as the kernel reads it, with plain string
+/// functions: one sign off the front, a split on the one `e` or `E`, then on the one point. The mantissa and
+/// exponent are normalized before the cast, so `"0E+999999999"` reads as `0`, as the kernel reads it. Text
+/// outside the grammar reaches each cast as `NULL`, never as text the cast refuses: a server folds a bound
+/// text into constants and evaluates the casts while it plans, before any condition filters it. Plain SQL,
+/// so the contract needs no database object but tables; `text` is evaluated once.
 pub fn decimal_sql(text: &str) -> String {
     let (max_text, max_digits) = (MAX_DECIMAL_TEXT, MAX_DECIMAL_DIGITS);
     let (min_exponent, max_exponent) = (i32::MIN, i32::MAX);
     // The most digits a 32-bit exponent has once its leading zeros are trimmed.
     let exponent_digits = max_exponent.to_string().len();
+    // Whether the text expression `x` is ASCII digits only.
+    let digits = |x: &str| format!("translate({x}, '0123456789', '') = ''");
+    // How many times the one-character `c` occurs in `x`.
+    let count = |x: &str, c: &str| format!("length({x}) - length(replace({x}, '{c}', ''))");
+    let (integer_and_fraction, magnitude) = (digits("p.integer || p.fraction"), digits("p.magnitude"));
+    let (exponents, points) = (count("r.rest", "e"), count("r.rest", "."));
     format!(
         r"(
   SELECT CASE
@@ -157,22 +164,42 @@ pub fn decimal_sql(text: &str) -> String {
       b.exponent - b.fraction + (length(b.digits) - length(rtrim(b.digits, '0'))) AS scale
     FROM (
       SELECT
-        a.m[1] AS sign,
-        ltrim(a.m[2] || coalesce(a.m[3], ''), '0') AS digits,
-        length(coalesce(a.m[3], '')) AS fraction,
+        p.sign,
+        CASE WHEN {integer_and_fraction} THEN ltrim(p.integer || p.fraction, '0') END AS digits,
+        length(p.fraction) AS fraction,
         CASE
-          WHEN a.m[5] IS NULL THEN 0::bigint
-          WHEN length(ltrim(a.m[5], '0')) > {exponent_digits} THEN NULL
-          ELSE (a.m[4] || '0' || ltrim(a.m[5], '0'))::bigint
+          WHEN p.exponent IS NULL THEN 0::bigint
+          WHEN p.magnitude = '' OR NOT ({magnitude}) THEN NULL
+          WHEN length(ltrim(p.magnitude, '0')) > {exponent_digits} THEN NULL
+          ELSE (p.exponent_sign || '0' || ltrim(p.magnitude, '0'))::bigint
         END AS exponent
       FROM (
-        SELECT regexp_match(t.x, '^([+-]?)([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?)([0-9]+))?$') AS m
-        FROM (SELECT {text} AS x) AS t
-        WHERE octet_length(t.x) <= {max_text}
-      ) AS a
-      WHERE a.m IS NOT NULL
-        AND (a.m[2] <> '' OR coalesce(a.m[3], '') <> '')
-        AND length(ltrim(a.m[2], '0')) + length(rtrim(coalesce(a.m[3], ''), '0')) <= {max_digits}
+        SELECT
+          m.sign,
+          m.integer,
+          m.fraction,
+          m.exponent,
+          CASE WHEN left(m.exponent, 1) IN ('+', '-') THEN left(m.exponent, 1) ELSE '' END AS exponent_sign,
+          CASE WHEN left(m.exponent, 1) IN ('+', '-') THEN substr(m.exponent, 2) ELSE m.exponent END AS magnitude
+        FROM (
+          SELECT
+            r.sign,
+            split_part(split_part(r.rest, 'e', 1), '.', 1) AS integer,
+            split_part(split_part(r.rest, 'e', 1), '.', 2) AS fraction,
+            CASE WHEN {exponents} = 1 THEN split_part(r.rest, 'e', 2) END AS exponent
+          FROM (
+            SELECT
+              CASE WHEN left(t.x, 1) IN ('+', '-') THEN left(t.x, 1) ELSE '' END AS sign,
+              translate(CASE WHEN left(t.x, 1) IN ('+', '-') THEN substr(t.x, 2) ELSE t.x END, 'E', 'e') AS rest
+            FROM (SELECT {text} AS x) AS t
+            WHERE octet_length(t.x) <= {max_text}
+          ) AS r
+          WHERE {exponents} <= 1
+            AND {points} <= 1
+        ) AS m
+      ) AS p
+      WHERE p.integer || p.fraction <> ''
+        AND length(ltrim(p.integer, '0')) + length(rtrim(p.fraction, '0')) <= {max_digits}
     ) AS b
     WHERE b.exponent BETWEEN {min_exponent} AND {max_exponent}
   ) AS c
@@ -381,7 +408,7 @@ impl Sql {
             Target::RowKey => "p.id".to_owned(),
             Target::Path(_) => {
                 let value = self.value(target);
-                format!("(CASE WHEN jsonb_typeof({value}) = 'string' THEN {value} #>> '{{}}' END)")
+                format!("({})", string_of(&value))
             }
         }
     }
@@ -395,7 +422,8 @@ impl Sql {
                     let resolved = self.value(target);
                     let bound = self.bind(&exact_number(n));
                     format!(
-                        "coalesce(jsonb_typeof({resolved}) = 'number' AND ({resolved})::numeric {} ({bound})::numeric, false)",
+                        "coalesce({} AND ({resolved})::numeric {} ({bound})::numeric, false)",
+                        is_type(&resolved, "number"),
                         order.sql()
                     )
                 }
@@ -415,7 +443,8 @@ impl Sql {
                     let resolved = self.value(target);
                     let bound = self.bind(&b.to_string());
                     format!(
-                        "coalesce(jsonb_typeof({resolved}) = 'boolean' AND ({resolved})::boolean {} ({bound})::boolean, false)",
+                        "coalesce({} AND ({resolved})::boolean {} ({bound})::boolean, false)",
+                        is_type(&resolved, "boolean"),
                         order.sql()
                     )
                 }
@@ -433,7 +462,8 @@ impl Sql {
                 let resolved = self.value(target);
                 let bound = self.bind(&exact_json(value));
                 format!(
-                    "coalesce(jsonb_typeof({resolved}) = 'array' AND EXISTS (SELECT 1 FROM jsonb_array_elements({resolved}) AS e(x) WHERE e.x = ({bound})::jsonb), false)"
+                    "coalesce({} AND EXISTS (SELECT 1 FROM jsonb_array_elements({resolved}) AS e(x) WHERE e.x = ({bound})::jsonb), false)",
+                    is_type(&resolved, "array")
                 )
             }
         }
@@ -497,13 +527,19 @@ fn prefix_successor(prefix: &str) -> Option<String> {
     None
 }
 
-fn holds_nul(value: &Value) -> bool {
-    match value {
-        Value::String(s) => s.contains('\0'),
-        Value::Array(items) => items.iter().any(holds_nul),
-        Value::Object(fields) => fields.iter().any(|(key, item)| key.contains('\0') || holds_nul(item)),
-        _ => false,
-    }
+/// Whether the `jsonb` expression `expr` is of the JSON type `json_type`, as `jsonb_typeof` names it.
+fn is_type(expr: &str, json_type: &str) -> String {
+    format!("jsonb_typeof({expr}) = '{json_type}'")
+}
+
+/// The `jsonb` expression `expr` cast to `cast` when it is of the JSON type `json_type`, else `NULL`.
+fn typed(expr: &str, json_type: &str, cast: &str) -> String {
+    format!("CASE WHEN {} THEN ({expr})::{cast} END", is_type(expr, json_type))
+}
+
+/// The text of the `jsonb` expression `expr` when it is a string, else `NULL`.
+fn string_of(expr: &str) -> String {
+    format!("CASE WHEN {} THEN {expr} #>> '{{}}' END", is_type(expr, "string"))
 }
 
 fn all(arms: Vec<String>) -> String {
@@ -560,23 +596,29 @@ impl Key {
     }
 
     fn decimal_column(&self) -> Option<String> {
-        self.decimal.then(|| {
-            let v = self.v();
-            let text = format!("CASE WHEN jsonb_typeof({v}) = 'string' THEN {v} #>> '{{}}' END");
-            format!("{} AS d{}", decimal_sql(&text), self.index)
-        })
+        self.decimal
+            .then(|| format!("{} AS d{}", decimal_sql(&string_of(&self.v())), self.index))
     }
 
+    /// The type rank of the value, in the kernel's type order: a missing path ranks as null, the last.
     fn rank(&self) -> String {
-        let v = self.v();
-        format!(
-            "(CASE jsonb_typeof({v}) WHEN 'number' THEN 0 WHEN 'string' THEN 1 WHEN 'boolean' THEN 2 WHEN 'array' THEN 3 WHEN 'object' THEN 4 ELSE 5 END)"
-        )
+        let last = TYPE_ORDER.len() - 1;
+        let arms: Vec<String> = TYPE_ORDER
+            .iter()
+            .enumerate()
+            .map(|(rank, json_type)| {
+                if rank == last {
+                    format!("ELSE {rank}")
+                } else {
+                    format!("WHEN '{json_type}' THEN {rank}")
+                }
+            })
+            .collect();
+        format!("(CASE jsonb_typeof({}) {} END)", self.v(), arms.join(" "))
     }
 
     fn number(&self) -> String {
-        let v = self.v();
-        format!("(CASE WHEN jsonb_typeof({v}) = 'number' THEN ({v})::numeric END)")
+        format!("({})", typed(&self.v(), "number", "numeric"))
     }
 
     /// The text of a string value: under the decimal collation only of text that is not decimal.
@@ -590,7 +632,10 @@ impl Key {
         } else {
             String::new()
         };
-        format!("(CASE WHEN jsonb_typeof({v}) = 'string'{other} THEN {v} #>> '{{}}' END) COLLATE \"C\"")
+        format!(
+            "(CASE WHEN {}{other} THEN {v} #>> '{{}}' END) COLLATE \"C\"",
+            is_type(&v, "string")
+        )
     }
 
     /// Whether a string value is other text, not decimal text: decimal text sorts first.
@@ -599,8 +644,7 @@ impl Key {
     }
 
     fn boolean(&self) -> String {
-        let v = self.v();
-        format!("(CASE WHEN jsonb_typeof({v}) = 'boolean' THEN ({v})::boolean END)")
+        format!("({})", typed(&self.v(), "boolean", "boolean"))
     }
 
     /// The `ORDER BY` terms of this key: its rank, then each type's value. Within one rank every other
@@ -635,15 +679,16 @@ enum Side {
 
 /// The condition that a row's key holds `side` of the cursor value `t`, in ascending order.
 fn key_side(sql: &mut Sql, key: &Key, t: &Value, side: Side) -> String {
-    let rank = rank_of(t);
+    let rank = type_rank(t);
     if key.row_key {
-        // The row key is always a string, rank 1.
+        // The row key is always a string.
+        let string_rank = type_rank(&Value::String(String::new()));
         return match t {
             Value::String(s) => string_side(sql, "p.id", s, side),
             _ => constant(match side {
-                Side::Before => 1 < rank,
+                Side::Before => string_rank < rank,
                 Side::Tied => false,
-                Side::After => 1 > rank,
+                Side::After => string_rank > rank,
             }),
         };
     }
@@ -721,18 +766,6 @@ fn decimal_side(sql: &mut Sql, key: &Key, s: &str, side: Side) -> String {
                 Side::Tied | Side::After => format!("({other} AND {text})"),
             }
         }
-    }
-}
-
-/// The type rank a value sorts at.
-fn rank_of(value: &Value) -> u8 {
-    match value {
-        Value::Number(_) => 0,
-        Value::String(_) => 1,
-        Value::Bool(_) => 2,
-        Value::Array(_) => 3,
-        Value::Object(_) => 4,
-        Value::Null => 5,
     }
 }
 

@@ -8,8 +8,10 @@
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
 
-/// What a store is built with. Every duration is in milliseconds.
+/// What a store is built with. Every duration is in milliseconds. A field the wire form leaves out takes
+/// its default ([`DEFAULT`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
     /// How long a call waits for a pooled connection.
     pub acquire_timeout_ms: i64,
@@ -40,6 +42,16 @@ pub const DEFAULT: Settings = Settings {
 impl Default for Settings {
     fn default() -> Self {
         DEFAULT
+    }
+}
+
+impl Settings {
+    /// The defaults with `overrides_json`, a JSON object of fields by name, applied. A field the settings do
+    /// not have, or a value that is not an integer, is a `bad_handle` error: a wiring mistake. The values are
+    /// not checked here ([`check_config`]).
+    pub fn with_overrides(overrides_json: &str) -> Result<Settings, Error> {
+        serde_json::from_str(overrides_json)
+            .map_err(|e| Error::bad_handle(format_args!("postgres settings are not the wire form: {e}")))
     }
 }
 
@@ -75,10 +87,26 @@ pub fn check_config(settings: &Settings) -> Result<(), Error> {
     Ok(())
 }
 
+/// Refuse a relay lease, as a `bad_handle` error: an `owner` that is empty or holds NUL, which no lease row
+/// can store, or a `ttl_ms` that is not positive.
+pub fn check_lease(owner: &str, ttl_ms: i64) -> Result<(), Error> {
+    if owner.is_empty() || owner.contains('\0') {
+        return Err(Error::bad_handle(format_args!(
+            "lease owner {owner:?} must be non-empty text without NUL"
+        )));
+    }
+    if ttl_ms <= 0 {
+        return Err(Error::bad_handle(format_args!(
+            "lease ttl_ms must be positive, got {ttl_ms}"
+        )));
+    }
+    Ok(())
+}
+
 /// `value`, a `u64` version, sequence or limit, as the signed `bigint` a column holds. A value past
 /// `i64::MAX` is a `codec` error: Postgres has no unsigned integer, and wrapping would store a
 /// negative version.
-pub fn check_bigint(what: &str, value: u64) -> Result<i64, Error> {
+pub(crate) fn check_bigint(what: &str, value: u64) -> Result<i64, Error> {
     i64::try_from(value).map_err(|_| Error::codec(format_args!("{what} {value} does not fit a Postgres bigint")))
 }
 
@@ -117,6 +145,51 @@ mod tests {
         ];
         for ((name, got), want) in cases.into_iter().zip(want) {
             assert_eq!(got, want.map_err(str::to_owned), "{name}");
+        }
+    }
+
+    #[test]
+    fn with_overrides_branches() {
+        assert_eq!(Settings::with_overrides("{}"), Ok(DEFAULT));
+        assert_eq!(
+            Settings::with_overrides(r#"{"lock_timeout_ms":250}"#).map(|s| s.lock_timeout_ms),
+            Ok(250)
+        );
+        for refused in [r#"{"lock_timeout":1}"#, r#"{"lock_timeout_ms":true}"#, "1"] {
+            let got = Settings::with_overrides(refused).map_err(|e| e.code);
+            assert_eq!(got, Err(edax_core::ErrorCode::BadHandle), "{refused}");
+        }
+    }
+
+    #[test]
+    fn check_lease_branches() {
+        let cases: [(&str, &str, i64, Result<(), &str>); 4] = [
+            ("valid", "relay-a", 1, Ok(())),
+            (
+                "empty_owner",
+                "",
+                1,
+                Err("bad_handle: lease owner \"\" must be non-empty text without NUL"),
+            ),
+            (
+                "nul_owner",
+                "a\0",
+                1,
+                Err("bad_handle: lease owner \"a\\0\" must be non-empty text without NUL"),
+            ),
+            (
+                "zero_ttl",
+                "relay-a",
+                0,
+                Err("bad_handle: lease ttl_ms must be positive, got 0"),
+            ),
+        ];
+        for (name, owner, ttl_ms, want) in cases {
+            assert_eq!(
+                check_lease(owner, ttl_ms).map_err(|e| e.to_string()),
+                want.map_err(str::to_owned),
+                "{name}"
+            );
         }
     }
 

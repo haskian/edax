@@ -14,10 +14,55 @@ use edax_event::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::{check_bigint, clamp_bigint};
+use crate::config::{check_bigint, check_lease, clamp_bigint};
+use crate::documents::stored_document;
 
 /// A bound parameter: text, or SQL `NULL`.
 pub type Param = Option<String>;
+
+/// A statement to run, by its name in [`crate::Statements`], and the parameters it binds: the answer of a
+/// write or a read whose statement turns on its input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Call {
+    /// The statement's name, a field of [`crate::Statements`].
+    pub statement: &'static str,
+    /// The parameters, `$1` first.
+    pub params: Vec<Param>,
+}
+
+edax_core::closed_names! {
+    /// An outbox a relay drains.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Outbox {
+        /// The event store's outbox.
+        Event = "event",
+        /// The command outbox.
+        Command = "command",
+        /// The saga store's outbox, read one saga at a time.
+        Saga = "saga",
+    }
+}
+
+impl Outbox {
+    /// The outbox named `name`, or a `bad_handle` error.
+    pub fn from_name(name: &str) -> Result<Outbox, Error> {
+        Outbox::by_name(name).ok_or_else(|| Error::bad_handle(format_args!("unknown postgres outbox: {name}")))
+    }
+
+    /// The parameters that keep one scope of this outbox's rows: the saga for the saga outbox, which takes
+    /// one, and nothing for the others, which take none. A scope that does not fit is a `bad_handle` error.
+    fn scope(self, saga: Option<&str>) -> Result<Vec<Param>, Error> {
+        match (self, saga) {
+            (Outbox::Saga, Some(saga)) => Ok(vec![text_param("saga", saga)?]),
+            (Outbox::Saga, None) => Err(Error::bad_handle("the saga outbox is read one saga at a time")),
+            (_, None) => Ok(Vec::new()),
+            (outbox, Some(_)) => Err(Error::bad_handle(format_args!(
+                "the {} outbox has no saga scope",
+                outbox.as_str()
+            ))),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct EventRow {
@@ -63,31 +108,42 @@ pub fn append_params(stream: &str, expected: u64, drafts: &[EventDraft]) -> Resu
     check_bigint("stream version", last)?;
     let rows = drafts.iter().map(event_row_of_draft).collect::<Result<Vec<_>, _>>()?;
     Ok(vec![
-        Some(text("stream", stream)?.to_owned()),
+        text_param("stream", stream)?,
         Some(check_bigint("expected version", expected)?.to_string()),
         Some(json(&rows)?),
     ])
 }
 
-/// What `append` returned, `{"stored", "events"}`, read against the call: the stored events, one per
-/// draft, or a `concurrency` error naming the stored version when the stream was not at `expected`.
-pub fn append_result(expected: u64, drafts: usize, result: &str) -> Result<Vec<EventMessage>, Error> {
+/// What `append` returned, `{"stored", "recorded_at"}`, read against the call: `drafts`, the batch it
+/// bound, as the store recorded them at its clock reading, or a `concurrency` error naming the stored
+/// version when the stream was not at `expected`. A stream at `expected` stores every draft or none: the
+/// unique key on `(stream, sequence)` fails the whole statement. The statement returns no event, because
+/// every stored field but the clock reading is the draft's own.
+pub fn append_result(expected: u64, drafts: Vec<EventDraft>, result: &str) -> Result<Vec<EventMessage>, Error> {
     #[derive(Deserialize)]
     struct Appended {
         stored: i64,
-        events: Vec<EventRow>,
+        recorded_at: i64,
     }
     let appended: Appended = decode("append result", result)?;
     if u64::try_from(appended.stored) != Ok(expected) {
         return Err(Error::concurrency(expected, appended.stored));
     }
-    if appended.events.len() != drafts {
-        return Err(Error::store(format_args!(
-            "append stored {} events for {drafts} drafts",
-            appended.events.len()
-        )));
-    }
-    appended.events.into_iter().map(event_of_row).collect()
+    Ok(drafts
+        .into_iter()
+        .map(|draft| draft.record(appended.recorded_at))
+        .collect())
+}
+
+/// The parameters of `load`: the stream and the sequence to read after. An `after` past `bigint` means
+/// "no bound".
+pub fn load_params(stream: &str, after: u64) -> Result<Vec<Param>, Error> {
+    Ok(vec![text_param("stream", stream)?, bound(after)])
+}
+
+/// The parameters of `load_snapshot`: the stream.
+pub fn load_snapshot_params(stream: &str) -> Result<Vec<Param>, Error> {
+    Ok(vec![text_param("stream", stream)?])
 }
 
 /// The stored events a read returned, one JSON row each.
@@ -110,16 +166,61 @@ pub fn commands_param(commands: &[CommandMessage]) -> Result<String, Error> {
     json(&rows)
 }
 
-/// The parameter holding the ids a `mark_published` deletes. An id holding NUL names no stored row, so
-/// it is left out.
-pub fn ids_param(ids: &[String]) -> Result<String, Error> {
-    let ids: Vec<&String> = ids.iter().filter(|id| !id.contains('\0')).collect();
-    json(&ids)
+/// The parameters of `command_enqueue`: the commands.
+pub fn enqueue_params(commands: &[CommandMessage]) -> Result<Vec<Param>, Error> {
+    Ok(vec![Some(commands_param(commands)?)])
 }
 
-/// A limit, an offset or a load's `after` as `bigint` text: past `i64::MAX` it means "no bound".
-pub fn bound_param(value: u64) -> String {
-    clamp_bigint(value).to_string()
+/// The read of `outbox`'s oldest `limit` rows, of the saga `saga` for the saga outbox. With `lease`, the
+/// relay's owner and the lease's length in milliseconds, the leased read, which reads rows only for the
+/// lease's holder. A limit past `bigint` means "no bound"; a lease [`check_lease`] refuses is its error.
+pub fn unpublished(outbox: Outbox, saga: Option<&str>, limit: u64, lease: Option<(&str, i64)>) -> Result<Call, Error> {
+    let mut params = outbox.scope(saga)?;
+    params.push(bound(limit));
+    let (unleased, leased) = match outbox {
+        Outbox::Event => ("event_unpublished", "event_unpublished_leased"),
+        Outbox::Command => ("command_unpublished", "command_unpublished_leased"),
+        Outbox::Saga => ("saga_unpublished", "saga_unpublished_leased"),
+    };
+    let Some((owner, ttl_ms)) = lease else {
+        return Ok(Call {
+            statement: unleased,
+            params,
+        });
+    };
+    check_lease(owner, ttl_ms)?;
+    params.extend([Some(owner.to_owned()), Some(ttl_ms.to_string())]);
+    Ok(Call {
+        statement: leased,
+        params,
+    })
+}
+
+/// The delete of the rows of `ids` from `outbox`, of the saga `saga` for the saga outbox. An id holding NUL
+/// names no stored row, so it is left out.
+pub fn mark_published(outbox: Outbox, saga: Option<&str>, ids: &[String]) -> Result<Call, Error> {
+    let mut params = outbox.scope(saga)?;
+    let ids: Vec<&String> = ids.iter().filter(|id| !id.contains('\0')).collect();
+    params.push(Some(json(&ids)?));
+    let statement = match outbox {
+        Outbox::Event => "event_mark_published",
+        Outbox::Command => "command_mark_published",
+        Outbox::Saga => "saga_mark_published",
+    };
+    Ok(Call { statement, params })
+}
+
+/// The count of `outbox`'s waiting rows, of the saga `saga` for the saga outbox.
+pub fn unpublished_count(outbox: Outbox, saga: Option<&str>) -> Result<Call, Error> {
+    let statement = match outbox {
+        Outbox::Event => "event_unpublished_count",
+        Outbox::Command => "command_unpublished_count",
+        Outbox::Saga => "saga_unpublished_count",
+    };
+    Ok(Call {
+        statement,
+        params: outbox.scope(saga)?,
+    })
 }
 
 /// A stored snapshot, as `load_snapshot` returns it.
@@ -152,8 +253,8 @@ pub fn decode_snapshot(row: &str) -> Result<SnapshotRow, Error> {
 /// The parameters of `save_snapshot`.
 pub fn snapshot_params(stream: &str, type_name: &str, version: u64, data: &[u8]) -> Result<Vec<Param>, Error> {
     Ok(vec![
-        Some(text("stream", stream)?.to_owned()),
-        Some(text("snapshot type", type_name)?.to_owned()),
+        text_param("stream", stream)?,
+        text_param("snapshot type", type_name)?,
         Some(check_bigint("snapshot version", version)?.to_string()),
         Some(to_hex(data)),
     ])
@@ -163,6 +264,34 @@ pub fn snapshot_params(stream: &str, type_name: &str, version: u64, data: &[u8])
 /// stream is a `codec` error (nothing was stored), as every store refuses it.
 pub fn snapshot_result(stream: &str, version: u64, stream_version: i64) -> Result<(), Error> {
     check_snapshot(stream, version, unsigned("stream version", stream_version)?)
+}
+
+/// The read of projection `projection`'s row `id`: `projection_get`, or with `locked` the read that holds
+/// the row until the transaction ends.
+pub fn projection_get(projection: &str, id: &str, locked: bool) -> Result<Call, Error> {
+    Ok(Call {
+        statement: if locked {
+            "projection_get_locked"
+        } else {
+            "projection_get"
+        },
+        params: vec![text_param("projection", projection)?, text_param("projection id", id)?],
+    })
+}
+
+/// The write of `document`, JSON text, as projection `projection`'s row `id` at version `expected`:
+/// `projection_insert` at 0, else `projection_update`. The document is bound as [`stored_document`]
+/// stores it, and refused as it refuses it.
+pub fn projection_save(projection: &str, id: &str, expected: u64, document: &[u8]) -> Result<Call, Error> {
+    let mut params = vec![text_param("projection", projection)?, text_param("projection id", id)?];
+    let statement = if expected == 0 {
+        "projection_insert"
+    } else {
+        params.push(Some(check_bigint("expected version", expected)?.to_string()));
+        "projection_update"
+    };
+    params.push(Some(stored_document(id, document)?));
+    Ok(Call { statement, params })
 }
 
 /// What a projection write returned: the new version, or `None` when the row was not at `expected`, a
@@ -195,34 +324,42 @@ pub fn decode_saga(row: &str) -> Result<SagaRow, Error> {
     decode("saga row", row)
 }
 
-/// The parameters of a saga write: `saga_insert` when `version` is 0, else `saga_update`. `state` is
-/// `None` for a completion. The commands must be the kernel's for this write
-/// ([`edax_event::check_saga_commands`]), else a `codec` error.
-pub fn saga_params(
+/// The read of saga `saga`'s instance `id`: `saga_load`, or with `locked` the read that holds the row until
+/// the transaction ends.
+pub fn saga_load(saga: &str, id: &str, locked: bool) -> Result<Call, Error> {
+    Ok(Call {
+        statement: if locked { "saga_load_locked" } else { "saga_load" },
+        params: vec![text_param("saga", saga)?, text_param("saga instance", id)?],
+    })
+}
+
+/// A saga write at `version`: `saga_insert` at 0, else `saga_update`. `state` is `None` for a completion.
+/// The commands must be the kernel's for this write ([`edax_event::check_saga_commands`]), else a `codec`
+/// error.
+pub fn saga_write(
     saga: &str,
     id: &str,
     version: u64,
     state: Option<&str>,
     folded: &str,
     commands: &[CommandMessage],
-) -> Result<Vec<Param>, Error> {
-    let next = version
-        .checked_add(1)
-        .ok_or_else(|| Error::codec(format_args!("saga {saga} instance {id} is at the last version")))?;
+) -> Result<Call, Error> {
+    let next = edax_core::next_version(&format!("saga {saga} instance {id}"), version)?;
     check_bigint("saga version", next)?;
     check_saga_commands(saga, id, next, commands)?;
-    let mut params = vec![
-        Some(text("saga", saga)?.to_owned()),
-        Some(text("saga instance", id)?.to_owned()),
-    ];
-    if version > 0 {
+    let mut params = vec![text_param("saga", saga)?, text_param("saga instance", id)?];
+    let statement = if version == 0 {
+        "saga_insert"
+    } else {
         params.push(Some(version.to_string()));
-    }
-    params.push(state.map(str::to_owned));
-    params.push(Some(text("folded marks", folded)?.to_owned()));
-    params.push(Some(state.is_none().to_string()));
-    params.push(Some(commands_param(commands)?));
-    Ok(params)
+        "saga_update"
+    };
+    params.extend([
+        optional_text("saga state", state)?,
+        text_param("folded marks", folded)?,
+        Some(commands_param(commands)?),
+    ]);
+    Ok(Call { statement, params })
 }
 
 /// What a saga write returned, read against the call: the new version, or a `concurrency` error for a
@@ -253,11 +390,7 @@ fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
     Ok(EventRow {
         id: text("event id", &draft.id)?.to_owned(),
         aggregate_id: text("aggregate id", &draft.aggregate_id)?.to_owned(),
-        tenant: draft
-            .tenant
-            .as_deref()
-            .map(|t| text("tenant", t).map(str::to_owned))
-            .transpose()?,
+        tenant: optional_text("tenant", draft.tenant.as_deref())?,
         sequence: check_bigint("sequence", sequence)?,
         name: text("event name", &draft.name)?.to_owned(),
         version: i64::from(draft.version),
@@ -290,13 +423,11 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
 }
 
 fn command_row(command: &CommandMessage) -> Result<CommandRow, Error> {
-    let optional =
-        |what: &str, value: &Option<String>| value.as_deref().map(|v| text(what, v).map(str::to_owned)).transpose();
     Ok(CommandRow {
         id: text("command id", &command.id)?.to_owned(),
-        idempotency_key: optional("idempotency key", &command.idempotency_key)?,
-        aggregate_id: optional("aggregate id", &command.aggregate_id)?,
-        tenant: optional("tenant", &command.tenant)?,
+        idempotency_key: optional_text("idempotency key", command.idempotency_key.as_deref())?,
+        aggregate_id: optional_text("aggregate id", command.aggregate_id.as_deref())?,
+        tenant: optional_text("tenant", command.tenant.as_deref())?,
         name: text("command name", &command.name)?.to_owned(),
         version: i64::from(command.version),
         data: to_hex(&command.data),
@@ -335,6 +466,21 @@ pub(crate) fn text<'a>(what: &str, value: &'a str) -> Result<&'a str, Error> {
     Ok(value)
 }
 
+/// `value` as a bound parameter, refused as [`text`] refuses it.
+pub(crate) fn text_param(what: &str, value: &str) -> Result<Param, Error> {
+    Ok(Some(text(what, value)?.to_owned()))
+}
+
+/// `value`, when there is one, refused as [`text`] refuses it.
+fn optional_text(what: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    value.map(|v| text(what, v).map(str::to_owned)).transpose()
+}
+
+/// A limit, an offset or a load's `after` as `bigint` text: past `i64::MAX` it means "no bound".
+fn bound(value: u64) -> Param {
+    Some(clamp_bigint(value).to_string())
+}
+
 fn json<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
     serde_json::to_string(value).map_err(Error::codec)
 }
@@ -356,23 +502,32 @@ fn payload_version(value: i64) -> Result<u32, Error> {
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for nibble in bytes.iter().flat_map(|byte| [byte >> 4, byte & 0x0f]) {
+        // A nibble is below 16, so it always has a hex digit.
+        text.extend(char::from_digit(u32::from(nibble), 16));
+    }
+    text
 }
 
 fn from_hex(text: &str) -> Result<Vec<u8>, Error> {
     let bad = || Error::codec("stored bytes are not hex");
+    let nibble = |digit: u8| {
+        char::from(digit)
+            .to_digit(16)
+            .and_then(|n| u8::try_from(n).ok())
+            .ok_or_else(bad)
+    };
     if !text.len().is_multiple_of(2) {
         return Err(bad());
     }
-    text.as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            std::str::from_utf8(pair)
-                .ok()
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-                .ok_or_else(bad)
-        })
-        .collect()
+    let mut bytes = Vec::with_capacity(text.len() / 2);
+    for pair in text.as_bytes().chunks_exact(2) {
+        if let [high, low] = pair {
+            bytes.push(nibble(*high)? << 4 | nibble(*low)?);
+        }
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -408,13 +563,8 @@ mod tests {
             rows[0]["metadata"], r#"{"note":"a\u0000b"}"#,
             "map NUL survives as JSON text"
         );
-        let mut stored = rows.clone();
-        stored[0]["recorded_at"] = 5.into();
-        stored[1]["recorded_at"] = 5.into();
-        let result = serde_json::json!({"stored": 0, "events": stored}).to_string();
-        let events = append_result(0, 2, &result).unwrap();
-        assert_eq!(events[0], draft(1).record(5));
-        assert_eq!(events[1], draft(2).record(5));
+        let events = append_result(0, vec![draft(1), draft(2)], r#"{"stored":0,"recorded_at":5}"#).unwrap();
+        assert_eq!(events, vec![draft(1).record(5), draft(2).record(5)]);
     }
 
     #[test]
@@ -432,11 +582,11 @@ mod tests {
         );
         assert!(err(append_params("s", i64::MAX as u64, &[draft(i64::MAX as u64 + 1)])).is_some());
         assert_eq!(
-            append_result(3, 1, r#"{"stored":4,"events":[]}"#).map_err(|e| e.to_string()),
+            append_result(3, vec![draft(4)], r#"{"stored":4,"recorded_at":5}"#).map_err(|e| e.to_string()),
             Err("concurrency: expected 3, stored 4".into())
         );
         assert_eq!(
-            append_result(4, 0, r#"{"stored":4,"events":[]}"#),
+            append_result(4, vec![], r#"{"stored":4,"recorded_at":5}"#),
             Ok(vec![]),
             "empty batch checks the version"
         );
@@ -470,11 +620,75 @@ mod tests {
             saga_result("s", "i", 0, r#"{"written":null,"stored":1,"completed":false}"#).map_err(|e| e.to_string()),
             Err("concurrency: saga s instance i is not at version 0".into())
         );
-        let params = saga_params("ship", "order-1", 0, Some("{}"), "", &[]).unwrap();
-        assert_eq!(params.len(), 6, "an insert has no expected version");
-        assert_eq!(params[4].as_deref(), Some("false"));
-        let done = saga_params("ship", "order-1", 2, None, "", &[]).unwrap();
-        assert_eq!(done.len(), 7);
-        assert_eq!(done[3], None, "a completion stores no state");
+        let insert = saga_write("ship", "order-1", 0, Some("{}"), "", &[]).unwrap();
+        assert_eq!(insert.statement, "saga_insert");
+        assert_eq!(insert.params.len(), 5, "an insert has no expected version");
+        let done = saga_write("ship", "order-1", 2, None, "", &[]).unwrap();
+        assert_eq!(done.statement, "saga_update");
+        assert_eq!(done.params.len(), 6);
+        assert_eq!(done.params[3], None, "a completion stores no state");
+        assert!(
+            saga_write("ship", "order-1", u64::MAX, None, "", &[]).is_err(),
+            "no next version"
+        );
+    }
+
+    #[test]
+    fn hex_round_trip() {
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(&to_hex(&bytes)[..8], "00010203");
+        assert_eq!(&to_hex(&bytes)[506..], "fdfeff");
+        assert_eq!(from_hex(&to_hex(&bytes)), Ok(bytes));
+        assert_eq!(from_hex("0A"), Ok(vec![10]), "upper case reads too");
+        assert!(from_hex("é1").is_err(), "a multi-byte character is no digit");
+    }
+
+    /// Every call names a statement the kernel renders, and keeps one scope per outbox.
+    #[test]
+    fn calls_name_rendered_statements() {
+        let rendered = serde_json::to_value(crate::statements(&crate::Tables::default())).unwrap();
+        let lease = Some(("relay-a", 1_000));
+        let mut calls = vec![
+            projection_get("p", "i", false),
+            projection_get("p", "i", true),
+            projection_save("p", "i", 0, b"{}"),
+            projection_save("p", "i", 3, b"{}"),
+            saga_load("s", "i", false),
+            saga_load("s", "i", true),
+        ];
+        for (outbox, saga) in [
+            (Outbox::Event, None),
+            (Outbox::Command, None),
+            (Outbox::Saga, Some("s")),
+        ] {
+            calls.extend([
+                unpublished(outbox, saga, 5, None),
+                unpublished(outbox, saga, 5, lease),
+                mark_published(outbox, saga, &[]),
+                unpublished_count(outbox, saga),
+            ]);
+        }
+        for call in calls {
+            let call = call.unwrap();
+            assert!(rendered.get(call.statement).is_some(), "{}", call.statement);
+        }
+        assert!(unpublished(Outbox::Saga, None, 1, None).is_err());
+        assert!(unpublished(Outbox::Event, Some("s"), 1, None).is_err());
+        assert!(unpublished(Outbox::Event, None, 1, Some(("", 1))).is_err());
+        assert_eq!(
+            unpublished(Outbox::Saga, Some("s"), u64::MAX, lease).unwrap().params,
+            vec![
+                Some("s".into()),
+                Some(i64::MAX.to_string()),
+                Some("relay-a".into()),
+                Some("1000".into())
+            ]
+        );
+        assert_eq!(
+            mark_published(Outbox::Event, None, &["a".into(), "b\0".into()])
+                .unwrap()
+                .params,
+            vec![Some(r#"["a"]"#.into())]
+        );
     }
 }

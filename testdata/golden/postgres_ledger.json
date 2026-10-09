@@ -175,5 +175,38 @@
   {
     "error": "bad_handle: a pending idempotency record cannot settle a claim: complete with a done or failed record",
     "name": "pending_cannot_settle"
+  },
+  {
+    "action": "vanished",
+    "attempt": 1,
+    "error": null,
+    "key": "order-7",
+    "name": "vanished_on_read_1"
+  },
+  {
+    "action": "vanished",
+    "attempt": 2,
+    "error": null,
+    "key": "order-7",
+    "name": "vanished_on_read_2"
+  },
+  {
+    "action": null,
+    "attempt": 3,
+    "error": "store: postgres claim of \"order-7\": the key kept changing under 3 reads",
+    "key": "order-7",
+    "name": "vanished_on_read_3"
+  },
+  {
+    "error": null,
+    "handle": "me",
+    "key": "order-7",
+    "name": "settle_params",
+    "params": [
+      "order-7",
+      "me",
+      "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
+    ],
+    "record": "{\"payload_hash\":7,\"result\":1,\"error\":null,\"error_code\":null,\"pending\":false}"
   }
 ]

@@ -17,7 +17,8 @@ use edax_cqrs::{complete_fence, release_fence, Fence, Holder, Record};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::rows::text;
+use crate::config::CLAIM_READS;
+use crate::rows::{text_param, Param};
 
 /// A ledger row, as `claim_read` and `ledger_hold` return it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -45,12 +46,38 @@ pub fn new_owner() -> String {
 }
 
 /// The parameters of `claim_insert` for `key`, claimed by `owner` for `payload_hash`: the key, the
-/// owner and the pending record. A key holding NUL is a `codec` error.
-pub fn claim_params(key: &str, owner: &str, payload_hash: u64) -> Result<Vec<Option<String>>, Error> {
+/// owner and the pending record. `claim_take_over` binds them too, then the lapsed owner. A key holding
+/// NUL is a `codec` error.
+pub fn claim_params(key: &str, owner: &str, payload_hash: u64) -> Result<Vec<Param>, Error> {
     Ok(vec![
-        Some(text("idempotency key", key)?.to_owned()),
-        Some(owner.to_owned()),
+        text_param("idempotency key", key)?,
+        text_param("claim owner", owner)?,
         Some(pending_record(payload_hash)?),
+    ])
+}
+
+/// The parameters of `claim_read`: the key, and the claim TTL in milliseconds.
+pub fn claim_read_params(key: &str, claim_ttl_ms: i64) -> Result<Vec<Param>, Error> {
+    Ok(vec![
+        text_param("idempotency key", key)?,
+        Some(claim_ttl_ms.to_string()),
+    ])
+}
+
+/// The parameters of `ledger_hold` and `ledger_delete`: the key.
+pub fn key_params(key: &str) -> Result<Vec<Param>, Error> {
+    Ok(vec![text_param("idempotency key", key)?])
+}
+
+/// The parameters of `ledger_settle`: the key, the settling claim's owner (its `handle`) and the record.
+/// A handle that is not an owner token's text is a `bad_handle` error.
+pub fn settle_params(key: &str, handle: &[u8], record: &str) -> Result<Vec<Param>, Error> {
+    let owner = std::str::from_utf8(handle)
+        .map_err(|_| Error::bad_handle("a postgres claim handle is the text of its owner token"))?;
+    Ok(vec![
+        text_param("idempotency key", key)?,
+        text_param("claim owner", owner)?,
+        text_param("record", record)?,
     ])
 }
 
@@ -58,6 +85,19 @@ pub fn claim_params(key: &str, owner: &str, payload_hash: u64) -> Result<Vec<Opt
 pub fn pending_record(payload_hash: u64) -> Result<String, Error> {
     let bytes = edax_cqrs::encode_record(&Record::<Value>::pending(payload_hash))?;
     String::from_utf8(bytes).map_err(Error::codec)
+}
+
+edax_core::closed_names! {
+    /// What a claim that lost the insert does with the row it then read, by name: [`ClaimRead`]'s variants.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ClaimAction {
+        /// The key holds a record: [`ClaimRead::Prior`].
+        Prior = "prior",
+        /// The key holds a lapsed claim: [`ClaimRead::TakeOver`].
+        TakeOver = "take_over",
+        /// The row was gone: [`ClaimRead::Vanished`].
+        Vanished = "vanished",
+    }
 }
 
 /// What a claim that lost the insert does with the row it then read.
@@ -71,9 +111,28 @@ pub enum ClaimRead {
     Vanished,
 }
 
-/// What a claim that lost the insert does with `row`, the row `claim_read` returned (`None` when none).
-pub fn claim_read(row: Option<&LedgerRow>) -> ClaimRead {
-    match row {
+impl ClaimRead {
+    /// This answer's name.
+    pub fn action(&self) -> ClaimAction {
+        match self {
+            ClaimRead::Prior(_) => ClaimAction::Prior,
+            ClaimRead::TakeOver(_) => ClaimAction::TakeOver,
+            ClaimRead::Vanished => ClaimAction::Vanished,
+        }
+    }
+}
+
+/// What a claim of `key` that lost its insert does with `row`, the row its `attempt`-th `claim_read`
+/// returned (`None` when none). A claim that lost the take-over of a lapsed claim asks again with `None`:
+/// the row it read is gone. A row gone on the last of [`CLAIM_READS`] attempts is the transient `store`
+/// error: the key kept changing under the claim.
+pub fn claim_read(key: &str, row: Option<&LedgerRow>, attempt: u32) -> Result<ClaimRead, Error> {
+    Ok(match row {
+        None if attempt >= CLAIM_READS => {
+            return Err(Error::store(format_args!(
+                "postgres claim of {key:?}: the key kept changing under {CLAIM_READS} reads"
+            )))
+        }
         None => ClaimRead::Vanished,
         Some(LedgerRow {
             owner: Some(owner),
@@ -81,13 +140,13 @@ pub fn claim_read(row: Option<&LedgerRow>) -> ClaimRead {
             ..
         }) => ClaimRead::TakeOver(owner.clone()),
         Some(row) => ClaimRead::Prior(row.record.clone()),
-    }
+    })
 }
 
 /// What `row` is to the claimant whose handle is `handle`, settling with `settling` (`None` for a
 /// release): the class the kernel's fence decides from. A settled row is this claimant's own only when
 /// this claim settled it with the same record.
-pub fn holder(row: Option<&LedgerRow>, handle: &[u8], settling: Option<&str>) -> Holder {
+fn holder(row: Option<&LedgerRow>, handle: &[u8], settling: Option<&str>) -> Holder {
     let Some(row) = row else { return Holder::Free };
     let own = |owner: &str| owner.as_bytes() == handle;
     match (&row.owner, &row.settled_by) {
@@ -170,20 +229,27 @@ mod tests {
     #[test]
     fn claim_read_branches() {
         let pending = pending_record(7).unwrap();
-        assert_eq!(claim_read(None), ClaimRead::Vanished);
+        let lapsed = row(Some("o"), None, &pending, true);
+        assert_eq!(claim_read("k", None, 1), Ok(ClaimRead::Vanished));
         assert_eq!(
-            claim_read(Some(&row(Some("o"), None, &pending, true))),
-            ClaimRead::TakeOver("o".into())
+            claim_read("k", None, CLAIM_READS).map_err(|e| e.to_string()),
+            Err("store: postgres claim of \"k\": the key kept changing under 3 reads".into())
         );
         assert_eq!(
-            claim_read(Some(&row(Some("o"), None, &pending, false))),
-            ClaimRead::Prior(pending.clone())
+            claim_read("k", Some(&lapsed), CLAIM_READS),
+            Ok(ClaimRead::TakeOver("o".into())),
+            "a row still answers on the last read"
         );
         assert_eq!(
-            claim_read(Some(&row(None, Some("o"), DONE, true))),
-            ClaimRead::Prior(DONE.into()),
+            claim_read("k", Some(&row(Some("o"), None, &pending, false)), 1),
+            Ok(ClaimRead::Prior(pending.clone()))
+        );
+        assert_eq!(
+            claim_read("k", Some(&row(None, Some("o"), DONE, true)), 1),
+            Ok(ClaimRead::Prior(DONE.into())),
             "a settled row never lapses"
         );
+        assert_eq!(ClaimRead::Vanished.action(), ClaimAction::Vanished);
     }
 
     #[test]
@@ -210,5 +276,10 @@ mod tests {
             "an unreadable record goes"
         );
         assert!(claim_params("k\0", "o", 1).is_err());
+        assert!(settle_params("k", &[0xff], DONE).is_err(), "a handle is owner text");
+        assert_eq!(
+            settle_params("k", b"me", DONE),
+            Ok(vec![Some("k".into()), Some("me".into()), Some(DONE.into())])
+        );
     }
 }

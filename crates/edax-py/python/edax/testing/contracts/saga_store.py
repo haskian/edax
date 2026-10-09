@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from ... import _native
 from ...errors import ConcurrencyError
-from ...message import CommandMessage, Payload
+from ...message import CommandMessage
 from ...saga import CompletedInstance, RunningInstance, SagaStore
 from ...unit_of_work import transaction
 from .._concurrency import RolledBack, race, staged_then_read, unique_id
+from ..messages import saga_command
 from ._fixtures import Transactional
 from .outbox import OutboxContract
 
@@ -21,24 +21,6 @@ Store = SagaStore[Any]
 
 #: The saga every saga store clause writes as, unless the clause names another.
 _SAGA = "order"
-
-
-def _saga_command(cid: str, version: int, index: int, saga: str = _SAGA) -> CommandMessage:
-    """The ``index``-th command a step of ``saga`` committing ``version`` of instance ``cid`` sends: the
-    kernel's row, with a real ``Fulfill`` payload, caused by the ``OrderPaid`` event ``evt-<cid>-<version>``
-    of the flow ``flow-<cid>``, in that event's tenant."""
-    payload = Payload("Fulfill", 1, f'{{"order_id":"{cid}"}}'.encode())
-    return _native.saga_command(
-        saga,
-        cid,
-        version,
-        index,
-        payload,
-        f"evt-{cid}-{version}",
-        f"flow-{cid}",
-        1_714_564_800_000_000_001,
-        "acme",
-    )
 
 
 class SagaStoreContract(Transactional):
@@ -110,12 +92,14 @@ class SagaStoreContract(Transactional):
         """The saga outbox: a write's commands are shown once it committed, oldest first, with every
         field intact; a refused write enqueues none, so a fold that lost the race sends nothing."""
         cid = unique_id("corr")
-        await saga_store.save(_SAGA, cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0)])
+        await saga_store.save(_SAGA, cid, {"step": "one"}, 0, "", [saga_command(_SAGA, cid, 1, 0)])
         with pytest.raises(ConcurrencyError):
-            await saga_store.save(_SAGA, cid, {"step": "lost"}, 0, "", [_saga_command(cid, 1, 0)])
-        await saga_store.complete(_SAGA, cid, 1, [_saga_command(cid, 2, 0), _saga_command(cid, 2, 1)])
-        want = _saga_command(cid, 2, 1)
-        sent = [_saga_command(cid, 1, 0).id, _saga_command(cid, 2, 0).id, want.id]
+            await saga_store.save(_SAGA, cid, {"step": "lost"}, 0, "", [saga_command(_SAGA, cid, 1, 0)])
+        await saga_store.complete(
+            _SAGA, cid, 1, [saga_command(_SAGA, cid, 2, 0), saga_command(_SAGA, cid, 2, 1)]
+        )
+        want = saga_command(_SAGA, cid, 2, 1)
+        sent = [saga_command(_SAGA, cid, 1, 0).id, saga_command(_SAGA, cid, 2, 0).id, want.id]
         assert await self._unpublished(saga_store, cid) == sent
         row = next(c for c in await saga_store.unpublished(_SAGA, limit=1000) if c.id == want.id)
         assert row == want, "every field of the command, its tenant, lineage and issued_at included"
@@ -145,18 +129,18 @@ class SagaStoreContract(Transactional):
         cid = unique_id("corr")
         sagas = {_SAGA: {"step": "awaiting_payment"}, "billing": {"step": "invoiced"}}
         for saga, state in sagas.items():
-            assert await saga_store.save(saga, cid, state, 0, "", [_saga_command(cid, 1, 0, saga)]) == 1, saga
+            assert await saga_store.save(saga, cid, state, 0, "", [saga_command(saga, cid, 1, 0)]) == 1, saga
         for saga, state in sagas.items():
             instance = await saga_store.load(saga, cid)
             assert (
                 isinstance(instance, RunningInstance) and instance.state == state and instance.version == 1
             ), saga
-            assert await self._unpublished(saga_store, cid, saga) == [_saga_command(cid, 1, 0, saga).id], saga
+            assert await self._unpublished(saga_store, cid, saga) == [saga_command(saga, cid, 1, 0).id], saga
         # The mark names both ids, so only the saga it names may prune its own row.
-        both = [_saga_command(cid, 1, 0, saga).id for saga in sagas]
+        both = [saga_command(saga, cid, 1, 0).id for saga in sagas]
         await saga_store.mark_published(_SAGA, both)
         assert await self._unpublished(saga_store, cid, "billing") == [
-            _saga_command(cid, 1, 0, "billing").id
+            saga_command("billing", cid, 1, 0).id
         ], "a mark prunes one saga's command only"
         assert await saga_store.load(unique_id("saga"), cid) is None, (
             "a saga that never wrote has no instance"
@@ -171,7 +155,7 @@ class SagaStoreContract(Transactional):
         alone."""
         transactor = self._unit_of_work(request)
         cid = unique_id("corr")
-        command = _saga_command(cid, 1, 0)
+        command = saga_command(_SAGA, cid, 1, 0)
         outcomes = await race(
             transactor.begin,
             lambda tx: saga_store.save(_SAGA, cid, {"step": "paid"}, 0, "", [command], tx=tx),
@@ -206,7 +190,7 @@ class SagaStoreContract(Transactional):
         cid = unique_id("corr")
         with pytest.raises(RuntimeError):
             async with transaction(transactor):
-                await saga_store.save(_SAGA, cid, {"step": "one"}, 0, "", [_saga_command(cid, 1, 0)])
+                await saga_store.save(_SAGA, cid, {"step": "one"}, 0, "", [saga_command(_SAGA, cid, 1, 0)])
                 unsent = await self._unpublished(saga_store, cid)
                 assert unsent == [], "an uncommitted command is not one to send"
                 raise RuntimeError("the handler failed")
@@ -241,7 +225,7 @@ class SagaOutboxContract(OutboxContract[CommandMessage]):
     ) -> list[CommandMessage]:
         saga_store: Store = request.getfixturevalue("saga_store")
         cid = unique_id("corr")
-        rows = [_saga_command(cid, 1, index) for index in range(n)]
+        rows = [saga_command(_SAGA, cid, 1, index) for index in range(n)]
         if commit:
             await saga_store.save(_SAGA, cid, {"step": "one"}, 0, "", rows)
             return rows

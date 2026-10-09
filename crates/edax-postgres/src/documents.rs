@@ -28,13 +28,16 @@ const EXACT_FROM: f64 = 9_007_199_254_740_992.0; // 2^53
 
 /// The text projection `id`'s `document` is stored as: the kernel's keyed document (the row key as its
 /// `"id"`, refused as `codec` when it is not a JSON object or holds an integer wider than 64 bits),
-/// re-serialized by [`exact_json`]. A string or object key holding NUL is a `codec` error: `jsonb`
+/// serialized by [`exact_json`]. A string or object key holding NUL is a `codec` error: `jsonb`
 /// cannot store it.
 pub fn stored_document(id: &str, document: &[u8]) -> Result<String, Error> {
-    let keyed = edax_cqrs::keyed_document_json(id, document)?;
-    let value: Value = serde_json::from_str(&keyed).map_err(Error::codec)?;
-    check_nul(&value)?;
-    Ok(exact_json(&value))
+    let keyed = Value::Object(edax_cqrs::keyed_document(id, edax_cqrs::document_json(id, document)?));
+    if holds_nul(&keyed) {
+        return Err(Error::codec(
+            "a projection document holds a NUL character, which Postgres cannot store",
+        ));
+    }
+    Ok(exact_json(&keyed))
 }
 
 /// `value` as JSON text, with every non-integer number of magnitude 2^53 or more written as its exact
@@ -69,19 +72,13 @@ impl Formatter for ExactFormatter {
     }
 }
 
-/// Refuse a string or object key holding NUL, which `jsonb` cannot store, as `codec`.
-fn check_nul(value: &Value) -> Result<(), Error> {
-    let refuse = || Error::codec("a projection document holds a NUL character, which Postgres cannot store");
+/// Whether a string or an object key anywhere in `value` holds NUL, which `jsonb` cannot store.
+pub(crate) fn holds_nul(value: &Value) -> bool {
     match value {
-        Value::String(s) if s.contains('\0') => Err(refuse()),
-        Value::Array(items) => items.iter().try_for_each(check_nul),
-        Value::Object(fields) => fields.iter().try_for_each(|(key, item)| {
-            if key.contains('\0') {
-                return Err(refuse());
-            }
-            check_nul(item)
-        }),
-        _ => Ok(()),
+        Value::String(s) => s.contains('\0'),
+        Value::Array(items) => items.iter().any(holds_nul),
+        Value::Object(fields) => fields.iter().any(|(key, item)| key.contains('\0') || holds_nul(item)),
+        _ => false,
     }
 }
 

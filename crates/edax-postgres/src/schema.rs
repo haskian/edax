@@ -490,7 +490,7 @@ pub fn reference_ddl(tables: &Tables) -> String {
 
 /// A column as the catalog reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CatalogColumn {
+pub(crate) struct CatalogColumn {
     name: String,
     #[serde(rename = "type")]
     column_type: String,
@@ -501,7 +501,7 @@ pub struct CatalogColumn {
 
 /// A unique index as the catalog reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CatalogUnique {
+pub(crate) struct CatalogUnique {
     name: String,
     columns: Vec<String>,
     collations: Vec<String>,
@@ -513,7 +513,7 @@ pub struct CatalogUnique {
 
 /// A table as the catalog reports it; `kind` is `None` when no such table exists.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct CatalogTable {
+pub(crate) struct CatalogTable {
     table: Logical,
     kind: Option<String>,
     columns: Vec<CatalogColumn>,

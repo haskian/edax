@@ -7,7 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, TypeVar
 
 from ._observer import wrap
-from ._units import AMBIENT, database_of, open_transaction
+from ._units import ambient_tx, open_transaction
 from .observe import Observer
 
 __all__ = ["Transactor", "Tx", "TxT", "TxT_co", "TxT_contra", "current_tx", "transaction"]
@@ -62,7 +62,7 @@ class Transactor(Protocol[TxT_co]):
 def current_tx(transactor: object) -> Tx | None:
     """The tx of the open :func:`transaction` over ``transactor``'s database, else ``None``. A store handed
     ``tx=None`` reads this with its own transactor, so it never sees another database's tx."""
-    return AMBIENT.get().get(id(database_of(transactor)))
+    return ambient_tx(transactor)
 
 
 def transaction(
