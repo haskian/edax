@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.9.0](https://github.com/haskian/edax/compare/d999d6ae9199cd11dc201e304ea37fd864ed6992..v0.9.0) - 2026-10-10
+#### Features
+- (**postgres**) add the Postgres kernel and the asyncpg backend (#23) - ([d999d6a](https://github.com/haskian/edax/commit/d999d6ae9199cd11dc201e304ea37fd864ed6992)) - Črtomir Majer
+
+- - -
+
 ## [v0.8.0](https://github.com/haskian/edax/compare/1f0e7915a51974c9ccac8aedabf8cb0cd51a54b4..v0.8.0) - 2026-10-08
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) enforce SDK contracts and harden message delivery (#21) - ([1f0e791](https://github.com/haskian/edax/commit/1f0e7915a51974c9ccac8aedabf8cb0cd51a54b4)) - Črtomir Majer
