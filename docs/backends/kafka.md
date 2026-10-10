@@ -429,9 +429,13 @@ It leaves the rest to the host:
   `consumer.rebalance_listener()` to `subscribe`. On revoke the kernel's `revoke` hands back each
   revoked partition's last due watermark as it drops the partition, so the queued deliveries are
   skipped. The listener commits those watermarks and waits for the handlers still running,
-  up to `drain_timeout_s`. No key is then handled by two members at once. The new owner starts from
-  the commit, so the skipped work runs there: at-least-once. Keep `drain_timeout_s` above the slowest
-  handler and below the client's `max_poll_interval_ms`. Without the listener, a revoked partition
+  up to `drain_timeout_s`. The new owner starts from the commit, so the skipped work runs there:
+  at-least-once. Keep `drain_timeout_s` above the slowest handler and below the client's
+  `max_poll_interval_ms`. The wait makes overlap rare, not impossible. A handler still running at the
+  deadline overlaps the new owner, which `revoke_overrun` reports. A member the group evicts (a pause
+  past the session timeout or `max_poll_interval_ms`) loses its partitions before its listener runs,
+  so the wait cannot cover it. In both cases one key can run on two members at once; the consume
+  guard keeps duplicate database effects out, but per-key order is broken for that window. Without the listener, a revoked partition
   keeps its stale bookkeeping, and its queued work runs alongside the new owner. Once its watermark
   is due, the client refuses every commit that names it, so no partition commits again. `run`
   therefore raises `BadHandle` for an `AIOKafkaConsumer` subscribed to topics with no listener. A

@@ -207,7 +207,8 @@ including their settlement. Use `Close` to release the native retry policies aft
 `Relay[M]` reads committed outbox rows, publishes them and marks settled rows. Its publisher must
 return only after a durable broker acknowledgement. A crash between publish and mark republishes
 the row. Consumers must deduplicate it. Concurrent drains on one relay take turns; multiple
-relays need a backend that leases rows.
+relays need a backend that holds one lease over the whole outbox. Per-row leases break per-key
+order.
 
 The kernel's drain policy blocks later rows of a failed key while allowing other keys to advance.
 It also decides retry counts and when a wider failure stops the batch. `Last` reads the last

@@ -44,3 +44,28 @@ jobs:
       # its own workspace, so the features never reach the build above.
       - name: Canonical form under serde_json features
         run: mise exec -- cargo test --manifest-path crates/edax-cqrs/feature-check/Cargo.toml
+
+  postgres:
+    name: postgres live check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_PASSWORD: edax
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 2s --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          cargo-cache-key: postgres
+      # The SQL edax-postgres emits, held to the kernel's reference applier on a real server: the filter,
+      # query and Postgres vectors, every keyset walk, a seeded differential and the decimal function. Its
+      # own workspace, so the main build links no Postgres client.
+      - name: Live check
+        run: mise exec -- cargo test --manifest-path crates/edax-postgres/live-check/Cargo.toml -- --test-threads=1
+        env:
+          EDAX_POSTGRES_URL: postgresql://postgres:edax@localhost:5432/postgres

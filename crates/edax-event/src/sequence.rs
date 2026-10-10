@@ -49,6 +49,18 @@ pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<u64, Erro
     Ok(want)
 }
 
+/// Refuse a snapshot of `stream` at `version` that leads the stream, at `stream_version`, as the store's
+/// write sees it. A snapshot may lag its stream but never lead it, or a load would fold events the stream
+/// does not hold. Every store refuses it the same way, a `codec` error, since the same save fails again.
+pub fn check_snapshot(stream: &str, version: u64, stream_version: u64) -> Result<(), Error> {
+    if version > stream_version {
+        return Err(Error::codec(format_args!(
+            "snapshot of {stream} at version {version} leads its stream at version {stream_version}"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether a save that moves an aggregate from version `initial` to `current` writes a snapshot under
 /// an interval of `every` versions: when the save crosses a multiple of `every`. `1` snapshots on
 /// every save that appends, `0` never does, and a save with nothing pending crosses no multiple.

@@ -69,6 +69,10 @@ flowchart LR
   lost event.
 - Two relays on a non-leasing `unpublished` double-publish. Overlapping drains of one relay take
   turns.
+- Several relays need one lease over the whole outbox, never per-row leases: two relays holding
+  different rows of one key publish them out of order. A lease is not a fencing token either. A
+  holder paused past its lease publishes its batch late, after its successor, so the broker can hold
+  1, 2, 3, 1, 2. The first copies keep their order; the late ones need a consumer that drops them.
 - Order is per key, the row's tenant and aggregate. A row whose publish fails holds back the rows
   behind it of its own key; the other keys go on, and every row the drain settled is marked. A second
   transient failure with no publish between them stops the batch: the broker is likely down.
@@ -90,8 +94,11 @@ flowchart LR
 - A bare "commit the current position" acks unsettled messages and loses them on restart.
 - Nothing redelivers a delivery left unsettled while the consumer lives. A raising dead-letter sink
   and a poison message therefore nack, after a backoff step.
-- A rebalance commits, resets the revoked partitions and waits for the running handlers, so no key
-  runs on two members at once.
+- A rebalance commits, resets the revoked partitions and waits up to `drain_timeout_s` for the running
+  handlers. That wait makes overlap rare, not impossible. A handler that outlasts it, or a member the
+  group evicts before its revoke runs, can run a key while the new owner runs it too
+  ([`revoke_overrun`](../sdk/observability.md#revoke_overrunhandling-a-revoke-outlasted-its-deadline)).
+  The consume guard then keeps duplicate database effects out; per-key order is broken for that window.
 
 ### `KeyOrderedDispatcher` to handler
 
@@ -276,8 +283,9 @@ A host can claim effectively-once for state in one database when all of these ho
   `NUMERIC`, or a string. A signed `BIGINT` reads every value at or above `2**63` back negative.
 - [ ] `EventStore.append` enforces its version check in the database, and `ProjectionStore.save`
   does too.
-- [ ] Exactly one `Relay` per store, unless `unpublished` leases rows (`SELECT ... FOR UPDATE SKIP
-  LOCKED`, or a `leased_until` column).
+- [ ] Exactly one `Relay` per store, unless `unpublished` holds one lease over the whole outbox.
+  Never lease single rows (`FOR UPDATE SKIP LOCKED`, a `leased_until` column): that breaks per-key
+  order.
 - [ ] `Producer.publish` returns only after a durable broker ack and raises on failure.
 - [ ] A delivery's `ack` settles only that message: a per-partition watermark on an offset broker.
 - [ ] The error taxonomy is honored: `ConcurrencyError` only for a version conflict, `StoreError`

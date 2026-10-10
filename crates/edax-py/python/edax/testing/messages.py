@@ -5,16 +5,26 @@ ids, a tenant, a JSON body with a non-ASCII memo, a lineage, a trace parent and 
 as the SDK writes them in production. A case rebuilds one with only the field under test changed.
 :func:`event` is a stored event with stable ids, to publish with no store behind it, and :func:`drafted` and
 :func:`recorded` move an event between its two shapes: the draft a repository hands ``append``, and the
-message the store keeps."""
+message the store keeps. :func:`saga_command` is a command a saga step stages, as the kernel builds it."""
 
 from __future__ import annotations
 
 from .. import _native
 from .._values import FIELDS
 from ..delivery import Delivery, M
-from ..message import CommandMessage, EventDraft, EventMessage
+from ..message import CommandMessage, EventDraft, EventMessage, Payload
 
-__all__ = ["command", "delivery", "draft", "drafted", "event", "event_of", "message", "recorded"]
+__all__ = [
+    "command",
+    "delivery",
+    "draft",
+    "drafted",
+    "event",
+    "event_of",
+    "message",
+    "recorded",
+    "saga_command",
+]
 
 #: The W3C trace parent every rich base carries in its ``extensions``.
 _TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -73,6 +83,24 @@ def command(aggregate_id: str | None, *, tenant: str | None = "acme") -> Command
         issued_at=_native.current_timestamp(),
         extensions={"traceparent": _TRACEPARENT},
         metadata=dict(_METADATA),
+    )
+
+
+def saga_command(saga: str, instance_id: str, version: int, index: int) -> CommandMessage:
+    """The ``index``-th command a step of ``saga`` sends when it commits ``version`` of ``instance_id``: the
+    kernel's row, with a real ``Fulfill`` payload, caused by the ``OrderPaid`` event
+    ``evt-<instance_id>-<version>`` of the flow ``flow-<instance_id>``, in that event's tenant."""
+    payload = Payload("Fulfill", 1, f'{{"order_id":"{instance_id}"}}'.encode())
+    return _native.saga_command(
+        saga,
+        instance_id,
+        version,
+        index,
+        payload,
+        f"evt-{instance_id}-{version}",
+        f"flow-{instance_id}",
+        1_714_564_800_000_000_001,
+        "acme",
     )
 
 

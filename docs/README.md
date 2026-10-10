@@ -71,6 +71,7 @@ flowchart LR
 |---|---|
 | [Backends overview](backends/README.md) | the seam contracts, and a checklist for implementing one |
 | [memory](backends/memory.md) | the in-memory stores and a transaction that is kept for real |
+| [postgres](backends/postgres.md) | every durable seam on Postgres for Python: the table contract, the query in SQL, relays |
 | [redis](backends/redis.md) | a ledger that does not join your transaction, its two expiry clocks, and fencing |
 | [Go backends](backends/go.md) | Go memory, Redis and Kafka adapters and their client contracts |
 | [kafka](backends/kafka.md) | the `Producer` and `Consumer` adapters, and what an ack must mean |
@@ -87,9 +88,9 @@ flowchart LR
 
 ## Three things to know before you build
 
-1. **No durable event or projection store ships.** Implement these stores against your own
-   database. Each seam's docstring is the specification; [backends](backends/README.md) is
-   the index.
+1. **One durable backend ships: Postgres, for Python.** [postgres](backends/postgres.md) covers
+   every durable seam. Go and the Rust SDK ship none yet; implement those stores against your own
+   database. Each seam's docstring is the specification; [backends](backends/README.md) is the index.
 2. **edax never promises exactly-once.** See [delivery guarantees](guides/delivery-guarantees.md)
    for the one statement of what does hold.
 3. **A golden vector wins over a disagreeing test.** If your change makes a vector fail, the change

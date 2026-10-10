@@ -242,6 +242,7 @@ dependencies = [
  "edax-event",
  "edax-kafka",
  "edax-memory",
+ "edax-postgres",
  "edax-redis",
  "serde",
  "serde_json",
@@ -329,6 +330,18 @@ dependencies = [
  "edax-golden",
  "edax-kafka",
  "proptest",
+ "serde_json",
+]
+
+[[package]]
+name = "edax-postgres"
+version = "0.8.0"
+dependencies = [
+ "edax-core",
+ "edax-cqrs",
+ "edax-event",
+ "edax-golden",
+ "serde",
  "serde_json",
 ]
 

@@ -25,7 +25,7 @@ mise exec -- cargo test --workspace
 
 # Python SDK (venv needs msgspec)
 cd crates/edax-py && mise exec -- uv venv && source .venv/bin/activate
-mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8"
+mise exec -- uv pip install msgspec pytest pytest-asyncio hypothesis "redis>=8" "fakeredis[lua]" "aiokafka>=0.8" "asyncpg>=0.30"
 mise exec -- maturin develop && python -m pytest -q
 ```
 
@@ -36,6 +36,10 @@ The Redis suites run on fakeredis, which runs the kernel's Lua. Set `EDAX_REDIS_
 The Kafka suites run on the Kafka-shaped fake in `tests/conftest.py`. Set `EDAX_KAFKA_BOOTSTRAP=localhost:59192`
 (a throwaway `apache/kafka:3.8.0`; 59092 is often another project's) to run `test_kafka_live.py`, and
 `EDAX_KAFKA_CONTAINER=<name>` for the pause and restart tests.
+The Postgres suites need a live server: set `EDAX_POSTGRES_URL=postgresql://postgres:edax@localhost:55433/postgres`
+(a throwaway `postgres:17`; 55432 is often another project's) to run `test_postgres.py`, and run
+`cargo test --manifest-path crates/edax-postgres/live-check/Cargo.toml -- --test-threads=1` with the same variable to
+hold the SQL to the kernel's reference applier. `EDAX_REQUIRE_POSTGRES=1` makes a missing URL fail, as CI sets it.
 
 ## Generated code
 
@@ -50,13 +54,16 @@ is never built. The Python package under `python/edax/` **is** yours to edit; `s
 and the `.alef/` scaffold are not.
 
 `edax-abi` has one module per kernel crate (`primitives.rs` for `edax-core`, then `event.rs`, `retry.rs`,
-`saga.rs`, `cqrs.rs`, `memory.rs`, `kafka.rs`, `redis.rs`), each declared with `mod` and re-exported with
+`saga.rs`, `cqrs.rs`, `memory.rs`, `kafka.rs`, `redis.rs`, `postgres.rs`), each declared with `mod` and re-exported with
 `pub use` from `lib.rs`, which keeps only the shared helpers. alef follows those declarations, but it
 fingerprints only the files `sources` in `alef.toml` lists: list a new module there too.
 
 Go's generated C interface is in `crates/edax-abi-ffi`; generated Go code is in
 `crates/edax-go/internal/native`. Edit `.mise/cmd/go-facade/` to change the internal kernel facade,
 then regenerate `crates/edax-go/internal/kernel/native.gen.go`. CI checks all these generated outputs, including the generated error and tenancy names.
+After an ABI signature change, run `ALEF_EXPORT_GENERATED_HEADERS=1 mise run go:build` too:
+alef's build hook exports both C headers only with that variable set. Plain generation can leave
+the previous header signatures beside the new Go calls.
 The root `kernel.go` exposes only the records and helpers used by the public SDK.
 The facade tool parses Go declarations with `go/parser`. The `edax-core` example `binding_names`
 exports error and tenancy names to it; do not parse Rust source or copy those name lists.
@@ -85,6 +92,7 @@ EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-postgres --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
 ```
 
@@ -114,7 +122,10 @@ and one collation (the crate-private `value` and `collation` modules) — never 
 (`partition_for`), `offsets` (the offset watermark and the revoke) and `client` (`check_config`,
 `check_consumer`, `check_dead_sink`, `acks_warning` and `broker_error`).
 `edax-redis` owns `ledger` (the key, settings and their defaults, value layout, claim handle and reply outcomes) and
-`scripts` (the fence scripts and the reply verdict). The adapter is the input and output (I/O) shell: it
+`scripts` (the fence scripts and the reply verdict). `edax-postgres` owns `config`, `error` (the SQLSTATE verdict per
+operation), `schema` (the table contract and its catalog check; edax provisions no table), `statements`, `rows` (the row layout), `documents` (exact number text), `query`
+(the read-model query compiled to SQL, and the page) and `ledger` (the claim owner and the fence). A Postgres
+statement, row layout or query rule every SDK must match is the kernel's: change it there, never in the adapter. The adapter is the input and output (I/O) shell: it
 calls the client and the kernel, and decides nothing on its own.
 
 `#[non_exhaustive]` goes on a kernel enum a host only *reads* — one whose new variant a host may
@@ -187,6 +198,6 @@ Build Go with `mise run go:build`, then run `mise exec -- go test -race ./...` f
 The static native library must be rebuilt after an ABI or kernel change.
 
 `pytest` does **not** rebuild the native module. After any change under `edax-core`, `edax-event`,
-`edax-cqrs`, `edax-memory`, `edax-kafka`, `edax-redis` or `edax-abi`, run `maturin develop` first or
+`edax-cqrs`, `edax-memory`, `edax-kafka`, `edax-redis`, `edax-postgres` or `edax-abi`, run `maturin develop` first or
 the Python suite passes green against the previously compiled kernel and proves nothing. CI does
 this in the right order (`.github/workflows/python.yml`).

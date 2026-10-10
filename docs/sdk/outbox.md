@@ -312,8 +312,15 @@ free for the dispatcher and the transport's heartbeats. A failed `mark_published
 unmarked, so the next drain publishes them again: at-least-once, as above.
 
 **Run one relay per store.** The `Outbox` contract does not lease rows. Two relays would read
-the same rows and double-publish. For N relays, make `unpublished` claim rows. Use a row lock that
-skips rows already locked and is held until `mark_published`, or a `leased_until` column.
+the same rows and double-publish. For N relays, give the whole outbox one lease, so only its holder
+reads; the Postgres backend's `RelayLease` does this. Never lease rows one by one, with a row lock
+that skips locked rows or a `leased_until` column. Relay A could then hold event 1 of an aggregate
+while relay B publishes event 2 first.
+
+A lease is not a fencing token. A holder paused past its lease still publishes the batch it read,
+after its successor published the same rows. The broker can then hold 1, 2, 3, 1, 2 for one key.
+The first copies keep their order. The late copies are harmless only to a consumer that drops them,
+with `idempotent_by_id` or a staleness check on the sequence.
 
 Overlapping drains of one relay take turns: the Python `Relay` holds an `asyncio.Lock`, the Rust
 `Relay` a `Mutex`, so a timer and a "drain now" cannot double-publish. That lock is per relay, not per
@@ -388,7 +395,7 @@ no count.
 | latency | one poll interval | the commit itself |
 | needs from the store | `unpublished` plus `mark_published` | neither |
 | acknowledgement | `mark_published` by row id | the CDC stream position |
-| concurrency | one relay per store, unless `unpublished` leases rows | whatever your CDC client supports |
+| concurrency | one relay per store, unless one lease covers the whole outbox | whatever your CDC client supports |
 | row retention | handled by `mark_published` | yours |
 
 Use one of the two. A store fed to change data capture implements no `Outbox` at all, and still meets

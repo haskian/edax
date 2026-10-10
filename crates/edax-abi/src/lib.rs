@@ -1,7 +1,7 @@
 //! Flat, plain-Rust API surface over the edax kernels and adapters.
 //!
 //! This crate holds no logic of its own: every function forwards to a kernel (`edax-core` /
-//! `edax-event` / `edax-cqrs` / `edax-kafka` / `edax-redis`) or to a backend (`edax-memory`),
+//! `edax-event` / `edax-cqrs` / `edax-kafka` / `edax-redis` / `edax-postgres`) or to a backend (`edax-memory`),
 //! reshaping only at the edges so the surface is trivial to bind. alef extracts these signatures and
 //! emits the native binding from them, so the shapes here are chosen to map cleanly:
 //!
@@ -24,6 +24,7 @@ mod cqrs;
 mod event;
 mod kafka;
 mod memory;
+mod postgres;
 mod primitives;
 mod redis;
 mod retry;
@@ -35,6 +36,7 @@ pub use cqrs::*;
 pub use event::*;
 pub use kafka::*;
 pub use memory::*;
+pub use postgres::*;
 pub use primitives::*;
 pub use redis::*;
 pub use retry::*;

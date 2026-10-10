@@ -17,10 +17,10 @@ Python service and a Rust service cannot drift.
 | `causation` | the lineage of a message: `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `idempotency` | the key and hash an event's idempotency guard claims; the record it claims is `edax-cqrs`'s | `event_idempotency.json` |
-| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
+| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot, and the refusal of one that leads its stream | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json`, `retry_step.json` |
 | `drain` | which rows an outbox relay's drain publishes, and what a failed row does to the rows behind it | `relay_drain.json` |
-| `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing) and the command messages it sends | `saga.json` |
+| `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing), the command messages it sends, and the refusal of a write to a completed instance | `saga.json` |
 
 Host code reaches the kernel through an SDK. The SDKs reach it through the flat application binary
 interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
@@ -468,7 +468,9 @@ A row that names no instance is a `codec` error.
 
 `saga_write(loaded, completes, has_commands)` answers what a saga runner writes after a fold. A
 `Completed` tombstone takes no write: a `codec` error, which `saga_admit` makes unreachable, since it
-skips every event that finds one. For an absent or running instance:
+skips every event that finds one. A store that finds a tombstone under a write refuses it with
+`saga_completed(saga, id, version)`, a `concurrency` error: the runner loaded a running instance that
+another worker completed first. For an absent or running instance:
 
 | Loaded, and the fold | Write |
 |---|---|
@@ -670,6 +672,10 @@ writes a snapshot: when it crosses a multiple of `every`. `1` snapshots on every
 `0` never does, and a save with nothing pending crosses no multiple. Both repositories ask it, so
 two SDKs saving one aggregate type snapshot at the same versions. `testdata/golden/snapshot_due.json`
 pins every branch.
+
+`check_snapshot(stream, version, stream_version)` refuses a snapshot that leads its stream, as the
+store's write sees it, with a `codec` error. A snapshot may lag the stream but never lead it, so every
+store refuses it with the same text.
 
 ## See also
 

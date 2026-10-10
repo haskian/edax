@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error};
-use edax_event::{EventDraft, EventMessage};
+use edax_event::{check_snapshot, EventDraft, EventMessage};
 
 use crate::tx::{held_by_other, store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
 
@@ -224,11 +224,7 @@ impl MemoryEventStore {
                         .map(sequence_of)
                 })
                 .unwrap_or(0);
-            if version > stream {
-                return Err(Error::codec(format_args!(
-                    "snapshot of {aggregate_id} at version {version} leads its stream at version {stream}"
-                )));
-            }
+            check_snapshot(aggregate_id, version, stream)?;
             let current = own
                 .snapshots
                 .get(aggregate_id)
