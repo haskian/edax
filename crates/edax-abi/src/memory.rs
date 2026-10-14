@@ -1186,3 +1186,38 @@ impl MemoryBroker {
         self.try_poll(group).map(|value| PollLookup { value })
     }
 }
+/// An atomic in-memory ingestion database. Persist this handle across runner restarts in tests.
+pub struct MemoryIngestion {
+    inner: edax_memory::MemoryIngest,
+}
+
+/// Build an independent in-memory ingestion database.
+pub fn memory_ingestion() -> MemoryIngestion {
+    MemoryIngestion {
+        inner: edax_memory::MemoryIngest::default(),
+    }
+}
+
+impl MemoryIngestion {
+    /// Commit original records and durable rejection decisions together.
+    pub fn commit(&self, manifest: &str, inputs: &str) -> Result<String, String> {
+        let contract = crate::read_json::<edax_cqrs::ingest::Contract>(manifest)?;
+        let inputs = crate::read_json::<Vec<edax_cqrs::ingest::Input>>(inputs)?;
+        crate::write_json(&self.inner.commit(&contract, &inputs).map_err(crate::to_wire)?)
+    }
+
+    /// Read a committed row as JSON, or JSON null.
+    pub fn get(&self, key: &str) -> Result<String, String> {
+        crate::write_json(&self.inner.get(key))
+    }
+
+    /// Read pending rejections as a JSON map, scoped to a target prefix.
+    pub fn pending(&self, prefix: &str, limit: u32) -> Result<String, String> {
+        crate::write_json(&self.inner.pending(prefix, limit as usize))
+    }
+
+    /// Confirm publication of a rejection whose original fingerprint still matches.
+    pub fn published(&self, source: &str, fingerprint: &str) -> Result<(), String> {
+        self.inner.published(source, fingerprint).map_err(crate::to_wire)
+    }
+}

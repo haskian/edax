@@ -50,6 +50,8 @@
 // Every public item is a cross-language contract, so it states what it promises.
 #![warn(missing_docs)]
 
+pub mod ingest;
+
 mod canonical;
 mod collation;
 mod decimal_text;

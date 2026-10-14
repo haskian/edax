@@ -802,3 +802,64 @@ fn golden_query() {
     }
     write_or_check("postgres_query.json", cases);
 }
+
+/// Optional ingestion SQL and recovery decisions, shared by every ingestion adapter.
+#[test]
+fn golden_ingest() {
+    let mut cases = Vec::new();
+    for (name, config) in [
+        ("default", "{}"),
+        (
+            "custom_schema_and_names",
+            r#"{"schema":"billing","names":{"ingest_events":"incoming","ingest_state":"current_orders","ingest_rejections":"rejected_orders"}}"#,
+        ),
+        (
+            "partial_names",
+            r#"{"schema":"sales","names":{"ingest_state":"current_orders"}}"#,
+        ),
+        ("malformed_json", "{"),
+        ("schema_uppercase", r#"{"schema":"Public"}"#),
+        ("schema_injection", r#"{"schema":"public'; DROP TABLE events; --"}"#),
+        ("table_quote", r#"{"names":{"ingest_events":"events\""}}"#),
+        ("table_dash", r#"{"names":{"ingest_events":"incoming-events"}}"#),
+        (
+            "shared_name",
+            r#"{"names":{"ingest_events":"shared","ingest_state":"shared"}}"#,
+        ),
+        ("unknown_role", r#"{"names":{"events":"incoming"}}"#),
+        ("unknown_field", r#"{"prefix":"my_"}"#),
+    ] {
+        let result = edax_postgres::ingest::statements(config);
+        cases.push(json!({
+            "name": name, "op": "statements", "config": config,
+            "want": result.as_ref().ok(), "error": refusal(&result),
+        }));
+    }
+    for (name, sqlstate) in [
+        ("connection", Some("08006")),
+        ("data_range", Some("22003")),
+        ("constraint", Some("23514")),
+        ("unique", Some("23505")),
+        ("missing_table", Some("42P01")),
+        ("authorization", Some("28P01")),
+        ("missing_database", Some("3D000")),
+        ("missing_schema", Some("3F000")),
+        ("serialization", Some("40001")),
+        ("deadlock", Some("40P01")),
+        ("resource", Some("53000")),
+        ("program_limit", Some("54000")),
+        ("timeout", Some("57014")),
+        ("unknown", Some("XX000")),
+        ("empty", Some("")),
+        ("missing", None),
+    ] {
+        for rolled_back in [false, true] {
+            cases.push(json!({
+                "name": format!("{name}_{}", if rolled_back { "rolled_back" } else { "uncertain" }),
+                "op": "recovery", "sqlstate": sqlstate, "rolled_back": rolled_back,
+                "want": edax_postgres::ingest::recovery(sqlstate, rolled_back), "error": null,
+            }));
+        }
+    }
+    write_or_check("postgres_ingest.json", cases);
+}

@@ -1820,6 +1820,555 @@ fn idempotency_fence_cases() -> Vec<Value> {
         .collect()
 }
 
+fn ingest_cases() -> Vec<Value> {
+    use edax_cqrs::ingest::{self, Contract, Input, Rejection, Stored};
+    use std::collections::BTreeMap;
+
+    let target = "orders-v1";
+    let input = |offset: i64, sequence: Option<u64>, status: &str| Input {
+        source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
+        key: ingest::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
+        stream: "order-42".into(),
+        event_id: format!("order-42-event-{offset}"),
+        sequence,
+        content: json!({"aggregate_id":"order-42", "sequence":sequence, "name":"OrderState", "version":1, "status":status}),
+        value: Some(json!({"order_id":"order-42", "status":status})),
+        raw_fingerprint: None,
+        raw: json!({"offset":offset,"sequence":sequence,"status":status}).to_string(),
+        failure: None,
+    };
+    let empty = BTreeMap::new();
+    let no_rejections = BTreeMap::new();
+    let mut rows = Vec::new();
+    let mut add = |name: &str,
+                   mode: &str,
+                   inputs: Vec<Input>,
+                   stored: &BTreeMap<String, Stored>,
+                   rejected: &BTreeMap<String, Rejection>| {
+        let result = ingest::plan(mode, &inputs, stored, rejected);
+        rows.push(json!({
+            "name":name, "op":"plan", "mode":mode, "inputs":inputs, "stored":stored,
+            "rejected":rejected, "want":result.as_ref().ok(), "error":refusal(&result),
+        }));
+    };
+    let created = input(0, Some(1), "created");
+    let paid = input(1, Some(2), "paid");
+    let shipped = input(2, Some(3), "shipped");
+    let other_stream = Input {
+        stream: "order-99".into(),
+        ..input(3, Some(4), "paid")
+    };
+    let paid_state = ingest::plan("upsert", std::slice::from_ref(&paid), &empty, &no_rejections).unwrap();
+    let mut conflicting_paid = input(4, Some(2), "cancelled");
+    // Keep raw identity different while using the same committed sequence and target.
+    conflicting_paid.event_id = "order-42-conflicting-payment".into();
+    let mut append = created.clone();
+    append.sequence = None;
+    append.key = ingest::key(target, &json!(["append", "acme", append.event_id]).to_string()).unwrap();
+    let append_state = ingest::plan("append", std::slice::from_ref(&append), &empty, &no_rejections).unwrap();
+    let append_conflict = Input {
+        value: Some(json!({"order_id":"order-42","status":"cancelled"})),
+        ..append.clone()
+    };
+    add(
+        "append_new_event_without_sequence",
+        "append",
+        vec![append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "append_exact_replay",
+        "append",
+        vec![append.clone()],
+        &append_state.writes,
+        &no_rejections,
+    );
+    add(
+        "append_conflicting_replay",
+        "append",
+        vec![append_conflict],
+        &append_state.writes,
+        &no_rejections,
+    );
+    add(
+        "append_duplicate_in_batch",
+        "append",
+        vec![append.clone(), append],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "upsert_absent_key_first_owner_wins",
+        "upsert",
+        vec![created.clone(), other_stream.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "upsert_lower_sequence_ignored",
+        "upsert",
+        vec![created.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_equal_sequence_exact_replay",
+        "upsert",
+        vec![paid.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_equal_sequence_conflict",
+        "upsert",
+        vec![conflicting_paid.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_higher_sequence",
+        "upsert",
+        vec![shipped.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "equal_new_sequence_first_value_wins",
+        "upsert",
+        vec![paid.clone(), conflicting_paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "compaction_preserves_original_outcomes",
+        "upsert",
+        vec![shipped.clone(), created.clone(), paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "stale_conflicts_are_ignored",
+        "upsert",
+        vec![paid.clone(), conflicting_paid.clone()],
+        &ingest::plan("upsert", std::slice::from_ref(&shipped), &empty, &no_rejections)
+            .unwrap()
+            .writes,
+        &no_rejections,
+    );
+    let tombstone = Input {
+        value: None,
+        ..input(5, Some(4), "deleted")
+    };
+    let deleted = ingest::plan(
+        "upsert",
+        std::slice::from_ref(&tombstone),
+        &paid_state.writes,
+        &no_rejections,
+    )
+    .unwrap();
+    add(
+        "tombstone_retains_owner_and_sequence",
+        "upsert",
+        vec![tombstone.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_exact_replay",
+        "upsert",
+        vec![tombstone],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_rejects_new_owner",
+        "upsert",
+        vec![other_stream.clone()],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_ignores_stale_resurrection",
+        "upsert",
+        vec![created.clone()],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "missing_sequence_rejected",
+        "upsert",
+        vec![input(6, None, "created")],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "postgres_sequence_overflow_rejected",
+        "upsert",
+        vec![input(7, Some(i64::MAX as u64 + 1), "created")],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "zero_sequence_is_valid",
+        "upsert",
+        vec![input(8, Some(0), "created")],
+        &empty,
+        &no_rejections,
+    );
+    let invalid = Input {
+        failure: Some("codec: order status is malformed".into()),
+        ..created.clone()
+    };
+    let rejected = ingest::plan("upsert", std::slice::from_ref(&invalid), &empty, &no_rejections).unwrap();
+    add(
+        "invalid_original_does_not_propose_owner",
+        "upsert",
+        vec![invalid, other_stream.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "durable_rejection_excluded_before_owner_selection",
+        "upsert",
+        vec![created.clone(), other_stream.clone()],
+        &empty,
+        &rejected.rejections,
+    );
+    let mut published = rejected.rejections.clone();
+    for rejection in published.values_mut() {
+        rejection.published = true;
+    }
+    add(
+        "published_rejection_still_excludes_original",
+        "upsert",
+        vec![created.clone(), other_stream],
+        &empty,
+        &published,
+    );
+    let first_batch = vec![paid.clone(), conflicting_paid.clone(), shipped.clone()];
+    let first_result = ingest::plan("upsert", &first_batch, &empty, &no_rejections).unwrap();
+    add(
+        "commit_before_crash",
+        "upsert",
+        first_batch.clone(),
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "replay_after_commit_keeps_rejection_despite_compaction",
+        "upsert",
+        first_batch,
+        &first_result.writes,
+        &first_result.rejections,
+    );
+    let reused_source = Input {
+        raw_fingerprint: None,
+        raw: "changed-source-record".into(),
+        ..created.clone()
+    };
+    add(
+        "durable_rejection_detects_source_reuse",
+        "upsert",
+        vec![reused_source.clone()],
+        &empty,
+        &rejected.rejections,
+    );
+    add(
+        "source_reuse_in_batch_refuses_entire_call",
+        "upsert",
+        vec![created.clone(), reused_source],
+        &empty,
+        &no_rejections,
+    );
+    let original_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let full_record = Input {
+        raw_fingerprint: Some(original_digest.into()),
+        failure: Some("codec: order status is malformed".into()),
+        ..created.clone()
+    };
+    let stub_record = Input {
+        raw: json!({"topic":"orders","partition":0,"offset":0,"oversized":true,"sha256":original_digest}).to_string(),
+        ..full_record.clone()
+    };
+    let full_rejection = ingest::plan("upsert", std::slice::from_ref(&full_record), &empty, &no_rejections).unwrap();
+    let stub_rejection = ingest::plan("upsert", std::slice::from_ref(&stub_record), &empty, &no_rejections).unwrap();
+    add(
+        "source_digest_survives_full_to_stub_replay",
+        "upsert",
+        vec![stub_record.clone()],
+        &empty,
+        &full_rejection.rejections,
+    );
+    add(
+        "source_digest_survives_stub_to_full_replay",
+        "upsert",
+        vec![full_record.clone()],
+        &empty,
+        &stub_rejection.rejections,
+    );
+    add(
+        "source_digest_survives_full_and_stub_in_batch",
+        "upsert",
+        vec![full_record.clone(), stub_record.clone()],
+        &empty,
+        &no_rejections,
+    );
+    let changed_digest = Input {
+        raw_fingerprint: Some("fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into()),
+        ..stub_record
+    };
+    add(
+        "source_digest_change_refused_on_replay",
+        "upsert",
+        vec![changed_digest.clone()],
+        &empty,
+        &full_rejection.rejections,
+    );
+    add(
+        "source_digest_change_refuses_entire_batch",
+        "upsert",
+        vec![full_record, changed_digest],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "unknown_mode_refused",
+        "fold",
+        vec![created.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add("empty_batch_no_changes", "upsert", vec![], &empty, &no_rejections);
+
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: target.into(),
+        source_incarnation: "cluster-a/orders-v1".into(),
+        mapper_id: "order-state-v1".into(),
+    };
+    for (name, previous, expected) in [
+        ("bind_new_target", None, contract.clone()),
+        ("bind_same_target", Some(contract.clone()), contract.clone()),
+        (
+            "changed_mapper_refused",
+            Some(contract.clone()),
+            Contract {
+                mapper_id: "order-state-v2".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "changed_source_refused",
+            Some(contract.clone()),
+            Contract {
+                source_incarnation: "cluster-b/orders-v1".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "unsupported_contract_mode",
+            None,
+            Contract {
+                mode: "fold".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "empty_generation_refused",
+            None,
+            Contract {
+                generation: String::new(),
+                ..contract.clone()
+            },
+        ),
+    ] {
+        let result = ingest::bind_contract(previous.as_ref(), &expected).map(|()| true);
+        rows.push(json!({"name":name,"op":"bind","previous":previous,"expected":expected,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, inputs) in [
+        ("valid_scoped_input", vec![created.clone()]),
+        (
+            "source_offset_at_json_safe_integer_boundary",
+            vec![Input {
+                source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, 9_007_199_254_740_992).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "source_offset_at_postgres_bigint_maximum",
+            vec![Input {
+                source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, i64::MAX).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "foreign_target_refused",
+            vec![Input {
+                key: ingest::key("orders-v2", r#"["upsert","acme","order-42"]"#).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "foreign_source_incarnation_refused",
+            vec![Input {
+                source: ingest::source_key(target, "other-cluster", "orders", 0, 0).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "noncanonical_identity_refused",
+            vec![Input {
+                key: format!(
+                    "{}[\"upsert\", \"acme\", \"order-42\"]",
+                    ingest::prefix(target).unwrap()
+                ),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_stream_refused",
+            vec![Input {
+                stream: String::new(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "row_mode_must_match_contract",
+            vec![Input {
+                key: ingest::row_key(target, "append", Some("acme"), &created.event_id).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "source_partition_above_i32_maximum_refused",
+            vec![Input {
+                source: ingest::key(
+                    target,
+                    &json!(["source", "cluster-a/orders-v1", "orders", i64::from(i32::MAX) + 1, "0"]).to_string(),
+                )
+                .unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "non_string_tenant_refused",
+            vec![Input {
+                key: ingest::key(target, &json!(["upsert", 42, "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_row_id_refused",
+            vec![Input {
+                key: ingest::key(target, &json!(["upsert", "acme", ""]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_event_id_refused",
+            vec![Input {
+                event_id: String::new(),
+                ..created.clone()
+            }],
+        ),
+    ] {
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let append_contract = Contract {
+        mode: "append".into(),
+        ..contract.clone()
+    };
+    for (name, row_id) in [
+        ("valid_append_contract_input", created.event_id.as_str()),
+        ("append_row_id_must_equal_event_id", "different-event"),
+    ] {
+        let inputs = vec![Input {
+            key: ingest::row_key(target, "append", Some("acme"), row_id).unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&append_contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":append_contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, offset) in [
+        ("numeric_source_offset_refused", json!(0)),
+        ("leading_zero_source_offset_refused", json!("00")),
+        ("positive_sign_source_offset_refused", json!("+1")),
+        ("negative_source_offset_refused", json!("-1")),
+        ("negative_zero_source_offset_refused", json!("-0")),
+        ("whitespace_source_offset_refused", json!(" 1")),
+        ("source_offset_beyond_bigint_refused", json!("9223372036854775808")),
+    ] {
+        let inputs = vec![Input {
+            source: ingest::key(
+                target,
+                &json!(["source", "cluster-a/orders-v1", "orders", 0, offset]).to_string(),
+            )
+            .unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, partition, offset) in [
+        ("source_offset_zero", 0, 0),
+        ("source_offset_last_json_safe_integer", 0, 9_007_199_254_740_991),
+        ("source_offset_two_to_53", 0, 9_007_199_254_740_992),
+        ("source_offset_two_to_53_plus_one", 0, 9_007_199_254_740_993),
+        ("source_offset_bigint_maximum", i32::MAX, i64::MAX),
+        ("source_negative_offset_refused", 0, -1),
+        ("source_bigint_minimum_refused", 0, i64::MIN),
+        ("source_negative_partition_refused", -1, 0),
+    ] {
+        let incarnation = "cluster-a/orders-v1";
+        let topic = "orders";
+        let result = ingest::source_key(target, incarnation, topic, partition, offset);
+        rows.push(json!({"name":name,"op":"source","target":target,"incarnation":incarnation,"topic":topic,"partition":partition,"offset":offset,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, target, mode, tenant, row_id) in [
+        ("row_key_upsert", "orders-v1", "upsert", Some("acme"), "order-42"),
+        ("row_key_append", "orders-v1", "append", Some("acme"), "event-42"),
+        ("row_key_absent_tenant", "orders-v1", "upsert", None, "order-42"),
+        ("row_key_empty_tenant", "orders-v1", "upsert", Some(""), "order-42"),
+        (
+            "row_key_nul_tenant",
+            "orders-v1",
+            "upsert",
+            Some("acme\0store"),
+            "order-42",
+        ),
+        ("row_key_nul_row", "orders-v1", "upsert", None, "order\0-42"),
+        (
+            "row_key_unicode",
+            "naročila-v1",
+            "upsert",
+            Some("trgovina-ž"),
+            "naročilo-42",
+        ),
+        ("row_key_empty_row_refused", "orders-v1", "upsert", None, ""),
+        ("row_key_empty_event_refused", "orders-v1", "append", None, ""),
+        ("row_key_invalid_mode_refused", "orders-v1", "fold", None, "order-42"),
+        ("row_key_empty_target_refused", "", "upsert", None, "order-42"),
+        ("row_key_nul_target_refused", "orders\0v1", "upsert", None, "order-42"),
+    ] {
+        let result = ingest::row_key(target, mode, tenant, row_id);
+        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (set, names) in [
+        ("ingest_mode", ingest::Mode::NAMES),
+        ("ingest_outcome", ingest::Outcome::NAMES),
+    ] {
+        rows.push(json!({"name":format!("{set}_names"),"op":"names","set":set,"want":names,"error":null}));
+    }
+    rows
+}
+
+#[test]
+fn golden_ingest() {
+    write_or_check("ingest.json", ingest_cases());
+}
+
 #[test]
 fn golden() {
     write_or_check("idempotency_fence.json", idempotency_fence_cases());

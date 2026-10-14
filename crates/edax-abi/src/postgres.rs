@@ -504,6 +504,16 @@ pub fn postgres_saga_result(saga: &str, id: &str, expected: u64, result: &str) -
     edax_postgres::rows::saga_result(saga, id, expected, result).map_err(to_wire)
 }
 
+/// SQL and reference DDL for the optional ingestion tables.
+pub fn postgres_ingest_statements(config: &str) -> Result<String, String> {
+    crate::write_json(&edax_postgres::ingest::statements(config).map_err(crate::to_wire)?)
+}
+
+/// Batch recovery classification; record-local isolation requires a confirmed rollback.
+pub fn postgres_ingest_recovery(rolled_back: bool, sqlstate: Option<String>) -> String {
+    edax_postgres::ingest::recovery(sqlstate.as_deref(), rolled_back).to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;

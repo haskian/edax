@@ -357,6 +357,77 @@ pub fn keyed_projection_document(id: &str, document_json: &str) -> Result<String
     edax_cqrs::keyed_document_json(id, document_json.as_bytes()).map_err(to_wire)
 }
 
+/// Every ingestion target mode, in the kernel's order.
+pub fn ingest_mode_names() -> Vec<String> {
+    names(edax_cqrs::ingest::Mode::NAMES)
+}
+
+/// Every original input outcome, in the kernel's order.
+pub fn ingest_outcome_names() -> Vec<String> {
+    names(edax_cqrs::ingest::Outcome::NAMES)
+}
+
+/// Compute atomic ingestion decisions from original inputs and locked durable state.
+pub fn ingest_plan(mode: &str, inputs: &str, stored: &str, rejected: &str) -> Result<String, String> {
+    let inputs = crate::read_json::<Vec<edax_cqrs::ingest::Input>>(inputs)?;
+    let stored = crate::read_json(stored)?;
+    let rejected = crate::read_json(rejected)?;
+    crate::write_json(&edax_cqrs::ingest::plan(mode, &inputs, &stored, &rejected).map_err(crate::to_wire)?)
+}
+
+/// The unambiguous namespace prefix of an ingestion target generation.
+pub fn ingest_prefix(target: &str) -> Result<String, String> {
+    edax_cqrs::ingest::prefix(target).map_err(crate::to_wire)
+}
+
+/// A target-scoped canonical identity; parts must be a JSON array.
+pub fn ingest_key(target: &str, parts: &str) -> Result<String, String> {
+    edax_cqrs::ingest::key(target, parts).map_err(crate::to_wire)
+}
+
+/// Source coordinates preserve the full signed 64-bit offset range.
+pub fn ingest_source_key(
+    target: &str,
+    incarnation: &str,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+) -> Result<String, String> {
+    edax_cqrs::ingest::source_key(target, incarnation, topic, partition, offset).map_err(crate::to_wire)
+}
+
+/// Refuse a changed interpretation of an existing ingestion target.
+pub fn ingest_bind_contract(previous: &str, expected: &str) -> Result<(), String> {
+    let previous: Option<edax_cqrs::ingest::Contract> = crate::read_json(previous)?;
+    let expected = crate::read_json(expected)?;
+    edax_cqrs::ingest::bind_contract(previous.as_ref(), &expected).map_err(crate::to_wire)
+}
+
+/// Validate all source and target identities before a sink acquires locks.
+pub fn ingest_validate_inputs(manifest: &str, inputs: &str) -> Result<(), String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs: Vec<edax_cqrs::ingest::Input> = crate::read_json(inputs)?;
+    edax_cqrs::ingest::validate_inputs(&contract, &inputs).map_err(crate::to_wire)
+}
+
+/// Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
+pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Identity {
+        row_id: String,
+        tenant: Option<String>,
+    }
+    let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
+    let identity: Identity = crate::read_json(identity)?;
+    edax_cqrs::ingest::row_key(
+        &contract.generation,
+        &contract.mode,
+        identity.tenant.as_deref(),
+        &identity.row_id,
+    )
+    .map_err(crate::to_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

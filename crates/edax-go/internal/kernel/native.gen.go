@@ -143,6 +143,22 @@ func (h *MemoryIdempotencyStore) Close() error {
 	return nil
 }
 
+// MemoryIngestion owns a native handle. Use Close when it is no longer needed. Do not copy it.
+type MemoryIngestion struct {
+	*nativeState[*native.MemoryIngestion]
+	cleanup runtime.Cleanup
+}
+
+// Close releases MemoryIngestion. It is safe to call more than once.
+func (h *MemoryIngestion) Close() error {
+	if h == nil || h.nativeState == nil {
+		return nil
+	}
+	h.cleanup.Stop()
+	h.nativeState.close()
+	return nil
+}
+
 // MemoryProjectionStore owns a native handle. Use Close when it is no longer needed. Do not copy it.
 type MemoryProjectionStore struct {
 	*nativeState[*native.MemoryProjectionStore]
@@ -321,6 +337,78 @@ func Advance(storedPresent bool, stored uint64, incomingPresent bool, incoming u
 func BackoffMillis(baseMillis uint64, capMillis uint64, attempt uint64, entropy uint64) uint64 {
 	nativeValue := native.BackoffMillis(baseMillis, capMillis, attempt, entropy)
 	return nativeValue
+}
+
+// BatchActionNames calls the shared kernel.
+func BatchActionNames() []string {
+	nativeValue := native.BatchActionNames()
+	return nativeValue
+}
+
+// BatchAdmit calls the shared kernel.
+func BatchAdmit(usedRecords uint64, usedBytes uint64, records uint64, bytes uint64, config string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("config", config); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchAdmit(usedRecords, usedBytes, records, bytes, config)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// BatchConfig calls the shared kernel.
+func BatchConfig(config string) (string, error) {
+	var zero string
+	if err := checkNativeString("config", config); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchConfig(config)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// BatchCut calls the shared kernel.
+func BatchCut(records uint64, bytes uint64, ageMs uint64, config string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("config", config); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchCut(records, bytes, ageMs, config)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// BatchFailureKindNames calls the shared kernel.
+func BatchFailureKindNames() []string {
+	nativeValue := native.BatchFailureKindNames()
+	return nativeValue
+}
+
+// BatchRecover calls the shared kernel.
+func BatchRecover(kind string, attempt uint32, count uint64, maxAttempts uint32) (string, error) {
+	var zero string
+	if err := checkNativeString("kind", kind); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchRecover(kind, attempt, count, maxAttempts)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// BatchRecoverWithRejections calls the shared kernel.
+func BatchRecoverWithRejections(kind string, attempt uint32, count uint64, maxAttempts uint32, rejected bool) (string, error) {
+	var zero string
+	if err := checkNativeString("kind", kind); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchRecoverWithRejections(kind, attempt, count, maxAttempts, rejected)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// BatchReserve calls the shared kernel.
+func BatchReserve(config string) (uint64, error) {
+	var zero uint64
+	if err := checkNativeString("config", config); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.BatchReserve(config)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // CanonicalDecimal calls the shared kernel.
@@ -740,6 +828,111 @@ func IdempotencyStates() []string {
 	return nativeValue
 }
 
+// IngestBindContract calls the shared kernel.
+func IngestBindContract(previous string, expected string) error {
+	if err := checkNativeString("previous", previous); err != nil {
+		return err
+	}
+	if err := checkNativeString("expected", expected); err != nil {
+		return err
+	}
+	return mapNativeError(native.IngestBindContract(previous, expected))
+}
+
+// IngestKey calls the shared kernel.
+func IngestKey(target string, parts string) (string, error) {
+	var zero string
+	if err := checkNativeString("target", target); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("parts", parts); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestKey(target, parts)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestModeNames calls the shared kernel.
+func IngestModeNames() []string {
+	nativeValue := native.IngestModeNames()
+	return nativeValue
+}
+
+// IngestOutcomeNames calls the shared kernel.
+func IngestOutcomeNames() []string {
+	nativeValue := native.IngestOutcomeNames()
+	return nativeValue
+}
+
+// IngestPlan calls the shared kernel.
+func IngestPlan(mode string, inputs string, stored string, rejected string) (string, error) {
+	var zero string
+	if err := checkNativeString("mode", mode); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("stored", stored); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("rejected", rejected); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestPlan(mode, inputs, stored, rejected)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestPrefix calls the shared kernel.
+func IngestPrefix(target string) (string, error) {
+	var zero string
+	if err := checkNativeString("target", target); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestPrefix(target)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestRowKey calls the shared kernel.
+func IngestRowKey(manifest string, identity string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("identity", identity); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestRowKey(manifest, identity)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestSourceKey calls the shared kernel.
+func IngestSourceKey(target string, incarnation string, topic string, partition int32, offset int64) (string, error) {
+	var zero string
+	if err := checkNativeString("target", target); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("incarnation", incarnation); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("topic", topic); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestSourceKey(target, incarnation, topic, partition, offset)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestValidateInputs calls the shared kernel.
+func IngestValidateInputs(manifest string, inputs string) error {
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return err
+	}
+	return mapNativeError(native.IngestValidateInputs(manifest, inputs))
+}
+
 // IsStale calls the shared kernel.
 func IsStale(storedPresent bool, stored uint64, incomingPresent bool, incoming uint64) bool {
 	nativeValue := native.IsStale(storedPresent, stored, incomingPresent, incoming)
@@ -864,6 +1057,42 @@ func KafkaEventRecord(tenancy string, message EventMessage, value []byte, conten
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// KafkaIngestionRaw calls the shared kernel.
+func KafkaIngestionRaw(record KafkaRecord, source string, limit uint64) (string, error) {
+	var zero string
+	if err := checkNativeString("source", source); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.KafkaIngestionRaw(normalizeNative(record), source, limit)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// KafkaIngestionRecord calls the shared kernel.
+func KafkaIngestionRecord(raw string) (*KafkaRecord, error) {
+	var zero *KafkaRecord
+	if err := checkNativeString("raw", raw); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.KafkaIngestionRecord(raw)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// KafkaIngestionRejectionRecord calls the shared kernel.
+func KafkaIngestionRejectionRecord(raw string, source string) (*KafkaRecord, error) {
+	var zero *KafkaRecord
+	if err := checkNativeString("raw", raw); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("source", source); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.KafkaIngestionRejectionRecord(raw, source)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // KafkaPartitionFor calls the shared kernel.
 func KafkaPartitionFor(key []byte, partitions uint32) (uint32, error) {
 	nativeValue, nativeError := native.KafkaPartitionFor(normalizeNative(key), partitions)
@@ -930,6 +1159,12 @@ func GetMemoryBroker(partitions uint32, tenancy string) (*MemoryBroker, error) {
 	}
 	nativeValue, nativeError := native.GetMemoryBroker(partitions, tenancy)
 	return wrapMemoryBroker(nativeValue), mapNativeError(nativeError)
+}
+
+// GetMemoryIngestion calls the shared kernel.
+func GetMemoryIngestion() *MemoryIngestion {
+	nativeValue := native.GetMemoryIngestion()
+	return wrapMemoryIngestion(nativeValue)
 }
 
 // GetMemoryTransactor calls the shared kernel.
@@ -1282,6 +1517,28 @@ func PostgresForgetWrite(key string, row *string) (bool, error) {
 		}
 	}
 	nativeValue, nativeError := native.PostgresForgetWrite(key, row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresIngestRecovery calls the shared kernel.
+func PostgresIngestRecovery(rolledBack bool, sqlstate *string) (string, error) {
+	var zero string
+	if sqlstate != nil {
+		if err := checkNativeString("sqlstate", *sqlstate); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue := native.PostgresIngestRecovery(rolledBack, sqlstate)
+	return nativeValue, nil
+}
+
+// PostgresIngestStatements calls the shared kernel.
+func PostgresIngestStatements(config string) (string, error) {
+	var zero string
+	if err := checkNativeString("config", config); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresIngestStatements(config)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2749,6 +3006,86 @@ func (h *MemoryIdempotencyStore) PutRaw(key string, recordJSON string) error {
 	return mapNativeError(h.inner.PutRaw(key, recordJSON))
 }
 
+// Commit calls the shared kernel.
+func (h *MemoryIngestion) Commit(manifest string, inputs string) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Commit(manifest, inputs)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Get calls the shared kernel.
+func (h *MemoryIngestion) Get(key string) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Get(key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Pending calls the shared kernel.
+func (h *MemoryIngestion) Pending(prefix string, limit uint32) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("prefix", prefix); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Pending(prefix, limit)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Published calls the shared kernel.
+func (h *MemoryIngestion) Published(source string, fingerprint string) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("source", source); err != nil {
+		return err
+	}
+	if err := checkNativeString("fingerprint", fingerprint); err != nil {
+		return err
+	}
+	return mapNativeError(h.inner.Published(source, fingerprint))
+}
+
 // Get calls the shared kernel.
 func (h *MemoryProjectionStore) Get(tx int64, projection string, id string) (*ProjectionRow, error) {
 	var zero *ProjectionRow
@@ -3237,6 +3574,24 @@ func (h *OffsetTracker) Committed(topic string, partition int32, offset int64) e
 	return nil
 }
 
+// CommittedGeneration calls the shared kernel.
+func (h *OffsetTracker) CommittedGeneration(topic string, partition int32, offset int64, generation int64) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("OffsetTracker")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("OffsetTracker")
+	}
+	if err := checkNativeString("topic", topic); err != nil {
+		return err
+	}
+	h.inner.CommittedGeneration(topic, partition, offset, generation)
+	return nil
+}
+
 // Nack calls the shared kernel.
 func (h *OffsetTracker) Nack(token int64) (*NackDecision, error) {
 	var zero *NackDecision
@@ -3523,6 +3878,15 @@ func wrapMemoryIdempotencyStore(value *native.MemoryIdempotencyStore) *MemoryIde
 	state := &nativeState[*native.MemoryIdempotencyStore]{inner: value}
 	handle := &MemoryIdempotencyStore{nativeState: state}
 	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryIdempotencyStore]).close, state)
+	return handle
+}
+func wrapMemoryIngestion(value *native.MemoryIngestion) *MemoryIngestion {
+	if value == nil {
+		return nil
+	}
+	state := &nativeState[*native.MemoryIngestion]{inner: value}
+	handle := &MemoryIngestion{nativeState: state}
+	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryIngestion]).close, state)
 	return handle
 }
 func wrapMemoryProjectionStore(value *native.MemoryProjectionStore) *MemoryProjectionStore {
