@@ -911,7 +911,8 @@ async def test_a_nack_keeps_per_key_order_so_the_staleness_guard_loses_nothing(s
 
     assert applied == [1, 2], "seq 1 was lost or applied after seq 2"
     assert runs == [1, 1, 2], "the stale seq 2 copy ran ahead of the redelivered seq 1"
-    assert [d[1] for d in observer.deliveries] == ["nack", "retired", "ack", "ack"]
+    # The consumer can now discard the retired fetch before it reaches the dispatcher.
+    assert [d[1] for d in observer.deliveries if d[1] != "retired"] == ["nack", "ack", "ack"]
     assert slept == [0]
     assert client.settled()
 
@@ -968,7 +969,9 @@ async def test_a_poison_message_with_a_failing_sink_backs_off_every_retry(slept:
     await _drive(consumer, dispatcher, lambda: calls >= 5)
 
     assert calls >= 5
-    assert len(client.seeks) == len(slept) and len(slept) >= 4, "a nack without its backoff wait"
+    # Shutdown may rewind one booked fetch that never reached the dispatcher. It starts no retry.
+    assert len(slept) >= 4 and len(slept) <= len(client.seeks) <= len(slept) + 1
+    assert all(row.live == 0 for row in consumer.stats().values())
     assert slept == list(range(len(slept))), "the step grows with every failed try of one poison id"
     assert client.commits == []
 
@@ -1473,10 +1476,10 @@ def test_a_client_without_aiokafka_errors_is_never_stopped(monkeypatch: pytest.M
     its own errors, none of which means end of stream."""
     import sys
 
-    from edax.backend import kafka as kafka_module
+    from edax.backend import _kafka as kafka_module
 
     monkeypatch.setitem(sys.modules, "aiokafka.errors", None)
-    assert kafka_module._consumer_stopped(ConnectionError("x")) is False
+    assert kafka_module.consumer_stopped(ConnectionError("x")) is False
 
 
 # =========================================================================
