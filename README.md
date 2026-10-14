@@ -140,7 +140,7 @@ cover commands through fault injection. Each example checks its results. Continu
 
 ## Documentation
 
-Start at [`docs/README.md`](docs/README.md). The four entry pages:
+Start at [`docs/README.md`](docs/README.md). Entry pages:
 
 - [Getting started](docs/guides/getting-started.md) — install the toolchain, build the native
   module, run both test suites.
@@ -151,19 +151,21 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 - [Backends](docs/backends/README.md) — the seam contracts, and the memory, Postgres, Redis and Kafka
   implementations. The `edax-kafka` kernel owns a Kafka record, its header, its partition and the
   offset watermark that settles it. The adapter only makes the client calls.
+- [Microbatch ingestion](docs/backends/ingestion.md) — Python Kafka append/upsert ingestion, atomic
+  Postgres sinks, durable rejection delivery and bounded admission.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `crates/edax-core` | shared primitives: `names`, `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`, `error` (the taxonomy); and two Rust-only runtime helpers, `lock` and `TokenMint`. [Scope](docs/kernels/core.md) |
-| `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`. [Scope](docs/kernels/event.md) |
-| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash_json`, `command_hash`, `received_key`, `claim_key`, `complete_fence`, `release_fence`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`. [Scope](docs/kernels/cqrs.md) |
+| `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `batch` (ingestion limits and recovery). [Scope](docs/kernels/event.md) |
+| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash_json`, `command_hash`, `received_key`, `claim_key`, `complete_fence`, `release_fence`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`, `ingest` (append/upsert identity, conflicts and compaction). [Scope](docs/kernels/cqrs.md) |
 | `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
-| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups; `ingest` is the atomic ingestion reference sink |
 | `crates/edax-kafka` | Kafka kernel: `record` (key, header, route, dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`). [Scope](docs/kernels/kafka.md) |
 | `crates/edax-redis` | Redis kernel: `ledger` (the idempotency ledger's key, settings, value layout, claim handle, reply outcomes), `scripts` (the five fence scripts, the reply verdict). [Scope](docs/kernels/redis.md) |
-| `crates/edax-postgres` | Postgres kernel: `config`, `error` (the SQLSTATE verdict), `schema` (the table contract and its catalog check), `statements`, `rows` (the row layout), `documents` (exact number text), `query` (the query compiled to SQL), `ledger` (the fence). [Scope](docs/kernels/postgres.md) |
+| `crates/edax-postgres` | Postgres kernel: `config`, `error` (the SQLSTATE verdict), `schema` (the table contract and its catalog check), `statements`, `rows` (the row layout), `documents` (exact number text), `query` (the query compiled to SQL), `ledger` (the fence), `ingest` (optional ingestion schema, statements and recovery). [Scope](docs/kernels/postgres.md) |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source both native bindings are generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |

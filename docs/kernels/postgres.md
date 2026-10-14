@@ -18,6 +18,7 @@ is one JSON text column. Each SDK ships only the client calls around it.
 | `rows` | the parameters each statement binds, the statement a call chooses, and the values each read decodes | `postgres_rows.json` |
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
+| `ingest` | optional ingestion table contracts, ordered advisory locks, atomic state/rejection writes and rollback-aware recovery | `postgres_ingest.json` |
 | `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,

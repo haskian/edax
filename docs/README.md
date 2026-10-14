@@ -41,8 +41,8 @@ flowchart LR
 | [Kernels overview](kernels/README.md) | what the kernels own, and what they are forbidden to do |
 | [edax-core](kernels/core.md) | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
-| [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
-| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
+| [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `batch` |
+| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `ingest` |
 | [edax-kafka](kernels/kafka.md) | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | [edax-redis](kernels/redis.md) | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | [Golden vectors](kernels/golden-vectors.md) | the cross-language contract, and when regenerating is legitimate |
@@ -74,6 +74,7 @@ flowchart LR
 | [postgres](backends/postgres.md) | every durable seam on Postgres for Python: the table contract, the query in SQL, relays |
 | [redis](backends/redis.md) | a ledger that does not join your transaction, its two expiry clocks, and fencing |
 | [Go backends](backends/go.md) | Go memory, Redis and Kafka adapters and their client contracts |
+| [Microbatch ingestion](backends/ingestion.md) | bounded Kafka append/upsert ingestion, atomic sinks and durable rejection publication |
 | [kafka](backends/kafka.md) | the `Producer` and `Consumer` adapters, and what an ack must mean |
 
 ### Guides

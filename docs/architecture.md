@@ -17,8 +17,8 @@ flowchart TB
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, ledger, Decimal, Instant<br/>filter, query"]
-        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga"]
+        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, ledger, Decimal, Instant<br/>filter, query, ingest"]
+        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga, batch"]
         E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, names, error"]
     end
 
@@ -106,9 +106,9 @@ what each one owns.
 | Crate | What |
 |---|---|
 | `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
-| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
-| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
-| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by the Rust, Python and Go SDKs |
+| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `batch` |
+| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `ingest` |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, a partitioned broker log that carries events and commands, and `ingest` (the atomic ingestion reference sink), written once and shared by the Rust, Python and Go SDKs |
 | `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |

@@ -18,6 +18,7 @@ Python service and a Rust service cannot drift.
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `idempotency` | the key and hash an event's idempotency guard claims; the record it claims is `edax-cqrs`'s | `event_idempotency.json` |
 | `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot, and the refusal of one that leads its stream | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
+| `batch` | microbatch limits, admission, flush thresholds, retry ceilings and original-order bisection | `event_batch.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json`, `retry_step.json` |
 | `drain` | which rows an outbox relay's drain publishes, and what a failed row does to the rows behind it | `relay_drain.json` |
 | `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing), the command messages it sends, and the refusal of a write to a completed instance | `saga.json` |

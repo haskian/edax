@@ -27,6 +27,7 @@ and the two travel together because the query evaluates the filter.
 | `complete_fence` / `release_fence` | whether a claim owner may complete or release the record currently held by a ledger key |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
+| `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts and exact source coordinates (`ingest.json`) |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
 | `query` | ordering, keyset cursors and paging over the documents a filter selects, and the `document` rule every stored read-model document meets |
 

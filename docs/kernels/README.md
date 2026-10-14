@@ -24,11 +24,11 @@ flowchart LR
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
         CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · names · error<br/>Rust-only: lock · token"]
-        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga"]
-        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query"]
+        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga · batch"]
+        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query · ingest"]
         KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
         RED["edax-redis<br/>ledger · scripts"]
-        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger"]
+        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger · ingest"]
     end
 
     APP -->|"calls a seam"| RS
