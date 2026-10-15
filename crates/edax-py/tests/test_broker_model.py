@@ -35,13 +35,15 @@ op = st.one_of(
 
 
 async def _try_poll(consumer: Any) -> edax.Delivery | None:
-    """A poll that gives up when nothing is fetchable. Both brokers answer a fetchable message within a
-    couple of loop turns, and a parked poll is safe to cancel: nothing was booked."""
+    """Allow the fetch task and its coordinator to run before treating an idle poll as empty.
+    Cancellation of a completed but undelivered fetch must leave it available for redelivery."""
     task = asyncio.ensure_future(consumer.poll())
-    for _ in range(5):
+    for _ in range(20):
         if task.done():
             return task.result()
         await asyncio.sleep(0)
+    if task.done():
+        return task.result()
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
     return None

@@ -9,6 +9,10 @@ description = "Kafka protocol kernel of edax: record, broker partition, offset w
 [dependencies]
 edax-core.workspace = true
 edax-event.workspace = true
+serde.workspace = true
+serde_json = "1"
+base64 = "0.22"
+sha2 = "0.10"
 
 [dev-dependencies]
 edax-event = { workspace = true, features = ["testkit"] }

@@ -133,14 +133,16 @@ different command and the guard raises `PayloadMismatch`. The guard claims the k
 mismatch, so a Rust service that shares the store reaches the same verdict. A retry re-runs a whole
 unit of work, never a handler inside one, so `retry` goes outside a guard given `unit_of_work`.
 
-Python and Go each have nineteen examples in the same learning order. The
+Python and Go each have twenty-one examples in the same learning order. The
 [Python examples](examples/py/README.md) and [Go examples](crates/edax-go/examples/README.md)
-cover commands through fault injection. Each example checks its results. Continuous integration
+cover commands, projections, ingestion and folds. Examples 20 and 21 use public Python stores;
+their Go counterparts exercise internal kernels because Go runners and database adapters for those
+features do not ship. Each example checks its results. Continuous integration
 (CI) smoke-tests both sets, including Redis and Kafka against real services.
 
 ## Documentation
 
-Start at [`docs/README.md`](docs/README.md). The four entry pages:
+Start at [`docs/README.md`](docs/README.md). Entry pages:
 
 - [Getting started](docs/guides/getting-started.md) — install the toolchain, build the native
   module, run both test suites.
@@ -151,26 +153,30 @@ Start at [`docs/README.md`](docs/README.md). The four entry pages:
 - [Backends](docs/backends/README.md) — the seam contracts, and the memory, Postgres, Redis and Kafka
   implementations. The `edax-kafka` kernel owns a Kafka record, its header, its partition and the
   offset watermark that settles it. The adapter only makes the client calls.
+- [Microbatch ingestion](docs/backends/ingestion.md) — Python Kafka append/upsert ingestion, atomic
+  Postgres sinks, durable rejection delivery and bounded admission.
+- [Ordered folds](docs/backends/folds.md) — delta reducers, fenced database checkpoints, outbox
+  delivery, generation cutovers and offline restore.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `crates/edax-core` | shared primitives: `names`, `hash`, `key` (tenancy, guard key), `backoff`, `clock`, `guid`, `version`, `error` (the taxonomy); and two Rust-only runtime helpers, `lock` and `TokenMint`. [Scope](docs/kernels/core.md) |
-| `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`. [Scope](docs/kernels/event.md) |
-| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash_json`, `command_hash`, `received_key`, `claim_key`, `complete_fence`, `release_fence`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`. [Scope](docs/kernels/cqrs.md) |
+| `crates/edax-event` | event-driven kernel: `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition` (local fan-out), `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `batch` (ingestion limits and recovery). [Scope](docs/kernels/event.md) |
+| `crates/edax-cqrs` | command-and-query kernel: `canonical_json` (RFC 8785), `payload_hash_json`, `command_hash`, `received_key`, `claim_key`, `complete_fence`, `release_fence`, the idempotency `record`, the host values `Decimal` and `Instant`, `filter`, `query`, `ingest` (append/upsert identity, conflicts and compaction), `fold` (ordered deltas, receipts, checkpoints, fences and effect activation). [Scope](docs/kernels/cqrs.md) |
 | `crates/edax` | the Rust reference model (`publish = false`): the SDK orchestration in a second language, held to the same kernels and golden vectors; not a deployable SDK |
-| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups |
+| `crates/edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log with consumer groups; `ingest` is the atomic ingestion reference sink |
 | `crates/edax-kafka` | Kafka kernel: `record` (key, header, route, dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `broker_error`). [Scope](docs/kernels/kafka.md) |
 | `crates/edax-redis` | Redis kernel: `ledger` (the idempotency ledger's key, settings, value layout, claim handle, reply outcomes), `scripts` (the five fence scripts, the reply verdict). [Scope](docs/kernels/redis.md) |
-| `crates/edax-postgres` | Postgres kernel: `config`, `error` (the SQLSTATE verdict), `schema` (the table contract and its catalog check), `statements`, `rows` (the row layout), `documents` (exact number text), `query` (the query compiled to SQL), `ledger` (the fence). [Scope](docs/kernels/postgres.md) |
+| `crates/edax-postgres` | Postgres kernel: `config`, `error` (the SQLSTATE verdict), `schema` (the table contract and its catalog check), `statements`, `rows` (the row layout), `documents` (exact number text), `query` (the query compiled to SQL), `ledger` (the fence), `ingest` (optional ingestion schema, statements and recovery), `fold` (atomic fold storage and effect suppression). [Scope](docs/kernels/postgres.md) |
 | `crates/edax-abi` | flat Rust surface over the kernels, and the source both native bindings are generated from |
 | `crates/edax-golden` | test-only golden-vector harness: every kernel's `tests/golden.rs` writes and checks through it |
 | `crates/edax-py` | Python SDK (`python/edax`); the native extension `src/lib.rs` is generated, not hand-written |
 | `crates/edax-abi-ffi` | Alef-generated C interface used by Go; no independent consistency logic |
 | `crates/edax-go` | Go SDK, with generated native calls under `internal/native` |
-| `examples/py` | nineteen Python examples in learning order; start at its [README](examples/py/README.md) |
-| `crates/edax-go/examples` | the same nineteen topics in Go; start at its [README](crates/edax-go/examples/README.md) |
+| `examples/py` | twenty-one Python examples in learning order; start at its [README](examples/py/README.md) |
+| `crates/edax-go/examples` | the same twenty-one topics in Go; start at its [README](crates/edax-go/examples/README.md) |
 | `docs` | the full documentation set. Start at [`docs/README.md`](docs/README.md) |
 | `testdata/golden` | cross-language consistency vectors |
 

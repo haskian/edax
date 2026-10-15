@@ -32,6 +32,7 @@ edax\._edax\.MemoryBroker
 edax\._edax\.MemoryCommandOutbox
 edax\._edax\.MemoryEventStore
 edax\._edax\.MemoryIdempotencyStore
+edax\._edax\.MemoryIngestion
 edax\._edax\.MemoryProjectionStore
 edax\._edax\.MemorySagaStore
 edax\._edax\.MemoryTransactor

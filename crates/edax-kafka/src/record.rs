@@ -292,3 +292,141 @@ pub fn dead_letter_source(headers: &[KafkaHeader]) -> Option<DeadLetterSource> {
 pub fn poison_id(topic: &str, partition: i32, offset: i64) -> String {
     format!("{topic}/{partition}/{offset}")
 }
+
+/// Durable source representation for ingestion. Oversized records omit bytes but keep their
+/// digest and coordinates. The digest is independent of the configured retention limit.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IngestionRaw {
+    /// Source topic.
+    pub topic: String,
+    /// Source partition.
+    pub partition: i32,
+    /// Source offset, encoded without the canonical JSON integer restriction.
+    pub offset: i64,
+    /// Base64 original key, empty for a stub.
+    pub key: String,
+    /// Base64 original value, empty for a stub.
+    pub value: String,
+    /// Ordered headers with base64 values, empty for a stub.
+    pub headers: Vec<(String, String)>,
+    /// Source timestamp, when supplied by the client.
+    pub timestamp: Option<i64>,
+    /// Source timestamp kind, when supplied by the client.
+    pub timestamp_type: Option<i32>,
+    /// Whether the original bytes were dropped.
+    pub oversized: bool,
+    /// SHA-256 of framed original bytes and metadata, before any truncation.
+    pub sha256: String,
+}
+
+impl IngestionRaw {
+    /// Decode the original bytes (empty for a stub) for rejection publication.
+    pub fn record(&self) -> Result<KafkaRecord, Error> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        Ok(KafkaRecord {
+            key: STANDARD.decode(&self.key).map_err(Error::codec)?,
+            value: STANDARD.decode(&self.value).map_err(Error::codec)?,
+            headers: self
+                .headers
+                .iter()
+                .map(|(key, value)| {
+                    Ok(KafkaHeader {
+                        key: key.clone(),
+                        value: STANDARD.decode(value).map_err(Error::codec)?,
+                    })
+                })
+                .collect::<Result<_, Error>>()?,
+        })
+    }
+}
+
+/// Header containing the complete ingestion source key, including target and source incarnation.
+pub const INGEST_SOURCE: &str = "edax-ingest-source";
+/// Header containing the SHA-256 digest of the complete original source record.
+pub const INGEST_SHA256: &str = "edax-ingest-sha256";
+/// Header containing `true` when ingestion retained a provenance stub instead of the original bytes.
+pub const INGEST_OVERSIZED: &str = "edax-ingest-oversized";
+
+/// Restore a rejection with its immutable ingestion identity and retained-source provenance.
+/// Read the last occurrence of each header: original headers remain verbatim and cannot override
+/// the authoritative values appended here. Ordinary dead-letter publication and stub fallback
+/// preserve these headers, so destinations can deduplicate across source and target incarnations.
+pub fn ingestion_rejection_record(raw: &IngestionRaw, source: &str) -> Result<KafkaRecord, Error> {
+    let mut record = raw.record()?;
+    record.headers.extend([
+        KafkaHeader::new(INGEST_SOURCE, source.as_bytes()),
+        KafkaHeader::new(INGEST_SHA256, raw.sha256.as_bytes()),
+        KafkaHeader::new(INGEST_OVERSIZED, if raw.oversized { b"true" } else { b"false" }),
+    ]);
+    Ok(record)
+}
+
+/// Encode a durable original or a bounded stub. Null byte values are normalized by the adapter
+/// using the ordinary Kafka record rule. Metadata and ordered headers participate in identity.
+pub fn ingestion_raw(
+    record: &KafkaRecord,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+    timestamp: Option<i64>,
+    timestamp_type: Option<i32>,
+    limit: usize,
+) -> Result<IngestionRaw, Error> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"edax.kafka.ingestion/v1\0");
+    let metadata = serde_json::to_vec(&(topic, partition, offset, timestamp, timestamp_type)).map_err(Error::codec)?;
+    for data in [&metadata, &record.key, &record.value] {
+        digest.update((data.len() as u64).to_be_bytes());
+        digest.update(data);
+    }
+    for header in &record.headers {
+        for data in [header.key.as_bytes(), header.value.as_slice()] {
+            digest.update((data.len() as u64).to_be_bytes());
+            digest.update(data);
+        }
+    }
+    let mut raw = IngestionRaw {
+        topic: topic.to_owned(),
+        partition,
+        offset,
+        timestamp,
+        timestamp_type,
+        key: String::new(),
+        value: String::new(),
+        headers: Vec::new(),
+        oversized: true,
+        sha256: format!("{:x}", digest.finalize()),
+    };
+    let measured = record.headers.iter().fold(
+        topic
+            .len()
+            .saturating_add(128)
+            .saturating_add(record.key.len())
+            .saturating_add(record.value.len()),
+        |size, h| {
+            size.saturating_add(h.key.len())
+                .saturating_add(h.value.len())
+                // Seven bytes for ["",""] is a lower bound, even before the separator.
+                .saturating_add(7)
+        },
+    );
+    if measured <= limit {
+        raw.key = STANDARD.encode(&record.key);
+        raw.value = STANDARD.encode(&record.value);
+        raw.headers = record
+            .headers
+            .iter()
+            .map(|h| (h.key.clone(), STANDARD.encode(&h.value)))
+            .collect();
+        raw.oversized = false;
+        if serde_json::to_vec(&raw).map_err(Error::codec)?.len() > limit {
+            raw.key.clear();
+            raw.value.clear();
+            raw.headers.clear();
+            raw.oversized = true;
+        }
+    }
+    Ok(raw)
+}

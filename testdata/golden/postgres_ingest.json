@@ -1,0 +1,383 @@
+[
+  {
+    "config": "{}",
+    "error": null,
+    "name": "default",
+    "op": "statements",
+    "want": {
+      "check": "SELECT EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'public' AND t.relname = 'edax_ingest_events' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'public' AND t.relname = 'edax_ingest_state' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'public' AND t.relname = 'edax_ingest_rejections' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AS compatible",
+      "ddl": "CREATE TABLE \"public\".\"edax_ingest_events\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"public\".\"edax_ingest_state\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"public\".\"edax_ingest_rejections\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE INDEX ON \"public\".\"edax_ingest_rejections\" (key) WHERE NOT (value->>'published')::boolean;\n",
+      "lock": "SELECT pg_catalog.pg_advisory_xact_lock(lock_id) FROM (SELECT DISTINCT pg_catalog.hashtextextended('edax_ingestion/v1:' || key, 0) AS lock_id FROM jsonb_array_elements_text($1::jsonb) AS keys(key)) AS locks ORDER BY lock_id",
+      "mark_published": "UPDATE \"public\".\"edax_ingest_rejections\" SET value = jsonb_set(value, '{published}', 'true'::jsonb) WHERE key = $1::text AND value->>'fingerprint' = $2::text AND starts_with(key, $3::text) RETURNING key",
+      "pending": "SELECT key, value::text AS value FROM \"public\".\"edax_ingest_rejections\" WHERE starts_with(key, $1::text) AND NOT (value->>'published')::boolean ORDER BY key LIMIT $2::text::bigint",
+      "pending_index": "CREATE INDEX ON \"public\".\"edax_ingest_rejections\" (key) WHERE NOT (value->>'published')::boolean;",
+      "read_events": "SELECT key, value::text AS value FROM \"public\".\"edax_ingest_events\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_events_metadata": "SELECT key, (value - 'value')::text AS value FROM \"public\".\"edax_ingest_events\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections": "SELECT key, value::text AS value FROM \"public\".\"edax_ingest_rejections\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections_for_plan": "SELECT saved.key, (CASE WHEN input.value->>'raw_fingerprint' IS NULL THEN saved.value ELSE jsonb_set(saved.value, '{raw}', input.value->'raw') END)::text AS value FROM \"public\".\"edax_ingest_rejections\" AS saved JOIN (SELECT DISTINCT ON (value->>'source') value FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS inputs(value, position) ORDER BY value->>'source', position) AS input ON saved.key = input.value->>'source' ORDER BY saved.key",
+      "read_state": "SELECT key, value::text AS value FROM \"public\".\"edax_ingest_state\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_state_metadata": "SELECT key, (value - 'value')::text AS value FROM \"public\".\"edax_ingest_state\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "write_events": "INSERT INTO \"public\".\"edax_ingest_events\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      "write_rejections": "INSERT INTO \"public\".\"edax_ingest_rejections\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO NOTHING",
+      "write_state": "INSERT INTO \"public\".\"edax_ingest_state\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    }
+  },
+  {
+    "config": "{\"schema\":\"billing\",\"names\":{\"ingest_events\":\"incoming\",\"ingest_state\":\"current_orders\",\"ingest_rejections\":\"rejected_orders\"}}",
+    "error": null,
+    "name": "custom_schema_and_names",
+    "op": "statements",
+    "want": {
+      "check": "SELECT EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'billing' AND t.relname = 'incoming' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'billing' AND t.relname = 'current_orders' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'billing' AND t.relname = 'rejected_orders' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AS compatible",
+      "ddl": "CREATE TABLE \"billing\".\"incoming\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"billing\".\"current_orders\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"billing\".\"rejected_orders\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE INDEX ON \"billing\".\"rejected_orders\" (key) WHERE NOT (value->>'published')::boolean;\n",
+      "lock": "SELECT pg_catalog.pg_advisory_xact_lock(lock_id) FROM (SELECT DISTINCT pg_catalog.hashtextextended('edax_ingestion/v1:' || key, 0) AS lock_id FROM jsonb_array_elements_text($1::jsonb) AS keys(key)) AS locks ORDER BY lock_id",
+      "mark_published": "UPDATE \"billing\".\"rejected_orders\" SET value = jsonb_set(value, '{published}', 'true'::jsonb) WHERE key = $1::text AND value->>'fingerprint' = $2::text AND starts_with(key, $3::text) RETURNING key",
+      "pending": "SELECT key, value::text AS value FROM \"billing\".\"rejected_orders\" WHERE starts_with(key, $1::text) AND NOT (value->>'published')::boolean ORDER BY key LIMIT $2::text::bigint",
+      "pending_index": "CREATE INDEX ON \"billing\".\"rejected_orders\" (key) WHERE NOT (value->>'published')::boolean;",
+      "read_events": "SELECT key, value::text AS value FROM \"billing\".\"incoming\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_events_metadata": "SELECT key, (value - 'value')::text AS value FROM \"billing\".\"incoming\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections": "SELECT key, value::text AS value FROM \"billing\".\"rejected_orders\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections_for_plan": "SELECT saved.key, (CASE WHEN input.value->>'raw_fingerprint' IS NULL THEN saved.value ELSE jsonb_set(saved.value, '{raw}', input.value->'raw') END)::text AS value FROM \"billing\".\"rejected_orders\" AS saved JOIN (SELECT DISTINCT ON (value->>'source') value FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS inputs(value, position) ORDER BY value->>'source', position) AS input ON saved.key = input.value->>'source' ORDER BY saved.key",
+      "read_state": "SELECT key, value::text AS value FROM \"billing\".\"current_orders\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_state_metadata": "SELECT key, (value - 'value')::text AS value FROM \"billing\".\"current_orders\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "write_events": "INSERT INTO \"billing\".\"incoming\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      "write_rejections": "INSERT INTO \"billing\".\"rejected_orders\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO NOTHING",
+      "write_state": "INSERT INTO \"billing\".\"current_orders\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    }
+  },
+  {
+    "config": "{\"schema\":\"sales\",\"names\":{\"ingest_state\":\"current_orders\"}}",
+    "error": null,
+    "name": "partial_names",
+    "op": "statements",
+    "want": {
+      "check": "SELECT EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'sales' AND t.relname = 'edax_ingest_events' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'sales' AND t.relname = 'current_orders' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AND EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'sales' AND t.relname = 'edax_ingest_rejections' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AS compatible",
+      "ddl": "CREATE TABLE \"sales\".\"edax_ingest_events\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"sales\".\"current_orders\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE TABLE \"sales\".\"edax_ingest_rejections\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE INDEX ON \"sales\".\"edax_ingest_rejections\" (key) WHERE NOT (value->>'published')::boolean;\n",
+      "lock": "SELECT pg_catalog.pg_advisory_xact_lock(lock_id) FROM (SELECT DISTINCT pg_catalog.hashtextextended('edax_ingestion/v1:' || key, 0) AS lock_id FROM jsonb_array_elements_text($1::jsonb) AS keys(key)) AS locks ORDER BY lock_id",
+      "mark_published": "UPDATE \"sales\".\"edax_ingest_rejections\" SET value = jsonb_set(value, '{published}', 'true'::jsonb) WHERE key = $1::text AND value->>'fingerprint' = $2::text AND starts_with(key, $3::text) RETURNING key",
+      "pending": "SELECT key, value::text AS value FROM \"sales\".\"edax_ingest_rejections\" WHERE starts_with(key, $1::text) AND NOT (value->>'published')::boolean ORDER BY key LIMIT $2::text::bigint",
+      "pending_index": "CREATE INDEX ON \"sales\".\"edax_ingest_rejections\" (key) WHERE NOT (value->>'published')::boolean;",
+      "read_events": "SELECT key, value::text AS value FROM \"sales\".\"edax_ingest_events\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_events_metadata": "SELECT key, (value - 'value')::text AS value FROM \"sales\".\"edax_ingest_events\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections": "SELECT key, value::text AS value FROM \"sales\".\"edax_ingest_rejections\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_rejections_for_plan": "SELECT saved.key, (CASE WHEN input.value->>'raw_fingerprint' IS NULL THEN saved.value ELSE jsonb_set(saved.value, '{raw}', input.value->'raw') END)::text AS value FROM \"sales\".\"edax_ingest_rejections\" AS saved JOIN (SELECT DISTINCT ON (value->>'source') value FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS inputs(value, position) ORDER BY value->>'source', position) AS input ON saved.key = input.value->>'source' ORDER BY saved.key",
+      "read_state": "SELECT key, value::text AS value FROM \"sales\".\"current_orders\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "read_state_metadata": "SELECT key, (value - 'value')::text AS value FROM \"sales\".\"current_orders\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "write_events": "INSERT INTO \"sales\".\"edax_ingest_events\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+      "write_rejections": "INSERT INTO \"sales\".\"edax_ingest_rejections\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO NOTHING",
+      "write_state": "INSERT INTO \"sales\".\"current_orders\" AS target (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    }
+  },
+  {
+    "config": "{",
+    "error": "bad_handle: postgres ingestion config: EOF while parsing an object at line 1 column 1",
+    "name": "malformed_json",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"schema\":\"Public\"}",
+    "error": "bad_handle: postgres schema \"Public\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "schema_uppercase",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"schema\":\"public'; DROP TABLE events; --\"}",
+    "error": "bad_handle: postgres schema \"public'; DROP TABLE events; --\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "schema_injection",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"names\":{\"ingest_events\":\"events\\\"\"}}",
+    "error": "bad_handle: postgres table name \"events\\\"\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "table_quote",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"names\":{\"ingest_events\":\"incoming-events\"}}",
+    "error": "bad_handle: postgres table name \"incoming-events\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "table_dash",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"names\":{\"ingest_events\":\"shared\",\"ingest_state\":\"shared\"}}",
+    "error": "bad_handle: postgres tables events and snapshots are both named \"shared\"",
+    "name": "shared_name",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"names\":{\"events\":\"incoming\"}}",
+    "error": "bad_handle: unknown postgres ingestion role: events",
+    "name": "unknown_role",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "config": "{\"prefix\":\"my_\"}",
+    "error": "bad_handle: postgres ingestion config: unknown field `prefix`, expected `schema` or `names` at line 1 column 9",
+    "name": "unknown_field",
+    "op": "statements",
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "connection_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "08006",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "connection_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "08006",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "data_range_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "22003",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "data_range_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "22003",
+    "want": "isolate"
+  },
+  {
+    "error": null,
+    "name": "constraint_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "23514",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "constraint_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "23514",
+    "want": "isolate"
+  },
+  {
+    "error": null,
+    "name": "unique_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "23505",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "unique_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "23505",
+    "want": "isolate"
+  },
+  {
+    "error": null,
+    "name": "missing_table_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "42P01",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "missing_table_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "42P01",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "authorization_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "28P01",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "authorization_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "28P01",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "missing_database_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "3D000",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "missing_database_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "3D000",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "missing_schema_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "3F000",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "missing_schema_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "3F000",
+    "want": "fatal"
+  },
+  {
+    "error": null,
+    "name": "serialization_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "40001",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "serialization_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "40001",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "deadlock_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "40P01",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "deadlock_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "40P01",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "resource_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "53000",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "resource_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "53000",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "program_limit_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "54000",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "program_limit_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "54000",
+    "want": "isolate"
+  },
+  {
+    "error": null,
+    "name": "timeout_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "57014",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "timeout_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "57014",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "unknown_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "XX000",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "unknown_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "XX000",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "empty_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": "",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "empty_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": "",
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "missing_uncertain",
+    "op": "recovery",
+    "rolled_back": false,
+    "sqlstate": null,
+    "want": "retry"
+  },
+  {
+    "error": null,
+    "name": "missing_rolled_back",
+    "op": "recovery",
+    "rolled_back": true,
+    "sqlstate": null,
+    "want": "retry"
+  }
+]

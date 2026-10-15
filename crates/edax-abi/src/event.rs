@@ -435,6 +435,72 @@ pub fn own_command(command: CommandMessage, tenant: Option<String>) -> Result<Co
         .map_err(to_wire)
 }
 
+/// Every microbatch failure classification, in the kernel's order.
+pub fn batch_failure_kind_names() -> Vec<String> {
+    names(edax_event::batch::FailureKind::NAMES)
+}
+
+/// Every microbatch recovery action, in the kernel's order.
+pub fn batch_action_names() -> Vec<String> {
+    names(edax_event::batch::Action::NAMES)
+}
+
+/// Validate and resolve the microbatch limits, including omitted defaults.
+pub fn batch_config(config: &str) -> Result<String, String> {
+    let config: edax_event::batch::Config = crate::read_json(config)?;
+    edax_event::batch::check(&config).map_err(crate::to_wire)?;
+    crate::write_json(&config)
+}
+
+/// Serialization headroom for fetching and preparing one original.
+pub fn batch_reserve(config: &str) -> Result<u64, String> {
+    edax_event::batch::reserve(&crate::read_json(config)?)
+        .map(|n| n as u64)
+        .map_err(crate::to_wire)
+}
+
+/// Recovery with the already-rejected fact supplied by the runner.
+pub fn batch_recover_with_rejections(
+    kind: &str,
+    attempt: u32,
+    count: u64,
+    max_attempts: u32,
+    rejected: bool,
+) -> Result<String, String> {
+    crate::write_json(
+        &edax_event::batch::recover_with_rejections(kind, attempt, count as usize, max_attempts, rejected)
+            .map_err(crate::to_wire)?,
+    )
+}
+
+/// Whether a batch has reached its record, byte, or age flush threshold.
+pub fn batch_cut(records: u64, bytes: u64, age_ms: u64, config: &str) -> Result<bool, String> {
+    let config = crate::read_json(config)?;
+    Ok(edax_event::batch::cut(
+        records as usize,
+        bytes as usize,
+        age_ms,
+        &config,
+    ))
+}
+
+/// Whether the requested retained data fits all admission caps.
+pub fn batch_admit(used_records: u64, used_bytes: u64, records: u64, bytes: u64, config: &str) -> Result<bool, String> {
+    let config = crate::read_json(config)?;
+    Ok(edax_event::batch::admit(
+        used_records as usize,
+        used_bytes as usize,
+        records as usize,
+        bytes as usize,
+        &config,
+    ))
+}
+
+/// The recovery action after a classified batch failure. Infrastructure never dead-letters.
+pub fn batch_recover(kind: &str, attempt: u32, count: u64, max_attempts: u32) -> Result<String, String> {
+    crate::write_json(&edax_event::batch::recover(kind, attempt, count as usize, max_attempts).map_err(crate::to_wire)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

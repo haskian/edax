@@ -2,8 +2,9 @@
 
 The software development kits (SDKs) connect kernel decisions to persistence and transport.
 Their seams (`Protocol` in Python and traits in Rust) let you supply database and broker adapters.
-Python and Go provide memory, Redis-ledger and Kafka adapters. See the [Go API map](go.md). You supply durable event,
-projection and saga stores.
+Python and Go provide memory, Redis-ledger and Kafka adapters. Python also provides PostgreSQL
+stores; Go requires host adapters for durable event, projection and saga storage. See the
+[Go API map](go.md).
 
 The pages below use Python method names and compare the Rust reference model where its behavior
 differs. The [Go guide](go.md) maps those contracts to Go interfaces and explains its context and
@@ -24,6 +25,10 @@ flowchart LR
     DISP --> RT["EventRouter<br/>idempotent_by_id"]
     RT --> EH["your event handler"]
     EH --> PS["ProjectionStore<br/>save: compare-and-set"]
+    BR --> ING["KafkaIngestion: append or full-state upsert"]
+    ING --> BS["BatchSink: state and rejection records"]
+    BR --> FOLD["KafkaFold: ordered delta reducer"]
+    FOLD --> FS["FoldStore: state, receipts, intents and checkpoint"]
     RT --> SAGA["SagaRunner"]
     SAGA -->|"stages commands with its state"| SO["saga outbox"]
     SO --> REL
@@ -43,12 +48,16 @@ duplicates within their retention window; version checks reject conflicting writ
 | `IdempotencyStore` | `idempotent` and `idempotent_by_id`; in Rust also `idempotent_in` and `idempotent_by_id_in` | [idempotency](idempotency.md) |
 | `Transactor` | `transaction` and `current_tx`; in Rust `transaction` and `retry_transaction` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
+| `BatchSink` (Python) | `KafkaIngestion` batches append/upsert writes and durable rejections; `RejectionPublisher` delivers pending rejections | [ingestion](../backends/ingestion.md) |
+| `FoldStore` / `FoldSession` (Python) | `KafkaFold` applies a reducer and checkpoints atomically; `FoldOutbox` delivers effect intents | [folds](../backends/folds.md) |
 | `SagaStore` | `SagaRunner` correlates, folds, emits commands, persists at the loaded version | [sagas](sagas.md) |
 | `Producer`, `Consumer` | `KeyOrderedDispatcher` fans deliveries to workers by partition; `EventRouter` routes by event name | [consuming](consuming.md) |
 | — | `CommandBus` and its middleware chain | [commands](commands.md) |
 | — | the error taxonomy every retry and dead-letter path branches on | [errors](errors.md) |
 
-Backends live under `edax.backend`, one module per technology, over a client you own. The base
+Backends live under `edax.backend`, with separate ingestion and fold adapters for Kafka and PostgreSQL.
+`edax.ingestion` and `edax.fold` define their contracts; the Rust kernels own consistency decisions.
+The [architecture map](../architecture.md) lists each module's responsibility. The base
 package pulls in no broker or database library. See [backends](../backends/README.md).
 
 ## Seams as a class diagram
@@ -122,4 +131,4 @@ promises: [delivery guarantees](../guides/delivery-guarantees.md).
 
 - [Architecture](../architecture.md) — why the kernel and SDK boundary sits where it does.
 - [Backends](../backends/README.md) — the seam contracts, and writing your own.
-- [Python examples](../../examples/py/README.md) and [Go examples](../../crates/edax-go/examples/README.md) — nineteen topics in the same learning order.
+- [Python examples](../../examples/py/README.md) and [Go examples](../../crates/edax-go/examples/README.md) — twenty-one topics in the same learning order.

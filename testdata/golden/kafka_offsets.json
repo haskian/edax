@@ -877,6 +877,362 @@
     ]
   },
   {
+    "name": "a_delayed_commit_after_reset_cannot_hide_the_new_generations_lower_watermark",
+    "steps": [
+      {
+        "offset": 100,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 0,
+        "want": {
+          "due": {
+            "offset": 101,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "reset",
+        "partition": 0,
+        "topic": "t",
+        "want": {}
+      },
+      {
+        "offset": 10,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 0,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 11,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 1,
+        "want": {
+          "due": {
+            "offset": 11,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 1,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 11,
+              "live": 0,
+              "max_delivered": 10,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_delayed_commit_after_revoke_cannot_hide_reassigned_progress",
+    "steps": [
+      {
+        "offset": 100,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 0,
+        "want": {
+          "due": {
+            "offset": 101,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "revoke",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "due": {
+            "offset": 101,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 0,
+        "want": {}
+      },
+      {
+        "offset": 10,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "op": "ack",
+        "token": 2,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 0,
+        "want": {}
+      },
+      {
+        "op": "capture_due",
+        "slot": 1,
+        "want": {
+          "due": {
+            "offset": 11,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 1,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 11,
+              "live": 0,
+              "max_delivered": 10,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "a_delayed_commit_after_nack_cannot_acknowledge_the_rewound_generation",
+    "steps": [
+      {
+        "offset": 10,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 1
+        }
+      },
+      {
+        "op": "ack",
+        "token": 1,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 0,
+        "want": {
+          "due": {
+            "offset": 11,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "offset": 11,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 2
+        }
+      },
+      {
+        "op": "nack",
+        "token": 2,
+        "want": {
+          "decision": "seek",
+          "offset": 11
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 0,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": [
+            {
+              "offset": 11,
+              "partition": 0,
+              "topic": "t"
+            }
+          ]
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 1,
+        "want": {
+          "due": {
+            "offset": 11,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 1,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "offset": 11,
+        "op": "book",
+        "partition": 0,
+        "topic": "t",
+        "want": {
+          "token": 3
+        }
+      },
+      {
+        "op": "ack",
+        "token": 3,
+        "want": {
+          "decision": "settled"
+        }
+      },
+      {
+        "op": "capture_due",
+        "slot": 2,
+        "want": {
+          "due": {
+            "offset": 12,
+            "partition": 0,
+            "topic": "t"
+          }
+        }
+      },
+      {
+        "op": "committed_generation",
+        "slot": 2,
+        "want": {}
+      },
+      {
+        "op": "due",
+        "want": {
+          "rows": []
+        }
+      },
+      {
+        "op": "stats",
+        "want": {
+          "rows": [
+            {
+              "committed": 12,
+              "live": 0,
+              "max_delivered": 11,
+              "partition": 0,
+              "topic": "t",
+              "unsettled": 0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
     "name": "a_revoke_hands_back_the_last_watermark_and_drops_the_partition",
     "steps": [
       {

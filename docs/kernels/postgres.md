@@ -18,6 +18,8 @@ is one JSON text column. Each SDK ships only the client calls around it.
 | `rows` | the parameters each statement binds, the statement a call chooses, and the values each read decodes | `postgres_rows.json` |
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
+| `fold` | optional fold table, generation locks, atomic writes, indexed pending delivery and permanent historical suppression | `postgres_fold.json` |
+| `ingest` | optional ingestion table contracts, ordered advisory locks, atomic state/rejection writes and rollback-aware recovery | `postgres_ingest.json` |
 | `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,
@@ -130,7 +132,9 @@ integer as the nearest `f64`. Two rules make the two agree.
   `exact_json` writes such a double as its exact digits and a `.0`: `58088200776852272.0`. `jsonb`
   keeps that value, and every reader reads it back as the same double.
 
-No value is refused for its size. The compiler binds comparands and cursor values through the same
+This read-model document/query contract does not reject a number for its magnitude. Ingestion and
+fold application values have the stricter [canonical JSON numeric contract](cqrs.md#numbers).
+The compiler binds comparands and cursor values through the same
 exact text. A document written to the table by other means is outside the guarantee. `jsonb` also
 spells numbers its own way on the way out: `1e-7` comes back as `0.0000001`, and `-0.0` as `0`. Each
 reads back as the same value.
@@ -215,6 +219,32 @@ its key forever. That mode is at-least-once: a handler slower than the TTL can r
 A claim that lost its insert reads the row, and `claim_read` names what it does next: `prior`,
 `take_over` or `vanished`. A lost take-over counts as a vanished row. The kernel bounds the loop: a
 row still gone on the third read gives the claim up as the transient `store` error.
+
+## Optional ingestion and fold storage
+
+`ingest` and `fold` each provide optional table contracts and reference DDL. They do not extend the
+base event-store schema or provision tables at runtime. Hosts apply the DDL through migrations.
+
+`ingest::statements` supplies target-manifest checks, ordered advisory locks, state/rejection writes,
+and pending rejection reads. Its partial index selects unpublished rejections so delivery does not
+scan lifetime publication history. The adapter commits accepted writes and durable rejections in
+one owned transaction. Recovery verdicts distinguish confirmed rollback from an unknown commit
+outcome; only a rolled-back record-local failure permits batch isolation.
+
+`fold::statements` supplies one key/value table per configured storage location. A transaction takes
+one advisory lock for its generation before reading or writing records. This serializes that
+generation's partitions, including updates whose state keys do not yet exist. Separate generations
+can progress independently. The table holds the manifest, checkpoints, states, receipts and intents,
+so backup and restore must preserve them together.
+
+The fold adapter executes the writes from `edax-cqrs::fold` under that lock. SQL selects pending
+intents through a partial index and applies the manifest's activation boundaries. Cutover suppression
+is permanent: later publication or replay cannot make an old suppressed intent eligible again.
+`postgres_ingest.json` and `postgres_fold.json` pin the SQL. Live tests cover rollback, ownership races,
+query plans and restore behavior beyond what pure vectors establish.
+
+See [ingestion](../backends/ingestion.md) for migrations and batch recovery, and
+[folds](../backends/folds.md) for cutover and restore procedures.
 
 ## See also
 

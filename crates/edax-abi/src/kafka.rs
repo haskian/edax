@@ -274,6 +274,9 @@ pub struct KafkaDue {
     pub partition: i32,
     /// The watermark to commit.
     pub offset: i64,
+    /// The partition generation that produced this watermark.
+    #[serde(default)]
+    pub generation: i64,
 }
 
 impl From<edax_kafka::Due> for KafkaDue {
@@ -282,6 +285,7 @@ impl From<edax_kafka::Due> for KafkaDue {
             topic: due.topic,
             partition: due.partition,
             offset: due.offset,
+            generation: due.generation,
         }
     }
 }
@@ -351,6 +355,11 @@ impl OffsetTracker {
         self.inner.committed(topic, partition, offset);
     }
 
+    /// Report a commit only to the generation that issued its watermark.
+    pub fn committed_generation(&self, topic: &str, partition: i32, offset: i64, generation: i64) {
+        self.inner.committed_generation(topic, partition, offset, generation);
+    }
+
     /// Settle `token` as failed: rewind its partition, retire every token of it, and report the
     /// offset the host should seek the partition to.
     pub fn nack(&self, token: i64) -> NackDecision {
@@ -397,6 +406,14 @@ pub fn offset_tracker() -> OffsetTracker {
     OffsetTracker {
         inner: Arc::new(edax_kafka::OffsetTracker::new()),
     }
+}
+
+/// Restore an ingestion rejection with its immutable source identity and provenance headers.
+pub fn kafka_ingestion_rejection_record(raw: &str, source: &str) -> Result<KafkaRecord, String> {
+    let raw: edax_kafka::record::IngestionRaw = crate::read_json(raw)?;
+    edax_kafka::record::ingestion_rejection_record(&raw, source)
+        .map(KafkaRecord::from)
+        .map_err(to_wire)
 }
 
 #[cfg(test)]
@@ -682,4 +699,34 @@ impl OffsetTracker {
             value: self.revoke(topic, partition),
         }
     }
+}
+
+/// Kernel-owned durable source encoding, including a stable digest and oversize stub policy.
+pub fn kafka_ingestion_raw(record: KafkaRecord, source: &str, limit: u64) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Source {
+        topic: String,
+        partition: i32,
+        offset: i64,
+        timestamp: Option<i64>,
+        timestamp_type: Option<i32>,
+    }
+    let source: Source = crate::read_json(source)?;
+    let raw = edax_kafka::record::ingestion_raw(
+        &record.into(),
+        &source.topic,
+        source.partition,
+        source.offset,
+        source.timestamp,
+        source.timestamp_type,
+        limit as usize,
+    )
+    .map_err(to_wire)?;
+    crate::write_json(&raw)
+}
+
+/// Decode the bytes of a persisted ingestion original (empty for a stub).
+pub fn kafka_ingestion_record(raw: &str) -> Result<KafkaRecord, String> {
+    let raw: edax_kafka::record::IngestionRaw = crate::read_json(raw)?;
+    raw.record().map(KafkaRecord::from).map_err(to_wire)
 }

@@ -276,3 +276,23 @@ Run both suites before you finish. `cargo test` alone misses binding regressions
   and Hypothesis.
 - [`../architecture.md`](../architecture.md) — why the kernels exist and how the native module is
   built.
+
+## Microbatch ingestion vectors
+
+`event_batch.json` pins defaults, limits, admission, batch cutting, recovery transitions and their names.
+`ingest.json` pins append/upsert planning, durable-rejection precedence, target contracts and exact
+source coordinates, modes and outcomes. `kafka_ingestion_raw.json` pins stable original digests, size boundaries and
+raw decoding. `postgres_ingest.json` pins ingestion SQL and rollback-aware SQLSTATE verdicts.
+The Rust generators, Python ABI reader and Go ABI reader replay all 202 cases. Asynchronous
+lifecycle and live Kafka/PostgreSQL tests cover behavior that these pure vectors cannot establish.
+`ingestion_numbers.json` adds 56 raw-text cases shared by ingestion and folds. These preserve
+original numeric tokens while checking rejection, allowed floats and full-width protocol counters.
+Python, Go and the Rust build with alternative serde features replay the same inputs.
+
+## Ordered fold vectors
+
+`fold.json` pins ordered transitions, canonical reducer envelopes, dual deduplication, generation-scoped
+leases, checkpoint recovery, ownership fences and cutovers. `fold_boundaries.json` pins key discovery,
+source continuity and effect eligibility. `postgres_fold.json` pins the optional table/catalog contract,
+transaction lock, keyed reads/writes, pending delivery and historical suppression statements.
+Rust tests generate these fixtures; Python and Go replay them through regenerated bindings.

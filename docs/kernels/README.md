@@ -24,11 +24,11 @@ flowchart LR
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
         CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · names · error<br/>Rust-only: lock · token"]
-        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga"]
-        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query"]
+        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga · batch"]
+        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query · ingest · fold"]
         KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
         RED["edax-redis<br/>ledger · scripts"]
-        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger"]
+        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger · ingest · fold"]
     end
 
     APP -->|"calls a seam"| RS
@@ -159,6 +159,10 @@ assert it, and a byte of drift fails the build.
 | Which serializer does a fetched record name, and what if nobody registered it? | `edax-kafka` | `kafka_decode.json` | A record is decoded with the wrong codec instead of dead-lettered, so a wrong message reaches a handler |
 | Which offset may a consumer commit, and which token settles a delivery? | `edax-kafka` | `kafka_offsets.json` | A commit skips an offset still in flight, so a restart never redelivers it |
 | Is a broker error one record's, the client's, or passing? | `edax-kafka` | `kafka_error.json` | One SDK dead-letters a record the broker refused while the other retries it forever, or one drains the outbox into the dead-letter queue over an ACL mistake |
+| May a microbatch admit more input, flush, retry or isolate a failure? | `edax-event::batch` | `event_batch.json` | A runner exceeds retained budgets or rejects originals after an uncertain commit |
+| Which originals may own or replace an ingestion row? | `edax-cqrs::ingest` | `ingest.json`, `ingestion_numbers.json` | A rejected original acquires ownership, stale state returns, or rounded numbers alias an identity |
+| May a delta run, and which state, receipts, intents and checkpoint must commit together? | `edax-cqrs::fold` | `fold.json`, `fold_boundaries.json`, `ingestion_numbers.json` | Replay applies twice, a sequence gap passes, or an old owner changes current progress |
+| Which SQL stores ingestion and fold decisions atomically? | `edax-postgres::{ingest, fold}` | `postgres_ingest.json`, `postgres_fold.json` | A store omits a rejection, loses a fence, or dispatches suppressed historical effects |
 | What bytes sit under an idempotency key in Redis? | `edax-redis` | `redis_value.json` | A ledger written by one SDK is unreadable by another sharing it, so both run the same command |
 | Which Lua does a fenced write or a forget run? | `edax-redis` | `redis_scripts.json` | Two SDKs cache two `EVALSHA` digests for one fence, so a lapsed worker overwrites its successor's claim |
 | Which tables, statements and row layout does a Postgres store use? | `edax-postgres` | `postgres_contract.json`, `postgres_statements.json`, `postgres_rows.json` | One SDK writes a row the other cannot read, or appends events past the other's version check |

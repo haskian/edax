@@ -1,6 +1,6 @@
 # Python examples
 
-Nineteen small programs, one idea each, in learning order. Each one prints what happens, step by
+Twenty-one small programs, one idea each, in learning order. Each one prints what happens, step by
 step. Each one ends in asserts and a final `ok:` line, so a clean exit means it worked.
 
 Every example runs on the in-memory backends. Two of them can switch to a real Redis or Kafka (see
@@ -26,7 +26,8 @@ crates/edax-py/.venv/bin/python examples/py/01_command_bus.py
 trap](../../docs/guides/getting-started.md#the-stale-native-module-trap).
 
 Smoke-test every file with `mise run examples:python` from the repository root.
-The [Go examples](../../crates/edax-go/examples/README.md) cover the same nineteen topics.
+The [Go examples](../../crates/edax-go/examples/README.md) follow the same topics. Go examples 20
+and 21 use internal kernel bindings; Go runners and database adapters for those features do not ship.
 
 ## Learning order
 
@@ -51,9 +52,12 @@ The [Go examples](../../crates/edax-go/examples/README.md) cover the same ninete
 | [`17_kafka.py`](17_kafka.py) | publish and consume through Kafka | `KafkaProducer`, `KafkaConsumer`, `KafkaDeadLetterSink` | [backends/kafka](../../docs/backends/kafka.md) |
 | [`18_contract_kit.py`](18_contract_kit.py) | test a store you wrote with the contract kit | `edax.testing.ProjectionStoreContract` | [guides/testing](../../docs/guides/testing.md) |
 | [`19_fault_injection.py`](19_fault_injection.py) | prove a handler survives a lost commit reply | `edax.testing.faults.BrokenCommit` | [delivery guarantees](../../docs/guides/delivery-guarantees.md) |
+| [`20_ingestion.py`](20_ingestion.py) | append events, replace complete state and publish rejections | `MemoryIngestionSink`, `IngestionTarget`, `RejectionPublisher` | [ingestion](../../docs/backends/ingestion.md) |
+| [`21_folds.py`](21_folds.py) | apply ordered deltas, skip replay and deliver effect intents | `MemoryFoldStore`, `FoldResult`, `FoldOutbox` | [folds](../../docs/backends/folds.md) |
 
 Steps 1 to 7 are the write side. Steps 8 to 11 are the read side. Steps 12 to 14 connect and watch
-the two. Steps 15 to 19 take it to production backends and to your own tests.
+the two. Steps 15 to 19 cover backends and tests. Steps 20 and 21 build projections from complete-state
+events and deltas. Both call the stores directly and need no Kafka or PostgreSQL service.
 
 ## Real backends
 

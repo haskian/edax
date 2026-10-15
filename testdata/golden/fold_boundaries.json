@@ -1,0 +1,716 @@
+[
+  {
+    "error": null,
+    "name": "initialize_complete_partition_vector",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "initialize"
+      }
+    },
+    "want": [
+      "11:balances-v1:[\"fold\",\"manifest\"]",
+      "11:balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "11:balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "state_identity_escapes_nul_and_unicode",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "aggregate": "račun-42",
+        "op": "get",
+        "tenant": "bank\u0000eu"
+      }
+    },
+    "want": [
+      "11:balances-v1:[\"fold\",\"manifest\"]",
+      "11:balances-v1:[\"fold\",\"state\",\"bank\\u0000eu\",\"račun-42\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "outbox_key_is_generation_scoped",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "intent_id": "receipt\u0000credit-42",
+        "op": "published"
+      }
+    },
+    "want": [
+      "11:balances-v1:[\"fold\",\"manifest\"]",
+      "11:balances-v1:[\"fold\",\"intent\",\"receipt\\u0000credit-42\"]"
+    ]
+  },
+  {
+    "error": "bad_handle: unregistered fold partition",
+    "name": "acquire_unknown_partition",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 2,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-v1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: unknown variant `skip_delta`, expected one of `initialize`, `acquire`, `renew`, `refresh`, `release`, `load`, `prepare`, `apply`, `freeze`, `activate`, `get`, `published`",
+    "name": "unknown_operation",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "skip_delta"
+      }
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 10,
+    "error": null,
+    "name": "cursor_at_beginning",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 20,
+    "error": null,
+    "name": "cursor_at_readable_end",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 0,
+    "error": null,
+    "name": "empty_source",
+    "op": "source",
+    "proof": {
+      "beginning": 0,
+      "end": 0,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 9,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "retention_lost_prefix",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 21,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "cursor_beyond_end",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 10,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "recreated_topic",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-99"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 10,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "changed_history",
+    "op": "source",
+    "proof": {
+      "beginning": 10,
+      "end": 20,
+      "history": "rollback-v2",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 10,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "negative_beginning",
+    "op": "source",
+    "proof": {
+      "beginning": -1,
+      "end": 20,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "cursor": 10,
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "reversed_boundaries",
+    "op": "source",
+    "proof": {
+      "beginning": 20,
+      "end": 10,
+      "history": "no-rollback-v1",
+      "identity": "cluster-42/topic-81"
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 5,
+      "partition": 0
+    },
+    "manifest": {
+      "active": false,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "building_suppresses_effects",
+    "op": "eligible",
+    "want": false
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 4,
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "below_cutoff",
+    "op": "eligible",
+    "want": false
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 5,
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "at_cutoff",
+    "op": "eligible",
+    "want": true
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 10,
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "active_has_no_upper_limit",
+    "op": "eligible",
+    "want": true
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 9,
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": true,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "frozen_below_upper",
+    "op": "eligible",
+    "want": true
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 10,
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": true,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "frozen_at_upper",
+    "op": "eligible",
+    "want": false
+  },
+  {
+    "error": null,
+    "intent": {
+      "offset": 5,
+      "partition": 2
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "unregistered_partition",
+    "op": "eligible",
+    "want": false
+  },
+  {
+    "error": "codec: invalid intent partition",
+    "intent": {
+      "offset": 5,
+      "partition": 2147483648
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "invalid_partition",
+    "op": "eligible",
+    "want": null
+  },
+  {
+    "error": "codec: invalid intent offset",
+    "intent": {
+      "offset": "5",
+      "partition": 0
+    },
+    "manifest": {
+      "active": true,
+      "contract": {
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "cutoffs": {
+        "0": 5,
+        "1": 10
+      },
+      "frozen": false,
+      "upper": {
+        "0": 10,
+        "1": 20
+      }
+    },
+    "name": "invalid_offset",
+    "op": "eligible",
+    "want": null
+  }
+]

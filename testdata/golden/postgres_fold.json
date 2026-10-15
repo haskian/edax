@@ -1,0 +1,90 @@
+[
+  {
+    "config": {
+      "schema": "public",
+      "table": "edax_fold"
+    },
+    "error": null,
+    "name": "default_table",
+    "op": "sql",
+    "want": {
+      "check": "SELECT EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'public' AND t.relname = 'edax_fold' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AS compatible",
+      "clock": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+      "ddl": "CREATE TABLE \"public\".\"edax_fold\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE INDEX ON \"public\".\"edax_fold\" (key) WHERE value->>'kind' = 'intent' AND value->>'published' = 'false' AND value->>'suppressed' = 'false';",
+      "lock": "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('edax_fold/v1:' || $1::text, 0))",
+      "pending": "SELECT intent.key, intent.value::text AS value FROM \"public\".\"edax_fold\" AS intent JOIN \"public\".\"edax_fold\" AS manifest ON manifest.key = $1::text WHERE starts_with(intent.key, $2::text) AND intent.value->>'kind' = 'intent' AND intent.value->>'published' = 'false' AND intent.value->>'suppressed' = 'false' AND (manifest.value->>'active')::boolean AND (intent.value->>'offset')::bigint >= (manifest.value->'cutoffs'->>(intent.value->>'partition'))::bigint AND (NOT (manifest.value->>'frozen')::boolean OR (intent.value->>'offset')::bigint < (manifest.value->'upper'->>(intent.value->>'partition'))::bigint) ORDER BY intent.key LIMIT $3::text::bigint",
+      "read": "SELECT key, value::text AS value FROM \"public\".\"edax_fold\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "suppress": "UPDATE \"public\".\"edax_fold\" SET value = jsonb_set(value, '{suppressed}', 'true'::jsonb) WHERE starts_with(key, $1::text) AND value->>'kind' = 'intent' AND value->>'suppressed' = 'false' AND (value->>'offset')::bigint < ($2::jsonb->>(value->>'partition'))::bigint",
+      "write": "INSERT INTO \"public\".\"edax_fold\" (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    }
+  },
+  {
+    "config": {
+      "schema": "billing",
+      "table": "account_balances"
+    },
+    "error": null,
+    "name": "custom_schema_table",
+    "op": "sql",
+    "want": {
+      "check": "SELECT EXISTS (\n SELECT 1 FROM pg_catalog.pg_class t\n JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace\n JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped\n JOIN pg_catalog.pg_attribute v ON v.attrelid = t.oid AND v.attname = 'value' AND NOT v.attisdropped\n JOIN pg_catalog.pg_collation col ON col.oid = k.attcollation\n WHERE n.nspname = 'billing' AND t.relname = 'account_balances' AND t.relkind IN ('r', 'p')\n AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity\n AND k.atttypid = 'pg_catalog.text'::regtype AND k.attnotnull AND k.attgenerated = ''\n AND col.collname IN ('C', 'POSIX') AND col.collnamespace = 'pg_catalog'::regnamespace\n AND v.atttypid = 'pg_catalog.jsonb'::regtype AND v.attnotnull AND v.attgenerated = ''\n AND EXISTS (\n  SELECT 1 FROM pg_catalog.pg_index i\n  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]\n  JOIN pg_catalog.pg_opclass op ON op.oid = i.indclass[0]\n  JOIN pg_catalog.pg_am am ON am.oid = op.opcmethod\n  WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indisready\n  AND i.indimmediate AND i.indpred IS NULL AND i.indexprs IS NULL\n  AND i.indnkeyatts = 1 AND i.indkey[0] = k.attnum\n  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace\n  AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace\n )\n AND NOT EXISTS (\n  SELECT 1 FROM pg_catalog.pg_attribute extra\n  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped\n  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull\n  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''\n )\n) AS compatible",
+      "clock": "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+      "ddl": "CREATE TABLE \"billing\".\"account_balances\" (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\nCREATE INDEX ON \"billing\".\"account_balances\" (key) WHERE value->>'kind' = 'intent' AND value->>'published' = 'false' AND value->>'suppressed' = 'false';",
+      "lock": "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('edax_fold/v1:' || $1::text, 0))",
+      "pending": "SELECT intent.key, intent.value::text AS value FROM \"billing\".\"account_balances\" AS intent JOIN \"billing\".\"account_balances\" AS manifest ON manifest.key = $1::text WHERE starts_with(intent.key, $2::text) AND intent.value->>'kind' = 'intent' AND intent.value->>'published' = 'false' AND intent.value->>'suppressed' = 'false' AND (manifest.value->>'active')::boolean AND (intent.value->>'offset')::bigint >= (manifest.value->'cutoffs'->>(intent.value->>'partition'))::bigint AND (NOT (manifest.value->>'frozen')::boolean OR (intent.value->>'offset')::bigint < (manifest.value->'upper'->>(intent.value->>'partition'))::bigint) ORDER BY intent.key LIMIT $3::text::bigint",
+      "read": "SELECT key, value::text AS value FROM \"billing\".\"account_balances\" WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key",
+      "suppress": "UPDATE \"billing\".\"account_balances\" SET value = jsonb_set(value, '{suppressed}', 'true'::jsonb) WHERE starts_with(key, $1::text) AND value->>'kind' = 'intent' AND value->>'suppressed' = 'false' AND (value->>'offset')::bigint < ($2::jsonb->>(value->>'partition'))::bigint",
+      "write": "INSERT INTO \"billing\".\"account_balances\" (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\" ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    }
+  },
+  {
+    "config": {
+      "schema": "public'; DROP TABLE accounts; --",
+      "table": "edax_fold"
+    },
+    "error": "bad_handle: postgres schema \"public'; DROP TABLE accounts; --\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "schema_injection",
+    "op": "sql",
+    "want": null
+  },
+  {
+    "config": {
+      "schema": "public",
+      "table": "accounts\""
+    },
+    "error": "bad_handle: postgres table name \"accounts\\\"\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "table_injection",
+    "op": "sql",
+    "want": null
+  },
+  {
+    "config": {
+      "schema": "Billing",
+      "table": "edax_fold"
+    },
+    "error": "bad_handle: postgres schema \"Billing\" must be 1 to 63 of a-z, 0-9 and _, not starting with a digit",
+    "name": "uppercase_name",
+    "op": "sql",
+    "want": null
+  },
+  {
+    "config": {
+      "schema": "public"
+    },
+    "error": "codec: missing field `table`",
+    "name": "missing_table",
+    "op": "sql",
+    "want": null
+  },
+  {
+    "config": {
+      "create": true,
+      "schema": "public",
+      "table": "edax_fold"
+    },
+    "error": "codec: unknown field `create`, expected `schema` or `table`",
+    "name": "unknown_option",
+    "op": "sql",
+    "want": null
+  }
+]

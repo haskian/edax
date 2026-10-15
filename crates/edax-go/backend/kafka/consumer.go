@@ -256,7 +256,7 @@ func (c *Consumer[M]) commit(ctx context.Context, due []kernel.KafkaDue) error {
 		return err
 	}
 	for _, d := range due {
-		if err := c.tracker.Committed(d.Topic, d.Partition, d.Offset); err != nil {
+		if err := c.tracker.CommittedGeneration(d.Topic, d.Partition, d.Offset, d.Generation); err != nil {
 			return err
 		}
 	}
