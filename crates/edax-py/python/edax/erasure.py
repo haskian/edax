@@ -275,6 +275,24 @@ class ErasureCoordinator:
         except ConcurrencyError as error:
             raise _StaleOperation from error
 
+    async def _cleanup(self, stored: StoredErasure) -> StoredErasure:
+        operation = stored.operation
+        failure: Exception | None = None
+        for participant in sorted(operation.required_participants - operation.acknowledgements):
+            cleanup = self._participants.get(participant)
+            if cleanup is None:
+                continue
+            try:
+                await cleanup(operation.scope)
+            except Exception as error:  # noqa: BLE001 — retain and re-raise after other cleanup attempts.
+                if failure is None:
+                    failure = error
+                continue
+            stored = await self._advance(stored, "acknowledge", participant)
+        if failure is not None:
+            raise failure
+        return stored
+
     async def resume(self, scope: KeyScope, request_id: str) -> ErasureOperation:
         """Resume an existing request using its frozen participants, including ones currently offline."""
         while True:
@@ -291,22 +309,7 @@ class ErasureCoordinator:
                     case "revoked":
                         await self._advance(stored, "notify")
                     case "notified":
-                        failure: Exception | None = None
-                        for participant in sorted(
-                            operation.required_participants - operation.acknowledgements
-                        ):
-                            cleanup = self._participants.get(participant)
-                            if cleanup is None:
-                                continue
-                            try:
-                                await cleanup(operation.scope)
-                            except Exception as error:  # noqa: BLE001 — retain and re-raise after other cleanup attempts.
-                                if failure is None:
-                                    failure = error
-                                continue
-                            stored = await self._advance(stored, "acknowledge", participant)
-                        if failure is not None:
-                            raise failure
+                        stored = await self._cleanup(stored)
                         operation = stored.operation
                         if not _native.erasure_can_destroy(operation.record):
                             return operation

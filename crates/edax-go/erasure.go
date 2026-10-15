@@ -273,8 +273,12 @@ func NewErasureCoordinator(keys KeyProvider, store ErasureStore, options Erasure
 	}
 	sort.Strings(required)
 	registered := make([]string, 0, len(participants))
-	for name := range participants { registered = append(registered, name) }
-	if err := kernel.ErasureValidateParticipants(required, registered); err != nil { return nil, err }
+	for name := range participants {
+		registered = append(registered, name)
+	}
+	if err := kernel.ErasureValidateParticipants(required, registered); err != nil {
+		return nil, err
+	}
 	return &ErasureCoordinator{keys: keys, store: store, participants: participants, required: required}, nil
 }
 func (c *ErasureCoordinator) Erase(ctx context.Context, scope KeyScope, request string) (ErasureOperation, error) {
@@ -328,6 +332,7 @@ func (c *ErasureCoordinator) Acknowledge(ctx context.Context, scope KeyScope, re
 // Every pending cleanup is attempted and its success persisted before the first cleanup error is returned.
 func (c *ErasureCoordinator) Resume(ctx context.Context, scope KeyScope, request string) (ErasureOperation, error) {
 	var cleanupError error
+resume:
 	for {
 		stored, err := c.require(ctx, scope, request)
 		if err != nil {
@@ -356,7 +361,6 @@ func (c *ErasureCoordinator) Resume(ctx context.Context, scope KeyScope, request
 			for _, name := range operation.Acknowledgements() {
 				acknowledged[name] = true
 			}
-			conflict := false
 			for _, name := range operation.RequiredParticipants() {
 				cleanup := c.participants[name]
 				if acknowledged[name] || cleanup == nil {
@@ -370,16 +374,12 @@ func (c *ErasureCoordinator) Resume(ctx context.Context, scope KeyScope, request
 				}
 				next, err := c.store.Advance(ctx, stored, "acknowledge", &name)
 				if errors.Is(err, ErrConcurrency) {
-					conflict = true
-					break
+					continue resume
 				}
 				if err != nil {
 					return ErasureOperation{}, err
 				}
 				stored = next
-			}
-			if conflict {
-				continue
 			}
 			if cleanupError != nil {
 				return ErasureOperation{}, cleanupError

@@ -446,14 +446,11 @@ func sameKeyProvider(left, right KeyProvider) bool {
 }
 
 func (s *Sealing) prepare(ctx context.Context, tenant, subject *string) (EncryptionInfo, []byte, error) {
-	if _, err := s.Scope(tenant, subject); err != nil {
+	scope, err := s.Scope(tenant, subject)
+	if err != nil {
 		return EncryptionInfo{}, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return EncryptionInfo{}, nil, err
-	}
-	scope, err := s.Scope(tenant, subject)
-	if err != nil {
 		return EncryptionInfo{}, nil, err
 	}
 	reserved, err := s.Keys.Reserve(ctx, scope, s.Cipher)
