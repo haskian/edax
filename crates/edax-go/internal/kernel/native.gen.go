@@ -770,6 +770,53 @@ func GetEventIdempotency(message EventMessage, mode string, scope string) (*Even
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// FoldCheckSource calls the shared kernel.
+func FoldCheckSource(contractJSON string, proofJSON string, cursor int64) error {
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return err
+	}
+	if err := checkNativeString("proofJSON", proofJSON); err != nil {
+		return err
+	}
+	return mapNativeError(native.FoldCheckSource(contractJSON, proofJSON, cursor))
+}
+
+// FoldIntentEligible calls the shared kernel.
+func FoldIntentEligible(manifestJSON string, intentJSON string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("manifestJSON", manifestJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("intentJSON", intentJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.FoldIntentEligible(manifestJSON, intentJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// FoldKeys calls the shared kernel.
+func FoldKeys(requestJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("requestJSON", requestJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.FoldKeys(requestJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// FoldTransition calls the shared kernel.
+func FoldTransition(requestJSON string, recordsJSON string, nowMs int64) (string, error) {
+	var zero string
+	if err := checkNativeString("requestJSON", requestJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("recordsJSON", recordsJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.FoldTransition(requestJSON, recordsJSON, nowMs)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // Guid calls the shared kernel.
 func Guid() string {
 	nativeValue := native.Guid()
@@ -1502,6 +1549,16 @@ func PostgresEnqueueParams(commands []CommandMessage) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.PostgresEnqueueParams(normalizeNative(commands))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresFoldStatements calls the shared kernel.
+func PostgresFoldStatements(configJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("configJSON", configJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresFoldStatements(configJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 

@@ -514,6 +514,13 @@ pub fn postgres_ingest_recovery(rolled_back: bool, sqlstate: Option<String>) -> 
     edax_postgres::ingest::recovery(sqlstate.as_deref(), rolled_back).to_owned()
 }
 
+/// Statements and host-owned DDL for atomic fold state, receipts, checkpoints and intents.
+pub fn postgres_fold_statements(config_json: &str) -> Result<String, String> {
+    serde_json::to_string(&edax_postgres::fold::statements(config_json).map_err(to_wire)?)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;

@@ -314,9 +314,9 @@ class OffsetCommitter:
         return self._pending if self._pending is not None and not self._pending.done() else None
 
     def check_idle(self) -> None:
-        """An unresolved cancelled commit must never overlap another commit or new admission."""
+        """An interrupted waiter must not admit new work while its client commit is unresolved."""
         if self._interrupted and self._pending is not None and not self._pending.done():
-            raise BadHandle("kafka commit still running after cancellation; stop this consumer")
+            raise BadHandle("kafka commit still running after deadline or cancellation; stop this consumer")
 
     # Neither builds the tracker: a gauge scraped on another thread before the first poll would bind it
     # to that thread, and the consumer's own poll would then refuse it. Unbuilt, it has booked nothing.
@@ -361,12 +361,10 @@ class OffsetCommitter:
                 raise errors.StoreError(f"kafka commit: no reply within {self._commit_timeout_s * 1000:g} ms")
             task.result()
         finally:
-            # Keep ownership until the client actually ends. Cancellation alone proves nothing.
+            # aiokafka shields its request: cancelling this task would hide live broker I/O.
+            # Retain the entire client call until it finishes, and fence admission in the meantime.
             if not task.done():
                 self._interrupted = True
-                task.cancel()
-                # Let a cooperative client acknowledge cancellation without waiting for a stubborn one.
-                await asyncio.sleep(0)
 
     async def send(self, due: Sequence[_native.KafkaDue]) -> None:
         offsets = {topic_partition(d.topic, d.partition): d.offset for d in due}

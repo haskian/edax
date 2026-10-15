@@ -215,6 +215,13 @@ class KafkaIngestion:
             done, pending = await asyncio.wait(
                 workers, timeout=max(0, deadline - asyncio.get_running_loop().time())
             )
+            # A timed-out commit waiter can leave its actual client call running.
+            running_commit = self._offsets.unfinished()
+            if running_commit is not None:
+                _, remaining = await asyncio.wait(
+                    {running_commit}, timeout=max(0, deadline - asyncio.get_running_loop().time())
+                )
+                pending.update(remaining)
             for task in done:
                 if not task.cancelled() and task.exception() is not None:
                     error = cast(BaseException, task.exception())
@@ -413,6 +420,21 @@ class KafkaIngestion:
             # Snapshot host values so a mapper cannot mutate already admitted originals.
             snapshot = _json.decode(mapped_json)
             row_key, value = snapshot["key"], snapshot["value"]
+            return target.input(
+                record.topic,
+                record.partition,
+                record.offset,
+                tenant,
+                event_id if target.mode == "append" else row_key,
+                stream,
+                event_id,
+                sequence,
+                content,
+                value,
+                raw,
+                failure,
+                _json.decode(raw)["sha256"],
+            )
         except Exception as error:
             if errors.failure_kind(error) != "terminal":
                 raise
@@ -655,11 +677,11 @@ class KafkaIngestion:
             while not stop.is_set():
                 self._check()
                 progressed = False
+                last_admitted: TopicPartition | None = None
                 for tp in tuple(self._rotation):
                     part = self._parts.get(tp)
                     if part is None:
                         continue
-                    self._rotation.rotate(-1)
                     if part.task is not None or part.ready_at > asyncio.get_running_loop().time():
                         continue
                     age = int((asyncio.get_running_loop().time() - part.opened) * 1000) if part.items else 0
@@ -674,12 +696,16 @@ class KafkaIngestion:
                         continue
                     record = await self._fetch_one(tp, part)
                     try:
-                        if record is not None:
-                            progressed = self._admit(tp, part, record) or progressed
+                        if record is not None and self._admit(tp, part, record):
+                            progressed = True
+                            last_admitted = tp
                     finally:
                         # Oversized originals become bounded stubs. Do not retain their payloads
                         # in this suspended frame while a sink or another partition waits.
                         record = None
+                if last_admitted is not None and last_admitted in self._rotation:
+                    # Capacity waiters get the next freed credit, ahead of busy earlier partitions.
+                    self._rotation.rotate(-self._rotation.index(last_admitted) - 1)
                 if not progressed and not stop.is_set():
                     self._changed.clear()
                     with suppress(asyncio.TimeoutError):
@@ -732,4 +758,5 @@ class KafkaIngestion:
                         if isinstance(cause, BaseException):
                             errors_to_clear.append(cause)
                 return
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Cancelling this waiter must not detach a client's shielded broker request.
+            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))

@@ -587,7 +587,7 @@ async def test_exact_i64_sequence_source_offset_and_nanosecond_event_envelope() 
     assert (await sink.commit([prepared])).outcomes == ("accepted",)
 
 
-async def test_wait_closed_waits_for_commit_that_ignores_cancellation() -> None:
+async def test_wait_closed_preserves_commit_until_client_completion() -> None:
     entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     class HeldCommit(BatchClient):
@@ -596,11 +596,11 @@ async def test_wait_closed_waits_for_commit_that_ignores_cancellation() -> None:
         async def commit(self, offsets: dict[TopicPartition, int]) -> None:
             self.calls += 1
             entered.set()
-            while not release.is_set():
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    cancelled.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
             await super().commit(offsets)
 
     messages = events(1)
@@ -619,10 +619,10 @@ async def test_wait_closed_waits_for_commit_that_ignores_cancellation() -> None:
         await asyncio.wait_for(entered.wait(), 1)
         task.cancel()
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
-        await asyncio.wait_for(cancelled.wait(), 1)
         closing = asyncio.create_task(runner.wait_closed())
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.shield(closing), 0.02)
+        assert not cancelled.is_set()
         assert client.calls == 1
         assert client.commits == []
     finally:

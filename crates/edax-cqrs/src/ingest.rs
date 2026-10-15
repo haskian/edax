@@ -149,7 +149,7 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
 
 /// One original source record, before compaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Input {
+pub struct Input<T = Value> {
     /// Immutable source coordinate, including source incarnation.
     pub source: String,
     /// Fully scoped target key.
@@ -161,9 +161,9 @@ pub struct Input {
     /// Aggregate sequence. Upserts require a PostgreSQL bigint-compatible value.
     pub sequence: Option<u64>,
     /// Canonical event content used to detect conflicting replays.
-    pub content: Value,
+    pub content: T,
     /// Complete mapped state; absence is a retained deletion marker.
-    pub value: Option<Value>,
+    pub value: Option<T>,
     /// Lossless source representation retained by a rejection.
     pub raw: String,
     /// Stable digest of the original source bytes, independent of a retained full record or stub.
@@ -172,6 +172,44 @@ pub struct Input {
     pub raw_fingerprint: Option<String>,
     /// An already classified decode or mapping rejection in kernel error wire form.
     pub failure: Option<String>,
+}
+
+/// Parse original payload tokens before JSON can round an integer wider than 64 bits.
+/// Invalid payloads become per-record rejections; source/sequence fields keep their full width.
+pub fn inputs_json(text: &str) -> Result<Vec<Input>, Error> {
+    use crate::json_numbers::{check_integers, Width};
+    use serde_json::value::RawValue;
+
+    let inputs: Vec<Input<&RawValue>> = serde_json::from_str(text).map_err(Error::codec)?;
+    inputs
+        .into_iter()
+        .map(|input| {
+            let parse = |raw: &RawValue| -> Result<Value, Error> {
+                // Preserve integers the Value model represents exactly. The planner applies
+                // canonical-number validation after sequence and durable rejection checks.
+                check_integers(raw.get().as_bytes(), Width::Bits64)?;
+                serde_json::from_str(raw.get()).map_err(Error::codec)
+            };
+            let payload = parse(input.content)
+                .and_then(|content| input.value.map(parse).transpose().map(|value| (content, value)));
+            let (content, value, failure) = match payload {
+                Ok((content, value)) => (content, value, input.failure),
+                Err(error) => (Value::Null, None, input.failure.or_else(|| Some(error.to_string()))),
+            };
+            Ok(Input {
+                source: input.source,
+                key: input.key,
+                stream: input.stream,
+                event_id: input.event_id,
+                sequence: input.sequence,
+                content,
+                value,
+                raw: input.raw,
+                raw_fingerprint: input.raw_fingerprint,
+                failure,
+            })
+        })
+        .collect()
 }
 
 /// The committed value and its permanent owner.

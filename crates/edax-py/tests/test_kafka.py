@@ -1114,9 +1114,7 @@ async def test_commits_are_batched_off_the_ack_path() -> None:
 
 
 async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
-    """aiokafka retries a commit while the coordinator is away, without end. A paused broker costs one
-    deadline per flush: the flush raises, nothing is recorded, consumption goes on, and the
-    watermark is due again once the broker is back."""
+    """The deadline bounds the waiter; the client call remains owned until its real reply."""
     client = FakeKafkaClient()
     await publish_all(
         client, "t", IdSerializer(), [build_message("a", "Tick", 1, id=str(i)) for i in range(3)]
@@ -1127,32 +1125,48 @@ async def test_a_commit_that_never_returns_hits_its_deadline() -> None:
     client.cluster.pause_commits()
     loop = asyncio.get_running_loop()
     started = loop.time()
-    with pytest.raises(edax.StoreError, match="kafka commit: no reply within 50 ms"):
-        await consumer.flush()
-    assert loop.time() - started < 1, "the deadline did not bound the commit"
-    assert consumer.stats()[TP0].committed is None, "a commit that did not land was recorded"
+    try:
+        with pytest.raises(edax.StoreError, match="kafka commit: no reply within 50 ms"):
+            await consumer.flush()
+        assert loop.time() - started < 1, "the deadline did not bound the commit"
+        assert consumer.stats()[TP0].committed is None, "a commit that did not land was recorded"
+        with pytest.raises(edax.BadHandle, match="commit still running"):
+            await consumer.poll()
+        with pytest.raises(edax.BadHandle, match="commit still running"):
+            await consumer.flush()
+    finally:
+        client.cluster.resume_commits()
+        pending = consumer._offsets.unfinished()
+        if pending is not None:
+            await pending
+    await consumer.flush()
+    assert client.commits == [3] and consumer.stats()[TP0].committed == 3
 
-    # The run keeps consuming while every commit times out, and its own stop is not held hostage.
-    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="3")])
+
+async def test_a_run_with_an_unresolved_commit_stops_without_waiting_for_the_broker() -> None:
+    client = FakeKafkaClient()
+    await publish_all(client, "t", IdSerializer(), [build_message("a", "Tick", 1, id="0")])
+    client.cluster.pause_commits()
     handled: list[str] = []
     observer = Recording()
     dispatcher = edax.KeyOrderedDispatcher(
         workers=1, handler=handling(lambda env: handled.append(env.id)), on_dead=sink_ok, observer=observer
     )
-    run_consumer = KafkaConsumer(
-        client, serializer=IdSerializer(), commit_interval_s=0.01, commit_timeout_s=0.05
-    )
-    started = loop.time()
-    await _drive(run_consumer, dispatcher, lambda: handled == ["3"] and bool(observer.commit_failures))
-    assert handled == ["3"], "the client's fetch position is past 0..2, so only the new record comes"
-    assert loop.time() - started < 2, "a paused broker hung the run"
-    assert client.commits == []
-    # A consumer whose progress is not saved is a counter, not only a log line.
-    assert observer.commit_failures and set(observer.commit_failures) == {edax.StoreError}
-
-    client.cluster.resume_commits()
-    await consumer.flush()
-    assert client.commits == [3] and consumer.stats()[TP0].committed == 3
+    consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_interval_s=0.01, commit_timeout_s=0.01)
+    dispatcher.start()
+    try:
+        with pytest.raises(edax.BadHandle, match="commit still running"):
+            await asyncio.wait_for(consumer.run(dispatcher), 1)
+        assert handled == ["0"]
+        assert client.commits == []
+        assert set(observer.commit_failures) == {edax.StoreError, edax.BadHandle}
+    finally:
+        await dispatcher.stop()
+        client.cluster.resume_commits()
+        pending = consumer._offsets.unfinished()
+        if pending is not None:
+            await pending
+    assert client.commits == [1]
 
 
 async def test_the_last_commit_after_run_ends_reaches_the_observer() -> None:

@@ -206,6 +206,57 @@ async def test_pending_page_advances_after_confirmed_publication(
     assert await sink.pending(1) == {}
 
 
+async def test_pending_index_skips_retained_published_history(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    pool, _, schema = database
+    sink = sink_for(database)
+    poison = record(sink, 0, failure="codec: invalid order")
+    row = (await sink.commit([poison])).rejections[poison.source]
+    history = [
+        _native.ingest_source_key(sink.target.generation, sink.target.source_incarnation, "orders", 0, offset)
+        for offset in range(1, 10_001)
+    ]
+    await pool.execute(
+        f'INSERT INTO "{schema}".edax_ingest_rejections (key, value) '
+        "SELECT source, $2::jsonb FROM jsonb_array_elements_text($1::jsonb) AS sources(source)",
+        _json.encode(history),
+        _json.encode({**row, "published": True}),
+    )
+    await pool.execute(f'ANALYZE "{schema}".edax_ingest_rejections')
+    statements = _json.decode(_native.postgres_ingest_statements(_json.encode({"schema": schema})))
+
+    assert await sink.pending(1) == {poison.source: row}
+    await sink.published(poison.source, row["fingerprint"])
+    assert await sink.pending(1) == {}
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_rejections') == 10_002
+
+    explained = _json.decode(
+        await pool.fetchval(
+            "EXPLAIN (ANALYZE, FORMAT JSON) " + statements["pending"], sink.target.prefix, "100"
+        )
+    )
+    nodes = [explained[0]["Plan"]]
+    scanned_indexes: list[str] = []
+    while nodes:
+        node = nodes.pop()
+        assert node.get("Rows Removed by Filter", 0) == 0, node
+        assert node["Node Type"] != "Seq Scan", node
+        if "Index Name" in node:
+            scanned_indexes.append(node["Index Name"])
+        nodes.extend(node.get("Plans", []))
+    assert scanned_indexes
+    for index in scanned_indexes:
+        assert await pool.fetchval(
+            "SELECT i.indpred IS NOT NULL FROM pg_catalog.pg_index i "
+            "JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid "
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = $1 AND c.relname = $2",
+            schema,
+            index,
+        )
+
+
 async def test_ambient_transaction_and_changed_manifest_are_refused(
     database: tuple[Any, PostgresTransactor, str],
 ) -> None:

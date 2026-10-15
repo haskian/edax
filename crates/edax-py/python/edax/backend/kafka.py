@@ -297,8 +297,9 @@ class KafkaConsumer:
     async def flush(self) -> None:
         """Commit every partition whose watermark moved, in one call, under the commit deadline. Raises
         what the commit raised, or the transient :class:`~edax.errors.StoreError` at the deadline; nothing
-        is recorded then, so the same watermarks are due again. Call it after ``dispatcher.stop()`` to
-        commit the drained work before closing the client."""
+        is recorded until the client replies. A deadline or caller cancellation leaves the client call
+        running, and new polls and commits raise ``BadHandle`` until it finishes. Call this after
+        ``dispatcher.stop()`` to commit the drained work before closing the client."""
         self._check_running()
         await self._offsets.flush()
 
@@ -439,35 +440,42 @@ class KafkaConsumer:
             _, unfinished = await asyncio.wait(
                 pending, timeout=max(0, deadline - asyncio.get_running_loop().time())
             )
+            # The commit waiter can time out before the revoke deadline while its client call survives.
+            running_commit = self._offsets.unfinished()
+            if running_commit is not None:
+                _, remaining = await asyncio.wait(
+                    {running_commit}, timeout=max(0, deadline - asyncio.get_running_loop().time())
+                )
+                unfinished.update(remaining)
+            if unfinished:
+                # A queued commit must not begin after the partition has changed owners.
+                commit.cancel()
+                self._stopped = BadHandle(
+                    "kafka revoke deadline expired with unfinished operations; stop this consumer"
+                )
+            # A handler already running finishes, and its ack settles nothing. Wait for it, so the new
+            # owner rarely runs a key this member is still running.
+            dispatcher = self._dispatcher
+            if dispatcher is not None:
+                running = await dispatcher.wait_handlers(max(0, deadline - asyncio.get_running_loop().time()))
+                if running:
+                    logger.warning(
+                        "edax kafka: %d handler(s) still running %ss after a revoke; "
+                        "the new owner may overlap",
+                        running,
+                        timeout,
+                    )
+                    dispatcher.observer.revoke_overrun(running)
+            # The next assignment may gain partitions absent from this revoke, including an empty revoke.
+            self._awaiting_assignment = self._stopped is None
         except asyncio.CancelledError:
             commit.cancel()
             self._stopped = BadHandle("kafka revoke cancelled with unfinished operations; stop this consumer")
-            self._fetch_ready.set()
             raise
-        if unfinished:
-            # A queued commit must not begin after the partition has changed owners.
-            commit.cancel()
-            self._stopped = BadHandle(
-                "kafka revoke deadline expired with unfinished operations; stop this consumer"
-            )
+        finally:
+            # An idle aiokafka member needs another fetch before it can rejoin. Interrupted callbacks
+            # also wake pollers, which then observe _stopped instead of waiting forever.
             self._fetch_ready.set()
-        # A handler already running finishes, and its ack settles nothing. Wait for it, so the new owner
-        # never runs a key this member is still running.
-        dispatcher = self._dispatcher
-        if dispatcher is not None:
-            running = await dispatcher.wait_handlers(max(0, deadline - asyncio.get_running_loop().time()))
-            if running:
-                logger.warning(
-                    "edax kafka: %d handler(s) still running %ss after a revoke; the new owner may overlap",
-                    running,
-                    timeout,
-                )
-                dispatcher.observer.revoke_overrun(running)
-        # The next assignment may gain partitions absent from this revoke, including an empty revoke.
-        self._awaiting_assignment = self._stopped is None
-        # An idle aiokafka member needs another fetch before it can rejoin. Until assignment,
-        # _read still discards revoked records; unresolved operations remain fenced by _stopped.
-        self._fetch_ready.set()
 
     async def _finish_fetch(self, timeout: float) -> None:
         task = self._fetch_task

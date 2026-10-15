@@ -4265,6 +4265,59 @@ EDAXAlefHandle edax_event_idempotency(EDAXAlefHandle message,
                                       const char *scope);
 
 /**
+ * Verify source incarnation/history and retained/readable boundaries, including empty fetches.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_fold_check_source(const char *contract_json,
+                               const char *proof_json,
+                               int64_t cursor);
+
+/**
+ * Generation cutoffs gate outbox dispatch even after replay or snapshot restore.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_fold_intent_eligible(const char *manifest_json,
+                                  const char *intent_json);
+
+/**
+ * Keys the fold transition reads under its generation transaction lock.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_fold_keys(const char *request_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_fold_keys` on this thread.
+ * Returns 0 when the primary call returned null or failed before producing a string. Enables safe
+ * slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_fold_keys`.
+ */
+uintptr_t edax_fold_keys_len(const char *_request_json);
+
+/**
+ * Pure fold transition. Persist every returned write atomically under the generation lock.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_fold_transition(const char *request_json,
+                           const char *records_json,
+                           int64_t now_ms);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_fold_transition` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_fold_transition`.
+ */
+uintptr_t edax_fold_transition_len(const char *_request_json,
+                                   const char *_records_json,
+                                   int64_t _now_ms);
+
+/**
  * A fresh time-ordered globally-unique id (UUID v7), as a string. Non-deterministic.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5234,6 +5287,22 @@ char *edax_postgres_enqueue_params(const char *commands);
  * with `edax_postgres_enqueue_params`.
  */
 uintptr_t edax_postgres_enqueue_params_len(const char *_commands);
+
+/**
+ * Statements and host-owned DDL for atomic fold state, receipts, checkpoints and intents.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_fold_statements(const char *config_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_fold_statements` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_fold_statements`.
+ */
+uintptr_t edax_postgres_fold_statements_len(const char *_config_json);
 
 /**
  * Whether a `forget` of `key` deletes `row`. See `edax_postgres.forget_write`.

@@ -24,7 +24,7 @@ from .. import _json, _names, _native, errors
 from .._deadline import within
 from .._units import enlisted
 from .._wiring import wiring_int, wiring_str
-from ..errors import BadHandle, EdaxError, StoreError
+from ..errors import BadHandle, EdaxError, StoreError, TransactionFailure
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
 from ..message import CommandMessage, EventDraft, EventMessage
 from ..projection import Entity
@@ -179,18 +179,8 @@ class PostgresTx:
     closed: bool = False
 
 
-class PostgresTransactionFailure(StoreError):
-    """An owned transaction's cause and recovery evidence, without reclassifying driver errors.
-
-    A confirmed rollback proves no write committed only when ``commit_started`` is false.
-    Once COMMIT starts, losing its reply leaves the outcome unknown even if ROLLBACK succeeds.
-    """
-
-    def __init__(self, cause: Exception, *, rolled_back: bool, commit_started: bool) -> None:
-        super().__init__(str(cause))
-        self.cause = cause
-        self.rolled_back = rolled_back
-        self.commit_started = commit_started
+class PostgresTransactionFailure(TransactionFailure):
+    """PostgreSQL transaction failure with the shared cause and recovery evidence contract."""
 
 
 # One transactor per pool: two would be two transaction identities over one pool, and a store of one would

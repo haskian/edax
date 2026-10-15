@@ -369,7 +369,7 @@ pub fn ingest_outcome_names() -> Vec<String> {
 
 /// Compute atomic ingestion decisions from original inputs and locked durable state.
 pub fn ingest_plan(mode: &str, inputs: &str, stored: &str, rejected: &str) -> Result<String, String> {
-    let inputs = crate::read_json::<Vec<edax_cqrs::ingest::Input>>(inputs)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
     let stored = crate::read_json(stored)?;
     let rejected = crate::read_json(rejected)?;
     crate::write_json(&edax_cqrs::ingest::plan(mode, &inputs, &stored, &rejected).map_err(crate::to_wire)?)
@@ -406,7 +406,7 @@ pub fn ingest_bind_contract(previous: &str, expected: &str) -> Result<(), String
 /// Validate all source and target identities before a sink acquires locks.
 pub fn ingest_validate_inputs(manifest: &str, inputs: &str) -> Result<(), String> {
     let contract = crate::read_json(manifest)?;
-    let inputs: Vec<edax_cqrs::ingest::Input> = crate::read_json(inputs)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
     edax_cqrs::ingest::validate_inputs(&contract, &inputs).map_err(crate::to_wire)
 }
 
@@ -426,6 +426,53 @@ pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> 
         &identity.row_id,
     )
     .map_err(crate::to_wire)
+}
+
+fn fold_value<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    serde_json::from_value(value)
+}
+
+/// Keys the fold transition reads under its generation transaction lock.
+pub fn fold_keys(request_json: &str) -> Result<String, String> {
+    let request = edax_cqrs::fold::request_json(request_json).map_err(to_wire)?;
+    serde_json::to_string(&edax_cqrs::fold::keys(&request).map_err(to_wire)?)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)
+}
+
+/// Pure fold transition. Persist every returned write atomically under the generation lock.
+pub fn fold_transition(request_json: &str, records_json: &str, now_ms: i64) -> Result<String, String> {
+    let request = edax_cqrs::fold::request_json(request_json).map_err(to_wire)?;
+    let records = fold_value(records_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    serde_json::to_string(&edax_cqrs::fold::transition(&request, &records, now_ms).map_err(to_wire)?)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)
+}
+
+/// Generation cutoffs gate outbox dispatch even after replay or snapshot restore.
+pub fn fold_intent_eligible(manifest_json: &str, intent_json: &str) -> Result<bool, String> {
+    let manifest = fold_value(manifest_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    let intent = fold_value(intent_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    edax_cqrs::fold::eligible(&manifest, &intent).map_err(to_wire)
+}
+
+/// Verify source incarnation/history and retained/readable boundaries, including empty fetches.
+pub fn fold_check_source(contract_json: &str, proof_json: &str, cursor: i64) -> Result<(), String> {
+    let contract: edax_cqrs::fold::Contract = fold_value(contract_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    let proof = fold_value(proof_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    contract.validate().map_err(to_wire)?;
+    contract.continuity(&proof, cursor).map_err(to_wire)
 }
 
 #[cfg(test)]

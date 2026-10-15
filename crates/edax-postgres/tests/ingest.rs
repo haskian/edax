@@ -60,6 +60,25 @@ fn ingestion_lock_order_and_table_contract_are_explicit() {
 }
 
 #[test]
+fn ingestion_pending_index_migrates_the_configured_rejection_table() {
+    for (config, table) in [
+        ("{}", "\"public\".\"edax_ingest_rejections\""),
+        (
+            r#"{"schema":"billing","names":{"ingest_rejections":"refused_orders"}}"#,
+            "\"billing\".\"refused_orders\"",
+        ),
+    ] {
+        let sql = statements(config).unwrap();
+        assert_eq!(
+            sql["pending_index"],
+            format!("CREATE INDEX ON {table} (key) WHERE NOT (value->>'published')::boolean;")
+        );
+        assert_eq!(sql["ddl"].matches(&sql["pending_index"]).count(), 1);
+        assert!(sql["pending"].contains("NOT (value->>'published')::boolean"));
+    }
+}
+
+#[test]
 fn only_record_failures_with_proven_rollback_are_isolated() {
     for (state, rolled_back, expected) in [
         (Some("22003"), true, "isolate"),

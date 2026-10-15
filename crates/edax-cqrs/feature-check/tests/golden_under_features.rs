@@ -93,3 +93,36 @@ fn cursor_vector_holds() {
         );
     }
 }
+
+#[test]
+fn ingestion_raw_number_vector_holds() {
+    use edax_cqrs::{fold, ingest};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    for case in golden("ingestion_numbers.json") {
+        let result = match case["op"].as_str().unwrap() {
+            "plan" => ingest::inputs_json(case["inputs_json"].as_str().unwrap())
+                .and_then(|inputs| {
+                    ingest::plan(
+                        case["mode"].as_str().unwrap(),
+                        &inputs,
+                        &BTreeMap::new(),
+                        &BTreeMap::new(),
+                    )
+                })
+                .map(|plan| json!(plan)),
+            "fold_keys" => fold::request_json(case["request_json"].as_str().unwrap())
+                .and_then(|request| fold::keys(&request))
+                .map(|keys| json!(keys)),
+            _ => panic!("unknown raw numeric golden operation"),
+        };
+        match result {
+            Ok(value) => {
+                assert!(case["error"].is_null(), "{}", case["name"]);
+                assert_eq!(value, case["want"], "{}", case["name"]);
+            }
+            Err(error) => assert_eq!(json!(error.to_string()), case["error"], "{}", case["name"]),
+        }
+    }
+}

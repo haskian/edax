@@ -158,7 +158,7 @@ async def test_idle_revoke_allows_the_fetch_needed_to_rejoin() -> None:
         await asyncio.gather(rejoining, polling, return_exceptions=True)
 
 
-async def test_revoke_deadline_keeps_an_uncancellable_commit_owned() -> None:
+async def test_revoke_deadline_keeps_the_client_commit_owned() -> None:
     client = HeldCommit(ignore_cancel=True)
     await seed(client)
     consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_timeout_s=0.01)
@@ -170,7 +170,7 @@ async def test_revoke_deadline_keeps_an_uncancellable_commit_owned() -> None:
     assert not second.live()
     with pytest.raises(edax.StoreError):
         await flush
-    await client.cancelled.wait()
+    assert not client.cancelled.is_set()
     with pytest.raises(edax.BadHandle):
         await consumer.flush()
     with pytest.raises(edax.BadHandle):
@@ -267,16 +267,22 @@ async def test_cancelling_revoke_cancels_its_queued_commit() -> None:
     assert client.commits == [1]
 
 
-async def test_cooperative_commit_timeout_remains_retryable_without_a_caller_yield() -> None:
+async def test_commit_timeout_waits_for_the_original_call_before_resuming() -> None:
     client = HeldCommit()
     await seed(client)
     consumer = KafkaConsumer(client, serializer=IdSerializer(), commit_timeout_s=0.001)
     await delivered(await consumer.poll()).ack()
     with pytest.raises(edax.StoreError):
         await consumer.flush()
-    # Deliberately no intervening sleep: ordinary cancellation must not look like a stuck client.
+    with pytest.raises(edax.BadHandle, match="commit still running"):
+        await consumer.flush()
+    assert not client.cancelled.is_set()
     client.release.set()
+    pending = consumer._offsets.unfinished()
+    assert pending is not None
+    await pending
     await consumer.flush()
+    assert client.calls == 1
     assert client.commits == [1]
     assert delivered(await consumer.poll()).message.id == "1"
 

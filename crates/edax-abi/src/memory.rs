@@ -1202,7 +1202,7 @@ impl MemoryIngestion {
     /// Commit original records and durable rejection decisions together.
     pub fn commit(&self, manifest: &str, inputs: &str) -> Result<String, String> {
         let contract = crate::read_json::<edax_cqrs::ingest::Contract>(manifest)?;
-        let inputs = crate::read_json::<Vec<edax_cqrs::ingest::Input>>(inputs)?;
+        let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(crate::to_wire)?;
         crate::write_json(&self.inner.commit(&contract, &inputs).map_err(crate::to_wire)?)
     }
 

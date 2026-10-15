@@ -1,0 +1,2495 @@
+[
+  {
+    "error": null,
+    "name": "initialize",
+    "now": 0,
+    "records": {},
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "initialize"
+      }
+    },
+    "want": {
+      "result": null,
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 0,
+          "expires_ms": 0,
+          "next_offset": 0,
+          "owner": "",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+          "epoch": 0,
+          "expires_ms": 0,
+          "next_offset": 0,
+          "owner": "",
+          "partition": 1
+        },
+        "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+          "active": false,
+          "contract": {
+            "effect_namespace": "account-effects-v1",
+            "envelope_id": "event-v1",
+            "generation": "account-balances-v1",
+            "keying_id": "account-v1",
+            "reducer_id": "balance-v1",
+            "source_history": "no-rollback-policy-1",
+            "source_identity": "cluster-42/topic-81",
+            "starts": {
+              "0": 0,
+              "1": 0
+            },
+            "topic": "account-events"
+          },
+          "cutoffs": {},
+          "frozen": false,
+          "upper": {}
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "name": "acquire",
+    "now": 10,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "in_progress: fold partition already owned",
+    "name": "live_owner_blocks_takeover",
+    "now": 11,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-b",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 139 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "normalized_envelope_must_remain_canonical_safe",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": 1e+18
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 0,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 32 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "normalized_state_must_remain_canonical_safe",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 0,
+        "op": "apply",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": {
+          "intents": [],
+          "state": {
+            "amount": 1e+18
+          }
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "prepare_first_delta",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 3,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "novel": true,
+        "state": null
+      },
+      "suppression": null,
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "name": "legitimate_broker_gap",
+    "now": 13,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 3,
+        "op": "apply",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "account": "account-42"
+              }
+            }
+          ],
+          "state": {
+            "balance": "12.50",
+            "currency": "EUR"
+          }
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 4,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 4,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"event\",\"bank-eu\",\"credit-1\"]": {
+          "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"intent\",\"18:account-effects-v1:[\\\"bank-eu\\\",\\\"account-42\\\",\\\"credit-1\\\",\\\"receipt\\\"]\"]": {
+          "destination": "email",
+          "id": "18:account-effects-v1:[\"bank-eu\",\"account-42\",\"credit-1\",\"receipt\"]",
+          "kind": "intent",
+          "offset": 3,
+          "partition": 0,
+          "payload": {
+            "account": "account-42"
+          },
+          "published": false,
+          "suppressed": false
+        },
+        "19:account-balances-v1:[\"fold\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]": {
+          "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+          "partition": 0,
+          "sequence": 1,
+          "value": {
+            "balance": "12.50",
+            "currency": "EUR"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "name": "uncertain_commit_recovers_database_cursor",
+    "now": 14,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 4,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "op": "load"
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 4,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "name": "logical_duplicate_new_offset",
+    "now": 15,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 4,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"event\",\"bank-eu\",\"credit-1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 4,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 5,
+        "op": "apply",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "account": "account-42"
+              }
+            }
+          ],
+          "state": {
+            "balance": "999",
+            "currency": "EUR"
+          }
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "codec: conflicting fold identity or incomplete deduplication indexes",
+    "name": "event_identity_reused",
+    "now": 16,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"event\",\"bank-eu\",\"credit-1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 6,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: conflicting fold identity or incomplete deduplication indexes",
+    "name": "sequence_identity_reused",
+    "now": 16,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "other",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 6,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: fold aggregate sequence gap",
+    "name": "missing_delta",
+    "now": 16,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 6,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: conflicting fold identity or incomplete deduplication indexes",
+    "name": "reducer_metadata_conflict",
+    "now": 16,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"event\",\"bank-eu\",\"credit-1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]": {
+        "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"credit-1\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"1\",\"tenant\":\"bank-eu\"}",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-1",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "changed"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 1,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 6,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "noop_advances_sequence",
+    "now": 17,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 6,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "noop-2",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 6,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 6,
+        "op": "apply",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": {
+          "intents": [],
+          "state": {
+            "balance": "12.50",
+            "currency": "EUR"
+          }
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"event\",\"bank-eu\",\"noop-2\"]": {
+          "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"noop-2\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"2\",\"tenant\":\"bank-eu\"}",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"sequence\",\"bank-eu\",\"account-42\",\"2\"]": {
+          "fingerprint": "{\"aggregate\":\"account-42\",\"event_id\":\"noop-2\",\"event_type\":\"CreditPosted\",\"metadata\":{\"correlation_id\":\"payment-99\"},\"payload\":{\"amount\":\"12.50\",\"currency\":\"EUR\"},\"schema_version\":\"1\",\"sequence\":\"2\",\"tenant\":\"bank-eu\"}",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+          "partition": 0,
+          "sequence": 2,
+          "value": {
+            "balance": "12.50",
+            "currency": "EUR"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "retention_overtook_cursor",
+    "now": 18,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "prepare",
+        "proof": {
+          "beginning": 8,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "topic_recreated",
+    "now": 18,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/new-topic"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "history_changed",
+    "now": 18,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "rollback-2",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: fold source continuity is unproven or required history is missing",
+    "name": "truncated_end",
+    "now": 18,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 6,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "expired_owner_takeover",
+    "now": 1010,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 7,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-b",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 2,
+          "expires_ms": 2010,
+          "next_offset": 7,
+          "owner": "worker-b",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: stale fold owner, cursor or expired lease",
+    "name": "obsolete_writer_fenced",
+    "now": 1011,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "apply",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "account": "account-42"
+              }
+            }
+          ],
+          "state": {
+            "balance": "25.00",
+            "currency": "EUR"
+          }
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "stale_release_cannot_release_new_owner",
+    "now": 1012,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 7,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "op": "release"
+      }
+    },
+    "want": {
+      "result": null,
+      "suppression": null,
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "name": "fresh_owner_still_live",
+    "now": 1013,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 2,
+          "expires_ms": 2010,
+          "next_offset": 7,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "load"
+      }
+    },
+    "want": {
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "suppression": null,
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "name": "activate_initial_generation",
+    "now": 1014,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "cutover": {
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "topic": "account-events"
+        },
+        "op": "activate"
+      }
+    },
+    "want": {
+      "result": null,
+      "suppression": {
+        "0": 0,
+        "1": 0
+      },
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+          "active": true,
+          "contract": {
+            "effect_namespace": "account-effects-v1",
+            "envelope_id": "event-v1",
+            "generation": "account-balances-v1",
+            "keying_id": "account-v1",
+            "reducer_id": "balance-v1",
+            "source_history": "no-rollback-policy-1",
+            "source_identity": "cluster-42/topic-81",
+            "starts": {
+              "0": 0,
+              "1": 0
+            },
+            "topic": "account-events"
+          },
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "frozen": false,
+          "upper": {}
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "name": "freeze_captures_database_cutoffs",
+    "now": 1015,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2010,
+        "next_offset": 7,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "freeze"
+      }
+    },
+    "want": {
+      "result": {
+        "cutoffs": {
+          "0": 7,
+          "1": 0
+        },
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "topic": "account-events"
+      },
+      "suppression": null,
+      "writes": {
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 2,
+          "expires_ms": 0,
+          "next_offset": 7,
+          "owner": "",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+          "epoch": 0,
+          "expires_ms": 0,
+          "next_offset": 0,
+          "owner": "",
+          "partition": 1
+        },
+        "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+          "active": true,
+          "contract": {
+            "effect_namespace": "account-effects-v1",
+            "envelope_id": "event-v1",
+            "generation": "account-balances-v1",
+            "keying_id": "account-v1",
+            "reducer_id": "balance-v1",
+            "source_history": "no-rollback-policy-1",
+            "source_identity": "cluster-42/topic-81",
+            "starts": {
+              "0": 0,
+              "1": 0
+            },
+            "topic": "account-events"
+          },
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "frozen": true,
+          "upper": {
+            "0": 7,
+            "1": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: fold generation is frozen",
+    "name": "frozen_generation_rejects_new_write",
+    "now": 1016,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 0,
+        "next_offset": 7,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": true,
+        "upper": {
+          "0": 7,
+          "1": 0
+        }
+      },
+      "19:account-balances-v1:[\"fold\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "partition": 0,
+        "sequence": 2,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "event": {
+          "aggregate": "account-42",
+          "event_id": "credit-3",
+          "event_type": "CreditPosted",
+          "metadata": {
+            "correlation_id": "payment-99"
+          },
+          "payload": {
+            "amount": "12.50",
+            "currency": "EUR"
+          },
+          "schema_version": "1",
+          "sequence": 3,
+          "tenant": "bank-eu"
+        },
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 2,
+          "expires_ms": 2010,
+          "next_offset": 7,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "offset": 8,
+        "op": "prepare",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid fold activation vector",
+    "name": "cannot_reactivate_frozen_generation",
+    "now": 1017,
+    "records": {
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 0,
+        "next_offset": 7,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"fold\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"fold\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": true,
+        "upper": {
+          "0": 7,
+          "1": 0
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "cutover": {
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "topic": "account-events"
+        },
+        "op": "activate"
+      }
+    },
+    "want": null
+  }
+]
