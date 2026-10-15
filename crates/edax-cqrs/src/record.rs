@@ -4,7 +4,8 @@
 //! other. The golden vector `testdata/golden/idempotency_record.json` pins both.
 //!
 //! Wire shape — flat JSON, fixed key order:
-//! `{"payload_hash": u64, "result": <json>, "error": string|null, "error_code": string|null, "pending": bool}`
+//! `{"payload_hash": u64, "result": <json>, "error": string|null, "error_code": string|null,
+//! "error_reason": string, "pending": bool}`, where `error_reason` appears only when a failure carries one.
 //!
 //! Reading order: `pending` wins, then `error`, then `result`. A missing `pending` reads as `false`
 //! (records written before the field existed). A missing `result` reads as `null`.
@@ -15,6 +16,13 @@
 //! failure, which keeps a shared ledger readable through a rolling deploy. A missing, `null` or
 //! unknown `error_code` reads as no code; the failure is still a failure. An empty `error` is still
 //! a failure: only `null` means "not failed".
+//!
+//! A host's rejection may name why it refused in `error_reason` (`not_found`), so a replay tells two
+//! refusals apart where the code says only `rejected`. Only a failure coded `rejected` carries one, and
+//! only a name [`check_reason`] accepts. The key is written only when present, so a record with none is
+//! the bytes a writer that predates it wrote, and such a reader ignores it. A reason a reader cannot use
+//! (misplaced, malformed, not a string) reads as none: it never makes the record unreadable, which would
+//! turn a `rejected` replay into `codec`.
 //!
 //! A `null` result on a completed, non-failed record is a **success whose value is null** — Python
 //! `None`, Rust `()` — not "no result". A typed reader decodes the stored value as its result type,
@@ -61,6 +69,9 @@ pub enum State<R> {
         code: Option<ErrorCode>,
         /// The failure's message, without the code.
         message: String,
+        /// Why a host's rejection refused (`not_found`), for a failure coded `rejected`; see
+        /// [`check_reason`].
+        reason: Option<String>,
     },
     /// The handler completed; a redelivery replays this value (which may be JSON `null`).
     Done(R),
@@ -90,6 +101,7 @@ impl<R> Record<R> {
             state: State::Failed {
                 code: Some(code),
                 message: message.into(),
+                reason: None,
             },
         }
     }
@@ -107,15 +119,26 @@ impl<R> Record<R> {
 
 impl<R> State<R> {
     /// Read the wire's fields in the kernel's order: `pending` wins, then `error`, then the
-    /// result. This is the single place the precedence is written down. `error_code` is read only
-    /// beside an `error`, and a name the taxonomy does not know reads as no code.
-    pub fn from_wire(pending: bool, error: Option<String>, error_code: Option<&str>, result: R) -> Self {
+    /// result. This is the single place the precedence is written down. `error_code` and `error_reason`
+    /// are read only beside an `error`; a name the taxonomy does not know reads as no code, and a reason
+    /// [`check_reason`] refuses, or one beside any code but `rejected`, reads as none.
+    pub fn from_wire(
+        pending: bool,
+        error: Option<String>,
+        error_code: Option<&str>,
+        error_reason: Option<&str>,
+        result: R,
+    ) -> Self {
         match (pending, error) {
             (true, _) => State::Pending,
-            (false, Some(message)) => State::Failed {
-                code: stored_code(error_code),
-                message,
-            },
+            (false, Some(message)) => {
+                let code = stored_code(error_code);
+                State::Failed {
+                    code,
+                    message,
+                    reason: usable_reason(code, error_reason).map(str::to_owned),
+                }
+            }
             (false, None) => State::Done(result),
         }
     }
@@ -150,6 +173,8 @@ struct WireRef<'a, R> {
     result: Option<&'a R>,
     error: Option<&'a str>,
     error_code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_reason: Option<&'a str>,
     pending: bool,
 }
 
@@ -164,22 +189,32 @@ struct WireOwned {
     error: Option<String>,
     #[serde(default)]
     error_code: Option<String>,
+    // A `Value`, so a reason of the wrong type reads as none rather than making the record unreadable.
+    #[serde(default)]
+    error_reason: Value,
     #[serde(default)]
     pending: bool,
 }
 
 impl<R: Serialize> Serialize for Record<R> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let (result, error, error_code, pending) = match &self.state {
-            State::Pending => (None, None, None, true),
-            State::Failed { code, message } => (None, Some(message.as_str()), code.map(ErrorCode::as_str), false),
-            State::Done(result) => (Some(result), None, None, false),
+        let (result, error, error_code, error_reason, pending) = match &self.state {
+            State::Pending => (None, None, None, None, true),
+            State::Failed { code, message, reason } => (
+                None,
+                Some(message.as_str()),
+                code.map(ErrorCode::as_str),
+                reason.as_deref(),
+                false,
+            ),
+            State::Done(result) => (Some(result), None, None, None, false),
         };
         WireRef {
             payload_hash: self.payload_hash,
             result,
             error,
             error_code,
+            error_reason,
             pending,
         }
         .serialize(serializer)
@@ -197,9 +232,15 @@ impl<'de, R: DeserializeOwned> Deserialize<'de> for Record<R> {
         let wire: WireOwned = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
         // The result is decoded as `R` only on the `Done` branch: a pending or failed record carries
         // `null` there, which must not be forced through a result type that has no null form.
-        let state = match State::from_wire(wire.pending, wire.error, wire.error_code.as_deref(), wire.result) {
+        let state = match State::from_wire(
+            wire.pending,
+            wire.error,
+            wire.error_code.as_deref(),
+            wire.error_reason.as_str(),
+            wire.result,
+        ) {
             State::Pending => State::Pending,
-            State::Failed { code, message } => State::Failed { code, message },
+            State::Failed { code, message, reason } => State::Failed { code, message, reason },
             State::Done(value) => State::Done(
                 serde_json::from_value(value)
                     .map_err(|e| serde::de::Error::custom(format!("cached result is not a valid replay value: {e}")))?,
@@ -214,8 +255,22 @@ impl<'de, R: DeserializeOwned> Deserialize<'de> for Record<R> {
 
 /// The canonical bytes of `record`: the only encoding a store may persist. A result JSON cannot
 /// express, or one holding an integer wider than 64 bits (see the module's number bound), is a `codec`
-/// error.
+/// error, and so is a reason beside any code but `rejected`, or one [`check_reason`] refuses.
 pub fn encode_record<R: Serialize>(record: &Record<R>) -> Result<Vec<u8>, Error> {
+    if let State::Failed {
+        code,
+        reason: Some(reason),
+        ..
+    } = &record.state
+    {
+        check_reason(reason)?;
+        if *code != Some(ErrorCode::Rejected) {
+            return Err(Error::codec(format_args!(
+                "a reason ({reason:?}) belongs only to a `rejected` failure, not to {}",
+                code.map_or("one with no code", ErrorCode::as_str)
+            )));
+        }
+    }
     let bytes = serde_json::to_vec(record).map_err(Error::codec)?;
     check_document(&bytes)?;
     Ok(bytes)
@@ -323,6 +378,26 @@ fn stored_code(name: Option<&str>) -> Option<ErrorCode> {
     name.and_then(|name| name.parse().ok())
 }
 
+/// Refuse `reason` unless it follows the rule of a name a host chooses ([`edax_core::is_open_name`]): 1 to
+/// [`edax_core::OPEN_NAME_MAX`] bytes of `[a-z0-9._-]`, starting with `[a-z0-9]`. A reason is a name a host
+/// branches on (`not_found`), not text for a person; the message carries that. A `codec` error, so a host
+/// SDK refuses a bad reason where the rejection is defined, never when a failure settles.
+pub fn check_reason(reason: &str) -> Result<(), Error> {
+    if edax_core::is_open_name(reason) {
+        return Ok(());
+    }
+    Err(Error::codec(format_args!(
+        "rejection reason {reason:?} must be 1 to {} of [a-z0-9._-], starting with [a-z0-9]",
+        edax_core::OPEN_NAME_MAX
+    )))
+}
+
+/// The reason a failure coded `code` keeps: `reason` when the code is `rejected` and [`check_reason`]
+/// accepts it, else none.
+fn usable_reason(code: Option<ErrorCode>, reason: Option<&str>) -> Option<&str> {
+    reason.filter(|reason| code == Some(ErrorCode::Rejected) && check_reason(reason).is_ok())
+}
+
 /// The error a replay of a cached failure raises: `cached_failure`, terminal, whatever the original
 /// code was. Its message is the original failure's wire form (`"codec: bad payload"`), so the code
 /// survives the replay; a failure stored without a code replays its message alone.
@@ -355,11 +430,20 @@ pub enum Settle<R> {
 /// replay the failure after the host fixed the wiring, so the consumer would dead-letter a message it
 /// stopped on to run again. Two SDKs guarding one ledger must cache the same failures, or one replays as
 /// terminal what the other re-runs; pinned by `testdata/golden/idempotency_settle.json`.
-pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, message: &str) -> Settle<R> {
+///
+/// `reason` is why a host's rejection refused. The cached record keeps it only beside the `rejected` code
+/// and only when [`check_reason`] accepts it; any other is dropped, never refused, so a reason cannot keep
+/// a failure from caching.
+pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, message: &str, reason: Option<&str>) -> Settle<R> {
     match code {
-        Some(code) if code.is_terminal() && !code.is_fatal() => {
-            Settle::Cache(Record::failed(payload_hash, code, message))
-        }
+        Some(code) if code.is_terminal() && !code.is_fatal() => Settle::Cache(Record {
+            payload_hash,
+            state: State::Failed {
+                code: Some(code),
+                message: message.to_owned(),
+                reason: usable_reason(Some(code), reason).map(str::to_owned),
+            },
+        }),
         _ => Settle::Release,
     }
 }
@@ -433,7 +517,7 @@ pub fn outcome<R>(prior: &Record<R>, current: u64) -> Outcome<'_, R> {
     }
     match &prior.state {
         State::Pending => Outcome::InProgress,
-        State::Failed { code, message } => Outcome::Failed { code: *code, message },
+        State::Failed { code, message, .. } => Outcome::Failed { code: *code, message },
         State::Done(result) => Outcome::Succeeded(result),
     }
 }
@@ -450,12 +534,12 @@ mod tests {
     #[test]
     fn settle_failure_caches_a_terminal_code_and_releases_everything_else() {
         assert_eq!(
-            settle_failure::<()>(HASH, None, "boom"),
+            settle_failure::<()>(HASH, None, "boom", None),
             Settle::Release,
             "no code is the transient default"
         );
         assert_eq!(
-            settle_failure::<()>(HASH, Some(ErrorCode::BadHandle), "boom"),
+            settle_failure::<()>(HASH, Some(ErrorCode::BadHandle), "boom", None),
             Settle::Release,
             "a fatal code is the wiring's"
         );
@@ -466,7 +550,7 @@ mod tests {
             } else {
                 Settle::Release
             };
-            assert_eq!(settle_failure::<()>(HASH, Some(*code), "boom"), want, "{code}");
+            assert_eq!(settle_failure::<()>(HASH, Some(*code), "boom", None), want, "{code}");
         }
     }
 
@@ -501,6 +585,7 @@ mod tests {
                     state: State::Failed {
                         code: None,
                         message: "bad".to_owned(),
+                        reason: None,
                     },
                 },
                 HASH,
@@ -517,6 +602,7 @@ mod tests {
         let failed = |code| State::Failed {
             code,
             message: "boom".to_owned(),
+            reason: None,
         };
         for (name, pending, error, error_code, want, want_str) in [
             (
@@ -561,7 +647,7 @@ mod tests {
             ),
             ("neither_is_done", false, None, None, State::Done(42), "done"),
         ] {
-            let got = State::from_wire(pending, error.map(str::to_owned), error_code, 42);
+            let got = State::from_wire(pending, error.map(str::to_owned), error_code, None, 42);
             assert_eq!(got, want, "{name}");
             assert_eq!(got.kind().as_str(), want_str, "{name}");
         }
@@ -769,6 +855,7 @@ mod tests {
                     state: State::Failed {
                         code: None,
                         message: "boom".to_owned(),
+                        reason: None,
                     },
                 },
                 r#"{"payload_hash":11234062831410934249,"result":null,"error":"boom","error_code":null,"pending":false}"#,
@@ -966,6 +1053,90 @@ mod tests {
             ("bytes_that_do_not_decode_pass", b"{not json".to_vec(), Ok(())),
         ] {
             assert_eq!(check_settled(&record).map_err(|e| e.to_string()), want, "{name}");
+        }
+    }
+
+    /// A rejection's reason: kept where it belongs, dropped by a settle where it does not, refused by a
+    /// hand-built record, and read as none where a reader cannot use it. Absent, it writes no key.
+    #[test]
+    fn a_reason_rides_only_a_rejected_failure() {
+        let rejected = |reason: Option<&str>| Record::<()> {
+            payload_hash: HASH,
+            state: State::Failed {
+                code: Some(ErrorCode::Rejected),
+                message: "no such order".to_owned(),
+                reason: reason.map(str::to_owned),
+            },
+        };
+        let settles = [
+            (
+                "kept_beside_rejected",
+                ErrorCode::Rejected,
+                Some("not_found"),
+                Some("not_found"),
+            ),
+            ("dropped_beside_another_code", ErrorCode::Codec, Some("not_found"), None),
+            ("dropped_when_malformed", ErrorCode::Rejected, Some("Not Found"), None),
+            ("none_stays_none", ErrorCode::Rejected, None, None),
+        ];
+        for (name, code, reason, kept) in settles {
+            let Settle::Cache(Record {
+                state: State::Failed { reason: got, .. },
+                ..
+            }) = settle_failure::<()>(HASH, Some(code), "no such order", reason)
+            else {
+                panic!("{name}: a terminal code caches");
+            };
+            assert_eq!(got.as_deref(), kept, "{name}");
+        }
+
+        let bytes = encode_record(&rejected(Some("not_found"))).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            format!(
+                r#"{{"payload_hash":{HASH},"result":null,"error":"no such order","error_code":"rejected","error_reason":"not_found","pending":false}}"#
+            )
+        );
+        assert_eq!(
+            decode_record::<()>(&bytes).unwrap(),
+            rejected(Some("not_found")),
+            "round trip"
+        );
+        let bare = String::from_utf8(encode_record(&rejected(None)).unwrap()).unwrap();
+        assert!(!bare.contains("error_reason"), "no reason, no key: {bare}");
+
+        let misplaced = Record::<()> {
+            payload_hash: HASH,
+            state: State::Failed {
+                code: Some(ErrorCode::Codec),
+                message: "bad".to_owned(),
+                reason: Some("not_found".to_owned()),
+            },
+        };
+        for (name, record) in [("misplaced", misplaced), ("malformed", rejected(Some("-x")))] {
+            let refused = encode_record(&record).unwrap_err();
+            assert_eq!(refused.code, ErrorCode::Codec, "{name}: {refused}");
+        }
+
+        for (name, reason) in [
+            ("not_a_string", "7"),
+            ("malformed", r#""Not Found""#),
+            ("beside_another_code", r#""not_found""#),
+        ] {
+            let code = if name == "beside_another_code" {
+                "codec"
+            } else {
+                "rejected"
+            };
+            let raw = format!(r#"{{"payload_hash":{HASH},"error":"x","error_code":"{code}","error_reason":{reason}}}"#);
+            let Record {
+                state: State::Failed { reason: got, .. },
+                ..
+            } = decode_record::<()>(raw.as_bytes()).unwrap()
+            else {
+                panic!("{name}: still a failure");
+            };
+            assert_eq!(got, None, "{name}: read as no reason");
         }
     }
 }

@@ -104,7 +104,7 @@ fn rig() -> Rig {
     bus.register(handler, vec![guard]).expect("one handler");
 
     Rig {
-        projections: db.projection_store(),
+        projections: db.projection_store("read_model"),
         sagas: db.saga_store(),
         db,
         events,

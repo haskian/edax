@@ -421,3 +421,78 @@ func TestRepositoryLoadDiscardsAggregateOnFailure(t *testing.T) {
 		})
 	}
 }
+
+// countingStore counts the reads a repository makes.
+type countingStore struct {
+	edax.EventStore
+	reads int
+}
+
+func (s *countingStore) Load(ctx context.Context, id string, after uint64) ([]edax.EventMessage, error) {
+	s.reads++
+	return s.EventStore.Load(ctx, id, after)
+}
+
+func (s *countingStore) LoadSnapshot(ctx context.Context, id string) (*edax.Snapshot, error) {
+	s.reads++
+	return s.EventStore.LoadSnapshot(ctx, id)
+}
+
+func TestRepositoryCreateStartsAnAggregateWithoutReading(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		tenancy edax.Tenancy
+		tenant  *string
+		fails   bool
+	}{
+		{name: "a pool refuses a create with no tenant", tenancy: "pool", fails: true},
+		{name: "a bridge refuses one too", tenancy: "bridge", fails: true},
+		{name: "a silo still checks a tenant it is given", tenancy: "silo", tenant: edax.Ptr(""), fails: true},
+		{name: "a silo expects none", tenancy: "silo"},
+		{name: "a pool with a tenant is fine", tenancy: "pool", tenant: edax.Ptr("acme")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := memory.New()
+			defer database.Close()
+			inner, err := database.EventStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer inner.Close()
+			store := &countingStore{EventStore: inner}
+			codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return new(invoiceIssued) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := edax.NewRepository[*invoice](store, codec, invoiceCodec{}, edax.RepositoryOptions{Tenancy: test.tenancy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := repo.Create("invoice-42", test.tenant)
+			if test.fails {
+				if !errors.Is(err, edax.ErrCodec) {
+					t.Fatalf("create: %v", err)
+				}
+				return
+			}
+			if err != nil || created.Version() != (edax.Version{}) || !reflect.DeepEqual(created.Tenant(), test.tenant) || store.reads != 0 {
+				t.Fatalf("create %+v %v reads=%d", created, err, store.reads)
+			}
+			if err = edax.Apply(created, &invoiceIssued{Total: 10}); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := repo.Save(ctx, created, edax.SaveOptions{})
+			if err != nil || len(stored) != 1 || !reflect.DeepEqual(stored[0].Tenant, test.tenant) {
+				t.Fatalf("save stamps the tenant: %+v %v", stored, err)
+			}
+			again, _ := repo.Create("invoice-42", test.tenant)
+			if err = edax.Apply(again, &invoiceIssued{Total: 5}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = repo.Save(ctx, again, edax.SaveOptions{}); !errors.Is(err, edax.ErrConcurrency) {
+				t.Fatalf("existing id: %v", err)
+			}
+		})
+	}
+}

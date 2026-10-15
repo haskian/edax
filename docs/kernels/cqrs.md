@@ -234,12 +234,19 @@ Wire shape — flat JSON, fixed key order:
 {"payload_hash": 11234062831410934249, "result": null, "error": null, "error_code": null, "pending": true}
 ```
 
+A rejection that names why it refused adds one key, written only when present:
+
+```json
+{"payload_hash": 11234062831410934249, "result": null, "error": "no such order", "error_code": "rejected", "error_reason": "not_found", "pending": false}
+```
+
 | Field | Type | Set when | Missing on read |
 |---|---|---|---|
 | `payload_hash` | unsigned 64-bit integer | always | required — a missing or non-integer hash makes the record unreadable |
 | `result` | any JSON | `done` | reads as `null` |
 | `error` | string or null | `failed`: the failure's message, without its code | reads as absent |
 | `error_code` | string or null | `failed`: the failure's taxonomy code | reads as no code; so does a `null` or a code this kernel does not know |
+| `error_reason` | string, written only when present | `failed` with code `rejected`: why the rejection refused, a name `check_reason` accepts | reads as no reason; so does one beside another code, one that is no name, or one that is not a string |
 | `pending` | bool | always | reads as `false` — records written before the field existed |
 
 A failed record keeps its code **beside** the message rather than inside an `error` object. A reader
@@ -249,6 +256,11 @@ message)` is the error a losing claimant raises: terminal, with the original fai
 its message (`"cached_failure: codec: bad payload"`). An empty `error` is still a failure; only
 `null` means "not failed". The ABI builds the record from the flat fields a binding holds, through
 `State::from_wire`, and refuses a code the taxonomy does not know.
+
+`settle_failure` keeps a rejection's reason beside the `rejected` code and drops any other, so a
+reason never keeps a failure from caching. `encode_record` refuses a reason a hand-built record
+misplaces. A record with no reason writes no `error_reason` key. Its bytes are the ones a writer that
+predates the field wrote, so no Redis or Postgres vector holding such a record changes.
 
 **Reading order: `pending` wins, then `error`, then `result`**. The precedence is written down in
 exactly one place, `State::from_wire`, so a foreign writer that over-specifies a record cannot make

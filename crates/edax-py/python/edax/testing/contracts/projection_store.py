@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -13,7 +14,7 @@ from ...projection import Entity, ProjectionQuery, ProjectionStore
 from ...query import Query, encode_cursor, sort_key
 from ...unit_of_work import transaction
 from .._concurrency import race, staged_then_read, unique_id
-from ._fixtures import Transactional
+from ._fixtures import Transactional, requires
 
 #: A seam fixture: the store under test.
 Store = ProjectionStore[Any]
@@ -35,8 +36,38 @@ class ProjectionStoreContract(Transactional):
     :class:`~edax.projection.ProjectionQuery` (the suite checks with ``isinstance``).
 
     Supply a ``projection_store`` fixture, and a ``transactor`` fixture unless the backend declares
-    ``supports_transactions = False``.
+    ``supports_transactions = False``. Supply a ``projection_store_named`` fixture too: a callable that
+    builds the store for a read-model name, each over one database. A backend that holds one read model
+    only declares ``supports_named_projections = False`` instead.
     """
+
+    #: The backend keeps read models apart by name, as one database must for their writes to join one
+    #: unit of work. Requires a ``projection_store_named`` fixture when true.
+    supports_named_projections: bool = True
+
+    async def test_two_read_models_share_no_rows(
+        self, projection_store: Store, request: pytest.FixtureRequest
+    ) -> None:
+        """Read models over one database share no row: an id one has saved is absent from the other,
+        whose first save at version 0 makes its own row, and each pages only its own. Without it a second
+        read model keyed by the same ids overwrites the first. The names and ids would collide if a store
+        joined them with a separator. Both read models come from ``projection_store_named``, whose names
+        the clause picks; ``projection_store`` plays no part."""
+        del projection_store
+        requires(self.supports_named_projections, "the backend holds one read model only")
+        named: Callable[[str], Store] = request.getfixturevalue("projection_store_named")
+        name, suffix = unique_id("read-model"), unique_id("row")
+        first, second = named(name), named(f"{name}:q")
+        await first.save(Entity(f"q:{suffix}", 0, {"from": "first"}))
+        assert await second.get(f"q:{suffix}") is None, "the other read model's id is absent"
+        assert await second.get(suffix) is None, "and no joined key reaches it"
+        assert await second.save(Entity(f"q:{suffix}", 0, {"from": "second"})) == 1, "its own first save"
+        stored = await first.get(f"q:{suffix}")
+        assert stored == Entity(f"q:{suffix}", 1, {"id": f"q:{suffix}", "from": "first"}), "left untouched"
+        for store, owner in ((first, "first"), (second, "second")):
+            if isinstance(store, ProjectionQuery):
+                page = await store.get_many(Query())
+                assert [(row["id"], row["from"]) for row in page.rows] == [(f"q:{suffix}", owner)], owner
 
     async def test_an_absent_entity_reads_as_none(self, projection_store: Store) -> None:
         """ "``get`` returns the current committed row plus the ``tx``'s own writes, or ``None``." """

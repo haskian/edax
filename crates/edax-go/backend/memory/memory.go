@@ -240,19 +240,23 @@ func (s *IdempotencyStore) Forget(ctx context.Context, key string) error {
 // Expire simulates lease or retention expiry by removing committed state; staged writes remain.
 func (s *IdempotencyStore) Expire(key string) (bool, error) { return s.native.Expire(key) }
 
-// ProjectionStore is a concurrency-safe view of the shared memory journal. Close it when finished.
+// ProjectionStore is a concurrency-safe view of one read model in the shared memory journal. Close it
+// when finished.
 type ProjectionStore struct {
-	database *Database
-	native   *kernel.MemoryProjectionStore
+	database   *Database
+	native     *kernel.MemoryProjectionStore
+	projection string
 }
 
-// ProjectionStore opens a separately owned read-model view of this database.
-func (d *Database) ProjectionStore() (*ProjectionStore, error) {
+// ProjectionStore opens a separately owned view of the read model named projection. Read models of one
+// database share no row, as the Postgres projections table keys each by its name, so two keyed by one id
+// never overwrite each other.
+func (d *Database) ProjectionStore(projection string) (*ProjectionStore, error) {
 	h, e := d.native.ProjectionStore()
 	if e != nil {
 		return nil, e
 	}
-	return &ProjectionStore{d, h}, nil
+	return &ProjectionStore{d, h, projection}, nil
 }
 
 // Close releases this native handle. Other retained handles keep their own ownership.
@@ -267,7 +271,7 @@ func (s *ProjectionStore) Get(ctx context.Context, id string) (*edax.ProjectionR
 	if e != nil {
 		return nil, e
 	}
-	return s.native.Get(t, id)
+	return s.native.Get(t, s.projection, id)
 }
 
 // Save checks the expected version and stages the replacement state atomically.
@@ -276,7 +280,7 @@ func (s *ProjectionStore) Save(ctx context.Context, id string, version uint64, d
 	if e != nil {
 		return 0, e
 	}
-	return s.native.Save(t, id, version, document)
+	return s.native.Save(t, s.projection, id, version, document)
 }
 
 // GetMany applies the kernel query to the context transaction’s projection view.
@@ -285,7 +289,7 @@ func (s *ProjectionStore) GetMany(ctx context.Context, query string) (string, er
 	if e != nil {
 		return "", e
 	}
-	return s.native.GetMany(t, query)
+	return s.native.GetMany(t, s.projection, query)
 }
 
 // SagaStore is a concurrency-safe view of the shared memory journal. Close it when finished.

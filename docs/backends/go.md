@@ -220,6 +220,7 @@ The package checks these contracts:
 | `EventStore` | Version checks, atomic batches, envelope fields, snapshots and event outbox |
 | `IdempotencyStore` | Exclusive claims, cached results, stale handle fences and forget |
 | `ProjectionStore` | Missing rows, version checks and preserved documents |
+| `NamedProjectionStores` | Read models over one database share no row; its factory returns the store of each name |
 | `CommandOutbox` | Transactional enqueue and idempotent publication marks |
 | `SagaStore` | Version checks, commands and completed tombstones |
 | `Transactions` | Commit or rollback events, ledger, projections, commands and saga state together |

@@ -178,14 +178,14 @@ dependencies = [
 
 [[package]]
 name = "edax-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "edax-cqrs"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64",
  "bigdecimal",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "edax-event"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64",
  "edax-core",
@@ -210,14 +210,14 @@ dependencies = [
 
 [[package]]
 name = "edax-golden"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "edax-postgres"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",

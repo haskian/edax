@@ -22,6 +22,7 @@ func TestMemoryContracts(t *testing.T) {
 	})
 	t.Run("projection", func(t *testing.T) {
 		edaxtest.ProjectionStore(t, func(t testing.TB) edax.ProjectionStore { return edaxtest.MemoryFixture(t).Projections })
+		edaxtest.NamedProjectionStores(t, edaxtest.MemoryNamedProjections)
 	})
 	t.Run("command_outbox", func(t *testing.T) {
 		edaxtest.CommandOutbox(t, func(t testing.TB) edax.CommandOutbox { return edaxtest.MemoryFixture(t).Commands })

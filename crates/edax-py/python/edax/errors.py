@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import ClassVar, Final, Literal, cast, get_args
+from typing import Any, ClassVar, Final, Literal, cast, get_args
 
 from . import _edax
 
@@ -76,12 +76,16 @@ class InProgress(EdaxError, code="in_progress"):
 class CachedFailure(EdaxError, code="cached_failure"):
     """Replay of a terminal failure cached under this idempotency key, so a redelivery dead-letters rather
     than retries. The message is the original failure's wire form (``"codec: bad payload"``), and
-    ``original_code`` its taxonomy code (``None`` for a record stored without one); the original exception
-    type does not survive."""
+    ``original_code`` its taxonomy code (``None`` for a record stored without one), and ``original_reason``
+    why a :class:`Rejected` refused, when its class named one; the original exception type does not
+    survive. :func:`reason_of` reads the reason off this and a live rejection alike."""
 
-    def __init__(self, message: str = "", original_code: str | None = None) -> None:
+    def __init__(
+        self, message: str = "", original_code: str | None = None, original_reason: str | None = None
+    ) -> None:
         super().__init__(message)
         self.original_code = original_code
+        self.original_reason = original_reason
 
 
 class HandlerNotFound(EdaxError, code="handler_not_found"):
@@ -103,7 +107,33 @@ class BadHandle(EdaxError, code="bad_handle"):
 class Rejected(EdaxError, code="rejected"):
     """A host's own business rejection ("insufficient funds"): the same command is rejected the same way on
     every retry, so the guard caches it and a dispatcher dead-letters it. Raise it, or subclass it, from a
-    handler. A host exception that declares ``terminal = True`` itself is cached under this code too."""
+    handler. A host exception that declares ``terminal = True`` itself is cached under this code too.
+
+    A subclass may name why it refuses, ``class NotFound(Rejected, reason="not_found")``, so a replay of
+    the cached failure tells it from another rejection: the record keeps the reason beside the code, and
+    :func:`reason_of` reads it off the live error and the replayed :class:`CachedFailure` alike. The kernel
+    checks the reason when the class is defined: 1 to 64 bytes of ``[a-z0-9._-]``, starting with
+    ``[a-z0-9]``, else :class:`CodecError`. Only the class keyword names one; a ``reason`` attribute in the
+    class body raises :class:`TypeError`, so a mixed-in library's own ``reason`` never reaches the record."""
+
+    _edax_reason: ClassVar[str | None] = None
+
+    def __init_subclass__(cls, reason: str | None = None, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "reason" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} defines `reason` in its body: name it as a class keyword, "
+                f'class {cls.__name__}(Rejected, reason="not_found")'
+            )
+        if reason is None:
+            return  # a subclass inherits its parent's reason
+        try:
+            _edax.check_rejection_reason(reason)
+        except RuntimeError as e:
+            raise from_wire(str(e)) from e
+        except TypeError as e:
+            raise CodecError(f"a rejection reason is text: {e}") from e
+        cls._edax_reason = reason
 
 
 def _check_every_kernel_code_has_a_class() -> None:
@@ -142,6 +172,17 @@ def code_of(e: BaseException) -> str | None:
     if isinstance(e, EdaxError):
         return e.code if e.code in _BY_CODE else None
     return Rejected.code if bool(getattr(e, "terminal", False)) else None
+
+
+def reason_of(e: BaseException) -> str | None:
+    """Why rejection ``e`` refused: the reason its :class:`Rejected` class names, or the one a replayed
+    :class:`CachedFailure` carries from the record; ``None`` for any other failure. One read for the live
+    rejection and its replay, so a host maps both to one answer (a 404 for ``not_found``)."""
+    if isinstance(e, Rejected):
+        return type(e)._edax_reason
+    if isinstance(e, CachedFailure):
+        return e.original_reason
+    return None
 
 
 def is_terminal(e: BaseException) -> bool:

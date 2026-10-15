@@ -71,7 +71,7 @@ pub use edax_core::payload_hash;
 use edax_core::Error;
 pub use host_value::{Decimal, Instant};
 pub use ledger::{complete_fence, release_fence, Claimed, Fence, Holder};
-pub use timestamp::canonical_timestamp;
+pub use timestamp::{canonical_timestamp, timestamp_from_unix_nanos};
 pub use value::{read_json, type_rank, TYPE_ORDER};
 
 pub use filter::{eval, eval_json, Filter, Operator};
@@ -81,8 +81,8 @@ pub use query::{
     TIEBREAK_PATH,
 };
 pub use record::{
-    cached_failure, check_settled, decode_prior, decode_record, encode_record, forget, lapsed_claim, outcome, replay,
-    settle_failure, unsettled_claim, Outcome, OutcomeKind, Record, Settle, State, StateKind,
+    cached_failure, check_reason, check_settled, decode_prior, decode_record, encode_record, forget, lapsed_claim,
+    outcome, replay, settle_failure, unsettled_claim, Outcome, OutcomeKind, Record, Settle, State, StateKind,
 };
 
 /// The idempotency hash of a command: its **name and the whole command value** serialized as one JSON

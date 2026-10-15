@@ -14,8 +14,8 @@ use edax_core::{ErrorCode, Tenancy};
 use edax_cqrs::{
     canonical_decimal, canonical_json, canonical_timestamp, check_settled, command_hash, complete_fence, decode_cursor,
     decode_prior, decode_record, document_json, effective_sort, encode_cursor, encode_record, eval_json,
-    keyed_document, outcome, payload_hash, query_json, received_key, release_fence, replay, settle_failure, Fence,
-    Holder, Record, Settle, SortKey, State,
+    keyed_document, outcome, payload_hash, query_json, received_key, release_fence, replay, settle_failure,
+    timestamp_from_unix_nanos, Fence, Holder, Record, Settle, SortKey, State,
 };
 use edax_golden::{refusal, write_or_check};
 use serde_json::{json, Value};
@@ -586,6 +586,41 @@ fn idempotency_record_cases() -> Vec<Value> {
             stored: format!(r#"{{"payload_hash":{hash},"result":7,"error":null,"pending":false,"ttl_ms":1000}}"#),
             current: hash,
         },
+        // A host's rejection keeps why it refused, so a replay tells `not_found` from `conflict`.
+        Case {
+            name: "a_rejection_keeps_its_reason",
+            stored: stored(&Record {
+                payload_hash: hash,
+                state: State::Failed {
+                    code: Some(ErrorCode::Rejected),
+                    message: "no such order".to_owned(),
+                    reason: Some("not_found".to_owned()),
+                },
+            }),
+            current: hash,
+        },
+        // A reason a reader cannot use reads as none: the failure, and its code, still replay.
+        Case {
+            name: "a_reason_beside_another_code_reads_as_none",
+            stored: format!(
+                r#"{{"payload_hash":{hash},"result":null,"error":"bad","error_code":"codec","error_reason":"not_found","pending":false}}"#
+            ),
+            current: hash,
+        },
+        Case {
+            name: "a_reason_that_is_not_a_name_reads_as_none",
+            stored: format!(
+                r#"{{"payload_hash":{hash},"result":null,"error":"no such order","error_code":"rejected","error_reason":"Not Found","pending":false}}"#
+            ),
+            current: hash,
+        },
+        Case {
+            name: "a_reason_that_is_not_a_string_reads_as_none",
+            stored: format!(
+                r#"{{"payload_hash":{hash},"result":null,"error":"no such order","error_code":"rejected","error_reason":7,"pending":false}}"#
+            ),
+            current: hash,
+        },
     ]);
     cases
         .chain(unreadable)
@@ -606,9 +641,10 @@ fn idempotency_record_cases() -> Vec<Value> {
             }
             match &record.state {
                 State::Pending => {}
-                State::Failed { code, message } => {
+                State::Failed { code, message, reason } => {
                     expected["error"] = json!(message);
                     expected["error_code"] = json!(code.map(ErrorCode::as_str));
+                    expected["error_reason"] = json!(reason);
                 }
                 State::Done(result) => expected["result"] = result.clone(),
             }
@@ -1355,21 +1391,24 @@ fn cursor_cases() -> Vec<Value> {
     minted_rows.chain(refused_rows).collect()
 }
 
-/// The guard's failure settle table: one row per taxonomy code plus the uncoded failure, and an empty
-/// message. `want` is `{"cache": <record>}`, the failed record a won claim completes with, or
-/// `"release"`.
+/// The guard's failure settle table: one row per taxonomy code plus the uncoded failure, an empty
+/// message, and a rejection's reason kept, dropped beside another code and dropped when it is no name.
+/// `want` is `{"cache": <record>}`, the failed record a won claim completes with, or `"release"`.
 fn idempotency_settle_cases() -> Vec<Value> {
     let hash = payload_hash(b"cmd-a");
     let codes = std::iter::once(None).chain(ErrorCode::ALL.iter().copied().map(Some));
-    let rows = codes
-        .map(|code| (code, "unknown field `amount`"))
-        .chain([(Some(ErrorCode::Codec), "")]);
-    rows.map(|(code, message)| {
-        let want = match settle_failure::<Value>(hash, code, message) {
+    let rows = codes.map(|code| (code, "unknown field `amount`", None)).chain([
+        (Some(ErrorCode::Codec), "", None),
+        (Some(ErrorCode::Rejected), "no such order", Some("not_found")),
+        (Some(ErrorCode::Codec), "unknown field `amount`", Some("not_found")),
+        (Some(ErrorCode::Rejected), "no such order", Some("Not Found")),
+    ]);
+    rows.map(|(code, message, reason)| {
+        let want = match settle_failure::<Value>(hash, code, message, reason) {
             Settle::Cache(record) => json!({ "cache": String::from_utf8(encode_record(&record).unwrap()).unwrap() }),
             Settle::Release => json!("release"),
         };
-        json!({ "code": code.map(ErrorCode::as_str), "message": message, "payload_hash": hash, "want": want })
+        json!({ "code": code.map(ErrorCode::as_str), "message": message, "reason": reason, "payload_hash": hash, "want": want })
     })
     .collect()
 }
@@ -1388,8 +1427,9 @@ fn idempotency_guard_cases() -> Vec<Value> {
     enum Run {
         Returns(Value),
         Fails(Option<ErrorCode>, &'static str),
+        Rejects(&'static str, &'static str),
     }
-    let won: [(&str, Run); 7] = [
+    let won: [(&str, Run); 8] = [
         ("a_success_is_cached", Run::Returns(result.clone())),
         ("a_null_success_is_cached_as_null", Run::Returns(Value::Null)),
         (
@@ -1399,6 +1439,10 @@ fn idempotency_guard_cases() -> Vec<Value> {
         (
             "a_host_rejection_is_cached_as_rejected",
             Run::Fails(Some(ErrorCode::Rejected), "insufficient funds"),
+        ),
+        (
+            "a_host_rejection_keeps_its_reason",
+            Run::Rejects("no such order", "not_found"),
         ),
         (
             "a_transient_failure_releases_the_claim",
@@ -1428,16 +1472,24 @@ fn idempotency_guard_cases() -> Vec<Value> {
                     Some(code) => edax_core::Error::new(code, message).to_string(),
                     None => message.to_owned(),
                 };
-                let record = match settle_failure::<Value>(hash, code, message) {
+                let record = match settle_failure::<Value>(hash, code, message, None) {
                     Settle::Cache(record) => Some(text(&record)),
                     Settle::Release => None,
                 };
-                (json!({ "error": { "code": code.map(ErrorCode::as_str), "message": message } }), json!({ "error": error }), record)
+                (json!({ "error": { "code": code.map(ErrorCode::as_str), "message": message, "reason": null } }), json!({ "error": error }), record)
+            }
+            Run::Rejects(message, reason) => {
+                let error = edax_core::Error::new(ErrorCode::Rejected, message).to_string();
+                let record = match settle_failure::<Value>(hash, Some(ErrorCode::Rejected), message, Some(reason)) {
+                    Settle::Cache(record) => Some(text(&record)),
+                    Settle::Release => None,
+                };
+                (json!({ "error": { "code": "rejected", "message": message, "reason": reason } }), json!({ "error": error }), record)
             }
         };
-        json!({ "name": name, "key": key, "payload_hash": hash, "prior": null, "run": run, "want": want, "want_record": record })
+        json!({ "name": name, "key": key, "payload_hash": hash, "prior": null, "run": run, "want": want, "want_reason": null, "want_record": record })
     });
-    let lost: [(&str, String, u64); 6] = [
+    let lost: [(&str, String, u64); 8] = [
         (
             "a_loser_replays_the_cached_result",
             text(&Record::done(hash, result.clone())),
@@ -1464,14 +1516,47 @@ fn idempotency_guard_cases() -> Vec<Value> {
             format!(r#"{{"payload_hash":{hash},"error":"boom","pending":false}}"#),
             hash,
         ),
+        // The replayed error keeps the code in its text and the reason beside it, as `want_reason`.
+        (
+            "a_loser_replays_a_rejection_with_its_reason",
+            text(&Record {
+                payload_hash: hash,
+                state: State::Failed {
+                    code: Some(ErrorCode::Rejected),
+                    message: "no such order".to_owned(),
+                    reason: Some("not_found".to_owned()),
+                },
+            }),
+            hash,
+        ),
+        // A reused key is another command's: the stored reason is not this one's to replay.
+        (
+            "a_reused_key_carries_no_reason",
+            text(&Record {
+                payload_hash: hash,
+                state: State::Failed {
+                    code: Some(ErrorCode::Rejected),
+                    message: "no such order".to_owned(),
+                    reason: Some("not_found".to_owned()),
+                },
+            }),
+            other,
+        ),
     ];
     let lost = lost.into_iter().map(|(name, prior, current)| {
         let record = decode_prior::<Value>(prior.as_bytes(), current);
-        let want = match replay(&record, current, key) {
-            Ok(value) => json!({ "result": value }),
-            Err(error) => json!({ "error": error.to_string() }),
+        let (want, reason) = match replay(&record, current, key) {
+            Ok(value) => (json!({ "result": value }), None),
+            Err(error) => {
+                // Only a replayed failure carries the stored reason: never a mismatch or a claim in flight.
+                let reason = match (outcome(&record, current), &record.state) {
+                    (edax_cqrs::Outcome::Failed { .. }, State::Failed { reason, .. }) => reason.clone(),
+                    _ => None,
+                };
+                (json!({ "error": error.to_string() }), reason)
+            }
         };
-        json!({ "name": name, "key": key, "payload_hash": current, "prior": prior, "run": null, "want": want, "want_record": prior })
+        json!({ "name": name, "key": key, "payload_hash": current, "prior": prior, "run": null, "want": want, "want_reason": reason, "want_record": prior })
     });
     won.chain(lost).collect()
 }
@@ -1486,6 +1571,8 @@ fn idempotency_guard_cases() -> Vec<Value> {
 ///   unknown. `epoch_micros` pins the instant, which this generator checks the text against before it
 ///   checks that the texts sort as the instants do.
 /// - `date`: ISO `YYYY-MM-DD`, already one width.
+/// - `unix_nanos`: nanoseconds since the Unix epoch, as a stored event's time or a clock reading, written
+///   as the `datetime` form floored to the microsecond. The input is decimal text.
 /// - `float`: a double as JSON writes it. JSON has no form for `NaN` or an infinity, and every SDK's
 ///   JSON encoder writes them as `null` (`serde_json`, Python's msgspec), so a hash, a filter and a
 ///   document agree on them. A field typed as a plain double cannot read that `null` back.
@@ -1624,10 +1711,35 @@ fn host_values_cases() -> Vec<Value> {
             "error": null,
         })
     });
+    // `input` is decimal text, not a JSON number: a reader that decodes numbers as doubles would round
+    // one past 2^53.
+    let nanos: [(&str, i64); 6] = [
+        ("unix_nanos_whole_microsecond", 1_704_067_200_000_001_000),
+        ("unix_nanos_floor_to_the_microsecond", 1_704_067_200_000_001_999),
+        ("unix_nanos_epoch", 0),
+        ("unix_nanos_before_the_epoch_floors_back", -1),
+        ("unix_nanos_min", i64::MIN),
+        ("unix_nanos_max", i64::MAX),
+    ];
+    let nanos_rows = nanos.into_iter().map(|(name, nanos)| {
+        let text = timestamp_from_unix_nanos(nanos).unwrap();
+        assert_eq!(canonical_timestamp(&text).unwrap(), text, "{name}: not canonical");
+        let micros = nanos.div_euclid(1_000);
+        assert_eq!(fixed_width_utc_micros(&text), micros, "{name}: not floored");
+        json!({
+            "name": name,
+            "kind": "unix_nanos",
+            "input": nanos.to_string(),
+            "json": serde_json::to_string(&text).unwrap(),
+            "epoch_micros": micros,
+            "error": null,
+        })
+    });
     decimal_rows
         .chain(datetime_rows)
         .chain(std::iter::once(date_row))
         .chain(float_rows)
+        .chain(nanos_rows)
         .collect()
 }
 

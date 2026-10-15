@@ -1075,7 +1075,7 @@ class ProjectionReplay:
 
 
 async def _replay_projection(history: list[ProjOp]) -> None:
-    r = ProjectionReplay(LostResponse(MemoryProjectionStore()))
+    r = ProjectionReplay(LostResponse(MemoryProjectionStore(projection="read_model")))
     for op in history:
         await r.step(op)
 

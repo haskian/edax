@@ -77,7 +77,7 @@ async def test_transaction_rolls_back_on_error() -> None:
 
 async def test_one_tx_threaded_to_projection_and_idempotency() -> None:
     db = MemoryTransactor()
-    proj, idem = MemoryProjectionStore(db), MemoryIdempotencyStore(db)
+    proj, idem = MemoryProjectionStore(db, projection="read_model"), MemoryIdempotencyStore(db)
     async with transaction(db) as tx:
         await proj.save(Entity("u1", 0, {"id": "u1", "n": 1}), tx=tx)  # explicit
         won = await idem.claim("k1", 1, tx=current_tx(db))  # ambient: won the claim
@@ -96,7 +96,7 @@ async def test_a_memory_store_refuses_a_foreign_tx() -> None:
     # knows nothing about: enlisting "anyway" would silently drop the atomicity the caller asked
     # for, so the store fails fast on an explicit one. Another database's ambient tx is not this
     # store's to see at all: the store runs outside any unit of work of its own database.
-    proj = MemoryProjectionStore()
+    proj = MemoryProjectionStore(projection="read_model")
     other = MemoryTransactor()
     async with transaction(other) as tx:
         with pytest.raises(edax.BadHandle, match="not a transaction of this MemoryTransactor"):
@@ -359,7 +359,7 @@ class Rig:
     def __init__(self) -> None:
         self.db = MemoryTransactor()
         self.store = MemoryEventStore(self.db)
-        self.proj = MemoryProjectionStore(self.db)
+        self.proj = MemoryProjectionStore(self.db, projection="read_model")
         self.sagas = MemorySagaStore(self.db)
         self.claims = MemoryIdempotencyStore(self.db)
         self.repo = counter_repo(self.store, iter(range(1, 100)))
@@ -704,7 +704,10 @@ async def test_two_databases_nest_and_each_store_joins_its_own(case: NestedCase)
     handed the orders stores the audit handle, which memory refused as a foreign tx and a SQL store would
     have written through the wrong connection. Each database then commits or rolls back on its own."""
     orders, audit = MemoryTransactor(), MemoryTransactor()
-    projections, ledger = MemoryProjectionStore(orders), MemoryIdempotencyStore(orders)
+    projections, ledger = (
+        MemoryProjectionStore(orders, projection="read_model"),
+        MemoryIdempotencyStore(orders),
+    )
     audit_log, orders_log = MemoryEventStore(audit), MemoryEventStore(orders)
     repo = counter_repo(orders_log, iter(range(1, 10)))
     acct = Counter("acct-1")
@@ -742,7 +745,7 @@ async def test_a_store_never_reads_another_databases_ambient_tx() -> None:
     """Inside a unit of work over another database, a store has no ambient tx of its own: it runs outside
     any unit of work, and an explicit handle of the other database is still refused as foreign."""
     orders, audit = MemoryTransactor(), MemoryTransactor()
-    projections = MemoryProjectionStore(orders)
+    projections = MemoryProjectionStore(orders, projection="read_model")
     async with transaction(audit) as audit_tx:
         assert current_tx(orders) is None and current_tx(projections) is None
         await projections.save(Entity("order-7", 0, {"status": "paid"}))  # auto-commit on orders
@@ -761,7 +764,7 @@ async def test_the_transactor_attribute_is_followed_one_hop() -> None:
             self.transactor = transactor
 
     db = MemoryTransactor()
-    store, beyond = MemoryProjectionStore(db), Named(Named(db))
+    store, beyond = MemoryProjectionStore(db, projection="read_model"), Named(Named(db))
     async with transaction(db) as tx:
         assert current_tx(store) is tx, "the store names its transactor"
         assert current_tx(Named(db)) is tx, "one hop reaches the owner"

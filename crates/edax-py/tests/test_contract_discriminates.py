@@ -425,6 +425,16 @@ class DropsTheErrorCode(Delegating):
         await self._inner.complete(key, handle, record, tx)
 
 
+class DropsTheErrorReason(Delegating):
+    """Keeps a cached rejection's code but not its reason: a ledger that rebuilds the record from the
+    fields it knows. A replay then cannot tell ``not_found`` from another rejection."""
+
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
+        if isinstance(record.state, Failed):
+            record = Record.failed(record.payload_hash, record.state.error, record.state.error_code)
+        await self._inner.complete(key, handle, record, tx)
+
+
 class RefusesAHeldKeyAsAStoreError(Delegating):
     """Refuses a settlement over a key another open transaction holds, but as a ``StoreError``, the error a
     driver raises for a lock timeout when nobody maps it. The guard reads that as a store fault, not as
@@ -1041,55 +1051,63 @@ BROKEN: list[Broken] = [
         lambda db, store: {"event_store": MemoryEventStore(db)},
     ),
     Broken(
+        "projections_share_one_namespace",
+        ProjectionStoreContract,
+        "test_two_read_models_share_no_rows",
+        lambda db: MemoryProjectionStore(db, projection="read_model"),
+        lambda db, store: {"projection_store_named": lambda _name: store},
+        expect="the other read model's id is absent",
+    ),
+    Broken(
         "drops_next",
         ProjectionStoreContract,
         "test_get_many_pages_every_row_once_by_its_next_cursor",
-        lambda db: DropsNext(MemoryProjectionStore(db)),
+        lambda db: DropsNext(MemoryProjectionStore(db, projection="read_model")),
     ),
     Broken(
         "endless_next",
         ProjectionStoreContract,
         "test_get_many_pages_every_row_once_by_its_next_cursor",
-        lambda db: EndlessNext(MemoryProjectionStore(db)),
+        lambda db: EndlessNext(MemoryProjectionStore(db, projection="read_model")),
     ),
     Broken(
         "row_key_is_not_the_id",
         ProjectionStoreContract,
         "test_get_many_returns_the_row_key_as_the_id",
-        lambda db: DropsTheRowKey(MemoryProjectionStore(db)),
+        lambda db: DropsTheRowKey(MemoryProjectionStore(db, projection="read_model")),
         expect="the id is the row key",
     ),
     Broken(
         "own_cursor_is_not_the_kernels",
         ProjectionStoreContract,
         "test_next_is_the_kernels_cursor",
-        lambda db: OwnCursor(MemoryProjectionStore(db)),
+        lambda db: OwnCursor(MemoryProjectionStore(db, projection="read_model")),
     ),
     Broken(
         "own_cursor_ignores_the_sort",
         ProjectionStoreContract,
         "test_a_cursor_minted_under_another_sort_is_refused",
-        lambda db: OwnCursor(MemoryProjectionStore(db)),
+        lambda db: OwnCursor(MemoryProjectionStore(db, projection="read_model")),
     ),
     Broken(
         "save_returns_the_old_version",
         ProjectionStoreContract,
         "test_save_returns_the_new_version_and_get_reads_the_keyed_row",
-        lambda db: ReturnsTheOldVersion(MemoryProjectionStore(db)),
+        lambda db: ReturnsTheOldVersion(MemoryProjectionStore(db, projection="read_model")),
         expect="the new version",
     ),
     Broken(
         "get_drops_the_row_key",
         ProjectionStoreContract,
         "test_save_returns_the_new_version_and_get_reads_the_keyed_row",
-        lambda db: GetDropsTheRowKey(MemoryProjectionStore(db)),
+        lambda db: GetDropsTheRowKey(MemoryProjectionStore(db, projection="read_model")),
         expect="keyed by the row",
     ),
     Broken(
         "projection_wraps_any_document",
         ProjectionStoreContract,
         "test_a_refused_save_writes_nothing",
-        lambda db: WrapsAnyDocument(MemoryProjectionStore(db)),
+        lambda db: WrapsAnyDocument(MemoryProjectionStore(db, projection="read_model")),
         args=("a_list",),
     ),
     Broken(
@@ -1217,6 +1235,13 @@ BROKEN: list[Broken] = [
         args=("failed_with_its_code",),
     ),
     Broken(
+        "ledger_drops_the_error_reason",
+        IdempotencyStoreContract,
+        "test_a_settled_record_replays_instead_of_a_rerun",
+        lambda db: DropsTheErrorReason(MemoryIdempotencyStore(db)),
+        args=("failed_with_its_reason",),
+    ),
+    Broken(
         "ledger_raises_on_an_unreadable_row",
         _RawContract,
         "test_an_unreadable_record_replays_as_a_cached_codec_failure",
@@ -1288,7 +1313,7 @@ BROKEN: list[Broken] = [
         "projection_save_ignores_the_ambient_tx",
         ProjectionStoreContract,
         "test_a_save_with_no_tx_joins_the_ambient_transaction",
-        lambda db: ProjectionSaveIgnoresAmbientTx(MemoryProjectionStore(db), db),
+        lambda db: ProjectionSaveIgnoresAmbientTx(MemoryProjectionStore(db, projection="read_model"), db),
         lambda db, store: {"transactor": db},
     ),
     Broken(
@@ -1630,7 +1655,7 @@ async def test_the_transaction_clauses_skip_a_backend_with_no_unit_of_work() -> 
     )
     for clause in projection_clauses:
         with pytest.raises(pytest.skip.Exception):
-            await clause(MemoryProjectionStore(db), no_fixtures)
+            await clause(MemoryProjectionStore(db, projection="read_model"), no_fixtures)
     for clause in saga_clauses:
         with pytest.raises(pytest.skip.Exception):
             await clause(MemorySagaStore(db), no_fixtures)

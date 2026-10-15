@@ -3,18 +3,21 @@
     "code": null,
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": "release"
   },
   {
     "code": "concurrency",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": "release"
   },
   {
     "code": "codec",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
     }
@@ -23,12 +26,14 @@
     "code": "store",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": "release"
   },
   {
     "code": "payload_mismatch",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"payload_mismatch\",\"pending\":false}"
     }
@@ -37,12 +42,14 @@
     "code": "in_progress",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": "release"
   },
   {
     "code": "cached_failure",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"cached_failure\",\"pending\":false}"
     }
@@ -51,6 +58,7 @@
     "code": "handler_not_found",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"handler_not_found\",\"pending\":false}"
     }
@@ -59,6 +67,7 @@
     "code": "already_registered",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"already_registered\",\"pending\":false}"
     }
@@ -67,12 +76,14 @@
     "code": "bad_handle",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": "release"
   },
   {
     "code": "rejected",
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"rejected\",\"pending\":false}"
     }
@@ -81,8 +92,36 @@
     "code": "codec",
     "message": "",
     "payload_hash": 11234062831410934249,
+    "reason": null,
     "want": {
       "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
+    }
+  },
+  {
+    "code": "rejected",
+    "message": "no such order",
+    "payload_hash": 11234062831410934249,
+    "reason": "not_found",
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
+    }
+  },
+  {
+    "code": "codec",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "reason": "not_found",
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+    }
+  },
+  {
+    "code": "rejected",
+    "message": "no such order",
+    "payload_hash": 11234062831410934249,
+    "reason": "Not Found",
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"pending\":false}"
     }
   }
 ]

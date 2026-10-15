@@ -55,5 +55,5 @@ func EncodeRecord(record IdempotencyRecord) (string, error) {
 	if record.ResultJSON != nil {
 		result = *record.ResultJSON
 	}
-	return kernel.EncodeIdempotencyRecord(record.PayloadHash, record.State == "pending", result, record.Error, record.ErrorCode)
+	return kernel.EncodeIdempotencyRecord(record.PayloadHash, record.State == "pending", result, record.Error, record.ErrorCode, record.ErrorReason)
 }

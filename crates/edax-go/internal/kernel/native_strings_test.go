@@ -42,7 +42,7 @@ func TestNativeTextConversionRefusesLoss(t *testing.T) {
 						return err
 					}
 					defer store.Close()
-					_, err = store.Get(NoTx(), text.value)
+					_, err = store.Get(NoTx(), "read_model", text.value)
 					return err
 				}},
 			}

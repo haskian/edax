@@ -364,3 +364,74 @@ async def test_a_cancel_is_never_cached() -> None:
         await task
     await bus.dispatch(WITHDRAW, idempotency_key=WITHDRAW.request_id)
     assert runs == 2
+
+
+class NotFound(edax.Rejected, reason="not_found"):
+    """A host rejection that names why it refused."""
+
+
+class OrderNotFound(NotFound):
+    """Inherits its parent's reason."""
+
+
+@pytest.mark.parametrize(
+    "name, error, reason",
+    [
+        ("a rejection names its class's reason", NotFound("no such order"), "not_found"),
+        ("a subclass inherits it", OrderNotFound("no such order"), "not_found"),
+        ("a plain rejection names none", edax.Rejected("insufficient funds"), None),
+        ("a declared-terminal host error names none", DeclaredTerminal("boom"), None),
+        ("another edax error names none", edax.CodecError("bad"), None),
+        (
+            "a replay carries the record's",
+            edax.CachedFailure("rejected: x", "rejected", "not_found"),
+            "not_found",
+        ),
+    ],
+)
+def test_reason_of_reads_the_live_rejection_and_its_replay(
+    name: str, error: Exception, reason: str | None
+) -> None:
+    assert edax.reason_of(error) == reason, name
+
+
+@pytest.mark.parametrize(
+    "name, define, refusal",
+    [
+        (
+            "a reason that is no name",
+            lambda: type("Bad", (edax.Rejected,), {}, reason="Not Found"),
+            edax.CodecError,
+        ),
+        ("a reason that is not text", lambda: type("Bad", (edax.Rejected,), {}, reason=7), edax.CodecError),
+        (
+            "a reason in the class body",
+            lambda: type("Bad", (edax.Rejected,), {"reason": "not_found"}),
+            TypeError,
+        ),
+    ],
+)
+def test_a_bad_reason_fails_where_the_rejection_is_defined(
+    name: str, define: Callable[[], type], refusal: type[Exception]
+) -> None:
+    with pytest.raises(refusal):
+        define()
+
+
+async def test_a_replayed_rejection_keeps_its_reason() -> None:
+    """The first dispatch raises the rejection itself; the redelivery replays the cached failure. Both
+    read as one reason, so a host maps both to one answer."""
+    bus = edax.CommandBus(
+        edax.idempotent(MemoryIdempotencyStore(), scope="orders", tenancy=edax.Tenancy.SILO)
+    )
+
+    async def handler(cmd: Withdraw) -> None:
+        raise NotFound(f"no account {cmd.account_id}")
+
+    bus.register(Withdraw, handler)
+    with pytest.raises(NotFound) as first:
+        await bus.dispatch(WITHDRAW, idempotency_key="req-1")
+    with pytest.raises(edax.CachedFailure) as replayed:
+        await bus.dispatch(WITHDRAW, idempotency_key="req-1")
+    assert (edax.reason_of(first.value), edax.reason_of(replayed.value)) == ("not_found", "not_found")
+    assert replayed.value.original_code == "rejected"

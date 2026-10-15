@@ -47,6 +47,18 @@ func NewInstant(text string) (Instant, error) {
 	return Instant{text: canonical}, err
 }
 
+// InstantFromUnixNanos returns the instant nanos after the Unix epoch, floored to the microsecond as
+// every SDK floors it: a stored event's RecordedAt or OccurredAt, or a clock reading. The kernel maps
+// every int64, so the error is unreachable; it stays because the kernel checks its own range.
+func InstantFromUnixNanos(nanos int64) (Instant, error) {
+	text, err := kernel.TimestampFromUnixNanos(nanos)
+	return Instant{text: text}, err
+}
+
+// InstantNow returns the kernel clock's current reading (CurrentTimestamp), floored to the microsecond.
+// Within a process it never goes back, but two calls inside one microsecond are equal.
+func InstantNow() (Instant, error) { return InstantFromUnixNanos(CurrentTimestamp()) }
+
 // String returns canonical UTC text, or an empty string for an uninitialized Instant.
 func (i Instant) String() string { return i.text }
 

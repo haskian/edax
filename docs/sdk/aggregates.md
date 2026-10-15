@@ -113,7 +113,9 @@ payload carries, before anything rounds it. `"+9.5"` and `"9.50"` read as `9.5`.
 a JSON number, an instant with no offset and a fraction finer than a microsecond are each a
 `CodecError`, as in the Rust and Go SDKs. A `decimal.Decimal` or `datetime` field raises `CodecError`
 when the codec is built, at any depth: msgspec would convert its text before the kernel could check
-it. `to_decimal()`, `to_datetime()`, `Decimal.from_decimal()` and `Instant.from_datetime()` convert
+it. `Instant.now()` reads the kernel clock, and `Instant.from_unix_nanos()` reads a stored event's
+`recorded_at` or `occurred_at`, both floored to the microsecond as every SDK floors them.
+`to_decimal()`, `to_datetime()`, `Decimal.from_decimal()` and `Instant.from_datetime()` convert
 for arithmetic.
 
 A command you dispatch in-process only may keep a plain `decimal.Decimal` or aware `datetime` field:
@@ -227,6 +229,17 @@ Rust has two entry points instead of an optional argument: `Repository::load(ten
 unit of work of its own, `Repository::load_in(tx, tenant, id)` runs inside the caller's `&mut Tx`.
 Python has one `load(aggregate_id, *, tenant=None, tx=None)` that joins the ambient transaction when
 `tx` is omitted. See [transactions](./transactions.md).
+
+## Repository.create: a new aggregate, no reads
+
+`repo.create(id, tenant=...)` in Python and `repo.Create(id, tenant)` in Go return the aggregate empty
+at version 0 with the tenant set, checked as `load` checks it. They call the aggregate codec with no
+data and touch no store, so a new aggregate costs no reads. They persist nothing: `save` writes it.
+
+Use it for an id this handler run minted. An id from outside, one in a command payload included, may
+already exist. Its save then fails with the transient `ConcurrencyError`, and a retry re-runs the
+handler into the same conflict until its budget runs out. Load such an id and check
+`version.initial == 0` instead. The Rust reference model has no `create`: it pins no shared decision.
 
 ## Repository.save: marshal, append, snapshot
 

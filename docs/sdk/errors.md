@@ -207,6 +207,32 @@ Err(edax::Terminal::new(InsufficientFunds { balance, requested }).into())
 
 The guard caches either as `rejected`, so a replay in any SDK names the code.
 
+### A rejection's reason
+
+Every host rejection shares the code `rejected`, so on its own a replay cannot tell a missing order
+from a conflicting one. Name why a rejection refuses, and the guard caches the reason beside the code:
+
+```python
+class NotFound(edax.Rejected, reason="not_found"): ...
+class Conflict(edax.Rejected, reason="conflict"): ...
+
+except Exception as e:
+    status = {"not_found": 404, "conflict": 409}.get(edax.reason_of(e), 500)
+```
+
+`edax.reason_of(e)` reads the reason off the live rejection and off its replayed `CachedFailure`
+(`original_reason`) alike, so the first answer and every replay agree. In Go, build the reason once
+with `edax.MustReason("not_found")` and return `edax.Reject(notFound, message)`; `edax.ReasonOf(err)`
+reads it back. In Rust, return `edax::Rejected::new(edax::Reason::new("not_found")?, cause)`.
+
+A reason is a name a host branches on, not text for a person: 1 to 64 bytes of `[a-z0-9._-]`,
+starting with `[a-z0-9]`, the rule an extension key follows. The kernel checks it where the rejection
+is defined (a Python class, `MustReason`, `Reason::new`), never when the failure settles, so a reason
+cannot keep a failure from caching. Only the class keyword names one in Python; a `reason` attribute
+in the class body raises `TypeError`, so a mixed-in library's own `reason` never reaches the record.
+The code and the retry verdict stay `rejected`'s. The Kafka dead-letter header and a saga's failure
+event carry the message only; an in-process `on_dead` callback reads the reason with `reason_of`.
+
 `examples/py/06_errors_and_retry.py` retries a transient error and stops at once on a `Rejected`
 subclass. `examples/py/09_dead_letters.py` shows the same split in a dispatcher with `on_dead`.
 

@@ -8,11 +8,59 @@ import (
 	"github.com/haskian/edax/crates/edax-go/internal/native"
 )
 
-// Error is a kernel failure. Code and Message preserve the kernel's wire form.
+// Error is a kernel failure. Code and Message preserve the kernel's wire form. OriginalCode is the code
+// of the failure a cached_failure replays, empty otherwise. A rejection's reason is unexported, so only
+// Reject or a replay sets it and a struct literal cannot fake one.
 type Error struct {
-	Code    ErrorCode
-	Message string
-	cause   error
+	Code         ErrorCode
+	Message      string
+	OriginalCode ErrorCode
+	reason       string
+	cause        error
+}
+
+// Reason is why a host's rejection refused (not_found): a name the host branches on, kept beside the
+// rejected code in the cached record so a replay tells two refusals apart. The zero Reason names none.
+type Reason struct{ name string }
+
+// NewReason checks name with the kernel: 1 to 64 bytes of [a-z0-9._-], starting with [a-z0-9], else a
+// codec error.
+func NewReason(name string) (Reason, error) {
+	if err := CheckRejectionReason(name); err != nil {
+		return Reason{}, err
+	}
+	return Reason{name: name}, nil
+}
+
+// MustReason is NewReason for a reason fixed at package initialization; it panics on a bad one, as
+// regexp.MustCompile does, so the mistake fails the program's start rather than a settle.
+func MustReason(name string) Reason {
+	reason, err := NewReason(name)
+	if err != nil {
+		panic(err)
+	}
+	return reason
+}
+
+// String returns the name, or "" for the zero Reason.
+func (r Reason) String() string { return r.name }
+
+// Reject builds a host's terminal rejection that names why it refused.
+func Reject(reason Reason, message string) *Error {
+	return &Error{Code: CodeRejected, Message: message, reason: reason.name}
+}
+
+// Replayed is the cached failure a losing claimant raises from wire, carrying the original code and the
+// reason a rejection named.
+func Replayed(wire string, originalCode *string, reason *string) *Error {
+	err := ErrorFromWire(wire)
+	if originalCode != nil {
+		err.OriginalCode = ErrorCode(*originalCode)
+	}
+	if reason != nil {
+		err.reason = *reason
+	}
+	return err
 }
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.Message }
@@ -109,47 +157,62 @@ func ErrorFromWire(wire string) *Error {
 
 // CodeOf selects the kernel category, preserving fatal precedence in joined errors.
 func CodeOf(err error) *string {
+	code, _ := failureOf(err)
+	return code
+}
+
+// ReasonOf is why a rejection refused: Reject's reason, or the one a replayed cached failure carries
+// from the record; "" for any other failure. It reads the same branch of a joined error CodeOf does.
+func ReasonOf(err error) string {
+	_, reason := failureOf(err)
+	return reason
+}
+
+// failureOf selects one failure's code and reason together, preserving fatal precedence in joined
+// errors, so the two never come from different branches.
+func failureOf(err error) (*string, string) {
 	if category, ok := err.(sentinel); ok {
 		code := string(category)
-		return &code
+		return &code, ""
 	}
 	// A joined cleanup or partition error must not hide a fatal failure behind
 	// the first transient one. Ask the kernel about each branch's code.
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		var selected *string
+		var selectedReason string
 		selectedRank := -1
 		for _, child := range joined.Unwrap() {
-			code := CodeOf(child)
+			code, reason := failureOf(child)
 			kind, failure := native.RetryFailure(code)
 			rank := 0
 			if failure == nil {
 				switch kind {
 				case "fatal":
-					return code
+					return code, reason
 				case "terminal":
 					rank = 1
 				}
 			}
 			if rank > selectedRank || rank == selectedRank && selected == nil {
-				selected, selectedRank = code, rank
+				selected, selectedReason, selectedRank = code, reason, rank
 			}
 		}
-		return selected
+		return selected, selectedReason
 	}
 	if _, typed := err.(*Error); !typed {
 		if wrapped, ok := err.(interface{ Unwrap() error }); ok {
-			return CodeOf(wrapped.Unwrap())
+			return failureOf(wrapped.Unwrap())
 		}
 	}
 	var typed *Error
 	if errors.As(err, &typed) && typed != nil {
 		if checkNativeString("code", string(typed.Code)) != nil {
-			return nil
+			return nil, ""
 		}
 		code := string(typed.Code)
-		return &code
+		return &code, typed.reason
 	}
-	return nil
+	return nil, ""
 }
 
 // MessageOf is what a failure records beside its code, like Rust's
