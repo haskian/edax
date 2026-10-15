@@ -16,6 +16,7 @@
         "total": 5000
       }
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
@@ -29,6 +30,7 @@
     "want": {
       "result": null
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
@@ -39,12 +41,14 @@
     "run": {
       "error": {
         "code": "codec",
-        "message": "unknown field `amount`"
+        "message": "unknown field `amount`",
+        "reason": null
       }
     },
     "want": {
       "error": "codec: unknown field `amount`"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
@@ -55,13 +59,33 @@
     "run": {
       "error": {
         "code": "rejected",
-        "message": "insufficient funds"
+        "message": "insufficient funds",
+        "reason": null
       }
     },
     "want": {
       "error": "rejected: insufficient funds"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds\",\"error_code\":\"rejected\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_host_rejection_keeps_its_reason",
+    "payload_hash": 11234062831410934249,
+    "prior": null,
+    "run": {
+      "error": {
+        "code": "rejected",
+        "message": "no such order",
+        "reason": "not_found"
+      }
+    },
+    "want": {
+      "error": "rejected: no such order"
+    },
+    "want_reason": null,
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
   },
   {
     "key": "req-1",
@@ -71,12 +95,14 @@
     "run": {
       "error": {
         "code": "store",
-        "message": "database unavailable"
+        "message": "database unavailable",
+        "reason": null
       }
     },
     "want": {
       "error": "store: database unavailable"
     },
+    "want_reason": null,
     "want_record": null
   },
   {
@@ -87,12 +113,14 @@
     "run": {
       "error": {
         "code": null,
-        "message": "connection reset"
+        "message": "connection reset",
+        "reason": null
       }
     },
     "want": {
       "error": "connection reset"
     },
+    "want_reason": null,
     "want_record": null
   },
   {
@@ -103,12 +131,14 @@
     "run": {
       "error": {
         "code": "bad_handle",
-        "message": "kafka broker error 29: topic authorization failed"
+        "message": "kafka broker error 29: topic authorization failed",
+        "reason": null
       }
     },
     "want": {
       "error": "bad_handle: kafka broker error 29: topic authorization failed"
     },
+    "want_reason": null,
     "want_record": null
   },
   {
@@ -123,6 +153,7 @@
         "total": 5000
       }
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
@@ -134,6 +165,7 @@
     "want": {
       "error": "cached_failure: codec: unknown field `amount`"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
@@ -145,6 +177,7 @@
     "want": {
       "error": "in_progress: req-1"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}"
   },
   {
@@ -156,6 +189,7 @@
     "want": {
       "error": "payload_mismatch: req-1"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"result\":{\"invoice_id\":\"invoice-7\",\"total\":5000},\"error\":null,\"error_code\":null,\"pending\":false}"
   },
   {
@@ -167,6 +201,7 @@
     "want": {
       "error": "cached_failure: codec: unreadable idempotency record: EOF while parsing an object at line 1 column 1"
     },
+    "want_reason": null,
     "want_record": "{"
   },
   {
@@ -178,6 +213,31 @@
     "want": {
       "error": "cached_failure: boom"
     },
+    "want_reason": null,
     "want_record": "{\"payload_hash\":11234062831410934249,\"error\":\"boom\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_loser_replays_a_rejection_with_its_reason",
+    "payload_hash": 11234062831410934249,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}",
+    "run": null,
+    "want": {
+      "error": "cached_failure: rejected: no such order"
+    },
+    "want_reason": "not_found",
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
+  },
+  {
+    "key": "req-1",
+    "name": "a_reused_key_carries_no_reason",
+    "payload_hash": 11234059532876049616,
+    "prior": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}",
+    "run": null,
+    "want": {
+      "error": "payload_mismatch: req-1"
+    },
+    "want_reason": null,
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
   }
 ]

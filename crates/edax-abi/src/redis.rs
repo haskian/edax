@@ -169,7 +169,7 @@ mod tests {
 
         // A settled record is passed through untouched, so a result never round-trips through a
         // second serializer on its way to the ledger.
-        let done = encode_idempotency_record(HASH, false, RESULT, None, None).unwrap();
+        let done = encode_idempotency_record(HASH, false, RESULT, None, None, None).unwrap();
         let settled = redis_settled_value(&claim, &done).unwrap();
         assert_eq!(&settled[..33], &claim[..33], "the claim's own owner token");
 
@@ -215,7 +215,7 @@ mod tests {
             redis_check_claim(b""),
             redis_settled_value(
                 &redis_new_claim(HASH).unwrap(),
-                &encode_idempotency_record(HASH, true, "null", None, None).unwrap(),
+                &encode_idempotency_record(HASH, true, "null", None, None, None).unwrap(),
             )
             .map(|_| ()),
         ] {

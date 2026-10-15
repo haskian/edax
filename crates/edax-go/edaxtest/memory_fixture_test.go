@@ -3,6 +3,7 @@ package edaxtest
 import (
 	"testing"
 
+	edax "github.com/haskian/edax/crates/edax-go"
 	"github.com/haskian/edax/crates/edax-go/backend/memory"
 )
 
@@ -27,7 +28,7 @@ func MemoryFixture(t testing.TB) TransactionFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = commands.Close() })
-	projections, err := db.ProjectionStore()
+	projections, err := db.ProjectionStore("read_model")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,4 +39,20 @@ func MemoryFixture(t testing.TB) TransactionFixture {
 	}
 	t.Cleanup(func() { _ = sagas.Close() })
 	return TransactionFixture{Owner: db, Events: events, Ledger: ledger, Commands: commands, Projections: projections, Sagas: sagas}
+}
+
+// MemoryNamedProjections opens a fresh memory database and returns the function that opens the store of
+// each read-model name over it.
+func MemoryNamedProjections(t testing.TB) func(string) edax.ProjectionStore {
+	t.Helper()
+	db := memory.New()
+	t.Cleanup(func() { _ = db.Close() })
+	return func(name string) edax.ProjectionStore {
+		store, err := db.ProjectionStore(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
 }

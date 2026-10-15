@@ -27,7 +27,7 @@ USERS: list[dict[str, Any]] = [
 
 
 async def _seeded() -> MemoryProjectionStore:
-    store = MemoryProjectionStore()
+    store = MemoryProjectionStore(projection="read_model")
     for doc in USERS:
         await store.save(Entity(doc["id"], 0, dict(doc)))
     return store
@@ -125,7 +125,7 @@ async def test_get_many_rejects_a_bad_spec_as_terminal(branch: str, kwargs: dict
     # The kernel tags a malformed spec `codec:`. Left as a raw RuntimeError it would read as transient
     # and a handler paging with a corrupt cursor would be redelivered forever. A cursor replayed under
     # another sort would page garbage if it were read at all.
-    store = MemoryProjectionStore()
+    store = MemoryProjectionStore(projection="read_model")
     await store.save(Entity("u0", 0, {"id": "u0", "name": "ada", "age": 36}))
     if kwargs.get("after") == "<name cursor>":
         kwargs = {**kwargs, "after": q.encode_cursor(USERS[0], [q.sort_key("name")])}
@@ -232,7 +232,7 @@ async def test_a_document_integer_wider_than_64_bits_is_refused(boundary: str) -
     """The filter and the sort would read the integer as the nearest float, and ``get``, ``get_many`` and
     ``query`` would return it rounded. So every boundary that takes a document refuses it, as the spec
     refuses one, and the save stores nothing."""
-    store = MemoryProjectionStore()
+    store = MemoryProjectionStore(projection="read_model")
     entity = Entity("a", 0, dict(_WIDE_DOCUMENT))
     with pytest.raises(CodecError) as caught:
         if boundary == "save":
@@ -333,7 +333,7 @@ async def test_golden_projection_document() -> None:
             got = {"error": str(e)}
         assert got == want, name
 
-        store = MemoryProjectionStore()
+        store = MemoryProjectionStore(projection="read_model")
         try:
             document = json.loads(c["json"])
         except json.JSONDecodeError:

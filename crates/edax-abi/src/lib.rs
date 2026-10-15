@@ -192,13 +192,20 @@ mod tests {
             ),
             (
                 "cached_result_is_not_json",
-                encode_idempotency_record(HASH, false, "{not json}", None, None).map(|_| ()),
+                encode_idempotency_record(HASH, false, "{not json}", None, None, None).map(|_| ()),
                 "key must be a string",
             ),
             (
                 "cached_error_code_is_unknown",
-                encode_idempotency_record(HASH, false, "null", Some("boom".to_owned()), Some("timeout".to_owned()))
-                    .map(|_| ()),
+                encode_idempotency_record(
+                    HASH,
+                    false,
+                    "null",
+                    Some("boom".to_owned()),
+                    Some("timeout".to_owned()),
+                    None,
+                )
+                .map(|_| ()),
                 "unknown error code: timeout",
             ),
             // A batch refusal and an unknown code carry the code too, or a host reads them as transient.

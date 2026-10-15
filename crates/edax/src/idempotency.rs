@@ -12,7 +12,7 @@ use edax_cqrs::{claim_key, replay, settle_failure, Settle};
 use edax_event::event_claim_key;
 use serde::Serialize;
 
-use crate::failure::{code_of, failure_message, HandlerError};
+use crate::failure::{code_of, failure_message, reason_of, HandlerError};
 use crate::Error;
 // Kernel type; its wire shape and replay verdict are pinned by `testdata/golden/idempotency_record.json`.
 pub use edax_cqrs::{Record, State};
@@ -257,7 +257,7 @@ where
                 // verdict the caller and the dispatcher act on, so a refused compensation is dropped
                 // here exactly as the panic arm below drops it. The host's rollback or the store's
                 // retention frees the claim instead.
-                let _ = match settle_failure(hash, code_of(&*e), &failure_message(&*e)) {
+                let _ = match settle_failure(hash, code_of(&*e), &failure_message(&*e), reason_of(&*e)) {
                     Settle::Cache(record) => complete_or_release(store, tx, key, &handle, record),
                     Settle::Release => store.release(tx, key, &handle),
                 };
@@ -282,6 +282,7 @@ where
 mod tests {
     use super::*;
     use crate::MemoryLedger;
+    use crate::{Reason, Rejected};
     use edax_core::ErrorCode;
     use serde_json::Value;
 
@@ -306,9 +307,13 @@ mod tests {
                     return Ok(result.clone());
                 }
                 let message = run["error"]["message"].as_str().expect("a failure has a message");
-                match run["error"]["code"].as_str() {
-                    Some(code) => Err(Error::new(code.parse::<ErrorCode>().expect("a kernel code"), message).into()),
-                    None => Err(message.into()),
+                let failure: HandlerError = match run["error"]["code"].as_str() {
+                    Some(code) => Error::new(code.parse::<ErrorCode>().expect("a kernel code"), message).into(),
+                    None => message.into(),
+                };
+                match run["error"]["reason"].as_str() {
+                    Some(reason) => Err(Rejected::new(Reason::new(reason).expect("a reason"), failure).into()),
+                    None => Err(failure),
                 }
             });
             assert_eq!(runs, usize::from(!run.is_null()), "{name}: handler runs");

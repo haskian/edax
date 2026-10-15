@@ -63,10 +63,12 @@ class Done:
 class Failed:
     """The handler failed terminally: a replay raises it. ``error`` is the message, ``error_code`` the
     taxonomy code (``None`` for a record whose writer stored none), so a replay in any SDK keeps the
-    original code."""
+    original code. ``error_reason`` is why a ``rejected`` failure refused, when its
+    :class:`~edax.errors.Rejected` class named one."""
 
     error: str
     error_code: str | None = None
+    error_reason: str | None = None
 
 
 #: Where a claimed key stands, as the kernel's ``State`` names it: one of three, never two at once.
@@ -95,9 +97,11 @@ class Record:
         return cls(payload_hash, Done(result))
 
     @classmethod
-    def failed(cls, payload_hash: int, error: str, error_code: str | None = None) -> Record:
-        """A completed terminal failure: its message and its code."""
-        return cls(payload_hash, Failed(error, error_code))
+    def failed(
+        cls, payload_hash: int, error: str, error_code: str | None = None, error_reason: str | None = None
+    ) -> Record:
+        """A completed terminal failure: its message, its code, and why a rejection refused."""
+        return cls(payload_hash, Failed(error, error_code, error_reason))
 
 
 @dataclass(frozen=True)
@@ -269,10 +273,11 @@ class Guard(Generic[TxT]):
         self.observe.claim(self.name, verdict)
         if error is None:
             return replayed  # the cached value, `None` included
-        if isinstance(error, CachedFailure):
+        if isinstance(error, CachedFailure) and isinstance(prior.state, Failed):
             # The kernel's replay text carries the original code (`codec: bad payload`); the record carries
-            # it apart too, for a caller that branches on it.
-            error.original_code = prior.state.error_code if isinstance(prior.state, Failed) else None
+            # it apart too, for a caller that branches on it, and the reason a rejection named beside it.
+            error.original_code = prior.state.error_code
+            error.original_reason = prior.state.error_reason
         raise error
 
 
@@ -379,7 +384,9 @@ async def _guarded_around_the_work(
             # cancel landing during the settlement would otherwise abandon the claim until its retention
             # frees it.
             how = await asyncio.shield(
-                _settle_failure(store, key, handle, payload_hash, errors.code_of(e), str(e))
+                _settle_failure(
+                    store, key, handle, payload_hash, errors.code_of(e), str(e), errors.reason_of(e)
+                )
             )
             raise
         refusal = await _complete_or_release(store, key, handle, done)
@@ -393,11 +400,17 @@ async def _guarded_around_the_work(
 
 
 async def _settle_failure(
-    store: IdempotencyStore[Any], key: str, handle: bytes, payload_hash: int, code: str | None, message: str
+    store: IdempotencyStore[Any],
+    key: str,
+    handle: bytes,
+    payload_hash: int,
+    code: str | None,
+    message: str,
+    reason: str | None,
 ) -> Settlement:
-    """Settle the claim after the handler failed with ``message`` and the taxonomy ``code``: cache the failed
-    record the kernel's settle table answers, or release when it answers none or the store would not take the
-    record. Never raises; returns how the claim ended: ``cached``,
+    """Settle the claim after the handler failed with ``message``, the taxonomy ``code`` and a rejection's
+    ``reason``: cache the failed record the kernel's settle table answers, or release when it answers none
+    or the store would not take the record. Never raises; returns how the claim ended: ``cached``,
     ``released``, or ``refused`` when the store would not take the release. The handler's exception is
     the verdict the caller, :func:`~edax.command.retry` and the dispatcher act on, so a compensation the store
     refuses must not replace it.
@@ -405,7 +418,7 @@ async def _settle_failure(
     caused, and the host's rollback frees the claim; on a ledger of its own the claim stays pending until
     its retention frees it. Either way the claim is settled by something other than this call."""
     try:
-        cached = _native.idempotency_settle_failure(payload_hash, message, code)
+        cached = _native.idempotency_settle_failure(payload_hash, message, code, reason)
         if cached is None:
             await store.release(key, handle)
             return "released"
@@ -437,8 +450,8 @@ def _replay_answer(key: str, current: int, prior: Record) -> tuple[ClaimVerdict,
     and the error to raise, ``None`` for a success. The result plays no part in it, so only the classifying
     fields cross. A stored ``payload_hash`` outside ``0 .. 2**64 - 1`` (a lossy store) cannot cross: the
     terminal :class:`~edax.errors.CodecError`."""
-    pending, failed = isinstance(prior.state, Pending), _failure(prior.state)
-    answer = _native.idempotency_replay(current, key, prior.payload_hash, pending, *failed)
+    pending, (error, code, _reason) = isinstance(prior.state, Pending), _failure(prior.state)
+    answer = _native.idempotency_replay(current, key, prior.payload_hash, pending, error, code)
     verdict = _names.named(answer.outcome, CLAIM_VERDICTS, "claim verdict")
     return verdict, None if answer.error is None else errors.from_wire(answer.error)
 
@@ -473,13 +486,14 @@ def encode_record(record: Record) -> str:
     )
 
 
-def _failure(state: RecordState) -> tuple[str | None, str | None]:
-    """The flat ``error`` and ``error_code`` the ABI takes for ``state``: both ``None`` unless it failed."""
+def _failure(state: RecordState) -> tuple[str | None, str | None, str | None]:
+    """The flat ``error``, ``error_code`` and ``error_reason`` the ABI takes for ``state``: all ``None``
+    unless it failed."""
     match state:
-        case Failed(error=error, error_code=code):
-            return error, code
+        case Failed(error=error, error_code=code, error_reason=reason):
+            return error, code, reason
         case Pending() | Done():
-            return None, None
+            return None, None, None
 
 
 def decode_record(raw: str) -> Record:
@@ -527,7 +541,10 @@ def _record_of(decoded: _native.IdempotencyRecord) -> Record:
             return Record.pending(decoded.payload_hash)
         case "failed":
             return Record.failed(
-                decoded.payload_hash, _names.given(decoded.error, "failure"), decoded.error_code
+                decoded.payload_hash,
+                _names.given(decoded.error, "failure"),
+                decoded.error_code,
+                decoded.error_reason,
             )
         case "done":
             # The kernel wrote `result_json` from a value it parsed, so it is JSON.

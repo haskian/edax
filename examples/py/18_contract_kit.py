@@ -50,6 +50,7 @@ class DictProjectionStore:
 
 class TestDictProjectionStore(ProjectionStoreContract):
     supports_transactions = False  # a dict has no unit of work, so those clauses skip
+    supports_named_projections = False  # one dict holds one read model
 
     @pytest.fixture
     def projection_store(self) -> DictProjectionStore:

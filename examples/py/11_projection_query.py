@@ -28,7 +28,7 @@ ACCOUNTS: list[Document] = [
 
 async def main() -> None:
     # 1. Save one document per account, keyed by its id. Every row reads back with that key as "id".
-    store = MemoryProjectionStore()
+    store = MemoryProjectionStore(projection="accounts")
     for account in ACCOUNTS:
         await store.save(Entity(account["id"], 0, account))
 

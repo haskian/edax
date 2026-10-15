@@ -1,4 +1,5 @@
-//! The one shape every closed set of names a kernel decision crosses as.
+//! The one shape every closed set of names a kernel decision crosses as, and the one rule an open name a
+//! host chooses follows: an extension key, a rejection's reason.
 
 /// A unit enum whose variants cross a binding by name: the enum, its `ALL` and `NAMES` lists, its
 /// `as_str` and its `by_name`, from one row list.
@@ -63,6 +64,24 @@ macro_rules! closed_names {
             }
         }
     };
+}
+
+/// The longest name [`is_open_name`] accepts, in bytes.
+pub const OPEN_NAME_MAX: usize = 64;
+
+/// Whether `name`, one a host chooses, follows the rule every such name follows: 1 to
+/// [`OPEN_NAME_MAX`] bytes of lowercase ASCII letters, digits, `.`, `_` and `-`, starting with a letter
+/// or a digit. A dot namespaces a name (`http.origin_ip`). Lowercase keeps it a safe header name on every
+/// transport, and the first character keeps it from reading as a flag or a path.
+pub fn is_open_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let first_ok = bytes
+        .first()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    let rest_ok = bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'));
+    first_ok && rest_ok && bytes.len() <= OPEN_NAME_MAX
 }
 
 /// Whether no two of `names` are equal. A `const fn`, so [`closed_names!`] checks its rows at compile

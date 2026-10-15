@@ -43,7 +43,7 @@ pub use dispatcher::{Delivery, DispatcherBuilder, HandlerFailure, KeyOrderedDisp
 /// wire form `"<code>: <message>"`. Every SDK renders and caches a failure the same way, and the code
 /// carries the terminal / transient verdict ([`ErrorCode::is_terminal`]).
 pub use edax_core::{backoff_millis, current_timestamp, guid, Backoff, Error, ErrorCode};
-pub use failure::{is_fatal, HandlerError, Terminal};
+pub use failure::{is_fatal, HandlerError, Reason, Rejected, Terminal};
 pub use idempotency::{forget, forget_event, Claim, ClaimHandle, IdempotencyStore, Record, State};
 pub use outbox::{CountedOutbox, Outbox, Relay, RelaySink};
 pub use pacing::{Entropy, Pacing, Sleeper};

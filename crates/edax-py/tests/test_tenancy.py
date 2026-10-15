@@ -220,6 +220,52 @@ async def test_a_mode_that_requires_a_tenant_refuses_a_load_without_one(
         assert (await repo.load("order-1", tenant=tenant)).version == Version(0), name
 
 
+class CountingStore(MemoryEventStore):
+    """A memory event store that counts the reads a repository makes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads = 0
+
+    async def load(self, tx: Any, aggregate_id: str, after: int = 0) -> list[edax.EventMessage]:
+        self.reads += 1
+        return await super().load(tx, aggregate_id, after)
+
+    async def load_snapshot(self, tx: Any, aggregate_id: str) -> edax.Snapshot | None:
+        self.reads += 1
+        return await super().load_snapshot(tx, aggregate_id)
+
+
+@pytest.mark.parametrize(
+    "name, mode, tenant, fails",
+    [
+        ("a pool refuses a create with no tenant", Tenancy.POOL, None, True),
+        ("a bridge refuses one too", Tenancy.BRIDGE, None, True),
+        ("a silo still checks a tenant it is given", Tenancy.SILO, "", True),
+        ("a silo expects none", Tenancy.SILO, None, False),
+        ("a pool with a tenant is fine", Tenancy.POOL, "acme", False),
+    ],
+)
+async def test_create_starts_an_aggregate_without_reading(
+    name: str, mode: Tenancy, tenant: str | None, fails: bool
+) -> None:
+    store = CountingStore()
+    repo = repository(mode, store)
+    if fails:
+        with pytest.raises(CodecError):
+            repo.create("order-1", tenant=tenant)
+        return
+    account = repo.create("order-1", tenant=tenant)
+    assert (account.version, account.tenant, store.reads) == (Version(0), tenant, 0), name
+    account.apply(Deposited(10))
+    [stored] = await repo.save(account)
+    assert stored.tenant == tenant, "the save stamps the tenant create set"
+    again = repo.create("order-1", tenant=tenant)
+    again.apply(Deposited(5))
+    with pytest.raises(edax.ConcurrencyError):
+        await repo.save(again)
+
+
 async def test_a_save_cannot_name_a_tenant_the_load_did_not() -> None:
     """The tenant travels on the aggregate, so there is no second argument to get wrong. A save after a
     silo load into a pool repository is the one mismatch left, and it fails before any write."""

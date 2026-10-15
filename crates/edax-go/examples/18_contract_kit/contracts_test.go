@@ -19,7 +19,7 @@ func TestProjectionStore(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		store, err := db.ProjectionStore()
+		store, err := db.ProjectionStore("read_model")
 		if err != nil {
 			t.Fatal(err)
 		}

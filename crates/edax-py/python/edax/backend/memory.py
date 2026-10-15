@@ -21,6 +21,7 @@ from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 from .. import _json, _native
 from .._owned import ThreadBound
 from .._units import enlisted
+from .._wiring import wiring_str
 from ..broker import consume
 from ..delivery import Delivery
 from ..dispatcher import KeyOrderedDispatcher
@@ -302,26 +303,36 @@ class MemoryLedger:
 
 
 class MemoryProjectionStore(_StoreView):
-    """:class:`~edax.projection.ProjectionQuery` over the native store; ``get_many`` runs the kernel query,
-    so it is the reference for how a durable backend must page. Documents cross as JSON, and every read
-    carries its row key as ``"id"``. A save under ``tx`` (or the ambient
-    :func:`~edax.unit_of_work.current_tx`) is staged until the transactor commits."""
+    """:class:`~edax.projection.ProjectionQuery` over the native store for the read model ``projection``;
+    ``get_many`` runs the kernel query, so it is the reference for how a durable backend must page. Documents
+    cross as JSON, and every read carries its row key as ``"id"``. A save under ``tx`` (or the ambient
+    :func:`~edax.unit_of_work.current_tx`) is staged until the transactor commits.
+
+    Read models over one transactor share no row, as the Postgres store keys each by ``projection``, so two
+    keyed by one id never overwrite each other. A ``projection`` that is not a ``str`` raises
+    :class:`~edax.errors.BadHandle`."""
+
+    def __init__(self, transactor: MemoryTransactor | None = None, *, projection: str) -> None:
+        super().__init__(transactor)
+        self._projection = wiring_str(projection, "projection")
 
     def _seam(self) -> _native.MemoryProjectionStore:
         """The native projection store of this view's database, on the thread that built it."""
         return _native.handle(self._db().projection_store())
 
     async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
-        row = self._seam().get(self._token(tx), id)
+        row = self._seam().get(self._token(tx), self._projection, id)
         return None if row is None else Entity(id, row.version, _json.decode(row.document_json))
 
     async def save(self, entity: Entity, tx: Tx | None = None) -> int:
         # Native `concurrency:` is ConcurrencyError, anything else StoreError.
-        return self._seam().save(self._token(tx), entity.id, entity.version, _json.encode(entity.document))
+        return self._seam().save(
+            self._token(tx), self._projection, entity.id, entity.version, _json.encode(entity.document)
+        )
 
     async def get_many(self, query: Query = Query(), *, tx: Tx | None = None) -> Page:
         # A malformed spec/cursor is tagged `codec:`: terminal.
-        page = self._seam().get_many(self._token(tx), query.to_json())
+        page = self._seam().get_many(self._token(tx), self._projection, query.to_json())
         return Page.from_kernel(page)
 
 

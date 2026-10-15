@@ -281,10 +281,10 @@ pub struct MemoryProjectionStore {
 }
 
 impl MemoryProjectionStore {
-    /// The stored document for `id` and its version as `tx` sees it, or `None`; the document carries its
+    /// The stored document for `id` in read model `projection` and its version as `tx` sees it, or `None`; the document carries its
     /// row key as `"id"`, as [`keyed_projection_document`](crate::keyed_projection_document) reads it.
-    pub fn get(&self, tx: i64, id: &str) -> Result<Option<ProjectionRow>, String> {
-        let row = self.inner.get(tx_of(tx), id).map_err(to_wire)?;
+    pub fn get(&self, tx: i64, projection: &str, id: &str) -> Result<Option<ProjectionRow>, String> {
+        let row = self.inner.get(tx_of(tx), projection, id).map_err(to_wire)?;
         Ok(row.map(|row| ProjectionRow {
             version: row.version,
             document_json: serde_json::Value::Object(row.value).to_string(),
@@ -295,18 +295,20 @@ impl MemoryProjectionStore {
     /// `version`; returns the new version. A document the kernel's [`edax_cqrs::document_json`] refuses
     /// is a `codec:` error: one that is not a JSON object, which the query could never key, or one
     /// holding an integer wider than 64 bits, which would be stored as the nearest float.
-    pub fn save(&self, tx: i64, id: &str, version: u64, document_json: &str) -> Result<u64, String> {
+    pub fn save(&self, tx: i64, projection: &str, id: &str, version: u64, document_json: &str) -> Result<u64, String> {
         let document = edax_cqrs::document_json(id, document_json.as_bytes()).map_err(to_wire)?;
-        self.inner.save(tx_of(tx), id, version, document).map_err(to_wire)
+        self.inner
+            .save(tx_of(tx), projection, id, version, document)
+            .map_err(to_wire)
     }
 
-    /// Run a read query (a JSON spec) over all documents as `tx` sees them; returns the kernel's page
+    /// Run a read query (a JSON spec) over the documents of read model `projection` as `tx` sees them; returns the kernel's page
     /// as JSON, `{"rows": [...], "next": cursor|null}`. A malformed spec is a `codec:` error.
-    pub fn get_many(&self, tx: i64, query_json: &str) -> Result<String, String> {
+    pub fn get_many(&self, tx: i64, projection: &str, query_json: &str) -> Result<String, String> {
         // The kernel's own reader, so a spec the kernel refuses (an integer past 64 bits) is refused here.
         let query = edax_cqrs::query_spec(query_json.as_bytes()).map_err(to_wire)?;
         self.inner
-            .get_many(tx_of(tx), &query)
+            .get_many(tx_of(tx), projection, &query)
             .and_then(|page| page.to_json())
             .map_err(to_wire)
     }
@@ -726,16 +728,20 @@ mod tests {
     #[test]
     fn projection_store_versions_and_queries() {
         let store = memory_transactor();
-        assert!(store.projection_store().get(no_tx(), "user-1").unwrap().is_none());
+        assert!(store.projection_store().get(no_tx(), "p", "user-1").unwrap().is_none());
 
         assert_eq!(
             store
                 .projection_store()
-                .save(no_tx(), "user-1", 0, r#"{"email":"ada@example.com","age":36}"#)
+                .save(no_tx(), "p", "user-1", 0, r#"{"email":"ada@example.com","age":36}"#)
                 .unwrap(),
             1
         );
-        let row = store.projection_store().get(no_tx(), "user-1").unwrap().expect("saved");
+        let row = store
+            .projection_store()
+            .get(no_tx(), "p", "user-1")
+            .unwrap()
+            .expect("saved");
         assert_eq!(row.version, 1);
         let keyed = json!({"id": "user-1", "email": "ada@example.com", "age": 36});
         assert_eq!(
@@ -747,7 +753,7 @@ mod tests {
         // The adapter's codes cross untouched: a stale version is a conflict, a bad document is codec.
         let conflict = store
             .projection_store()
-            .save(no_tx(), "user-1", 0, r#"{"email":"ada@example.com","age":37}"#)
+            .save(no_tx(), "p", "user-1", 0, r#"{"email":"ada@example.com","age":37}"#)
             .unwrap_err();
         assert_eq!(conflict, "concurrency: expected 0, stored 1");
         // The kernel's document rule decides, as `check_projection_document` reports it to a host's store.
@@ -758,7 +764,7 @@ mod tests {
         ] {
             let refused = store
                 .projection_store()
-                .save(no_tx(), "user-2", 0, document)
+                .save(no_tx(), "p", "user-2", 0, document)
                 .unwrap_err();
             assert_eq!(Err(refused), check_projection_document("user-2", document), "{name}");
         }
@@ -766,12 +772,12 @@ mod tests {
 
         store
             .projection_store()
-            .save(no_tx(), "user-2", 0, r#"{"email":"grace@example.com","age":29}"#)
+            .save(no_tx(), "p", "user-2", 0, r#"{"email":"grace@example.com","age":29}"#)
             .unwrap();
         let page: Value = serde_json::from_str(
             &store
                 .projection_store()
-                .get_many(no_tx(), r#"{"sort":[{"path":"age"}]}"#)
+                .get_many(no_tx(), "p", r#"{"sort":[{"path":"age"}]}"#)
                 .unwrap(),
         )
         .unwrap();
@@ -784,11 +790,12 @@ mod tests {
         assert_eq!((ids, &page["next"]), (vec!["user-2", "user-1"], &Value::Null));
         assert!(store
             .projection_store()
-            .get_many(no_tx(), "{not a query}")
+            .get_many(no_tx(), "p", "{not a query}")
             .unwrap_err()
             .starts_with("codec: "));
         let wide = store.projection_store().get_many(
             no_tx(),
+            "p",
             r#"{"filter":{"compare":{"path":"age","op":"eq","value":1180591620717411303424}}}"#,
         );
         assert!(
@@ -797,7 +804,7 @@ mod tests {
         );
         let cursor = store
             .projection_store()
-            .get_many(no_tx(), r#"{"sort":[{"path":"age"}],"after":"!!!"}"#)
+            .get_many(no_tx(), "p", r#"{"sort":[{"path":"age"}],"after":"!!!"}"#)
             .unwrap_err();
         assert!(
             cursor.starts_with("codec: "),
@@ -984,7 +991,10 @@ mod tests {
                 .event_store()
                 .save_snapshot(tx, "agg-1", "Invoice", 1, b"snap".to_vec())
                 .unwrap();
-            store.projection_store().save(tx, "user-1", 0, r#"{"age":36}"#).unwrap();
+            store
+                .projection_store()
+                .save(tx, "p", "user-1", 0, r#"{"age":36}"#)
+                .unwrap();
             assert!(
                 store.idempotency_store().claim(tx, "req-A", 7).unwrap().won,
                 "{}",
@@ -1005,7 +1015,7 @@ mod tests {
             );
             assert!(store.event_store().unpublished(10).is_empty(), "{}", c.name);
             assert!(
-                store.projection_store().get(no_tx(), "user-1").unwrap().is_none(),
+                store.projection_store().get(no_tx(), "p", "user-1").unwrap().is_none(),
                 "{}",
                 c.name
             );
@@ -1019,7 +1029,7 @@ mod tests {
                 store.event_store().load(no_tx(), "agg-1", 0).unwrap().len(),
                 store.event_store().unpublished(10).len(),
                 store.event_store().load_snapshot(no_tx(), "agg-1").unwrap().is_some(),
-                store.projection_store().get(no_tx(), "user-1").unwrap().is_some(),
+                store.projection_store().get(no_tx(), "p", "user-1").unwrap().is_some(),
                 !store.idempotency_store().claim(no_tx(), "req-A", 7).unwrap().won,
                 store
                     .saga_store()
@@ -1160,8 +1170,8 @@ impl MemoryEventStore {
 }
 impl MemoryProjectionStore {
     /// The ownership-safe C result shape of [`Self::get`].
-    pub fn get_result(&self, tx: i64, id: &str) -> Result<ProjectionLookup, String> {
-        self.get(tx, id).map(|value| ProjectionLookup { value })
+    pub fn get_result(&self, tx: i64, projection: &str, id: &str) -> Result<ProjectionLookup, String> {
+        self.get(tx, projection, id).map(|value| ProjectionLookup { value })
     }
 }
 impl MemorySagaStore {

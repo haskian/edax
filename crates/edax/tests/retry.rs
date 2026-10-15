@@ -96,7 +96,7 @@ impl Rig {
     fn new() -> Self {
         let db = MemoryTransactor::new();
         Self {
-            projections: db.projection_store(),
+            projections: db.projection_store("read_model"),
             db,
             handle: Arc::new(Shared::new(MemoryTx::auto_commit())),
             runs: Arc::new(AtomicUsize::new(0)),

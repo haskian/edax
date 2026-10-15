@@ -16,7 +16,8 @@
 //! - a UTC year below `0000`, which four digits cannot hold (`jiff` refuses one past 9999 itself).
 //!
 //! `jiff` then prints the instant at six fraction digits: four-digit year, `T`, and `Z`.
-//! `testdata/golden/host_values.json` pins the form.
+//! [`timestamp_from_unix_nanos`] writes a clock reading or a stored event time in the same form,
+//! floored to the microsecond. `testdata/golden/host_values.json` pins both.
 
 use edax_core::Error;
 use jiff::tz::Offset;
@@ -33,9 +34,24 @@ pub fn canonical_timestamp(text: &str) -> Result<String, Error> {
     if instant.subsec_nanosecond() % 1_000 != 0 {
         return Err(Error::codec(format_args!("{text:?} is finer than a microsecond")));
     }
+    render(instant, text)
+}
+
+/// The fixed-width UTC text of `nanos` since the Unix epoch, floored to the microsecond, so an instant
+/// before the epoch rounds back in time as one after it does. Every `i64` falls inside the four-digit
+/// years, so the `codec` error is unreachable; it stays a `Result` because `jiff` checks its own range.
+pub fn timestamp_from_unix_nanos(nanos: i64) -> Result<String, Error> {
+    let instant = Timestamp::from_microsecond(nanos.div_euclid(1_000))
+        .map_err(|e| Error::codec(format_args!("{nanos} ns is no instant: {e}")))?;
+    render(instant, nanos)
+}
+
+/// `instant` at six fraction digits, or the `codec` error for a year the four digits cannot hold;
+/// `input` names what it was read from.
+fn render(instant: Timestamp, input: impl std::fmt::Debug) -> Result<String, Error> {
     // jiff prints a year below 0000 with a `-00` prefix, which breaks the fixed width.
     if Offset::UTC.to_datetime(instant).year() < 0 {
-        return Err(Error::codec(format_args!("{text:?} falls before the UTC year 0000")));
+        return Err(Error::codec(format_args!("{input:?} falls before the UTC year 0000")));
     }
     Ok(format!("{instant:.6}"))
 }

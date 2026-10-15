@@ -79,7 +79,8 @@ func run() (err error) {
 		return err
 	}
 
-	a, err := repo.Load(ctx, "acct-1", nil)
+	// Create reads nothing: a new account, empty at version 0.
+	a, err := repo.Create("acct-1", nil)
 	if err != nil {
 		return err
 	}

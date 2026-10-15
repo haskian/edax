@@ -52,6 +52,7 @@ from .errors import (
     StoreError,
     is_fatal,
     is_terminal,
+    reason_of,
 )
 from .host_value import Decimal, Instant
 from .idempotency import Claimed, IdempotencyStore, Record, Won, claim_key, forget
@@ -166,6 +167,7 @@ __all__ = [
     "StoreError",
     "is_fatal",
     "is_terminal",
+    "reason_of",
     # write side
     "Claimed",
     "CommandBus",

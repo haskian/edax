@@ -57,7 +57,7 @@ class Rig:
         self, *, shared: bool, commit: CommitFault = None, raises: Exception | None = None, result: Any = None
     ) -> None:
         self.db = MemoryTransactor()
-        self.projections = MemoryProjectionStore(self.db)
+        self.projections = MemoryProjectionStore(self.db, projection="read_model")
         self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.unit: Any = BrokenCommit(self.db, commit) if commit else self.db
         self.runs = 0
@@ -223,7 +223,7 @@ class Broker:
 
     def __init__(self, *, shared: bool, fail_first: Exception | None = None, uow: bool = True) -> None:
         self.db = MemoryTransactor()
-        self.projections = MemoryProjectionStore(self.db)
+        self.projections = MemoryProjectionStore(self.db, projection="read_model")
         self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.runs = 0
         self.acked: list[bytes] = []
@@ -391,7 +391,7 @@ async def test_a_guard_inside_the_hosts_transaction_runs_only_on_a_ledger_that_j
     landed. The guard refuses it with the fatal ``BadHandle`` before the claim, so the redelivery outside
     the transaction runs the work once and it lands."""
     db = MemoryTransactor()
-    projections = MemoryProjectionStore(db)
+    projections = MemoryProjectionStore(db, projection="read_model")
     ledger = case.ledger(db)
     runs = 0
 
@@ -512,7 +512,7 @@ async def test_a_failed_commit_after_the_handler_leaves_no_cached_success(
     own under ``unit_of_work=`` releases it after the failed commit; under the host's transaction it is
     refused before the claim, because it would complete before the commit."""
     db = MemoryTransactor()
-    projections = MemoryProjectionStore(db)
+    projections = MemoryProjectionStore(db, projection="read_model")
     ledger = case.ledger(db)
     unit = BrokenCommit(db, "nothing_landed")
     guard_unit = None if case.host_owns_the_transaction else unit
@@ -767,7 +767,7 @@ class History:
 
     def __init__(self, shared: bool) -> None:
         self.db = MemoryTransactor()
-        self.projections = MemoryProjectionStore(self.db)
+        self.projections = MemoryProjectionStore(self.db, projection="read_model")
         self.ledger: Any = MemoryIdempotencyStore(self.db) if shared else MemoryLedger()
         self.unit = BrokenCommit(self.db, None)
         self.shared = shared

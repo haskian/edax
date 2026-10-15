@@ -58,7 +58,11 @@ class TestMemoryEventOutbox(EventOutboxContract):
 class TestMemoryProjectionStore(ProjectionStoreContract):
     @pytest.fixture
     def projection_store(self, db: MemoryTransactor) -> Any:
-        return MemoryProjectionStore(db)
+        return MemoryProjectionStore(db, projection="read_model")
+
+    @pytest.fixture
+    def projection_store_named(self, db: MemoryTransactor) -> Any:
+        return lambda name: MemoryProjectionStore(db, projection=name)
 
     @pytest.fixture
     def transactor(self, db: MemoryTransactor) -> Any:

@@ -35,7 +35,7 @@ func run() (err error) {
 	db, ledgerDB := memory.New(), memory.New()
 	defer func() { err = errors.Join(err, db.Close()) }()
 	defer func() { err = errors.Join(err, ledgerDB.Close()) }()
-	balances, err := db.ProjectionStore()
+	balances, err := db.ProjectionStore("balances")
 	if err != nil {
 		return err
 	}

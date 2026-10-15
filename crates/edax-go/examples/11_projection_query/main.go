@@ -26,7 +26,7 @@ func run() (err error) {
 	defer cancel()
 	db := memory.New()
 	defer func() { err = errors.Join(err, db.Close()) }()
-	store, err := db.ProjectionStore()
+	store, err := db.ProjectionStore("accounts")
 	if err != nil {
 		return err
 	}

@@ -168,7 +168,7 @@ window causes.
 ```python
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
 db = MemoryTransactor()
-balances = MemoryProjectionStore(db)
+balances = MemoryProjectionStore(db, projection="balances")
 router = EventRouter(
     idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
 )

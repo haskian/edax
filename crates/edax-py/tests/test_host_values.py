@@ -33,10 +33,12 @@ EPOCH = dt.datetime(1970, 1, 1, tzinfo=UTC)
 MICROSECOND = dt.timedelta(microseconds=1)
 
 
-def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date | float:
+def _host_value(kind: str, text: str) -> Decimal | dt.datetime | dt.date | float | edax.Instant:
     """The host value a golden row names by its ``kind`` and ``input`` text."""
     if kind == "decimal":
         return Decimal(text)
+    if kind == "unix_nanos":
+        return edax.Instant.from_unix_nanos(int(text))
     if kind == "float":
         return float(text)
     if kind == "datetime":
@@ -95,6 +97,8 @@ def test_golden_host_values(case: dict[str, Any]) -> None:
         return  # a JSON object key is text, so a float key has no form of its own to pin
     assert _json.encode({value: 1}) == f"{{{case['json']}:1}}", "a dict key takes the same form"
     if case["epoch_micros"] is not None:
+        if isinstance(value, edax.Instant):
+            value = value.to_datetime()
         assert isinstance(value, dt.datetime)
         assert (value - EPOCH) // MICROSECOND == case["epoch_micros"], "the row's input is its pinned instant"
 
@@ -203,7 +207,7 @@ LEDGER: list[dict[str, Any]] = [
 async def test_sort_and_cursor_paging_order_host_values_by_value(
     branch: str, sort: list[Q.SortKey], want: list[str]
 ) -> None:
-    store = MemoryProjectionStore()
+    store = MemoryProjectionStore(projection="read_model")
     for row in LEDGER:
         await store.save(Entity(row["id"], 0, row))
     whole = await store.get_many(Q.Query(sort=sort))
@@ -519,7 +523,7 @@ async def test_a_defaulted_field_encodes_matches_and_stores_however_the_value_wa
     assert [F.matches(filter, d) for d in documents] == [True, True], branch
     stored: list[list[Any]] = []
     for d in documents:
-        store = MemoryProjectionStore()
+        store = MemoryProjectionStore(projection="read_model")
         await store.save(Entity("view-1", 0, d))
         stored.append((await store.get_many(Q.Query(filter=filter))).rows)
     assert len(stored[0]) == 1 and stored[0] == stored[1], branch
@@ -688,3 +692,23 @@ def test_host_types_are_immutable_value_objects(branch: str, value: Any, same: A
     for copied in (copy.copy(value), copy.deepcopy(value), pickle.loads(pickle.dumps(value))):
         assert copied == value and type(copied) is type(value), branch
     assert repr(value) == f"edax.{type(value).__name__}({str(value)!r})", branch
+
+
+@pytest.mark.parametrize(
+    "name, nanos, error",
+    [
+        ("past a signed 64-bit integer", 2**63, edax.CodecError),
+        ("not an int", "0", edax.CodecError),
+    ],
+)
+def test_from_unix_nanos_refuses_what_is_no_instant(name: str, nanos: Any, error: type[Exception]) -> None:
+    with pytest.raises(error):
+        edax.Instant.from_unix_nanos(nanos)
+
+
+def test_now_reads_the_kernel_clock_floored() -> None:
+    before = edax.Instant.from_unix_nanos(edax.current_timestamp())
+    now = edax.Instant.now()
+    after = edax.Instant.from_unix_nanos(edax.current_timestamp())
+    assert before <= now <= after
+    assert now == edax.Instant(str(now)), "already canonical"
