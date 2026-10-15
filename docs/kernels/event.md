@@ -649,6 +649,25 @@ if !edax::is_stale(stored_sequence, msg.sequence) {
 Persist the mark in the same transaction as the projection write. A crash between two separate
 commits leaves the mark ahead of the state it claims to describe.
 
+## `batch` — ingestion limits and recovery
+
+`Config` sets batch record/byte/age thresholds, concurrent sink operations, retained-input budgets,
+input and mapper size limits, and the retry ceiling. `check` validates the limits, including
+headroom for one additional record. `reserve` accounts for source and mapped serialization copies.
+`admit` checks both retained budgets without integer overflow. `cut` answers whether a nonempty
+batch has reached any flush threshold; the SDK supplies monotonic elapsed time.
+
+`recover` returns one of `retry`, `stop`, `split` or `reject`. A transient or uncertain failure
+retries unchanged originals until the ceiling. Only a confirmed rollback with a record-local failure
+allows a split. Children retain original order and the left child runs first. A failure to persist
+already-rejected originals is an infrastructure failure and cannot produce another rejection loop.
+
+The SDK owns task scheduling, cancellation and capacity accounting. It retains each task's credits
+until the task releases its data. The kernel supplies the admission decision; the runner must also
+reserve processing capacity and rotate admissions so backing-off partitions cannot starve others.
+`event_batch.json` pins the decisions. [Ingestion](../backends/ingestion.md) documents configuration
+and the Kafka runner's lifecycle.
+
 ## `sequence` — the dense-batch rule
 
 `check_batch(expected, sequences)` is the rule every event store applies before an append writes.

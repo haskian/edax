@@ -1,6 +1,6 @@
 # Go examples
 
-Nineteen examples cover the same topics and learning order as the
+Twenty-one examples follow the learning order of the
 [Python examples](../../../examples/py/README.md). Each program checks its results and prints a
 final `ok:` line. The contract-kit example is a Go test package.
 
@@ -27,7 +27,8 @@ It runs the contract-kit package with `go test -race -count=1 -v`. Pass director
 mise run examples:go 05_idempotent_commands 13_saga
 ```
 
-Each numbered directory stands alone and shows its setup, error handling and use of the public SDK.
+Each numbered directory stands alone and checks its results. Examples 01–19 use the public SDK.
+Examples 20 and 21 use the internal kernel bindings from this repository.
 
 ## Learning order
 
@@ -52,9 +53,33 @@ Each numbered directory stands alone and shows its setup, error handling and use
 | [17_kafka](17_kafka/) | Publish an outbox and consume through a dispatcher |
 | [18_contract_kit](18_contract_kit/) | Run the public backend contracts with store factories |
 | [19_fault_injection](19_fault_injection/) | Survive a lost commit reply without applying a deposit twice |
+| [20_ingestion](20_ingestion/) | Check append replay/conflicts and retain an upsert deletion marker through the memory kernel |
+| [21_folds](21_folds/) | Apply ordered deltas, skip a duplicate reducer call and refuse a sequence gap through the fold kernel |
 
 The [Go SDK guide](../../../docs/sdk/go.md) describes the interfaces. The
 [examples guide](../../../docs/guides/examples.md) maps these topics onto the message flow.
+
+## Ingestion and fold kernel examples
+
+Run both from the repository root after building the native library:
+
+```sh
+mise run examples:go 20_ingestion 21_folds
+```
+
+Go exposes these kernel decisions through generated bindings. It has no ingestion or fold runner
+and no PostgreSQL adapter for them. The examples import `internal/kernel`, so run them inside this
+repository; an external Go module cannot import that package.
+
+Example 20 uses the native memory ingestion database. It commits accepted rows and rejected
+originals together. The append conflict remains pending for publication. The example does not send
+a dead letter or mark it published. Upsert deletion retains its stream owner and sequence.
+
+Example 21 stores the writes from `FoldTransition` in a Go map. It uses fixed source evidence and
+a fixed clock to demonstrate the protocol. The map has no durability, transaction isolation or
+concurrent access protection. A production adapter must verify source continuity, hold the
+required locks and commit all returned writes atomically. The example emits no external effects
+and does not demonstrate outbox publication or rebuild activation.
 
 ## Real backends
 

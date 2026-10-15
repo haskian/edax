@@ -306,9 +306,10 @@ revoke, or rewind. Confirmations within one generation preserve the highest wate
 whole record per `TopicPartition`: unsettled count, how many are still live, highest offset
 delivered, and last committed watermark.
 
-A deadline cancels the pending client call without waiting indefinitely for cancellation.
-The adapter retains the call until it finishes. No new commit or poll starts while a cancelled
-commit remains unresolved; attempts raise `BadHandle`. A late successful reply updates only its original
+A deadline or caller cancellation ends the wait without cancelling the client commit. aiokafka shields
+its broker request, so cancelling the client call would hide an operation that can still finish later.
+The adapter retains the entire call until it finishes. No new commit or poll starts while that call
+remains unresolved; attempts raise `BadHandle`. A late successful reply updates only its original
 generation. Stop the caller-owned client before replacing the adapter after this failure.
 
 Fetches and bookings share one task. A rewind invalidates an outstanding fetch and restores the

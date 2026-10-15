@@ -42,9 +42,10 @@ flowchart LR
 | [edax-core](kernels/core.md) | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
 | [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `batch` |
-| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `ingest` |
+| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `ingest`, `fold` |
 | [edax-kafka](kernels/kafka.md) | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | [edax-redis](kernels/redis.md) | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
+| [edax-postgres](kernels/postgres.md) | PostgreSQL configuration, schema checks, SQL, row layouts, queries, ledger, ingestion and fold storage |
 | [Golden vectors](kernels/golden-vectors.md) | the cross-language contract, and when regenerating is legitimate |
 
 ### SDK — the wiring
@@ -74,6 +75,7 @@ flowchart LR
 | [postgres](backends/postgres.md) | every durable seam on Postgres for Python: the table contract, the query in SQL, relays |
 | [redis](backends/redis.md) | a ledger that does not join your transaction, its two expiry clocks, and fencing |
 | [Go backends](backends/go.md) | Go memory, Redis and Kafka adapters and their client contracts |
+| [Ordered folds](backends/folds.md) | delta reducers, authoritative checkpoints, fencing, outbox and rebuild activation |
 | [Microbatch ingestion](backends/ingestion.md) | bounded Kafka append/upsert ingestion, atomic sinks and durable rejection publication |
 | [kafka](backends/kafka.md) | the `Producer` and `Consumer` adapters, and what an ack must mean |
 
@@ -84,8 +86,11 @@ flowchart LR
 | [Getting started](guides/getting-started.md) | build it, then wire one command end to end |
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
-| [Examples](guides/examples.md) | nineteen topics in Python and Go, in learning order |
+| [Examples](guides/examples.md) | twenty-one topics in Python and Go, in learning order |
 | [Multi-tenancy](guides/multi-tenancy.md) | silo, pool and bridge mapped onto the seams, and what is not enforced |
+
+The last two example topics use public Python stores and internal Go kernel bindings. Go ingestion
+and fold runners and database adapters are not implemented.
 
 ## Three things to know before you build
 
@@ -101,4 +106,4 @@ flowchart LR
 
 - [`README.md`](../README.md) — the project overview and quickstart.
 - [`AGENTS.md`](../AGENTS.md) — operational rules for working in this repository.
-- [Python examples](../examples/py/README.md) and [Go examples](../crates/edax-go/examples/README.md) — nineteen topics in each language, with result checks.
+- [Python examples](../examples/py/README.md) and [Go examples](../crates/edax-go/examples/README.md) — twenty-one topics in each language, with result checks.

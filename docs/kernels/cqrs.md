@@ -9,7 +9,8 @@ The command bus itself is host-local ergonomics: handler registration, typed dis
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
 (SDKs), not here. The table below lists its shared decisions and stored types.
 
-The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
+The query side owns reading and maintaining derived state. `ingest` maintains append/upsert rows;
+`fold` maintains ordered stateful projections. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
 and the two travel together because the query evaluates the filter.
 
@@ -27,6 +28,7 @@ and the two travel together because the query evaluates the filter.
 | `complete_fence` / `release_fence` | whether a claim owner may complete or release the record currently held by a ledger key |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
+| `fold` | canonical ordered delta transitions, dual receipts, source continuity, scoped leases, checkpoint recovery and outbox activation |
 | `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts and exact source coordinates (`ingest.json`) |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
 | `query` | ordering, keyset cursors and paging over the documents a filter selects, and the `document` rule every stored read-model document meets |
@@ -487,6 +489,62 @@ The total order, the tiebreak and the cursor are documented from the host's side
 `Query`, `SortKey` and `Page` rather than defining its own, so the spec and the applier cannot drift.
 
 ---
+
+## `ingest` — append and complete-state upsert
+
+`Contract` fixes a target generation's mode, source incarnation and mapper identity. Key helpers
+scope row identities by generation and tenant, and source coordinates by source incarnation,
+topic, partition and offset. `validate_inputs` refuses records outside that contract.
+
+`plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
+rejections before selecting owners. In append mode, identical event replay succeeds and changed
+content under the same identity is rejected. In upsert mode, one aggregate stream owns each row:
+a higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
+sequence is rejected. A null value retains a deletion marker. The planner validates every original
+before compacting eligible replacements into the final writes.
+
+`inputs_json` checks original numeric tokens before decoding application values. Integer literals
+outside the canonical JSON safe range become record-local failures instead of rounded identities.
+Protocol offsets and sequences keep their full supported integer width. `ingest.json` and
+`ingestion_numbers.json` pin these contracts.
+
+The store must commit the plan's state writes and rejection records in one transaction.
+`edax-memory::ingest` provides the reference sink. `edax-postgres::ingest` supplies SQL and recovery
+verdicts; the Python adapter supplies the transaction. See [ingestion](../backends/ingestion.md).
+
+## `fold` — ordered state transitions
+
+A fold repeatedly applies a pure reducer to previous state and an event. The reducer implements
+application behavior. This kernel decides whether the event may run and which records must commit
+with its result. It maintains one state per tenant/aggregate; cross-aggregate state and external
+snapshot imports are outside this contract.
+
+`keys(request)` names the records an operation needs. `transition(request, records, now_ms)`
+returns a result and writes to persist atomically. The caller holds the generation lock until
+commit. The kernel does no I/O and never invokes a reducer.
+
+| Operation | Decision |
+|---|---|
+| Initialize | Bind the immutable generation contract and complete partition/start vector |
+| Acquire, renew, refresh, release, load | Fence checkpoint ownership and recover authoritative progress |
+| Prepare | Check source continuity, ownership, event identity and sequence; return canonical reducer input and previous state |
+| Apply | Save replacement state, both deduplication receipts, deterministic intents and the next source offset |
+| Freeze and activate | Retire old owners, capture cutoffs and suppress effects already covered by the old generation |
+| Get and published | Read aggregate state or mark an eligible intent delivered |
+
+Two receipts bind each event to its event ID and aggregate sequence. Identical replay skips the
+reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
+checks cover physical source identity, history and retained/readable boundaries. These checks
+cannot establish that a restored database contains every previously created aggregate; the host
+must restore a consistent generation and terminate every previous writer before recovery.
+
+`request_json` validates application number tokens before decoding. Reducer input, replacement state
+and intent payloads use canonical JSON. The reducer cannot observe source offset or attempt number.
+`intent_id` provides stable effect identity and `eligible` applies activation cutoffs. Delivery is
+at least once, so the destination must deduplicate intent IDs, including after backup restore.
+
+`fold.json`, `fold_boundaries.json` and `ingestion_numbers.json` pin these decisions. The
+[fold guide](../backends/folds.md) covers leases, transactions, rebuilds and offline restore.
 
 ## What the kernel does not own
 

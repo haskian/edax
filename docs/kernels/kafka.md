@@ -301,10 +301,20 @@ tracker recorded the watermark itself, the commit that raised would count as com
 next, correct commit at that offset would be refused. Recording after the fact also keeps the record
 monotonic within a generation: two confirmations that return out of order leave the higher watermark recorded.
 The shell must still serialize broker requests. Generation checks protect local bookkeeping only.
+A timeout or cancellation of the waiter does not prove that the client's request has ended.
+The Python committer retains the actual client task until completion before sending another commit.
+Revocation retires tokens before waiting on that request. If it outlives the drain deadline, admission
+stays stopped while the unresolved request remains tracked.
 
 `due` also skips a watermark no higher than the first offset booked. A fresh tracker does not know the
 group's commit after a restart or a rebalance. But it fetched from there, so committing it again
 would be a round trip for nothing.
+
+The shell also captures assignment generation before fetching and checks it before booking returned
+records. Otherwise an old fetch could receive fresh delivery tokens after reassignment. Every
+rewind retires the previous generation. When a runner discards fetched results before booking, it
+resumes from the last proven contiguous completion frontier. The lowest retained record alone is
+not sufficient when earlier fetched records were discarded.
 
 ### Why `nack` seeks the lowest offset and rewinds the partition
 

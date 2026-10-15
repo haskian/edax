@@ -1,17 +1,27 @@
 # Projections
 
-The read side: a read model stored as one document per id, written with a version check, and paged
-with semantics the kernel decides.
+A projection derives useful state from events. The stored result is a read model, such as an
+account balance or order summary. A fold is the calculation used by a stateful projection:
+`next_state = reducer(previous_state, event)`.
 
-The event-sourced side replays events to rebuild an aggregate. A read model is the other shape: a
-current document you save and query directly. `ProjectionStore` is that seam: a versioned document
-store, one document per id under an optimistic version check. `ProjectionQuery` is its query side,
-which a store implements beside it to page the documents by the kernel's rules. It is not a projector. It keeps no
-record of which events a row has folded, so it cannot skip a redelivered one by itself. Deduplication
-comes from the consume-path guard, [`idempotent_by_id`](./consuming.md#idempotent_by_id), in front of
-the handler. A projector that folds events and keeps per-row marks is a deferred feature. Python
-ships a durable store, [`PostgresProjectionStore`](../backends/postgres.md); in Go and Rust you bring
-one.
+Choose the write path from the data each event supplies:
+
+| Input and work | API | State and replay protection |
+|---|---|---|
+| A handler needs to read or change several application records | `ProjectionStore` with an event handler and `idempotent_by_id` | The handler owns the update; its guard and writes must share a transaction |
+| Each event becomes an independent stored row | [`KafkaIngestion`, append mode](../backends/ingestion.md) | Stable event identity; identical replay does not rewrite the row |
+| Each event contains the complete replacement row | [`KafkaIngestion`, upsert mode](../backends/ingestion.md) | One aggregate owns the row; newer sequences replace state, older ones are ignored |
+| Each event changes the previous state of one aggregate | [`KafkaFold`](../backends/folds.md) | A pure reducer; state, deduplication, outbox intents and source progress commit together |
+
+`ProjectionStore` and its query interface are available in Python and Go. The ingestion and fold
+runners and their PostgreSQL adapters are Python APIs. Go currently exposes their shared decisions
+only through the repository's internal kernel bindings.
+
+The rest of this page covers `ProjectionStore`: one document per id, saved with an optimistic
+version check. `ProjectionQuery` adds filtering and pagination. The store keeps no event receipts;
+the consume-path guard, [`idempotent_by_id`](./consuming.md#idempotent_by_id), supplies deduplication.
+Python ships [`PostgresProjectionStore`](../backends/postgres.md); Go and Rust require a host adapter.
+Ingestion and fold tables have their own storage contracts and do not implement `ProjectionQuery`.
 
 A redelivered event can reload the current row version, fold again, and pass the next version check.
 Commit the consume guard and projection write in the same transaction to close that replay window.

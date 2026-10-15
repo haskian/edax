@@ -1,12 +1,20 @@
 # Kafka microbatch ingestion
 
-`KafkaIngestion` batches complete event messages into an atomic `BatchSink`. The Python SDK ships
-`PostgresIngestionSink` and `MemoryIngestionSink`. Rust kernels own admission, recovery, identity,
-conflict resolution, compaction and SQL. The generated bindings expose those decisions to Python
-and Go; a Go ingestion runner and database adapter are not included.
+`KafkaIngestion` collects Kafka events into database batches. Append mode stores one row per event.
+Upsert mode maintains the latest complete state for each mapped key. The mapper returns a
+`MappedRow(key, value)`; it does not read the previous row.
 
-This release supports append and complete-state upsert. It does not implement delta folds,
-database-authoritative source checkpoints, multi-stream row merges or raw Kafka tombstones.
+The Python SDK provides `PostgresIngestionSink` and `MemoryIngestionSink` behind the atomic
+`BatchSink` interface. Rust kernels own admission, recovery, identity, conflict resolution,
+compaction and SQL. Go has internal bindings to those decisions but no ingestion runner or
+database adapter. The [Python example](../../examples/py/20_ingestion.py) calls the memory sink;
+the [Go example](../../crates/edax-go/examples/20_ingestion/main.go) exercises the kernel from
+inside the repository. Its internal imports are unavailable to external Go modules.
+
+This runner supports append and complete-state upsert. [Ordered folds](folds.md) use a separate
+runner and database-authoritative checkpoints. Multi-stream row merges and raw Kafka tombstones
+remain outside both contracts. See the [projection guide](../sdk/projections.md) to choose between
+an application handler, append/upsert ingestion and a fold.
 
 ## Wire the pipeline
 
@@ -25,6 +33,13 @@ roles `ingest_events`, `ingest_state` and `ingest_rejections` to both `reference
 stores need no ingestion-table migration unless they use this feature. The sink checks the catalog;
 it rejects incompatible key/value columns, missing usable uniqueness, required extra columns and
 row-level security. It never creates tables.
+
+The reference DDL includes a partial index containing only unpublished rejections. Existing
+ingestion installations should copy its `CREATE INDEX` statement into a host-run migration;
+generate the DDL with their configured schema and table names. Run that statement once, without
+recreating the tables. The kernel also returns it separately as `pending_index`. Keep published
+rejection rows: replay needs their decisions. The partial index lets pending pages skip that
+retained history. New installations already get the index from the full reference DDL.
 
 ```python
 import asyncio
@@ -96,7 +111,8 @@ Install the runner's listener before starting the subscription. Disable consumer
 supply a group ID. `on_dead` is required and must return only after durable publication. A runner is
 single-use. On failure or cancellation, stop its caller-owned consumer and await `wait_closed()`
 before replacing it or closing resources that unfinished work still uses. Keep the producer and
-pool alive until that wait completes. `run(stop)` drains admitted work on a normal stop.
+pool alive until that wait completes. Cancelling `wait_closed()` leaves those operations tracked;
+call it again to wait for their completion. `run(stop)` drains admitted work on a normal stop.
 
 ## State and replay contract
 
@@ -136,6 +152,9 @@ event envelope as JSON **text** in `content`; it does not parse that envelope in
 value for fingerprinting. This preserves integer nanosecond timestamps and 64-bit sequences without
 crossing the canonical JSON safe-integer limit. Mapped host values still follow the ordinary
 [host-value encoding contract](../kernels/filter.md#host-values-every-sdk-writes-alike).
+The kernel checks original numeric tokens before parsing payloads, so an oversized integer
+cannot round into another record's identity. Unsafe integer payloads become durable rejections;
+represent exact large application numbers as strings.
 
 ## Durable rejection delivery
 
