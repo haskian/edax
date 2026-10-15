@@ -3,6 +3,7 @@ package edax
 import (
 	"context"
 	"errors"
+	"github.com/haskian/edax/crates/edax-go/internal/kernel"
 	"reflect"
 	"testing"
 	"time"
@@ -133,6 +134,64 @@ func TestEventRouterMiddlewareFactoryReentersRouter(t *testing.T) {
 				if err := router.Dispatch(context.Background(), event); err != nil || !reflect.DeepEqual(seen, []string{want}) {
 					t.Fatalf("%s: seen %v err %v want %s", name, seen, err, want)
 				}
+			}
+		})
+	}
+}
+
+func TestOpenedEventProvenanceRejectsMutableAliases(t *testing.T) {
+	for _, field := range []string{"data", "metadata", "subject"} {
+		t.Run(field, func(t *testing.T) {
+			keys := NewMemoryKeys()
+			defer keys.Close()
+			sealing, err := NewSealing(keys, "test", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft := EventDraft{ID: "event", AggregateID: "aggregate", Subject: Ptr("owner"), Name: "Changed", Version: 1, Data: []byte(`{"value":1}`), CorrelationID: "flow", CausationID: "cause", Metadata: map[string]string{"source": "original"}}
+			sealed, err := sealing.SealEvent(context.Background(), draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := kernel.RecordEvent(*sealed, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain := NewEventRouter()
+			if err := plain.Register("Changed", func(context.Context, EventMessage) error {
+				t.Fatal("unconfigured router passed ciphertext to handler")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := plain.Dispatch(context.Background(), *raw); !errors.Is(err, ErrBadHandle) {
+				t.Fatalf("unconfigured router accepted encryption: %v", err)
+			}
+			router := NewSealedEventRouter(sealing)
+			err = router.Register("Changed", func(ctx context.Context, view EventMessage) error {
+				if originalEvent(ctx, view).Encryption == nil {
+					t.Fatal("unchanged view lost provenance")
+				}
+				switch field {
+				case "data":
+					view.Data[0] = '['
+				case "metadata":
+					view.Metadata["source"] = "forged"
+				case "subject":
+					*view.Subject = "forged"
+				}
+				cached := ctx.Value(authenticatedEventKey{}).(authenticatedEvent)
+				_, err := cached.openedPayload(originalEvent(ctx, view))
+				if !errors.Is(err, ErrCodec) {
+					t.Fatalf("mutated %s retained authenticated provenance: %v", field, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := router.Dispatch(context.Background(), *raw); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

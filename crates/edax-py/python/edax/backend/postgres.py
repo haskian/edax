@@ -24,12 +24,12 @@ from .. import _json, _names, _native, errors
 from .._deadline import within
 from .._units import enlisted
 from .._wiring import wiring_int, wiring_str
-from ..errors import BadHandle, EdaxError, StoreError
+from ..errors import BadHandle, CodecError, EdaxError, StoreError
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
 from ..message import CommandMessage, EventDraft, EventMessage
 from ..projection import Entity
 from ..query import Page, Query
-from ..saga import CompletedInstance, RunningInstance, SagaInstance
+from ..saga import CompletedInstance, ProtectedSagaState, RunningInstance, SagaInstance
 from ..store import Snapshot
 from ..unit_of_work import Tx
 
@@ -375,7 +375,7 @@ class PostgresTransactor:
             raise
         except Exception as e:
             tx.aborted = True
-            raise _typed(op, e, self._unique) from e
+            raise postgres_error(op, e, self._unique) from e
         except BaseException:
             tx.aborted = True
             raise
@@ -394,13 +394,13 @@ class _Acquired:
         except EdaxError:
             raise
         except Exception as e:
-            raise _typed("transaction", e) from e
+            raise postgres_error("transaction", e) from e
 
     async def __aexit__(self, *exc: Any) -> bool | None:
         return await self._held.__aexit__(*exc)
 
 
-def _typed(op: _Op, e: Exception, unique: Mapping[str, str] | None = None) -> EdaxError:
+def postgres_error(op: _Op, e: Exception, unique: Mapping[str, str] | None = None) -> EdaxError:
     """``e``, an error from the client or the server, as the kernel's typed error. A unique violation is
     read by the key its index guards, which ``unique`` maps the index's name to (the table check's answer)."""
     sqlstate = getattr(e, "sqlstate", None)
@@ -419,7 +419,7 @@ def _client_failure(e: Exception) -> _ClientFailure:
     return "encode" if isinstance(e, ValueError) else "other"
 
 
-def _params(params_json: str) -> list[str | None]:
+def postgres_params(params_json: str) -> list[str | None]:
     params: list[str | None] = json.loads(params_json)
     return params
 
@@ -474,7 +474,7 @@ class _OutboxReads(_StoreView):
 
     async def _rows(self, call: _native.PostgresCall) -> list[Any]:
         """The rows the kernel's ``call`` returns, run in a transaction of its own."""
-        sql, params = self._sql(call.statement), _params(call.params_json)
+        sql, params = self._sql(call.statement), postgres_params(call.params_json)
         return await self._transactor._alone("outbox", lambda conn: conn.fetch(sql, *params))
 
     async def _unpublished(self, saga: str | None, limit: int) -> list[str]:
@@ -508,22 +508,38 @@ class PostgresEventStore(_OutboxReads):
         return self._transactor.begin()
 
     async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[EventMessage]:
-        params = _params(_native.postgres_load_params(aggregate_id, after))
+        params = postgres_params(_native.postgres_load_params(aggregate_id, after))
         rows = await self._fetch("load", tx, "load", *params)
         return _native.postgres_decode_events([row[0] for row in rows])
 
     async def load_snapshot(self, tx: Tx, aggregate_id: str) -> Snapshot | None:
-        params = _params(_native.postgres_load_snapshot_params(aggregate_id))
+        params = postgres_params(_native.postgres_load_snapshot_params(aggregate_id))
         row: str | None = await self._fetchval("load", tx, "load_snapshot", *params)
         if row is None:
             return None
         snapshot = _native.postgres_decode_snapshot(row)
-        return Snapshot(aggregate_id, snapshot.type_name, snapshot.version, snapshot.data)
+        return Snapshot(
+            aggregate_id,
+            snapshot.type_name,
+            snapshot.version,
+            snapshot.data,
+            snapshot.tenant,
+            snapshot.subject,
+            snapshot.encryption,
+        )
 
     async def save_snapshot(self, tx: Tx, snapshot: Snapshot) -> None:
-        params = _params(
-            _native.postgres_snapshot_params(
-                snapshot.aggregate_id, snapshot.type_name, snapshot.version, snapshot.data
+        params = postgres_params(
+            _native.postgres_protected_snapshot_params(
+                snapshot.aggregate_id,
+                _native.SnapshotResult(
+                    type_name=snapshot.type_name,
+                    version=snapshot.version,
+                    data=snapshot.data,
+                    tenant=snapshot.tenant,
+                    subject=snapshot.subject,
+                    encryption=snapshot.encryption,
+                ),
             )
         )
         stream_version: int = await self._fetchval("save_snapshot", tx, "save_snapshot", *params)
@@ -534,7 +550,7 @@ class PostgresEventStore(_OutboxReads):
     ) -> list[EventMessage]:
         # The dense-batch rule, the bigint bound and the NUL refusal are the kernel's, before any I/O.
         batch = list(drafts)
-        params = _params(_native.postgres_append_params(aggregate_id, expected_version, batch))
+        params = postgres_params(_native.postgres_append_params(aggregate_id, expected_version, batch))
         result: str = await self._fetchval("append", tx, "append", *params)
         # The statement returns its clock reading, not the events: the kernel stamps the drafts with it.
         return _native.postgres_append_result(expected_version, batch, result)
@@ -563,7 +579,7 @@ class PostgresCommandOutbox(_OutboxReads):
         if not commands:
             self._transactor._handle(tx)  # a foreign handle is refused even for an empty batch
             return
-        params = _params(_native.postgres_enqueue_params(list(commands)))
+        params = postgres_params(_native.postgres_enqueue_params(list(commands)))
         await self._fetchval("enqueue", tx, "command_enqueue", *params)
 
     async def unpublished(self, limit: int) -> list[CommandMessage]:
@@ -595,7 +611,7 @@ class PostgresProjectionStore(_StoreView):
     async def get(self, id: str, tx: Tx | None = None) -> Entity | None:
         locked = self._lock_reads and self._transactor._handle(tx) is not None
         call = _native.postgres_projection_get(self._projection, id, locked)
-        rows = await self._fetch("projection_read", tx, call.statement, *_params(call.params_json))
+        rows = await self._fetch("projection_read", tx, call.statement, *postgres_params(call.params_json))
         return Entity(id, rows[0][0], _json.decode(rows[0][1])) if rows else None
 
     async def save(self, entity: Entity, tx: Tx | None = None) -> int:
@@ -605,7 +621,7 @@ class PostgresProjectionStore(_StoreView):
             self._projection, entity.id, version, _json.encode(entity.document)
         )
         written: int | None = await self._fetchval(
-            "projection_save", tx, call.statement, *_params(call.params_json)
+            "projection_save", tx, call.statement, *postgres_params(call.params_json)
         )
         return _native.postgres_projection_result(entity.id, entity.version, written)
 
@@ -613,7 +629,7 @@ class PostgresProjectionStore(_StoreView):
         spec = query.to_json()
         # A spec or a cursor the kernel refuses is its terminal CodecError, before any I/O.
         compiled = _native.postgres_compile_query(self._transactor.tables, self._projection, spec)
-        params = _params(compiled.params_json)
+        params = postgres_params(compiled.params_json)
 
         async def read(conn: PgConnection) -> list[str]:
             return [row[0] for row in await conn.fetch(compiled.sql, *params)]
@@ -638,8 +654,8 @@ class PostgresIdempotencyStore(_StoreView):
 
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
         owner = _native.postgres_new_owner()
-        params = _params(_native.postgres_claim_params(key, owner, payload_hash))
-        read_params = _params(
+        params = postgres_params(_native.postgres_claim_params(key, owner, payload_hash))
+        read_params = postgres_params(
             _native.postgres_claim_read_params(key, self._transactor._settings.claim_ttl_ms)
         )
 
@@ -675,18 +691,18 @@ class PostgresIdempotencyStore(_StoreView):
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         body = encode_record(record)
-        key_params = _params(_native.postgres_ledger_key_params(key))
+        key_params = postgres_params(_native.postgres_ledger_key_params(key))
 
         async def complete(conn: PgConnection) -> None:
             # A pending record is the kernel's BadHandle and a lapsed claim its StoreError: nothing written.
             if _native.postgres_complete_write(key, await self._hold(conn, key_params), handle, body):
-                settle = _params(_native.postgres_settle_params(key, handle, body))
+                settle = postgres_params(_native.postgres_settle_params(key, handle, body))
                 await conn.execute(self._sql("ledger_settle"), *settle)
 
         await self._transactor.run("settle", tx, complete)
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
-        key_params = _params(_native.postgres_ledger_key_params(key))
+        key_params = postgres_params(_native.postgres_ledger_key_params(key))
 
         async def release(conn: PgConnection) -> None:
             if _native.postgres_release_write(await self._hold(conn, key_params), handle):
@@ -695,7 +711,7 @@ class PostgresIdempotencyStore(_StoreView):
         await self._transactor.run("settle", tx, release)
 
     async def forget(self, key: str, tx: Tx | None = None) -> None:
-        key_params = _params(_native.postgres_ledger_key_params(key))
+        key_params = postgres_params(_native.postgres_ledger_key_params(key))
 
         async def forget(conn: PgConnection) -> None:
             # A pending claim is the kernel's InProgress, and stays.
@@ -717,13 +733,21 @@ class PostgresSagaStore(_OutboxReads):
     async def load(self, saga: str, id: str, tx: Tx | None = None) -> SagaInstance | None:
         # Inside a unit of work the read holds the row, so two steps of one instance wait for each other.
         call = _native.postgres_saga_load(saga, id, self._transactor._handle(tx) is not None)
-        row: str | None = await self._fetchval("saga_load", tx, call.statement, *_params(call.params_json))
+        row: str | None = await self._fetchval(
+            "saga_load", tx, call.statement, *postgres_params(call.params_json)
+        )
         if row is None:
             return None
         instance = _native.postgres_decode_saga(row)
-        if instance.completed:
+        if instance.completed and instance.state_json is None:
             return CompletedInstance(instance.version)
-        state = _json.decode(_names.given(instance.state_json, "saga state"))
+        state_json = _names.given(instance.state_json, "saga state")
+        protected = _native.decode_protected_state(state_json).value
+        if protected is not None and protected.completed:
+            return CompletedInstance(instance.version, protected, instance.folded)
+        if instance.completed:
+            raise CodecError("saga completion disagrees with authenticated state")
+        state = protected if protected is not None else _json.decode(state_json)
         return RunningInstance(state, instance.version, instance.folded)
 
     async def _write(
@@ -737,7 +761,9 @@ class PostgresSagaStore(_OutboxReads):
         tx: Tx | None,
     ) -> int:
         call = _native.postgres_saga_write(saga, id, version, state, folded, list(commands))
-        result: str = await self._fetchval("saga_write", tx, call.statement, *_params(call.params_json))
+        result: str = await self._fetchval(
+            "saga_write", tx, call.statement, *postgres_params(call.params_json)
+        )
         return _native.postgres_saga_result(saga, id, version, result)
 
     async def save(
@@ -750,7 +776,11 @@ class PostgresSagaStore(_OutboxReads):
         commands: Sequence[CommandMessage],
         tx: Tx | None = None,
     ) -> int:
-        encoded = _json.encode(state)
+        encoded = (
+            _native.encode_protected_state(state)
+            if isinstance(state, ProtectedSagaState)
+            else _json.encode(state)
+        )
         return await self._write(saga, id, version, encoded, folded, commands, tx)
 
     async def complete(

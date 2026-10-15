@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from . import _native
-from .message import EventDraft, EventMessage
+from .message import EncryptionInfo, EventDraft, EventMessage
 from .unit_of_work import Transactor, TxT
 
 __all__ = [
@@ -29,6 +29,9 @@ class Snapshot:
     type_name: str
     version: int
     data: bytes
+    tenant: str | None = None
+    subject: str | None = None
+    encryption: EncryptionInfo | None = None
 
 
 class EventStore(Transactor[TxT], Protocol[TxT]):

@@ -34,6 +34,21 @@ const CodeBadHandle ErrorCode = "bad_handle"
 // CodeRejected is the kernel's rejected error category.
 const CodeRejected ErrorCode = "rejected"
 
+// CodeShredded is the kernel's shredded error category.
+const CodeShredded ErrorCode = "shredded"
+
+// CodeKeyUnavailable is the kernel's key_unavailable error category.
+const CodeKeyUnavailable ErrorCode = "key_unavailable"
+
+// CodeKeyRevoking is the kernel's key_revoking error category.
+const CodeKeyRevoking ErrorCode = "key_revoking"
+
+// CodeKeyMissing is the kernel's key_missing error category.
+const CodeKeyMissing ErrorCode = "key_missing"
+
+// CodeKeyUnauthorized is the kernel's key_unauthorized error category.
+const CodeKeyUnauthorized ErrorCode = "key_unauthorized"
+
 // Tenancy selects the kernel's tenant isolation mode.
 type Tenancy string
 

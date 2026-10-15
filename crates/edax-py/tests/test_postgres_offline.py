@@ -53,7 +53,7 @@ class ServerError(Exception):
 def test_every_failure_is_typed_by_the_kernel(name: str, op: Any, error: Exception, want: type) -> None:
     # The index names the reference schema gives the events' two unique keys, as the table check maps them.
     unique = {"edax_events_stream_sequence_key": "events_stream_sequence", "edax_events_pkey": "events_id"}
-    assert type(pg._typed(op, error, unique)) is want, name
+    assert type(pg.postgres_error(op, error, unique)) is want, name
 
 
 def test_settings_start_from_the_kernels_defaults() -> None:
@@ -114,9 +114,10 @@ def test_reference_ddl_is_the_kernels() -> None:
 def test_a_unique_violation_is_read_by_the_key_its_index_guards() -> None:
     race = ServerError("23505", "stream_order_unique")
     assert (
-        type(pg._typed("append", race, {"stream_order_unique": "events_stream_sequence"})) is ConcurrencyError
+        type(pg.postgres_error("append", race, {"stream_order_unique": "events_stream_sequence"}))
+        is ConcurrencyError
     )
-    assert type(pg._typed("append", race, {})) is CodecError, (
+    assert type(pg.postgres_error("append", race, {})) is CodecError, (
         "an index the check did not map is no version race"
     )
 
@@ -237,7 +238,56 @@ def test_ledger_vector(case: dict[str, Any]) -> None:
 @pytest.mark.parametrize("case", golden("postgres_rows.json"), ids=lambda c: c["name"])
 def test_rows_vector(case: dict[str, Any]) -> None:
     name = case["name"]
-    if "call" in case:
+    if case.get("kind") == "sealed_event":
+        event = _native.postgres_decode_events([case["row"]])[0]
+        assert json.loads(_native.encode_event("json", event)) == case["message"]
+        draft = drafted(event)
+        assert (
+            json.loads(_native.postgres_append_params(case["stream"], case["expected"], [draft]))
+            == case["params"]
+        )
+        appended = _native.postgres_append_result(case["expected"], [draft], case["result"])[0]
+        assert json.loads(_native.encode_event("json", appended)) == case["message"]
+        assert _native.open_event(event, bytes.fromhex(case["key_hex"])) == bytes.fromhex(
+            case["plaintext_hex"]
+        )
+    elif case.get("kind") == "sealed_command":
+        command = _native.postgres_decode_commands([case["row"]])[0]
+        assert json.loads(_native.encode_command("json", command)) == case["message"]
+        assert json.loads(_native.postgres_enqueue_params([command])) == case["params"]
+        assert _native.open_command(command, bytes.fromhex(case["key_hex"])) == bytes.fromhex(
+            case["plaintext_hex"]
+        )
+    elif case.get("kind") == "sealed_snapshot":
+        snapshot = _native.postgres_decode_snapshot(case["row"])
+        stored = json.loads(case["row"])
+        assert (snapshot.type_name, snapshot.version, snapshot.tenant, snapshot.subject) == (
+            stored["type_name"],
+            stored["version"],
+            stored["tenant"],
+            stored["subject"],
+        )
+        assert bytes(snapshot.data).hex() == stored["data"]
+        assert snapshot.encryption is not None
+        assert (
+            json.loads(_native.postgres_protected_snapshot_params(case["stream"], snapshot)) == case["params"]
+        )
+        aad = _native.state_encryption_context(
+            "snapshot",
+            case["stream"],
+            snapshot.type_name,
+            snapshot.version,
+            "",
+            False,
+            snapshot.encryption,
+            snapshot.tenant,
+            snapshot.subject,
+        )
+        assert bytes(aad).hex() == case["aad_hex"]
+        assert _native.open_bytes(
+            snapshot.encryption, bytes.fromhex(case["key_hex"]), aad, snapshot.data
+        ) == bytes.fromhex(case["plaintext_hex"])
+    elif "call" in case:
         call = getattr(_native, f"postgres_{case['call']}")
         assert _refusal(lambda: call(*case["args"])) == case["error"]
         if case["error"] is None:

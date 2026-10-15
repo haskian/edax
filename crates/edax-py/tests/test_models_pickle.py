@@ -97,6 +97,14 @@ OTHER: dict[str, Any] = {
     "idempotency_key": None,
     "aggregate_id": "acct-2",
     "tenant": "tenant-b",
+    "subject": "person-b",
+    "encryption": edax.EncryptionInfo(
+        format_version=1,
+        key_namespace="test",
+        key_id="key-other",
+        cipher="xchacha20-poly1305",
+        nonce=b"x" * 24,
+    ),
     "sequence": None,
     "name": "Withdrawn",
     "version": 9,
@@ -139,7 +147,7 @@ def test_the_repr_names_every_field_and_the_public_module() -> None:
     assert repr(MESSAGE) == (
         "EventMessage(id='e1', aggregate_id='acct-1', name='Deposited', version=1, data=b'\\x00\\x01', "
         "correlation_id='flow-1', causation_id='cmd-1', recorded_at=42, extensions={'traceparent': '00-a-b-01'}, "
-        "metadata={'trace': 'x'}, tenant=None, sequence=3, occurred_at=41)"
+        "metadata={'trace': 'x'}, tenant=None, subject=None, encryption=None, sequence=3, occurred_at=41)"
     )
     assert repr(edax.Lineage("flow-1", "evt-1")) == "Lineage(correlation_id='flow-1', causation_id='evt-1')"
 

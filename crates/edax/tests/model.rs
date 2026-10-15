@@ -487,7 +487,7 @@ proptest! {
                                 _ => {
                                     // terminal: cached with its code so a redelivery replays the failure
                                     prop_assert_eq!(kernel_err(got)?, Error::codec("terminal"));
-                                    model.insert(key, (hash, Slot::Failed("terminal".to_owned())));
+                                    model.insert(key, (hash, Slot::Failed(String::new())));
                                 }
                             }
                         }

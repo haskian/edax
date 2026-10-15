@@ -308,7 +308,9 @@ async def test_a_failure_python_caches_is_byte_for_byte_what_rust_writes() -> No
         await maybe_await(guarded(env))
     prior = await ledger.claim(event_claimed("evt-1"), rust.payload_hash)
     assert not isinstance(prior, Won)
-    assert edax.idempotency.encode_record(prior) == rust.stored
+    assert edax.idempotency.encode_record(prior) == edax.idempotency.encode_record(
+        edax.idempotency.Record.failed(rust.payload_hash, "", "rejected")
+    )
 
 
 async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cached_failure() -> None:
@@ -345,3 +347,109 @@ async def test_a_record_rust_tore_mid_write_replays_in_python_as_the_kernels_cac
     [error] = dead
     assert isinstance(error, edax.CachedFailure) and error.terminal and error.original_code == "codec"
     assert f"{error.code}: {error}" == case["replay_error"], "the replay text both SDKs show"
+
+
+@pytest.mark.parametrize("case", golden("sealing.json"), ids=lambda c: f"{c['cipher']}-{c['kind']}")
+def test_sealing_bytes_match_shared_vectors(case: dict[str, Any]) -> None:
+    import base64
+
+    from edax import _native
+
+    enc = case["encryption"]
+    info = edax.EncryptionInfo(
+        format_version=enc["format_version"],
+        key_namespace=enc["key_namespace"],
+        key_id=enc["key_id"],
+        cipher=enc["cipher"],
+        nonce=base64.b64decode(enc["nonce"]),
+    )
+    key, plaintext = bytes.fromhex(case["key_hex"]), bytes.fromhex(case["plaintext_hex"])
+    ciphertext = bytes.fromhex(case["ciphertext_hex"])
+    if case["kind"] in ("event", "command"):
+        for fmt in ("json", "msgpack"):
+            serializer = edax.KernelSerializer(fmt, case["kind"])
+            wire = bytes.fromhex(case[f"{fmt}_hex"])
+            message = serializer.decode(wire)
+            assert serializer.encode(message) == wire
+            assert message.encryption == info
+            if case["kind"] == "event":
+                assert isinstance(message, edax.EventMessage)
+                aad = _native.event_encryption_context(message)
+                assert _native.open_event(message, key) == plaintext
+            else:
+                assert isinstance(message, edax.CommandMessage)
+                aad = _native.command_encryption_context(message)
+                assert _native.open_command(message, key) == plaintext
+            assert bytes(aad).hex() == case["aad_hex"]
+    else:
+        aad = _native.state_encryption_context(
+            case["kind"],
+            case["identity"],
+            case["type_name"],
+            case["version"],
+            case["marks"],
+            case["completed"],
+            info,
+            case["tenant"],
+            case["subject"],
+        )
+        assert bytes(aad).hex() == case["aad_hex"]
+    assert _native.seal_bytes(info, key, aad, plaintext) == ciphertext
+    assert _native.open_bytes(info, key, aad, ciphertext) == plaintext
+
+
+@pytest.mark.parametrize("case", golden("protected_ledger.json"), ids=lambda c: f"{c['kind']}-{c['name']}")
+def test_protected_ledger_matches_shared_vectors(case: dict[str, Any]) -> None:
+    import base64
+    import json
+
+    from edax import _native
+
+    scope = _native.KeyScope(**case["scope"])
+    assert _native.protected_claim_key(scope, case["claim_key"]) == case["storage_key"]
+    assert case["storage_key"] == case["claim_key"]
+    if case["kind"] == "legacy":
+        with pytest.raises(edax.CodecError) as caught:
+            _native.protected_open(case["record"], b"")
+        assert wire_of(caught.value) == case["error"]
+        return
+
+    assert bytes(_native.encode_key_scope(scope)).hex() == case["scope_hex"]
+    fingerprint = _native.protected_fingerprint(
+        case["command_name"],
+        case["command_version"],
+        bytes.fromhex(case["command_hex"]),
+        case["fingerprint_key_id"],
+        bytes.fromhex(case["fingerprint_key_hex"]),
+    )
+    assert fingerprint == case["fingerprint_json"]
+    assert bytes(json.loads(fingerprint)["value"]).hex() == case["fingerprint_hex"]
+    pending = _native.protected_pending(scope, case["claim_key"], case["owner"], fingerprint)
+    assert pending == case["pending_record"]
+    assert _native.protected_replay(pending, scope, case["claim_key"], fingerprint).action == "pending"
+
+    encoded_info = case["encryption"]
+    info = _native.EncryptionInfo(
+        format_version=encoded_info["format_version"],
+        key_namespace=encoded_info["key_namespace"],
+        key_id=encoded_info["key_id"],
+        cipher=encoded_info["cipher"],
+        nonce=base64.b64decode(encoded_info["nonce"]),
+    )
+    key, result = bytes.fromhex(case["data_key_hex"]), bytes.fromhex(case["result_hex"])
+    done = _native.protected_finish(pending, case["owner"], info, key, result)
+    assert done == case["done_record"]
+    assert _native.protected_replay(done, scope, case["claim_key"], fingerprint).action == "done"
+    assert _native.protected_open(done, key) == result
+    ciphertext = base64.b64decode(json.loads(case["done_record"])["state"]["result"]["data"])
+    assert _native.seal_bytes(info, key, bytes.fromhex(case["result_aad_hex"]), result) == ciphertext
+
+    failed = _native.protected_failure(pending, case["owner"], "rejected")
+    assert failed == case["failed_record"]
+    replay = _native.protected_replay(failed, scope, case["claim_key"], fingerprint)
+    assert (replay.action, replay.code) == ("failed", "rejected")
+    other_scope = _native.KeyScope(**case["other_scope"])
+    assert _native.protected_claim_key(other_scope, case["claim_key"]) == case["storage_key"]
+    with pytest.raises(edax.CodecError) as caught:
+        _native.protected_replay(done, other_scope, case["claim_key"], fingerprint)
+    assert wire_of(caught.value) == case["other_scope_error"]

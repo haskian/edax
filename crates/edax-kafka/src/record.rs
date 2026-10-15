@@ -181,7 +181,7 @@ pub const DLQ_TOPIC: &str = "edax-dlq-topic";
 pub const DLQ_PARTITION: &str = "edax-dlq-partition";
 /// Header naming the offset a dead-lettered record was fetched from, in decimal.
 pub const DLQ_OFFSET: &str = "edax-dlq-offset";
-/// Header carrying why the record was dead-lettered, as text: the failure's wire form, `"<code>: <message>"`,
+/// Header carrying only the stable failure code; arbitrary exception text is never persisted,
 /// or [`DLQ_UNCLASSIFIED`] in place of the code for a failure that carries none.
 pub const DLQ_ERROR: &str = "edax-dlq-error";
 /// What [`DLQ_ERROR`] names in place of a code for a failure no code classifies (a host's own error), so
@@ -193,29 +193,27 @@ pub const DLQ_DROPPED: &str = "edax-dlq-dropped";
 
 /// The record a dead-letter sink publishes for a record it could not handle.
 ///
-/// The key, the value and every header are kept verbatim, so a republish to the source topic routes
-/// and decodes exactly as the original did once the fault is fixed: the content type, a middleware's
-/// key id and a `traceparent` all survive. Four headers are appended: [`DLQ_TOPIC`],
-/// [`DLQ_PARTITION`], [`DLQ_OFFSET`] and [`DLQ_ERROR`]. A record dead-lettered twice carries two sets;
-/// [`dead_letter_source`] reads the last. The coordinates are the record's identity, so a sink that
-/// sees the same offset twice after a redelivery dedups on them.
+/// The key, value and all headers except previous [`DLQ_ERROR`] headers are kept verbatim:
+/// the content type, a middleware's key id and a `traceparent` survive republishing. Four headers
+/// are appended: [`DLQ_TOPIC`], [`DLQ_PARTITION`], [`DLQ_OFFSET`] and [`DLQ_ERROR`]. Repeated dead
+/// lettering retains the previous coordinates but replaces all prior error text with the latest
+/// code. [`dead_letter_source`] reads the last coordinates. These identify the record, so a sink
+/// that sees the same offset twice after redelivery dedups on them.
 ///
-/// The failure is `code` and `message`, rendered here so every SDK writes one form:
-/// [`ErrorCode::tag`]'s wire form for a coded failure, [`DLQ_UNCLASSIFIED`] in the code's place for
-/// one with no code.
+/// Every SDK persists only `code`, or [`DLQ_UNCLASSIFIED`] when absent. `message` is accepted
+/// for source compatibility but never persisted; it can contain opened sensitive payloads.
 pub fn dead_letter_record(
     record: &KafkaRecord,
     topic: &str,
     partition: i32,
     offset: i64,
     code: Option<ErrorCode>,
-    message: &str,
+    _message: &str,
 ) -> KafkaRecord {
-    let error = match code {
-        Some(code) => code.tag(message),
-        None => format!("{DLQ_UNCLASSIFIED}: {message}"),
-    };
-    let mut headers = record.headers.clone();
+    // Exception text may contain decrypted payload data. Persist only the stable code, and
+    // remove previous diagnostic text when a historical dead letter is republished.
+    let error = code.map_or(DLQ_UNCLASSIFIED, ErrorCode::as_str);
+    let mut headers: Vec<_> = record.headers.iter().filter(|h| h.key != DLQ_ERROR).cloned().collect();
     headers.extend([
         KafkaHeader::new(DLQ_TOPIC, topic.as_bytes()),
         KafkaHeader::new(DLQ_PARTITION, partition.to_string().as_bytes()),

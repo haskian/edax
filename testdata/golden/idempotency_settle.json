@@ -16,7 +16,7 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
     }
   },
   {
@@ -30,7 +30,7 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"payload_mismatch\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"payload_mismatch\",\"pending\":false}"
     }
   },
   {
@@ -44,7 +44,7 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"cached_failure\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"cached_failure\",\"pending\":false}"
     }
   },
   {
@@ -52,7 +52,7 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"handler_not_found\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"handler_not_found\",\"pending\":false}"
     }
   },
   {
@@ -60,7 +60,7 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"already_registered\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"already_registered\",\"pending\":false}"
     }
   },
   {
@@ -74,8 +74,40 @@
     "message": "unknown field `amount`",
     "payload_hash": 11234062831410934249,
     "want": {
-      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"rejected\",\"pending\":false}"
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"rejected\",\"pending\":false}"
     }
+  },
+  {
+    "code": "shredded",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"shredded\",\"pending\":false}"
+    }
+  },
+  {
+    "code": "key_unavailable",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
+  },
+  {
+    "code": "key_revoking",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
+  },
+  {
+    "code": "key_missing",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
+  },
+  {
+    "code": "key_unauthorized",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "want": "release"
   },
   {
     "code": "codec",

@@ -45,7 +45,7 @@
     "want": {
       "error": "codec: unknown field `amount`"
     },
-    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
     "key": "req-1",
@@ -61,7 +61,7 @@
     "want": {
       "error": "rejected: insufficient funds"
     },
-    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds\",\"error_code\":\"rejected\",\"pending\":false}"
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"rejected\",\"pending\":false}"
   },
   {
     "key": "req-1",

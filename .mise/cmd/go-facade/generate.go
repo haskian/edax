@@ -110,7 +110,7 @@ func makeWrapper(api *binding, fn function, metadata bindingMetadata) (wrapper, 
 			w.ValueChecks = append(w.ValueChecks, parameter.Name)
 		}
 		argument := ast.Expr(ast.NewIdent(parameter.Name))
-		if needsNormalization(typ, api.Records) && !metadata.optional(fn, parameter.Name) {
+		if needsNormalization(typ, api.Records) && !byteSlice(typ) && !metadata.optional(fn, parameter.Name) {
 			argument = call("normalizeNative", argument)
 		}
 		arguments = append(arguments, argument)

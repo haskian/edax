@@ -51,7 +51,7 @@ func TestSignatureFormattingDoesNotChangeFacade(t *testing.T) {
 				"func (h *Ledger) Apply(first string, second string, note *string, rows []Payload) (*Payload, error)",
 				`checkNativeString("first", first)`, `checkNativeString("second", second)`, `checkNativeString("note", *note)`,
 				"h.inner.Apply(first, second, note, normalizeNative(rows))",
-				"native.VersionsPresent(available != nil, normalizeNative(available))", "native.GetRecord(normalizeNative(data), normalizeNative(labels))",
+				"native.VersionsPresent(available != nil, normalizeNative(available))", "native.GetRecord(data, normalizeNative(labels))",
 				"return wrapLedger(nativeValue)", "defer runtime.KeepAlive(h)",
 			} {
 				if !strings.Contains(string(generated), fragment) {

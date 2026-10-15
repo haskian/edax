@@ -106,6 +106,26 @@ class Rejected(EdaxError, code="rejected"):
     handler. A host exception that declares ``terminal = True`` itself is cached under this code too."""
 
 
+class Shredded(EdaxError, code="shredded"):
+    """The key provider confirms permanent destruction of the requested scope."""
+
+
+class KeyUnavailable(EdaxError, code="key_unavailable"):
+    """Provider outage; processing must be deferred without poison-message attempts."""
+
+
+class KeyRevoking(EdaxError, code="key_revoking"):
+    """Scope access is revoked and destruction is pending."""
+
+
+class KeyMissing(EdaxError, code="key_missing"):
+    """A required generation is missing; this is not proof of destruction."""
+
+
+class KeyUnauthorized(EdaxError, code="key_unauthorized"):
+    """Provider credentials or scope configuration do not authorize access."""
+
+
 def _check_every_kernel_code_has_a_class() -> None:
     """Fail the import if the kernel knows a code this module does not, so :func:`from_wire` finds a class
     for every code the kernel names."""

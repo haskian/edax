@@ -36,7 +36,10 @@ pub use clock::current_timestamp;
 pub use error::{is_terminal, Error, ErrorCode};
 pub use guid::{guid, guid_simple};
 pub use hash::{fnv1a32, fnv1a64, payload_hash};
-pub use key::{check_tenancy, check_tenant, guard_key, scoped, tenant_key, GuardKind, Tenancy, TENANT_MAX};
+pub use key::{
+    check_subject, check_tenancy, check_tenant, guard_key, scoped, tenant_key, GuardKind, Tenancy, SUBJECT_MAX,
+    TENANT_MAX,
+};
 pub use names::distinct_names;
 pub use sync::lock;
 pub use token::{TokenMint, NO_TOKEN};

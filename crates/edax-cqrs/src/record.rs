@@ -348,18 +348,18 @@ pub enum Settle<R> {
 }
 
 /// The failure half of the guard's settle table, as the write itself: a failure whose `code` is terminal
-/// is cached as [`Record::failed`] under `payload_hash` with its `message`, anything else releases the
-/// claim. `code` is the failure's taxonomy code, `None` for a failure no code classifies (a host's own
+/// is cached as [`Record::failed`] under `payload_hash` with an empty message; anything else releases the
+/// claim. Exception text can contain opened sensitive data and is never persisted by this decision.
+/// The message argument remains for source compatibility with existing callers; its value is ignored.
+/// `code` is the failure's taxonomy code, `None` for a failure no code classifies (a host's own
 /// error, a panic, a cancellation), which [`edax_core::is_terminal`] reads as transient. A fatal code
 /// ([`ErrorCode::is_fatal`]) releases too: the wiring failed, not the work, and a cached record would
 /// replay the failure after the host fixed the wiring, so the consumer would dead-letter a message it
 /// stopped on to run again. Two SDKs guarding one ledger must cache the same failures, or one replays as
 /// terminal what the other re-runs; pinned by `testdata/golden/idempotency_settle.json`.
-pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, message: &str) -> Settle<R> {
+pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, _message: &str) -> Settle<R> {
     match code {
-        Some(code) if code.is_terminal() && !code.is_fatal() => {
-            Settle::Cache(Record::failed(payload_hash, code, message))
-        }
+        Some(code) if code.is_terminal() && !code.is_fatal() => Settle::Cache(Record::failed(payload_hash, code, "")),
         _ => Settle::Release,
     }
 }
@@ -462,7 +462,7 @@ mod tests {
         for code in ErrorCode::ALL {
             let cached = code.is_terminal() && !code.is_fatal();
             let want = if cached {
-                Settle::Cache(Record::failed(HASH, *code, "boom"))
+                Settle::Cache(Record::failed(HASH, *code, ""))
             } else {
                 Settle::Release
             };

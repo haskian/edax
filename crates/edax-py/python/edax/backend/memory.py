@@ -29,7 +29,7 @@ from ..idempotency import Claimed, Record, decode_claim, encode_record
 from ..message import CommandMessage, EventDraft, EventMessage, message_kind
 from ..projection import Entity
 from ..query import Page, Query
-from ..saga import CompletedInstance, RunningInstance, SagaInstance
+from ..saga import CompletedInstance, ProtectedSagaState, RunningInstance, SagaInstance
 from ..store import Snapshot
 from ..tenancy import Tenancy
 from ..unit_of_work import Tx
@@ -192,15 +192,24 @@ class MemoryEventStore(_OutboxView[EventMessage]):
 
     async def load_snapshot(self, tx: Tx, aggregate_id: str) -> Snapshot | None:
         r = self._seam().load_snapshot(self._token(tx), aggregate_id)
-        return None if r is None else Snapshot(aggregate_id, r.type_name, r.version, r.data)
+        return (
+            None
+            if r is None
+            else Snapshot(aggregate_id, r.type_name, r.version, r.data, r.tenant, r.subject, r.encryption)
+        )
 
     async def save_snapshot(self, tx: Tx, snapshot: Snapshot) -> None:
-        self._seam().save_snapshot(
+        self._seam().save_snapshot_record(
             self._token(tx),
             snapshot.aggregate_id,
-            snapshot.type_name,
-            snapshot.version,
-            snapshot.data,
+            _native.SnapshotResult(
+                type_name=snapshot.type_name,
+                version=snapshot.version,
+                data=snapshot.data,
+                tenant=snapshot.tenant,
+                subject=snapshot.subject,
+                encryption=snapshot.encryption,
+            ),
         )
 
     async def append(
@@ -344,7 +353,11 @@ class MemorySagaStore(_StoreView):
             return None
         if row.completed:
             return CompletedInstance(row.version)
-        return RunningInstance(_json.decode(row.state_json), row.version, row.folded)
+        protected = _native.decode_protected_state(row.state_json).value
+        if protected is not None and protected.completed:
+            return CompletedInstance(row.version, protected, row.folded)
+        state = protected if protected is not None else _json.decode(row.state_json)
+        return RunningInstance(state, row.version, row.folded)
 
     async def save(
         self,
@@ -357,9 +370,12 @@ class MemorySagaStore(_StoreView):
         tx: Tx | None = None,
     ) -> int:
         # Native `concurrency:` is ConcurrencyError, anything else StoreError.
-        return self._seam().save(
-            self._token(tx), saga, id, version, _json.encode(state), folded, list(commands)
+        encoded = (
+            _native.encode_protected_state(state)
+            if isinstance(state, ProtectedSagaState)
+            else _json.encode(state)
         )
+        return self._seam().save(self._token(tx), saga, id, version, encoded, folded, list(commands))
 
     async def complete(
         self, saga: str, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None

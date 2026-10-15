@@ -42,5 +42,25 @@
   {
     "code": "rejected",
     "failure": "terminal"
+  },
+  {
+    "code": "shredded",
+    "failure": "terminal"
+  },
+  {
+    "code": "key_unavailable",
+    "failure": "contended"
+  },
+  {
+    "code": "key_revoking",
+    "failure": "contended"
+  },
+  {
+    "code": "key_missing",
+    "failure": "fatal"
+  },
+  {
+    "code": "key_unauthorized",
+    "failure": "fatal"
   }
 ]

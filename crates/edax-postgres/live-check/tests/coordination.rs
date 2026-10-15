@@ -17,6 +17,8 @@ fn command() -> CommandMessage {
         idempotency_key: Some("req-7".into()),
         aggregate_id: Some("invoice-7".into()),
         tenant: Some("acme".into()),
+        subject: None,
+        encryption: None,
         name: "SendInvoice".into(),
         version: 1,
         data: b"{}".to_vec(),
@@ -34,6 +36,8 @@ fn draft() -> EventDraft {
         id: "evt-1".into(),
         aggregate_id: "invoice-7".into(),
         tenant: Some("acme".into()),
+        subject: None,
+        encryption: None,
         sequence: Some(1),
         name: "InvoiceIssued".into(),
         version: 2,
@@ -177,14 +181,14 @@ fn racing_saga_write_does_not_report_a_stale_stored_version() {
     client
         .query_one(
             &sql.saga_insert,
-            &[&"ship", &"order-7", &r#"{"step":"allocated"}"#, &"", &"[]"],
+            &[&"ship", &"order-7", &r#"{"step":"allocated"}"#, &"", &"[]", &"false"],
         )
         .unwrap();
     let mut winner = connect().unwrap();
     let mut tx = winner.transaction().unwrap();
     tx.query_one(
         &sql.saga_update,
-        &[&"ship", &"order-7", &"1", &r#"{"step":"packed"}"#, &"", &"[]"],
+        &[&"ship", &"order-7", &"1", &r#"{"step":"packed"}"#, &"", &"[]", &"false"],
     )
     .unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -197,7 +201,7 @@ fn racing_saga_write_does_not_report_a_stale_stored_version() {
         client
             .query_one(
                 &update,
-                &[&"ship", &"order-7", &"1", &r#"{"step":"shipped"}"#, &"", &"[]"],
+                &[&"ship", &"order-7", &"1", &r#"{"step":"shipped"}"#, &"", &"[]", &"false"],
             )
             .unwrap()
             .get::<_, String>(0)
@@ -321,6 +325,7 @@ fn relay_leases_are_per_outbox_table() {
         Some(r#"{"step":"allocated"}"#.to_owned()),
         Some(String::new()),
         commands,
+        Some("false".to_owned()),
     ];
     for sql in [&first_sql, &second_sql] {
         client.query_one(&sql.append, &bind(&appended)).unwrap();

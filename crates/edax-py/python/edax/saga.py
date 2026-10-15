@@ -23,26 +23,31 @@ a :data:`SAGA_COMMAND_FAILED` event into the instance that sent the command, and
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Final, Generic, Literal, Protocol, TypeAlias, TypedDict, get_args
 
-from . import _names, _native
+from . import _json, _names, _native
 from ._observer import wrap
+from ._units import transaction_guard
+from ._values import give_value_semantics, replace
 from .aggregate import PayloadCodec
 from .causation import caused_by
 from .command import CommandBus
 from .delivery import DeadLetter
-from .errors import BadHandle, code_of
+from .errors import BadHandle, Shredded, code_of
 from .message import CommandMessage, EventMessage
 from .observe import Observer, SagaSkip
 from .outbox import Publish
+from .sealing import SealedValue, Sealing, cached_event, original_event
 from .unit_of_work import TxT, TxT_contra
 
 __all__ = [
     "SAGA_COMMAND_FAILED",
     "Completed",
     "CompletedInstance",
+    "ProtectedSagaState",
     "RunningInstance",
     "Saga",
     "SagaCommandFailed",
@@ -68,7 +73,8 @@ _names.check(_SAGA_WRITES, _native.saga_write_actions(), "saga write actions")
 class SagaCommandFailed(TypedDict):
     """The JSON payload of a :data:`SAGA_COMMAND_FAILED` event: ``json.loads(msg.data)``. ``command_id`` is
     the dead command's outbox id, ``command`` its name, ``code`` the failure's taxonomy code (``"rejected"``
-    for a business rejection, ``None`` when no code classifies it), and ``error`` its message."""
+    for a business rejection, ``None`` when no code classifies it), and ``error`` its message.
+    Protected commands retain only the stable code: their ``error`` is empty."""
 
     command_id: str
     command: str
@@ -88,12 +94,18 @@ class _Completed(Enum):
 
 Completed = _Completed.COMPLETED
 
+# The kernel owns the serialized envelope and its validation. Adapters preserve this record without
+# decoding the ciphertext as application JSON.
+ProtectedSagaState = _native.ProtectedState
+give_value_semantics(ProtectedSagaState)
+
 
 @dataclass(frozen=True)
 class RunningInstance:
     """A stored running saga instance: its accumulated ``state`` and the ``version`` a write is conditional
     on. ``folded`` is the kernel's record of the events the instance folded (``saga_admit``), opaque text the
-    store keeps as the last ``save`` wrote it."""
+    store keeps as the last ``save`` wrote it. With sealing, ``state`` is a
+    :class:`ProtectedSagaState` until the runner authenticates and opens it for the handler."""
 
     state: Any
     version: int
@@ -106,6 +118,8 @@ class CompletedInstance:
     again. It has no state: the workflow has finished."""
 
     version: int
+    protected: ProtectedSagaState | None = None
+    folded: str = ""
 
 
 #: A stored saga instance, running or completed: the Rust SDK's ``SagaInstance`` enum.
@@ -224,6 +238,11 @@ class SagaRunner(Generic[TxT]):
     command objects into the outbox and back, like an event codec: ``json_codec({"Fulfill": Fulfill})``.
     ``now`` stamps each command's ``issued_at`` (default: the kernel clock).
 
+    ``sealing`` authenticates incoming events and encrypts persisted application state and outgoing
+    commands. The first committed state fixes its tenant and subject; conflicting owners are rejected
+    before the handler runs. Processing marks remain plaintext and authenticated. Historical plaintext
+    state requires the sealing configuration's explicit migration option.
+
     Where one store holds every tenant, compose the tenant into the saga's own
     :meth:`Saga.instance_id`, with :func:`~edax.tenancy.tenant_key`: two tenants' instances of one saga
     would otherwise fold into each other. The runner keys by what that returns, so a row's id and the
@@ -241,12 +260,14 @@ class SagaRunner(Generic[TxT]):
         *,
         now: Callable[[], int] | None = None,
         observer: Observer | None = None,
+        sealing: Sealing | None = None,
     ) -> None:
         self._saga = saga
         self._store = store
         self._commands = commands
         self._now = now or _native.current_timestamp
         self._observer = wrap(observer)
+        self._sealing = sealing
 
     async def on_event(self, msg: EventMessage, tx: TxT | None = None) -> None:
         """Handle one committed event: load its instance, fold the event, and write the new
@@ -261,10 +282,33 @@ class SagaRunner(Generic[TxT]):
 
         Each command is a child of ``msg``: it carries the event's ``correlation_id``, and the event's id
         as its ``causation_id``. The fold runs under the ambient lineage of ``msg`` too."""
-        with caused_by(msg):
-            instance_id = self._saga.instance_id(msg)
-            if instance_id is not None:
-                await self._fold(instance_id, msg, tx)
+        raw = original_event(msg)
+        sealing = self._sealing
+        if sealing is not None:
+            data = cached_event(raw, sealing)
+            if data is None:
+                opened = await sealing.open_event_for_consumer(raw)
+                if opened is None:
+                    return
+                data = opened.data
+            _native.protected_scope(sealing.key_namespace, raw.tenant, raw.subject)
+            msg = replace(raw, data=data, encryption=None)
+        elif raw.encryption is not None:
+            raise BadHandle("encrypted saga events require configured sealing")
+        async with AsyncExitStack() as resources:
+            if sealing is not None:
+                try:
+                    await resources.enter_async_context(
+                        transaction_guard(self._store, sealing.write_guard(raw.tenant, raw.subject), tx)
+                    )
+                except Shredded:
+                    # Only the trusted guard acquisition can skip an erasure race. Handler exceptions
+                    # below this boundary propagate unchanged.
+                    return
+            with caused_by(msg):
+                instance_id = self._saga.instance_id(msg)
+                if instance_id is not None:
+                    await self._fold(instance_id, msg, tx, raw=raw)
 
     async def command_failed(self, dead: DeadLetter[CommandMessage], tx: TxT | None = None) -> None:
         """The ``on_dead`` sink for this runner's command relay: fold the :data:`SAGA_COMMAND_FAILED` event
@@ -277,13 +321,30 @@ class SagaRunner(Generic[TxT]):
         that compensates stays open until its commands have run. A sink that runs twice for one row folds
         once, whatever folded between them: the instance keeps every failure it folded. A failed fold
         raises, so the relay hands the row back and the sink runs again."""
-        failed = _native.saga_command_failed(
-            dead.message, str(dead.failure), self._now(), code_of(dead.failure)
-        )
-        with caused_by(failed):
-            await self._fold(failed.aggregate_id, failed, tx)
+        sealing = self._sealing
+        if sealing is not None:
+            opened = await sealing.open_command_for_consumer(dead.message)
+            if opened is None:
+                return
+        elif dead.message.encryption is not None:
+            raise BadHandle("encrypted saga commands require configured sealing")
+        async with AsyncExitStack() as resources:
+            if sealing is not None:
+                try:
+                    await resources.enter_async_context(
+                        transaction_guard(
+                            self._store, sealing.write_guard(dead.message.tenant, dead.message.subject), tx
+                        )
+                    )
+                except Shredded:
+                    return
+            failed = _native.saga_command_failed(
+                dead.message, str(dead.failure), self._now(), code_of(dead.failure)
+            )
+            with caused_by(failed):
+                await self._fold(failed.aggregate_id, failed, tx, raw=failed)
 
-    async def _fold(self, instance_id: str, msg: EventMessage, tx: TxT | None) -> None:
+    async def _fold(self, instance_id: str, msg: EventMessage, tx: TxT | None, *, raw: EventMessage) -> None:
         saga = self._saga.name
         instance = await self._store.load(saga, instance_id, tx)
         # What was loaded crosses flat, and the kernel builds one `Loaded` of it for both calls below.
@@ -291,13 +352,38 @@ class SagaRunner(Generic[TxT]):
         match instance:
             case None:
                 loaded, completed, folded = None, False, ""
-            case CompletedInstance(version=version):
-                loaded, completed, folded = version, True, ""
+            case CompletedInstance(version=version, protected=protected, folded=marks):
+                loaded, completed, folded = version, True, marks
+                state = protected
             case RunningInstance(state=state, version=version, folded=folded):
                 loaded, completed = version, False
             case _:
                 _names.unreachable(instance)
-        admit = _native.saga_admit(saga, completed, folded, msg, loaded)
+        sealing = self._sealing
+        if isinstance(state, ProtectedSagaState):
+            if sealing is None:
+                raise BadHandle("protected saga state requires configured sealing")
+            _native.check_sealed_owner(True, state.tenant, raw.tenant)
+            _native.check_sealed_owner(True, state.subject, raw.subject)
+            completed = state.completed
+            state = _json.decode(
+                await sealing.open_state(
+                    "saga",
+                    instance_id,
+                    saga,
+                    _names.given(loaded, "loaded saga version"),
+                    SealedValue(encryption=state.encryption, data=state.data),
+                    state.tenant,
+                    state.subject,
+                    folded,
+                    state.completed,
+                )
+            )
+        elif sealing is not None and instance is not None:
+            await sealing.check_legacy(raw.tenant, raw.subject)
+        if sealing is not None and not completed:
+            _native.protected_scope(sealing.key_namespace, raw.tenant, raw.subject)
+        admit = _native.saga_admit(saga, completed, folded, raw, loaded)
         # Every kernel decision is named, so a variant this SDK does not know fails loudly instead of
         # landing in a neighbouring arm. Pinned by `testdata/golden/saga.json`.
         action = _names.named(admit.action, _SAGA_ADMITS, "saga admit action")
@@ -319,10 +405,52 @@ class SagaRunner(Generic[TxT]):
             case "save":
                 expected, rows = self._written(write, instance_id, commands, msg)
                 folded_marks = _names.given(admit.folded, "folded marks")
+                if sealing is not None:
+                    sealed = await sealing.seal_state(
+                        "saga",
+                        instance_id,
+                        saga,
+                        _names.given(write.version, "saga write version"),
+                        _json.encode_bytes(new_state),
+                        raw.tenant,
+                        raw.subject,
+                        folded_marks,
+                    )
+                    new_state = ProtectedSagaState(
+                        tenant=raw.tenant,
+                        subject=raw.subject,
+                        encryption=sealed.encryption,
+                        data=sealed.data,
+                        completed=False,
+                    )
+                    rows = [await sealing.seal_command(row) for row in rows]
                 await self._store.save(saga, instance_id, new_state, expected, folded_marks, rows, tx)
             case "complete":
                 expected, rows = self._written(write, instance_id, commands, msg)
-                await self._store.complete(saga, instance_id, expected, rows, tx)
+                if sealing is not None:
+                    rows = [await sealing.seal_command(row) for row in rows]
+                    folded_marks = _names.given(admit.folded, "folded marks")
+                    sealed = await sealing.seal_state(
+                        "saga",
+                        instance_id,
+                        saga,
+                        _names.given(write.version, "saga write version"),
+                        b"null",
+                        raw.tenant,
+                        raw.subject,
+                        folded_marks,
+                        True,
+                    )
+                    tombstone = ProtectedSagaState(
+                        tenant=raw.tenant,
+                        subject=raw.subject,
+                        encryption=sealed.encryption,
+                        data=sealed.data,
+                        completed=True,
+                    )
+                    await self._store.save(saga, instance_id, tombstone, expected, folded_marks, rows, tx)
+                else:
+                    await self._store.complete(saga, instance_id, expected, rows, tx)
             case _:
                 _names.unreachable(written)
 
@@ -354,12 +482,15 @@ class SagaRunner(Generic[TxT]):
                 cause_correlation_id,
                 issued_at,
                 cause.tenant,
+                cause.subject,
             )
             for index, payload in enumerate(payloads)
         ]
 
     def command(self, row: CommandMessage) -> Any:
         """Decode an outbox row back into the command the saga emitted."""
+        if row.encryption is not None:
+            raise BadHandle("decode encrypted saga commands through a sealing-enabled CommandBus")
         return self._commands.unmarshal(row)
 
     def outbox(self) -> SagaOutbox:
@@ -386,6 +517,6 @@ class SagaRunner(Generic[TxT]):
             )
 
         async def publish(row: CommandMessage) -> None:
-            await bus.dispatch_message(row)
+            await bus.deliver_message(row)
 
         return publish

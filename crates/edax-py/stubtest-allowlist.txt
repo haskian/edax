@@ -65,3 +65,11 @@ edax\._edax\.TenancyRules
 # `edax.aggregate` gives each record's two dictionaries a key-ordered read-only property at import (the
 # native getter iterates in a per-process order); the stub keeps alef's field declaration.
 edax\._edax\.(EventDraft|EventMessage|CommandMessage)\.(extensions|metadata)
+edax\._edax\.EncryptionInfo
+edax\._edax\.KeyReservation
+edax\._edax\.KeyScope
+edax\._edax\.MemoryKeys
+edax\._edax\.ProtectedReplay
+edax\._edax\.ProtectedState
+edax\._edax\.ProtectedStateResult
+edax\._edax\.SealedValue

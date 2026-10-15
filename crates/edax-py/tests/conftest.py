@@ -235,13 +235,23 @@ def build_command(
 def message_from_obj(o: dict[str, Any]) -> edax.EventMessage | edax.CommandMessage:
     """The native message a golden's JSON object names: a command if it carries ``issued_at``."""
     fields: dict[str, Any] = {**o, "data": base64.b64decode(o["data"])}
+    encryption = o.get("encryption")
+    if encryption is not None:
+        fields["encryption"] = edax.EncryptionInfo(
+            **(encryption | {"nonce": base64.b64decode(encryption["nonce"])})
+        )
     return edax.CommandMessage(**fields) if "issued_at" in o else edax.EventMessage(**fields)
 
 
 def message_as_obj(msg: edax.EventMessage | edax.CommandMessage) -> dict[str, Any]:
     """The golden's message shape out of a native message, so a case compares one value against the
     vector's JSON instead of a dozen fields."""
-    return fields_of(msg) | {"data": base64.b64encode(bytes(msg.data)).decode()}
+    fields = fields_of(msg) | {"data": base64.b64encode(bytes(msg.data)).decode()}
+    if msg.encryption is not None:
+        fields["encryption"] = fields_of(msg.encryption) | {
+            "nonce": base64.b64encode(bytes(msg.encryption.nonce)).decode()
+        }
+    return fields
 
 
 class Recording(edax.Observer):

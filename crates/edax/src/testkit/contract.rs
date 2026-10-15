@@ -468,6 +468,9 @@ where
         )
     };
     let snapshot = |version: u64, data: &[u8]| Snapshot {
+        subject: None,
+        encryption: None,
+        tenant: None,
         aggregate_id: "acct-1".into(),
         type_name: "Account".into(),
         version,

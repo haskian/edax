@@ -260,7 +260,7 @@ func TestPoisonAndDeadLetter(t *testing.T) {
 					rendered = string(header.Value)
 				}
 			}
-			if want := "codec: " + wrapped.Message; rendered != want {
+			if want := "codec"; rendered != want {
 				t.Fatalf("dead-letter error header %q want %q", rendered, want)
 			}
 			if err = poison.Ack(context.Background()); err != nil {

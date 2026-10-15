@@ -65,6 +65,11 @@ const (
 	ErrAlreadyRegistered = sentinel(CodeAlreadyRegistered)
 	ErrBadHandle         = sentinel(CodeBadHandle)
 	ErrRejected          = sentinel(CodeRejected)
+	ErrShredded          = sentinel(CodeShredded)
+	ErrKeyMissing        = sentinel(CodeKeyMissing)
+	ErrKeyRevoking       = sentinel(CodeKeyRevoking)
+	ErrKeyUnauthorized   = sentinel(CodeKeyUnauthorized)
+	ErrKeyUnavailable    = sentinel(CodeKeyUnavailable)
 )
 
 // ClosedHandle reports a released SDK resource.

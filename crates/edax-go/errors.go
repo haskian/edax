@@ -18,6 +18,11 @@ const (
 	ErrAlreadyRegistered = kernel.ErrAlreadyRegistered
 	ErrBadHandle         = kernel.ErrBadHandle
 	ErrRejected          = kernel.ErrRejected
+	ErrShredded          = kernel.ErrShredded
+	ErrKeyMissing        = kernel.ErrKeyMissing
+	ErrKeyRevoking       = kernel.ErrKeyRevoking
+	ErrKeyUnauthorized   = kernel.ErrKeyUnauthorized
+	ErrKeyUnavailable    = kernel.ErrKeyUnavailable
 )
 
 // WrapError adds a kernel category and message while retaining the original cause.

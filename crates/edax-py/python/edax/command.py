@@ -8,7 +8,8 @@ import contextvars
 import functools
 import typing
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, is_dataclass
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field, is_dataclass
 from typing import Any, Protocol
 
 import msgspec
@@ -17,7 +18,7 @@ from . import _json, _native, errors
 from ._chain import Registry, require_async
 from ._lineage import stamp
 from ._observer import wrap
-from ._units import in_unit_of_work
+from ._units import current_transaction_guard, in_unit_of_work
 from ._wiring import is_int, wiring_str, wiring_u32
 from .aggregate import CommandCodec, PayloadCodec
 from .causation import caused_by
@@ -29,12 +30,15 @@ from .errors import (  # re-exported: the command errors are part of this module
     HandlerNotFound,
     InProgress,
     PayloadMismatch,
+    Shredded,
 )
 from .host_value import HOST_TYPES
 from .idempotency import Guard, IdempotencyStore, claim_key, guarded
-from .message import CommandMessage, Lineage
+from .message import CommandMessage, Lineage, Payload
 from .observe import Observer
 from .pacing import Pacing
+from .protected_ledger import ProtectedLedger
+from .sealing import Sealing
 from .tenancy import Tenancy
 from .unit_of_work import Transactor, TxT
 
@@ -92,6 +96,12 @@ class _Dispatch:
 
     message: CommandMessage
     received: bool
+    sealing: Sealing | None = None
+    wire: bytes | None = field(init=False, default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.sealing is not None:
+            object.__setattr__(self, "wire", bytes(_native.encode_command("json", self.message)))
 
 
 # The dispatch the bus is running right now. Each dispatch sets a new value and resets it on exit, so a
@@ -104,7 +114,21 @@ def current_command() -> CommandMessage | None:
     handler's whole run, or ``None`` outside a dispatch: a read-only convenience for a handler, which
     receives only the command. Middleware receives the message as an argument instead (:data:`Next`)."""
     dispatch = _current.get()
-    return None if dispatch is None else dispatch.message
+    if dispatch is None:
+        return None
+    if dispatch.wire is not None:
+        return _native.decode_command("json", dispatch.wire)
+    return dispatch.message
+
+
+def _check_dispatch_message(msg: CommandMessage) -> None:
+    dispatch = _current.get()
+    if (
+        dispatch is not None
+        and dispatch.wire is not None
+        and bytes(_native.encode_command("json", msg)) != dispatch.wire
+    ):
+        raise CodecError("middleware changed an authenticated command envelope")
 
 
 def _guard_key(msg: CommandMessage) -> str | None:
@@ -122,6 +146,7 @@ def _step(handler: Handler) -> Next:
 
     @functools.wraps(handler)
     async def step(msg: CommandMessage, cmd: Any) -> Any:
+        _check_dispatch_message(msg)
         return await handler(cmd)
 
     return step
@@ -137,6 +162,7 @@ def command_message(
     extensions: dict[str, str] | None = None,
     metadata: dict[str, str] | None = None,
     tenant: str | None = None,
+    subject: str | None = None,
 ) -> CommandMessage:
     """The :class:`~edax.message.CommandMessage` for ``cmd``: what :meth:`CommandBus.dispatch` runs, and
     what you publish to a broker or put in a command outbox.
@@ -176,6 +202,7 @@ def command_message(
             idempotency_key=idempotency_key,
             aggregate_id=aggregate_id,
             tenant=tenant,
+            subject=subject,
         )
 
 
@@ -214,9 +241,12 @@ class CommandBus:
     the codec does not name, so a missing entry fails at wiring rather than dead-letter every message. A bus
     that only dispatches in-process needs none."""
 
-    def __init__(self, *middleware: Middleware, codec: CommandCodec | None = None) -> None:
+    def __init__(
+        self, *middleware: Middleware, codec: CommandCodec | None = None, sealing: Sealing | None = None
+    ) -> None:
         self._handlers: Registry[Next] = Registry(middleware)
         self._codec = codec
+        self._sealing = sealing
 
     @property
     def codec(self) -> CommandCodec | None:
@@ -272,6 +302,7 @@ class CommandBus:
         idempotency_key: str | None = None,
         aggregate_id: str | None = None,
         tenant: str | None = None,
+        subject: str | None = None,
         lineage: Lineage | None = None,
         extensions: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
@@ -290,7 +321,12 @@ class CommandBus:
             extensions=extensions,
             metadata=metadata,
             tenant=tenant,
+            subject=subject,
         )
+        if self._sealing is not None:
+            async with current_transaction_guard(self._sealing.write_guard(msg.tenant, msg.subject)):
+                msg = await self._sealing.seal_command(msg)
+                return await _run(handler, _Dispatch(msg, received=False, sealing=self._sealing), cmd)
         return await _run(handler, _Dispatch(msg, received=False), cmd)
 
     async def dispatch_message(self, msg: CommandMessage) -> Any:
@@ -305,13 +341,40 @@ class CommandBus:
         built with no ``codec`` raises the fatal :class:`~edax.errors.BadHandle`, an unregistered
         ``msg.name`` :class:`~edax.errors.HandlerNotFound`, and a message the codec cannot read the terminal
         :class:`~edax.errors.CodecError`."""
+        return await self._receive_message(msg, delivery=False)
+
+    async def deliver_message(self, msg: CommandMessage) -> Any:
+        """Consumer delivery: skip only destruction confirmed by trusted opening or admission."""
+        return await self._receive_message(msg, delivery=True)
+
+    async def _receive_message(self, msg: CommandMessage, *, delivery: bool) -> Any:
         if self._codec is None:
             raise BadHandle(
                 "dispatch_message decodes with the bus's codec: build it with CommandBus(codec=...)"
             )
         handler = self._handler(msg.name)
-        cmd = self._codec.unmarshal(msg)
-        return await _run(handler, _Dispatch(msg, received=True), cmd)
+        if self._sealing is None:
+            if msg.encryption is not None:
+                raise BadHandle("encrypted commands require command bus sealing")
+            return await _run(handler, _Dispatch(msg, received=True), self._codec.unmarshal(msg))
+        if delivery:
+            opened = await self._sealing.open_command_for_consumer(msg)
+            if opened is None:
+                return None
+            data = opened.data
+        else:
+            data = await self._sealing.open_command(msg)
+        async with AsyncExitStack() as resources:
+            try:
+                await resources.enter_async_context(
+                    current_transaction_guard(self._sealing.write_guard(msg.tenant, msg.subject))
+                )
+            except Shredded:
+                if delivery:
+                    return None
+                raise
+            cmd = self._codec.unmarshal(Payload(name=msg.name, version=msg.version, data=data))
+            return await _run(handler, _Dispatch(msg, received=True, sealing=self._sealing), cmd)
 
     def _handler(self, name: str) -> Next:
         handler = self._handlers.get(name)
@@ -472,11 +535,20 @@ def idempotent(
         replay_as = _replay_type(result_type, next_)
 
         async def step(msg: CommandMessage, cmd: Any) -> Any:
+            _check_dispatch_message(msg)
             request = _guard_key(msg)
             if request is None:
                 return await next_(msg, cmd)
             key = claim_key(scope, request, tenancy=tenancy, tenant=msg.tenant)
-            guard = Guard(store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
+            dispatch = _current.get()
+            guard: Guard[TxT]
+            if dispatch is not None and dispatch.sealing is not None:
+                protected = await ProtectedLedger[TxT](
+                    store, dispatch.sealing, msg, _payload_json(cmd)
+                ).prepare()
+                guard = Guard[TxT](protected, msg.name, key, 0, observe, replay_as)
+            else:
+                guard = Guard[TxT](store, msg.name, key, _payload_hash(cmd, msg.name), observe, replay_as)
             return await guarded(guard, lambda: next_(msg, cmd), unit_of_work)
 
         return step

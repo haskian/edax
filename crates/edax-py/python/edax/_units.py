@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from time import perf_counter_ns
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import BadHandle
 from .observe import Observer, TransactionOutcome
+from .sealing import detach_sealing_context, sealing_context
 
 if TYPE_CHECKING:
     from .unit_of_work import Transactor, TxT
@@ -27,6 +28,30 @@ Handle = TypeVar("Handle")
 AMBIENT: contextvars.ContextVar[Mapping[int, Any]] = contextvars.ContextVar(
     "edax_ambient_tx", default=MappingProxyType({})
 )
+
+
+# Resources registered here outlive every participant and are released only after commit/rollback.
+RESOURCES: contextvars.ContextVar[Mapping[int, AsyncExitStack]] = contextvars.ContextVar(
+    "edax_transaction_resources", default=MappingProxyType({})
+)
+
+
+@asynccontextmanager
+async def transaction_guard(
+    transactor: object, guard: AbstractAsyncContextManager[None], tx: object | None = None
+) -> AsyncIterator[None]:
+    stack = RESOURCES.get().get(id(database_of(transactor)))
+    if stack is not None:
+        await stack.enter_async_context(guard)
+        yield
+    elif tx is not None:
+        raise BadHandle(
+            "protected writes with an explicit transaction require transaction() "
+            "to retain the scope fence through commit"
+        )
+    else:
+        async with guard:
+            yield
 
 
 def database_of(transactor: object) -> object:
@@ -71,6 +96,8 @@ def leave_every_unit_of_work() -> None:
     """Start this task with no ambient tx. A task copies its creator's context, so a long-lived task started
     inside :func:`~edax.unit_of_work.transaction` would otherwise keep using that tx from a second task."""
     AMBIENT.set({})
+    RESOURCES.set({})
+    detach_sealing_context()
 
 
 @asynccontextmanager
@@ -95,12 +122,30 @@ async def open_transaction(transactor: Transactor[TxT], observe: Observer) -> As
     started = perf_counter_ns()
     outcome: TransactionOutcome = "rolled_back"
     try:
-        async with transactor.begin() as tx:
-            token = AMBIENT.set({**open_now, database: tx})
+        async with AsyncExitStack() as resources:
+            resources.enter_context(sealing_context())
+            resource_token = RESOURCES.set({**RESOURCES.get(), database: resources})
             try:
-                yield tx
+                async with transactor.begin() as tx:
+                    token = AMBIENT.set({**open_now, database: tx})
+                    try:
+                        yield tx
+                    finally:
+                        AMBIENT.reset(token)
+                outcome = "committed"
             finally:
-                AMBIENT.reset(token)
-        outcome = "committed"
+                RESOURCES.reset(resource_token)
     finally:
         observe.transaction(outcome, perf_counter_ns() - started)
+
+
+@asynccontextmanager
+async def current_transaction_guard(guard: AbstractAsyncContextManager[None]) -> AsyncIterator[None]:
+    """Retain a dispatch guard through the outermost managed transaction, if any."""
+    resources = RESOURCES.get()
+    if resources:
+        await next(iter(resources.values())).enter_async_context(guard)
+        yield
+    else:
+        async with guard:
+            yield

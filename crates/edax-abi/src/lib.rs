@@ -29,6 +29,7 @@ mod primitives;
 mod redis;
 mod retry;
 mod saga;
+mod seal;
 #[cfg(test)]
 mod testkit;
 
@@ -41,6 +42,7 @@ pub use primitives::*;
 pub use redis::*;
 pub use retry::*;
 pub use saga::*;
+pub use seal::*;
 
 /// A kernel failure as it crosses: the kernel's own wire form `"<code>: <message>"`, nothing added.
 /// Every kernel function fails with [`edax_core::Error`], so the code is always the kernel's and a

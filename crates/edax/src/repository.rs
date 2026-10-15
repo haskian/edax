@@ -1,9 +1,12 @@
 //! Save/load orchestration over an [`EventStore`]: a [`Repository`] rehydrates an aggregate from its
 //! snapshot and events, and saves its pending events and a snapshot in one unit of work.
 
+use std::sync::Arc;
+
 use edax_core::{tenant_key, Tenancy};
 use edax_event::{draft_batch, originate, EventMessage, Extensions, Lineage, Metadata, SaveContext};
 
+use crate::sealing::{PreparedSave, Sealing, StateContext};
 use crate::store::{EventStore, Snapshot};
 use crate::{Aggregate, AggregateCodec, Error, EventCodec};
 
@@ -34,6 +37,7 @@ pub struct Repository<S, EC, AC> {
     new_id: Box<dyn Fn() -> String + Send + Sync>,
     snapshot_every: u64,
     tenancy: Tenancy,
+    sealing: Option<Arc<Sealing>>,
 }
 
 impl<S, EC, AC> Repository<S, EC, AC>
@@ -50,7 +54,14 @@ where
             new_id: Box::new(edax_core::guid),
             snapshot_every: 1,
             tenancy: Tenancy::Silo,
+            sealing: None,
         }
+    }
+
+    /// Seal all persisted payloads and reject plaintext reads unless migration was explicitly enabled.
+    pub fn sealing(mut self, sealing: Arc<Sealing>) -> Self {
+        self.sealing = Some(sealing);
+        self
     }
 
     /// How this repository separates tenants, fixed here rather than per call, so no two calls of one
@@ -109,6 +120,23 @@ where
     /// A `codec` error for an extension key outside the kernel's rule, before anything is written: the
     /// relay could never encode the event.
     pub fn save(&self, agg: &mut AC::Aggregate, options: SaveOptions) -> Result<Vec<EventMessage>, Error> {
+        if let Some(sealing) = &self.sealing {
+            let scope = sealing.scope(agg.root().tenant(), agg.root().subject())?;
+            let _guard = sealing.hold(&scope)?;
+            self.prepare(agg, &options, sealing)?;
+            let prepared = agg
+                .root()
+                .prepared
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| Error::bad_handle("protected save was not prepared"))?;
+            if let Some(pending) = agg.root_mut().prepared.as_mut() {
+                pending.attempted = true;
+            }
+            let events = self.store.transaction(|tx| self.stage_prepared(tx, agg, &prepared))?;
+            agg.root_mut().settle(prepared.version);
+            return Ok(events);
+        }
         let lineage = self.lineage(options.lineage.as_ref());
         // Stage inside the transaction, reset outside it. This method owns the commit, so it waits for the
         // commit to land before clearing the aggregate: a failed commit leaves the pending events in place and
@@ -129,6 +157,11 @@ where
         agg: &mut AC::Aggregate,
         options: SaveOptions,
     ) -> Result<Vec<EventMessage>, Error> {
+        if self.sealing.is_some() {
+            return Err(Error::bad_handle(
+                "protected save_in cannot retain a provider fence through the caller's commit; use Repository::save",
+            ));
+        }
         let lineage = self.lineage(options.lineage.as_ref());
         let (events, current) = self.stage(tx, agg, &lineage, &options)?;
         agg.root_mut().settle(current);
@@ -169,6 +202,7 @@ where
             .collect::<Result<Vec<_>, Error>>()?;
         let ids = payloads.iter().map(|_| (self.new_id)()).collect();
         let context = SaveContext {
+            subject: root.subject(),
             tenant,
             lineage,
             extensions: &options.extensions,
@@ -182,6 +216,9 @@ where
         let snapshot = if batch.snapshot {
             let data = self.aggregates.dump(agg)?;
             Some(Snapshot {
+                tenant: tenant.map(str::to_owned),
+                subject: root.subject().map(str::to_owned),
+                encryption: None,
                 aggregate_id: key.clone(),
                 type_name: self.aggregates.type_name().to_string(),
                 version: batch.version,
@@ -197,34 +234,202 @@ where
         }
         Ok((events, batch.version))
     }
-    /// Rebuild from the snapshot and the events after it. A snapshot is a cache of the event log, so
-    /// one this codec cannot use — another aggregate type's under the same id, or one whose `dump`
-    /// format no longer loads — is ignored and the stream replays from version 0. The loaded tail is
-    /// held to the kernel's dense-run rule, so a store that returns a gap or a repeat fails the load
-    /// instead of folding the wrong state.
+    fn prepare(&self, agg: &mut AC::Aggregate, options: &SaveOptions, sealing: &Sealing) -> Result<(), Error> {
+        let root = agg.root();
+        let key = tenant_key(self.tenancy, root.tenant(), root.id())?;
+        let payloads = root
+            .pending()
+            .iter()
+            .map(|event| self.events.marshal(event))
+            .collect::<Result<Vec<_>, Error>>()?;
+        // The signature is process-local. It prevents changing pending state while an uncertain
+        // commit still refers to its original event IDs and ciphertext.
+        let state = if edax_event::snapshot_due(self.snapshot_every, root.version(), root.current()) {
+            self.aggregates.dump(agg)?
+        } else {
+            Vec::new()
+        };
+        let mut signature = edax_seal::Aad::new("edax.prepared-save.v1");
+        signature
+            .bytes(&self.store.identity().to_be_bytes())
+            .bytes(&(std::ptr::from_ref(sealing) as usize).to_be_bytes())
+            .str(&key)
+            .str(self.aggregates.type_name())
+            .u64(root.version())
+            .u64(self.snapshot_every)
+            .optional(root.tenant())
+            .optional(root.subject())
+            .str(sealing.key_namespace())
+            .str(sealing.cipher().as_str())
+            .optional(options.lineage.as_ref().map(|lineage| lineage.correlation_id.as_str()))
+            .optional(options.lineage.as_ref().map(|lineage| lineage.causation_id.as_str()))
+            .optional_i64(options.occurred_at)
+            .map(&options.extensions)
+            .map(&options.metadata)
+            .bytes(&state);
+        for payload in &payloads {
+            signature.str(&payload.name).u32(payload.version).bytes(&payload.data);
+        }
+        let signature = signature.finish();
+        if let Some(prepared) = root.prepared.as_ref() {
+            if prepared.signature != signature {
+                return Err(Error::bad_handle(
+                    "pending protected save changed after preparation; reload before changing it",
+                ));
+            }
+            return Ok(());
+        }
+        let lineage = self.lineage(options.lineage.as_ref());
+        let ids = payloads.iter().map(|_| (self.new_id)()).collect();
+        let context = SaveContext {
+            subject: root.subject(),
+            tenant: root.tenant(),
+            lineage: &lineage,
+            extensions: &options.extensions,
+            metadata: &options.metadata,
+            occurred_at: options.occurred_at,
+        };
+        let batch = draft_batch(root.id(), root.version(), self.snapshot_every, payloads, ids, &context)?;
+        let drafts = batch
+            .drafts
+            .into_iter()
+            .map(|draft| sealing.seal_event(draft))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let snapshot = if batch.snapshot {
+            let sealed = sealing.seal_state(
+                &StateContext {
+                    kind: "snapshot",
+                    identity: &key,
+                    type_name: self.aggregates.type_name(),
+                    version: batch.version,
+                    tenant: root.tenant(),
+                    subject: root.subject(),
+                    marks: "",
+                    completed: false,
+                },
+                &state,
+            )?;
+            Some(Snapshot {
+                aggregate_id: key,
+                type_name: self.aggregates.type_name().to_owned(),
+                version: batch.version,
+                tenant: root.tenant().map(str::to_owned),
+                subject: root.subject().map(str::to_owned),
+                encryption: Some(sealed.encryption),
+                data: sealed.data,
+            })
+        } else {
+            None
+        };
+        let prepared = PreparedSave {
+            signature,
+            drafts,
+            snapshot,
+            initial: root.version(),
+            version: batch.version,
+            attempted: false,
+        };
+        agg.root_mut().prepared = Some(prepared);
+        Ok(())
+    }
+
+    fn stage_prepared(
+        &self,
+        tx: &mut S::Tx,
+        agg: &AC::Aggregate,
+        prepared: &PreparedSave,
+    ) -> Result<Vec<EventMessage>, Error> {
+        let key = tenant_key(self.tenancy, agg.root().tenant(), agg.root().id())?;
+        if prepared.attempted {
+            let existing = self.store.load(tx, &key, prepared.initial)?;
+            if edax_event::sealing::reconcile_prepared_events(&prepared.drafts, &existing)? {
+                return Ok(existing.into_iter().take(prepared.drafts.len()).collect());
+            }
+        }
+        let events = self.store.append(tx, &key, prepared.initial, prepared.drafts.clone())?;
+        if let Some(snapshot) = &prepared.snapshot {
+            self.store.save_snapshot(tx, snapshot)?;
+        }
+        Ok(events)
+    }
+
+    /// Authenticate before decoding or upcasting. Snapshot decoding may fall back to event replay;
+    /// failed authentication and conflicting ownership must never become a cache miss.
     fn replay(&self, tx: &mut S::Tx, key: &str, tenant: Option<&str>, id: &str) -> Result<AC::Aggregate, Error> {
-        let cached = self
+        let mut cached = None;
+        let mut subject = None;
+        let mut owner_known = false;
+        if let Some(snapshot) = self
             .store
             .load_snapshot(tx, key)?
-            .filter(|s| s.type_name == self.aggregates.type_name())
-            .and_then(|s| {
-                self.aggregates
-                    .load(id, s.version, Some(&s.data))
-                    .ok()
-                    .map(|agg| (s.version, agg))
-            });
+            .filter(|snapshot| snapshot.type_name == self.aggregates.type_name())
+        {
+            let data = if let Some(sealing) = &self.sealing {
+                if snapshot.encryption.is_some() || snapshot.tenant.is_some() {
+                    edax_event::sealing::check_owner(true, tenant, snapshot.tenant.as_deref())?;
+                }
+                sealing.open_state(
+                    &StateContext {
+                        kind: "snapshot",
+                        identity: key,
+                        type_name: &snapshot.type_name,
+                        version: snapshot.version,
+                        tenant,
+                        subject: snapshot.subject.as_deref(),
+                        marks: "",
+                        completed: false,
+                    },
+                    snapshot.encryption.as_ref(),
+                    &snapshot.data,
+                )?
+            } else {
+                if snapshot.encryption.is_some() {
+                    return Err(Error::bad_handle("encrypted snapshots require repository sealing"));
+                }
+                snapshot.data.clone()
+            };
+            subject = snapshot.subject;
+            owner_known = true;
+            if let Ok(aggregate) = self.aggregates.load(id, snapshot.version, Some(&data)) {
+                cached = Some((snapshot.version, aggregate));
+            }
+        }
         let (base, mut agg) = match cached {
             Some(found) => found,
             None => (0, self.aggregates.load(id, 0, None)?),
         };
-        // Before the fold, so a replayed transition sees the tenant a live `apply` sees.
         agg.root_mut().set_tenant(tenant);
         let events = self.store.load(tx, key, base)?;
-        let sequences: Vec<Option<u64>> = events.iter().map(|e| e.sequence).collect();
+        let sequences: Vec<Option<u64>> = events.iter().map(|event| event.sequence).collect();
         let version = edax_event::check_batch(base, &sequences)?;
-        for env in events {
-            // Replay drives state directly — not apply(), which would re-queue these as pending.
-            agg.transition(&self.events.unmarshal(&env.into_payload())?);
+        // Check the whole run before applying transitions, including a snapshot fallback's owner.
+        for event in &events {
+            if self.sealing.is_some() {
+                edax_event::sealing::check_owner(true, tenant, event.tenant.as_deref())?;
+                edax_event::sealing::check_owner(owner_known, subject.as_deref(), event.subject.as_deref())?;
+            }
+            if !owner_known {
+                subject = event.subject.clone();
+                owner_known = true;
+            }
+        }
+        agg.root_mut().restore_subject(subject.as_deref());
+        let mut opened = Vec::with_capacity(events.len());
+        for event in events {
+            let data = if let Some(sealing) = &self.sealing {
+                sealing.open_event(&event)?
+            } else {
+                if event.encryption.is_some() {
+                    return Err(Error::bad_handle("encrypted events require repository sealing"));
+                }
+                event.data.clone()
+            };
+            let mut payload = event.into_payload();
+            payload.data = data;
+            opened.push(self.events.unmarshal(&payload)?);
+        }
+        for event in opened {
+            agg.transition(&event);
         }
         agg.root_mut().settle(version);
         Ok(agg)
@@ -1017,6 +1222,9 @@ mod tests {
             store.append(&mut MemoryTx::auto_commit(), "acct-s", 0, stream).unwrap();
             if let Some((type_name, version, data)) = c.snapshot {
                 let snapshot = Snapshot {
+                    tenant: None,
+                    subject: None,
+                    encryption: None,
                     aggregate_id: "acct-s".into(),
                     type_name: type_name.into(),
                     version,
@@ -1034,5 +1242,338 @@ mod tests {
                 .map_err(|e| e.to_string());
             assert_eq!(got, c.want.map_err(str::to_owned), "{}", c.name);
         }
+    }
+
+    #[test]
+    fn protected_snapshot_type_is_checked_before_opening() {
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        for configured in [false, true] {
+            for matching_type in [false, true] {
+                let keys = Arc::new(MemoryKeys::new());
+                let sealing = Arc::new(Sealing::new(keys.clone(), "production-eu", Cipher::default()).unwrap());
+                let store = MemoryEventStore::new();
+                let mut repository = repo(store.clone()).snapshot_every(0);
+                if configured {
+                    repository = repository.sealing(sealing.clone());
+                }
+                let mut account = Account::open("snapshot-type-account");
+                account.root_mut().set_subject(Some("account-owner")).unwrap();
+                account.apply(AccountEvent::Deposited(4200));
+                repository.save(&mut account, SaveOptions::default()).unwrap();
+                let type_name = if matching_type { "Account" } else { "Ledger" };
+                let sealed = sealing
+                    .seal_state(
+                        &StateContext {
+                            kind: "snapshot",
+                            identity: account.root().id(),
+                            type_name,
+                            version: 1,
+                            tenant: None,
+                            subject: Some("snapshot-owner"),
+                            marks: "",
+                            completed: false,
+                        },
+                        b"4200",
+                    )
+                    .unwrap();
+                store
+                    .save_snapshot(
+                        &mut MemoryTx::auto_commit(),
+                        &Snapshot {
+                            aggregate_id: account.root().id().into(),
+                            type_name: type_name.into(),
+                            version: 1,
+                            tenant: None,
+                            subject: Some("snapshot-owner".into()),
+                            encryption: Some(sealed.encryption),
+                            data: sealed.data,
+                        },
+                    )
+                    .unwrap();
+                keys.destroy(&sealing.scope(None, Some("snapshot-owner")).unwrap())
+                    .unwrap();
+                let loaded = repository.load(None, account.root().id());
+                if matching_type {
+                    assert_eq!(
+                        loaded.err().unwrap().code,
+                        if configured {
+                            ErrorCode::Shredded
+                        } else {
+                            ErrorCode::BadHandle
+                        }
+                    );
+                } else {
+                    let loaded = loaded.unwrap();
+                    assert_eq!((loaded.balance, loaded.root().version()), (4200, 1));
+                    assert_eq!(loaded.root().subject(), Some("account-owner"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn protected_snapshot_dump_runs_only_when_due() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        struct FailingDump;
+        impl AggregateCodec for FailingDump {
+            type Aggregate = Account;
+            fn type_name(&self) -> &str {
+                "Account"
+            }
+            fn load(&self, id: &str, version: u64, data: Option<&[u8]>) -> Result<Account, Error> {
+                AccountCodec.load(id, version, data)
+            }
+            fn dump(&self, _: &Account) -> Result<Vec<u8>, Error> {
+                Err(Error::codec("snapshot dump failed"))
+            }
+        }
+        for (name, every, pending, due) in [
+            ("disabled", 0, true, false),
+            ("interval not reached", 2, true, false),
+            ("no pending events", 1, false, false),
+            ("snapshot due", 1, true, true),
+        ] {
+            let sealing =
+                Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+            let store = MemoryEventStore::new();
+            let repository = Repository::new(store.clone(), AccountEvents, FailingDump)
+                .snapshot_every(every)
+                .sealing(sealing);
+            let mut account = Account::open("dump-account");
+            account.root_mut().set_subject(Some("account-owner")).unwrap();
+            if pending {
+                account.apply(AccountEvent::Deposited(4200));
+            }
+            let result = repository.save(&mut account, SaveOptions::default());
+            if due {
+                assert_eq!(result.unwrap_err().message, "snapshot dump failed", "{name}");
+                assert_eq!(account.root().pending().len(), 1, "{name}");
+            } else {
+                assert_eq!(result.unwrap().len(), usize::from(pending), "{name}");
+                assert!(account.root().pending().is_empty(), "{name}");
+            }
+            assert_eq!(
+                store
+                    .load(&mut MemoryTx::auto_commit(), "dump-account", 0)
+                    .unwrap()
+                    .len(),
+                usize::from(pending && !due),
+                "{name}"
+            );
+            assert!(
+                store
+                    .load_snapshot(&mut MemoryTx::auto_commit(), "dump-account")
+                    .unwrap()
+                    .is_none(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn protected_repository_round_trips_and_enforces_owner_and_reader_policy() {
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        for cipher in [Cipher::Aes256Gcm, Cipher::XChaCha20Poly1305] {
+            for snapshots in [0, 1] {
+                let keys = Arc::new(MemoryKeys::new());
+                let sealing = Arc::new(Sealing::new(keys.clone(), "production-eu", cipher).unwrap());
+                let store = MemoryEventStore::new();
+                let protected = repo(store.clone()).snapshot_every(snapshots).sealing(sealing.clone());
+                let mut account = Account::open("private-account");
+                account.root_mut().set_subject(Some("person-42")).unwrap();
+                account.apply(AccountEvent::Deposited(314159));
+                let stored = protected.save(&mut account, SaveOptions::default()).unwrap();
+                assert_ne!(stored[0].data, b"314159");
+                assert_eq!(stored[0].encryption.as_ref().unwrap().cipher, cipher);
+                assert_eq!(store.unpublished(10).unwrap(), stored);
+                let snapshot = store
+                    .load_snapshot(&mut MemoryTx::auto_commit(), "private-account")
+                    .unwrap();
+                if let Some(snapshot) = snapshot {
+                    assert_ne!(snapshot.data, b"314159");
+                    assert_eq!(snapshot.subject.as_deref(), Some("person-42"));
+                    assert!(snapshot.encryption.is_some());
+                }
+                let mut loaded = protected.load(None, "private-account").unwrap();
+                assert_eq!(loaded.balance, 314159);
+                assert_eq!(loaded.root().subject(), Some("person-42"));
+                assert_eq!(
+                    loaded.root_mut().set_subject(Some("person-43")).unwrap_err().code,
+                    ErrorCode::Codec
+                );
+                assert_eq!(
+                    repo(store.clone()).load(None, "private-account").err().unwrap().code,
+                    ErrorCode::BadHandle
+                );
+                let mut tx = store.begin().unwrap();
+                assert_eq!(
+                    protected
+                        .save_in(&mut tx, &mut loaded, SaveOptions::default())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::BadHandle
+                );
+                store.rollback(tx);
+                let scope = sealing.scope(None, Some("person-42")).unwrap();
+                keys.destroy(&scope).unwrap();
+                assert_eq!(
+                    protected.load(None, "private-account").err().unwrap().code,
+                    ErrorCode::Shredded
+                );
+                assert!(sealing.open_event_delivery(&stored[0]).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn protected_repository_requires_explicit_legacy_migration() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let store = MemoryEventStore::new();
+        let mut account = Account::open("historical-account");
+        account.apply(AccountEvent::Deposited(123456));
+        repo(store.clone()).save(&mut account, SaveOptions::default()).unwrap();
+        let keys = Arc::new(MemoryKeys::new());
+        let strict = Arc::new(Sealing::new(keys.clone(), "production-eu", Cipher::default()).unwrap());
+        assert_eq!(
+            repo(store.clone())
+                .sealing(strict)
+                .load(None, "historical-account")
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Codec
+        );
+        let legacy = Arc::new(
+            Sealing::new(keys, "production-eu", Cipher::default())
+                .unwrap()
+                .allow_plaintext(true),
+        );
+        assert_eq!(
+            repo(store)
+                .sealing(legacy)
+                .load(None, "historical-account")
+                .unwrap()
+                .balance,
+            123456
+        );
+    }
+
+    struct UncertainCommit {
+        inner: MemoryEventStore,
+        fail_once: std::sync::atomic::AtomicBool,
+        committed: bool,
+    }
+
+    impl Transactor for UncertainCommit {
+        type Tx = MemoryTx;
+        fn identity(&self) -> usize {
+            self.inner.identity()
+        }
+        fn begin(&self) -> Result<MemoryTx, Error> {
+            self.inner.begin()
+        }
+        fn rollback(&self, tx: MemoryTx) {
+            self.inner.rollback(tx);
+        }
+        fn commit(&self, tx: MemoryTx) -> Result<(), Error> {
+            if self.fail_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if self.committed {
+                    self.inner.commit(tx)?;
+                } else {
+                    self.inner.rollback(tx);
+                }
+                return Err(Error::new(ErrorCode::Store, "commit response unavailable"));
+            }
+            self.inner.commit(tx)
+        }
+    }
+
+    impl EventStore for UncertainCommit {
+        fn load(&self, tx: &mut MemoryTx, id: &str, after: u64) -> Result<Vec<EventMessage>, Error> {
+            self.inner.load(tx, id, after)
+        }
+        fn load_snapshot(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<Snapshot>, Error> {
+            self.inner.load_snapshot(tx, id)
+        }
+        fn save_snapshot(&self, tx: &mut MemoryTx, snapshot: &Snapshot) -> Result<(), Error> {
+            self.inner.save_snapshot(tx, snapshot)
+        }
+        fn append(
+            &self,
+            tx: &mut MemoryTx,
+            id: &str,
+            expected: u64,
+            drafts: Vec<EventDraft>,
+        ) -> Result<Vec<EventMessage>, Error> {
+            self.inner.append(tx, id, expected, drafts)
+        }
+    }
+
+    #[test]
+    fn protected_save_reconciles_uncertain_commits_without_resealing() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        for committed in [false, true] {
+            let inner = MemoryEventStore::new();
+            let store = UncertainCommit {
+                inner: inner.clone(),
+                fail_once: std::sync::atomic::AtomicBool::new(true),
+                committed,
+            };
+            let sealing =
+                Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+            let repository = Repository::new(store, AccountEvents, AccountCodec).sealing(sealing);
+            let mut account = Account::open("uncertain-account");
+            account.root_mut().set_subject(Some("person-42")).unwrap();
+            account.apply(AccountEvent::Deposited(314159));
+            assert_eq!(
+                repository.save(&mut account, SaveOptions::default()).unwrap_err().code,
+                ErrorCode::Store
+            );
+            let retained = account.root().prepared.as_ref().unwrap().clone();
+            assert_eq!(
+                inner
+                    .load(&mut MemoryTx::auto_commit(), "uncertain-account", 0)
+                    .unwrap()
+                    .len(),
+                usize::from(committed)
+            );
+            let result = repository.save(&mut account, SaveOptions::default()).unwrap();
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0], retained.drafts[0].clone().record(result[0].recorded_at));
+            let snapshot = inner
+                .load_snapshot(&mut MemoryTx::auto_commit(), "uncertain-account")
+                .unwrap()
+                .unwrap();
+            assert_eq!(snapshot.data, retained.snapshot.unwrap().data);
+            assert_eq!(inner.unpublished(10).unwrap().len(), 1);
+            assert!(account.root().prepared.is_none());
+            assert_eq!(account.root().version(), 1);
+        }
+    }
+
+    #[test]
+    fn protected_save_refuses_changed_pending_state_after_uncertain_commit() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let inner = MemoryEventStore::new();
+        let store = UncertainCommit {
+            inner: inner.clone(),
+            fail_once: std::sync::atomic::AtomicBool::new(true),
+            committed: false,
+        };
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+        let repository = Repository::new(store, AccountEvents, AccountCodec).sealing(sealing);
+        let mut account = Account::open("changed-account");
+        account.root_mut().set_subject(Some("person-42")).unwrap();
+        account.apply(AccountEvent::Deposited(314159));
+        repository.save(&mut account, SaveOptions::default()).unwrap_err();
+        account.balance += 1;
+        assert_eq!(
+            repository.save(&mut account, SaveOptions::default()).unwrap_err().code,
+            ErrorCode::BadHandle
+        );
+        assert!(inner
+            .load(&mut MemoryTx::auto_commit(), "changed-account", 0)
+            .unwrap()
+            .is_empty());
     }
 }

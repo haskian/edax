@@ -29,7 +29,7 @@ use edax_core::Error;
 use serde::{Deserialize, Serialize};
 
 /// The version of the table contract this build requires. Raised only by an addition.
-pub const CONTRACT_VERSION: u32 = 1;
+pub const CONTRACT_VERSION: u32 = 2;
 
 /// The oldest Postgres major version the statements run on (`server_version_num` / 10000).
 pub const MIN_SERVER_VERSION: i64 = 14;
@@ -327,6 +327,8 @@ fn command_columns() -> Vec<Column> {
         nullable("idempotency_key", Text),
         nullable("aggregate_id", Text),
         nullable("tenant", Text),
+        nullable("subject", Text),
+        nullable("encryption", Text),
         col("name", Text),
         col("version", Bigint),
         col("data", Bytea),
@@ -349,6 +351,8 @@ pub fn table_contract(role: Logical) -> TableContract {
                 col("sequence", Bigint),
                 col("aggregate_id", Text),
                 nullable("tenant", Text),
+                nullable("subject", Text),
+                nullable("encryption", Text),
                 col("name", Text),
                 col("version", Bigint),
                 col("data", Bytea),
@@ -368,6 +372,9 @@ pub fn table_contract(role: Logical) -> TableContract {
         Logical::Snapshots => (
             vec![
                 key("stream"),
+                nullable("tenant", Text),
+                nullable("subject", Text),
+                nullable("encryption", Text),
                 col("type_name", Text),
                 col("version", Bigint),
                 col("data", Bytea),

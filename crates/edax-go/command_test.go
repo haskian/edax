@@ -84,7 +84,7 @@ func TestCommandGuardBranches(t *testing.T) {
 					t.Fatalf("cached failure: %v", secondErr)
 				}
 				// The ledger caches the code beside the bare message, never the wire form.
-				if want := "cached_failure: " + test.failure.Error(); test.cached && secondErr.Error() != want {
+				if want := "cached_failure: rejected: "; test.cached && secondErr.Error() != want {
 					t.Fatalf("cached failure %q want %q", secondErr, want)
 				}
 			}

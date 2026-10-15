@@ -140,7 +140,7 @@ func (s *EventStore) LoadSnapshot(ctx context.Context, key string) (*edax.Snapsh
 	if e != nil || row == nil {
 		return nil, e
 	}
-	return &edax.Snapshot{AggregateID: key, TypeName: row.TypeName, Version: row.Version, Data: row.Data}, nil
+	return &edax.Snapshot{AggregateID: key, TypeName: row.TypeName, Version: row.Version, Data: row.Data, Tenant: row.Tenant, Subject: row.Subject, Encryption: row.Encryption}, nil
 }
 
 // SaveSnapshot replaces the aggregate cache in the context transaction, when present.
@@ -149,7 +149,7 @@ func (s *EventStore) SaveSnapshot(ctx context.Context, row edax.Snapshot) error 
 	if e != nil {
 		return e
 	}
-	return s.native.SaveSnapshot(t, row.AggregateID, row.TypeName, row.Version, row.Data)
+	return s.native.SaveSnapshotRecord(t, row.AggregateID, kernel.SnapshotResult{TypeName: row.TypeName, Version: row.Version, Data: row.Data, Tenant: row.Tenant, Subject: row.Subject, Encryption: row.Encryption})
 }
 
 // Unpublished reads at most limit committed outbox rows; staged writes are not published.
@@ -319,7 +319,19 @@ func (s *SagaStore) Load(ctx context.Context, saga, id string) (*edax.SagaInstan
 	if e != nil || row == nil {
 		return nil, e
 	}
-	return &edax.SagaInstance{Version: row.Version, Completed: row.Completed, State: json.RawMessage(row.StateJSON), Folded: row.Folded}, nil
+	instance := &edax.SagaInstance{Version: row.Version, Completed: row.Completed, State: json.RawMessage(row.StateJSON), Folded: row.Folded}
+	if !row.Completed {
+		decoded, err := kernel.DecodeProtectedState(row.StateJSON)
+		if err != nil {
+			return nil, err
+		}
+		if decoded.Value != nil {
+			instance.Protected = decoded.Value
+			instance.Completed = decoded.Value.Completed
+			instance.State = nil
+		}
+	}
+	return instance, nil
 }
 
 // Save checks the expected version and stages the replacement state atomically.
@@ -328,7 +340,18 @@ func (s *SagaStore) Save(ctx context.Context, saga, id string, state json.RawMes
 	if e != nil {
 		return 0, e
 	}
-	return s.native.Save(t, saga, id, expected, string(state), folded, commands)
+	encoded := string(state)
+	decoded, err := kernel.DecodeProtectedState(encoded)
+	if err != nil {
+		return 0, err
+	}
+	if decoded.Value != nil {
+		encoded, err = kernel.EncodeProtectedState(*decoded.Value)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return s.native.Save(t, saga, id, expected, encoded, folded, commands)
 }
 
 // Complete atomically writes a completion tombstone and its commands at the expected version.

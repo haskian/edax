@@ -52,8 +52,8 @@ func Locate() *Payload { return nil }
 				"h.inner.FetchResult()",
 				"return nativeValue.Value, nil",
 				"h.inner.Count()",
-				"h.inner.SelectPresent(normalizeNative(data), rows != nil, normalizeNative(rows))",
-				"native.ResolvePresent(normalizeNative(data), note, available != nil, normalizeNative(available))",
+				"h.inner.SelectPresent(data, rows != nil, normalizeNative(rows))",
+				"native.ResolvePresent(data, note, available != nil, normalizeNative(available))",
 				"native.Locate()",
 			} {
 				if !strings.Contains(string(generated), fragment) {

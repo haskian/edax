@@ -12,7 +12,9 @@
 //! - A message is a **map** keyed by field name in both formats, never a positional array, and so is
 //!   every struct inside it. A reader refuses an array where a map belongs ([`StructsFromMaps`]).
 //! - A reader **ignores a field it does not know**, so a writer may add one and an older reader keeps
-//!   decoding (forward compatible). An optional field (`tenant`, `sequence`, `occurred_at`,
+//!   decoding (forward compatible). Deploy encryption-aware readers before enabling sealed writers:
+//!   an older reader ignores `encryption` and passes ciphertext to its plaintext payload codec.
+//!   An optional field (`tenant`, `subject`, `encryption`, `sequence`, `occurred_at`,
 //!   `idempotency_key`, a command's `aggregate_id`) is written as `null` and reads as `None` when
 //!   missing; every other field is required.
 //! - **Trailing bytes** after the message are refused in both formats: a frame holds one message.
@@ -72,7 +74,8 @@ edax_core::closed_names! {
 /// from it.
 fn check_message<M: Message>(msg: &M) -> Result<(), Error> {
     check_extensions(msg.extensions())?;
-    msg.tenant().map_or(Ok(()), check_tenant)
+    msg.tenant().map_or(Ok(()), check_tenant)?;
+    crate::sealing::check_protection(msg.subject(), msg.encryption(), msg.data())
 }
 
 impl Format {

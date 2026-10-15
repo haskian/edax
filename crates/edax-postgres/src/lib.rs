@@ -26,6 +26,7 @@
 
 pub mod config;
 pub mod documents;
+pub mod erasure;
 pub mod error;
 pub mod ledger;
 pub mod query;

@@ -85,6 +85,8 @@ pub struct DraftBatch {
 pub struct SaveContext<'a> {
     /// The tenant the aggregate belongs to, `None` for none.
     pub tenant: Option<&'a str>,
+    /// Immutable erasure owner of protected state.
+    pub subject: Option<&'a str>,
     /// The flow every event of the batch continues.
     pub lineage: &'a Lineage,
     /// Edax extension context, under [`check_extensions`]'s key rule.
@@ -112,6 +114,7 @@ pub fn draft_batch(
 ) -> Result<DraftBatch, Error> {
     let SaveContext {
         tenant,
+        subject,
         lineage,
         extensions,
         metadata,
@@ -145,6 +148,8 @@ pub fn draft_batch(
             id,
             aggregate_id: aggregate_id.to_owned(),
             tenant: tenant.map(ToOwned::to_owned),
+            subject: subject.map(ToOwned::to_owned),
+            encryption: None,
             sequence: Some(sequence),
             name: payload.name,
             version: payload.version,

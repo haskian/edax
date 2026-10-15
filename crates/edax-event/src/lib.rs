@@ -37,11 +37,13 @@
 pub mod causation;
 pub mod codec;
 pub mod drain;
+pub mod erasure;
 pub mod idempotency;
 pub mod message;
 pub mod partition;
 pub mod retry;
 pub mod saga;
+pub mod sealing;
 pub mod sequence;
 pub mod staleness;
 #[cfg(any(test, feature = "testkit"))]

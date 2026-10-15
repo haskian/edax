@@ -37,6 +37,7 @@ sources = [
   "crates/edax-abi/src/lib.rs",
   "crates/edax-abi/src/primitives.rs",
   "crates/edax-abi/src/event.rs",
+  "crates/edax-abi/src/seal.rs",
   "crates/edax-abi/src/retry.rs",
   "crates/edax-abi/src/saga.rs",
   "crates/edax-abi/src/cqrs.rs",

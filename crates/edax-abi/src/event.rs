@@ -28,6 +28,37 @@ macro_rules! mirror {
     };
 }
 
+/// Protected records validate the cipher name while crossing into the typed kernel.
+macro_rules! mirror_protected {
+    ($record:ident <-> $kernel:path { $($field:ident),* }) => {
+        impl TryFrom<$record> for $kernel {
+            type Error = edax_core::Error;
+
+            fn try_from(message: $record) -> Result<Self, Self::Error> {
+                Ok(Self {
+                    $($field: message.$field,)*
+                    subject: message.subject,
+                    encryption: message.encryption.map(edax_seal::EncryptionInfo::try_from).transpose()?,
+                    extensions: ordered(message.extensions),
+                    metadata: ordered(message.metadata),
+                })
+            }
+        }
+
+        impl From<$kernel> for $record {
+            fn from(message: $kernel) -> Self {
+                Self {
+                    $($field: message.$field,)*
+                    subject: message.subject,
+                    encryption: message.encryption.map(crate::EncryptionInfo::from),
+                    extensions: unordered(message.extensions),
+                    metadata: unordered(message.metadata),
+                }
+            }
+        }
+    };
+}
+
 /// The local worker, of `n`, that runs `aggregate_id`'s events: local fan-out only, never broker
 /// placement (that is [`kafka_partition_for`](crate::kafka_partition_for)). See [`edax_event::partition()`].
 pub fn partition(aggregate_id: &str, n: u32) -> u32 {
@@ -88,6 +119,7 @@ pub fn draft_batch(
     metadata: HashMap<String, String>,
     tenant: Option<String>,
     occurred_at: Option<i64>,
+    subject: Option<String>,
 ) -> Result<DraftBatch, String> {
     let lineage = edax_event::Lineage::from(lineage);
     let (extensions, metadata) = (ordered(extensions), ordered(metadata));
@@ -97,6 +129,7 @@ pub fn draft_batch(
         extensions: &extensions,
         metadata: &metadata,
         occurred_at,
+        subject: subject.as_deref(),
     };
     let payloads = payloads.into_iter().map(edax_event::Payload::from).collect();
     let batch =
@@ -204,7 +237,12 @@ pub struct EventIdempotency {
 /// is a `codec:` error.
 pub fn event_idempotency(message: EventMessage, mode: &str, scope: &str) -> Result<EventIdempotency, String> {
     let mode = tenancy_mode(mode)?;
-    let rule = edax_event::event_idempotency(&edax_event::EventMessage::from(message), mode, scope).map_err(to_wire)?;
+    let rule = edax_event::event_idempotency(
+        &edax_event::EventMessage::try_from(message).map_err(to_wire)?,
+        mode,
+        scope,
+    )
+    .map_err(to_wire)?;
     Ok(EventIdempotency {
         key: rule.key,
         payload_hash: rule.payload_hash,
@@ -243,6 +281,12 @@ pub struct EventDraft {
     /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
     /// derives from this message is composed from it; see `tenant_key`.
     pub tenant: Option<String>,
+    /// Immutable erasure owner for a protected aggregate.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Typed encryption framing; absent for historical plaintext records.
+    #[serde(default)]
+    pub encryption: Option<crate::EncryptionInfo>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name.
@@ -278,6 +322,12 @@ pub struct EventMessage {
     /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
     /// derives from this message is composed from it; see `tenant_key`.
     pub tenant: Option<String>,
+    /// Immutable erasure owner for a protected aggregate.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Typed encryption framing; absent for historical plaintext records.
+    #[serde(default)]
+    pub encryption: Option<crate::EncryptionInfo>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name a consumer routes and unmarshals by.
@@ -315,6 +365,12 @@ pub struct CommandMessage {
     /// The tenant this message belongs to, `None` outside a multi-tenant deployment. Every key a seam
     /// derives from this message is composed from it; see `tenant_key`.
     pub tenant: Option<String>,
+    /// Erasure owner of the protected command payload.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Typed encryption framing; absent for historical plaintext records.
+    #[serde(default)]
+    pub encryption: Option<crate::EncryptionInfo>,
     /// The command type name a handler is registered under.
     pub name: String,
     /// The payload schema version.
@@ -346,25 +402,26 @@ impl From<Payload> for edax_event::Payload {
     }
 }
 
-mirror!(EventDraft <-> edax_event::EventDraft {
-    id, aggregate_id, tenant, sequence, name, version, data, correlation_id, causation_id, occurred_at;
-    maps: extensions, metadata
+mirror_protected!(EventDraft <-> edax_event::EventDraft {
+    id, aggregate_id, tenant, sequence, name, version, data, correlation_id, causation_id, occurred_at
 });
 
-mirror!(EventMessage <-> edax_event::EventMessage {
-    id, aggregate_id, tenant, sequence, name, version, data, correlation_id, causation_id, occurred_at, recorded_at;
-    maps: extensions, metadata
+mirror_protected!(EventMessage <-> edax_event::EventMessage {
+    id, aggregate_id, tenant, sequence, name, version, data, correlation_id, causation_id, occurred_at, recorded_at
 });
 
-mirror!(CommandMessage <-> edax_event::CommandMessage {
-    id, idempotency_key, aggregate_id, tenant, name, version, data, correlation_id, causation_id, issued_at;
-    maps: extensions, metadata
+mirror_protected!(CommandMessage <-> edax_event::CommandMessage {
+    id, idempotency_key, aggregate_id, tenant, name, version, data, correlation_id, causation_id, issued_at
 });
 
 /// The stored message for `draft`: every field as drafted, stamped `recorded_at` on the store's clock.
 /// See [`edax_event::EventDraft::record`].
-pub fn record_event(draft: EventDraft, recorded_at: i64) -> EventMessage {
-    EventMessage::from(edax_event::EventDraft::from(draft).record(recorded_at))
+pub fn record_event(draft: EventDraft, recorded_at: i64) -> Result<EventMessage, String> {
+    Ok(EventMessage::from(
+        edax_event::EventDraft::try_from(draft)
+            .map_err(to_wire)?
+            .record(recorded_at),
+    ))
 }
 
 fn format_of(format: &str) -> Result<edax_event::Format, String> {
@@ -375,7 +432,7 @@ fn format_of(format: &str) -> Result<edax_event::Format, String> {
 /// error, so a producer never mints a message every consumer would refuse.
 pub fn encode_event(format: &str, message: EventMessage) -> Result<Vec<u8>, String> {
     format_of(format)?
-        .encode(&edax_event::EventMessage::from(message))
+        .encode(&edax_event::EventMessage::try_from(message).map_err(to_wire)?)
         .map_err(to_wire)
 }
 
@@ -391,7 +448,7 @@ pub fn decode_event(format: &str, wire: &[u8]) -> Result<EventMessage, String> {
 /// A command -> wire bytes in `format`, as [`encode_event`] does an event.
 pub fn encode_command(format: &str, message: CommandMessage) -> Result<Vec<u8>, String> {
     format_of(format)?
-        .encode(&edax_event::CommandMessage::from(message))
+        .encode(&edax_event::CommandMessage::try_from(message).map_err(to_wire)?)
         .map_err(to_wire)
 }
 
@@ -430,9 +487,12 @@ pub fn wire_formats() -> Vec<String> {
 /// [`edax_event::own_command`].
 // `tenant` is optional, so it trails: alef moves optional parameters to the end of the signature.
 pub fn own_command(command: CommandMessage, tenant: Option<String>) -> Result<CommandMessage, String> {
-    edax_event::own_command(edax_event::CommandMessage::from(command), tenant.as_deref())
-        .map(CommandMessage::from)
-        .map_err(to_wire)
+    edax_event::own_command(
+        edax_event::CommandMessage::try_from(command).map_err(to_wire)?,
+        tenant.as_deref(),
+    )
+    .map(CommandMessage::from)
+    .map_err(to_wire)
 }
 
 #[cfg(test)]
@@ -598,6 +658,7 @@ mod tests {
                 },
                 RECORDED_AT,
             )
+            .unwrap()
         };
         let command = |aggregate_id: Option<&str>, tenant: Option<&str>| CommandMessage {
             tenant: tenant.map(str::to_owned),
@@ -628,4 +689,120 @@ mod tests {
             }
         }
     }
+}
+
+fn erasure_record(record: &str) -> Result<edax_event::erasure::ErasureOperation, String> {
+    edax_event::erasure::decode_operation(record).map_err(to_wire)
+}
+
+/// Construct the operation that must be persisted before revocation.
+pub fn erasure_create(
+    scope: crate::KeyScope,
+    operation_id: &str,
+    request_id: &str,
+    participants: Vec<String>,
+) -> Result<String, String> {
+    let op = edax_event::erasure::ErasureOperation::new(
+        operation_id.to_owned(),
+        request_id.to_owned(),
+        scope.try_into().map_err(to_wire)?,
+        participants.into_iter().collect(),
+    )
+    .map_err(to_wire)?;
+    edax_event::erasure::encode_operation(&op).map_err(to_wire)
+}
+/// Validate and normalize an operation restored by a store.
+pub fn erasure_validate(record: &str) -> Result<String, String> {
+    edax_event::erasure::encode_operation(&erasure_record(record)?).map_err(to_wire)
+}
+/// Confirm a workflow effect or one participant's cleanup.
+pub fn erasure_apply(record: &str, action: &str, participant: Option<String>) -> Result<String, String> {
+    let op = edax_event::erasure::apply(erasure_record(record)?, action, participant.as_deref()).map_err(to_wire)?;
+    edax_event::erasure::encode_operation(&op).map_err(to_wire)
+}
+/// Whether every required cleanup participant acknowledged this notification.
+pub fn erasure_can_destroy(record: &str) -> Result<bool, String> {
+    Ok(erasure_record(record)?.can_destroy())
+}
+/// Validate request idempotency and its frozen participants.
+pub fn erasure_check_request(existing: &str, candidate: &str) -> Result<(), String> {
+    edax_event::erasure::check_request(&erasure_record(existing)?, &erasure_record(candidate)?).map_err(to_wire)
+}
+/// The stable-ID control notification generated by a durable transition.
+pub fn erasure_notification(previous: &str, next: &str) -> Result<Option<String>, String> {
+    edax_event::erasure::notification(&erasure_record(previous)?, &erasure_record(next)?).map_err(to_wire)
+}
+/// Interpret a provider's authoritative status after a requested lifecycle effect.
+pub fn erasure_provider_confirmed(action: &str, status: &str) -> Result<bool, String> {
+    edax_event::erasure::provider_confirmed(action, status).map_err(to_wire)
+}
+
+/// Every durable erasure stage.
+pub fn erasure_stages() -> Vec<String> {
+    names(edax_event::erasure::ErasureStage::NAMES)
+}
+
+/// Every erasure workflow action.
+pub fn erasure_actions() -> Vec<String> {
+    names(edax_event::erasure::ErasureAction::NAMES)
+}
+
+/// Validate coordinator participants before any revocation effect.
+pub fn erasure_validate_participants(required: Vec<String>, registered: Vec<String>) -> Result<(), String> {
+    edax_event::erasure::validate_participants(&required.into_iter().collect(), &registered.into_iter().collect())
+        .map_err(to_wire)
+}
+
+/// Reconcile an uncertain commit without reusing a message ID for new ciphertext.
+pub fn reconcile_prepared_events(drafts: Vec<EventDraft>, stored: Vec<EventMessage>) -> Result<bool, String> {
+    let drafts = drafts
+        .into_iter()
+        .map(edax_event::EventDraft::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
+    let stored = stored
+        .into_iter()
+        .map(edax_event::EventMessage::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
+    edax_event::sealing::reconcile_prepared_events(&drafts, &stored).map_err(to_wire)
+}
+
+/// Typed protected application-state envelope, retained opaquely by storage adapters.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProtectedState {
+    pub tenant: Option<String>,
+    pub subject: Option<String>,
+    pub completed: bool,
+    pub encryption: crate::EncryptionInfo,
+    pub data: Vec<u8>,
+}
+/// Presence envelope preserves optional native handle ownership in generated bindings.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProtectedStateResult {
+    pub value: Option<ProtectedState>,
+}
+/// Encode the versioned protected state representation.
+pub fn encode_protected_state(state: ProtectedState) -> Result<String, String> {
+    edax_event::sealing::encode_protected_state(&edax_event::sealing::ProtectedState::new(
+        state.tenant,
+        state.subject,
+        state.completed,
+        state.encryption.try_into().map_err(to_wire)?,
+        state.data,
+    ))
+    .map_err(to_wire)
+}
+/// Distinguish protected state from explicitly supported historical plaintext.
+pub fn decode_protected_state(state_json: &str) -> Result<ProtectedStateResult, String> {
+    let value = edax_event::sealing::decode_protected_state(state_json)
+        .map_err(to_wire)?
+        .map(|s| ProtectedState {
+            tenant: s.tenant,
+            subject: s.subject,
+            completed: s.completed,
+            encryption: s.encryption.into(),
+            data: s.data,
+        });
+    Ok(ProtectedStateResult { value })
 }

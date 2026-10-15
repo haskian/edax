@@ -38,6 +38,7 @@ from .codec import json_codec, msgpack_codec
 from .command import CommandBus, command_message, current_command, idempotent, received_key, retry
 from .delivery import DeadLetter, DeadLetterSink, Delivery, Undecodable
 from .dispatcher import DispatcherStats, DispatcherStopped, KeyOrderedDispatcher
+from .erasure import ErasureCoordinator, ErasureOperation, ErasureStore, MemoryErasureStore
 from .errors import (
     AlreadyRegistered,
     BadHandle,
@@ -47,8 +48,13 @@ from .errors import (
     EdaxError,
     HandlerNotFound,
     InProgress,
+    KeyMissing,
+    KeyRevoking,
+    KeyUnauthorized,
+    KeyUnavailable,
     PayloadMismatch,
     Rejected,
+    Shredded,
     StoreError,
     is_fatal,
     is_terminal,
@@ -85,6 +91,7 @@ from .saga import (
     SagaRunner,
     SagaStore,
 )
+from .sealing import EncryptionInfo, KeyProvider, KeyScope, MemoryKeys, SealedValue, Sealing
 from .serializer import KernelSerializer, Serializer
 from .store import EventStore, Snapshot, check_sequence_batch
 from .tenancy import TENANT_MAX, Tenancy, check_tenant, tenant_key
@@ -92,6 +99,21 @@ from .unit_of_work import Transactor, Tx, current_tx, transaction
 from .upcast import Upcaster
 
 __all__ = [
+    "Sealing",
+    "KeyProvider",
+    "MemoryKeys",
+    "KeyScope",
+    "EncryptionInfo",
+    "SealedValue",
+    "ErasureCoordinator",
+    "ErasureOperation",
+    "ErasureStore",
+    "MemoryErasureStore",
+    "Shredded",
+    "KeyMissing",
+    "KeyUnavailable",
+    "KeyUnauthorized",
+    "KeyRevoking",
     # submodules (every seam and wrapper module but `filter`, so `from edax import *` is the whole surface
     # without rebinding the builtin `filter`; reach the module as `edax.filter`)
     "aggregate",
