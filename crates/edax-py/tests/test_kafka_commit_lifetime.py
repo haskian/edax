@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import edax
 import pytest
@@ -48,7 +48,7 @@ async def test_client_commit_outlives_its_waiter_without_overlapping_another_com
         async def commit(self, offsets: dict[TopicPartition, int]) -> None:
             try:
                 # Exercise aiokafka's real commit lock and shield. Only the network call is held.
-                await GroupCoordinator.commit_offsets(coordinator, None, offsets)
+                await GroupCoordinator.commit_offsets(cast(GroupCoordinator, coordinator), None, offsets)
             except asyncio.CancelledError:
                 coordinator.client_cancelled = True
                 raise
@@ -96,7 +96,9 @@ async def test_client_commit_outlives_its_waiter_without_overlapping_another_com
             await asyncio.gather(pending, return_exceptions=True)
 
 
-async def test_cancelling_revoke_during_handler_drain_releases_poll_waiters() -> None:
+async def test_cancelling_revoke_during_handler_drain_releases_poll_waiters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Draining:
         def __init__(self) -> None:
             self.started = asyncio.Event()
@@ -108,7 +110,7 @@ async def test_cancelling_revoke_during_handler_drain_releases_poll_waiters() ->
 
     consumer = KafkaConsumer(FakeKafkaClient(), serializer=IdSerializer())
     draining = Draining()
-    consumer._dispatcher = draining
+    monkeypatch.setattr(consumer, "_dispatcher", draining)
     revoke = asyncio.create_task(consumer.rebalance_listener().on_partitions_revoked([TP]))
     await draining.started.wait()
     polling = asyncio.create_task(consumer.poll())

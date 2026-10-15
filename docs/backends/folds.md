@@ -144,9 +144,14 @@ A fresh generation starts with dispatch disabled. For an initial deployment, exp
 activate its starting vector after the host confirms it is the sole effect producer:
 
 ```python
-await store.activate(FoldCutover(
-    target.source_identity, target.source_history, target.topic, target.starts,
-))
+await store.activate(
+    FoldCutover(
+        target.source_identity,
+        target.source_history,
+        target.topic,
+        target.starts,
+    )
+)
 ```
 
 ## Source verification and runner

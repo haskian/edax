@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from aiokafka import TopicPartition
@@ -45,7 +45,8 @@ async def test_cancelled_ingestion_close_waiter_preserves_shielded_client_commit
     class Client(BatchClient):
         async def commit(self, offsets: dict[TopicPartition, int]) -> None:
             try:
-                await GroupCoordinator.commit_offsets(coordinator, None, offsets)
+                # The test double supplies the state used by the real commit method.
+                await GroupCoordinator.commit_offsets(cast(GroupCoordinator, coordinator), None, offsets)
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
