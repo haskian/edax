@@ -18,7 +18,7 @@ use edax_core::Error;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::decimal_text::parse;
-use crate::timestamp::canonical_timestamp;
+use crate::timestamp::{canonical_timestamp, timestamp_from_unix_nanos};
 
 /// An exact decimal number in its canonical text (see [`canonical_decimal`](crate::canonical_decimal)),
 /// written as a JSON string. Two decimals are equal when their values are, and they order by value, not
@@ -50,6 +50,12 @@ impl Instant {
     /// The fixed-width UTC text, as it travels.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The instant `nanos` after the Unix epoch, floored to the microsecond: a stored event's
+    /// `recorded_at` or `occurred_at`, or a clock reading. See [`timestamp_from_unix_nanos`].
+    pub fn from_unix_nanos(nanos: i64) -> Result<Instant, Error> {
+        timestamp_from_unix_nanos(nanos).map(Instant)
     }
 }
 

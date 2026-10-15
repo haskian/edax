@@ -39,7 +39,7 @@ def deposited(event_id: str, amount: int) -> EventMessage:
 async def main() -> None:
     # 1. The read model's database, behind a commit we can break on purpose.
     db = MemoryTransactor()
-    balances = MemoryProjectionStore(db)
+    balances = MemoryProjectionStore(db, projection="balances")
     unit = BrokenCommit(db, arm="lost_response")  # the next commit lands, then raises
     deliveries: list[str] = []
     applied: list[str] = []

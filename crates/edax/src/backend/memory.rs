@@ -93,10 +93,11 @@ impl MemoryTransactor {
         }
     }
 
-    /// The projection store over this database.
-    pub fn projection_store(&self) -> MemoryProjectionStore {
+    /// The store of read model `projection` over this database.
+    pub fn projection_store(&self, projection: impl Into<String>) -> MemoryProjectionStore {
         MemoryProjectionStore {
             inner: self.inner.projection_store(),
+            projection: projection.into(),
         }
     }
 
@@ -278,18 +279,38 @@ impl EventStore for MemoryEventStore {
 ///
 /// `Tx = MemoryTx`: a save under an open handle is staged until the [`MemoryTransactor`] commits,
 /// so a projection write commits or rolls back with the events that produced it.
-#[derive(Clone, Default)]
+///
+/// Each view holds one read model, named when it is built. Read models of one database share no row, as
+/// the Postgres projections table keys each by its name, so two keyed by one id never overwrite each other.
+/// There is no `Default`: a nameless view would bring that collision back.
+#[derive(Clone)]
 pub struct MemoryProjectionStore {
     inner: edax_memory::MemoryProjectionStore,
+    projection: String,
 }
 
-memory_view!(MemoryProjectionStore);
+impl MemoryProjectionStore {
+    /// The store of read model `projection` over a database of its own.
+    pub fn new(projection: impl Into<String>) -> Self {
+        MemoryProjectionStore {
+            inner: edax_memory::MemoryProjectionStore::default(),
+            projection: projection.into(),
+        }
+    }
+
+    /// The transactor this store enlists with.
+    pub fn transactor(&self) -> MemoryTransactor {
+        MemoryTransactor {
+            inner: self.inner.transactor(),
+        }
+    }
+}
 
 impl ProjectionStore for MemoryProjectionStore {
     type Tx = MemoryTx;
 
     fn get(&self, tx: &mut MemoryTx, id: &str) -> Result<Option<Entity>, Error> {
-        Ok(self.inner.get(*tx, id)?.map(|row| Entity {
+        Ok(self.inner.get(*tx, &self.projection, id)?.map(|row| Entity {
             id: id.to_string(),
             version: row.version,
             document: Value::Object(row.value),
@@ -299,13 +320,14 @@ impl ProjectionStore for MemoryProjectionStore {
     fn save(&self, tx: &mut MemoryTx, entity: &Entity) -> Result<u64, Error> {
         // The kernel's document rule: an object, since a read carries the row key as its `"id"`.
         let document = edax_cqrs::document(&entity.id, entity.document.clone())?;
-        self.inner.save(*tx, &entity.id, entity.version, document)
+        self.inner
+            .save(*tx, &self.projection, &entity.id, entity.version, document)
     }
 }
 
 impl ProjectionQuery for MemoryProjectionStore {
     fn get_many(&self, tx: &mut MemoryTx, query: &Query) -> Result<Page, Error> {
-        self.inner.get_many(*tx, query)
+        self.inner.get_many(*tx, &self.projection, query)
     }
 }
 
@@ -592,7 +614,7 @@ mod tests {
             .unwrap();
         let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", HASH)).expect("key stays taken");
         assert_eq!(got.payload_hash, HASH);
-        let edax_cqrs::State::Failed { code, message: m } = &got.state else {
+        let edax_cqrs::State::Failed { code, message: m, .. } = &got.state else {
             panic!("want Failed, got {:?}", got.state)
         };
         assert_eq!(*code, Some(ErrorCode::Codec), "cached with the codec's own code");
@@ -663,7 +685,7 @@ mod tests {
             store.put_raw("k", bytes).unwrap();
             let got = prior(store.claim(&mut MemoryTx::auto_commit(), "k", claimant)).expect("key stays taken");
             assert_eq!(got.payload_hash, want_hash, "{name}");
-            let edax_cqrs::State::Failed { code, message } = &got.state else {
+            let edax_cqrs::State::Failed { code, message, .. } = &got.state else {
                 panic!("{name}: want Failed, got {:?}", got.state)
             };
             assert_eq!(*code, Some(ErrorCode::Codec), "{name}");
@@ -728,7 +750,7 @@ mod tests {
     fn a_projection_document_must_be_an_object() {
         // A read carries the row key as the document's `"id"`, so a scalar or an array could be saved
         // and never found: refused at the write, as the terminal codec error.
-        let store = MemoryProjectionStore::new();
+        let store = MemoryProjectionStore::new("read_model");
         for (name, document) in [
             ("array", json!(["ada@example.com"])),
             ("scalar", json!(36)),
@@ -842,7 +864,7 @@ mod tests {
         // the event store's `tx` would be unknown to it.
         let db = MemoryTransactor::new();
         let events = db.event_store();
-        let proj = db.projection_store();
+        let proj = db.projection_store("read_model");
 
         // One unit of work over the event store's Transactor; the same `tx` drives both writes.
         events
@@ -903,7 +925,7 @@ mod tests {
         // A standalone store is its own database: the transactor's handle is unknown to it. That is
         // `BadHandle` — terminal, a wiring mistake — and the Python backend refuses a foreign handle
         // with the same verdict (`edax.backend.memory.MemoryTransactor.token`).
-        let stranger = MemoryProjectionStore::new();
+        let stranger = MemoryProjectionStore::new("read_model");
         let out: Result<_, Error> = db.transaction(|tx| stranger.get(tx, "a"));
         assert!(
             matches!(&out, Err(Error { code: ErrorCode::BadHandle, message: m }) if m.starts_with("unknown transaction")),

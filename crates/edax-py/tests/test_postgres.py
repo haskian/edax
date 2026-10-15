@@ -132,6 +132,10 @@ class TestPostgresProjectionStore(ProjectionStoreContract):
         return PostgresProjectionStore(db, "accounts")
 
     @pytest.fixture
+    def projection_store_named(self, db: PostgresTransactor) -> Any:
+        return lambda name: PostgresProjectionStore(db, projection=name)
+
+    @pytest.fixture
     def transactor(self, db: PostgresTransactor) -> Any:
         return db
 

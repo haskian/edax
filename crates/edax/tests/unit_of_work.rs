@@ -75,7 +75,7 @@ impl History {
     /// handler to share, or both run under the auto-commit handle and commit independently.
     fn new(enlisted: bool) -> (Self, Arc<Shared<MemoryTx>>) {
         let db = MemoryTransactor::new();
-        let projections = db.projection_store();
+        let projections = db.projection_store("read_model");
         let ledger = Arc::new(db.idempotency_store::<i64>());
         let handle = Arc::new(Shared::new(MemoryTx::auto_commit()));
 

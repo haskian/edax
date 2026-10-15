@@ -380,25 +380,19 @@ pub fn own_command(command: CommandMessage, tenant: Option<&str>) -> Result<Comm
     }
 }
 
-/// The longest [`Extensions`] key.
-pub const EXTENSION_KEY_MAX: usize = 64;
+/// The longest [`Extensions`] key: [`edax_core::OPEN_NAME_MAX`].
+pub const EXTENSION_KEY_MAX: usize = edax_core::OPEN_NAME_MAX;
 
-/// Whether every key in `extensions` follows the rule: 1 to [`EXTENSION_KEY_MAX`] bytes of lowercase
-/// ASCII letters, digits, `.`, `_` and `-`, starting with a letter or digit. A dot namespaces keys per
-/// extension (`http.origin_ip`). Lowercase keeps a key safe as a header name on every transport.
+/// Whether every key in `extensions` follows the rule of a name a host chooses
+/// ([`edax_core::is_open_name`]): 1 to [`EXTENSION_KEY_MAX`] bytes of lowercase ASCII letters, digits,
+/// `.`, `_` and `-`, starting with a letter or digit. The dot namespaces keys per extension
+/// (`http.origin_ip`).
 ///
 /// A bad key is a `codec` error naming it. The codec checks on encode and decode, so a producer never
 /// mints a message every consumer would refuse. Pinned by `testdata/golden/extensions.json`.
 pub fn check_extensions(extensions: &Extensions) -> Result<(), Error> {
     for key in extensions.keys() {
-        let bytes = key.as_bytes();
-        let first_ok = bytes
-            .first()
-            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
-        let rest_ok = bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'));
-        if !first_ok || !rest_ok || bytes.len() > EXTENSION_KEY_MAX {
+        if !edax_core::is_open_name(key) {
             return Err(Error::codec(format_args!(
                 "extension key {key:?} must be 1 to {EXTENSION_KEY_MAX} of [a-z0-9._-], starting with [a-z0-9]"
             )));

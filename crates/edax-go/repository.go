@@ -74,6 +74,24 @@ func (r *Repository[A]) enlist(ctx context.Context, run func(context.Context) er
 	return WithinTransaction(ctx, r.store.UnitOfWork(), run)
 }
 
+// Create returns a new aggregate, empty at version 0 and carrying tenant. It persists and reads nothing,
+// so it takes no context and reports no observation; Save writes it. The tenant is checked as Load checks it.
+// Use it for an id this handler run minted. An id from outside may already exist: its Save fails with the
+// transient ErrConcurrency, so a retry re-runs the handler into the same conflict until its budget runs out.
+// Load such an id and check Version().Initial == 0 instead.
+func (r *Repository[A]) Create(id string, tenant *string) (A, error) {
+	var zero A
+	if _, err := kernel.TenantKey(string(r.options.Tenancy), id, tenant); err != nil {
+		return zero, err
+	}
+	aggregate, err := r.aggregates.Load(id, 0, nil)
+	if err != nil {
+		return zero, err
+	}
+	standAt(aggregate, 0, tenant)
+	return aggregate, nil
+}
+
 // Load uses a snapshot when its codec can read it, then checks and replays the dense event stream.
 // Any failure, including transaction commit failure, returns the zero aggregate value.
 func (r *Repository[A]) Load(ctx context.Context, id string, tenant *string) (aggregate A, err error) {

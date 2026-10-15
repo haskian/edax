@@ -53,7 +53,8 @@ impl<E> Root<E> {
     /// [`Tenancy::Pool`](crate::Tenancy::Pool) or [`Tenancy::Bridge`](crate::Tenancy::Bridge) a new
     /// aggregate starts from [`Repository::load`](crate::Repository::load) with a tenant, which returns it
     /// empty at version 0 with the tenant set; one built with [`Root::new`] has none, and its save is a
-    /// `codec` error.
+    /// `codec` error. The Python and Go SDKs add `create`, which does the same without reading; this
+    /// reference model leaves it out, as it pins no shared decision.
     pub fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
     }

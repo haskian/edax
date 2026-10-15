@@ -108,6 +108,19 @@ class Repository(Generic[A, TxT]):
             async with open_transaction(self._store, self._observer) as own:
                 yield own
 
+    def create(self, aggregate_id: str, *, tenant: str | None = None) -> A:
+        """A new aggregate: empty at version 0, carrying ``tenant``. It persists nothing, and reads nothing;
+        :meth:`save` writes it. ``tenant`` is checked as :meth:`load` checks it.
+
+        Use it for an id this handler run minted. An id from outside, one in a command payload included,
+        may already exist: its save raises the transient :class:`~edax.errors.ConcurrencyError`, so a retry
+        re-runs the handler into the same conflict until its budget runs out. :meth:`load` such an id and
+        check ``version.initial == 0`` instead."""
+        tenant_key(self._tenancy, tenant, aggregate_id)
+        agg = self._aggregates.load(aggregate_id, 0, None)
+        stand_at(agg, 0, tenant=tenant)
+        return agg
+
     async def load(
         self,
         aggregate_id: str,

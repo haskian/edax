@@ -432,7 +432,7 @@ func TestEventGuardSharesProjectionTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ledger.Close()
-	projections, err := db.ProjectionStore()
+	projections, err := db.ProjectionStore("orders")
 	if err != nil {
 		t.Fatal(err)
 	}

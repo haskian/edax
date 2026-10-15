@@ -59,7 +59,7 @@ def test_golden_idempotency_record() -> None:
         states: dict[str, RecordState] = {
             "pending": Pending(),
             "done": Done(c.get("result")),
-            "failed": Failed(c.get("error", ""), c.get("error_code")),
+            "failed": Failed(c.get("error", ""), c.get("error_code"), c.get("error_reason")),
         }
         want = Record(c["payload_hash"], states[c["state"]])
         assert record == want, c["name"]
@@ -78,6 +78,7 @@ def test_golden_idempotency_record() -> None:
             if c["outcome"] == "failed":
                 assert isinstance(caught.value, edax.CachedFailure)
                 assert caught.value.original_code == c["error_code"], c["name"]
+                assert edax.reason_of(caught.value) == c["error_reason"], c["name"]
         assert verdicts.heard == [c["outcome"]], c["name"]
         # Whether a store's `complete` takes the bytes as the record that settles a claim: the native
         # store runs the kernel's `check_settled`, so only a pending record is refused.
@@ -1043,7 +1044,7 @@ async def test_retry_refuses_to_run_inside_an_open_transaction(case: PlacementCa
     first one's staged save and applied the deposit on top of it, and one commit landed both."""
 
     db = MemoryTransactor()
-    accounts = MemoryProjectionStore(db)
+    accounts = MemoryProjectionStore(db, projection="accounts")
     ledger = MemoryIdempotencyStore(db)
     runs = 0
 

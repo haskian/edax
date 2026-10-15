@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.10.0](https://github.com/haskian/edax/compare/7bc3e479a4d45f3c298b4427508ff41f70b4bcf7..v0.10.0) - 2026-10-15
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) add create, Instant.now, read-model names and rejection reasons (#25) - ([7bc3e47](https://github.com/haskian/edax/commit/7bc3e479a4d45f3c298b4427508ff41f70b4bcf7)) - Črtomir Majer
+
+- - -
+
 ## [v0.9.0](https://github.com/haskian/edax/compare/d999d6ae9199cd11dc201e304ea37fd864ed6992..v0.9.0) - 2026-10-10
 #### Features
 - (**postgres**) add the Postgres kernel and the asyncpg backend (#23) - ([d999d6a](https://github.com/haskian/edax/commit/d999d6ae9199cd11dc201e304ea37fd864ed6992)) - Črtomir Majer

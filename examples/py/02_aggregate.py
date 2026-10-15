@@ -59,8 +59,8 @@ async def main() -> None:
     events = json_codec({"Deposited": Deposited, "Withdrawn": Withdrawn})
     repo = Repository(store, events, AccountCodec(), snapshot_every=0)  # 0: no snapshots yet
 
-    # 2. Load an id that has no events: an empty account at version 0.
-    account = await repo.load("acct-1")
+    # 2. Create a new account: empty at version 0. Nothing is read or written yet.
+    account = repo.create("acct-1")
     print(f"new account: balance {account.balance}, version {account.version.current}")
 
     # 3. Apply events. They change the state now and wait in `pending` until the save.

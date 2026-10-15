@@ -168,7 +168,7 @@ window causes.
 ```python
 # examples/py/10_idempotent_events.py: one database for the ledger and the read model
 db = MemoryTransactor()
-balances = MemoryProjectionStore(db)
+balances = MemoryProjectionStore(db, projection="balances")
 router = EventRouter(
     idempotent_by_id(MemoryIdempotencyStore(db), unit_of_work=db, scope="balances", tenancy=Tenancy.SILO)
 )
@@ -301,7 +301,8 @@ behaviour without changing a line of handler code. Test on the ordering you depl
 own-ledger shape in memory, with the same claim fence. Its `expire(key)` hook forces the takeover a Redis
 claim TTL produces ([memory backend](../backends/memory.md#test-on-the-ordering-you-deploy-memoryledger)).
 
-New cached failures retain the taxonomy code and omit arbitrary exception text. `CachedFailure`
+New ordinary cached failures retain the taxonomy code and any validated rejection reason, and omit
+arbitrary exception text. Protected failures retain only the code. `CachedFailure`
 does not preserve the original exception type. Map HTTP statuses from `original_code` or keep that
 mapping outside the guard. Historical records can still contain error text; enabling sealing does
 not scrub it.

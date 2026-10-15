@@ -246,5 +246,53 @@
     "json": "null",
     "kind": "float",
     "name": "float_negative_infinity_is_written_as_null"
+  },
+  {
+    "epoch_micros": 1704067200000001,
+    "error": null,
+    "input": "1704067200000001000",
+    "json": "\"2024-01-01T00:00:00.000001Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_whole_microsecond"
+  },
+  {
+    "epoch_micros": 1704067200000001,
+    "error": null,
+    "input": "1704067200000001999",
+    "json": "\"2024-01-01T00:00:00.000001Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_floor_to_the_microsecond"
+  },
+  {
+    "epoch_micros": 0,
+    "error": null,
+    "input": "0",
+    "json": "\"1970-01-01T00:00:00.000000Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_epoch"
+  },
+  {
+    "epoch_micros": -1,
+    "error": null,
+    "input": "-1",
+    "json": "\"1969-12-31T23:59:59.999999Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_before_the_epoch_floors_back"
+  },
+  {
+    "epoch_micros": -9223372036854776,
+    "error": null,
+    "input": "-9223372036854775808",
+    "json": "\"1677-09-21T00:12:43.145224Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_min"
+  },
+  {
+    "epoch_micros": 9223372036854775,
+    "error": null,
+    "input": "9223372036854775807",
+    "json": "\"2262-04-11T23:47:16.854775Z\"",
+    "kind": "unix_nanos",
+    "name": "unix_nanos_max"
   }
 ]

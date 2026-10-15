@@ -75,15 +75,20 @@ async def event(sealing: Sealing, *, subject: str = SUBJECT, id: str = "profile-
 
 @pytest.mark.parametrize("cipher", ["aes-256-gcm", "xchacha20-poly1305"])
 @pytest.mark.parametrize("snapshot_every", [0, 1])
+@pytest.mark.parametrize("origin", ["load", "create"])
 async def test_repository_encrypts_events_snapshots_outboxes_and_both_wire_formats(
-    cipher: Cipher, snapshot_every: int
+    cipher: Cipher, snapshot_every: int, origin: str
 ) -> None:
     keys = MemoryKeys()
     sealing = Sealing(keys, "profiles", cipher=cipher)
     store = MemoryEventStore()
     outbox = MemoryCommandOutbox(store.transactor)
     repo = repository(store, sealing, commands=outbox, snapshot_every=snapshot_every)
-    profile = await repo.load("profile-1", subject=SUBJECT)
+    if origin == "create":
+        profile = repo.create("profile-1")
+        profile.subject = SUBJECT
+    else:
+        profile = await repo.load("profile-1", subject=SUBJECT)
     profile.apply(CreateUser(EMAIL))
     command = edax.command_message(CreateUser(EMAIL), codec=COMMANDS)
     rows = await repo.save(profile, commands=[command])

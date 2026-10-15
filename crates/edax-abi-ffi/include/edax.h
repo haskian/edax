@@ -85,8 +85,8 @@ typedef struct EDAXEventMessage EDAXEventMessage;
 /**
  * A stored idempotency record, decoded by the kernel. `state` is `"pending"`, `"failed"` or
  * `"done"`; `error` is set only for `"failed"`, and `error_code` beside it when the failure was
- * stored with a code the kernel knows; `result_json` (the cached result as JSON text) is set only for
- * `"done"`.
+ * stored with a code the kernel knows, and `error_reason` beside a `rejected` one when the rejection
+ * named why it refused; `result_json` (the cached result as JSON text) is set only for `"done"`.
  */
 typedef struct EDAXIdempotencyRecord EDAXIdempotencyRecord;
 /**
@@ -1517,6 +1517,15 @@ char *edax_idempotency_record_error(EDAXAlefHandle handle);
 char *edax_idempotency_record_error_code(EDAXAlefHandle handle);
 
 /**
+ * Get the `error_reason` field from a `IdempotencyRecord`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_idempotency_record_error_reason(EDAXAlefHandle handle);
+
+/**
  * Get the `result_json` field from a `IdempotencyRecord`.
  * A non-null returned pointer is owned by the caller.
  * It must be freed with `edax_free_string`.
@@ -2307,13 +2316,15 @@ char *edax_memory_keys_status(EDAXAlefHandle this_,
 void edax_memory_projection_store_free(EDAXAlefHandle handle);
 
 /**
- * The stored document for `id` and its version as `tx` sees it, or `None`; the document carries its
+ * The stored document for `id` in read model `projection` and its version as `tx` sees it, or `None`;
+ * the document carries its
  * row key as `"id"`, as `keyed_projection_document` (crate::keyed_projection_document) reads it.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_memory_projection_store_get(EDAXAlefHandle this_,
                                                 int64_t tx,
+                                                const char *projection,
                                                 const char *id);
 
 /**
@@ -2326,18 +2337,21 @@ EDAXAlefHandle edax_memory_projection_store_get(EDAXAlefHandle this_,
  */
 uint64_t edax_memory_projection_store_save(EDAXAlefHandle this_,
                                            int64_t tx,
+                                           const char *projection,
                                            const char *id,
                                            uint64_t version,
                                            const char *document_json);
 
 /**
- * Run a read query (a JSON spec) over all documents as `tx` sees them; returns the kernel's page
+ * Run a read query (a JSON spec) over the documents of read model `projection` as `tx` sees them;
+ * returns the kernel's page
  * as JSON, `{"rows": [...], "next": cursor|null}`. A malformed spec is a `codec:` error.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 char *edax_memory_projection_store_get_many(EDAXAlefHandle this_,
                                             int64_t tx,
+                                            const char *projection,
                                             const char *query_json);
 
 /**
@@ -2347,6 +2361,7 @@ char *edax_memory_projection_store_get_many(EDAXAlefHandle this_,
  */
 EDAXAlefHandle edax_memory_projection_store_get_result(EDAXAlefHandle this_,
                                                        int64_t tx,
+                                                       const char *projection,
                                                        const char *id);
 
 /**
@@ -4269,6 +4284,17 @@ int32_t edax_check_projection_document(const char *id,
 int32_t edax_check_query(const char *query);
 
 /**
+ * Refuse `reason` as why a host's rejection refused unless it is 1 to 64 bytes of `[a-z0-9._-]`,
+ * starting
+ * with `[a-z0-9]`: a `codec:` error. A host SDK checks it where the rejection is defined, so a bad
+ * reason
+ * fails at once rather than vanishing when the failure settles. See `edax_cqrs.check_reason`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_rejection_reason(const char *reason);
+
+/**
  * Check immutable ownership before a protected transition.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4556,7 +4582,8 @@ int32_t edax_encode_event(const char *format,
  * the host's result as JSON text; it is read only when the record is neither pending nor failed.
  * `error_code` is the failure's taxonomy code, read only beside `error`; an unknown one is a
  * `codec:` error. `error` is `None` for a record that did not fail; any `Some`, the empty message
- * included, is a failure. See `edax_cqrs.Record`.
+ * included, is a failure. `error_reason` is why a `rejected` failure refused; one beside another code,
+ * or one `check_rejection_reason` refuses, is a `codec:` error. See `edax_cqrs.Record`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
@@ -4564,7 +4591,8 @@ char *edax_encode_idempotency_record(uint64_t payload_hash,
                                      int32_t pending,
                                      const char *result_json,
                                      const char *error,
-                                     const char *error_code);
+                                     const char *error_code,
+                                     const char *error_reason);
 
 /**
  * Return the byte length of the C string most recently returned by `edax_encode_idempotency_record` on
@@ -4577,7 +4605,8 @@ uintptr_t edax_encode_idempotency_record_len(uint64_t _payload_hash,
                                              int32_t _pending,
                                              const char *_result_json,
                                              const char *_error,
-                                             const char *_error_code);
+                                             const char *_error_code,
+                                             const char *_error_reason);
 
 /**
  * Injective, versioned encoding shared by every key provider.
@@ -4931,13 +4960,17 @@ EDAXAlefHandle edax_idempotency_replay(uint64_t current,
  * caches for a failure with `message` and the taxonomy `code` under `payload_hash`, or `None` to
  * release
  * the claim instead. `code` is `None` for a failure no code classifies; an unknown code is a `codec:`
- * error. See `edax_cqrs.settle_failure`.
+ * error. `reason` is why a host's rejection refused: the record keeps it beside the `rejected` code
+ * when
+ * `check_rejection_reason` accepts it, and drops it otherwise, so a reason never keeps a failure from
+ * caching. See `edax_cqrs.settle_failure`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_idempotency_settle_failure(uint64_t payload_hash,
                                                const char *message,
-                                               const char *code);
+                                               const char *code,
+                                               const char *reason);
 
 /**
  * Every name `IdempotencyRecord.state` takes, in the kernel's order. A host checks the states it
@@ -7102,6 +7135,24 @@ uintptr_t edax_tenant_key_len(const char *_mode,
  * freed with the appropriate free function.
  */
 uint32_t edax_tenant_max(void);
+
+/**
+ * The fixed-width UTC text of `nanos` since the Unix epoch, floored to the microsecond: a stored
+ * event's
+ * time or a clock reading as an instant. See `edax_cqrs.timestamp_from_unix_nanos`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_timestamp_from_unix_nanos(int64_t nanos);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_timestamp_from_unix_nanos` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_timestamp_from_unix_nanos`.
+ */
+uintptr_t edax_timestamp_from_unix_nanos_len(int64_t _nanos);
 
 /**
  * The record that stands in for a cached result the host cannot read back as its result type: a

@@ -10,6 +10,7 @@ import asyncio
 import base64
 import logging
 import sys
+import types
 from typing import Any
 
 import edax
@@ -554,7 +555,7 @@ def test_golden_idempotency_settle() -> None:
         else:
             failure = edax.errors.from_wire(f"{row['code']}: {row['message']}")
         cached = _edax.idempotency_settle_failure(
-            row["payload_hash"], str(failure), edax.errors.code_of(failure)
+            row["payload_hash"], str(failure), edax.errors.code_of(failure), row["reason"]
         )
         got = (
             "release"
@@ -589,6 +590,9 @@ async def test_golden_idempotency_guard() -> None:
             failure = run["error"]
             if failure["code"] is None:
                 raise RuntimeError(failure["message"])
+            if failure["reason"] is not None:
+                refused = types.new_class("Refused", (edax.Rejected,), {"reason": failure["reason"]})
+                raise refused(failure["message"])
             raise edax.errors.from_wire(f"{failure['code']}: {failure['message']}")
 
         guard = Guard(ledger, "IssueInvoice", key, payload_hash, wrap(None))
@@ -596,6 +600,8 @@ async def test_golden_idempotency_guard() -> None:
             got: dict[str, Any] = {"result": await guarded(guard, handler, None)}
         except Exception as e:  # noqa: BLE001 - the raise is the subject
             got = {"error": f"{e.code}: {e}" if isinstance(e, edax.EdaxError) else str(e)}
+            if row["prior"] is not None:
+                assert edax.reason_of(e) == row["want_reason"], f"{name}: the replayed reason"
         assert got == row["want"], name
         assert len(runs) == (run is not None), f"{name}: handler runs"
         # What the key holds: a fresh claim wins once the claim was released, else reads the record.

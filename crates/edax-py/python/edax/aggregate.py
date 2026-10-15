@@ -45,9 +45,9 @@ class Aggregate:
         #: loaded it and stamped onto every event and command it saves. ``None`` outside a multi-tenant
         #: deployment. A host never assigns it: the repository fills it from the call that loaded the
         #: aggregate, which is what keeps a load and the save that follows on one tenant. So under
-        #: ``POOL`` or ``BRIDGE`` a new aggregate starts from ``repo.load(id, tenant=...)``, which returns
-        #: it empty at version 0 with the tenant set. One built with this constructor has none, and its
-        #: save raises :class:`~edax.errors.CodecError`.
+        #: ``POOL`` or ``BRIDGE`` a new aggregate starts from ``repo.create(id, tenant=...)``, which returns
+        #: it empty at version 0 with the tenant set and reads nothing. One built with this constructor has
+        #: none, and its save raises :class:`~edax.errors.CodecError`.
         self.tenant: str | None = None
         self.subject: str | None = None
         self._owner: str | None = None

@@ -20,6 +20,7 @@ Store = IdempotencyStore[Any]
 _SETTLED: dict[str, list[Record]] = {
     "done": [Record.done(1234, {"balance": 42})],
     "failed_with_its_code": [Record.failed(1234, "insufficient funds", "rejected")],
+    "failed_with_its_reason": [Record.failed(1234, "no such order", "rejected", "not_found")],
     "done_with_none": [Record.done(1234, None)],
     "done_twice": [Record.done(1234, {"balance": 42}), Record.done(1234, {"balance": 42})],
 }

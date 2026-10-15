@@ -876,7 +876,7 @@ mod tests {
         };
         let bytes = edax_cqrs::encode_record(&stored).unwrap();
         assert!(
-            matches!(stored.state, crate::State::Failed { code: Some(ErrorCode::Rejected), ref message } if message.is_empty())
+            matches!(stored.state, crate::State::Failed { code: Some(ErrorCode::Rejected), ref message, .. } if message.is_empty())
         );
         assert!(!std::str::from_utf8(&bytes)
             .unwrap()

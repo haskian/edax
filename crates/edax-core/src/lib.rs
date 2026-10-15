@@ -9,7 +9,8 @@
 //! decides how a key is composed: [`scoped`] namespaces a key by a scope injectively, [`Tenancy`] and
 //! [`tenant_key`] put the tenant in it, and [`guard_key`] is the ledger key an idempotency guard claims.
 //! [`next_version`] is the one step every versioned row takes. The `names` module's [`closed_names!`] is
-//! the one shape of a closed set of names a decision crosses a binding as.
+//! the one shape of a closed set of names a decision crosses a binding as, and [`is_open_name`] the one
+//! rule a name a host chooses follows.
 //!
 //! [`lock`] and [`TokenMint`] are Rust-only runtime helpers, not cross-language contracts: one
 //! poison-tolerant lock and one settlement-token mint the Rust adapters share, so two state machines
@@ -40,7 +41,7 @@ pub use key::{
     check_subject, check_tenancy, check_tenant, guard_key, scoped, tenant_key, GuardKind, Tenancy, SUBJECT_MAX,
     TENANT_MAX,
 };
-pub use names::distinct_names;
+pub use names::{distinct_names, is_open_name, OPEN_NAME_MAX};
 pub use sync::lock;
 pub use token::{TokenMint, NO_TOKEN};
 pub use version::next_version;

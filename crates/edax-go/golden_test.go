@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -693,15 +694,23 @@ type guardScenario struct {
 	run        func() (any, error) // nil for a loser, which must not run the handler
 	wantResult any
 	wantError  *string
+	wantReason *string
 	wantRecord *string
 }
 
-// goldenFailure is a handler failure as the golden files spell it: a code, or none, and a message.
-func goldenFailure(code *string, message string) (wire string, failure error) {
+// goldenFailure is a handler failure as the golden files spell it: a code, or none, a message, and a
+// rejection's reason. A reason Go cannot attach (beside another code, or no name) is left off: the
+// kernel drops it from the record anyway, which the row's want pins.
+func goldenFailure(code *string, message string, reason *string) (wire string, failure error) {
 	if code == nil {
 		return message, errors.New(message)
 	}
 	wire = *code + ": " + message
+	if reason != nil && *code == string(CodeRejected) {
+		if named, err := NewReason(*reason); err == nil {
+			return wire, Reject(named, message)
+		}
+	}
 	return wire, ErrorFromWire(wire)
 }
 
@@ -718,23 +727,27 @@ func TestIdempotencyGoldenThroughTheGuard(t *testing.T) {
 		Prior       *string
 		Run         json.RawMessage
 		Want        json.RawMessage
+		WantReason  *string `json:"want_reason"`
 		WantRecord  *string `json:"want_record"`
 	}](t, "idempotency_guard") {
 		if row.Key != key {
 			t.Fatalf("%s: key %q", row.Name, row.Key)
 		}
-		scenario := guardScenario{name: "guard/" + row.Name, hash: row.PayloadHash, prior: row.Prior, wantRecord: row.WantRecord}
+		scenario := guardScenario{name: "guard/" + row.Name, hash: row.PayloadHash, prior: row.Prior, wantRecord: row.WantRecord, wantReason: row.WantReason}
 		if run, ok := jsonValue(t, row.Run).(map[string]any); ok {
 			scenario.run = func() (any, error) {
 				if result, ok := run["result"]; ok {
 					return result, nil
 				}
 				failure := run["error"].(map[string]any)
-				var code *string
+				var code, reason *string
 				if text, ok := failure["code"].(string); ok {
 					code = &text
 				}
-				_, err := goldenFailure(code, failure["message"].(string))
+				if text, ok := failure["reason"].(string); ok {
+					reason = &text
+				}
+				_, err := goldenFailure(code, failure["message"].(string), reason)
 				return nil, err
 			}
 		}
@@ -749,10 +762,11 @@ func TestIdempotencyGoldenThroughTheGuard(t *testing.T) {
 	for _, row := range goldenRows[struct {
 		Code        *string
 		Message     string
+		Reason      *string
 		PayloadHash uint64 `json:"payload_hash"`
 		Want        json.RawMessage
 	}](t, "idempotency_settle") {
-		wire, failure := goldenFailure(row.Code, row.Message)
+		wire, failure := goldenFailure(row.Code, row.Message, row.Reason)
 		scenario := guardScenario{name: fmt.Sprintf("settle/%s", wire), hash: row.PayloadHash, run: func() (any, error) { return nil, failure }, wantError: &wire}
 		if cache, ok := jsonValue(t, row.Want).(map[string]any); ok {
 			record := cache["cache"].(string)
@@ -765,9 +779,14 @@ func TestIdempotencyGoldenThroughTheGuard(t *testing.T) {
 		Stored      string
 		Current     uint64
 		ReplayError *string `json:"replay_error"`
+		ErrorReason *string `json:"error_reason"`
+		Outcome     string
 		Result      json.RawMessage
 	}](t, "idempotency_record") {
 		scenario := guardScenario{name: "record/" + row.Name, hash: row.Current, prior: &row.Stored, wantError: row.ReplayError, wantRecord: &row.Stored}
+		if row.Outcome == "failed" {
+			scenario.wantReason = row.ErrorReason
+		}
 		if row.ReplayError == nil && len(row.Result) > 0 {
 			scenario.wantResult = jsonValue(t, row.Result)
 		}
@@ -804,6 +823,9 @@ func TestIdempotencyGoldenThroughTheGuard(t *testing.T) {
 				if err == nil || err.Error() != *scenario.wantError {
 					t.Fatalf("error %v, want %q", err, *scenario.wantError)
 				}
+				if scenario.prior != nil && ReasonOf(err) != markTextOrEmpty(scenario.wantReason) {
+					t.Fatalf("replayed reason %q, want %v", ReasonOf(err), markTextOf(scenario.wantReason))
+				}
 			} else if err != nil || !reflect.DeepEqual(got, scenario.wantResult) {
 				t.Fatalf("result %#v, want %#v: %v", got, scenario.wantResult, err)
 			}
@@ -823,9 +845,53 @@ func TestIdempotencyGoldenThroughTheGuard(t *testing.T) {
 	}
 }
 
+func markTextOrEmpty(text *string) string {
+	if text == nil {
+		return ""
+	}
+	return *text
+}
+
 func markTextOf(text *string) string {
 	if text == nil {
 		return "nothing"
 	}
 	return *text
+}
+
+func TestHostValuesGoldenUnixNanos(t *testing.T) {
+	rows := goldenRows[struct {
+		Name  string  `json:"name"`
+		Kind  string  `json:"kind"`
+		Input string  `json:"input"`
+		JSON  *string `json:"json"`
+	}](t, "host_values")
+	seen := 0
+	for _, row := range rows {
+		if row.Kind != "unix_nanos" {
+			continue
+		}
+		seen++
+		nanos, err := strconv.ParseInt(row.Input, 10, 64)
+		if err != nil {
+			t.Fatalf("%s: %v", row.Name, err)
+		}
+		instant, err := InstantFromUnixNanos(nanos)
+		if err != nil {
+			t.Fatalf("%s: %v", row.Name, err)
+		}
+		encoded, err := json.Marshal(instant)
+		if err != nil || string(encoded) != *row.JSON {
+			t.Fatalf("%s: %s %v, want %s", row.Name, encoded, err, *row.JSON)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no unix_nanos rows")
+	}
+	before, _ := InstantFromUnixNanos(CurrentTimestamp())
+	now, err := InstantNow()
+	after, _ := InstantFromUnixNanos(CurrentTimestamp())
+	if err != nil || now.String() < before.String() || now.String() > after.String() {
+		t.Fatalf("now %v %v outside [%v, %v]", now, err, before, after)
+	}
 }

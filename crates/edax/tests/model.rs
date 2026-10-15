@@ -33,7 +33,7 @@ use edax::{
     idempotent, propagate, Aggregate, AggregateCodec, Command, CommandBus, Delivery, DispatchOptions, Entity, Error,
     ErrorCode, EventCodec, EventDraft, EventMessage, EventStore, Extensions, HandlerError, IdempotencyStore, JsonCodec,
     KeyOrderedDispatcher, MemoryEventStore, MemoryIdempotencyStore, MemoryProjectionStore, MemoryTx, Metadata, Outbox,
-    Pacing, ProjectionQuery, Query, Relay, Repository, Root, SaveOptions,
+    Pacing, ProjectionQuery, ProjectionStore, Query, Relay, Repository, Root, SaveOptions,
 };
 use edax_cqrs::{claim_key, command_hash, SortKey};
 use edax_event::Payload;
@@ -541,7 +541,7 @@ proptest! {
                         Slot::Pending => prop_assert_eq!(&r.state, &State::Pending),
                         Slot::Done(v) => prop_assert_eq!(&r.state, &State::Done(*v)),
                         Slot::Failed(msg) => {
-                            prop_assert_eq!(&r.state, &State::Failed { code: Some(ErrorCode::Codec), message: msg.clone() })
+                            prop_assert_eq!(&r.state, &State::Failed { code: Some(ErrorCode::Codec), message: msg.clone(), reason: None })
                         }
                     }
                 }
@@ -988,7 +988,19 @@ proptest! {
 
     #[test]
     fn projection_matches_model(history in prop::collection::vec(proj_op(), 1..24)) {
-        check_projection_store(MemoryProjectionStore::new, history)?;
+        // A sibling read model over the same database already holds every id the history touches: the
+        // model expects each absent, so a store that shared rows across read models fails it.
+        let beside_a_sibling = || {
+            let store = MemoryProjectionStore::new("m");
+            let sibling = store.transactor().projection_store("m:sibling");
+            let mut tx = MemoryTx::default();
+            for id in 0u8..6 {
+                let row = Entity { id: format!("u{id}"), version: 0, document: json!({"n": 99}) };
+                sibling.save(&mut tx, &row).unwrap();
+            }
+            store
+        };
+        check_projection_store(beside_a_sibling, history)?;
     }
 }
 

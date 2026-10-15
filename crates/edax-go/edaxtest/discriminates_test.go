@@ -88,8 +88,28 @@ func soundLedger(t testing.TB) edax.IdempotencyStore {
 	return MemoryFixture(t).Ledger
 }
 func soundProjections(t testing.TB) edax.ProjectionStore { return MemoryFixture(t).Projections }
-func soundCommands(t testing.TB) edax.CommandOutbox      { return MemoryFixture(t).Commands }
-func soundSagas(t testing.TB) edax.SagaStore             { return MemoryFixture(t).Sagas }
+
+// dropsTheErrorReason keeps a cached failure's code but not its reason: a ledger that rebuilds the record
+// from the fields it knows.
+type dropsTheErrorReason struct{ edax.IdempotencyStore }
+
+func (s dropsTheErrorReason) Complete(ctx context.Context, key string, handle []byte, record edax.IdempotencyRecord) error {
+	record.ErrorReason = nil
+	return s.IdempotencyStore.Complete(ctx, key, handle, record)
+}
+
+// sharesOneNamespace opens one read model for every name: a store keyed by row id alone.
+func sharesOneNamespace(named func(string) edax.ProjectionStore) func(string) edax.ProjectionStore {
+	var shared edax.ProjectionStore
+	return func(string) edax.ProjectionStore {
+		if shared == nil {
+			shared = named("shared")
+		}
+		return shared
+	}
+}
+func soundCommands(t testing.TB) edax.CommandOutbox { return MemoryFixture(t).Commands }
+func soundSagas(t testing.TB) edax.SagaStore        { return MemoryFixture(t).Sagas }
 
 // acceptsAConflictingAppend runs `INSERT ... ON CONFLICT DO NOTHING` and never checks the affected
 // row count: the losing writer believes its event landed.
@@ -346,6 +366,10 @@ func TestTheKitFailsABackendThatBreaksItsClause(t *testing.T) {
 		{"projection_wraps_null", "null save was not refused", against(projectionStoreClauses(), "refused_save/null", soundProjections, func(store edax.ProjectionStore) edax.ProjectionStore { return wrapsAnyDocument{store} })},
 		{"projection_accepts_a_conflicting_save", "exactly one writer lands", against(projectionStoreClauses(), "two_writers_at_one_version_land_exactly_one_save", soundProjections, func(store edax.ProjectionStore) edax.ProjectionStore { return acceptsAConflictingSave{store} })},
 		{"projection_get_many_drops_the_row_key", "want each row key", against(projectionStoreClauses(), "get_many_returns_the_row_key_as_the_id", soundProjections, func(store edax.ProjectionStore) edax.ProjectionStore { return getManyDropsTheRowKey{store} })},
+		{"ledger_drops_the_error_reason", "want code rejected and reason not_found", against(idempotencyStoreClauses(), "a_cached_rejection_keeps_its_code_and_reason", soundLedger, func(store edax.IdempotencyStore) edax.IdempotencyStore { return dropsTheErrorReason{store} })},
+		{"projections_share_one_namespace", "the other read model's id q:1042 is present", against(namedProjectionStoreClauses(), "two_read_models_share_no_rows", MemoryNamedProjections, func(named func(string) edax.ProjectionStore) func(string) edax.ProjectionStore {
+			return sharesOneNamespace(named)
+		})},
 		{"projection_get_many_drops_next", "every row once", against(projectionStoreClauses(), "get_many_pages_every_row_once_by_its_next_cursor", soundProjections, func(store edax.ProjectionStore) edax.ProjectionStore { return getManyDropsNext{store} })},
 		{"command_outbox_pages_newest_first", "oldest commit first", against(commandOutboxClauses(), "unpublished_is_oldest_commit_first", soundCommands, func(store edax.CommandOutbox) edax.CommandOutbox { return commandsNewestFirst{store} })},
 		{"saga_accepts_a_conflicting_step", "exactly one writer lands", against(sagaStoreClauses(), "two_steps_at_one_version_land_exactly_one_write", soundSagas, func(store edax.SagaStore) edax.SagaStore { return acceptsAConflictingStep{store} })},

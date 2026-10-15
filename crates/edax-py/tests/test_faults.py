@@ -77,7 +77,7 @@ async def test_a_lost_response_lands_the_write_and_fires_once(case: LostCase) ->
 
 async def test_a_lost_save_lands_and_withholds_the_new_version() -> None:
     """The caller never hears the new version: the save raises, and the row landed at it all the same."""
-    store = LostResponse(MemoryProjectionStore())
+    store = LostResponse(MemoryProjectionStore(projection="read_model"))
     store.arm("save")
     with pytest.raises(edax.StoreError, match="save: the write landed"):
         await store.save(Entity("acct-1", 0, {"balance": 100}))

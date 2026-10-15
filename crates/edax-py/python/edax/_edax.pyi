@@ -210,6 +210,7 @@ class IdempotencyRecord:
     state: str
     error: str | None
     error_code: str | None
+    error_reason: str | None
     result_json: str | None
     def __init__(
         self,
@@ -217,6 +218,7 @@ class IdempotencyRecord:
         state: str,
         error: str | None = None,
         error_code: str | None = None,
+        error_reason: str | None = None,
         result_json: str | None = None,
     ) -> None: ...
     @staticmethod
@@ -682,19 +684,22 @@ class MemoryProjectionStore:
     def get(
         self,
         tx: int,
+        projection: str,
         id: str,  # noqa: A002
     ) -> ProjectionRow | None: ...
     def save(
         self,
         tx: int,
+        projection: str,
         id: str,  # noqa: A002
         version: int,
         document_json: str,
     ) -> int: ...
-    def get_many(self, tx: int, query_json: str) -> str: ...
+    def get_many(self, tx: int, projection: str, query_json: str) -> str: ...
     def get_result(
         self,
         tx: int,
+        projection: str,
         id: str,  # noqa: A002
     ) -> ProjectionLookup: ...
 class MemorySagaStore:
@@ -806,6 +811,7 @@ def check_projection_document(
 ) -> None: ...
 
 def check_query(query: str) -> None: ...
+def check_rejection_reason(reason: str) -> None: ...
 def check_sealed_owner(
     committed: bool,
     owner: str | None = None,
@@ -868,6 +874,7 @@ def encode_idempotency_record(
     result_json: str,
     error: str | None = None,
     error_code: str | None = None,
+    error_reason: str | None = None,
 ) -> str: ...
 
 def encode_key_scope(scope: KeyScope) -> bytes: ...
@@ -927,6 +934,7 @@ def idempotency_settle_failure(
     payload_hash: int,
     message: str,
     code: str | None = None,
+    reason: str | None = None,
 ) -> IdempotencyRecord | None: ...
 
 def idempotency_states() -> list[str]: ...
@@ -1275,6 +1283,7 @@ def tenancy_modes() -> list[str]: ...
 def tenancy_rules(mode: str) -> TenancyRules: ...
 def tenant_key(mode: str, key: str, tenant: str | None = None) -> str: ...
 def tenant_max() -> int: ...
+def timestamp_from_unix_nanos(nanos: int) -> str: ...
 def unreadable_idempotency_record(payload_hash: int, cause: str) -> IdempotencyRecord: ...
 def upcast_plan(from_version: int, to: int, available: list[int] | None = None) -> list[int]: ...
 def upcast_plan_present(

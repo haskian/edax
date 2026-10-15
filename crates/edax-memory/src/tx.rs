@@ -12,7 +12,7 @@ use crate::event::{MemoryEventStore, Snapshot};
 use crate::idempotency::{Held, MemoryIdempotencyStore};
 use crate::outbox::MemoryCommandOutbox;
 use crate::outbox_rows::OutboxRows;
-use crate::projection::{Document, MemoryProjectionStore};
+use crate::projection::{Document, MemoryProjectionStore, ProjectionKey};
 use crate::saga::{MemorySagaStore, SagaKey, SagaRow};
 use crate::versioned::{Staged, VersionedTable};
 
@@ -79,7 +79,7 @@ pub(crate) struct Committed {
     pub(crate) event_ids: HashSet<String>,                 // every stored event id
     pub(crate) snapshots: HashMap<String, Snapshot>,       // aggregate_id -> snapshot
     pub(crate) event_outbox: OutboxRows<EventMessage>,     // unpublished events only
-    pub(crate) projections: VersionedTable<String, Document>, // id -> document
+    pub(crate) projections: VersionedTable<ProjectionKey, Document>, // (projection, id) -> document
     pub(crate) claims: HashMap<String, Held>,              // idempotency key -> record (and claim)
     pub(crate) sagas: VersionedTable<SagaKey, SagaRow>,    // (saga, instance id) -> row
     pub(crate) saga_outbox: HashMap<String, OutboxRows<CommandMessage>>, // saga -> its unsent commands only
@@ -93,7 +93,7 @@ pub(crate) struct WriteSet {
     pub(crate) streams: HashMap<String, Vec<EventMessage>>, // aggregate_id -> appended tail
     pub(crate) event_outbox: Vec<EventMessage>,             // the same events, in append order
     pub(crate) snapshots: HashMap<String, Snapshot>,
-    pub(crate) projections: Staged<String, Document>,
+    pub(crate) projections: Staged<ProjectionKey, Document>,
     pub(crate) claims: HashMap<String, Option<Held>>,
     pub(crate) sagas: Staged<SagaKey, SagaRow>,
     pub(crate) saga_outbox: HashMap<String, Vec<CommandMessage>>, // saga -> its commands, in write order
@@ -382,7 +382,7 @@ mod tests {
         db.events
             .save_snapshot(tx, "invoice-7", "Invoice", 1, b"snap".to_vec())
             .expect("snapshot");
-        db.projections.save(tx, "user-1", 0, doc()).expect("projection");
+        db.projections.save(tx, "p", "user-1", 0, doc()).expect("projection");
         won(db.claims.claim(tx, "req-A", HASH));
         db.sagas
             .save(tx, "shipping", "order-1", 0, state(), String::new(), vec![])
@@ -395,7 +395,7 @@ mod tests {
             db.events.load(tx, "invoice-7", 0).unwrap().len(),
             db.events.unpublished(10).len(),
             db.events.load_snapshot(tx, "invoice-7").unwrap().is_some(),
-            db.projections.get(tx, "user-1").unwrap().is_some(),
+            db.projections.get(tx, "p", "user-1").unwrap().is_some(),
             matches!(db.claims.claim(tx, "req-A", HASH), Ok(Claimed::Prior(_))),
             db.sagas.load(tx, "shipping", "order-1").unwrap().is_some(),
         )
@@ -489,7 +489,7 @@ mod tests {
             },
             Case {
                 name: "projection row",
-                write: |db, tx| db.projections.save(tx, "user-1", 0, doc()).map(|_| ()),
+                write: |db, tx| db.projections.save(tx, "p", "user-1", 0, doc()).map(|_| ()),
             },
             Case {
                 name: "saga instance",
@@ -1128,14 +1128,16 @@ mod tests {
                 want,
                 "{name}: save_snapshot"
             );
-            assert_eq!(db.projections.get(tx, "user-1").map(|_| ()), want, "{name}: get");
+            assert_eq!(db.projections.get(tx, "p", "user-1").map(|_| ()), want, "{name}: get");
             assert_eq!(
-                db.projections.save(tx, "user-1", 0, doc()).map(|_| ()),
+                db.projections.save(tx, "p", "user-1", 0, doc()).map(|_| ()),
                 want,
                 "{name}: save"
             );
             assert_eq!(
-                db.projections.get_many(tx, &edax_cqrs::Query::default()).map(|_| ()),
+                db.projections
+                    .get_many(tx, "p", &edax_cqrs::Query::default())
+                    .map(|_| ()),
                 want,
                 "{name}: get_many"
             );
@@ -1188,7 +1190,7 @@ mod tests {
         // Two standalone stores are two databases: a token of one is unknown to the other.
         let other = MemoryProjectionStore::new();
         let tx = store.transactor().begin();
-        assert_eq!(other.get(tx, "user-1"), Err(unknown_tx(tx)));
+        assert_eq!(other.get(tx, "p", "user-1"), Err(unknown_tx(tx)));
     }
 
     /// Concurrent transactions on disjoint keys commit independently; on one key exactly one wins
@@ -1203,7 +1205,7 @@ mod tests {
                     s.spawn(move || {
                         let tx = db.tr.begin();
                         // Every thread writes its own projection row and races on one stream.
-                        db.projections.save(tx, &format!("user-{i}"), 0, doc())?;
+                        db.projections.save(tx, "p", &format!("user-{i}"), 0, doc())?;
                         let raced = db.events.append(
                             tx,
                             "invoice-7",
@@ -1235,7 +1237,7 @@ mod tests {
         assert_eq!(db.events.load(Tx::auto_commit(), "invoice-7", 0).unwrap().len(), 1);
         let page = db
             .projections
-            .get_many(Tx::auto_commit(), &edax_cqrs::Query::default())
+            .get_many(Tx::auto_commit(), "p", &edax_cqrs::Query::default())
             .unwrap();
         assert_eq!(
             page.rows.len(),

@@ -158,7 +158,7 @@ func TestGuardTransactionRollbackAndPanic(t *testing.T) {
 	defer database.Close()
 	ledger, _ := database.IdempotencyStore()
 	defer ledger.Close()
-	projections, _ := database.ProjectionStore()
+	projections, _ := database.ProjectionStore("accounts")
 	defer projections.Close()
 	ctx := context.Background()
 	calls := 0
@@ -269,7 +269,7 @@ func TestGuardInsideHostTransactionRunsOnlyOnLedgerThatJoinsIt(t *testing.T) {
 				defer same.Close()
 				foreign, _ := other.IdempotencyStore()
 				defer foreign.Close()
-				rows, _ := db.ProjectionStore()
+				rows, _ := db.ProjectionStore("accounts")
 				defer rows.Close()
 				ledger := test.ledger(same, foreign)
 				options := edax.IdempotentOptions{Scope: "accounts"}

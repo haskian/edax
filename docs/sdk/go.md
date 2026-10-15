@@ -141,7 +141,9 @@ runs on. Without the codec, the guard hashes the raw bytes. A renamed field then
 different request, and the same bytes under a changed upcast replay the old result. Only a JSON
 command that no upcaster touches can omit the option.
 
-Declare exact decimal and timestamp fields as `edax.Decimal` and `edax.Instant`. These types use
+Declare exact decimal and timestamp fields as `edax.Decimal` and `edax.Instant`.
+`edax.InstantNow()` reads the kernel clock and `edax.InstantFromUnixNanos()` reads a stored event's
+`RecordedAt` or `OccurredAt`, both floored to the microsecond as every SDK floors them. These types use
 the kernel's canonical text in JSON and MessagePack. A plain `float64` or `time.Time` field can
 encode different bytes from a Python decimal or timestamp. Upcast transforms receive raw payload
 bytes in the codec's chosen encoding.

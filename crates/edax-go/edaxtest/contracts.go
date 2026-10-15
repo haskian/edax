@@ -270,7 +270,34 @@ func idempotencyStoreClauses() []clause[edax.IdempotencyStore] {
 	for _, name := range []string{"claim_and_replay", "stale_handle", "forget"} {
 		clauses = append(clauses, clause[edax.IdempotencyStore]{name, func(t testing.TB, factory Factory[edax.IdempotencyStore]) { claimLifecycle(t, factory, name) }})
 	}
-	return append(clauses, clause[edax.IdempotencyStore]{"concurrent_claims_have_exactly_one_winner", concurrentClaimsHaveOneWinner})
+	return append(clauses,
+		clause[edax.IdempotencyStore]{"concurrent_claims_have_exactly_one_winner", concurrentClaimsHaveOneWinner},
+		clause[edax.IdempotencyStore]{"a_cached_rejection_keeps_its_code_and_reason", cachedRejectionKeepsItsReason},
+	)
+}
+
+// cachedRejectionKeepsItsReason: a settled rejection replays with its code and the reason it named. A
+// ledger that rebuilds the record from the fields it knows loses them, and a replay then cannot tell
+// not_found from another rejection.
+func cachedRejectionKeepsItsReason(t testing.TB, factory Factory[edax.IdempotencyStore]) {
+	store := factory(t)
+	ctx := ctx(t)
+	key := "billing:charge:1042"
+	claimed, err := store.Claim(ctx, key, 42)
+	check(t, err)
+	message, code, reason := "no invoice 1042", "rejected", "not_found"
+	record := edax.IdempotencyRecord{PayloadHash: 42, State: "failed", Error: &message, ErrorCode: &code, ErrorReason: &reason}
+	check(t, store.Complete(ctx, key, claimed.Handle, record))
+	prior, err := store.Claim(ctx, key, 42)
+	check(t, err)
+	if prior.Won || prior.Prior == nil {
+		t.Fatal("a settled rejection was not replayed")
+	}
+	decoded, err := kernel.DecodeIdempotencyRecord(*prior.Prior)
+	check(t, err)
+	if decoded.State != "failed" || decoded.ErrorCode == nil || *decoded.ErrorCode != code || decoded.ErrorReason == nil || *decoded.ErrorReason != reason {
+		t.Fatalf("cached rejection reads %+v, want code %s and reason %s", decoded, code, reason)
+	}
 }
 
 func claimLifecycle(t testing.TB, factory Factory[edax.IdempotencyStore], name string) {
@@ -374,6 +401,57 @@ func concurrentClaimsHaveOneWinner(t testing.TB, factory Factory[edax.Idempotenc
 func ProjectionStore(t *testing.T, factory Factory[edax.ProjectionStore]) {
 	t.Helper()
 	runClauses(t, factory, projectionStoreClauses())
+}
+
+// NamedProjectionStores checks that read models over one database share no row. The factory returns a
+// function that opens the store of a read-model name, every one over the same database. Call it beside
+// ProjectionStore for a backend that keeps more than one read model.
+func NamedProjectionStores(t *testing.T, factory Factory[func(name string) edax.ProjectionStore]) {
+	t.Helper()
+	runClauses(t, factory, namedProjectionStoreClauses())
+}
+
+func namedProjectionStoreClauses() []clause[func(string) edax.ProjectionStore] {
+	return []clause[func(string) edax.ProjectionStore]{{"two_read_models_share_no_rows", readModelsShareNoRows}}
+}
+
+// readModelsShareNoRows: an id one read model saved is absent from another, whose first save at version 0
+// makes its own row, and each pages only its own. Without it a second read model keyed by the same ids
+// overwrites the first. The names and ids would collide if a store joined them with a separator.
+func readModelsShareNoRows(t testing.TB, factory Factory[func(string) edax.ProjectionStore]) {
+	named := factory(t)
+	first, second := named("invoices"), named("invoices:q")
+	ctx := ctx(t)
+	_, err := first.Save(ctx, "q:1042", 0, `{"from":"first"}`)
+	check(t, err)
+	for _, id := range []string{"q:1042", "1042"} {
+		row, err := second.Get(ctx, id)
+		check(t, err)
+		if row != nil {
+			t.Fatalf("the other read model's id %s is present: %+v", id, row)
+		}
+	}
+	version, err := second.Save(ctx, "q:1042", 0, `{"from":"second"}`)
+	check(t, err)
+	if version != 1 {
+		t.Fatalf("a first save in the second read model reached version %d, want 1", version)
+	}
+	wantRow(t, first, ctx, "q:1042", 1, map[string]any{"id": "q:1042", "from": "first"})
+	for _, read := range []struct {
+		store edax.ProjectionStore
+		from  string
+	}{{first, "first"}, {second, "second"}} {
+		page, err := read.store.GetMany(ctx, `{}`)
+		check(t, err)
+		var parsed struct {
+			Rows []map[string]any `json:"rows"`
+		}
+		check(t, json.Unmarshal([]byte(page), &parsed))
+		want := []map[string]any{{"id": "q:1042", "from": read.from}}
+		if !reflect.DeepEqual(parsed.Rows, want) {
+			t.Fatalf("%s read model pages %v, want %v", read.from, parsed.Rows, want)
+		}
+	}
 }
 
 // refusedSaves are saves over a row stored at version 1, by branch: the version the writer read, the

@@ -93,6 +93,11 @@ func guard(ctx context.Context, store IdempotencyStore, key string, hash uint64,
 		}
 		ObserveContext(ctx, CurrentObserver(ctx), Observation{Operation: "idempotency.claim", Name: key, Outcome: replay.Outcome})
 		if replay.Error != nil {
+			if replay.Outcome == "failed" {
+				// The kernel's replay text keeps the original code; the record keeps it apart too, and the
+				// reason a rejection named beside it. A mismatch or a claim in flight is not this failure.
+				return nil, kernel.Replayed(*replay.Error, prior.ErrorCode, prior.ErrorReason)
+			}
 			return nil, ErrorFromWire(*replay.Error)
 		}
 		value, decodeErr := decodeRecordResult(prior)
@@ -135,7 +140,7 @@ func guard(ctx context.Context, store IdempotencyStore, key string, hash uint64,
 	}
 	if err != nil {
 		if cacheFailures && ctx.Err() == nil {
-			cached, decisionErr := kernel.IdempotencySettleFailure(hash, errorMessage(err), errorCode(err))
+			cached, decisionErr := kernel.IdempotencySettleFailure(hash, errorMessage(err), errorCode(err), errorReason(err))
 			if decisionErr != nil {
 				return nil, errors.Join(err, decisionErr)
 			}

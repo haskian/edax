@@ -132,13 +132,16 @@ async def test_contender_is_pending_until_full_fingerprint_can_be_compared() -> 
         await changed.claim(CLAIM, 0)
 
 
-async def test_failure_cache_contains_only_the_terminal_code() -> None:
+@pytest.mark.parametrize("reason", [None, "not_found"])
+async def test_failure_cache_contains_only_the_terminal_code(reason: str | None) -> None:
     raw = MemoryLedger()
     sealing = Sealing(MemoryKeys(), "orders-production")
     ledger = await prepared(raw, sealing)
     won = await ledger.claim(CLAIM, 0)
     assert isinstance(won, Won)
-    await ledger.complete(CLAIM, won.handle, Record.failed(0, "rejected email ada@example.test", "rejected"))
+    await ledger.complete(
+        CLAIM, won.handle, Record.failed(0, "rejected email ada@example.test", "rejected", reason)
+    )
     stored = await raw.claim(ledger.storage_key(CLAIM), 0)
     assert isinstance(stored, Record) and isinstance(stored.state, Done)
     assert "ada@example.test" not in encode_record(stored)
@@ -149,6 +152,7 @@ async def test_failure_cache_contains_only_the_terminal_code() -> None:
     with pytest.raises(CachedFailure) as error:
         replay_guard(replay).replay(prior)
     assert error.value.original_code == "rejected"
+    assert error.value.original_reason is None
     assert "ada@example.test" not in str(error.value)
 
 

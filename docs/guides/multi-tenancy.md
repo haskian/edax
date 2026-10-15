@@ -52,7 +52,7 @@ producer = KafkaProducer(client, "events", tenancy=Tenancy.POOL)
 
 | Seam | What the tenant keys | How it travels |
 |---|---|---|
-| `Repository.load(id, tenant=...)` | the event stream and the snapshot | the aggregate carries it, so the save that follows cannot name another |
+| `Repository.load(id, tenant=...)`, `Repository.create(id, tenant=...)` | the event stream and the snapshot | the aggregate carries it, so the save that follows cannot name another |
 | `Repository.save` | every event's `tenant` field, and every saved command's | stamped by the repository, from the aggregate; a command naming another tenant is refused |
 | `idempotent(..., tenancy=...)` | the ledger claim, inside its `scope` | read off the command message |
 | `forget(..., tenancy=..., tenant=...)`, `forget_event(...)` | the ledger record a re-drive deletes | passed by the operator, from the dead-lettered message |
@@ -124,8 +124,9 @@ account.apply(Deposited(100))
 await repo.save(account)  # every event stamped with the tenant it was loaded for
 ```
 
-A new aggregate starts the same way: `repo.load(id, tenant=...)` returns it empty at version 0 with the
-tenant set. One built with its constructor carries no tenant, and its save raises `CodecError`.
+A new aggregate starts from `repo.create(id, tenant=...)`, which returns it empty at version 0 with the
+tenant set and reads nothing. One built with its constructor carries no tenant, and its save raises
+`CodecError`.
 
 ## 3. Hybrid, the bridge model
 

@@ -442,6 +442,14 @@ func CheckQuery(query string) error {
 	return mapNativeError(native.CheckQuery(query))
 }
 
+// CheckRejectionReason calls the shared kernel.
+func CheckRejectionReason(reason string) error {
+	if err := checkNativeString("reason", reason); err != nil {
+		return err
+	}
+	return mapNativeError(native.CheckRejectionReason(reason))
+}
+
 // CheckSealedOwner calls the shared kernel.
 func CheckSealedOwner(committed bool, owner *string, proposed *string) error {
 	if owner != nil {
@@ -694,7 +702,7 @@ func EncodeEvent(format string, message EventMessage) ([]byte, error) {
 }
 
 // EncodeIdempotencyRecord calls the shared kernel.
-func EncodeIdempotencyRecord(payloadHash uint64, pending bool, resultJSON string, error *string, errorCode *string) (string, error) {
+func EncodeIdempotencyRecord(payloadHash uint64, pending bool, resultJSON string, error *string, errorCode *string, errorReason *string) (string, error) {
 	var zero string
 	if err := checkNativeString("resultJSON", resultJSON); err != nil {
 		return zero, err
@@ -709,7 +717,12 @@ func EncodeIdempotencyRecord(payloadHash uint64, pending bool, resultJSON string
 			return zero, err
 		}
 	}
-	nativeValue, nativeError := native.EncodeIdempotencyRecord(payloadHash, pending, resultJSON, error, errorCode)
+	if errorReason != nil {
+		if err := checkNativeString("errorReason", *errorReason); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.EncodeIdempotencyRecord(payloadHash, pending, resultJSON, error, errorCode, errorReason)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1016,7 +1029,7 @@ func GetIdempotencyReplay(current uint64, key string, payloadHash uint64, pendin
 }
 
 // IdempotencySettleFailure calls the shared kernel.
-func IdempotencySettleFailure(payloadHash uint64, message string, code *string) (*IdempotencyRecord, error) {
+func IdempotencySettleFailure(payloadHash uint64, message string, code *string, reason *string) (*IdempotencyRecord, error) {
 	var zero *IdempotencyRecord
 	if err := checkNativeString("message", message); err != nil {
 		return zero, err
@@ -1026,7 +1039,12 @@ func IdempotencySettleFailure(payloadHash uint64, message string, code *string) 
 			return zero, err
 		}
 	}
-	nativeValue, nativeError := native.IdempotencySettleFailure(payloadHash, message, code)
+	if reason != nil {
+		if err := checkNativeString("reason", *reason); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.IdempotencySettleFailure(payloadHash, message, code, reason)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2688,6 +2706,12 @@ func TenantMax() uint32 {
 	return nativeValue
 }
 
+// TimestampFromUnixNanos calls the shared kernel.
+func TimestampFromUnixNanos(nanos int64) (string, error) {
+	nativeValue, nativeError := native.TimestampFromUnixNanos(nanos)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // UnreadableIdempotencyRecord calls the shared kernel.
 func UnreadableIdempotencyRecord(payloadHash uint64, cause string) (*IdempotencyRecord, error) {
 	var zero *IdempotencyRecord
@@ -3609,7 +3633,7 @@ func (h *MemoryKeys) Status(scope KeyScope) (string, error) {
 }
 
 // Get calls the shared kernel.
-func (h *MemoryProjectionStore) Get(tx int64, id string) (*ProjectionRow, error) {
+func (h *MemoryProjectionStore) Get(tx int64, projection string, id string) (*ProjectionRow, error) {
 	var zero *ProjectionRow
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
@@ -3620,10 +3644,13 @@ func (h *MemoryProjectionStore) Get(tx int64, id string) (*ProjectionRow, error)
 	if h.inner == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
 	}
+	if err := checkNativeString("projection", projection); err != nil {
+		return zero, err
+	}
 	if err := checkNativeString("id", id); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := h.inner.GetResult(tx, id)
+	nativeValue, nativeError := h.inner.GetResult(tx, projection, id)
 	if nativeError != nil {
 		return zero, mapNativeError(nativeError)
 	}
@@ -3634,7 +3661,7 @@ func (h *MemoryProjectionStore) Get(tx int64, id string) (*ProjectionRow, error)
 }
 
 // Save calls the shared kernel.
-func (h *MemoryProjectionStore) Save(tx int64, id string, version uint64, documentJSON string) (uint64, error) {
+func (h *MemoryProjectionStore) Save(tx int64, projection string, id string, version uint64, documentJSON string) (uint64, error) {
 	var zero uint64
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
@@ -3645,18 +3672,21 @@ func (h *MemoryProjectionStore) Save(tx int64, id string, version uint64, docume
 	if h.inner == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
 	}
+	if err := checkNativeString("projection", projection); err != nil {
+		return zero, err
+	}
 	if err := checkNativeString("id", id); err != nil {
 		return zero, err
 	}
 	if err := checkNativeString("documentJSON", documentJSON); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := h.inner.Save(tx, id, version, documentJSON)
+	nativeValue, nativeError := h.inner.Save(tx, projection, id, version, documentJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 
 // GetMany calls the shared kernel.
-func (h *MemoryProjectionStore) GetMany(tx int64, queryJSON string) (string, error) {
+func (h *MemoryProjectionStore) GetMany(tx int64, projection string, queryJSON string) (string, error) {
 	var zero string
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
@@ -3667,15 +3697,18 @@ func (h *MemoryProjectionStore) GetMany(tx int64, queryJSON string) (string, err
 	if h.inner == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
 	}
+	if err := checkNativeString("projection", projection); err != nil {
+		return zero, err
+	}
 	if err := checkNativeString("queryJSON", queryJSON); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := h.inner.GetMany(tx, queryJSON)
+	nativeValue, nativeError := h.inner.GetMany(tx, projection, queryJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 
 // GetResult calls the shared kernel.
-func (h *MemoryProjectionStore) GetResult(tx int64, id string) (*ProjectionLookup, error) {
+func (h *MemoryProjectionStore) GetResult(tx int64, projection string, id string) (*ProjectionLookup, error) {
 	var zero *ProjectionLookup
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
@@ -3686,10 +3719,13 @@ func (h *MemoryProjectionStore) GetResult(tx int64, id string) (*ProjectionLooku
 	if h.inner == nil {
 		return zero, ClosedHandle("MemoryProjectionStore")
 	}
+	if err := checkNativeString("projection", projection); err != nil {
+		return zero, err
+	}
 	if err := checkNativeString("id", id); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := h.inner.GetResult(tx, id)
+	nativeValue, nativeError := h.inner.GetResult(tx, projection, id)
 	return nativeValue, mapNativeError(nativeError)
 }
 

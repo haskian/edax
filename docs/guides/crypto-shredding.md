@@ -244,7 +244,9 @@ that the scope remains active before returning decoded data. Legacy or malformed
 records fail closed.
 
 Failures persist only their shared error code. Ordinary idempotency settlement also no longer
-persists arbitrary exception messages. Kafka dead letters use code-only error information and
+persists arbitrary exception messages. Ordinary ledgers retain validated rejection reason names
+from the host's fixed vocabulary; protected ledgers omit those reasons too. Keep personal data out
+of reason names. Kafka dead letters use code-only error information and
 remove all previous dead-letter error fields; sealed saga-command failures omit exception text.
 Ordinary saga failures retain exception text. Application
 logs, observers, custom metadata, and external error sinks still need their own privacy policy.

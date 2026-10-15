@@ -38,7 +38,7 @@ db = PostgresTransactor(
 
 events = PostgresEventStore(db)
 commands = PostgresCommandOutbox(db)
-accounts = PostgresProjectionStore(db, "accounts")
+accounts = PostgresProjectionStore(db, projection="accounts")
 ledger = PostgresIdempotencyStore(db)
 sagas = PostgresSagaStore(db)
 await db.check()  # fail fast at startup: every table these stores use meets the contract
@@ -176,8 +176,9 @@ the connection and preserves the cancellation.
 
 ## Projections and queries
 
-`PostgresProjectionStore(db, "accounts")` holds one read model. Every read model shares the
-`edax_projections` table, keyed by `(projection, id)`. A document is stored as the kernel writes it,
+`PostgresProjectionStore(db, projection="accounts")` holds one read model. Every read model shares the
+`edax_projections` table, keyed by `(projection, id)`. `MemoryProjectionStore(db, projection="accounts")`
+keys its rows the same way, so the two swap. A document is stored as the kernel writes it,
 with the row key as its `"id"`.
 
 `get_many` compiles the query to one statement that pages exactly as the kernel's reference applier

@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn save_versions_then_get() {
-        let store = MemoryProjectionStore::new();
+        let store = MemoryProjectionStore::new("read_model");
         let mut tx = MemoryTx::auto_commit();
         let e = entity("u1", json!({"name": "ada", "age": 36}));
         assert_eq!(store.save(&mut tx, &e).unwrap(), 1, "the new version is returned");
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn stale_version_conflicts() {
-        let store = MemoryProjectionStore::new();
+        let store = MemoryProjectionStore::new("read_model");
         let mut tx = MemoryTx::auto_commit();
         let e = Entity {
             version: store.save(&mut tx, &entity("u1", json!({"n": 1}))).unwrap(),
@@ -144,7 +144,7 @@ mod tests {
 
     /// Four read models, two of which tie on `age` — so a page boundary can land inside the tie.
     fn seeded_store() -> MemoryProjectionStore {
-        let store = MemoryProjectionStore::new();
+        let store = MemoryProjectionStore::new("read_model");
         for (i, &(name, age)) in [("ada", 36), ("bob", 41), ("cal", 36), ("dot", 29)].iter().enumerate() {
             store
                 .save(

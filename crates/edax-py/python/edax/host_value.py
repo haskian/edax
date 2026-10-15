@@ -117,6 +117,28 @@ class Instant(_Frozen):
         )
 
     @classmethod
+    def _canonical(cls, text: str) -> Instant:
+        """An :class:`Instant` of ``text`` the kernel already wrote in its form, read without a second
+        canonicalization."""
+        instant = object.__new__(cls)
+        object.__setattr__(instant, "_text", text)
+        return instant
+
+    @classmethod
+    def from_unix_nanos(cls, nanos: int) -> Instant:
+        """The instant ``nanos`` after the Unix epoch, floored to the microsecond, as every SDK floors it: a
+        stored event's ``recorded_at`` or ``occurred_at``, or a clock reading. ``nanos`` outside a signed
+        64-bit integer is a :class:`~edax.errors.CodecError`."""
+        return cls._canonical(_native.timestamp_from_unix_nanos(nanos))
+
+    @classmethod
+    def now(cls) -> Instant:
+        """The kernel clock's current reading (:func:`~edax.kernel.current_timestamp`), floored to the
+        microsecond. Within a process it never goes back, but two calls inside one microsecond are equal.
+        It ignores a ``now=`` clock injected elsewhere, so a deterministic test passes its instants in."""
+        return cls.from_unix_nanos(_native.current_timestamp())
+
+    @classmethod
     def from_datetime(cls, value: _dt.datetime) -> Instant:
         """``value`` as an :class:`Instant`. A naive ``datetime`` is a :class:`~edax.errors.CodecError`: its
         instant is unknown, and guessing UTC would misplace it silently."""

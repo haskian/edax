@@ -88,6 +88,12 @@ pub fn canonical_timestamp(text: &str) -> Result<String, String> {
     edax_cqrs::canonical_timestamp(text).map_err(to_wire)
 }
 
+/// The fixed-width UTC text of `nanos` since the Unix epoch, floored to the microsecond: a stored event's
+/// time or a clock reading as an instant. See [`edax_cqrs::timestamp_from_unix_nanos`].
+pub fn timestamp_from_unix_nanos(nanos: i64) -> Result<String, String> {
+    edax_cqrs::timestamp_from_unix_nanos(nanos).map_err(to_wire)
+}
+
 /// The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
 /// `{"name": name, "payload": payload}`. `payload` is the command value as UTF-8 JSON, in the shape
 /// the handler receives (after upcast). The kernel canonicalizes, so every binding agrees. An integer
@@ -121,14 +127,15 @@ pub fn idempotency_outcomes() -> Vec<String> {
 
 /// A stored idempotency record, decoded by the kernel. `state` is `"pending"`, `"failed"` or
 /// `"done"`; `error` is set only for `"failed"`, and `error_code` beside it when the failure was
-/// stored with a code the kernel knows; `result_json` (the cached result as JSON text) is set only for
-/// `"done"`.
+/// stored with a code the kernel knows, and `error_reason` beside a `rejected` one when the rejection
+/// named why it refused; `result_json` (the cached result as JSON text) is set only for `"done"`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyRecord {
     pub payload_hash: u64,
     pub state: String,
     pub error: Option<String>,
     pub error_code: Option<String>,
+    pub error_reason: Option<String>,
     pub result_json: Option<String>,
 }
 
@@ -138,15 +145,25 @@ pub struct IdempotencyRecord {
 /// the host's result as JSON text; it is read only when the record is neither pending nor failed.
 /// `error_code` is the failure's taxonomy code, read only beside `error`; an unknown one is a
 /// `codec:` error. `error` is `None` for a record that did not fail; any `Some`, the empty message
-/// included, is a failure. See [`edax_cqrs::Record`].
+/// included, is a failure. `error_reason` is why a `rejected` failure refused; one beside another code,
+/// or one [`check_rejection_reason`] refuses, is a `codec:` error. See [`edax_cqrs::Record`].
 pub fn encode_idempotency_record(
     payload_hash: u64,
     pending: bool,
     result_json: &str,
     error: Option<String>,
     error_code: Option<String>,
+    error_reason: Option<String>,
 ) -> Result<String, String> {
-    let record = record_of_flat(payload_hash, pending, result_json, error, error_code.as_deref()).map_err(to_wire)?;
+    let record = record_of_flat(
+        payload_hash,
+        pending,
+        result_json,
+        error,
+        error_code.as_deref(),
+        error_reason,
+    )
+    .map_err(to_wire)?;
     let bytes = edax_cqrs::encode_record(&record).map_err(to_wire)?;
     // The kernel's encoder writes UTF-8 only, so the lossy path never replaces anything.
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -190,14 +207,20 @@ fn record_of_flat(
     result_json: &str,
     error: Option<String>,
     error_code: Option<&str>,
+    error_reason: Option<String>,
 ) -> Result<edax_cqrs::Record<serde_json::Value>, edax_core::Error> {
-    Ok(match edax_cqrs::State::from_wire(pending, error, None, ()) {
+    Ok(match edax_cqrs::State::from_wire(pending, error, None, None, ()) {
         edax_cqrs::State::Pending => edax_cqrs::Record::pending(payload_hash),
+        // The reason crosses as given: `encode_record` refuses one that is misplaced or no name.
         edax_cqrs::State::Failed { message, .. } => {
             let code = error_code.map(str::parse::<ErrorCode>).transpose()?;
             edax_cqrs::Record {
                 payload_hash,
-                state: edax_cqrs::State::Failed { code, message },
+                state: edax_cqrs::State::Failed {
+                    code,
+                    message,
+                    reason: error_reason,
+                },
             }
         }
         edax_cqrs::State::Done(()) => edax_cqrs::Record::done(
@@ -210,16 +233,19 @@ fn record_of_flat(
 /// A decoded record as the flat fields a binding holds.
 fn flat_record(record: edax_cqrs::Record<serde_json::Value>) -> IdempotencyRecord {
     let state = record.state.kind().as_str().to_owned();
-    let (error, error_code, result_json) = match record.state {
-        edax_cqrs::State::Pending => (None, None, None),
-        edax_cqrs::State::Failed { code, message } => (Some(message), code.map(|c| c.as_str().to_owned()), None),
-        edax_cqrs::State::Done(result) => (None, None, Some(result.to_string())),
+    let (error, error_code, error_reason, result_json) = match record.state {
+        edax_cqrs::State::Pending => (None, None, None, None),
+        edax_cqrs::State::Failed { code, message, reason } => {
+            (Some(message), code.map(|c| c.as_str().to_owned()), reason, None)
+        }
+        edax_cqrs::State::Done(result) => (None, None, None, Some(result.to_string())),
     };
     IdempotencyRecord {
         payload_hash: record.payload_hash,
         state,
         error,
         error_code,
+        error_reason,
         result_json,
     }
 }
@@ -227,18 +253,30 @@ fn flat_record(record: edax_cqrs::Record<serde_json::Value>) -> IdempotencyRecor
 /// The failure half of the guard's settle table, as the write itself: the failed record a won claim
 /// caches for a failure with `message` and the taxonomy `code` under `payload_hash`, or `None` to release
 /// the claim instead. `code` is `None` for a failure no code classifies; an unknown code is a `codec:`
-/// error. See [`edax_cqrs::settle_failure`].
-// `code` is optional, so it trails: alef moves optional parameters to the end of the signature.
+/// error. `reason` is why a host's rejection refused: the record keeps it beside the `rejected` code when
+/// [`check_rejection_reason`] accepts it, and drops it otherwise, so a reason never keeps a failure from
+/// caching. See [`edax_cqrs::settle_failure`].
+// `code` and `reason` are optional, so they trail: alef moves optional parameters to the end.
 pub fn idempotency_settle_failure(
     payload_hash: u64,
     message: &str,
     code: Option<String>,
+    reason: Option<String>,
 ) -> Result<Option<IdempotencyRecord>, String> {
     let code = error_code(code)?;
-    Ok(match edax_cqrs::settle_failure(payload_hash, code, message) {
-        edax_cqrs::Settle::Cache(record) => Some(flat_record(record)),
-        edax_cqrs::Settle::Release => None,
-    })
+    Ok(
+        match edax_cqrs::settle_failure(payload_hash, code, message, reason.as_deref()) {
+            edax_cqrs::Settle::Cache(record) => Some(flat_record(record)),
+            edax_cqrs::Settle::Release => None,
+        },
+    )
+}
+
+/// Refuse `reason` as why a host's rejection refused unless it is 1 to 64 bytes of `[a-z0-9._-]`, starting
+/// with `[a-z0-9]`: a `codec:` error. A host SDK checks it where the rejection is defined, so a bad reason
+/// fails at once rather than vanishing when the failure settles. See [`edax_cqrs::check_reason`].
+pub fn check_rejection_reason(reason: &str) -> Result<(), String> {
+    edax_cqrs::check_reason(reason).map_err(to_wire)
 }
 
 /// What a claimant that lost the claim on `key` reads from the winner's record: `outcome` is one of
@@ -267,7 +305,7 @@ pub fn idempotency_replay(
 ) -> IdempotencyReplay {
     let prior = edax_cqrs::Record {
         payload_hash,
-        state: edax_cqrs::State::from_wire(pending, error, error_code.as_deref(), ()),
+        state: edax_cqrs::State::from_wire(pending, error, error_code.as_deref(), None, ()),
     };
     let outcome = edax_cqrs::outcome(&prior, current).kind().as_str().to_owned();
     let error = edax_cqrs::replay(&prior, current, key).err().map(to_wire);
@@ -416,7 +454,14 @@ mod tests {
                 Err("codec: integer at byte 9 is outside the 64-bit range"),
             ),
         ] {
-            let got = encode_idempotency_record(7, pending, result, error.map(str::to_owned), code.map(str::to_owned));
+            let got = encode_idempotency_record(
+                7,
+                pending,
+                result,
+                error.map(str::to_owned),
+                code.map(str::to_owned),
+                None,
+            );
             assert_eq!(got.as_deref(), want.map_err(ToString::to_string).as_deref(), "{name}");
         }
     }
@@ -446,9 +491,9 @@ mod tests {
 
     #[test]
     fn idempotency_settle_failure_crosses_the_record_to_cache() {
-        let cached = |code: &str| idempotency_settle_failure(HASH, "bad payload", Some(code.to_owned()));
+        let cached = |code: &str| idempotency_settle_failure(HASH, "bad payload", Some(code.to_owned()), None);
         assert!(
-            matches!(idempotency_settle_failure(HASH, "boom", None), Ok(None)),
+            matches!(idempotency_settle_failure(HASH, "boom", None, None), Ok(None)),
             "unclassified releases"
         );
         assert!(matches!(cached("store"), Ok(None)), "a transient code releases");
@@ -599,6 +644,7 @@ mod tests {
                 case.result_json,
                 owned_error(),
                 case.error_code.map(str::to_owned),
+                None,
             );
             assert_eq!(encoded.as_deref(), Ok(case.encoded), "{}", case.name);
 

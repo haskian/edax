@@ -68,7 +68,7 @@ direct retry, and reused the validated Go key scope. Existing tests passed witho
 
 ## Recorded verification
 
-These are dated run results, not a fixed test-count requirement. Both runs rebuilt the native
+These are dated run results, not a fixed test-count requirement. Each run rebuilt the native
 libraries before the full Python and Go suites. Skipped tests are listed separately from passes.
 
 | Run | Results | Limits |
@@ -77,6 +77,12 @@ libraries before the full Python and Go suites. Skipped tests are listed separat
 | Live integrations during hardening | Postgres reference: 6 coordination and 8 differential/schema tests passed. Python ran live Postgres and isolated Kafka, including broker pause/restart. | These cover the supplied adapters and test deployments. |
 | Static and generated checks during hardening | Clippy with warnings denied, Ruff, formatting, ty, strict mypy, stubtest, facade generator tests, documentation lint, and binding regeneration passed. CQRS alternate-feature tests: 5 passed. | Generated bindings were rebuilt through the prescribed tasks. |
 | Simplification pass, 2026-10-15 | Rust: 525 passed, one ignored doctest. Python: 2,460 passed, 16 skipped. Go: all packages passed uncached race tests. Type and formatting checks passed. | Live Postgres ran. Live Kafka and Redis were skipped, along with the 14 nonjoining-ledger contracts. |
+| Merge with `main` at `5605d6c`, 2026-10-15 | Rust: 527 passed, one ignored doctest. Python: 2,497 passed, 16 skipped. All Go packages passed uncached race tests after binding regeneration and native rebuilds. | Live Postgres ran. Live Kafka and Redis were skipped, along with the 14 nonjoining-ledger contracts. |
+
+The merge preserves `main`'s aggregate creation API and validated rejection reasons in ordinary
+ledgers. Exception text remains omitted; protected failures also omit reasons. Regression cases
+cover encrypted aggregates built with `Repository.create` and protected failure records receiving
+a rejection reason.
 
 ## Reproduce the checks
 
