@@ -303,3 +303,22 @@ A transaction left open for long holds back cleanup everywhere, so set
 - [Backends](./README.md): the seam contracts and the conformance suite.
 - [Transactions](../sdk/transactions.md): `Transactor`, `current_tx`, `transaction`.
 - [Idempotency](../sdk/idempotency.md): both guards and both modes.
+
+## Encrypted records and erasure
+
+Table contract 2 adds nullable `subject` and `encryption` columns to message/outbox tables, and
+nullable `tenant`, `subject`, `encryption` columns to snapshots. Existing null rows remain historical
+plaintext and require an explicit compatible reader policy. Use the
+[additive migration](postgres-crypto-migration.sql) with your own schema names and migration tool.
+Edax never provisions these tables.
+
+Durable erasure uses the separate [reference control schema](postgres-erasure-schema.sql) and
+`edax.backend.erasure_postgres.PostgresErasureStore`. Its operation records and control outbox use
+no subject payload key. `guard_in_transaction(connection, scope)` must run on the same connection
+as participant writes and hold through commit; cleanup uses `revoke_in_transaction` before deletion.
+Acquire scope fences before application row locks. These helpers require READ COMMITTED because
+revocation must be read in a fresh statement snapshot after a lock wait.
+
+A provider guard and a Postgres destination guard protect different resources. A production
+participant must wire both where required. The reference memory provider is process-local and
+cannot fence another service. See [provider and participant conformance](../guides/crypto-shredding.md).

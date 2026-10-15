@@ -89,6 +89,7 @@ contract: **golden wins** over a disagreeing test unless you're deliberately cha
 ```
 EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test protected golden_protected_ledger
 EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
@@ -108,9 +109,15 @@ runtime helpers, `lock` and `TokenMint`, which no binding crosses and no golden 
 `sequence` (and a save's `draft_batch`), `upcast`,
 and the orchestration decisions the SDKs make: `retry` (`Retries`, which every dispatcher performs, and
 `retry_step`), `drain` (the relay's `Drain`) and `saga` (`saga_admit`, `saga_write`, `saga_command_id`).
+`sealing` owns authenticated message/state context, protected-state completion and opening policy;
+`erasure` owns frozen participants, workflow transitions, control notifications and configuration validation.
+`edax-seal` owns cryptography, `Cipher`, `EncryptionInfo`, scope encoding, and `keys` (the reference
+provider's reservations, generations and permanent revocation). Secret copies returned to hosts are
+not proof of complete process-memory zeroization.
 `edax-cqrs` is both halves of its name: the command side's `canonical_json`, `command_hash`,
 `received_key`, `claim_key` and the idempotency `record` (the claimant's `outcome` and `replay`, the
-winner's `settle_failure`), the ledger fence every store applies (`complete_fence`, `release_fence`; Redis's
+winner's `settle_failure`), `protected` (keyed command fingerprints, encrypted results and authenticated
+scope checks while preserving ordinary claim keys), the ledger fence every store applies (`complete_fence`, `release_fence`; Redis's
 Lua replays it from `idempotency_fence.json`), the host values `Decimal` and `Instant`, *and* the read side's `filter` and
 `query`. The `record` serves the event guard too: `edax-event` names the key and hash, `edax-cqrs` keeps
 the state machine. Filter and query live together because both read documents through one value model
@@ -124,7 +131,8 @@ and one collation (the crate-private `value` and `collation` modules) — never 
 `edax-redis` owns `ledger` (the key, settings and their defaults, value layout, claim handle and reply outcomes) and
 `scripts` (the fence scripts and the reply verdict). `edax-postgres` owns `config`, `error` (the SQLSTATE verdict per
 operation), `schema` (the table contract and its catalog check; edax provisions no table), `statements`, `rows` (the row layout), `documents` (exact number text), `query`
-(the read-model query compiled to SQL, and the page) and `ledger` (the claim owner and the fence). A Postgres
+(the read-model query compiled to SQL, and the page), `ledger` (the claim owner and the fence), and
+`erasure` (durable operations, notification outbox and destination revocation fences). A Postgres
 statement, row layout or query rule every SDK must match is the kernel's: change it there, never in the adapter. The adapter is the input and output (I/O) shell: it
 calls the client and the kernel, and decides nothing on its own.
 
@@ -198,6 +206,6 @@ Build Go with `mise run go:build`, then run `mise exec -- go test -race ./...` f
 The static native library must be rebuilt after an ABI or kernel change.
 
 `pytest` does **not** rebuild the native module. After any change under `edax-core`, `edax-event`,
-`edax-cqrs`, `edax-memory`, `edax-kafka`, `edax-redis`, `edax-postgres` or `edax-abi`, run `maturin develop` first or
+`edax-cqrs`, `edax-seal`, `edax-memory`, `edax-kafka`, `edax-redis`, `edax-postgres` or `edax-abi`, run `maturin develop` first or
 the Python suite passes green against the previously compiled kernel and proves nothing. CI does
 this in the right order (`.github/workflows/python.yml`).

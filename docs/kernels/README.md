@@ -1,6 +1,6 @@
 # The kernels
 
-What the six pure Rust kernels own, why the boundary sits exactly there, and how each software
+What the shared Rust kernels own, why the boundary sits exactly there, and how each software
 development kit (SDK) reaches them.
 
 The SDK wires; the kernel decides. A decision that must be identical in
@@ -24,11 +24,12 @@ flowchart LR
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
         CORE["edax-core<br/>hash · key · backoff · clock<br/>guid · version · names · error<br/>Rust-only: lock · token"]
-        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga"]
-        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · ledger · Decimal · Instant<br/>filter · query"]
+        SEAL["edax-seal<br/>cryptography · AAD · keys"]
+        EV["edax-event<br/>message · codec · causation<br/>partition · staleness · idempotency · sequence<br/>upcast · retry · drain · saga · sealing · erasure"]
+        CQ["edax-cqrs<br/>canonical_json · command_hash<br/>received_key · claim_key · record · protected · ledger · Decimal · Instant<br/>filter · query"]
         KAF["edax-kafka<br/>record · partition<br/>offsets · client"]
         RED["edax-redis<br/>ledger · scripts"]
-        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger"]
+        PG["edax-postgres<br/>config · error · schema · statements<br/>rows · documents · query · ledger · erasure"]
     end
 
     APP -->|"calls a seam"| RS
@@ -42,6 +43,12 @@ flowchart LR
     NAT -->|"forwards"| ABI
     GO -->|"generated cgo binding and C ABI"| ABI
     ABI -->|"forwards, reshaping only"| CORE
+    ABI --> SEAL
+    SEAL --> CORE
+    EV --> SEAL
+    CQ --> SEAL
+    PG --> SEAL
+    RS --> SEAL
     ABI --> EV
     ABI --> CQ
     ABI --> KAF
@@ -58,7 +65,7 @@ flowchart LR
 ```
 
 Each node lists its crate's modules. The table at the top of each kernel's page ([core](./core.md),
-[event](./event.md), [cqrs](./cqrs.md), [kafka](./kafka.md), [redis](./redis.md),
+[seal](./seal.md), [event](./event.md), [cqrs](./cqrs.md), [kafka](./kafka.md), [redis](./redis.md),
 [postgres](./postgres.md)) is the one complete
 description of what each module owns.
 
@@ -229,16 +236,21 @@ waiting.
   `error`, `sync`, `token`.
 - [filter.md](./filter.md) — the filter module of `edax-cqrs`, on its own page.
 - [event.md](./event.md) — `edax-event`: the messages, codec, lineage, ordering key, partition,
-  upcast, staleness, the event guard's key, sequence, retry, saga.
+  upcast, staleness, the event guard's key, sequence, retry, drain, saga, sealing and erasure.
 - [cqrs.md](./cqrs.md) — `edax-cqrs`: canonical JSON, the command hash, the received and claim keys,
-  the idempotency decision, record and forget, plus the query side — filter, sort and cursors.
+  idempotency, record and forget, protected fingerprints and results. Queries cover filter, sort and cursors.
 - [kafka.md](./kafka.md) — `edax-kafka`: the record key and header per kind, the media types, the poison id,
   and the token-settled offset watermark.
 - [redis.md](./redis.md) — `edax-redis`: the ledger value layout, the owner token and the five fenced
   scripts.
 - [postgres.md](./postgres.md) — `edax-postgres`: the schema, the statements, the row layout, the query
-  compiler, the error verdict and the ledger fence.
+  compiler, the error verdict, the ledger fence and durable erasure.
 - [golden-vectors.md](./golden-vectors.md) — how the contract is generated, asserted and
   regenerated.
 - [../architecture.md](../architecture.md) — the full layering and build pipeline these crates sit
   in.
+
+The optional [seal kernel](seal.md) owns the encryption protocol and memory key-provider reference.
+`edax-event::sealing` binds it to messages and state; `edax-event::erasure` owns the workflow.
+`edax-cqrs::protected` owns protected command fingerprints and results; `edax-postgres::erasure`
+owns durable operations, notifications and transactional destination fences.

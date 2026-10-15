@@ -20,6 +20,7 @@ and the two travel together because the query evaluates the filter.
 | `command_hash` | *which* bytes a command's hash covers: its name and its whole payload |
 | `received_key` | the idempotency key a received command is claimed under |
 | `claim_key` | the ledger key a command guard claims, scoped by the guard |
+| `protected` | full HMAC-SHA-256 fingerprints and encrypted command-result records bound to scope, claim and owner |
 | `Record` / `State` | the stored record's wire shape and reading order, for the command guard and the event guard alike |
 | `decode_prior` | what a claimant reads from stored bytes no reader can decode |
 | `outcome` | the verdict a losing claimant reaches from a record |
@@ -218,6 +219,13 @@ any claim, so a pool never claims a shared row. The event guard's key follows th
 `edax_core::guard_key` with their `GuardKind`, so the two cannot compose in different orders.
 `testdata/golden/claim_key.json` pins the key, with a row per mode.
 
+Protected command idempotency keeps this same claim key. `protected::claim_key` validates the
+encryption scope and returns the ordinary key unchanged, so enabling protection cannot bypass a
+pre-migration result or an in-flight claim. The protected record authenticates the scope, claim
+identity, claimant token, fingerprint, and encrypted result. A duplicate under a different scope
+fails closed. [`protected_ledger.json`](../../testdata/golden/protected_ledger.json) pins its
+fingerprint bytes, result associated data, record encoding and scope checks for both ciphers.
+
 The scope is required in the Rust and Python SDKs. A default would put two services on one ledger under one scope,
 and the second would replay the first one's outcome.
 
@@ -389,9 +397,9 @@ replay.
 
 The winner's half of the table is `settle_failure(payload_hash, code, message) -> Cache(record) |
 Release`. After the handler failed, a won claim completes with the failed record the kernel builds
-when the verdict for the code is terminal. It releases the claim for anything else: a transient code,
-a fatal one, or no code (a host's own error, a panic, a cancellation). A fatal code (`bad_handle`) means
-the wiring failed, so the message must run again once the host fixes it. Both guards ask it with the code the
+when the code is terminal and nonfatal. The record stores that code with an empty message;
+the compatibility `message` parameter is ignored. It releases transient, fatal, and uncoded failures,
+including panics and cancellations. Both guards ask it with the code the
 failure carries: Rust `edax_cqrs::settle_failure(hash, code_of(e), ..)`, Python
 `_edax.idempotency_settle_failure(hash, str(e), errors.code_of(e))`. So two SDKs guarding one ledger
 cache the same failures, as the same record. `testdata/golden/idempotency_settle.json` pins one row

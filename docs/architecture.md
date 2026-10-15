@@ -17,8 +17,9 @@ flowchart TB
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, ledger, Decimal, Instant<br/>filter, query"]
-        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga"]
+        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, protected, ledger, Decimal, Instant<br/>filter, query"]
+        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga, sealing, erasure"]
+        S["edax-seal<br/>cipher, EncryptionInfo, AAD, keys"]
         E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, names, error"]
     end
 
@@ -26,6 +27,9 @@ flowchart TB
     B -->|"asks for a decision"| C
     B -->|"asks for a decision"| D
     B -->|"asks for a decision"| E
+    C --> S
+    D --> S
+    S --> E
     C -->|"shared primitives"| E
     D -->|"shared primitives"| E
 ```
@@ -49,7 +53,7 @@ Two examples explain why the kernels own these decisions:
   (`crates/edax-cqrs/src/filter.rs`).
 
 Kernel decisions are synchronous and need no database or broker. Most are pure functions of their
-arguments. Clock and identifier generation have explicit exceptions; native handles also keep
+arguments. Clock, identifier and cryptographic randomness generation have explicit exceptions; native handles also keep
 caller-owned state. See [kernel constraints](kernels/README.md#purity-constraints).
 
 ## The crate graph
@@ -57,6 +61,8 @@ caller-owned state. See [kernel constraints](kernels/README.md#purity-constraint
 ```mermaid
 flowchart LR
     core["edax-core<br/>primitives"]
+    seal["edax-seal<br/>encryption and key lifecycle"]
+    postgres["edax-postgres<br/>SQL and erasure fences"]
     event["edax-event<br/>event kernel"]
     cqrs["edax-cqrs<br/>command kernel"]
     memory["edax-memory<br/>in-memory stores"]
@@ -69,6 +75,16 @@ flowchart LR
     go["crates/edax-go<br/>Go SDK"]
     golden["edax-golden<br/>vector harness"]
 
+    seal --> core
+    event --> seal
+    cqrs --> seal
+    postgres --> seal
+    postgres --> event
+    postgres --> cqrs
+    postgres --> core
+    rust --> seal
+    abi --> seal
+    abi --> postgres
     event --> core
     cqrs --> core
     memory --> core
@@ -106,11 +122,13 @@ what each one owns.
 | Crate | What |
 |---|---|
 | `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
-| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
-| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
+| `edax-seal` | cipher and encryption records, authenticated context, encryption, fingerprints, randomness, `keys` lifecycle and usage accounting |
+| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `sealing`, `erasure` |
+| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, `protected` fingerprints and results, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
 | `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by the Rust, Python and Go SDKs |
 | `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
+| `edax-postgres` | `config`, `error`, `schema`, `statements`, `rows`, `documents`, `query`, `ledger`, `erasure` |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
@@ -136,7 +154,7 @@ a hand-written SDK around that binding.
 
 ```mermaid
 flowchart LR
-    K["edax-core<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis"] --> ABI["crates/edax-abi/src/<br/>hand-written flat surface"]
+    K["edax-core<br/>edax-seal<br/>edax-event<br/>edax-cqrs<br/>edax-memory<br/>edax-kafka<br/>edax-redis<br/>edax-postgres"] --> ABI["crates/edax-abi/src/<br/>hand-written flat surface"]
     ABI -->|"alef"| GEN["crates/edax-py/src/lib.rs<br/>GENERATED pyo3 module"]
     ABI -->|"alef"| STUB["python/edax/_edax.pyi<br/>generated type stub, shipped"]
     GEN -->|"maturin develop"| SO["_edax native module"]
@@ -201,7 +219,7 @@ across versions or languages, it belongs in a kernel with a golden vector.
 |---|---|---|---|
 | concurrency | synchronous; dispatcher workers are operating-system threads | `asyncio` tasks | synchronous context-aware calls; dispatcher workers are goroutines |
 | transaction handle | explicit or obtained from a host provider | `contextvars`, keyed by database | `context.Context`, keyed by `UnitOfWork` |
-| backends shipped | in-memory | in-memory, Redis, Kafka | in-memory, Redis, Kafka client interfaces |
+| backends shipped | in-memory | in-memory, Redis, Kafka, Postgres | in-memory, Redis, Kafka client interfaces |
 | guard that owns the transaction | not implemented | `unit_of_work=` on both guards | `IdempotentOptions.UnitOfWork` on both guards |
 
 None of these differences reaches the kernels. All three SDKs call the same kernel functions, so a

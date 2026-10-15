@@ -41,9 +41,14 @@ it in `edax::Terminal`.
 | `Error::bad_handle(..)` | `BadHandle` | `bad_handle` | terminal | a store handed a transaction handle it does not recognise: never begun, already settled, or another transactor's; a nested `transaction`; `retry` inside an open transaction; an idempotency guard inside a transaction its ledger does not join; a misconfigured store | fatal, see [`is_fatal`](#is_fatal-the-failures-that-stop-a-consumer): the dispatcher stops, nacks the delivery uncounted and hands back the work it has not run; the relay stops too; nothing is dead-lettered, because retrying cannot rewire the store |
 | `ErrorCode::PayloadMismatch` | `PayloadMismatch` | `payload_mismatch` | terminal | the guard, when the key's stored hash differs from this payload's | the dispatcher dead-letters; the guard never re-runs the handler |
 | `ErrorCode::InProgress` | `InProgress` | `in_progress` | transient | the guard, when the winner holds the claim and has not completed | `retry` re-runs; the dispatcher waits one backoff step and nacks without spending an attempt |
-| `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal failure, or a stored record no reader can decode (`original_code` `codec`); the message is the original failure's wire form and `original_code` its code | the dispatcher dead-letters instead of redelivering forever |
+| `ErrorCode::CachedFailure` | `CachedFailure` | `cached_failure` | terminal | the guard, replaying a cached terminal code, or an unreadable record (`original_code` `codec`); new settlements omit exception text | the dispatcher dead-letters instead of redelivering forever |
 | `ErrorCode::HandlerNotFound` | `HandlerNotFound` | `handler_not_found` | terminal | `CommandBus.dispatch` when no handler is registered (or, in Rust, one is registered for another command or result type) | the dispatcher dead-letters: a redelivery finds the same registry |
 | `edax::Terminal(err)` | `Rejected`, or any exception with `terminal = True` | `rejected` | terminal | a host's own business rejection ("insufficient funds") | `retry` gives up at once; the guard caches it as `rejected`; the dispatcher dead-letters |
+| `ErrorCode::Shredded` | `Shredded` | `shredded` | terminal | trusted provider resolution confirms destruction | direct calls fail; a trusted delivery opener may skip; handler-raised errors still follow ordinary failure handling |
+| `ErrorCode::KeyUnavailable` | `KeyUnavailable` | `key_unavailable` | transient | key-provider outage | consumer/relay contention retries do not spend the poison-message budget |
+| `ErrorCode::KeyRevoking` | `KeyRevoking` | `key_revoking` | transient | permanently revoked scope awaits destruction | consumer/relay contention retries continue until the condition changes |
+| `ErrorCode::KeyMissing` | `KeyMissing` | `key_missing` | terminal, fatal | expected generation is missing | stop visibly; absence never permits an erasure skip |
+| `ErrorCode::KeyUnauthorized` | `KeyUnauthorized` | `key_unauthorized` | terminal, fatal | scope, purpose, or provider access is unauthorized | stop visibly; never cache or dead-letter as an application failure |
 | any other error | any other exception | none | transient (the kernel's default) | host code, a downstream client, a panic | everything treats it as worth retrying |
 
 Every row is a code of the kernel; the second column names the constructor where one exists, and
@@ -136,10 +141,10 @@ settle of it.
 
 ### `is_fatal`: the failures that stop a consumer
 
-One terminal code is more than terminal. `bad_handle` is a wiring fault: a refused credential or
-topic, a store that refuses its own settings, a handle used on the wrong thread. It fails every
-message alike, not one. The kernel's retry policy reads it as `Fatal` (`edax_event::Failure::of`), so
-a dispatcher and a relay stop on it rather than dead-letter every message after it.
+`bad_handle`, `key_missing`, and `key_unauthorized` are fatal. They identify configuration,
+transaction-handle, key-availability, or authorization faults that require intervention.
+The kernel's retry policy reads them as `Fatal` (`edax_event::Failure::of`). A dispatcher or relay
+stops and returns unfinished deliveries without charging their attempt budgets.
 `edax.is_fatal(e)` (Rust `edax::is_fatal`) asks the kernel for that kind, through
 `_edax.retry_failure(code_of(e))`. Every fatal failure is terminal. A host loop around `relay.drain`
 or `dispatcher.submit` stops on one; `Relay.run` and `consumer.run` already do. See
@@ -219,17 +224,16 @@ terminal. Timeouts, deadlocks, and anything naming a dependency are not.
 | Consumer | Terminal | Transient |
 |---|---|---|
 | `retry` | return or re-raise at once, no attempt spent | wait one step of its `Pacing` and run again, up to `attempts` |
-| the guard | write a `failed` record under the key | release the claim so a retry or redelivery re-runs |
-| `KeyOrderedDispatcher` | dead-letter on the first failed attempt, whatever `max_attempts` says | nack, until the `max_attempts`-th failed attempt |
+| the guard | cache a code-only `failed` record, except fatal failures release the claim | release the claim so a retry or redelivery re-runs |
+| `KeyOrderedDispatcher` | stop on fatal errors; otherwise dead-letter on the first failed attempt | nack until `max_attempts`, except contention does not spend attempts |
 
 **`retry`.** A terminal error cannot come out differently, so spending attempts and backoff on it
 only delays the real outcome.
 
-**The guard.** Here the verdict is durable. A terminal failure is cached, its code beside its
-message. Every later claimant replays it as `CachedFailure`, whose message is the original wire form
-(`codec: bad payload`). A transient one releases the claim, and so does a fatal one (`bad_handle`):
-the wiring failed, not the work, so the message must run again once the host fixes it. Three more
-special cases apply. A Python
+**The guard.** A new terminal settlement stores its code with an empty message. Replay raises
+`CachedFailure` with that code; it cannot reconstruct the original exception text. Historical records
+may still carry text until the application migrates or deletes them. Transient and fatal failures
+release the claim. Three more special cases apply. A Python
 cancellation, a `BaseException`, always releases, because nobody is left to complete that claim. A
 Rust panic also releases and keeps unwinding, because a panic is not a value a record can replay
 faithfully. When the ledger shares the guard's transaction, a terminal failure is not cached at all,
@@ -238,7 +242,7 @@ because the record would roll back with everything else. See [idempotency](./ide
 **`KeyOrderedDispatcher`.** A terminal error dies on the first failure because retrying only repeats
 it; a transient one is nacked until the attempt ceiling. Two details:
 
-- `InProgress` is exempt from the attempt count. See
+- `InProgress`, `KeyUnavailable`, and `KeyRevoking` are exempt from the attempt count. See
   [consuming](./consuming.md#inprogress-is-contention-not-a-failed-attempt).
 - A panic is unclassified and therefore transient. A bug on one payload is the poison message the
   ceiling exists for, but a single panic cannot be told from a transient one.
@@ -253,7 +257,10 @@ coming back stalls its partition.
 
 ```mermaid
 flowchart TB
-    H["handler raises"] --> C{"is_terminal: ask the kernel code"}
+    H["handler raises"] --> F{"is_fatal: ask the kernel code"}
+    F -- "fatal" --> RELEASE["guard: release claim; propagate error"]
+    RELEASE --> D{"dispatcher settles the delivery"}
+    F -- "nonfatal" --> C{"is_terminal: ask the kernel code"}
     C -- "terminal" --> T1["guard: complete the key with a failed record"]
     C -- "transient" --> R1["guard: release the claim"]
     T1 --> RT{"retry wraps the handler"}
@@ -261,8 +268,9 @@ flowchart TB
     RT -- "terminal" --> OUT["the error leaves the bus"]
     RT -- "transient, attempts left" --> AGAIN["wait one jittered backoff step, run again"]
     RT -- "transient, attempts spent" --> OUT
-    OUT --> D{"dispatcher settles the delivery"}
-    D -- "InProgress" --> W["wait one backoff step, nack, budget untouched"]
+    OUT --> D
+    D -- "InProgress, KeyUnavailable, KeyRevoking" --> W["wait one backoff step, nack, budget untouched"]
+    D -- "fatal" --> STOP["stop and return unfinished deliveries, budget untouched"]
     D -- "terminal and on_dead set" --> DL["dead-letter: call on_dead, then ack"]
     D -- "terminal and no on_dead" --> N["wait one backoff step, nack: the broker redelivers"]
     DL -- "on_dead raised" --> N
@@ -294,9 +302,10 @@ in the kernel's declaration order, with four fields.
 
 It pins three things:
 
-1. The code set and its order. Ten codes today: `concurrency`, `codec`, `store`,
+1. The code set and its order. Fifteen codes: `concurrency`, `codec`, `store`,
    `payload_mismatch`, `in_progress`, `cached_failure`, `handler_not_found`, `already_registered`,
-   `bad_handle`, `rejected`. New codes append, so an existing row's position never moves.
+   `bad_handle`, `rejected`, `shredded`, `key_unavailable`, `key_revoking`, `key_missing`,
+   `key_unauthorized`. New codes append, preserving existing positions.
 2. The verdict per code, which is what an idempotency guard persists on.
 3. The `"<code>: <message>"` framing every binding parses, with a realistic message per code.
 

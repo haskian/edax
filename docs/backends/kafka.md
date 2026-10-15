@@ -453,10 +453,11 @@ It leaves the rest to the host:
   topic would otherwise decode two ways.
 - **Dead-lettering.** `KeyOrderedDispatcher`'s `max_attempts` and `on_dead` own that, and
   `KafkaConsumer.run` requires `on_dead`. `KafkaDeadLetterSink(producer, topic)` is a ready sink. It
-  publishes the record as it was fetched, before any middleware: key, value and every header
-  verbatim, plus `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and `edax-dlq-error`. The
-  kernel renders `edax-dlq-error` from the failure's code, `"codec: ..."`, or `"unclassified: ..."` for
-  a host exception that carries none, with its class in the message. A republish to the source topic after the fix then routes and decodes as the original did. The record
+  publishes the fetched key and value, before any middleware. It retains headers except prior
+  `edax-dlq-error` values, then adds `edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` and
+  a new `edax-dlq-error`. That error header contains only the failure's code, such as `codec`, or
+  `unclassified` when no code is available. It never stores exception text or an exception class.
+  A republish to the source topic after the fix routes and decodes as the original did. The record
   rides on `Delivery.origin` as a `KafkaFetched`, so a sink of your own calls
   `delivery.origin.dead_letter(error)` for it. `KafkaFetched` also carries the broker facts a
   message never holds: `timestamp`, in Unix milliseconds, and `timestamp_type`, `0` for the

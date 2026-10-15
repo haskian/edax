@@ -177,13 +177,16 @@ Register event handlers by name with `EventRouter.Register`. An unknown name is 
 middleware. The context carries the event's lineage while the handler runs.
 
 Wrap a router in `KeyOrderedDispatcher[EventMessage]`. Use `KeyOrderedDispatcher[CommandMessage]`
-with a handler that calls `CommandBus.Execute` to consume commands. The kernel chooses each
+with a handler that calls `CommandBus.Deliver` to consume commands. `Execute` remains the direct-call
+API; `Deliver` permits the trusted opener to skip a confirmed destroyed scope. The kernel chooses each
 worker from the message's ordering key. `MaxQueue` limits each worker's waiting deliveries;
 zero means unbounded. `Submit` waits when that queue is full and respects its context deadline.
 
 A `Delivery` contains the message and transport-owned `OnAck`, `OnNack` and `Live` callbacks.
 The dispatcher acknowledges successful handling. The kernel chooses retry, dead-letter or stop
-after a handler error. `ErrInProgress` is contention and does not spend the failed-attempt budget.
+after a handler error. `ErrInProgress`, `ErrKeyUnavailable`, and `ErrKeyRevoking` use contention retries
+without spending the failed-attempt budget. See [sealing and erasure](../guides/crypto-shredding.md)
+for setup, ownership, guard lifetimes, and migration.
 A dead-letter sink must complete its durable write before returning nil. The dispatcher then
 acknowledges the original delivery.
 

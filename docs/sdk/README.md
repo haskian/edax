@@ -44,6 +44,8 @@ duplicates within their retention window; version checks reject conflicting writ
 | `Transactor` | `transaction` and `current_tx`; in Rust `transaction` and `retry_transaction` | [transactions](transactions.md) |
 | `ProjectionStore` | read models, with the kernel's filter and query semantics and portable cursors | [projections](projections.md) |
 | `SagaStore` | `SagaRunner` correlates, folds, emits commands, persists at the loaded version | [sagas](sagas.md) |
+| `KeyProvider` | `Sealing` reserves and resolves scoped keys; repositories, buses, routers, and saga runners protect payloads | [crypto-shredding](../guides/crypto-shredding.md) |
+| `ErasureStore` | `ErasureCoordinator` persists progress, revokes access, coordinates cleanup, and confirms destruction | [erasure workflow](../guides/crypto-shredding.md#erasure-workflow-and-recovery) |
 | `Producer`, `Consumer` | `KeyOrderedDispatcher` fans deliveries to workers by partition; `EventRouter` routes by event name | [consuming](consuming.md) |
 | — | `CommandBus` and its middleware chain | [commands](commands.md) |
 | — | the error taxonomy every retry and dead-letter path branches on | [errors](errors.md) |

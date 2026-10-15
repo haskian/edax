@@ -6,16 +6,18 @@ exactly this.
 ## Layers
 
 **Kernel** — a synchronous Rust crate that defines shared decisions across languages and processes.
-The kernels are `edax-core`, `edax-event`, `edax-cqrs`, `edax-kafka` and `edax-redis`. They call no
-database or broker client. Clock and identifier generation have explicit nondeterministic
+The kernels are `edax-core`, `edax-event`, `edax-cqrs`, `edax-seal`, `edax-kafka`, `edax-redis` and
+`edax-postgres`. They call no database or broker client. Clock, identifier and cryptographic
+randomness generation have explicit nondeterministic
 exceptions. See [kernels](kernels/README.md).
 
 **Protocol module** — a kernel crate named `edax-<tech>` that owns one technology's shared
-decisions: its bytes, its names and its state machines. `edax-kafka` and `edax-redis` are the two
-that ship. It links no client library.
+decisions: its bytes, its names and its state machines. `edax-kafka`, `edax-redis` and `edax-postgres`
+ship these decisions. It links no client library.
 
 **I/O shell** — the per-SDK adapter over a protocol module. It calls the client and the kernel, and
-decides nothing in between. `edax.backend.kafka` and `edax.backend.redis` are the two Python ones.
+decides nothing in between. Python supplies `edax.backend.kafka`, `edax.backend.redis` and
+`edax.backend.postgres`.
 
 **SDK** — software development kit, the per-language layer that wires the kernels to a host's
 storage and transports: `crates/edax` (Rust reference model), `crates/edax-py/python/edax` (Python)
@@ -28,8 +30,8 @@ Python native module and Go C binding are generated from it. See [architecture](
 broker: `EventStore`, `ProjectionStore`, `IdempotencyStore`, `SagaStore`, `Transactor`, `Producer`,
 `Consumer`. Its docstring is the specification.
 
-**Backend** — a concrete implementation of one or more seams. Three ship: `memory`, `redis`,
-`kafka`. See [backends](backends/README.md).
+**Backend** — a concrete implementation of one or more seams. Four ship: `memory`, `redis`,
+`kafka`, `postgres`. See [backends](backends/README.md).
 
 **Golden vector** — a JSON file under `testdata/golden/` generated from a kernel and replayed by
 the kernel and SDK tests. A golden vector always wins over a disagreeing test. See [golden
@@ -307,3 +309,24 @@ Every short form this documentation uses. Each page also expands the form on its
 | TTL | time to live |
 | UUID | universally unique identifier |
 | XA | eXtended Architecture, the two-phase commit standard |
+
+## Protected data
+
+**Subject** — the erasure owner whose keys and downstream copies are erased together. A protected
+aggregate or saga keeps one immutable subject, including after saga completion.
+
+**Key namespace** — the configured security domain for a provider shared by multiple deployments.
+It remains part of the key scope in every tenancy mode.
+
+**Key ID** — an opaque identifier for one immutable data-key generation. `key_id` is not a subject,
+provider address, or wrapping-key alias. Rewrapping preserves the ID and usage count.
+
+**Encryption information** — the typed `encryption` record: format version, namespace, key ID,
+cipher and nonce. Payload schema `version` is independent of `encryption.format_version`.
+
+**Seal / open** — authenticated encryption and authenticated decryption of a whole payload. The
+shared protocol belongs to edax; its implementation lives in `edax-seal`, not in extension keys.
+
+**Erase** — the tracked workflow that revokes access, coordinates fenced cleanup and confirms
+key destruction and required acknowledgements. Completion covers the declared participant set;
+it is not universal proof of deletion. See [crypto-shredding](guides/crypto-shredding.md).

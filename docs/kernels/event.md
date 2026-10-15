@@ -11,6 +11,8 @@ Python service and a Rust service cannot drift.
 | Module | Owns | Golden vector |
 |---|---|---|
 | `message` | the event and command message shapes and the `Payload` each carries, the extension key rule, the ordering key, the tenant of a command a save sends | `envelopes.json`, `extensions.json`, `ordering_key.json`, `command_owner.json` |
+| `sealing` | message/state AAD, immutable owners, protected state including completion, prepared-write reconciliation and opening policy | `sealing.json` and unit tests |
+| `erasure` | frozen participants, irreversible workflow transitions and control notifications | unit and SDK conformance tests |
 | `partition` | which local worker runs an ordering key (never broker placement) | `partition.json` |
 | `codec` | the reproducible wire bytes for both kinds of message, their media types, and how they evolve | `envelopes.json`, `envelope_decode.json` |
 | `upcast` | which `v -> v+1` steps run, in which order | `upcast.json` |
@@ -29,7 +31,7 @@ interface (ABI) in `crates/edax-abi`. That crate holds no logic of its own.
 
 Two messages cross a process boundary: `EventMessage` and `CommandMessage`, both in
 `crates/edax-event/src/message.rs`. Both are flat: identity, payload, lineage, time, then two string
-maps. Nothing nests. A `Kind` enum names the two, `Event` and `Command`. It is exhaustive on purpose,
+maps, with an optional typed `encryption` record and an erasure `subject`. A `Kind` enum names the two, `Event` and `Command`. It is exhaustive on purpose,
 so a new kind is a compile error in every SDK rather than a silent default.
 
 | Field | `EventMessage` | `CommandMessage` | Read by |
@@ -38,10 +40,12 @@ so a new kind is a compile error in every SDK rather than a silent default.
 | `idempotency_key` | — | `Option<String>`, the client's intent; `None` makes no claim | the command guard, through `claim_key` |
 | `aggregate_id` | `String` | `Option<String>`, the target, if any | the ordering key |
 | `tenant` | `Option<String>` | `Option<String>` | `tenant_key`: every key a seam is called with |
+| `subject` | `Option<String>` | `Option<String>` | immutable erasure owner of protected aggregate or saga state |
+| `encryption` | `Option<EncryptionInfo>` | `Option<EncryptionInfo>` | format version, namespace, immutable key ID, cipher and nonce; opening and authenticated context |
 | `sequence` | `Option<u64>`, the per-aggregate ordinal | — | `is_stale`, `advance`, `check_batch` |
 | `name` | `String` | `String` | routing, `upcast_plan`, the command hash |
 | `version` | `u32`, the payload schema version | `u32` | `upcast_plan` |
-| `data` | `Vec<u8>`, the host-serialized payload | `Vec<u8>` | nothing: opaque, base64 in JSON, native bytes in MessagePack |
+| `data` | `Vec<u8>`, serialized plaintext or ciphertext plus tag | `Vec<u8>` | payload decoding after authentication; base64 in JSON, native bytes in MessagePack |
 | `correlation_id` | `String` | `String` | lineage |
 | `causation_id` | `String` | `String` | lineage |
 | `occurred_at` | `Option<i64>`, valid time | — | nothing: the host's |
@@ -49,6 +53,10 @@ so a new kind is a compile error in every SDK rather than a silent default.
 | `issued_at` | — | `i64`, the issuer's clock | relay lag |
 | `extensions` | `Extensions` | `Extensions` | edax extensions, such as trace context |
 | `metadata` | `Metadata` | `Metadata` | nothing: the application's |
+
+Missing historical `subject` and `encryption` fields decode as `None`. A present encryption record
+must be complete and valid. Every field except `data` remains plaintext. See
+[the sealing contract](seal.md) for byte framing and the exact authenticated context.
 
 Two more shapes sit beside the messages. `Payload` is a codec's output, an event's or a command's:
 `name`, `version` and `data`. An aggregate holds its pending events in that shape, and a saga hands
@@ -183,8 +191,8 @@ Determinism rests on two things. Sorted map keys: `Extensions` and `Metadata` ar
 whatever order a host filled them in, the encoding sorts them by UTF-8 bytes. That puts `"Z"` before
 `"a"`, and U+FF71 before U+1F980, although JavaScript, Java and C# sort that pair the other way by
 UTF-16 code units. Field order is fixed. Both formats write a message as a map keyed by field name.
-The golden `msgpack_hex` of the `base` event starts `8d`, a 13-entry map, then `a2 6964`, the key
-`id`. A command starts `8c`, a 12-entry map.
+The golden `msgpack_hex` of the `base` event starts `8f`, a 15-entry map, then `a2 6964`, the key
+`id`. A command starts `8e`, a 14-entry map.
 
 ### Evolution: one rule for both formats and both kinds
 
@@ -194,11 +202,13 @@ both formats follow one rule, pinned by `testdata/golden/envelope_decode.json`:
 | Input | JSON | MessagePack |
 |---|---|---|
 | a field the reader does not know | ignored | ignored |
-| an optional field missing or `null`: `tenant`, `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
+| an optional field missing or `null`: `tenant`, `subject`, `encryption`, `sequence`, `occurred_at`, `idempotency_key`, a command's `aggregate_id` | `None` | `None` |
 | any other field missing, the `extensions` map included | `codec` error | `codec` error |
 | a negative `version` | `codec` error | `codec` error |
 | an `extensions` key outside the key rule | `codec` error | `codec` error |
 | a `tenant` outside `check_tenant`: empty, or over `TENANT_MAX` (64) bytes, counted in bytes and not characters | `codec` error | `codec` error |
+| a present `subject` outside 1–256 UTF-8 bytes | `codec` error | `codec` error |
+| malformed encryption framing, encryption without a subject, or ciphertext shorter than its tag | `codec` error | `codec` error |
 | a field repeated | `codec` error | `codec` error |
 | a key repeated inside `extensions` or `metadata` | the last wins | the last wins |
 | the message as a positional array | `codec` error | `codec` error |
@@ -209,6 +219,10 @@ positional array, and buys forward compatibility in both formats. Each decode ro
 a wire value and encoded in both formats, so the two cannot follow different rules. The vector pins
 only the error code for a refusal: the message is the parser's own text, which a second SDK's parser
 words differently.
+
+Ignoring unknown fields does not make encryption safe for old readers. A reader that predates
+`encryption` ignores that field and sends ciphertext to its plaintext payload codec. Deploy readers
+that understand encryption and enforce the opening policy before enabling encrypted writers.
 
 A domain payload inside `data` meets the same format rules through `Format::encode_payload` and
 `Format::decode_payload`, which the Rust SDK's codecs call. A struct reads from a map only, at every
@@ -352,7 +366,11 @@ sink is wired. The host runs the handler, the sink, the wait and the ack or nack
 `failed(id, tenant, broker_attempt, failure)` what to do, with `failure = Failure::of(code)`. A
 message is its id inside its tenant: two tenants' stores may mint one id, and one consumer serving
 both counts each apart. `code` is the failure's error code, `None` for one no code classifies.
-`in_progress` reads as `Contended`: another consumer holds the message's idempotency claim. `bad_handle` reads as `Fatal`: a wiring fault, such as
+`in_progress`, `key_unavailable`, and `key_revoking` read as `Contended`: a claim, provider outage,
+or pending destruction prevents progress. These retries do not exhaust `max_attempts`. A revocation
+waiting on an offline cleanup participant can therefore hold a Kafka partition indefinitely.
+Only confirmed destruction permits the trusted delivery opener to skip a protected message.
+`bad_handle` reads as `Fatal`: a wiring fault, such as
 a refused credential or topic, that fails every message alike. Another terminal code reads as
 `Terminal`, anything else as `Transient`. The ABI takes the code itself, so no SDK maps an error to a
 kind; `retry_failure(code)` names the kind for a host loop that must stop on a fatal one. The answer,
@@ -460,7 +478,7 @@ fold the event into the instance the row names, so the saga can compensate:
 | `aggregate_id` | the command's: the instance | the runner folds it there, without the saga's `instance_id` |
 | `sequence` | `None` | the failure has no place in an aggregate's order |
 | `name` | `SagaCommandFailed` | the saga's `handle` branches on it |
-| `data` | JSON `{"command_id", "command", "code", "error"}` | the dead command, the failure's taxonomy code (`null` when none classifies it) and its message |
+| `data` | JSON `{"command_id", "command", "code", "error"}` | the dead command and taxonomy code (`null` when absent); `error` is empty for a sealed command and retains the message otherwise |
 | `tenant`, lineage | the command's tenant; the command's child | the failure stays in the command's tenant and flow |
 | `recorded_at` | the runner's clock | as a command's `issued_at` |
 

@@ -6,7 +6,8 @@ The kernels define shared decisions such as message encoding and idempotency. Th
 those decisions to storage and transports. Golden vectors test agreement across languages.
 
 Start with [getting started](guides/getting-started.md) and [delivery
-guarantees](guides/delivery-guarantees.md).
+guarantees](guides/delivery-guarantees.md). For protected data, see
+[crypto-shredding](guides/crypto-shredding.md).
 
 ## Reading order
 
@@ -41,10 +42,12 @@ flowchart LR
 | [Kernels overview](kernels/README.md) | what the kernels own, and what they are forbidden to do |
 | [edax-core](kernels/core.md) | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | [filter](kernels/filter.md) | the filter abstract syntax tree (AST), its null rule, and the two build surfaces |
-| [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga` |
-| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
+| [edax-seal](kernels/seal.md) | encryption records, cipher and nonce rules, authenticated context, cryptography, scoped key lifecycle and usage accounting |
+| [edax-event](kernels/event.md) | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `sealing`, `erasure` |
+| [edax-cqrs](kernels/cqrs.md) | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, `protected` fingerprints and results, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
 | [edax-kafka](kernels/kafka.md) | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | [edax-redis](kernels/redis.md) | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
+| [edax-postgres](kernels/postgres.md) | `config`, `error`, `schema`, `statements`, `rows`, `documents`, `query`, `ledger`, `erasure` |
 | [Golden vectors](kernels/golden-vectors.md) | the cross-language contract, and when regenerating is legitimate |
 
 ### SDK — the wiring
@@ -83,6 +86,8 @@ flowchart LR
 | [Getting started](guides/getting-started.md) | build it, then wire one command end to end |
 | [Delivery guarantees](guides/delivery-guarantees.md) | what every hop of the pipeline promises |
 | [Testing](guides/testing.md) | golden vectors, model tests, and testing your own backend |
+| [Crypto-shredding](guides/crypto-shredding.md) | envelope fields, ownership, key lifecycle, erasure, migration, and deployment limits |
+| [Crypto-shredding verification](guides/crypto-shredding-verification.md) | test coverage, review fixes, recorded results, and checks required for production providers |
 | [Examples](guides/examples.md) | nineteen topics in Python and Go, in learning order |
 | [Multi-tenancy](guides/multi-tenancy.md) | silo, pool and bridge mapped onto the seams, and what is not enforced |
 

@@ -262,3 +262,12 @@ nothing writes.
 - [Projections](../sdk/projections.md) — the filter, the sort order, and keyset cursors.
 - [Outbox](../sdk/outbox.md) — what `Relay` promises, and why a dual write cannot be atomic.
 - [kafka](../backends/kafka.md) — the record key, the partition rule, and the headers.
+
+## Encryption scopes
+
+Sealing keys are scoped by `(key_namespace, tenant, subject)` independently of storage tenancy mode.
+SILO and BRIDGE do not remove tenant information from key scope or authenticated context. The
+configured namespace is checked before any provider lookup. A tenant erasure permanently blocks
+all child subjects, including subjects first created after revocation. This requires a durable
+provider and destination fences; storage routing by itself is not an authorization check.
+See [crypto-shredding](crypto-shredding.md) for ownership, migration and cleanup requirements.
