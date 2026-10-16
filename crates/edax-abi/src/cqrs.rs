@@ -505,7 +505,7 @@ mod tests {
                 record.error_code.as_deref(),
                 record.result_json
             ),
-            (Some("bad payload"), Some("codec"), None)
+            (Some(""), Some("codec"), None)
         );
         assert_eq!(
             cached("timeout").err().as_deref(),
@@ -778,4 +778,110 @@ mod tests {
             assert_eq!((record.payload_hash, record.state.as_str()), (HASH, state), "{name}");
         }
     }
+}
+
+fn protected_record(record: &str) -> Result<edax_cqrs::protected::ProtectedRecord, String> {
+    edax_cqrs::protected::decode_record(record).map_err(crate::to_wire)
+}
+fn protected_fingerprint_record(record: &str) -> Result<edax_cqrs::protected::Fingerprint, String> {
+    serde_json::from_str(record).map_err(|_| crate::to_wire(edax_core::Error::codec("invalid protected fingerprint")))
+}
+/// Full HMAC-SHA-256 command fingerprint; no plaintext hash is retained.
+pub fn protected_fingerprint(
+    name: &str,
+    version: u32,
+    data: &[u8],
+    key_id: &str,
+    key: &[u8],
+) -> Result<String, String> {
+    let fp = edax_cqrs::protected::command_fingerprint(name, version, data, key_id, key).map_err(crate::to_wire)?;
+    serde_json::to_string(&fp).map_err(|e| crate::to_wire(edax_core::Error::codec(e)))
+}
+/// Preserve the ordinary claim identity across protected-ledger migration.
+pub fn protected_claim_key(scope: crate::KeyScope, key: &str) -> Result<String, String> {
+    edax_cqrs::protected::claim_key(&scope.try_into().map_err(crate::to_wire)?, key).map_err(crate::to_wire)
+}
+/// Construct a protected pending record bound to its claim owner.
+pub fn protected_pending(
+    scope: crate::KeyScope,
+    claim_id: &str,
+    owner: &str,
+    fingerprint: &str,
+) -> Result<String, String> {
+    let record = edax_cqrs::protected::ProtectedRecord::pending(
+        scope.try_into().map_err(crate::to_wire)?,
+        claim_id.to_owned(),
+        owner.to_owned(),
+        protected_fingerprint_record(fingerprint)?,
+    )
+    .map_err(crate::to_wire)?;
+    edax_cqrs::protected::encode_record(&record).map_err(crate::to_wire)
+}
+/// Replay decision, with ciphertext retained until the provider authorizes opening.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProtectedReplay {
+    pub action: String,
+    pub encryption: Option<crate::EncryptionInfo>,
+    pub code: Option<String>,
+}
+/// Stable protected-ledger replay decisions, defined by the owning kernel.
+pub fn protected_replay_actions() -> Vec<String> {
+    crate::names(edax_cqrs::protected::ProtectedReplayKind::NAMES)
+}
+/// Compare the complete protected fingerprint and security scope.
+pub fn protected_replay(
+    record: &str,
+    scope: crate::KeyScope,
+    claim_id: &str,
+    fingerprint: &str,
+) -> Result<ProtectedReplay, String> {
+    use edax_cqrs::protected::ProtectedReplay as Decision;
+    let record = protected_record(record)?;
+    let fp = protected_fingerprint_record(fingerprint)?;
+    let decision = record
+        .replay(&scope.try_into().map_err(crate::to_wire)?, claim_id, &fp)
+        .map_err(crate::to_wire)?;
+    Ok(match decision {
+        Decision::Pending => ProtectedReplay {
+            action: decision.kind().as_str().into(),
+            encryption: None,
+            code: None,
+        },
+        Decision::Done(value) => ProtectedReplay {
+            action: decision.kind().as_str().into(),
+            encryption: Some(value.encryption.clone().into()),
+            code: None,
+        },
+        Decision::Failed(code) => ProtectedReplay {
+            action: decision.kind().as_str().into(),
+            encryption: None,
+            code: Some(code.as_str().into()),
+        },
+    })
+}
+/// Encrypt a successful command result and settle its fenced record.
+pub fn protected_finish(
+    record: &str,
+    owner: &str,
+    info: crate::EncryptionInfo,
+    key: &[u8],
+    plaintext: &[u8],
+) -> Result<String, String> {
+    let record = protected_record(record)?;
+    let record = record
+        .seal_result(owner, info.try_into().map_err(crate::to_wire)?, key, plaintext)
+        .map_err(crate::to_wire)?;
+    edax_cqrs::protected::encode_record(&record).map_err(crate::to_wire)
+}
+/// Persist only a stable failure code, with no arbitrary exception text.
+pub fn protected_failure(record: &str, owner: &str, code: &str) -> Result<String, String> {
+    let record = protected_record(record)?;
+    let record = record
+        .fail(owner, code.parse().map_err(crate::to_wire)?)
+        .map_err(crate::to_wire)?;
+    edax_cqrs::protected::encode_record(&record).map_err(crate::to_wire)
+}
+/// Authenticate a cached result after scoped provider resolution.
+pub fn protected_open(record: &str, key: &[u8]) -> Result<Vec<u8>, String> {
+    protected_record(record)?.open_result(key).map_err(crate::to_wire)
 }

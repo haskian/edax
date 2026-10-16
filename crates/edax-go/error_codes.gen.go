@@ -39,6 +39,21 @@ const CodeBadHandle = kernel.CodeBadHandle
 // CodeRejected is the kernel's rejected error category.
 const CodeRejected = kernel.CodeRejected
 
+// CodeShredded is the kernel's shredded error category.
+const CodeShredded = kernel.CodeShredded
+
+// CodeKeyUnavailable is the kernel's key_unavailable error category.
+const CodeKeyUnavailable = kernel.CodeKeyUnavailable
+
+// CodeKeyRevoking is the kernel's key_revoking error category.
+const CodeKeyRevoking = kernel.CodeKeyRevoking
+
+// CodeKeyMissing is the kernel's key_missing error category.
+const CodeKeyMissing = kernel.CodeKeyMissing
+
+// CodeKeyUnauthorized is the kernel's key_unauthorized error category.
+const CodeKeyUnauthorized = kernel.CodeKeyUnauthorized
+
 // TenancySilo selects silo isolation.
 const TenancySilo = kernel.TenancySilo
 

@@ -18,6 +18,7 @@ is one JSON text column. Each SDK ships only the client calls around it.
 | `rows` | the parameters each statement binds, the statement a call chooses, and the values each read decodes | `postgres_rows.json` |
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
+| `erasure` | durable operations, atomic control outbox, permanent revocations, catalog checks and transaction advisory fences | erasure unit and live tests |
 | `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,
@@ -89,7 +90,19 @@ Each parameter is declared `text` and cast in the statement. Each statement open
 parameters, and NUL in any text parameter is refused as `codec` before any I/O. Where the statement
 turns on the input, the function names it too. It picks an insert or a compare-and-set by the
 expected version, a locked or a plain read, and a leased or an unleased outbox read. The adapter only
-runs what it is handed. Five shapes carry a decision.
+runs what it is handed.
+
+`save_snapshot` binds seven parameters: `$1` stream, `$2` type name, `$3` version, `$4` data as
+hexadecimal bytes, `$5` tenant, `$6` subject, and `$7` serialized encryption information. The last
+three are nullable for an ordinary snapshot. The statement returns the stream version for the
+kernel's snapshot check.
+
+Saga writes bind the kernel's completion verdict separately from state JSON: `$6` on insert and
+`$7` on update. A protected completed saga retains its encrypted state envelope while setting
+`completed` and `completed_at`, so retention can still find it. The statement does not parse
+application state as `jsonb` to infer completion.
+
+Five shapes carry a decision.
 
 - **A transaction opens in one round trip.** `begin` renders `BEGIN ISOLATION LEVEL READ COMMITTED`
   and the lock, statement and idle timeouts as `SET LOCAL`, from settings `check_config` accepts. The

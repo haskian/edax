@@ -17,6 +17,8 @@ pub struct Root<E> {
     version: u64,
     tenant: Option<String>,
     pending: Vec<E>,
+    subject: Option<String>,
+    pub(crate) prepared: Option<crate::sealing::PreparedSave>,
 }
 
 impl<E> Root<E> {
@@ -28,6 +30,8 @@ impl<E> Root<E> {
             version,
             tenant: None,
             pending: Vec::new(),
+            subject: None,
+            prepared: None,
         }
     }
 
@@ -55,6 +59,27 @@ impl<E> Root<E> {
         self.tenant.as_deref()
     }
 
+    /// Immutable erasure owner once this aggregate has committed state.
+    pub fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
+    }
+
+    pub fn set_subject(&mut self, subject: Option<&str>) -> Result<(), Error> {
+        edax_event::sealing::check_owner(self.version > 0, self.subject(), subject)?;
+        if self.prepared.is_some() && self.subject() != subject {
+            return Err(Error::new(
+                edax_core::ErrorCode::BadHandle,
+                "pending prepared write owns its subject",
+            ));
+        }
+        self.subject = subject.map(ToOwned::to_owned);
+        Ok(())
+    }
+
+    pub(crate) fn restore_subject(&mut self, subject: Option<&str>) {
+        self.subject = subject.map(ToOwned::to_owned);
+    }
+
     /// The prospective version: the loaded one plus the events not yet persisted.
     pub fn current(&self) -> u64 {
         self.version
@@ -69,6 +94,7 @@ impl<E> Root<E> {
     /// Pin the root to what storage holds: the stream is at `version`, and nothing is pending.
     pub(crate) fn settle(&mut self, version: u64) {
         self.pending.clear();
+        self.prepared = None;
         self.version = version;
     }
 

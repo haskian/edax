@@ -1,0 +1,28 @@
+[package]
+name = "edax-seal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated encryption and erasure key scopes for edax"
+
+[dependencies]
+edax-core.workspace = true
+serde.workspace = true
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.3"
+zeroize = "1"
+base64 = "0.22"
+serde_bytes = "0.11"
+
+[dev-dependencies]
+serde_json = "1"
+rmp-serde = "1"
+hex = "0.4"
+edax-golden.workspace = true
+
+[lints]
+workspace = true

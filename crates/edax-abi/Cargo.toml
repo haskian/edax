@@ -10,6 +10,7 @@ description = "Flat, plain-Rust API surface over the edax kernels — the source
 
 [dependencies]
 edax-core.workspace = true
+edax-seal.workspace = true
 edax-event.workspace = true
 edax-cqrs.workspace = true
 edax-memory.workspace = true

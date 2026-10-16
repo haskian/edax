@@ -46,6 +46,9 @@ type DrainRowFailed = native.DrainRowFailed
 // Drained is the kernel's binding record.
 type Drained = native.Drained
 
+// EncryptionInfo is the kernel's binding record.
+type EncryptionInfo = native.EncryptionInfo
+
 // EventDraft is the kernel's binding record.
 type EventDraft = native.EventDraft
 
@@ -75,6 +78,12 @@ type KafkaRevoked = native.KafkaRevoked
 
 // KafkaRoute is the kernel's binding record.
 type KafkaRoute = native.KafkaRoute
+
+// KeyReservation is the kernel's binding record.
+type KeyReservation = native.KeyReservation
+
+// KeyScope is the kernel's binding record.
+type KeyScope = native.KeyScope
 
 // Lineage is the kernel's binding record.
 type Lineage = native.Lineage
@@ -135,6 +144,22 @@ type MemoryIdempotencyStore struct {
 
 // Close releases MemoryIdempotencyStore. It is safe to call more than once.
 func (h *MemoryIdempotencyStore) Close() error {
+	if h == nil || h.nativeState == nil {
+		return nil
+	}
+	h.cleanup.Stop()
+	h.nativeState.close()
+	return nil
+}
+
+// MemoryKeys owns a native handle. Use Close when it is no longer needed. Do not copy it.
+type MemoryKeys struct {
+	*nativeState[*native.MemoryKeys]
+	cleanup runtime.Cleanup
+}
+
+// Close releases MemoryKeys. It is safe to call more than once.
+func (h *MemoryKeys) Close() error {
 	if h == nil || h.nativeState == nil {
 		return nil
 	}
@@ -243,6 +268,15 @@ type ProjectionLookup = native.ProjectionLookup
 // ProjectionRow is the kernel's binding record.
 type ProjectionRow = native.ProjectionRow
 
+// ProtectedReplay is the kernel's binding record.
+type ProtectedReplay = native.ProtectedReplay
+
+// ProtectedState is the kernel's binding record.
+type ProtectedState = native.ProtectedState
+
+// ProtectedStateResult is the kernel's binding record.
+type ProtectedStateResult = native.ProtectedStateResult
+
 // RedisDefaults is the kernel's binding record.
 type RedisDefaults = native.RedisDefaults
 
@@ -282,6 +316,9 @@ type SagaRow = native.SagaRow
 
 // SagaWrite is the kernel's binding record.
 type SagaWrite = native.SagaWrite
+
+// SealedValue is the kernel's binding record.
+type SealedValue = native.SealedValue
 
 // SnapshotLookup is the kernel's binding record.
 type SnapshotLookup = native.SnapshotLookup
@@ -335,7 +372,7 @@ func CanonicalDecimal(text string) (string, error) {
 
 // CanonicalJSON calls the shared kernel.
 func CanonicalJSON(payload []byte) (string, error) {
-	nativeValue, nativeError := native.CanonicalJSON(normalizeNative(payload))
+	nativeValue, nativeError := native.CanonicalJSON(payload)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -355,6 +392,35 @@ func CheckExtensions(extensions map[string]string) error {
 		return err
 	}
 	return mapNativeError(native.CheckExtensions(normalizeNative(extensions)))
+}
+
+// CheckKeyScope calls the shared kernel.
+func CheckKeyScope(scope KeyScope) error {
+	if err := checkNativeValue("scope", scope); err != nil {
+		return err
+	}
+	return mapNativeError(native.CheckKeyScope(normalizeNative(scope)))
+}
+
+// CheckKeyStatus calls the shared kernel.
+func CheckKeyStatus(status string) error {
+	if err := checkNativeString("status", status); err != nil {
+		return err
+	}
+	return mapNativeError(native.CheckKeyStatus(status))
+}
+
+// CheckKeyWriteStatus calls the shared kernel.
+func CheckKeyWriteStatus(status string) error {
+	if err := checkNativeString("status", status); err != nil {
+		return err
+	}
+	return mapNativeError(native.CheckKeyWriteStatus(status))
+}
+
+// CheckPlaintextPolicy calls the shared kernel.
+func CheckPlaintextPolicy(allowPlaintext bool) error {
+	return mapNativeError(native.CheckPlaintextPolicy(allowPlaintext))
 }
 
 // CheckProjectionDocument calls the shared kernel.
@@ -382,6 +448,21 @@ func CheckRejectionReason(reason string) error {
 		return err
 	}
 	return mapNativeError(native.CheckRejectionReason(reason))
+}
+
+// CheckSealedOwner calls the shared kernel.
+func CheckSealedOwner(committed bool, owner *string, proposed *string) error {
+	if owner != nil {
+		if err := checkNativeString("owner", *owner); err != nil {
+			return err
+		}
+	}
+	if proposed != nil {
+		if err := checkNativeString("proposed", *proposed); err != nil {
+			return err
+		}
+	}
+	return mapNativeError(native.CheckSealedOwner(committed, owner, proposed))
 }
 
 // CheckSequenceBatch calls the shared kernel.
@@ -423,13 +504,23 @@ func ClaimKey(mode string, scope string, idempotencyKey string, tenant *string) 
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// CommandEncryptionContext calls the shared kernel.
+func CommandEncryptionContext(message CommandMessage) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.CommandEncryptionContext(normalizeNative(message))
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // CommandHashJSON calls the shared kernel.
 func CommandHashJSON(name string, payload []byte) (uint64, error) {
 	var zero uint64
 	if err := checkNativeString("name", name); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.CommandHashJSON(name, normalizeNative(payload))
+	nativeValue, nativeError := native.CommandHashJSON(name, payload)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -445,7 +536,7 @@ func DecodeCommand(format string, wire []byte) (*CommandMessage, error) {
 	if err := checkNativeString("format", format); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.DecodeCommand(format, normalizeNative(wire))
+	nativeValue, nativeError := native.DecodeCommand(format, wire)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -468,7 +559,7 @@ func DecodeEvent(format string, wire []byte) (*EventMessage, error) {
 	if err := checkNativeString("format", format); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.DecodeEvent(format, normalizeNative(wire))
+	nativeValue, nativeError := native.DecodeEvent(format, wire)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -492,20 +583,41 @@ func DecodePriorIdempotencyRecord(recordJSON string, claimantHash uint64) (*Idem
 	return nativeValue, nil
 }
 
+// DecodeProtectedState calls the shared kernel.
+func DecodeProtectedState(stateJSON string) (*ProtectedStateResult, error) {
+	var zero *ProtectedStateResult
+	if err := checkNativeString("stateJSON", stateJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.DecodeProtectedState(stateJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // DefaultBackoff calls the shared kernel.
 func DefaultBackoff() *BackoffPolicy {
 	nativeValue := native.DefaultBackoff()
 	return nativeValue
 }
 
+// DefaultCipher calls the shared kernel.
+func DefaultCipher() string {
+	nativeValue := native.DefaultCipher()
+	return nativeValue
+}
+
 // GetDraftBatch calls the shared kernel.
-func GetDraftBatch(aggregateID string, initial uint64, snapshotEvery uint64, payloads []Payload, ids []string, lineage Lineage, extensions map[string]string, metadata map[string]string, tenant *string, occurredAt *int64) (*DraftBatch, error) {
+func GetDraftBatch(aggregateID string, initial uint64, snapshotEvery uint64, payloads []Payload, ids []string, lineage Lineage, extensions map[string]string, metadata map[string]string, tenant *string, occurredAt *int64, subject *string) (*DraftBatch, error) {
 	var zero *DraftBatch
 	if err := checkNativeString("aggregateID", aggregateID); err != nil {
 		return zero, err
 	}
 	if tenant != nil {
 		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
 			return zero, err
 		}
 	}
@@ -524,7 +636,7 @@ func GetDraftBatch(aggregateID string, initial uint64, snapshotEvery uint64, pay
 	if err := checkNativeValue("metadata", metadata); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.GetDraftBatch(aggregateID, initial, snapshotEvery, normalizeNative(payloads), normalizeNative(ids), normalizeNative(lineage), normalizeNative(extensions), normalizeNative(metadata), tenant, occurredAt)
+	nativeValue, nativeError := native.GetDraftBatch(aggregateID, initial, snapshotEvery, normalizeNative(payloads), normalizeNative(ids), normalizeNative(lineage), normalizeNative(extensions), normalizeNative(metadata), tenant, occurredAt, subject)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -614,6 +726,182 @@ func EncodeIdempotencyRecord(payloadHash uint64, pending bool, resultJSON string
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// EncodeKeyScope calls the shared kernel.
+func EncodeKeyScope(scope KeyScope) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.EncodeKeyScope(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// EncodeProtectedState calls the shared kernel.
+func EncodeProtectedState(state ProtectedState) (string, error) {
+	var zero string
+	if err := checkNativeValue("state", state); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.EncodeProtectedState(normalizeNative(state))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// EncryptionCiphers calls the shared kernel.
+func EncryptionCiphers() []string {
+	nativeValue := native.EncryptionCiphers()
+	return nativeValue
+}
+
+// EncryptionNonce calls the shared kernel.
+func EncryptionNonce(cipher string) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeString("cipher", cipher); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.EncryptionNonce(cipher)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// EncryptionScope calls the shared kernel.
+func EncryptionScope(keyNamespace string, info EncryptionInfo, tenant *string, subject *string) (*KeyScope, error) {
+	var zero *KeyScope
+	if err := checkNativeString("keyNamespace", keyNamespace); err != nil {
+		return zero, err
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.EncryptionScope(keyNamespace, normalizeNative(info), tenant, subject)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureActions calls the shared kernel.
+func ErasureActions() []string {
+	nativeValue := native.ErasureActions()
+	return nativeValue
+}
+
+// ErasureApply calls the shared kernel.
+func ErasureApply(record string, action string, participant *string) (string, error) {
+	var zero string
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("action", action); err != nil {
+		return zero, err
+	}
+	if participant != nil {
+		if err := checkNativeString("participant", *participant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ErasureApply(record, action, participant)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureCanDestroy calls the shared kernel.
+func ErasureCanDestroy(record string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureCanDestroy(record)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureCheckRequest calls the shared kernel.
+func ErasureCheckRequest(existing string, candidate string) error {
+	if err := checkNativeString("existing", existing); err != nil {
+		return err
+	}
+	if err := checkNativeString("candidate", candidate); err != nil {
+		return err
+	}
+	return mapNativeError(native.ErasureCheckRequest(existing, candidate))
+}
+
+// ErasureCreate calls the shared kernel.
+func ErasureCreate(scope KeyScope, operationID string, requestID string, participants []string) (string, error) {
+	var zero string
+	if err := checkNativeString("operationID", operationID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("requestID", requestID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("participants", participants); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureCreate(normalizeNative(scope), operationID, requestID, normalizeNative(participants))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureNotification calls the shared kernel.
+func ErasureNotification(previous string, next string) (*string, error) {
+	var zero *string
+	if err := checkNativeString("previous", previous); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("next", next); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureNotification(previous, next)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureProviderConfirmed calls the shared kernel.
+func ErasureProviderConfirmed(action string, status string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("action", action); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("status", status); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureProviderConfirmed(action, status)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureStages calls the shared kernel.
+func ErasureStages() []string {
+	nativeValue := native.ErasureStages()
+	return nativeValue
+}
+
+// ErasureValidate calls the shared kernel.
+func ErasureValidate(record string) (string, error) {
+	var zero string
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureValidate(record)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ErasureValidateParticipants calls the shared kernel.
+func ErasureValidateParticipants(required []string, registered []string) error {
+	if err := checkNativeValue("required", required); err != nil {
+		return err
+	}
+	if err := checkNativeValue("registered", registered); err != nil {
+		return err
+	}
+	return mapNativeError(native.ErasureValidateParticipants(normalizeNative(required), normalizeNative(registered)))
+}
+
 // ErrorCodes calls the shared kernel.
 func ErrorCodes() []string {
 	nativeValue := native.ErrorCodes()
@@ -666,6 +954,16 @@ func EventClaimKey(mode string, scope string, eventID string, tenant *string) (s
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// EventEncryptionContext calls the shared kernel.
+func EventEncryptionContext(message EventMessage) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.EventEncryptionContext(normalizeNative(message))
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // GetEventIdempotency calls the shared kernel.
 func GetEventIdempotency(message EventMessage, mode string, scope string) (*EventIdempotency, error) {
 	var zero *EventIdempotency
@@ -679,6 +977,22 @@ func GetEventIdempotency(message EventMessage, mode string, scope string) (*Even
 		return zero, err
 	}
 	nativeValue, nativeError := native.GetEventIdempotency(normalizeNative(message), mode, scope)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// FreshEncryptionInfo calls the shared kernel.
+func FreshEncryptionInfo(keyNamespace string, keyID string, cipher string) (*EncryptionInfo, error) {
+	var zero *EncryptionInfo
+	if err := checkNativeString("keyNamespace", keyNamespace); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("keyID", keyID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("cipher", cipher); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.FreshEncryptionInfo(keyNamespace, keyID, cipher)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -802,7 +1116,7 @@ func KafkaCommandRecord(tenancy string, message CommandMessage, value []byte, co
 	if err := checkNativeValue("message", message); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.KafkaCommandRecord(tenancy, normalizeNative(message), normalizeNative(value), contentType, key)
+	nativeValue, nativeError := native.KafkaCommandRecord(tenancy, normalizeNative(message), value, contentType, key)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -860,13 +1174,13 @@ func KafkaEventRecord(tenancy string, message EventMessage, value []byte, conten
 	if err := checkNativeValue("message", message); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.KafkaEventRecord(tenancy, normalizeNative(message), normalizeNative(value), contentType, key)
+	nativeValue, nativeError := native.KafkaEventRecord(tenancy, normalizeNative(message), value, contentType, key)
 	return nativeValue, mapNativeError(nativeError)
 }
 
 // KafkaPartitionFor calls the shared kernel.
 func KafkaPartitionFor(key []byte, partitions uint32) (uint32, error) {
-	nativeValue, nativeError := native.KafkaPartitionFor(normalizeNative(key), partitions)
+	nativeValue, nativeError := native.KafkaPartitionFor(key, partitions)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -894,6 +1208,12 @@ func GetKafkaRoute(headers []KafkaHeader, registered []string, defaultKind strin
 	}
 	nativeValue, nativeError := native.GetKafkaRoute(normalizeNative(headers), normalizeNative(registered), defaultKind)
 	return nativeValue, mapNativeError(nativeError)
+}
+
+// KeyStatuses calls the shared kernel.
+func KeyStatuses() []string {
+	nativeValue := native.KeyStatuses()
+	return nativeValue
 }
 
 // KeyedProjectionDocument calls the shared kernel.
@@ -932,6 +1252,12 @@ func GetMemoryBroker(partitions uint32, tenancy string) (*MemoryBroker, error) {
 	return wrapMemoryBroker(nativeValue), mapNativeError(nativeError)
 }
 
+// GetMemoryKeys calls the shared kernel.
+func GetMemoryKeys() *MemoryKeys {
+	nativeValue := native.GetMemoryKeys()
+	return wrapMemoryKeys(nativeValue)
+}
+
 // GetMemoryTransactor calls the shared kernel.
 func GetMemoryTransactor() *MemoryTransactor {
 	nativeValue := native.GetMemoryTransactor()
@@ -954,6 +1280,36 @@ func NoTx() int64 {
 func GetOffsetTracker() *OffsetTracker {
 	nativeValue := native.GetOffsetTracker()
 	return wrapOffsetTracker(nativeValue)
+}
+
+// OpenBytes calls the shared kernel.
+func OpenBytes(info EncryptionInfo, key []byte, context []byte, ciphertext []byte) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.OpenBytes(normalizeNative(info), key, context, ciphertext)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// OpenCommand calls the shared kernel.
+func OpenCommand(message CommandMessage, key []byte) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.OpenCommand(normalizeNative(message), key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// OpenEvent calls the shared kernel.
+func OpenEvent(message EventMessage, key []byte) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.OpenEvent(normalizeNative(message), key)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // OrderingKey calls the shared kernel.
@@ -1018,13 +1374,13 @@ func Partition(aggregateID string, n uint32) (uint32, error) {
 
 // PayloadHash calls the shared kernel.
 func PayloadHash(payload []byte) uint64 {
-	nativeValue := native.PayloadHash(normalizeNative(payload))
+	nativeValue := native.PayloadHash(payload)
 	return nativeValue
 }
 
 // PayloadHashJSON calls the shared kernel.
 func PayloadHashJSON(payload []byte) (uint64, error) {
-	nativeValue, nativeError := native.PayloadHashJSON(normalizeNative(payload))
+	nativeValue, nativeError := native.PayloadHashJSON(payload)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1216,7 +1572,7 @@ func PostgresCompleteWrite(key string, row *string, handle []byte, record string
 	if err := checkNativeString("record", record); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresCompleteWrite(key, row, normalizeNative(handle), record)
+	nativeValue, nativeError := native.PostgresCompleteWrite(key, row, handle, record)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1267,6 +1623,137 @@ func PostgresEnqueueParams(commands []CommandMessage) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.PostgresEnqueueParams(normalizeNative(commands))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureCheckCatalog calls the shared kernel.
+func PostgresErasureCheckCatalog(schema string, catalogJSON string) error {
+	if err := checkNativeString("schema", schema); err != nil {
+		return err
+	}
+	if err := checkNativeString("catalogJSON", catalogJSON); err != nil {
+		return err
+	}
+	return mapNativeError(native.PostgresErasureCheckCatalog(schema, catalogJSON))
+}
+
+// PostgresErasureCheckGuard calls the shared kernel.
+func PostgresErasureCheckGuard(row string) error {
+	if err := checkNativeString("row", row); err != nil {
+		return err
+	}
+	return mapNativeError(native.PostgresErasureCheckGuard(row))
+}
+
+// PostgresErasureCreateParams calls the shared kernel.
+func PostgresErasureCreateParams(operation string) (string, error) {
+	var zero string
+	if err := checkNativeString("operation", operation); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureCreateParams(operation)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureDecodeOperation calls the shared kernel.
+func PostgresErasureDecodeOperation(row string) (string, error) {
+	var zero string
+	if err := checkNativeString("row", row); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureDecodeOperation(row)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureGuardParams calls the shared kernel.
+func PostgresErasureGuardParams(scope KeyScope) (string, error) {
+	var zero string
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureGuardParams(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureLoadParams calls the shared kernel.
+func PostgresErasureLoadParams(scope KeyScope, requestID string) (string, error) {
+	var zero string
+	if err := checkNativeString("requestID", requestID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureLoadParams(normalizeNative(scope), requestID)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureReferenceDdl calls the shared kernel.
+func PostgresErasureReferenceDdl(schema string) (string, error) {
+	var zero string
+	if err := checkNativeString("schema", schema); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureReferenceDdl(schema)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureRevocationLocks calls the shared kernel.
+func PostgresErasureRevocationLocks(scope KeyScope) (string, error) {
+	var zero string
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureRevocationLocks(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureScopeID calls the shared kernel.
+func PostgresErasureScopeID(scope KeyScope) (string, error) {
+	var zero string
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureScopeID(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureStatements calls the shared kernel.
+func PostgresErasureStatements(schema string) (string, error) {
+	var zero string
+	if err := checkNativeString("schema", schema); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureStatements(schema)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureUpdateParams calls the shared kernel.
+func PostgresErasureUpdateParams(previous string, next string) (string, error) {
+	var zero string
+	if err := checkNativeString("previous", previous); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("next", next); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureUpdateParams(previous, next)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureUpdateResult calls the shared kernel.
+func PostgresErasureUpdateResult(version *int64) (uint64, error) {
+	nativeValue, nativeError := native.PostgresErasureUpdateResult(version)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresErasureWriterLocks calls the shared kernel.
+func PostgresErasureWriterLocks(scope KeyScope) (string, error) {
+	var zero string
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresErasureWriterLocks(normalizeNative(scope))
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1403,6 +1890,19 @@ func PostgresProjectionSave(projection string, id string, expected uint64, docum
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// PostgresProtectedSnapshotParams calls the shared kernel.
+func PostgresProtectedSnapshotParams(stream string, snapshot SnapshotResult) (string, error) {
+	var zero string
+	if err := checkNativeString("stream", stream); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("snapshot", snapshot); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresProtectedSnapshotParams(stream, normalizeNative(snapshot))
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // PostgresReferenceDdl calls the shared kernel.
 func PostgresReferenceDdl(tablesJSON string) (string, error) {
 	var zero string
@@ -1421,7 +1921,7 @@ func PostgresReleaseWrite(row *string, handle []byte) (bool, error) {
 			return zero, err
 		}
 	}
-	nativeValue, nativeError := native.PostgresReleaseWrite(row, normalizeNative(handle))
+	nativeValue, nativeError := native.PostgresReleaseWrite(row, handle)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1497,7 +1997,7 @@ func PostgresSettleParams(key string, handle []byte, record string) (string, err
 	if err := checkNativeString("record", record); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresSettleParams(key, normalizeNative(handle), record)
+	nativeValue, nativeError := native.PostgresSettleParams(key, handle, record)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1510,7 +2010,7 @@ func PostgresSnapshotParams(stream string, typeName string, version uint64, data
 	if err := checkNativeString("typeName", typeName); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresSnapshotParams(stream, typeName, version, normalizeNative(data))
+	nativeValue, nativeError := native.PostgresSnapshotParams(stream, typeName, version, data)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1617,6 +2117,138 @@ func Propagate(parentID string, parentCorrelationID string) (*Lineage, error) {
 	return nativeValue, nil
 }
 
+// ProtectedClaimKey calls the shared kernel.
+func ProtectedClaimKey(scope KeyScope, key string) (string, error) {
+	var zero string
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedClaimKey(normalizeNative(scope), key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedFailure calls the shared kernel.
+func ProtectedFailure(record string, owner string, code string) (string, error) {
+	var zero string
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("owner", owner); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("code", code); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedFailure(record, owner, code)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedFingerprint calls the shared kernel.
+func ProtectedFingerprint(name string, version uint32, data []byte, keyID string, key []byte) (string, error) {
+	var zero string
+	if err := checkNativeString("name", name); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("keyID", keyID); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedFingerprint(name, version, data, keyID, key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedFinish calls the shared kernel.
+func ProtectedFinish(record string, owner string, info EncryptionInfo, key []byte, plaintext []byte) (string, error) {
+	var zero string
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("owner", owner); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedFinish(record, owner, normalizeNative(info), key, plaintext)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedOpen calls the shared kernel.
+func ProtectedOpen(record string, key []byte) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedOpen(record, key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedPending calls the shared kernel.
+func ProtectedPending(scope KeyScope, claimID string, owner string, fingerprint string) (string, error) {
+	var zero string
+	if err := checkNativeString("claimID", claimID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("owner", owner); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("fingerprint", fingerprint); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProtectedPending(normalizeNative(scope), claimID, owner, fingerprint)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// GetProtectedReplay calls the shared kernel.
+func GetProtectedReplay(record string, scope KeyScope, claimID string, fingerprint string) (*ProtectedReplay, error) {
+	var zero *ProtectedReplay
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("claimID", claimID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("fingerprint", fingerprint); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.GetProtectedReplay(record, normalizeNative(scope), claimID, fingerprint)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProtectedReplayActions calls the shared kernel.
+func ProtectedReplayActions() []string {
+	nativeValue := native.ProtectedReplayActions()
+	return nativeValue
+}
+
+// ProtectedScope calls the shared kernel.
+func ProtectedScope(keyNamespace string, tenant *string, subject *string) (*KeyScope, error) {
+	var zero *KeyScope
+	if err := checkNativeString("keyNamespace", keyNamespace); err != nil {
+		return zero, err
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ProtectedScope(keyNamespace, tenant, subject)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // Query calls the shared kernel.
 func Query(query string, docs string) (string, error) {
 	var zero string
@@ -1645,6 +2277,19 @@ func ReceivedKey(id string, idempotencyKey *string) (string, error) {
 	return nativeValue, nil
 }
 
+// ReconcilePreparedEvents calls the shared kernel.
+func ReconcilePreparedEvents(drafts []EventDraft, stored []EventMessage) (bool, error) {
+	var zero bool
+	if err := checkNativeValue("drafts", drafts); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("stored", stored); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ReconcilePreparedEvents(normalizeNative(drafts), normalizeNative(stored))
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // RecordEvent calls the shared kernel.
 func RecordEvent(draft EventDraft, recordedAt int64) (*EventMessage, error) {
 	var zero *EventMessage
@@ -1657,7 +2302,7 @@ func RecordEvent(draft EventDraft, recordedAt int64) (*EventMessage, error) {
 
 // RedisCheckClaim calls the shared kernel.
 func RedisCheckClaim(claim []byte) error {
-	return mapNativeError(native.RedisCheckClaim(normalizeNative(claim)))
+	return mapNativeError(native.RedisCheckClaim(claim))
 }
 
 // RedisCheckConfig calls the shared kernel.
@@ -1670,13 +2315,13 @@ func RedisCheckConfig(prefix string, ttlMs int64, claimTTLMs int64, opTimeoutMs 
 
 // RedisClaimOutcome calls the shared kernel.
 func RedisClaimOutcome(claim []byte, reply []byte) (*ClaimResult, error) {
-	nativeValue, nativeError := native.RedisClaimOutcomePresent(normalizeNative(claim), reply != nil, normalizeNative(reply))
+	nativeValue, nativeError := native.RedisClaimOutcomePresent(claim, reply != nil, normalizeNative(reply))
 	return nativeValue, mapNativeError(nativeError)
 }
 
 // RedisClaimOutcomePresent calls the shared kernel.
 func RedisClaimOutcomePresent(claim []byte, present bool, reply []byte) (*ClaimResult, error) {
-	nativeValue, nativeError := native.RedisClaimOutcomePresent(normalizeNative(claim), present, normalizeNative(reply))
+	nativeValue, nativeError := native.RedisClaimOutcomePresent(claim, present, reply)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1720,7 +2365,7 @@ func RedisForgetOutcomePresent(key string, present bool, held []byte) (bool, err
 	if err := checkNativeString("key", key); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.RedisForgetOutcomePresent(key, present, normalizeNative(held))
+	nativeValue, nativeError := native.RedisForgetOutcomePresent(key, present, held)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1777,7 +2422,7 @@ func RedisSettledValue(claim []byte, recordJSON string) ([]byte, error) {
 	if err := checkNativeString("recordJSON", recordJSON); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.RedisSettledValue(normalizeNative(claim), recordJSON)
+	nativeValue, nativeError := native.RedisSettledValue(claim, recordJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1851,7 +2496,7 @@ func SagaAdmitActions() []string {
 }
 
 // SagaCommand calls the shared kernel.
-func SagaCommand(saga string, instanceID string, version uint64, index uint64, payload Payload, causeID string, causeCorrelationID string, issuedAt int64, tenant *string) (*CommandMessage, error) {
+func SagaCommand(saga string, instanceID string, version uint64, index uint64, payload Payload, causeID string, causeCorrelationID string, issuedAt int64, tenant *string, subject *string) (*CommandMessage, error) {
 	var zero *CommandMessage
 	if err := checkNativeString("saga", saga); err != nil {
 		return zero, err
@@ -1870,10 +2515,15 @@ func SagaCommand(saga string, instanceID string, version uint64, index uint64, p
 			return zero, err
 		}
 	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
 	if err := checkNativeValue("payload", payload); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.SagaCommand(saga, instanceID, version, index, normalizeNative(payload), causeID, causeCorrelationID, issuedAt, tenant)
+	nativeValue, nativeError := native.SagaCommand(saga, instanceID, version, index, normalizeNative(payload), causeID, causeCorrelationID, issuedAt, tenant, subject)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -1926,6 +2576,42 @@ func SagaWriteActions() []string {
 	return nativeValue
 }
 
+// SealBytes calls the shared kernel.
+func SealBytes(info EncryptionInfo, key []byte, context []byte, plaintext []byte) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.SealBytes(normalizeNative(info), key, context, plaintext)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// SealCommand calls the shared kernel.
+func SealCommand(message CommandMessage, info EncryptionInfo, key []byte) (*CommandMessage, error) {
+	var zero *CommandMessage
+	if err := checkNativeValue("message", message); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.SealCommand(normalizeNative(message), normalizeNative(info), key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// SealEvent calls the shared kernel.
+func SealEvent(draft EventDraft, info EncryptionInfo, key []byte) (*EventDraft, error) {
+	var zero *EventDraft
+	if err := checkNativeValue("draft", draft); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.SealEvent(normalizeNative(draft), normalizeNative(info), key)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // SnapshotDue calls the shared kernel.
 func SnapshotDue(every uint64, initial uint64, current uint64) bool {
 	nativeValue := native.SnapshotDue(every, initial, current)
@@ -1940,6 +2626,38 @@ func GetSplitError(wire string) (*SplitError, error) {
 	}
 	nativeValue := native.GetSplitError(wire)
 	return nativeValue, nil
+}
+
+// StateEncryptionContext calls the shared kernel.
+func StateEncryptionContext(kind string, identity string, typeName string, version uint64, marks string, completed bool, info EncryptionInfo, tenant *string, subject *string) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeString("kind", kind); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("identity", identity); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("typeName", typeName); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("marks", marks); err != nil {
+		return zero, err
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.StateEncryptionContext(kind, identity, typeName, version, marks, completed, normalizeNative(info), tenant, subject)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // GetStreak calls the shared kernel.
@@ -2566,7 +3284,27 @@ func (h *MemoryEventStore) SaveSnapshot(tx int64, aggregateID string, typeName s
 	if err := checkNativeString("typeName", typeName); err != nil {
 		return err
 	}
-	return mapNativeError(h.inner.SaveSnapshot(tx, aggregateID, typeName, version, normalizeNative(data)))
+	return mapNativeError(h.inner.SaveSnapshot(tx, aggregateID, typeName, version, data))
+}
+
+// SaveSnapshotRecord calls the shared kernel.
+func (h *MemoryEventStore) SaveSnapshotRecord(tx int64, aggregateID string, snapshot SnapshotResult) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("MemoryEventStore")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("MemoryEventStore")
+	}
+	if err := checkNativeString("aggregateID", aggregateID); err != nil {
+		return err
+	}
+	if err := checkNativeValue("snapshot", snapshot); err != nil {
+		return err
+	}
+	return mapNativeError(h.inner.SaveSnapshotRecord(tx, aggregateID, normalizeNative(snapshot)))
 }
 
 // Unpublished calls the shared kernel.
@@ -2673,7 +3411,7 @@ func (h *MemoryIdempotencyStore) Complete(tx int64, key string, handle []byte, r
 	if err := checkNativeString("recordJSON", recordJSON); err != nil {
 		return err
 	}
-	return mapNativeError(h.inner.Complete(tx, key, normalizeNative(handle), recordJSON))
+	return mapNativeError(h.inner.Complete(tx, key, handle, recordJSON))
 }
 
 // Release calls the shared kernel.
@@ -2690,7 +3428,7 @@ func (h *MemoryIdempotencyStore) Release(tx int64, key string, handle []byte) er
 	if err := checkNativeString("key", key); err != nil {
 		return err
 	}
-	return mapNativeError(h.inner.Release(tx, key, normalizeNative(handle)))
+	return mapNativeError(h.inner.Release(tx, key, handle))
 }
 
 // Forget calls the shared kernel.
@@ -2747,6 +3485,151 @@ func (h *MemoryIdempotencyStore) PutRaw(key string, recordJSON string) error {
 		return err
 	}
 	return mapNativeError(h.inner.PutRaw(key, recordJSON))
+}
+
+// Reserve calls the shared kernel.
+func (h *MemoryKeys) Reserve(scope KeyScope, cipher string) (*KeyReservation, error) {
+	var zero *KeyReservation
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeString("cipher", cipher); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Reserve(normalizeNative(scope), cipher)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Resolve calls the shared kernel.
+func (h *MemoryKeys) Resolve(scope KeyScope, cipher string, keyID string) ([]byte, error) {
+	var zero []byte
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeString("cipher", cipher); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("keyID", keyID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Resolve(normalizeNative(scope), cipher, keyID)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Fingerprint calls the shared kernel.
+func (h *MemoryKeys) Fingerprint(scope KeyScope) (*KeyReservation, error) {
+	var zero *KeyReservation
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Fingerprint(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ResolveFingerprint calls the shared kernel.
+func (h *MemoryKeys) ResolveFingerprint(scope KeyScope, keyID string) ([]byte, error) {
+	var zero []byte
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeString("keyID", keyID); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.ResolveFingerprint(normalizeNative(scope), keyID)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Revoke calls the shared kernel.
+func (h *MemoryKeys) Revoke(scope KeyScope) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Revoke(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Destroy calls the shared kernel.
+func (h *MemoryKeys) Destroy(scope KeyScope) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Destroy(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Status calls the shared kernel.
+func (h *MemoryKeys) Status(scope KeyScope) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryKeys")
+	}
+	if err := checkNativeValue("scope", scope); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Status(normalizeNative(scope))
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // Get calls the shared kernel.
@@ -3523,6 +4406,15 @@ func wrapMemoryIdempotencyStore(value *native.MemoryIdempotencyStore) *MemoryIde
 	state := &nativeState[*native.MemoryIdempotencyStore]{inner: value}
 	handle := &MemoryIdempotencyStore{nativeState: state}
 	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryIdempotencyStore]).close, state)
+	return handle
+}
+func wrapMemoryKeys(value *native.MemoryKeys) *MemoryKeys {
+	if value == nil {
+		return nil
+	}
+	state := &nativeState[*native.MemoryKeys]{inner: value}
+	handle := &MemoryKeys{nativeState: state}
+	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryKeys]).close, state)
 	return handle
 }
 func wrapMemoryProjectionStore(value *native.MemoryProjectionStore) *MemoryProjectionStore {

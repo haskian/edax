@@ -283,11 +283,10 @@ class KafkaFetched:
         return KafkaRecord(self.key, self.value, [KafkaHeader(k, v) for k, v in self.headers])
 
     def dead_letter(self, error: BaseException) -> KafkaRecord:
-        """The record a dead-letter topic gets: this one verbatim, plus the ``edax-dlq-*`` headers naming
-        its topic, partition, offset and ``error``. The coordinates are its identity, so a sink that sees
-        the same offset twice after a redelivery can dedup on them. The kernel renders ``edax-dlq-error``
-        from the code ``error`` carries (``unclassified`` when it carries none) and its message, which names
-        a host exception's class, so every SDK writes one form."""
+        """The fetched record with prior error headers removed and four ``edax-dlq-*`` headers added.
+        These name its topic, partition, offset and error code (``unclassified`` when absent).
+        Exception text is never persisted. The coordinates identify the record, so a sink that sees
+        the same offset twice after a redelivery can dedup on them."""
         code = errors.code_of(error)
         message = str(error) if code is not None else f"{error_type(error)}: {error}"
         # A code is the kernel's own, so the refusal of an unknown one cannot fire.

@@ -49,7 +49,8 @@ pub struct Statements {
     pub load: String,
     /// `$1` stream: the snapshot row.
     pub load_snapshot: String,
-    /// `$1` stream, `$2` type name, `$3` version, `$4` data: the stream's version.
+    /// `$1` stream, `$2` type name, `$3` version, `$4` data as hex, `$5` tenant,
+    /// `$6` subject, `$7` encryption JSON: returns the stream's version.
     pub save_snapshot: String,
     /// `$1` limit: event rows, oldest first.
     pub event_unpublished: String,
@@ -232,7 +233,7 @@ WHERE e.stream = $1::text
 ORDER BY e.sequence";
 
 const LOAD_SNAPSHOT: &str = r"/* edax:load_snapshot */
-SELECT json_build_object('type_name', s.type_name, 'version', s.version, 'data', encode(s.data, 'hex'))::text
+SELECT json_build_object('type_name', s.type_name, 'version', s.version, 'data', encode(s.data, 'hex'), 'tenant', s.tenant, 'subject', s.subject, 'encryption', s.encryption)::text
 FROM {snapshots} AS s
 WHERE s.stream = $1::text";
 
@@ -243,14 +244,15 @@ WITH current AS (
   WHERE stream = $1::text
 ),
 saved AS (
-  INSERT INTO {snapshots} AS s (stream, type_name, version, data)
-  SELECT $1::text, $2::text, ($3::text)::bigint, decode($4::text, 'hex')
+  INSERT INTO {snapshots} AS s (stream, type_name, version, data, tenant, subject, encryption)
+  SELECT $1::text, $2::text, ($3::text)::bigint, decode($4::text, 'hex'), $5::text, $6::text, $7::text
   FROM current
   WHERE ($3::text)::bigint <= current.version
   ON CONFLICT (stream) DO UPDATE
   SET type_name = EXCLUDED.type_name,
       version = EXCLUDED.version,
-      data = EXCLUDED.data
+      data = EXCLUDED.data,
+      tenant = EXCLUDED.tenant, subject = EXCLUDED.subject, encryption = EXCLUDED.encryption
   WHERE s.version <= EXCLUDED.version
 )
 SELECT version
@@ -450,8 +452,8 @@ WITH written AS (
     1,
     $3::text,
     $4::text,
-    $3::text IS NULL,
-    CASE WHEN $3::text IS NULL THEN clock_timestamp() END
+    ($6::text)::boolean,
+    CASE WHEN ($6::text)::boolean THEN clock_timestamp() END
   )
   ON CONFLICT (saga, id) DO NOTHING
   RETURNING version
@@ -465,8 +467,8 @@ WITH written AS (
   SET version = version + 1,
       state = $4::text,
       folded = $5::text,
-      completed = $4::text IS NULL,
-      completed_at = CASE WHEN $4::text IS NULL THEN clock_timestamp() END
+      completed = ($7::text)::boolean,
+      completed_at = CASE WHEN ($7::text)::boolean THEN clock_timestamp() END
   WHERE saga = $1::text
     AND id = $2::text
     AND version = ($3::text)::bigint

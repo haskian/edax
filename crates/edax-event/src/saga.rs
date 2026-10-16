@@ -342,6 +342,8 @@ pub struct Cause<'a> {
     pub correlation_id: &'a str,
     /// The folded event's tenant, which each command it causes inherits.
     pub tenant: Option<&'a str>,
+    /// Immutable erasure owner inherited by child commands.
+    pub subject: Option<&'a str>,
 }
 
 impl<'a> From<&'a EventMessage> for Cause<'a> {
@@ -350,6 +352,7 @@ impl<'a> From<&'a EventMessage> for Cause<'a> {
             id: &event.id,
             correlation_id: &event.correlation_id,
             tenant: event.tenant.as_deref(),
+            subject: event.subject.as_deref(),
         }
     }
 }
@@ -389,6 +392,8 @@ pub fn saga_command(
         id,
         aggregate_id: Some(instance_id.to_owned()),
         tenant: cause.tenant.map(ToOwned::to_owned),
+        subject: cause.subject.map(ToOwned::to_owned),
+        encryption: None,
         name: payload.name,
         version: payload.version,
         data: payload.data,
@@ -448,13 +453,19 @@ pub fn saga_command_failed(
         command_id: command.id.clone(),
         command: command.name.clone(),
         code: code.map(|code| code.as_str().to_owned()),
-        error: error.to_owned(),
+        error: if command.encryption.is_some() {
+            String::new()
+        } else {
+            error.to_owned()
+        },
     };
     let lineage = propagate(&command.id, &command.correlation_id);
     Ok(EventMessage {
         id: format!("{}:failed", command.id),
         aggregate_id: instance_id,
         tenant: command.tenant.clone(),
+        subject: command.subject.clone(),
+        encryption: None,
         sequence: None,
         name: SAGA_COMMAND_FAILED.to_owned(),
         version: 1,
@@ -803,6 +814,7 @@ mod tests {
     #[test]
     fn saga_command_failed_branches() {
         let cause = Cause {
+            subject: None,
             id: "evt-1",
             correlation_id: "corr-1",
             tenant: Some("acme"),
@@ -822,6 +834,8 @@ mod tests {
         );
         let failed = saga_command_failed(&row, Some(ErrorCode::Rejected), "out of stock", 9).map_err(|e| e.to_string());
         let want = EventMessage {
+        subject: None,
+        encryption: None,
             id: "8:shipping:order-7:3:0:failed".into(),
             aggregate_id: "order-7".into(),
             tenant: Some("acme".into()),

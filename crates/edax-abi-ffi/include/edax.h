@@ -63,6 +63,10 @@ typedef struct EDAXDrainRowFailed EDAXDrainRowFailed;
  */
 typedef struct EDAXDrained EDAXDrained;
 /**
+ * Encryption framing shared by messages and persisted state; contains no secret key material.
+ */
+typedef struct EDAXEncryptionInfo EDAXEncryptionInfo;
+/**
  * An event as a repository hands it to the store: every field of `EventMessage` but
  * `recorded_at`, which the store assigns. See `edax_event.EventDraft`.
  */
@@ -119,6 +123,14 @@ typedef struct EDAXKafkaRevoked EDAXKafkaRevoked;
  */
 typedef struct EDAXKafkaRoute EDAXKafkaRoute;
 /**
+ * Public reservation identity. Secret bytes cross separately through the byte-returning resolve APIs.
+ */
+typedef struct EDAXKeyReservation EDAXKeyReservation;
+/**
+ * Provider scope, independent of storage-tenancy key composition.
+ */
+typedef struct EDAXKeyScope EDAXKeyScope;
+/**
  * The two ids that place a message in its flow. See `edax_event.Lineage`.
  */
 typedef struct EDAXLineage EDAXLineage;
@@ -147,6 +159,11 @@ typedef uint64_t EDAXMemoryEventStore;
  * JSON records, fenced on the claim's handle. See `edax_memory.MemoryIdempotencyStore`.
  */
 typedef uint64_t EDAXMemoryIdempotencyStore;
+/**
+ * In-memory reference provider. One mutex serializes all reservations and revocations.
+ * Restarting the process loses keys and tombstones; this is not a durable production provider.
+ */
+typedef uint64_t EDAXMemoryKeys;
 /**
  * The projection store seam of a `MemoryTransactor`: versioned read-model documents, queried by the
  * kernel. See `edax_memory.MemoryProjectionStore`.
@@ -238,6 +255,18 @@ typedef struct EDAXProjectionLookup EDAXProjectionLookup;
  */
 typedef struct EDAXProjectionRow EDAXProjectionRow;
 /**
+ * Replay decision, with ciphertext retained until the provider authorizes opening.
+ */
+typedef struct EDAXProtectedReplay EDAXProtectedReplay;
+/**
+ * Typed protected application-state envelope, retained opaquely by storage adapters.
+ */
+typedef struct EDAXProtectedState EDAXProtectedState;
+/**
+ * Presence envelope preserves optional native handle ownership in generated bindings.
+ */
+typedef struct EDAXProtectedStateResult EDAXProtectedStateResult;
+/**
  * The ledger settings a store is built with when its host overrides none, in milliseconds. A struct
  * rather than three calls, like `RedisScripts`. See `edax_redis.DEFAULT_TTL_MS`.
  */
@@ -291,6 +320,10 @@ typedef struct EDAXSagaRow EDAXSagaRow;
  * commits, which the step's command ids carry (both `None` for nothing). See `edax_event.SagaWrite`.
  */
 typedef struct EDAXSagaWrite EDAXSagaWrite;
+/**
+ * Reusable encrypted stored value; record-specific context is supplied by its owning kernel.
+ */
+typedef struct EDAXSealedValue EDAXSealedValue;
 /**
  * A snapshot lookup whose outer record always has an owned native handle.
  */
@@ -532,6 +565,24 @@ char *edax_command_message_aggregate_id(EDAXAlefHandle handle);
  * Pointer must be a valid handle returned by this library.
  */
 char *edax_command_message_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `CommandMessage`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_command_message_subject(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `CommandMessage`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_command_message_encryption(EDAXAlefHandle handle);
 
 /**
  * Get the `name` field from a `CommandMessage`.
@@ -956,6 +1007,73 @@ int32_t edax_drained_has_wait_step(EDAXAlefHandle handle);
 char *edax_drained_raise_id(EDAXAlefHandle handle);
 
 /**
+ * Create a `EncryptionInfo` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_encryption_info_free`.
+ */
+EDAXAlefHandle edax_encryption_info_from_json(const char *json);
+
+/**
+ * Serialize a `EncryptionInfo` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_encryption_info_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `EncryptionInfo` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_encryption_info_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `format_version` field from a `EncryptionInfo`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+uint32_t edax_encryption_info_format_version(EDAXAlefHandle handle);
+
+/**
+ * Get the `key_namespace` field from a `EncryptionInfo`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_encryption_info_key_namespace(EDAXAlefHandle handle);
+
+/**
+ * Get the `key_id` field from a `EncryptionInfo`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_encryption_info_key_id(EDAXAlefHandle handle);
+
+/**
+ * Get the `cipher` field from a `EncryptionInfo`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_encryption_info_cipher(EDAXAlefHandle handle);
+
+/**
+ * Get the `nonce` field from a `EncryptionInfo`.
+ * The returned byte pointer is borrowed from `ptr` and must not be freed.
+ * It remains valid until `ptr` is destroyed or the field is mutated.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+uint8_t *edax_encryption_info_nonce(EDAXAlefHandle handle,
+                                    uintptr_t *out_len);
+
+/**
  * Create a `EventDraft` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -1004,6 +1122,24 @@ char *edax_event_draft_aggregate_id(EDAXAlefHandle handle);
  * Pointer must be a valid handle returned by this library.
  */
 char *edax_event_draft_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `EventDraft`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_event_draft_subject(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `EventDraft`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_event_draft_encryption(EDAXAlefHandle handle);
 
 /**
  * Get the `sequence` field from a `EventDraft`.
@@ -1195,6 +1331,24 @@ char *edax_event_message_aggregate_id(EDAXAlefHandle handle);
  * Pointer must be a valid handle returned by this library.
  */
 char *edax_event_message_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `EventMessage`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_event_message_subject(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `EventMessage`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_event_message_encryption(EDAXAlefHandle handle);
 
 /**
  * Get the `sequence` field from a `EventMessage`.
@@ -1653,6 +1807,88 @@ char *edax_kafka_route_unknown(EDAXAlefHandle handle);
 int32_t edax_kafka_route_headerless(EDAXAlefHandle handle);
 
 /**
+ * Create a `KeyReservation` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_key_reservation_free`.
+ */
+EDAXAlefHandle edax_key_reservation_from_json(const char *json);
+
+/**
+ * Serialize a `KeyReservation` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_key_reservation_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `KeyReservation` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_key_reservation_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `key_id` field from a `KeyReservation`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_key_reservation_key_id(EDAXAlefHandle handle);
+
+/**
+ * Create a `KeyScope` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_key_scope_free`.
+ */
+EDAXAlefHandle edax_key_scope_from_json(const char *json);
+
+/**
+ * Serialize a `KeyScope` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_key_scope_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `KeyScope` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_key_scope_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `key_namespace` field from a `KeyScope`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_key_scope_key_namespace(EDAXAlefHandle handle);
+
+/**
+ * Get the `tenant` field from a `KeyScope`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_key_scope_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `KeyScope`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_key_scope_subject(EDAXAlefHandle handle);
+
+/**
  * Create a `Lineage` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -1880,6 +2116,16 @@ int32_t edax_memory_event_store_save_snapshot(EDAXAlefHandle this_,
                                               uintptr_t data_len);
 
 /**
+ * Store the complete protected snapshot envelope.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_event_store_save_snapshot_record(EDAXAlefHandle this_,
+                                                     int64_t tx,
+                                                     const char *aggregate_id,
+                                                     EDAXAlefHandle snapshot);
+
+/**
  * Committed outbox events not yet published, capped at `limit`. The relay reads outside any
  * transaction, so there is no token.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -1988,6 +2234,79 @@ int32_t edax_memory_idempotency_store_expire(EDAXAlefHandle this_,
 int32_t edax_memory_idempotency_store_put_raw(EDAXAlefHandle this_,
                                               const char *key,
                                               const char *record_json);
+
+/**
+ * Free a `MemoryKeys` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_memory_keys_free(EDAXAlefHandle handle);
+
+/**
+ * Reserve one write before encrypting; failed writes still consume the reservation.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_keys_reserve(EDAXAlefHandle this_,
+                                        EDAXAlefHandle scope,
+                                        const char *cipher);
+
+/**
+ * Resolve only the requested existing generation, exact scope, and encryption purpose.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_keys_resolve(EDAXAlefHandle this_,
+                                 EDAXAlefHandle scope,
+                                 const char *cipher,
+                                 const char *key_id,
+                                 uint8_t **out_ptr,
+                                 uintptr_t *out_len,
+                                 uintptr_t *out_cap);
+
+/**
+ * Reserve the stable fingerprint key, independent of every encryption generation.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_keys_fingerprint(EDAXAlefHandle this_,
+                                            EDAXAlefHandle scope);
+
+/**
+ * Resolve only an existing fingerprint generation of this exact scope.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_keys_resolve_fingerprint(EDAXAlefHandle this_,
+                                             EDAXAlefHandle scope,
+                                             const char *key_id,
+                                             uint8_t **out_ptr,
+                                             uintptr_t *out_len,
+                                             uintptr_t *out_cap);
+
+/**
+ * Permanently reject reservations and reads while destruction is pending.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_keys_revoke(EDAXAlefHandle this_,
+                              EDAXAlefHandle scope);
+
+/**
+ * Destroy current and historical keys, retaining permanent ownership tombstones.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_keys_destroy(EDAXAlefHandle this_,
+                               EDAXAlefHandle scope);
+
+/**
+ * Read the authoritative scope state, including a tenant's revocation of future subjects.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_keys_status(EDAXAlefHandle this_,
+                              EDAXAlefHandle scope);
 
 /**
  * Free a `MemoryProjectionStore` handle.
@@ -2895,6 +3214,155 @@ uint64_t edax_projection_row_version(EDAXAlefHandle handle);
 char *edax_projection_row_document_json(EDAXAlefHandle handle);
 
 /**
+ * Create a `ProtectedReplay` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_protected_replay_free`.
+ */
+EDAXAlefHandle edax_protected_replay_from_json(const char *json);
+
+/**
+ * Serialize a `ProtectedReplay` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_protected_replay_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `ProtectedReplay` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_protected_replay_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `action` field from a `ProtectedReplay`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_protected_replay_action(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `ProtectedReplay`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_protected_replay_encryption(EDAXAlefHandle handle);
+
+/**
+ * Get the `code` field from a `ProtectedReplay`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_protected_replay_code(EDAXAlefHandle handle);
+
+/**
+ * Create a `ProtectedState` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_protected_state_free`.
+ */
+EDAXAlefHandle edax_protected_state_from_json(const char *json);
+
+/**
+ * Serialize a `ProtectedState` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_protected_state_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `ProtectedState` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_protected_state_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `tenant` field from a `ProtectedState`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_protected_state_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `ProtectedState`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_protected_state_subject(EDAXAlefHandle handle);
+
+/**
+ * Get the `completed` field from a `ProtectedState`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+int32_t edax_protected_state_completed(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `ProtectedState`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_protected_state_encryption(EDAXAlefHandle handle);
+
+/**
+ * Get the `data` field from a `ProtectedState`.
+ * The returned byte pointer is borrowed from `ptr` and must not be freed.
+ * It remains valid until `ptr` is destroyed or the field is mutated.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+uint8_t *edax_protected_state_data(EDAXAlefHandle handle,
+                                   uintptr_t *out_len);
+
+/**
+ * Create a `ProtectedStateResult` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_protected_state_result_free`.
+ */
+EDAXAlefHandle edax_protected_state_result_from_json(const char *json);
+
+/**
+ * Serialize a `ProtectedStateResult` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_protected_state_result_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `ProtectedStateResult` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_protected_state_result_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `value` field from a `ProtectedStateResult`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_protected_state_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_protected_state_result_value(EDAXAlefHandle handle);
+
+/**
  * Create a `RedisDefaults` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -3405,6 +3873,48 @@ uint64_t edax_saga_write_version(EDAXAlefHandle handle);
 int32_t edax_saga_write_has_version(EDAXAlefHandle handle);
 
 /**
+ * Create a `SealedValue` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_sealed_value_free`.
+ */
+EDAXAlefHandle edax_sealed_value_from_json(const char *json);
+
+/**
+ * Serialize a `SealedValue` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_sealed_value_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `SealedValue` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_sealed_value_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `SealedValue`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_sealed_value_encryption(EDAXAlefHandle handle);
+
+/**
+ * Get the `data` field from a `SealedValue`.
+ * The returned byte pointer is borrowed from `ptr` and must not be freed.
+ * It remains valid until `ptr` is destroyed or the field is mutated.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+uint8_t *edax_sealed_value_data(EDAXAlefHandle handle,
+                                uintptr_t *out_len);
+
+/**
  * Create a `SnapshotLookup` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -3458,6 +3968,33 @@ char *edax_snapshot_result_to_json(EDAXAlefHandle handle);
  * Handle must have been returned by this library, or be zero.
  */
 void edax_snapshot_result_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `tenant` field from a `SnapshotResult`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_snapshot_result_tenant(EDAXAlefHandle handle);
+
+/**
+ * Get the `subject` field from a `SnapshotResult`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_snapshot_result_subject(EDAXAlefHandle handle);
+
+/**
+ * Get the `encryption` field from a `SnapshotResult`.
+ * A non-null returned handle is owned by the caller.
+ * It must be freed with `edax_encryption_info_free`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+EDAXAlefHandle edax_snapshot_result_encryption(EDAXAlefHandle handle);
 
 /**
  * Get the `type_name` field from a `SnapshotResult`.
@@ -3698,6 +4235,34 @@ uintptr_t edax_canonical_timestamp_len(const char *_text);
 int32_t edax_check_extensions(const char *extensions);
 
 /**
+ * Validate a provider scope without creating or resolving a key.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_key_scope(EDAXAlefHandle scope);
+
+/**
+ * Apply the kernel's authoritative key-provider state verdict.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_key_status(const char *status);
+
+/**
+ * A new write may create an unknown scope; revoking and destroyed scopes remain fenced.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_key_write_status(const char *status);
+
+/**
+ * Refuse plaintext unless the reader explicitly enables the legacy-read policy.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_plaintext_policy(int32_t allow_plaintext);
+
+/**
  * Refuse `document_json` as the stored document of projection `id` exactly as the kernel's stores do,
  * as a `codec:` error: one that is not a JSON object, holds an integer wider than 64 bits, or is not
  * JSON. For a host's own projection store. See `edax_cqrs.document_json`.
@@ -3728,6 +4293,15 @@ int32_t edax_check_query(const char *query);
  * freed with the appropriate free function.
  */
 int32_t edax_check_rejection_reason(const char *reason);
+
+/**
+ * Check immutable ownership before a protected transition.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_check_sealed_owner(int32_t committed,
+                                const char *owner,
+                                const char *proposed);
 
 /**
  * Check an append batch against the dense-sequence rule: every event carries a sequence and the
@@ -3775,6 +4349,16 @@ uintptr_t edax_claim_key_len(const char *_mode,
                              const char *_scope,
                              const char *_idempotency_key,
                              const char *_tenant);
+
+/**
+ * The exact command context, including intent identity and issuer time.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_command_encryption_context(EDAXAlefHandle message,
+                                        uint8_t **out_ptr,
+                                        uintptr_t *out_len,
+                                        uintptr_t *out_cap);
 
 /**
  * The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
@@ -3854,11 +4438,34 @@ EDAXAlefHandle edax_decode_prior_idempotency_record(const char *record_json,
                                                     uint64_t claimant_hash);
 
 /**
+ * Distinguish protected state from explicitly supported historical plaintext.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_decode_protected_state(const char *state_json);
+
+/**
  * The toolkit's default backoff policy, so a host never restates its numbers.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_default_backoff(void);
+
+/**
+ * Default cipher selected by the encryption protocol.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_default_cipher(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_default_cipher` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_default_cipher`.
+ */
+uintptr_t edax_default_cipher_len(void);
 
 /**
  * The drafts a save of the aggregate `aggregate_id` at version `initial` appends for `payloads`, each
@@ -3879,7 +4486,8 @@ EDAXAlefHandle edax_draft_batch(const char *aggregate_id,
                                 const char *extensions,
                                 const char *metadata,
                                 const char *tenant,
-                                int64_t occurred_at);
+                                int64_t occurred_at,
+                                const char *subject);
 
 /**
  * The drain rule of a relay whose rows die at their `max_attempts`-th transient failure (`0`: never)
@@ -4001,6 +4609,207 @@ uintptr_t edax_encode_idempotency_record_len(uint64_t _payload_hash,
                                              const char *_error_reason);
 
 /**
+ * Injective, versioned encoding shared by every key provider.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_encode_key_scope(EDAXAlefHandle scope,
+                              uint8_t **out_ptr,
+                              uintptr_t *out_len,
+                              uintptr_t *out_cap);
+
+/**
+ * Encode the versioned protected state representation.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_encode_protected_state(EDAXAlefHandle state);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_encode_protected_state` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_encode_protected_state`.
+ */
+uintptr_t edax_encode_protected_state_len(EDAXAlefHandle _state);
+
+/**
+ * Cipher names a host compares against its own enum.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_encryption_ciphers(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_encryption_ciphers` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_encryption_ciphers`.
+ */
+uintptr_t edax_encryption_ciphers_len(void);
+
+/**
+ * OS-random nonce of the required algorithm-specific size.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_encryption_nonce(const char *cipher,
+                              uint8_t **out_ptr,
+                              uintptr_t *out_len,
+                              uintptr_t *out_cap);
+
+/**
+ * Validate the configured namespace before selecting any provider record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_encryption_scope(const char *key_namespace,
+                                     EDAXAlefHandle info,
+                                     const char *tenant,
+                                     const char *subject);
+
+/**
+ * Every erasure workflow action.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_actions(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_actions` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_actions`.
+ */
+uintptr_t edax_erasure_actions_len(void);
+
+/**
+ * Confirm a workflow effect or one participant's cleanup.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_apply(const char *record,
+                         const char *action,
+                         const char *participant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_apply` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_apply`.
+ */
+uintptr_t edax_erasure_apply_len(const char *_record,
+                                 const char *_action,
+                                 const char *_participant);
+
+/**
+ * Whether every required cleanup participant acknowledged this notification.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_erasure_can_destroy(const char *record);
+
+/**
+ * Validate request idempotency and its frozen participants.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_erasure_check_request(const char *existing,
+                                   const char *candidate);
+
+/**
+ * Construct the operation that must be persisted before revocation.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_create(EDAXAlefHandle scope,
+                          const char *operation_id,
+                          const char *request_id,
+                          const char *participants);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_create` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_create`.
+ */
+uintptr_t edax_erasure_create_len(EDAXAlefHandle _scope,
+                                  const char *_operation_id,
+                                  const char *_request_id,
+                                  const char *_participants);
+
+/**
+ * The stable-ID control notification generated by a durable transition.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_notification(const char *previous,
+                                const char *next);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_notification` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_notification`.
+ */
+uintptr_t edax_erasure_notification_len(const char *_previous,
+                                        const char *_next);
+
+/**
+ * Interpret a provider's authoritative status after a requested lifecycle effect.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_erasure_provider_confirmed(const char *action,
+                                        const char *status);
+
+/**
+ * Every durable erasure stage.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_stages(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_stages` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_stages`.
+ */
+uintptr_t edax_erasure_stages_len(void);
+
+/**
+ * Validate and normalize an operation restored by a store.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_erasure_validate(const char *record);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_erasure_validate` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_erasure_validate`.
+ */
+uintptr_t edax_erasure_validate_len(const char *_record);
+
+/**
+ * Validate coordinator participants before any revocation effect.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_erasure_validate_participants(const char *required,
+                                           const char *registered);
+
+/**
  * Every code of the error taxonomy, in the kernel's order. A host builds its exception table from
  * this list rather than restating it, so a code the kernel adds is a code the host must map.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -4066,6 +4875,16 @@ uintptr_t edax_event_claim_key_len(const char *_mode,
                                    const char *_tenant);
 
 /**
+ * The exact event context; recorded time is excluded by the event kernel.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_event_encryption_context(EDAXAlefHandle message,
+                                      uint8_t **out_ptr,
+                                      uintptr_t *out_len,
+                                      uintptr_t *out_cap);
+
+/**
  * The key and hash the event idempotency guard named `scope` claims for `message`, in a deployment
  * of tenancy `mode`: the kernel's rule, pinned by `testdata/golden/event_idempotency.json`, so two
  * SDKs consuming one stream bind alike. A mode that requires a tenant and a message that names none
@@ -4076,6 +4895,15 @@ uintptr_t edax_event_claim_key_len(const char *_mode,
 EDAXAlefHandle edax_event_idempotency(EDAXAlefHandle message,
                                       const char *mode,
                                       const char *scope);
+
+/**
+ * Complete encryption information with a fresh operating-system nonce.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_fresh_encryption_info(const char *key_namespace,
+                                          const char *key_id,
+                                          const char *cipher);
 
 /**
  * A fresh time-ordered globally-unique id (UUID v7), as a string. Non-deterministic.
@@ -4284,9 +5112,10 @@ uintptr_t edax_kafka_content_type_header_len(void);
 
 /**
  * The record a dead-letter sink publishes for `record`, fetched from `topic`/`partition`/`offset`:
- * key, value and headers verbatim, plus the four `edax-dlq-*` headers. The failure is its taxonomy
- * `code` (`None` for a failure no code classifies) and its `message`; the kernel renders the header. A
- * code the taxonomy does not know is a `codec:` error. `code` trails because alef moves optional
+ * key, value and headers verbatim except prior error headers, plus four `edax-dlq-*` headers.
+ * The error header contains only `code`, or `unclassified` when absent. The compatibility
+ * `message` argument is never persisted. An unknown code is a `codec:` error.
+ * `code` trails because alef moves optional
  * parameters to the end. See `edax_kafka.dead_letter_record`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4370,6 +5199,22 @@ EDAXAlefHandle edax_kafka_route(const char *headers,
                                 const char *default_kind);
 
 /**
+ * Lifecycle names; provider errors are separate from persisted lifecycle states.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_key_statuses(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_key_statuses` on this thread.
+ * Returns 0 when the primary call returned null or failed before producing a string. Enables safe
+ * slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_key_statuses`.
+ */
+uintptr_t edax_key_statuses_len(void);
+
+/**
  * `document_json`, the stored document of projection `id`, as a store's `get` and `get_many` read it
  * back:
  * with the row key as its `"id"` field, overwriting any the document carries. A document
@@ -4424,6 +5269,13 @@ EDAXAlefHandle edax_memory_broker(uint32_t partitions,
                                   const char *tenancy);
 
 /**
+ * Create a process-local provider with no reusable host-side cache.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_keys(void);
+
+/**
  * A fresh in-memory database with every seam behind one transaction boundary.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4465,6 +5317,46 @@ int64_t edax_no_tx(void);
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_offset_tracker(void);
+
+/**
+ * Low-level authenticated opening; returns no plaintext until the full tag validates.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_open_bytes(EDAXAlefHandle info,
+                        const uint8_t *key,
+                        uintptr_t key_len,
+                        const uint8_t *context,
+                        uintptr_t context_len,
+                        const uint8_t *ciphertext,
+                        uintptr_t ciphertext_len,
+                        uint8_t **out_ptr,
+                        uintptr_t *out_len,
+                        uintptr_t *out_cap);
+
+/**
+ * Authenticate a command before payload decoding, upcasting, or result replay.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_open_command(EDAXAlefHandle message,
+                          const uint8_t *key,
+                          uintptr_t key_len,
+                          uint8_t **out_ptr,
+                          uintptr_t *out_len,
+                          uintptr_t *out_cap);
+
+/**
+ * Authenticate an event without changing the original raw envelope.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_open_event(EDAXAlefHandle message,
+                        const uint8_t *key,
+                        uintptr_t key_len,
+                        uint8_t **out_ptr,
+                        uintptr_t *out_len,
+                        uintptr_t *out_cap);
 
 /**
  * The ordering key of a message: `aggregate_id`, or the message's own `id` when it targets no
@@ -4861,6 +5753,199 @@ char *edax_postgres_enqueue_params(const char *commands);
 uintptr_t edax_postgres_enqueue_params_len(const char *_commands);
 
 /**
+ * Validate the erasure catalog query result without provisioning tables.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_postgres_erasure_check_catalog(const char *schema,
+                                            const char *catalog_json);
+
+/**
+ * Refuse revoked scopes and isolation modes that can read stale tombstones.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_postgres_erasure_check_guard(const char *row);
+
+/**
+ * Parameters for the first durable operation record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_create_params(const char *operation);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_create_params` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_create_params`.
+ */
+uintptr_t edax_postgres_erasure_create_params_len(const char *_operation);
+
+/**
+ * Normalize an operation row read from Postgres.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_decode_operation(const char *row);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_decode_operation` on this thread. Returns 0 when the primary call returned
+ * null or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_decode_operation`.
+ */
+uintptr_t edax_postgres_erasure_decode_operation_len(const char *_row);
+
+/**
+ * Parameters for the fresh-snapshot revocation check after locks are held.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_guard_params(EDAXAlefHandle scope);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_guard_params` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_guard_params`.
+ */
+uintptr_t edax_postgres_erasure_guard_params_len(EDAXAlefHandle _scope);
+
+/**
+ * Parameters for a request lookup.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_load_params(EDAXAlefHandle scope,
+                                        const char *request_id);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_erasure_load_params`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_load_params`.
+ */
+uintptr_t edax_postgres_erasure_load_params_len(EDAXAlefHandle _scope,
+                                                const char *_request_id);
+
+/**
+ * Reference migration only; edax never provisions tables.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_reference_ddl(const char *schema);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_reference_ddl` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_reference_ddl`.
+ */
+uintptr_t edax_postgres_erasure_reference_ddl_len(const char *_schema);
+
+/**
+ * Conflicting transaction locks for cleanup and permanent revocation.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_revocation_locks(EDAXAlefHandle scope);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_revocation_locks` on this thread. Returns 0 when the primary call returned
+ * null or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_revocation_locks`.
+ */
+uintptr_t edax_postgres_erasure_revocation_locks_len(EDAXAlefHandle _scope);
+
+/**
+ * Canonical identifier including namespace, tenant and subject.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_scope_id(EDAXAlefHandle scope);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_erasure_scope_id` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_scope_id`.
+ */
+uintptr_t edax_postgres_erasure_scope_id_len(EDAXAlefHandle _scope);
+
+/**
+ * SQL for operation CAS, notifications, and transaction fences.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_statements(const char *schema);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_erasure_statements`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_statements`.
+ */
+uintptr_t edax_postgres_erasure_statements_len(const char *_schema);
+
+/**
+ * Parameters for an atomic operation transition and optional control notification.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_update_params(const char *previous,
+                                          const char *next);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_update_params` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_update_params`.
+ */
+uintptr_t edax_postgres_erasure_update_params_len(const char *_previous,
+                                                  const char *_next);
+
+/**
+ * CAS verdict. Missing result is a retryable conflict.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_postgres_erasure_update_result(int64_t version);
+
+/**
+ * Ordered shared transaction locks for protected writers.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_erasure_writer_locks(EDAXAlefHandle scope);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_erasure_writer_locks` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_erasure_writer_locks`.
+ */
+uintptr_t edax_postgres_erasure_writer_locks_len(EDAXAlefHandle _scope);
+
+/**
  * Whether a `forget` of `key` deletes `row`. See `edax_postgres.forget_write`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5023,6 +6108,25 @@ EDAXAlefHandle edax_postgres_projection_save(const char *projection,
                                              const char *id,
                                              uint64_t expected,
                                              const char *document_json);
+
+/**
+ * Parameters preserving ownership and encryption on stored aggregate state.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_protected_snapshot_params(const char *stream,
+                                              EDAXAlefHandle snapshot);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_protected_snapshot_params` on this thread. Returns 0 when the primary call returned
+ * null or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_protected_snapshot_params`.
+ */
+uintptr_t edax_postgres_protected_snapshot_params_len(const char *_stream,
+                                                      EDAXAlefHandle _snapshot);
 
 /**
  * A schema that meets the table contract, for the tables `tables_json` names: a starting point for the
@@ -5254,6 +6358,169 @@ EDAXAlefHandle edax_propagate(const char *parent_id,
                               const char *parent_correlation_id);
 
 /**
+ * Preserve the ordinary claim identity across protected-ledger migration.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_claim_key(EDAXAlefHandle scope,
+                               const char *key);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_claim_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_claim_key`.
+ */
+uintptr_t edax_protected_claim_key_len(EDAXAlefHandle _scope,
+                                       const char *_key);
+
+/**
+ * Persist only a stable failure code, with no arbitrary exception text.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_failure(const char *record,
+                             const char *owner,
+                             const char *code);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_failure` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_failure`.
+ */
+uintptr_t edax_protected_failure_len(const char *_record,
+                                     const char *_owner,
+                                     const char *_code);
+
+/**
+ * Full HMAC-SHA-256 command fingerprint; no plaintext hash is retained.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_fingerprint(const char *name,
+                                 uint32_t version,
+                                 const uint8_t *data,
+                                 uintptr_t data_len,
+                                 const char *key_id,
+                                 const uint8_t *key,
+                                 uintptr_t key_len);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_fingerprint` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_fingerprint`.
+ */
+uintptr_t edax_protected_fingerprint_len(const char *_name,
+                                         uint32_t _version,
+                                         const uint8_t *_data,
+                                         uintptr_t _data_len,
+                                         const char *_key_id,
+                                         const uint8_t *_key,
+                                         uintptr_t _key_len);
+
+/**
+ * Encrypt a successful command result and settle its fenced record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_finish(const char *record,
+                            const char *owner,
+                            EDAXAlefHandle info,
+                            const uint8_t *key,
+                            uintptr_t key_len,
+                            const uint8_t *plaintext,
+                            uintptr_t plaintext_len);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_finish` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_finish`.
+ */
+uintptr_t edax_protected_finish_len(const char *_record,
+                                    const char *_owner,
+                                    EDAXAlefHandle _info,
+                                    const uint8_t *_key,
+                                    uintptr_t _key_len,
+                                    const uint8_t *_plaintext,
+                                    uintptr_t _plaintext_len);
+
+/**
+ * Authenticate a cached result after scoped provider resolution.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_protected_open(const char *record,
+                            const uint8_t *key,
+                            uintptr_t key_len,
+                            uint8_t **out_ptr,
+                            uintptr_t *out_len,
+                            uintptr_t *out_cap);
+
+/**
+ * Construct a protected pending record bound to its claim owner.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_pending(EDAXAlefHandle scope,
+                             const char *claim_id,
+                             const char *owner,
+                             const char *fingerprint);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_pending` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_pending`.
+ */
+uintptr_t edax_protected_pending_len(EDAXAlefHandle _scope,
+                                     const char *_claim_id,
+                                     const char *_owner,
+                                     const char *_fingerprint);
+
+/**
+ * Compare the complete protected fingerprint and security scope.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_protected_replay(const char *record,
+                                     EDAXAlefHandle scope,
+                                     const char *claim_id,
+                                     const char *fingerprint);
+
+/**
+ * Stable protected-ledger replay decisions, defined by the owning kernel.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_protected_replay_actions(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_protected_replay_actions` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_protected_replay_actions`.
+ */
+uintptr_t edax_protected_replay_actions_len(void);
+
+/**
+ * Validate the encryption write scope before reserving any provider material.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_protected_scope(const char *key_namespace,
+                                    const char *tenant,
+                                    const char *subject);
+
+/**
  * Apply a read query (JSON string) to a JSON array of documents; returns the page as JSON text
  * `{"rows": [...], "next": cursor|null}`, `next` minted under the query's own sort. See
  * `edax_cqrs.query()`.
@@ -5292,6 +6559,14 @@ char *edax_received_key(const char *id,
  */
 uintptr_t edax_received_key_len(const char *_id,
                                 const char *_idempotency_key);
+
+/**
+ * Reconcile an uncertain commit without reusing a message ID for new ciphertext.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_reconcile_prepared_events(const char *drafts,
+                                       const char *stored);
 
 /**
  * The stored message for `draft`: every field as drafted, stamped `recorded_at` on the store's clock.
@@ -5633,7 +6908,8 @@ EDAXAlefHandle edax_saga_command(const char *saga,
                                  const char *cause_id,
                                  const char *cause_correlation_id,
                                  int64_t issued_at,
-                                 const char *tenant);
+                                 const char *tenant,
+                                 const char *subject);
 
 /**
  * The event a saga folds when `command`, a row its outbox sent, died of the failure `error` with the
@@ -5719,6 +6995,42 @@ char *edax_saga_write_actions(void);
 uintptr_t edax_saga_write_actions_len(void);
 
 /**
+ * Low-level encryption with kernel-constructed record context. Reserve usage before calling.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_seal_bytes(EDAXAlefHandle info,
+                        const uint8_t *key,
+                        uintptr_t key_len,
+                        const uint8_t *context,
+                        uintptr_t context_len,
+                        const uint8_t *plaintext,
+                        uintptr_t plaintext_len,
+                        uint8_t **out_ptr,
+                        uintptr_t *out_len,
+                        uintptr_t *out_cap);
+
+/**
+ * Seal a command after every authenticated producer field has been finalized.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_seal_command(EDAXAlefHandle message,
+                                 EDAXAlefHandle info,
+                                 const uint8_t *key,
+                                 uintptr_t key_len);
+
+/**
+ * Seal a prepared draft once; retain its ciphertext across ambiguous commit retries.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_seal_event(EDAXAlefHandle draft,
+                               EDAXAlefHandle info,
+                               const uint8_t *key,
+                               uintptr_t key_len);
+
+/**
  * Whether a save from version `initial` to `current` writes a snapshot under an interval of `every`
  * versions (`0`: never). See `edax_event.snapshot_due`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -5739,6 +7051,24 @@ int32_t edax_snapshot_due(uint64_t every,
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_split_error(const char *wire);
+
+/**
+ * Bind a stored value to its identity, owner, schema, version, and saga processing marks.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_state_encryption_context(const char *kind,
+                                      const char *identity,
+                                      const char *type_name,
+                                      uint64_t version,
+                                      const char *marks,
+                                      int32_t completed,
+                                      EDAXAlefHandle info,
+                                      const char *tenant,
+                                      const char *subject,
+                                      uint8_t **out_ptr,
+                                      uintptr_t *out_len,
+                                      uintptr_t *out_cap);
 
 /**
  * A streak with no failure yet.

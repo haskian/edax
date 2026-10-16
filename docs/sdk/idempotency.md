@@ -301,9 +301,23 @@ behaviour without changing a line of handler code. Test on the ordering you depl
 own-ledger shape in memory, with the same claim fence. Its `expire(key)` hook forces the takeover a Redis
 claim TTL produces ([memory backend](../backends/memory.md#test-on-the-ordering-you-deploy-memoryledger)).
 
-`CachedFailure` also carries only `str(e)` and the taxonomy code, not the exception type. Anything a caller derives
-from the error class, an HTTP status in particular, is lost on replay. Map the status from the
-message, or keep the mapping outside the guard.
+New ordinary cached failures retain the taxonomy code and any validated rejection reason, and omit
+arbitrary exception text. Protected failures retain only the code. `CachedFailure`
+does not preserve the original exception type. Map HTTP statuses from `original_code` or keep that
+mapping outside the guard. Historical records can still contain error text; enabling sealing does
+not scrub it.
+
+## Protected commands
+
+With sealing configured, command idempotency uses a full HMAC-SHA256 fingerprint under a dedicated
+scope key. Cached successes contain encrypted results. The ordinary claim identity stays unchanged,
+so enabling sealing cannot bypass a legacy claim and execute the command twice.
+
+Protected replay checks scope, fingerprint, result authentication, and revocation before returning
+the cached value. Data-key rotation leaves command equality unchanged. Legacy completed records
+are refused; migrate or retire them deliberately. See the
+[protected-result contract](../guides/crypto-shredding.md#snapshots-saga-completion-and-command-results)
+for pending claims, failure persistence, and migration.
 
 ## Every failure window
 

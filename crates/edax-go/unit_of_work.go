@@ -3,6 +3,8 @@ package edax
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +21,8 @@ type UnitOfWork interface {
 
 type transactionKey struct{ owner UnitOfWork }
 type transactionMarker struct{}
+type transactionRootResources struct{}
+type transactionCurrentResources struct{}
 
 // InTransaction reports whether ctx belongs to any open unit of work.
 func InTransaction(ctx context.Context) bool { return ctx.Value(transactionMarker{}) != nil }
@@ -29,10 +33,48 @@ func CurrentTransaction(ctx context.Context, owner UnitOfWork) (Tx, bool) {
 	return tx, ok
 }
 
+type transactionResourceKey struct{ owner UnitOfWork }
+type transactionResources struct {
+	mu      sync.Mutex
+	release []func()
+	guards  []*sealingGuard
+	settled atomic.Bool
+	parent  *transactionResources
+}
+
+func checkTransactionResources(ctx context.Context) error {
+	for resources, _ := ctx.Value(transactionCurrentResources{}).(*transactionResources); resources != nil; resources = resources.parent {
+		if resources.settled.Load() {
+			return &Error{Code: CodeBadHandle, Message: "cannot use a settled transaction context"}
+		}
+	}
+	return nil
+}
+
+// HoldTransactionResource retains a scope fence until commit or rollback completes.
+// Returns false when ctx has no managed transaction for owner; caller then owns release.
+func HoldTransactionResource(ctx context.Context, owner UnitOfWork, release func()) bool {
+	resources, ok := ctx.Value(transactionResourceKey{owner}).(*transactionResources)
+	if !ok {
+		return false
+	}
+	resources.mu.Lock()
+	if checkTransactionResources(ctx) != nil {
+		resources.mu.Unlock()
+		return false
+	}
+	resources.release = append(resources.release, release)
+	resources.mu.Unlock()
+	return true
+}
+
 // WithinTransaction publishes a transaction through ctx and rolls it back on failure or panic.
 // A second transaction on the same database is refused; callers should join the existing ctx.
 func WithinTransaction(ctx context.Context, owner UnitOfWork, run func(context.Context) error) (err error) {
 	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if err = checkTransactionResources(ctx); err != nil {
 		return err
 	}
 	if owner == nil {
@@ -44,6 +86,23 @@ func WithinTransaction(ctx context.Context, owner UnitOfWork, run func(context.C
 	tx, err := owner.Begin(ctx)
 	if err != nil {
 		return err
+	}
+	parent, _ := ctx.Value(transactionCurrentResources{}).(*transactionResources)
+	resources := &transactionResources{parent: parent}
+	defer func() {
+		resources.mu.Lock()
+		resources.settled.Store(true)
+		releases := resources.release
+		resources.release = nil
+		resources.mu.Unlock()
+		for index := len(releases) - 1; index >= 0; index-- {
+			releases[index]()
+		}
+	}()
+	ctx = context.WithValue(ctx, transactionResourceKey{owner}, resources)
+	ctx = context.WithValue(ctx, transactionCurrentResources{}, resources)
+	if ctx.Value(transactionRootResources{}) == nil {
+		ctx = context.WithValue(ctx, transactionRootResources{}, resources)
 	}
 	committed := false
 	started := time.Now()
@@ -84,9 +143,25 @@ type detachedTransactions struct{ context.Context }
 // Value hides transaction ownership while retaining other context values.
 func (ctx detachedTransactions) Value(key any) any {
 	switch key.(type) {
-	case transactionKey, transactionMarker:
+	case transactionKey, transactionMarker, transactionResourceKey, transactionRootResources, transactionCurrentResources, sealingGuardKey, openedEventKey, authenticatedEventKey:
 		return nil
 	default:
 		return ctx.Context.Value(key)
 	}
+}
+
+// HoldCurrentTransactionResource retains a guard through the outermost open transaction.
+func HoldCurrentTransactionResource(ctx context.Context, release func()) bool {
+	resources, ok := ctx.Value(transactionRootResources{}).(*transactionResources)
+	if !ok {
+		return false
+	}
+	resources.mu.Lock()
+	if checkTransactionResources(ctx) != nil {
+		resources.mu.Unlock()
+		return false
+	}
+	resources.release = append(resources.release, release)
+	resources.mu.Unlock()
+	return true
 }

@@ -205,7 +205,15 @@ async def test_snapshot_type_name_crosses_the_native_boundary() -> None:
     """One field, one name — ``type_name`` — in the dataclass, in the native record, and back. A
     half-applied rename breaks exactly one leg, so both are asserted: the save path reads
     ``snapshot.type_name``, the load path reads the native result's ``type_name``."""
-    assert [f.name for f in fields(edax.Snapshot)] == ["aggregate_id", "type_name", "version", "data"]
+    assert [f.name for f in fields(edax.Snapshot)] == [
+        "aggregate_id",
+        "type_name",
+        "version",
+        "data",
+        "tenant",
+        "subject",
+        "encryption",
+    ]
 
     store = MemoryEventStore()
     await store.append(

@@ -237,6 +237,9 @@ impl EventStore for MemoryEventStore {
     fn load_snapshot(&self, tx: &mut MemoryTx, aggregate_id: &str) -> Result<Option<Snapshot>, Error> {
         Ok(self.inner.load_snapshot(*tx, aggregate_id)?.map(|s| Snapshot {
             aggregate_id: aggregate_id.to_string(),
+            tenant: s.tenant,
+            subject: s.subject,
+            encryption: s.encryption,
             type_name: s.type_name,
             version: s.version,
             data: s.data,
@@ -244,12 +247,17 @@ impl EventStore for MemoryEventStore {
     }
 
     fn save_snapshot(&self, tx: &mut MemoryTx, snapshot: &Snapshot) -> Result<(), Error> {
-        self.inner.save_snapshot(
+        self.inner.save_snapshot_record(
             *tx,
             &snapshot.aggregate_id,
-            &snapshot.type_name,
-            snapshot.version,
-            snapshot.data.clone(),
+            edax_memory::Snapshot {
+                type_name: snapshot.type_name.clone(),
+                version: snapshot.version,
+                data: snapshot.data.clone(),
+                tenant: snapshot.tenant.clone(),
+                subject: snapshot.subject.clone(),
+                encryption: snapshot.encryption.clone(),
+            },
         )
     }
 

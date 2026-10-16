@@ -18,6 +18,11 @@ const (
 	ErrAlreadyRegistered = kernel.ErrAlreadyRegistered
 	ErrBadHandle         = kernel.ErrBadHandle
 	ErrRejected          = kernel.ErrRejected
+	ErrShredded          = kernel.ErrShredded
+	ErrKeyMissing        = kernel.ErrKeyMissing
+	ErrKeyRevoking       = kernel.ErrKeyRevoking
+	ErrKeyUnauthorized   = kernel.ErrKeyUnauthorized
+	ErrKeyUnavailable    = kernel.ErrKeyUnavailable
 )
 
 // Reason is why a host's rejection refused (not_found), kept beside the rejected code in the cached

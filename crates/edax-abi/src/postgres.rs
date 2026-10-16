@@ -202,7 +202,11 @@ fn call(call: Result<edax_postgres::Call, edax_core::Error>) -> Result<PostgresC
 
 /// The parameters of `append`. See [`edax_postgres::rows::append_params`].
 pub fn postgres_append_params(stream: &str, expected: u64, drafts: Vec<EventDraft>) -> Result<String, String> {
-    let drafts: Vec<edax_event::EventDraft> = drafts.into_iter().map(Into::into).collect();
+    let drafts: Vec<edax_event::EventDraft> = drafts
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
     params_json(edax_postgres::rows::append_params(stream, expected, &drafts).map_err(to_wire)?)
 }
 
@@ -213,7 +217,11 @@ pub fn postgres_append_result(
     drafts: Vec<EventDraft>,
     result: &str,
 ) -> Result<Vec<EventMessage>, String> {
-    let drafts: Vec<edax_event::EventDraft> = drafts.into_iter().map(Into::into).collect();
+    let drafts: Vec<edax_event::EventDraft> = drafts
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
     Ok(edax_postgres::rows::append_result(expected, drafts, result)
         .map_err(to_wire)?
         .into_iter()
@@ -251,7 +259,11 @@ pub fn postgres_decode_commands(rows: Vec<String>) -> Result<Vec<CommandMessage>
 
 /// The parameters of `command_enqueue`. See [`edax_postgres::rows::enqueue_params`].
 pub fn postgres_enqueue_params(commands: Vec<CommandMessage>) -> Result<String, String> {
-    let commands: Vec<edax_event::CommandMessage> = commands.into_iter().map(Into::into).collect();
+    let commands: Vec<edax_event::CommandMessage> = commands
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
     params_json(edax_postgres::rows::enqueue_params(&commands).map_err(to_wire)?)
 }
 
@@ -312,6 +324,9 @@ pub fn postgres_snapshot_params(stream: &str, type_name: &str, version: u64, dat
 pub fn postgres_decode_snapshot(row: &str) -> Result<SnapshotResult, String> {
     let row = edax_postgres::rows::decode_snapshot(row).map_err(to_wire)?;
     Ok(SnapshotResult {
+        tenant: row.tenant,
+        subject: row.subject,
+        encryption: row.encryption.map(Into::into),
         type_name: row.type_name,
         version: row.version,
         data: row.data,
@@ -487,7 +502,11 @@ pub fn postgres_saga_write(
     folded: &str,
     commands: Vec<CommandMessage>,
 ) -> Result<PostgresCall, String> {
-    let commands: Vec<edax_event::CommandMessage> = commands.into_iter().map(Into::into).collect();
+    let commands: Vec<edax_event::CommandMessage> = commands
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
     call(edax_postgres::rows::saga_write(
         saga,
         id,
@@ -502,6 +521,94 @@ pub fn postgres_saga_write(
 /// [`edax_postgres::rows::saga_result`].
 pub fn postgres_saga_result(saga: &str, id: &str, expected: u64, result: &str) -> Result<u64, String> {
     edax_postgres::rows::saga_result(saga, id, expected, result).map_err(to_wire)
+}
+
+/// Parameters preserving ownership and encryption on stored aggregate state.
+pub fn postgres_protected_snapshot_params(stream: &str, snapshot: SnapshotResult) -> Result<String, String> {
+    let info = snapshot
+        .encryption
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(to_wire)?;
+    params_json(
+        edax_postgres::rows::protected_snapshot_params(
+            stream,
+            &snapshot.type_name,
+            snapshot.version,
+            &snapshot.data,
+            snapshot.tenant.as_deref(),
+            snapshot.subject.as_deref(),
+            info.as_ref(),
+        )
+        .map_err(to_wire)?,
+    )
+}
+
+fn erasure_op(record: &str) -> Result<edax_event::erasure::ErasureOperation, String> {
+    edax_event::erasure::decode_operation(record).map_err(to_wire)
+}
+fn erasure_json(value: &impl serde::Serialize) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+}
+/// Reference migration only; edax never provisions tables.
+pub fn postgres_erasure_reference_ddl(schema: &str) -> Result<String, String> {
+    edax_postgres::erasure::reference_ddl(schema).map_err(to_wire)
+}
+/// SQL for operation CAS, notifications, and transaction fences.
+pub fn postgres_erasure_statements(schema: &str) -> Result<String, String> {
+    erasure_json(&edax_postgres::erasure::statements(schema).map_err(to_wire)?)
+}
+/// Validate the erasure catalog query result without provisioning tables.
+pub fn postgres_erasure_check_catalog(schema: &str, catalog_json: &str) -> Result<(), String> {
+    edax_postgres::erasure::check_catalog(schema, catalog_json).map_err(to_wire)
+}
+/// Canonical identifier including namespace, tenant and subject.
+pub fn postgres_erasure_scope_id(scope: crate::KeyScope) -> Result<String, String> {
+    edax_postgres::erasure::scope_id(&scope.try_into().map_err(to_wire)?).map_err(to_wire)
+}
+fn erasure_calls(calls: Vec<edax_postgres::rows::Call>) -> Result<String, String> {
+    let calls: Vec<serde_json::Value> = calls
+        .into_iter()
+        .map(|c| serde_json::json!({"statement":c.statement,"params":c.params}))
+        .collect();
+    erasure_json(&calls)
+}
+/// Ordered shared transaction locks for protected writers.
+pub fn postgres_erasure_writer_locks(scope: crate::KeyScope) -> Result<String, String> {
+    erasure_calls(edax_postgres::erasure::writer_locks(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
+}
+/// Conflicting transaction locks for cleanup and permanent revocation.
+pub fn postgres_erasure_revocation_locks(scope: crate::KeyScope) -> Result<String, String> {
+    erasure_calls(edax_postgres::erasure::revocation_locks(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
+}
+/// Parameters for the fresh-snapshot revocation check after locks are held.
+pub fn postgres_erasure_guard_params(scope: crate::KeyScope) -> Result<String, String> {
+    params_json(edax_postgres::erasure::guard_params(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
+}
+/// Refuse revoked scopes and isolation modes that can read stale tombstones.
+pub fn postgres_erasure_check_guard(row: &str) -> Result<(), String> {
+    edax_postgres::erasure::check_guard(row).map_err(to_wire)
+}
+/// Parameters for the first durable operation record.
+pub fn postgres_erasure_create_params(operation: &str) -> Result<String, String> {
+    params_json(edax_postgres::erasure::create_params(&erasure_op(operation)?).map_err(to_wire)?)
+}
+/// Parameters for a request lookup.
+pub fn postgres_erasure_load_params(scope: crate::KeyScope, request_id: &str) -> Result<String, String> {
+    params_json(edax_postgres::erasure::load_params(&scope.try_into().map_err(to_wire)?, request_id).map_err(to_wire)?)
+}
+/// Parameters for an atomic operation transition and optional control notification.
+pub fn postgres_erasure_update_params(previous: &str, next: &str) -> Result<String, String> {
+    let previous = edax_postgres::erasure::decode_operation(previous).map_err(to_wire)?;
+    params_json(edax_postgres::erasure::update_params(&previous, &erasure_op(next)?).map_err(to_wire)?)
+}
+/// Normalize an operation row read from Postgres.
+pub fn postgres_erasure_decode_operation(row: &str) -> Result<String, String> {
+    erasure_json(&edax_postgres::erasure::decode_operation(row).map_err(to_wire)?)
+}
+/// CAS verdict. Missing result is a retryable conflict.
+pub fn postgres_erasure_update_result(version: Option<i64>) -> Result<u64, String> {
+    edax_postgres::erasure::update_result(version).map_err(to_wire)
 }
 
 #[cfg(test)]

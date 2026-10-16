@@ -1397,7 +1397,7 @@ async def test_the_dead_letter_sink_publishes_the_record_as_fetched(cause: str) 
         "edax-dlq-partition": str(source_tp.partition).encode(),
         "edax-dlq-offset": b"0",
     }
-    assert source["edax-dlq-error"].startswith(b"codec: ")
+    assert source["edax-dlq-error"] == b"codec"
 
 
 class _Declined(Exception):
@@ -1409,15 +1409,11 @@ class _Declined(Exception):
 @pytest.mark.parametrize(
     "error, header",
     [
-        pytest.param(
-            edax.CodecError("negative balance"), b"codec: negative balance", id="an_edax_error_by_its_code"
-        ),
-        pytest.param(
-            _Declined("card declined"), b"rejected: card declined", id="a_terminal_host_error_as_rejected"
-        ),
+        pytest.param(edax.CodecError("negative balance"), b"codec", id="an_edax_error_by_its_code"),
+        pytest.param(_Declined("card declined"), b"rejected", id="a_terminal_host_error_as_rejected"),
         pytest.param(
             ValueError("renderer crashed"),
-            b"unclassified: builtins.ValueError: renderer crashed",
+            b"unclassified",
             id="an_uncoded_host_error_unclassified_by_its_class",
         ),
     ],
@@ -1426,7 +1422,7 @@ def test_the_dead_letter_header_names_the_failure_as_the_kernel_renders_it(
     error: BaseException, header: bytes
 ) -> None:
     """``edax-dlq-error`` is the kernel's rendering of the code the failure carries, so every SDK on one
-    dead-letter topic writes one vocabulary. A host exception with no code keeps its class in the message."""
+    dead-letter topic writes one vocabulary. Arbitrary exception text is never persisted."""
     fetched = KafkaFetched("t", 1, 9, b"acct-9", b"{}", (("content-type", b"application/json"),))
     headers = {h.key: h.value for h in fetched.dead_letter(error).headers}
     assert headers["edax-dlq-error"] == header

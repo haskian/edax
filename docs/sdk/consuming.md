@@ -297,6 +297,12 @@ nacks.
 `InProgress` never counts toward `max_attempts`. The ceiling is therefore the claim's time to live
 (TTL), not the attempt budget. A crashed peer's claim blocks the key until that TTL expires.
 
+`KeyUnavailable` and `KeyRevoking` also use uncounted contention retries. They have no TTL-derived
+ceiling: a provider outage or delayed destruction can block ordered delivery indefinitely.
+Only the trusted opening decision can skip a confirmed destroyed scope. A handler raising
+`Shredded` does not authorize a skip. See
+[protected delivery](../guides/crypto-shredding.md#reads-delivery-and-retries).
+
 The schedule is the kernel's, with full jitter: a random wait in `0 ..= min(100 * 2^step, 30000)`
 milliseconds. Consumers that hit one downed dependency then do not retry in lockstep. The dispatcher's
 `Pacing` (Rust `DispatcherBuilder::pacing`, Python `pacing=`) carries the policy, the sleep and the

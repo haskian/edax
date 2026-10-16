@@ -3,6 +3,7 @@ package edax
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,6 +52,181 @@ func jsonValue(t *testing.T, raw []byte) any {
 		t.Fatal(err)
 	}
 	return value
+}
+
+func TestProtectedLedgerGolden(t *testing.T) {
+	for _, row := range goldenRows[struct {
+		Kind              string                `json:"kind"`
+		Name              string                `json:"name"`
+		Scope             kernel.KeyScope       `json:"scope"`
+		ScopeHex          string                `json:"scope_hex"`
+		ClaimKey          string                `json:"claim_key"`
+		StorageKey        string                `json:"storage_key"`
+		Owner             string                `json:"owner"`
+		CommandName       string                `json:"command_name"`
+		CommandVersion    uint32                `json:"command_version"`
+		CommandHex        string                `json:"command_hex"`
+		FingerprintKeyID  string                `json:"fingerprint_key_id"`
+		FingerprintKeyHex string                `json:"fingerprint_key_hex"`
+		FingerprintJSON   string                `json:"fingerprint_json"`
+		FingerprintHex    string                `json:"fingerprint_hex"`
+		DataKeyHex        string                `json:"data_key_hex"`
+		Encryption        kernel.EncryptionInfo `json:"encryption"`
+		ResultHex         string                `json:"result_hex"`
+		ResultAADHex      string                `json:"result_aad_hex"`
+		PendingRecord     string                `json:"pending_record"`
+		DoneRecord        string                `json:"done_record"`
+		FailedRecord      string                `json:"failed_record"`
+		OtherScope        kernel.KeyScope       `json:"other_scope"`
+		OtherScopeError   string                `json:"other_scope_error"`
+		Record            string                `json:"record"`
+		Error             *string               `json:"error"`
+	}](t, "protected_ledger") {
+		t.Run(row.Kind+"/"+row.Name, func(t *testing.T) {
+			decode := func(encoded string) []byte {
+				t.Helper()
+				value, err := hex.DecodeString(encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return value
+			}
+			storageKey, err := kernel.ProtectedClaimKey(row.Scope, row.ClaimKey)
+			if err != nil || storageKey != row.StorageKey || storageKey != row.ClaimKey {
+				t.Fatalf("claim key %q, want ordinary key %q: %v", storageKey, row.ClaimKey, err)
+			}
+			if row.Kind == "legacy" {
+				_, err := kernel.ProtectedOpen(row.Record, nil)
+				goldenError(t, err, row.Error)
+				return
+			}
+			scope, err := kernel.EncodeKeyScope(row.Scope)
+			if err != nil || !bytes.Equal(scope, decode(row.ScopeHex)) {
+				t.Fatalf("scope bytes differ: %v", err)
+			}
+			fingerprint, err := kernel.ProtectedFingerprint(row.CommandName, row.CommandVersion, decode(row.CommandHex), row.FingerprintKeyID, decode(row.FingerprintKeyHex))
+			if err != nil || fingerprint != row.FingerprintJSON {
+				t.Fatalf("fingerprint differs: %v", err)
+			}
+			var fingerprintValue struct {
+				Value []byte `json:"value"`
+			}
+			if err := json.Unmarshal([]byte(fingerprint), &fingerprintValue); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(fingerprintValue.Value, decode(row.FingerprintHex)) {
+				t.Fatal("fingerprint bytes differ")
+			}
+			pending, err := kernel.ProtectedPending(row.Scope, row.ClaimKey, row.Owner, fingerprint)
+			if err != nil || pending != row.PendingRecord {
+				t.Fatalf("pending record differs: %v", err)
+			}
+			key, result := decode(row.DataKeyHex), decode(row.ResultHex)
+			done, err := kernel.ProtectedFinish(pending, row.Owner, row.Encryption, key, result)
+			if err != nil || done != row.DoneRecord {
+				t.Fatalf("done record differs: %v", err)
+			}
+			opened, err := kernel.ProtectedOpen(done, key)
+			if err != nil || !bytes.Equal(opened, result) {
+				t.Fatalf("opened result differs: %v", err)
+			}
+			var expected struct {
+				State struct {
+					Result struct {
+						Data []byte `json:"data"`
+					} `json:"result"`
+				} `json:"state"`
+			}
+			if err := json.Unmarshal([]byte(row.DoneRecord), &expected); err != nil {
+				t.Fatal(err)
+			}
+			ciphertext, err := kernel.SealBytes(row.Encryption, key, decode(row.ResultAADHex), result)
+			if err != nil || !bytes.Equal(ciphertext, expected.State.Result.Data) {
+				t.Fatalf("result AAD/ciphertext differs: %v", err)
+			}
+			failed, err := kernel.ProtectedFailure(pending, row.Owner, "rejected")
+			if err != nil || failed != row.FailedRecord {
+				t.Fatalf("failed record differs: %v", err)
+			}
+			for _, replay := range []struct{ record, action string }{{pending, "pending"}, {done, "done"}, {failed, "failed"}} {
+				decision, err := kernel.GetProtectedReplay(replay.record, row.Scope, row.ClaimKey, fingerprint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decision.Action != replay.action {
+					t.Fatalf("replay action %q want %q", decision.Action, replay.action)
+				}
+				if replay.action == "failed" && (decision.Code == nil || *decision.Code != "rejected") {
+					t.Fatalf("failure code %v", decision.Code)
+				}
+			}
+			otherKey, err := kernel.ProtectedClaimKey(row.OtherScope, row.ClaimKey)
+			if err != nil || otherKey != row.StorageKey {
+				t.Fatalf("other scope changed claim identity: %v", err)
+			}
+			_, err = kernel.GetProtectedReplay(done, row.OtherScope, row.ClaimKey, fingerprint)
+			goldenError(t, err, &row.OtherScopeError)
+		})
+	}
+}
+
+func TestSagaCommandAndFailureGolden(t *testing.T) {
+	for index, row := range goldenRows[struct {
+		SagaCommand *struct {
+			Saga       string              `json:"saga"`
+			InstanceID string              `json:"instance_id"`
+			Version    uint64              `json:"version"`
+			Index      uint64              `json:"index"`
+			IssuedAt   int64               `json:"issued_at"`
+			Command    kernel.Payload      `json:"command"`
+			Cause      kernel.EventMessage `json:"cause"`
+		} `json:"saga_command"`
+		SagaCommandFailed *struct {
+			Command    kernel.CommandMessage `json:"command"`
+			Code       *string               `json:"code"`
+			Error      string                `json:"error"`
+			RecordedAt int64                 `json:"recorded_at"`
+		} `json:"saga_command_failed"`
+		Want json.RawMessage `json:"want"`
+	}](t, "saga") {
+		if row.SagaCommand == nil && row.SagaCommandFailed == nil {
+			continue
+		}
+		t.Run(fmt.Sprint(index), func(t *testing.T) {
+			if step := row.SagaCommand; step != nil {
+				got, err := kernel.SagaCommand(step.Saga, step.InstanceID, step.Version, step.Index, step.Command, step.Cause.ID, step.Cause.CorrelationID, step.IssuedAt, step.Cause.Tenant, step.Cause.Subject)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want kernel.CommandMessage
+				if err := json.Unmarshal(row.Want, &want); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(*got, want) {
+					t.Fatalf("saga child differs: got %+v want %+v", got, want)
+				}
+				return
+			}
+			step := row.SagaCommandFailed
+			got, err := kernel.SagaCommandFailed(step.Command, step.Error, step.RecordedAt, step.Code)
+			var refusal struct {
+				Error *string `json:"error"`
+			}
+			if parseErr := json.Unmarshal(row.Want, &refusal); parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if goldenError(t, err, refusal.Error) {
+				return
+			}
+			var want kernel.EventMessage
+			if err := json.Unmarshal(row.Want, &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(*got, want) {
+				t.Fatalf("saga failure differs: got %+v want %+v", got, want)
+			}
+		})
+	}
 }
 
 func TestHashAndCanonicalGolden(t *testing.T) {
@@ -321,7 +497,7 @@ func TestNilNativeCollections(t *testing.T) {
 	if draft.Data != nil || draft.Extensions != nil || draft.Metadata != nil {
 		t.Fatal("binding changed caller's zero-value collections")
 	}
-	batch, err := kernel.GetDraftBatch("invoice-42", 0, 1, nil, nil, Lineage{CorrelationID: "flow-42", CausationID: "cmd-42"}, nil, nil, nil, nil)
+	batch, err := kernel.GetDraftBatch("invoice-42", 0, 1, nil, nil, Lineage{CorrelationID: "flow-42", CausationID: "cmd-42"}, nil, nil, nil, nil, nil)
 	if err != nil || len(batch.Drafts) != 0 || batch.Version != 0 {
 		t.Fatalf("empty draft batch: %+v %v", batch, err)
 	}

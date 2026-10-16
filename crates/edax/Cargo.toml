@@ -10,6 +10,7 @@ description = "Reference model of the edax SDK in Rust: an executable specificat
 publish = false
 
 [dependencies]
+edax-seal.workspace = true
 edax-core.workspace = true
 edax-cqrs.workspace = true
 edax-event.workspace = true

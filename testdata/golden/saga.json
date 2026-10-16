@@ -723,6 +723,7 @@
         "causation_id": "cmd-1",
         "correlation_id": "corr-1",
         "data": "3q2+7w==",
+        "encryption": null,
         "extensions": {
           "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
         },
@@ -734,6 +735,7 @@
         "occurred_at": null,
         "recorded_at": 1700000000000000000,
         "sequence": 7,
+        "subject": null,
         "tenant": "acme",
         "version": 1
       },
@@ -753,12 +755,65 @@
       "causation_id": "evt-1",
       "correlation_id": "corr-1",
       "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+      "encryption": null,
       "extensions": {},
       "id": "8:shipping:4:acme:order-7:4:1",
       "idempotency_key": "8:shipping:4:acme:order-7:4:1",
       "issued_at": 1700000000000000001,
       "metadata": {},
       "name": "Fulfill",
+      "subject": null,
+      "tenant": "acme",
+      "version": 2
+    }
+  },
+  {
+    "saga_command": {
+      "cause": {
+        "aggregate_id": "agg-1",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "3q2+7w==",
+        "encryption": null,
+        "extensions": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "id": "evt-1",
+        "metadata": {
+          "trace": "abc-123"
+        },
+        "name": "InvoiceIssued",
+        "occurred_at": null,
+        "recorded_at": 1700000000000000000,
+        "sequence": 7,
+        "subject": "customer-42",
+        "tenant": "acme",
+        "version": 1
+      },
+      "command": {
+        "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "name": "Fulfill",
+        "version": 2
+      },
+      "index": 0,
+      "instance_id": "4:acme:order-7",
+      "issued_at": 1700000000000000001,
+      "saga": "shipping",
+      "version": 5
+    },
+    "want": {
+      "aggregate_id": "4:acme:order-7",
+      "causation_id": "evt-1",
+      "correlation_id": "corr-1",
+      "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+      "encryption": null,
+      "extensions": {},
+      "id": "8:shipping:4:acme:order-7:5:0",
+      "idempotency_key": "8:shipping:4:acme:order-7:5:0",
+      "issued_at": 1700000000000000001,
+      "metadata": {},
+      "name": "Fulfill",
+      "subject": "customer-42",
       "tenant": "acme",
       "version": 2
     }
@@ -771,12 +826,14 @@
         "causation_id": "evt-1",
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "encryption": null,
         "extensions": {},
         "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
         "name": "Fulfill",
+        "subject": null,
         "tenant": "acme",
         "version": 2
       },
@@ -788,6 +845,7 @@
       "causation_id": "8:shipping:4:acme:order-7:4:1",
       "correlation_id": "corr-1",
       "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo0OjEiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOiJyZWplY3RlZCIsImVycm9yIjoib3V0IG9mIHN0b2NrIn0=",
+      "encryption": null,
       "extensions": {},
       "id": "8:shipping:4:acme:order-7:4:1:failed",
       "metadata": {},
@@ -795,6 +853,7 @@
       "occurred_at": null,
       "recorded_at": 1700000000000000002,
       "sequence": null,
+      "subject": null,
       "tenant": "acme",
       "version": 1
     }
@@ -807,12 +866,14 @@
         "causation_id": "evt-1",
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "encryption": null,
         "extensions": {},
         "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
         "name": "Fulfill",
+        "subject": null,
         "tenant": "acme",
         "version": 2
       },
@@ -824,6 +885,7 @@
       "causation_id": "8:shipping:4:acme:order-7:4:1",
       "correlation_id": "corr-1",
       "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo0OjEiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOm51bGwsImVycm9yIjoid2FyZWhvdXNlIEFQSSB0aW1lZCBvdXQifQ==",
+      "encryption": null,
       "extensions": {},
       "id": "8:shipping:4:acme:order-7:4:1:failed",
       "metadata": {},
@@ -831,6 +893,7 @@
       "occurred_at": null,
       "recorded_at": 1700000000000000002,
       "sequence": null,
+      "subject": null,
       "tenant": "acme",
       "version": 1
     }
@@ -843,12 +906,14 @@
         "causation_id": "evt-1",
         "correlation_id": "corr-1",
         "data": "eyJvcmRlciI6Im9yZGVyLTcifQ==",
+        "encryption": null,
         "extensions": {},
         "id": "8:shipping:4:acme:order-7:4:1",
         "idempotency_key": "8:shipping:4:acme:order-7:4:1",
         "issued_at": 1700000000000000001,
         "metadata": {},
         "name": "Fulfill",
+        "subject": null,
         "tenant": "acme",
         "version": 2
       },
@@ -857,6 +922,98 @@
     },
     "want": {
       "error": "codec: command \"8:shipping:4:acme:order-7:4:1\" names no saga instance"
+    }
+  },
+  {
+    "saga_command_failed": {
+      "code": "rejected",
+      "command": {
+        "aggregate_id": "4:acme:order-7",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "/3MOBVhWdRmp1Y7cqDQak99lRsv0WTsXnIwyJ2AL5jB8z6I=",
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "data-key-1",
+          "key_namespace": "production-eu",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "extensions": {},
+        "id": "8:shipping:4:acme:order-7:5:0",
+        "idempotency_key": "8:shipping:4:acme:order-7:5:0",
+        "issued_at": 1700000000000000001,
+        "metadata": {},
+        "name": "Fulfill",
+        "subject": "customer-42",
+        "tenant": "acme",
+        "version": 2
+      },
+      "error": "private address: 17 Example Lane",
+      "recorded_at": 1700000000000000002
+    },
+    "want": {
+      "aggregate_id": "4:acme:order-7",
+      "causation_id": "8:shipping:4:acme:order-7:5:0",
+      "correlation_id": "corr-1",
+      "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo1OjAiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOiJyZWplY3RlZCIsImVycm9yIjoiIn0=",
+      "encryption": null,
+      "extensions": {},
+      "id": "8:shipping:4:acme:order-7:5:0:failed",
+      "metadata": {},
+      "name": "SagaCommandFailed",
+      "occurred_at": null,
+      "recorded_at": 1700000000000000002,
+      "sequence": null,
+      "subject": "customer-42",
+      "tenant": "acme",
+      "version": 1
+    }
+  },
+  {
+    "saga_command_failed": {
+      "code": null,
+      "command": {
+        "aggregate_id": "4:acme:order-7",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "/3MOBVhWdRmp1Y7cqDQak99lRsv0WTsXnIwyJ2AL5jB8z6I=",
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "data-key-1",
+          "key_namespace": "production-eu",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "extensions": {},
+        "id": "8:shipping:4:acme:order-7:5:0",
+        "idempotency_key": "8:shipping:4:acme:order-7:5:0",
+        "issued_at": 1700000000000000001,
+        "metadata": {},
+        "name": "Fulfill",
+        "subject": "customer-42",
+        "tenant": "acme",
+        "version": 2
+      },
+      "error": "private address: 17 Example Lane",
+      "recorded_at": 1700000000000000002
+    },
+    "want": {
+      "aggregate_id": "4:acme:order-7",
+      "causation_id": "8:shipping:4:acme:order-7:5:0",
+      "correlation_id": "corr-1",
+      "data": "eyJjb21tYW5kX2lkIjoiODpzaGlwcGluZzo0OmFjbWU6b3JkZXItNzo1OjAiLCJjb21tYW5kIjoiRnVsZmlsbCIsImNvZGUiOm51bGwsImVycm9yIjoiIn0=",
+      "encryption": null,
+      "extensions": {},
+      "id": "8:shipping:4:acme:order-7:5:0:failed",
+      "metadata": {},
+      "name": "SagaCommandFailed",
+      "occurred_at": null,
+      "recorded_at": 1700000000000000002,
+      "sequence": null,
+      "subject": "customer-42",
+      "tenant": "acme",
+      "version": 1
     }
   }
 ]

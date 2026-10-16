@@ -17,6 +17,7 @@
 //! beside the message it delivers.
 
 use edax_core::Error;
+use edax_seal::EncryptionInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -73,6 +74,10 @@ pub struct EventDraft {
     pub aggregate_id: String,
     /// The tenant this event belongs to, `None` in a single-tenant deployment.
     pub tenant: Option<String>,
+    /// Immutable erasure owner; plaintext routing context.
+    pub subject: Option<String>,
+    /// Payload encryption format and immutable data-key generation.
+    pub encryption: Option<EncryptionInfo>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream.
     pub sequence: Option<u64>,
     /// The event type name.
@@ -100,6 +105,8 @@ impl EventDraft {
             id: self.id,
             aggregate_id: self.aggregate_id,
             tenant: self.tenant,
+            subject: self.subject,
+            encryption: self.encryption,
             sequence: self.sequence,
             name: self.name,
             version: self.version,
@@ -126,6 +133,12 @@ pub struct EventMessage {
     /// [`edax_core::tenant_key`].
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Immutable erasure owner; plaintext routing context.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Payload encryption format and immutable data-key generation.
+    #[serde(default)]
+    pub encryption: Option<EncryptionInfo>,
     /// The per-aggregate ordinal, `None` for an event outside an aggregate stream. A missing field
     /// reads as `None`.
     #[serde(default)]
@@ -191,6 +204,12 @@ pub struct CommandMessage {
     /// [`edax_core::tenant_key`].
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Immutable erasure owner; plaintext routing context.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Payload encryption format and immutable data-key generation.
+    #[serde(default)]
+    pub encryption: Option<EncryptionInfo>,
     /// The command type name a handler is registered under.
     pub name: String,
     /// The payload schema version.
@@ -253,6 +272,15 @@ pub trait Message: sealed::Sealed {
 
     /// The tenant this message belongs to, which the codec holds to [`edax_core::check_tenant`].
     fn tenant(&self) -> Option<&str>;
+
+    /// Erasure owner, if any.
+    fn subject(&self) -> Option<&str>;
+
+    /// Payload encryption information, if any.
+    fn encryption(&self) -> Option<&EncryptionInfo>;
+
+    /// Serialized plaintext or ciphertext and tag.
+    fn data(&self) -> &[u8];
 }
 
 impl Message for EventMessage {
@@ -271,6 +299,18 @@ impl Message for EventMessage {
         &self.aggregate_id
     }
 
+    fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
+    }
+
+    fn encryption(&self) -> Option<&EncryptionInfo> {
+        self.encryption.as_ref()
+    }
+
+    fn data(&self) -> &[u8] {
+        &self.data
+    }
+
     fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
     }
@@ -285,6 +325,18 @@ impl Message for CommandMessage {
 
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+
+    fn subject(&self) -> Option<&str> {
+        self.subject.as_deref()
+    }
+
+    fn encryption(&self) -> Option<&EncryptionInfo> {
+        self.encryption.as_ref()
+    }
+
+    fn data(&self) -> &[u8] {
+        &self.data
     }
 
     fn tenant(&self) -> Option<&str> {

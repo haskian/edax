@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/edax-golden", "crates/edax-core", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-postgres", "crates/edax-abi", "crates/edax-abi-ffi"]
+members = ["crates/edax-golden", "crates/edax-core", "crates/edax-seal", "crates/edax-event", "crates/edax-cqrs", "crates/edax-py", "crates/edax", "crates/edax-memory", "crates/edax-kafka", "crates/edax-redis", "crates/edax-postgres", "crates/edax-abi", "crates/edax-abi-ffi"]
 # Its own workspace: it turns on serde_json features that must never reach the main build.
 exclude = ["crates/edax-cqrs/feature-check"]
 
@@ -22,6 +22,7 @@ indexing_slicing = "deny"
 [workspace.dependencies]
 edax-golden = { path = "crates/edax-golden" }
 edax-core = { path = "crates/edax-core" }
+edax-seal = { path = "crates/edax-seal" }
 edax-event = { path = "crates/edax-event" }
 edax-cqrs = { path = "crates/edax-cqrs" }
 edax-memory = { path = "crates/edax-memory" }

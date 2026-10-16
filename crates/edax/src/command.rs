@@ -5,22 +5,23 @@
 //! verdict; the guard engine is [`crate::idempotency`].
 
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use edax_core::{ErrorCode, Tenancy};
 use edax_cqrs::{claim_key, command_hash};
 use edax_event::{check_extensions, originate, CommandMessage, Extensions, Lineage, Metadata, Payload, FIRST_VERSION};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::aggregate::PayloadCodec;
 use crate::chain::{register_once, wrap_outermost_first};
 use crate::failure::HandlerError;
-use crate::idempotency::{Guard, IdempotencyStore};
+use crate::idempotency::{guarded, Claim, ClaimHandle, Guard, IdempotencyStore, Record, State};
 use crate::pacing::Pacing;
+use crate::sealing::Sealing;
 use crate::unit_of_work::{in_unit_of_work, retry_with};
 use crate::Error;
 
@@ -79,6 +80,8 @@ pub struct DispatchOptions {
     pub aggregate_id: Option<String>,
     /// Whose command it is: a guard composes its ledger key from it under a pool.
     pub tenant: Option<String>,
+    /// Immutable erasure owner for a protected command.
+    pub subject: Option<String>,
     /// The flow the command continues; `None` starts a new one rooted at the message.
     pub lineage: Option<Lineage>,
     /// Edax extension context, under keys the kernel's rule accepts.
@@ -125,6 +128,8 @@ where
     let id = edax_core::guid();
     let lineage = options.lineage.unwrap_or_else(|| originate(None, None, &id));
     Ok(CommandMessage {
+        subject: options.subject,
+        encryption: None,
         id,
         idempotency_key: options.idempotency_key,
         aggregate_id: options.aggregate_id,
@@ -145,18 +150,37 @@ thread_local! {
     /// ([`CommandBus::dispatch_message`]) rather than built it ([`CommandBus::dispatch`]). A handler is a
     /// sync closure on its caller's thread, so a guard inside the chain reads the dispatch it runs in.
     static RECEIVED: Cell<bool> = const { Cell::new(false) };
+    static SEALING: RefCell<Option<Arc<Sealing>>> = const { RefCell::new(None) };
+    static RAW_COMMAND: RefCell<Option<CommandMessage>> = const { RefCell::new(None) };
+}
+
+/// The original envelope for this synchronous dispatch, retaining ciphertext for guards and forwarding.
+pub fn current_command() -> Option<CommandMessage> {
+    RAW_COMMAND.with_borrow(Clone::clone)
+}
+
+fn check_authenticated_command(message: &CommandMessage) -> Result<(), Error> {
+    if SEALING.with_borrow(|sealing| sealing.is_some()) && !RAW_COMMAND.with_borrow(|raw| raw.as_ref() == Some(message))
+    {
+        return Err(Error::codec("middleware changed the authenticated command envelope"));
+    }
+    Ok(())
 }
 
 /// Marks the dispatch running on this thread as received or not until dropped, panics included, then
 /// gives the outer dispatch its mark back, so a dispatch nested in a handler reads its own.
 struct Dispatching {
     outer: bool,
+    sealing: Option<Arc<Sealing>>,
+    message: Option<CommandMessage>,
 }
 
 impl Dispatching {
-    fn new(received: bool) -> Self {
+    fn new(received: bool, sealing: Option<Arc<Sealing>>, message: &CommandMessage) -> Self {
         Self {
             outer: RECEIVED.replace(received),
+            sealing: SEALING.replace(sealing),
+            message: RAW_COMMAND.replace(Some(message.clone())),
         }
     }
 }
@@ -164,6 +188,8 @@ impl Dispatching {
 impl Drop for Dispatching {
     fn drop(&mut self) {
         RECEIVED.set(self.outer);
+        SEALING.replace(self.sealing.take());
+        RAW_COMMAND.replace(self.message.take());
     }
 }
 
@@ -180,7 +206,10 @@ fn guard_key(msg: &CommandMessage) -> Option<&str> {
 /// command type on a [`CommandBus`], because each one is typed by the command it reads and the result it
 /// caches.
 fn wrap<C: Command + 'static>(handler: Handler<C>, middleware: &[Middleware<C>]) -> Next<C> {
-    let step: Next<C> = Box::new(move |_: &CommandMessage, cmd: &C| handler(cmd));
+    let step: Next<C> = Box::new(move |message: &CommandMessage, cmd: &C| {
+        check_authenticated_command(message)?;
+        handler(cmd)
+    });
     wrap_outermost_first(step, middleware)
 }
 
@@ -223,11 +252,18 @@ impl<C: Command> PayloadCodec for InProcess<C> {
 pub struct CommandBus {
     /// Each command type's [`Registered`], type-erased, under its [`Command::TYPE`].
     handlers: HashMap<&'static str, Box<dyn Any + Send + Sync>>,
+    sealing: Option<Arc<Sealing>>,
 }
 
 impl CommandBus {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Enable strict protected reads and sealing for locally constructed commands.
+    pub fn sealing(mut self, sealing: Arc<Sealing>) -> Self {
+        self.sealing = Some(sealing);
+        self
     }
 
     /// Install `handler` for commands of type `C`, under [`Command::TYPE`], wrapped in `middleware`, the
@@ -283,8 +319,16 @@ impl CommandBus {
     /// returned.
     pub fn dispatch<C: Command + 'static>(&self, cmd: &C, options: DispatchOptions) -> Result<C::Output, HandlerError> {
         let registered = self.registered::<C>()?;
-        let msg = command_message(cmd, &*registered.codec, options)?;
-        let _dispatching = Dispatching::new(false);
+        let mut msg = command_message(cmd, &*registered.codec, options)?;
+        let _guard = if let Some(sealing) = &self.sealing {
+            check_protected_transaction()?;
+            msg = sealing.seal_command(msg)?;
+            let scope = sealing.scope(msg.tenant.as_deref(), msg.subject.as_deref())?;
+            Some(sealing.hold(&scope)?)
+        } else {
+            None
+        };
+        let _dispatching = Dispatching::new(false, self.sealing.clone(), &msg);
         (registered.chain)(&msg, cmd)
     }
 
@@ -297,8 +341,18 @@ impl CommandBus {
     /// # Errors
     /// The terminal [`ErrorCode::HandlerNotFound`] for a message whose name is not `C::TYPE`, or a type
     /// with no handler; the terminal `codec` error of a message the codec cannot read. Otherwise whatever
-    /// the chain returned.
+    /// the chain returned. Confirmed key destruction raises `Shredded`; consumers that should settle
+    /// destroyed rows use [`Self::deliver`].
     pub fn dispatch_message<C: Command + 'static>(&self, msg: &CommandMessage) -> Result<C::Output, HandlerError> {
+        self.dispatch_received::<C>(msg, false)?
+            .ok_or_else(|| Error::bad_handle("direct command dispatch unexpectedly skipped delivery").into())
+    }
+
+    fn dispatch_received<C: Command + 'static>(
+        &self,
+        msg: &CommandMessage,
+        delivery: bool,
+    ) -> Result<Option<C::Output>, HandlerError> {
         if msg.name != C::TYPE {
             return Err(Error::new(
                 ErrorCode::HandlerNotFound,
@@ -307,9 +361,41 @@ impl CommandBus {
             .into());
         }
         let registered = self.registered::<C>()?;
-        let cmd = registered.codec.unmarshal(&msg.payload())?;
-        let _dispatching = Dispatching::new(true);
-        (registered.chain)(msg, &cmd)
+        let mut payload = msg.payload();
+        let _guard = if let Some(sealing) = &self.sealing {
+            check_protected_transaction()?;
+            payload.data = if delivery {
+                let Some(data) = sealing.open_command_delivery(msg)? else {
+                    return Ok(None);
+                };
+                data
+            } else {
+                sealing.open_command(msg)?
+            };
+            let scope = if msg.encryption.is_some() {
+                sealing.scope(msg.tenant.as_deref(), msg.subject.as_deref())?
+            } else {
+                sealing.legacy_scope(msg.tenant.as_deref(), msg.subject.as_deref())?
+            };
+            match sealing.hold(&scope) {
+                Err(error) if delivery && error.code == ErrorCode::Shredded => return Ok(None),
+                result => Some(result?),
+            }
+        } else {
+            if msg.encryption.is_some() {
+                return Err(Error::bad_handle("encrypted commands require command bus sealing").into());
+            }
+            None
+        };
+        let cmd = registered.codec.unmarshal(&payload)?;
+        let _dispatching = Dispatching::new(true, self.sealing.clone(), msg);
+        (registered.chain)(msg, &cmd).map(Some)
+    }
+
+    /// A consumer delivery returns `None` only when scoped key resolution or admission confirms destruction.
+    /// Handler errors, including Shredded, remain errors.
+    pub fn deliver<C: Command + 'static>(&self, msg: &CommandMessage) -> Result<Option<C::Output>, HandlerError> {
+        self.dispatch_received::<C>(msg, true)
     }
 
     /// What `C` was registered with.
@@ -325,6 +411,13 @@ impl CommandBus {
             )
         })
     }
+}
+
+pub(crate) fn check_protected_transaction() -> Result<(), Error> {
+    if in_unit_of_work() {
+        return Err(Error::bad_handle("protected dispatch cannot release its fence before the caller's transaction commits; dispatch outside the transaction"));
+    }
+    Ok(())
 }
 
 /// Retry the handler up to `attempts` times, waiting each step of `pacing`, and return the last error.
@@ -405,6 +498,12 @@ where
         let guard = guard.clone();
         Box::new(
             move |msg: &CommandMessage, cmd: &C| -> Result<C::Output, HandlerError> {
+                if SEALING.with_borrow(|sealing| sealing.is_some()) || msg.encryption.is_some() {
+                    return Err(Error::bad_handle(
+                        "sealed commands require protected_idempotent over IdempotencyStore<String>",
+                    )
+                    .into());
+                }
                 let Some(key) = guard_key(msg) else {
                     return next(msg, cmd);
                 };
@@ -416,6 +515,234 @@ where
             },
         )
     })
+}
+
+/// Protected command deduplication over a ledger whose result is an opaque encrypted-record string.
+/// The existing typed-result ledger cannot hold ciphertext generically; sealed buses refuse ordinary
+/// [`idempotent`]. This auto-commit adapter gives the same at-least-once effect boundary as that helper.
+/// Caller-owned transactions require an explicit fence lifetime and are refused by the sealed bus.
+/// The fingerprint binds the authenticated command's serialized value, as ordinary Rust idempotency
+/// does. The registered codec must keep that value stable across deployments for existing requests.
+pub fn protected_idempotent<C, S>(store: S, scope: impl Into<String>, tenancy: Tenancy) -> Middleware<C>
+where
+    C: Command + 'static,
+    C::Output: Clone + Serialize + DeserializeOwned + 'static,
+    S: IdempotencyStore<String> + Send + Sync + 'static,
+    S::Tx: Default + 'static,
+{
+    let store = Arc::new(store);
+    let scope: Arc<str> = Arc::from(scope.into());
+    Box::new(move |next: Next<C>| {
+        let store = store.clone();
+        let scope = scope.clone();
+        Box::new(move |msg, cmd| {
+            let sealing = SEALING
+                .with_borrow(Clone::clone)
+                .ok_or_else(|| Error::bad_handle("protected_idempotent requires a sealed command bus"))?;
+            check_protected_transaction()?;
+            check_authenticated_command(msg)?;
+            let Some(key) = guard_key(msg) else {
+                return next(msg, cmd);
+            };
+            let logical = claim_key(tenancy, msg.tenant.as_deref(), &scope, key)?;
+            let key_scope = sealing.scope(msg.tenant.as_deref(), msg.subject.as_deref())?;
+            let reserved = sealing.keys().fingerprint(&key_scope)?;
+            // A payload's format is a codec contract, never inferred from whether its bytes happen
+            // to parse as JSON: MessagePack scalar bytes can also be valid JSON with another value.
+            let json = serde_json::to_vec(cmd).map_err(|_| Error::codec("protected command is not JSON-encodable"))?;
+            let fingerprint = edax_cqrs::protected::command_fingerprint(
+                &msg.name,
+                msg.version,
+                &json,
+                &reserved.key_id,
+                reserved.key.as_bytes(),
+            )?;
+            drop(reserved);
+            let adapter = ProtectedLedger::<S, C::Output> {
+                store: store.clone(),
+                sealing,
+                scope: key_scope,
+                fingerprint,
+                claims: Mutex::new(HashMap::new()),
+                output: PhantomData,
+            };
+            guarded(&adapter, &mut S::Tx::default(), &logical, 0, || next(msg, cmd))
+        })
+    })
+}
+
+struct ProtectedClaim {
+    pending: edax_cqrs::protected::ProtectedRecord,
+    settled: Option<String>,
+}
+
+struct ProtectedLedger<S, O> {
+    store: Arc<S>,
+    sealing: Arc<Sealing>,
+    scope: edax_seal::KeyScope,
+    fingerprint: edax_cqrs::protected::Fingerprint,
+    claims: Mutex<HashMap<(String, Vec<u8>), ProtectedClaim>>,
+    output: PhantomData<fn() -> O>,
+}
+
+impl<S, O> IdempotencyStore<O> for ProtectedLedger<S, O>
+where
+    S: IdempotencyStore<String>,
+    O: Serialize + DeserializeOwned,
+{
+    type Tx = S::Tx;
+    fn claim(&self, tx: &mut Self::Tx, key: &str, hash: u64) -> Result<Claim<O>, Error> {
+        use edax_cqrs::protected::{decode_record, ProtectedRecord, ProtectedReplay};
+        if hash != 0 {
+            return Err(Error::bad_handle("protected ledger requires the constant guard hash"));
+        }
+        self.sealing.check_active(&self.scope)?;
+        let stored = edax_cqrs::protected::claim_key(&self.scope, key)?;
+        match self.store.claim(tx, &stored, 0)? {
+            Claim::Won(handle) => {
+                let owner = if handle.0.is_empty() {
+                    edax_core::guid()
+                } else {
+                    handle.0.iter().map(|byte| format!("{byte:02x}")).collect()
+                };
+                let pending =
+                    match ProtectedRecord::pending(self.scope.clone(), stored.clone(), owner, self.fingerprint.clone())
+                    {
+                        Ok(record) => record,
+                        Err(error) => {
+                            self.store.release(tx, &stored, &handle)?;
+                            return Err(error);
+                        }
+                    };
+                edax_core::lock(&self.claims)
+                    .insert((stored, handle.0.clone()), ProtectedClaim { pending, settled: None });
+                Ok(Claim::Won(handle))
+            }
+            Claim::Prior(record) => {
+                if record.payload_hash != 0 {
+                    return Err(Error::codec("invalid protected ledger envelope"));
+                }
+                let protected = match record.state {
+                    State::Pending => return Ok(Claim::Prior(Record::pending(0))),
+                    State::Done(encoded) => decode_record(&encoded)?,
+                    State::Failed { .. } => return Err(Error::codec("invalid protected ledger envelope")),
+                };
+                let result = match protected.replay(&self.scope, &stored, &self.fingerprint)? {
+                    ProtectedReplay::Pending => Record::pending(0),
+                    ProtectedReplay::Failed(code) => Record::failed(0, code, "protected command failed"),
+                    ProtectedReplay::Done(value) => {
+                        let key = self.sealing.resolve(
+                            self.scope.tenant.as_deref(),
+                            self.scope.subject.as_deref(),
+                            &value.encryption,
+                        )?;
+                        let opened = protected.open_result(key.as_bytes())?;
+                        let output = serde_json::from_slice(&opened)
+                            .map_err(|_| Error::codec("invalid protected command result"))?;
+                        Record::done(0, output)
+                    }
+                };
+                self.sealing.check_active(&self.scope)?;
+                Ok(Claim::Prior(result))
+            }
+        }
+    }
+
+    fn complete(&self, tx: &mut Self::Tx, key: &str, handle: &ClaimHandle, record: Record<O>) -> Result<(), Error> {
+        if record.payload_hash != 0 {
+            return Err(Error::bad_handle("protected ledger requires the constant guard hash"));
+        }
+        self.sealing.check_active(&self.scope)?;
+        let stored = edax_cqrs::protected::claim_key(&self.scope, key)?;
+        let mut claims = edax_core::lock(&self.claims);
+        let claim = claims
+            .get_mut(&(stored.clone(), handle.0.clone()))
+            .ok_or_else(|| Error::bad_handle("protected settlement has no local claim owner"))?;
+        if claim.settled.is_none() {
+            let settled = match record.state {
+                State::Done(value) => {
+                    edax_cqrs::encode_record(&Record::done(0, &value))?;
+                    let plaintext = serde_json::to_vec(&value)
+                        .map_err(|_| Error::codec("protected result is not JSON-encodable"))?;
+                    let (info, key) = self
+                        .sealing
+                        .prepare(self.scope.tenant.as_deref(), self.scope.subject.as_deref())?;
+                    claim
+                        .pending
+                        .seal_result(&claim.pending.owner, info, key.as_bytes(), &plaintext)?
+                }
+                State::Failed { code: Some(code), .. } => claim.pending.fail(&claim.pending.owner, code)?,
+                _ => {
+                    return Err(Error::bad_handle(
+                        "protected settlement requires a completed outcome and stable failure code",
+                    ))
+                }
+            };
+            claim.settled = Some(edax_cqrs::protected::encode_record(&settled)?);
+        }
+        let encoded = claim
+            .settled
+            .as_ref()
+            .ok_or_else(|| Error::bad_handle("protected settlement was not prepared"))?;
+        self.store
+            .complete(tx, &stored, handle, Record::done(0, encoded.clone()))
+    }
+
+    fn release(&self, tx: &mut Self::Tx, key: &str, handle: &ClaimHandle) -> Result<(), Error> {
+        let stored = edax_cqrs::protected::claim_key(&self.scope, key)?;
+        self.store.release(tx, &stored, handle)?;
+        edax_core::lock(&self.claims).remove(&(stored, handle.0.clone()));
+        Ok(())
+    }
+
+    fn forget(&self, tx: &mut Self::Tx, key: &str) -> Result<(), Error> {
+        self.store
+            .forget(tx, &edax_cqrs::protected::claim_key(&self.scope, key)?)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod admission_test_keys {
+    use crate::sealing::*;
+    use crate::Error;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    pub struct ObservedKeys {
+        inner: MemoryKeys,
+        pub resolutions: AtomicUsize,
+        pub destroy_on_hold: AtomicBool,
+    }
+    impl KeyProvider for ObservedKeys {
+        fn reserve(&self, scope: &KeyScope, cipher: Cipher) -> Result<ReservedKey, Error> {
+            self.inner.reserve(scope, cipher)
+        }
+        fn resolve(&self, scope: &KeyScope, cipher: Cipher, id: &str) -> Result<KeyMaterial, Error> {
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            self.inner.resolve(scope, cipher, id)
+        }
+        fn fingerprint(&self, scope: &KeyScope) -> Result<ReservedKey, Error> {
+            self.inner.fingerprint(scope)
+        }
+        fn resolve_fingerprint(&self, scope: &KeyScope, id: &str) -> Result<KeyMaterial, Error> {
+            self.inner.resolve_fingerprint(scope, id)
+        }
+        fn revoke(&self, scope: &KeyScope) -> Result<KeyStatus, Error> {
+            self.inner.revoke(scope)
+        }
+        fn destroy(&self, scope: &KeyScope) -> Result<KeyStatus, Error> {
+            self.inner.destroy(scope)
+        }
+        fn status(&self, scope: &KeyScope) -> Result<KeyStatus, Error> {
+            self.inner.status(scope)
+        }
+        fn hold(&self, scope: &KeyScope) -> Result<Box<dyn KeyGuard + '_>, Error> {
+            if self.destroy_on_hold.swap(false, Ordering::SeqCst) {
+                self.inner.destroy(scope)?;
+            }
+            self.inner.hold(scope)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1277,7 +1604,7 @@ mod tests {
                 errors: &[Some(codec)],
                 want: [
                     Some(Error::codec("bad payload")),
-                    Some(Error::new(ErrorCode::CachedFailure, "codec: bad payload")),
+                    Some(Error::new(ErrorCode::CachedFailure, "codec: ")),
                 ],
                 held: false,
                 redispatched: 10,
@@ -1291,7 +1618,7 @@ mod tests {
                 errors: &[Some(rejected)],
                 want: [
                     Some(blip_error()),
-                    Some(Error::new(ErrorCode::CachedFailure, "rejected: insufficient funds")),
+                    Some(Error::new(ErrorCode::CachedFailure, "rejected: ")),
                 ],
                 held: false,
                 redispatched: 10,
@@ -1463,7 +1790,7 @@ mod tests {
         let replay = bus.dispatch(&cmd, by_id(&cmd)).expect_err("cached failure");
         assert_eq!(
             replay.downcast_ref::<Error>(),
-            Some(&Error::new(ErrorCode::CachedFailure, "codec: bad payload"))
+            Some(&Error::new(ErrorCode::CachedFailure, "codec: "))
         );
         assert_eq!(calls.get(), 1); // handler never re-ran
     }
@@ -1868,11 +2195,7 @@ mod tests {
             .dispatch(cmd, DispatchOptions::keyed("req-1"))
             .expect_err("the redelivery replays the failure");
         let second = second.downcast_ref::<Error>().expect("a kernel error");
-        assert_eq!(
-            second,
-            &cached_failure(Some(ErrorCode::Codec), &first.message),
-            "{name}"
-        );
+        assert_eq!(second, &cached_failure(Some(ErrorCode::Codec), ""), "{name}");
         assert_eq!(runs.get(), 1, "{name}: the handler ran once");
     }
 
@@ -2142,5 +2465,274 @@ mod tests {
             [Pay::TYPE],
             "the rejected command was dead-lettered"
         );
+    }
+
+    #[test]
+    fn protected_command_admission_opens_once_and_fences_legacy() {
+        use super::admission_test_keys::ObservedKeys;
+        use crate::sealing::Cipher;
+        for (name, legacy, protected, tamper, destroy, delivery) in [
+            ("delivery opens once", false, true, false, false, true),
+            ("direct opens once", false, true, false, false, false),
+            ("legacy without owner", true, false, false, false, true),
+            ("direct legacy without owner", true, false, false, false, false),
+            ("legacy protected cache refused", true, true, false, false, true),
+            ("changed envelope refused", false, true, true, false, true),
+            ("changed envelope at handler refused", false, false, true, false, true),
+            ("destroyed at admission settles", false, false, false, true, true),
+            ("direct destruction raises", false, false, false, true, false),
+        ] {
+            let keys = Arc::new(ObservedKeys::default());
+            let sealing = Arc::new(
+                Sealing::new(keys.clone(), "production-eu", Cipher::default())
+                    .unwrap()
+                    .allow_plaintext(true),
+            );
+            let command = pay("request-17", 4200);
+            let mut message = command_message(&command, &pay_codec(), DispatchOptions::default()).unwrap();
+            if !legacy {
+                message.subject = Some("person-42".into());
+                message = sealing.seal_command(message).unwrap();
+            }
+            let mut middleware: Vec<Middleware<Pay>> = vec![];
+            if tamper {
+                middleware.push(Box::new(|next| {
+                    Box::new(move |raw, command| {
+                        let mut changed = raw.clone();
+                        changed.id.push_str("-changed");
+                        next(&changed, command)
+                    })
+                }));
+            }
+            if protected {
+                middleware.push(protected_idempotent(
+                    MemoryIdempotencyStore::<String>::new(),
+                    SCOPE,
+                    Tenancy::Silo,
+                ));
+            }
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = calls.clone();
+            let mut bus = CommandBus::new().sealing(sealing);
+            bus.register_with_codec::<Pay, _>(
+                Box::new(move |command| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Ok(command.amount)
+                }),
+                pay_codec(),
+                middleware,
+            )
+            .unwrap();
+            keys.destroy_on_hold.store(destroy, Ordering::SeqCst);
+            let result = if delivery {
+                bus.deliver::<Pay>(&message)
+            } else {
+                bus.dispatch_message::<Pay>(&message).map(Some)
+            };
+            if tamper || legacy && protected || destroy && !delivery {
+                let code = result.unwrap_err().downcast_ref::<Error>().unwrap().code;
+                assert_eq!(
+                    code,
+                    if destroy { ErrorCode::Shredded } else { ErrorCode::Codec },
+                    "{name}"
+                );
+            } else {
+                assert_eq!(result.unwrap(), if destroy { None } else { Some(4200) }, "{name}");
+            }
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                usize::from(!(tamper || destroy || legacy && protected)),
+                "{name}"
+            );
+            assert_eq!(keys.resolutions.load(Ordering::SeqCst), usize::from(!legacy), "{name}");
+        }
+    }
+
+    #[test]
+    fn protected_command_replays_across_fresh_ciphertext_and_rotation() {
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        for cipher in [Cipher::Aes256Gcm, Cipher::XChaCha20Poly1305] {
+            let keys = Arc::new(MemoryKeys::with_aes_limit(1).unwrap());
+            let sealing = Arc::new(Sealing::new(keys.clone(), "production-eu", cipher).unwrap());
+            let store = Arc::new(MemoryIdempotencyStore::<String>::new());
+            let observed = Arc::new(Mutex::new(Vec::<CommandMessage>::new()));
+            let captured = observed.clone();
+            let capture: Middleware<Pay> = Box::new(move |next| {
+                let captured = captured.clone();
+                Box::new(move |message, command| {
+                    assert!(message.encryption.is_some());
+                    assert_ne!(message.data, serde_json::to_vec(command).unwrap());
+                    captured.lock().unwrap().push(message.clone());
+                    next(message, command)
+                })
+            });
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = calls.clone();
+            let mut bus = CommandBus::new().sealing(sealing.clone());
+            bus.register_with_codec::<Pay, _>(
+                Box::new(move |command| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    assert!(current_command().unwrap().encryption.is_some());
+                    Ok(command.amount)
+                }),
+                pay_codec(),
+                vec![capture, protected_idempotent(store.clone(), SCOPE, Tenancy::Silo)],
+            )
+            .unwrap();
+            let options = || DispatchOptions {
+                subject: Some("person-42".into()),
+                ..DispatchOptions::keyed("request-17")
+            };
+            assert_eq!(bus.dispatch(&pay("request-17", 314159), options()).unwrap(), 314159);
+            assert_eq!(bus.dispatch(&pay("request-17", 314159), options()).unwrap(), 314159);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let messages = observed.lock().unwrap().clone();
+            assert_ne!(messages[0].data, messages[1].data);
+            if cipher == Cipher::Aes256Gcm {
+                assert_ne!(
+                    messages[0].encryption.as_ref().unwrap().key_id,
+                    messages[1].encryption.as_ref().unwrap().key_id
+                );
+            }
+            let scope = sealing.scope(None, Some("person-42")).unwrap();
+            let stored_key = edax_cqrs::protected::claim_key(&scope, &claimed("request-17")).unwrap();
+            let stored = match store.claim(&mut MemoryTx::auto_commit(), &stored_key, 0).unwrap() {
+                Claim::Prior(record) => record,
+                Claim::Won(_) => panic!("protected result missing"),
+            };
+            assert_eq!(stored.payload_hash, 0);
+            let wire = String::from_utf8(edax_cqrs::encode_record(&stored).unwrap()).unwrap();
+            assert!(!wire.contains("314159"));
+            let State::Done(record) = stored.state else {
+                panic!("outer result must be protected record string")
+            };
+            let protected = edax_cqrs::protected::decode_record(&record).unwrap();
+            assert_eq!(protected.fingerprint.value.len(), 32);
+            assert_eq!(
+                bus.dispatch(&pay("request-17", 271828), options())
+                    .unwrap_err()
+                    .downcast_ref::<Error>()
+                    .unwrap()
+                    .code,
+                ErrorCode::PayloadMismatch
+            );
+            keys.destroy(&scope).unwrap();
+            assert_eq!(
+                bus.dispatch_message::<Pay>(&messages[0])
+                    .unwrap_err()
+                    .downcast_ref::<Error>()
+                    .unwrap()
+                    .code,
+                ErrorCode::Shredded
+            );
+            assert!(bus.deliver::<Pay>(&messages[0]).unwrap().is_none());
+            assert!(current_command().is_none());
+        }
+    }
+
+    #[test]
+    fn protected_command_failure_is_code_only_and_handler_shredded_is_not_skipped() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+        let store = Arc::new(MemoryIdempotencyStore::<String>::new());
+        let mut bus = CommandBus::new().sealing(sealing.clone());
+        bus.register_with_codec::<Pay, _>(
+            Box::new(|_| Err(Error::new(ErrorCode::Rejected, "address: 17 Example Lane").into())),
+            pay_codec(),
+            vec![protected_idempotent(store.clone(), SCOPE, Tenancy::Silo)],
+        )
+        .unwrap();
+        let options = DispatchOptions {
+            subject: Some("person-42".into()),
+            ..DispatchOptions::keyed("request-17")
+        };
+        assert!(bus
+            .dispatch(&pay("request-17", 100), options.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("17 Example Lane"));
+        let replay = bus.dispatch(&pay("request-17", 100), options.clone()).unwrap_err();
+        assert_eq!(replay.downcast_ref::<Error>().unwrap().code, ErrorCode::CachedFailure);
+        assert!(!replay.to_string().contains("17 Example Lane"));
+        let scope = sealing.scope(None, Some("person-42")).unwrap();
+        let key = edax_cqrs::protected::claim_key(&scope, &claimed("request-17")).unwrap();
+        let Claim::Prior(record) = store.claim(&mut MemoryTx::auto_commit(), &key, 0).unwrap() else {
+            panic!("missing failure")
+        };
+        assert!(!String::from_utf8(edax_cqrs::encode_record(&record).unwrap())
+            .unwrap()
+            .contains("17 Example Lane"));
+        let mut failing = CommandBus::new().sealing(sealing.clone());
+        failing
+            .register_with_codec::<Pay, _>(
+                Box::new(|_| Err(Error::new(ErrorCode::Shredded, "handler failure").into())),
+                pay_codec(),
+                vec![],
+            )
+            .unwrap();
+        let message = sealing
+            .seal_command(command_message(&pay("other", 100), &pay_codec(), options).unwrap())
+            .unwrap();
+        assert_eq!(
+            failing
+                .deliver::<Pay>(&message)
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::Shredded
+        );
+    }
+
+    #[test]
+    fn sealed_command_refuses_plaintext_and_unprotected_ledgers_and_joins_repository_fence() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        use crate::testkit::account::{repo, AccountEvent};
+        use crate::{Aggregate, MemoryEventStore};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+        let mut unsafe_bus = CommandBus::new().sealing(sealing.clone());
+        unsafe_bus
+            .register::<Pay>(
+                Box::new(|command| Ok(command.amount)),
+                vec![idempotent(MemStore::new(), SCOPE, Tenancy::Silo)],
+            )
+            .unwrap();
+        let options = DispatchOptions {
+            subject: Some("person-42".into()),
+            ..DispatchOptions::keyed("request-17")
+        };
+        assert_eq!(
+            unsafe_bus
+                .dispatch(&pay("request-17", 100), options.clone())
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::BadHandle
+        );
+        let raw = command_message(&pay("request-17", 100), &pay_codec(), options.clone()).unwrap();
+        assert_eq!(
+            unsafe_bus
+                .dispatch_message::<Pay>(&raw)
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::Codec
+        );
+        let repository = repo(MemoryEventStore::new()).sealing(sealing.clone());
+        let mut bus = CommandBus::new().sealing(sealing);
+        bus.register::<Pay>(
+            Box::new(move |command| {
+                let mut account = repository.load(None, "account-42")?;
+                account.root_mut().set_subject(Some("person-42"))?;
+                account.apply(AccountEvent::Deposited(command.amount));
+                repository.save(&mut account, crate::SaveOptions::default())?;
+                Ok(account.balance)
+            }),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(bus.dispatch(&pay("request-17", 314159), options).unwrap(), 314159);
     }
 }

@@ -1,6 +1,7 @@
 package edax
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -18,11 +19,32 @@ type commandContextKey struct{}
 type commandDispatch struct {
 	message  CommandMessage
 	received bool
+	sealing  *Sealing
+	wire     []byte
+	opened   []byte
+}
+
+func (dispatch commandDispatch) openedPayload(message CommandMessage) ([]byte, error) {
+	wire, err := EncodeCommand("json", message)
+	if err != nil {
+		return nil, err
+	}
+	if dispatch.sealing == nil || !bytes.Equal(wire, dispatch.wire) {
+		return nil, &Error{Code: CodeCodec, Message: "command changed after authentication"}
+	}
+	return append([]byte(nil), dispatch.opened...), nil
 }
 
 // CurrentCommand returns the envelope for the current handler invocation.
 func CurrentCommand(ctx context.Context) (CommandMessage, bool) {
 	dispatch, ok := ctx.Value(commandContextKey{}).(commandDispatch)
+	if ok && dispatch.sealing != nil {
+		message, err := DecodeCommand("json", dispatch.wire)
+		if err != nil {
+			return CommandMessage{}, false
+		}
+		return *message, true
+	}
 	return dispatch.message, ok
 }
 
@@ -32,11 +54,20 @@ type CommandBus struct {
 	mu         sync.RWMutex
 	handlers   map[string]CommandHandler
 	middleware []Middleware
+	sealing    *Sealing
 }
 
 // NewCommandBus creates an empty registry. Registration and dispatch may run concurrently.
 func NewCommandBus(middleware ...Middleware) *CommandBus {
 	return &CommandBus{handlers: make(map[string]CommandHandler), middleware: append([]Middleware(nil), middleware...)}
+}
+
+// NewSealedCommandBus encrypts local commands and authenticates received commands.
+// Middleware and CurrentCommand see ciphertext; registered handlers receive an opened view.
+func NewSealedCommandBus(sealing *Sealing, middleware ...Middleware) *CommandBus {
+	bus := NewCommandBus(middleware...)
+	bus.sealing = sealing
+	return bus
 }
 
 // Register binds a name to a handler and its middleware. Duplicate names are refused.
@@ -51,6 +82,26 @@ func (b *CommandBus) Register(name string, handler CommandHandler) error {
 		return &Error{Code: CodeAlreadyRegistered, Message: name}
 	}
 	// Factories run outside the lock, so one may register or dispatch on this bus.
+	if b.sealing != nil {
+		registered := handler
+		handler = func(ctx context.Context, raw CommandMessage) (any, error) {
+			dispatch, _ := ctx.Value(commandContextKey{}).(commandDispatch)
+			data, err := dispatch.openedPayload(raw)
+			if err != nil {
+				return nil, err
+			}
+			wire, err := EncodeCommand("json", raw)
+			if err != nil {
+				return nil, err
+			}
+			opened, err := DecodeCommand("json", wire)
+			if err != nil {
+				return nil, err
+			}
+			opened.Data, opened.Encryption = append([]byte(nil), data...), nil
+			return registered(ctx, *opened)
+		}
+	}
 	for i := len(b.middleware) - 1; i >= 0; i-- {
 		if b.middleware[i] == nil {
 			return &Error{Code: CodeBadHandle, Message: "nil command middleware"}
@@ -77,34 +128,89 @@ func (b *CommandBus) Register(name string, handler CommandHandler) error {
 // execution and replay. Use ExecuteAs for a typed result. Unguarded handlers retain
 // their original result type.
 func (b *CommandBus) Execute(ctx context.Context, message CommandMessage) (any, error) {
-	return b.dispatch(ctx, message, true)
+	value, _, err := b.dispatch(ctx, message, true, false)
+	return value, err
+}
+
+// Deliver skips only when the trusted opening decision confirms destroyed keys.
+// Errors returned by handlers, including Shredded, are never converted into skips.
+func (b *CommandBus) Deliver(ctx context.Context, message CommandMessage) (any, bool, error) {
+	return b.dispatch(ctx, message, true, true)
 }
 
 // Dispatch runs a local command. A missing idempotency key leaves it unguarded.
 func (b *CommandBus) Dispatch(ctx context.Context, message CommandMessage) (any, error) {
-	return b.dispatch(ctx, message, false)
+	value, _, err := b.dispatch(ctx, message, false, false)
+	return value, err
 }
 
-func (b *CommandBus) dispatch(ctx context.Context, message CommandMessage, received bool) (value any, err error) {
+func (b *CommandBus) dispatch(ctx context.Context, message CommandMessage, received, delivery bool) (value any, skipped bool, err error) {
 	started := time.Now()
 	defer func() {
 		ObserveContext(ctx, CurrentObserver(ctx), Observation{Operation: "command", Name: message.Name, ID: message.ID, CorrelationID: message.CorrelationID, Duration: time.Since(started), Err: err})
 	}()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	b.mu.RLock()
 	handler := b.handlers[message.Name]
 	b.mu.RUnlock()
-	if handler == nil {
-		return nil, &Error{Code: CodeHandlerNotFound, Message: message.Name}
+	dispatch := commandDispatch{received: received, sealing: b.sealing}
+	if b.sealing != nil {
+		if !received && message.Encryption == nil {
+			sealed, sealErr := b.sealing.SealCommand(ctx, message)
+			if sealErr != nil {
+				return nil, false, sealErr
+			}
+			message = *sealed
+		}
+		dispatch.wire, err = EncodeCommand("json", message)
+		if err != nil {
+			return nil, false, err
+		}
+		owned, decodeErr := DecodeCommand("json", dispatch.wire)
+		if decodeErr != nil {
+			return nil, false, decodeErr
+		}
+		message = *owned
+		if delivery {
+			dispatch.opened, skipped, err = b.sealing.OpenCommandDelivery(ctx, message)
+		} else {
+			dispatch.opened, err = b.sealing.OpenCommand(ctx, message)
+		}
+		if err != nil || skipped {
+			return nil, skipped, err
+		}
+		defer clear(dispatch.opened)
+		scope, scopeErr := b.sealing.Scope(message.Tenant, message.Subject)
+		if scopeErr != nil {
+			return nil, false, scopeErr
+		}
+		var release func()
+		ctx, release, err = b.sealing.Guard(ctx, scope)
+		if err != nil {
+			if delivery && destroyedKey(err) {
+				return nil, true, nil
+			}
+			return nil, false, err
+		}
+		if !HoldCurrentTransactionResource(ctx, release) {
+			defer release()
+		}
+	} else if message.Encryption != nil {
+		return nil, false, &Error{Code: CodeBadHandle, Message: "encrypted commands require command bus sealing"}
 	}
-	ctx = context.WithValue(ctx, commandContextKey{}, commandDispatch{message, received})
+	if handler == nil {
+		return nil, false, &Error{Code: CodeHandlerNotFound, Message: message.Name}
+	}
+	dispatch.message = message
+	ctx = context.WithValue(ctx, commandContextKey{}, dispatch)
 	ctx, err = CausedBy(ctx, message.ID, message.CorrelationID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return handler(ctx, message)
+	value, err = handler(ctx, message)
+	return value, false, err
 }
 
 // CommandOptions contains envelope metadata independent of its payload.
@@ -113,6 +219,7 @@ type CommandOptions struct {
 	IdempotencyKey *string
 	AggregateID    *string
 	Tenant         *string
+	Subject        *string
 	Lineage        *Lineage
 	Extensions     map[string]string
 	Metadata       map[string]string
@@ -129,7 +236,7 @@ func NewCommandMessage(ctx context.Context, payload Payload, options CommandOpti
 		id = Guid()
 	}
 	message := CommandMessage{ID: id, Name: payload.Name, Version: payload.Version, Data: payload.Data,
-		IdempotencyKey: options.IdempotencyKey, AggregateID: options.AggregateID, Tenant: options.Tenant,
+		IdempotencyKey: options.IdempotencyKey, AggregateID: options.AggregateID, Tenant: options.Tenant, Subject: options.Subject,
 		CorrelationID: flow.CorrelationID, CausationID: flow.CausationID, IssuedAt: CurrentTimestamp(),
 		Extensions: options.Extensions, Metadata: options.Metadata}
 	// The codec applies the complete kernel message contract before dispatch or publish.

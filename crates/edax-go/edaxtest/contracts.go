@@ -78,7 +78,7 @@ func sagaCommand(t testing.TB) edax.CommandMessage {
 func sagaStepCommand(t testing.TB, version uint64, name string) edax.CommandMessage {
 	t.Helper()
 	payload := command()
-	result, err := kernel.SagaCommand("billing", "invoice:1042", version, 0, edax.Payload{Name: name, Version: payload.Version, Data: payload.Data}, payload.CausationID, payload.CorrelationID, payload.IssuedAt, nil)
+	result, err := kernel.SagaCommand("billing", "invoice:1042", version, 0, edax.Payload{Name: name, Version: payload.Version, Data: payload.Data}, payload.CausationID, payload.CorrelationID, payload.IssuedAt, nil, nil)
 	check(t, err)
 	return *result
 }

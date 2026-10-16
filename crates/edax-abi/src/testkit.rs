@@ -18,7 +18,11 @@ pub(crate) fn draft(id: &str, sequence: Option<u64>) -> EventDraft {
 
 /// The draft above as the store records it at [`RECORDED_AT`].
 pub(crate) fn event_message(id: &str, sequence: Option<u64>) -> EventMessage {
-    EventMessage::from(edax_event::EventDraft::from(draft(id, sequence)).record(RECORDED_AT))
+    EventMessage::from(
+        edax_event::EventDraft::try_from(draft(id, sequence))
+            .unwrap()
+            .record(RECORDED_AT),
+    )
 }
 
 /// The kernel's base command aimed at `aggregate_id`. It also sets the one map the base leaves empty,
@@ -37,8 +41,8 @@ pub(crate) fn command_message(aggregate_id: Option<&str>) -> CommandMessage {
 /// boundary.
 pub(crate) fn assert_same_event(got: EventMessage, want: EventMessage, case: &str) {
     assert_eq!(
-        edax_event::EventMessage::from(got),
-        edax_event::EventMessage::from(want),
+        edax_event::EventMessage::try_from(got),
+        edax_event::EventMessage::try_from(want),
         "{case}"
     );
 }
@@ -46,8 +50,8 @@ pub(crate) fn assert_same_event(got: EventMessage, want: EventMessage, case: &st
 /// Whole-record command equality, for the reason [`assert_same_event`] gives.
 pub(crate) fn assert_same_command(got: CommandMessage, want: CommandMessage, case: &str) {
     assert_eq!(
-        edax_event::CommandMessage::from(got),
-        edax_event::CommandMessage::from(want),
+        edax_event::CommandMessage::try_from(got),
+        edax_event::CommandMessage::try_from(want),
         "{case}"
     );
 }

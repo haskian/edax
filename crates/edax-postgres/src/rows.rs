@@ -69,6 +69,10 @@ struct EventRow {
     id: String,
     aggregate_id: String,
     tenant: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    encryption: Option<String>,
     sequence: i64,
     name: String,
     version: i64,
@@ -89,6 +93,10 @@ struct CommandRow {
     idempotency_key: Option<String>,
     aggregate_id: Option<String>,
     tenant: Option<String>,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    encryption: Option<String>,
     name: String,
     version: i64,
     data: String,
@@ -226,6 +234,12 @@ pub fn unpublished_count(outbox: Outbox, saga: Option<&str>) -> Result<Call, Err
 /// A stored snapshot, as `load_snapshot` returns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotRow {
+    /// Persisted tenant.
+    pub tenant: Option<String>,
+    /// Immutable state owner.
+    pub subject: Option<String>,
+    /// State encryption information.
+    pub encryption: Option<edax_seal::EncryptionInfo>,
     /// The aggregate type it marshals.
     pub type_name: String,
     /// The stream version it was taken at.
@@ -241,9 +255,23 @@ pub fn decode_snapshot(row: &str) -> Result<SnapshotRow, Error> {
         type_name: String,
         version: i64,
         data: String,
+        #[serde(default)]
+        tenant: Option<String>,
+        #[serde(default)]
+        subject: Option<String>,
+        #[serde(default)]
+        encryption: Option<String>,
     }
     let row: Row = decode("snapshot row", row)?;
     Ok(SnapshotRow {
+        tenant: row.tenant,
+        subject: row.subject,
+        encryption: row
+            .encryption
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(Error::codec)?,
         type_name: row.type_name,
         version: unsigned("snapshot version", row.version)?,
         data: from_hex(&row.data)?,
@@ -252,11 +280,29 @@ pub fn decode_snapshot(row: &str) -> Result<SnapshotRow, Error> {
 
 /// The parameters of `save_snapshot`.
 pub fn snapshot_params(stream: &str, type_name: &str, version: u64, data: &[u8]) -> Result<Vec<Param>, Error> {
+    protected_snapshot_params(stream, type_name, version, data, None, None, None)
+}
+
+/// Persist all protected snapshot fields. The application provisions the expanded schema first.
+#[allow(clippy::too_many_arguments)]
+pub fn protected_snapshot_params(
+    stream: &str,
+    type_name: &str,
+    version: u64,
+    data: &[u8],
+    tenant: Option<&str>,
+    subject: Option<&str>,
+    encryption: Option<&edax_seal::EncryptionInfo>,
+) -> Result<Vec<Param>, Error> {
+    edax_event::sealing::check_protection(subject, encryption, data)?;
     Ok(vec![
         text_param("stream", stream)?,
         text_param("snapshot type", type_name)?,
         Some(check_bigint("snapshot version", version)?.to_string()),
         Some(to_hex(data)),
+        optional_text("tenant", tenant)?,
+        optional_text("subject", subject)?,
+        encryption.map(json).transpose()?,
     ])
 }
 
@@ -358,6 +404,13 @@ pub fn saga_write(
         optional_text("saga state", state)?,
         text_param("folded marks", folded)?,
         Some(commands_param(commands)?),
+        Some(
+            match state {
+                None => true,
+                Some(json) => edax_event::sealing::decode_protected_state(json)?.is_some_and(|state| state.completed),
+            }
+            .to_string(),
+        ),
     ]);
     Ok(Call { statement, params })
 }
@@ -384,6 +437,7 @@ pub fn saga_result(saga: &str, id: &str, expected: u64, result: &str) -> Result<
 }
 
 fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
+    edax_event::sealing::check_protection(draft.subject.as_deref(), draft.encryption.as_ref(), &draft.data)?;
     let sequence = draft
         .sequence
         .ok_or_else(|| Error::codec("an appended draft carries no sequence"))?;
@@ -391,6 +445,8 @@ fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
         id: text("event id", &draft.id)?.to_owned(),
         aggregate_id: text("aggregate id", &draft.aggregate_id)?.to_owned(),
         tenant: optional_text("tenant", draft.tenant.as_deref())?,
+        subject: optional_text("subject", draft.subject.as_deref())?,
+        encryption: draft.encryption.as_ref().map(json).transpose()?,
         sequence: check_bigint("sequence", sequence)?,
         name: text("event name", &draft.name)?.to_owned(),
         version: i64::from(draft.version),
@@ -409,6 +465,13 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
         id: row.id,
         aggregate_id: row.aggregate_id,
         tenant: row.tenant,
+        subject: row.subject,
+        encryption: row
+            .encryption
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(Error::codec)?,
         sequence: Some(unsigned("sequence", row.sequence)?),
         name: row.name,
         version: payload_version(row.version)?,
@@ -423,11 +486,14 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
 }
 
 fn command_row(command: &CommandMessage) -> Result<CommandRow, Error> {
+    edax_event::sealing::check_protection(command.subject.as_deref(), command.encryption.as_ref(), &command.data)?;
     Ok(CommandRow {
         id: text("command id", &command.id)?.to_owned(),
         idempotency_key: optional_text("idempotency key", command.idempotency_key.as_deref())?,
         aggregate_id: optional_text("aggregate id", command.aggregate_id.as_deref())?,
         tenant: optional_text("tenant", command.tenant.as_deref())?,
+        subject: optional_text("subject", command.subject.as_deref())?,
+        encryption: command.encryption.as_ref().map(json).transpose()?,
         name: text("command name", &command.name)?.to_owned(),
         version: i64::from(command.version),
         data: to_hex(&command.data),
@@ -445,6 +511,13 @@ fn command_of_row(row: CommandRow) -> Result<CommandMessage, Error> {
         idempotency_key: row.idempotency_key,
         aggregate_id: row.aggregate_id,
         tenant: row.tenant,
+        subject: row.subject,
+        encryption: row
+            .encryption
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(Error::codec)?,
         name: row.name,
         version: payload_version(row.version)?,
         data: from_hex(&row.data)?,
@@ -537,6 +610,8 @@ mod tests {
 
     fn draft(sequence: u64) -> EventDraft {
         EventDraft {
+            subject: None,
+            encryption: None,
             id: format!("evt-{sequence}"),
             aggregate_id: "invoice-7".into(),
             tenant: Some("acme".into()),
@@ -622,10 +697,10 @@ mod tests {
         );
         let insert = saga_write("ship", "order-1", 0, Some("{}"), "", &[]).unwrap();
         assert_eq!(insert.statement, "saga_insert");
-        assert_eq!(insert.params.len(), 5, "an insert has no expected version");
+        assert_eq!(insert.params.len(), 6, "an insert has no expected version");
         let done = saga_write("ship", "order-1", 2, None, "", &[]).unwrap();
         assert_eq!(done.statement, "saga_update");
-        assert_eq!(done.params.len(), 6);
+        assert_eq!(done.params.len(), 7);
         assert_eq!(done.params[3], None, "a completion stores no state");
         assert!(
             saga_write("ship", "order-1", u64::MAX, None, "", &[]).is_err(),

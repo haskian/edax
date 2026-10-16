@@ -155,15 +155,16 @@ share one id and a dead-letter queue keyed on it would keep the first and reject
 
 ### `dead_letter_record` — what a dead-letter sink publishes
 
-`dead_letter_record(record, topic, partition, offset, code, message)` keeps the fetched record's key,
-value and headers verbatim, and appends four headers: `edax-dlq-topic`, `edax-dlq-partition`,
-`edax-dlq-offset` (both decimal) and `edax-dlq-error`. The kernel renders `edax-dlq-error` from the
-failure's taxonomy `code` and its `message`. A coded failure is its wire form, `"<code>: <message>"`. A
-failure with no code is `"unclassified: <message>"`. So every SDK on one dead-letter topic writes one
-vocabulary, and a republish job groups by the prefix. A republish to the source topic after the fix
+`dead_letter_record(record, topic, partition, offset, code, message)` keeps the fetched record's key
+and value. It removes every prior `edax-dlq-error` header, retains the other headers, and appends
+`edax-dlq-topic`, `edax-dlq-partition`, `edax-dlq-offset` (the latter two in decimal) and
+`edax-dlq-error`. The error header contains only the taxonomy code, such as `codec`, or
+`unclassified` when no code is available. The compatibility `message` argument is never persisted;
+exception text can contain opened payload data. A repeated dead letter retains earlier coordinate
+headers but has only the current code-only error header. A republish to the source topic after the fix
 then routes and decodes as the original did: the content type, a middleware's key id and a
 `traceparent` all survive. `dead_letter_source(headers)` is the reader. It takes the last set, the
-most recent dead-lettering, and answers nothing when a coordinate is missing or unreadable. A present
+most recent coordinates, and answers nothing when a coordinate is missing or unreadable. A present
 `edax-dlq-dropped` that is not UTF-8 counts as unreadable, not missing.
 
 A dead-letter topic may refuse the record itself: the original plus four headers can pass the

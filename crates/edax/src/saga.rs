@@ -15,7 +15,8 @@
 //! ack, a crash before the offset commit) is skipped instead of folded again under new command ids.
 //!
 //! A command that dies in the relay (its handler rejects it) saves no event, so nothing would tell the
-//! instance. Wire [`SagaRunner::command_failed`] as the relay's dead-letter sink: it folds a
+//! instance. Wire [`SagaRunner::command_failed`] (or [`SagaRunner::command_failed_committed`] for a
+//! protected runner) as the relay's dead-letter sink: it folds a
 //! [`SAGA_COMMAND_FAILED`] event into the instance that sent the command, and the saga compensates.
 
 use edax_event::{
@@ -26,8 +27,12 @@ pub use edax_event::{SagaCommandFailed, SAGA_COMMAND_FAILED};
 
 use crate::failure::{code_of, failure_message, HandlerError};
 use crate::outbox::{CountedOutbox, Outbox};
+use crate::sealing::{Sealing, StateContext};
 use crate::settle::DeadLetter;
 use crate::{Error, PayloadCodec};
+use edax_event::sealing::{check_owner, decode_protected_state, encode_protected_state, ProtectedState};
+use serde::{de::DeserializeOwned, Serialize};
+use std::sync::Arc;
 
 /// The decision half of a saga: route an event to an instance and fold it into that instance.
 pub trait Saga {
@@ -175,29 +180,106 @@ impl<ST: SagaStore> CountedOutbox<CommandMessage> for SagaOutbox<ST> {
 }
 
 /// Drives a [`Saga`] over committed events: route to an instance, fold, and persist the step, state and
-/// commands in one write. Pass [`SagaRunner::run`] (closing over a `tx`) to an event router / consumer as the
-/// handler, and drain the saga's command outbox ([`SagaRunner::outbox`]) with a [`Relay`](crate::Relay),
-/// decoding each row with [`SagaRunner::command`].
-pub struct SagaRunner<SG, ST, CC> {
+/// commands in one write. Pass [`SagaRunner::run`] (closing over a `tx`), or
+/// [`SagaRunner::run_committed`] for protected state, to an event router / consumer as the handler,
+/// and drain the saga's command outbox ([`SagaRunner::outbox`]) with a [`Relay`](crate::Relay),
+/// decoding each row with [`SagaRunner::command_delivery`]. A `None` result settles the row without
+/// publishing: return `Ok(())` from the relay's publish closure so it marks the row published.
+pub struct SagaRunner<SG: Saga, ST: SagaStore, CC> {
     saga: SG,
     store: ST,
     commands: CC,
     now: Box<dyn Fn() -> i64 + Send + Sync>,
+    sealing: Option<Arc<Sealing>>,
+    decode_state: DecodeState<SG::State, ST::State>,
+    encode_state: EncodeState<SG::State, ST::State>,
 }
+
+type DecodeState<S, Stored> = fn(Stored, &StateContext<'_>, Option<&Sealing>) -> Result<(Option<S>, bool), Error>;
+type EncodeState<S, Stored> = fn(Option<S>, &StateContext<'_>, Option<&Sealing>) -> Result<Stored, Error>;
 
 impl<SG, ST, CC> SagaRunner<SG, ST, CC>
 where
     SG: Saga,
-    ST: SagaStore<State = SG::State>,
+    ST: SagaStore,
     CC: PayloadCodec<Domain = SG::Command>,
 {
     /// A runner folding with `saga`, persisting to `store`, and marshaling commands with `commands`.
-    pub fn new(saga: SG, store: ST, commands: CC) -> Self {
+    pub fn new(saga: SG, store: ST, commands: CC) -> Self
+    where
+        ST: SagaStore<State = SG::State>,
+    {
         Self {
             saga,
             store,
             commands,
             now: Box::new(edax_core::current_timestamp),
+            sealing: None,
+            decode_state: |state, _, _| Ok((Some(state), false)),
+            encode_state: |state, _, _| state.ok_or_else(|| Error::codec("plain saga completion has no state")),
+        }
+    }
+
+    /// Protect arbitrary serializable domain state using a store whose state is an opaque JSON value.
+    /// The kernel envelope remains a JSON object, matching the Python and Go storage contract.
+    /// Use `run_committed`: protected runners must retain the provider fence through commit.
+    pub fn new_sealed(saga: SG, store: ST, commands: CC, sealing: Arc<Sealing>) -> Self
+    where
+        ST: SagaStore<State = serde_json::Value>,
+        SG::State: Serialize + DeserializeOwned,
+    {
+        Self {
+            saga,
+            store,
+            commands,
+            now: Box::new(edax_core::current_timestamp),
+            sealing: Some(sealing),
+            decode_state: |stored, context, sealing| {
+                let sealing = sealing.ok_or_else(|| Error::bad_handle("protected saga requires sealing"))?;
+                let stored = serde_json::to_string(&stored).map_err(Error::codec)?;
+                let protected = decode_protected_state(&stored)?;
+                let (plaintext, completed) = match protected {
+                    Some(protected) => {
+                        check_owner(true, protected.tenant.as_deref(), context.tenant)?;
+                        check_owner(true, protected.subject.as_deref(), context.subject)?;
+                        let bound = StateContext {
+                            completed: protected.completed,
+                            ..*context
+                        };
+                        (
+                            sealing.open_state(&bound, Some(&protected.encryption), &protected.data)?,
+                            protected.completed,
+                        )
+                    }
+                    None => (sealing.open_state(context, None, stored.as_bytes())?, false),
+                };
+                if completed {
+                    // The encrypted completion contains no application state and is authenticated first.
+                    let value: serde_json::Value = serde_json::from_slice(&plaintext).map_err(Error::codec)?;
+                    if !value.is_null() {
+                        return Err(Error::codec("protected saga completion contains application state"));
+                    }
+                    Ok((None, true))
+                } else {
+                    Ok((Some(serde_json::from_slice(&plaintext).map_err(Error::codec)?), false))
+                }
+            },
+            encode_state: |state, context, sealing| {
+                let sealing = sealing.ok_or_else(|| Error::bad_handle("protected saga requires sealing"))?;
+                let data = match state {
+                    Some(state) => serde_json::to_vec(&state).map_err(Error::codec)?,
+                    None => b"null".to_vec(),
+                };
+                let sealed = sealing.seal_state(context, &data)?;
+                let encoded = encode_protected_state(&ProtectedState::new(
+                    context.tenant.map(str::to_owned),
+                    context.subject.map(str::to_owned),
+                    context.completed,
+                    sealed.encryption,
+                    sealed.data,
+                ))?;
+                serde_json::from_str(&encoded).map_err(Error::codec)
+            },
         }
     }
 
@@ -221,9 +303,34 @@ where
         SagaOutbox::new(self.store.clone(), self.saga.name())
     }
 
-    /// Decode an outbox row back into the saga's command, for the relay's publish.
+    /// Decode an outbox row explicitly. Destroyed keys raise `Shredded`; relay consumers use
+    /// [`Self::command_delivery`] to settle those rows without publishing them.
     pub fn command(&self, row: &CommandMessage) -> Result<SG::Command, Error> {
+        if let Some(sealing) = &self.sealing {
+            let mut opened = row.clone();
+            opened.data = sealing.open_command(row)?;
+            opened.encryption = None;
+            return self.commands.unmarshal(&opened.payload());
+        }
+        if row.encryption.is_some() {
+            return Err(Error::bad_handle("encrypted saga commands require sealing"));
+        }
         self.commands.unmarshal(&row.payload())
+    }
+
+    /// Decode a command for delivery. `None` means trusted scoped key resolution confirmed destruction.
+    /// Return success from the relay's publish closure for `None`, without invoking a command handler.
+    /// Malformed envelopes, authentication failures and codec errors remain errors.
+    pub fn command_delivery(&self, row: &CommandMessage) -> Result<Option<SG::Command>, Error> {
+        let Some(sealing) = &self.sealing else {
+            return self.command(row).map(Some);
+        };
+        let Some(data) = sealing.open_command_delivery(row)? else {
+            return Ok(None);
+        };
+        let mut payload = row.payload();
+        payload.data = data;
+        self.commands.unmarshal(&payload).map(Some)
     }
 
     /// Handle one committed event: load its instance, fold the event, and write the new state
@@ -235,10 +342,53 @@ where
     /// whose sequence is below the one the instance folded from its aggregate: in order delivery folded
     /// it before, but a dead-lettered event re-driven after a later one lands there too, and never folds.
     pub fn run(&self, tx: &mut ST::Tx, event: &EventMessage) -> Result<(), HandlerError> {
+        if self.sealing.is_some() {
+            return Err(Error::bad_handle(
+                "protected saga writes require run_committed to retain the scope fence through commit",
+            )
+            .into());
+        }
+        let raw = crate::router::original_event(event);
+        if raw.encryption.is_some() {
+            return Err(Error::bad_handle("encrypted saga events require sealing").into());
+        }
+        self.run_view(tx, event, &raw)
+    }
+
+    fn run_view(&self, tx: &mut ST::Tx, event: &EventMessage, raw: &EventMessage) -> Result<(), HandlerError> {
         let Some(instance_id) = self.saga.instance_id(event) else {
             return Ok(());
         };
-        self.fold(tx, &instance_id, event)
+        self.fold(tx, &instance_id, event, raw)
+    }
+
+    /// Authenticate and fold while retaining the write fence through this transaction's commit.
+    /// An ambient transaction is rejected: this runner cannot extend a borrowed transaction's lifetime.
+    pub fn run_committed<T: crate::Transactor<Tx = ST::Tx>>(
+        &self,
+        transactor: &T,
+        event: &EventMessage,
+    ) -> Result<(), HandlerError> {
+        let raw = crate::router::original_event(event);
+        let event = &raw;
+        if crate::unit_of_work::in_unit_of_work() {
+            return Err(Error::bad_handle("run_committed cannot join an ambient transaction").into());
+        }
+        let Some(sealing) = &self.sealing else {
+            return transactor.transaction(|tx| self.run(tx, event));
+        };
+        let Some(data) = sealing.open_event_delivery(event)? else {
+            return Ok(());
+        };
+        let scope = sealing.scope(event.tenant.as_deref(), event.subject.as_deref())?;
+        let _guard = match sealing.hold(&scope) {
+            Err(error) if error.code == crate::ErrorCode::Shredded => return Ok(()),
+            result => result?,
+        };
+        let mut opened = event.clone();
+        opened.data = data;
+        opened.encryption = None;
+        transactor.transaction(|tx| self.run_view(tx, &opened, event))
     }
 
     /// The dead-letter sink for this runner's command relay: fold the [`SAGA_COMMAND_FAILED`] event for
@@ -252,6 +402,43 @@ where
         tx: &mut ST::Tx,
         dead: DeadLetter<&CommandMessage, &HandlerError>,
     ) -> Result<(), HandlerError> {
+        if self.sealing.is_some() {
+            return Err(Error::bad_handle("protected saga failures require command_failed_committed").into());
+        }
+        if dead.message.encryption.is_some() {
+            return Err(Error::bad_handle("encrypted saga commands require sealing").into());
+        }
+        self.fold_failure(tx, dead)
+    }
+
+    /// Authenticate a dead command and retain the scope fence through compensation's commit.
+    pub fn command_failed_committed<T: crate::Transactor<Tx = ST::Tx>>(
+        &self,
+        transactor: &T,
+        dead: DeadLetter<&CommandMessage, &HandlerError>,
+    ) -> Result<(), HandlerError> {
+        if crate::unit_of_work::in_unit_of_work() {
+            return Err(Error::bad_handle("command_failed_committed cannot join an ambient transaction").into());
+        }
+        let Some(sealing) = &self.sealing else {
+            return transactor.transaction(|tx| self.command_failed(tx, dead));
+        };
+        if sealing.open_command_delivery(dead.message)?.is_none() {
+            return Ok(());
+        }
+        let scope = sealing.scope(dead.message.tenant.as_deref(), dead.message.subject.as_deref())?;
+        let _guard = match sealing.hold(&scope) {
+            Err(error) if error.code == crate::ErrorCode::Shredded => return Ok(()),
+            result => result?,
+        };
+        transactor.transaction(|tx| self.fold_failure(tx, dead))
+    }
+
+    fn fold_failure(
+        &self,
+        tx: &mut ST::Tx,
+        dead: DeadLetter<&CommandMessage, &HandlerError>,
+    ) -> Result<(), HandlerError> {
         let error = dead.failure;
         let event = saga_command_failed(
             dead.message,
@@ -259,20 +446,64 @@ where
             &failure_message(&**error),
             (self.now)(),
         )?;
-        self.fold(tx, &event.aggregate_id, &event)
+        self.fold(tx, &event.aggregate_id, &event, &event)
     }
 
     /// Fold `event` into the instance `instance_id` and write the step.
-    fn fold(&self, tx: &mut ST::Tx, instance_id: &str, event: &EventMessage) -> Result<(), HandlerError> {
+    fn fold(
+        &self,
+        tx: &mut ST::Tx,
+        instance_id: &str,
+        event: &EventMessage,
+        raw: &EventMessage,
+    ) -> Result<(), HandlerError> {
         let saga = self.saga.name();
         let (loaded, state, folded) = match self.store.load(tx, saga, instance_id)? {
             None => (Loaded::Absent, None, String::new()),
-            Some(SagaInstance::Running { state, version, folded }) => (Loaded::Active { version }, Some(state), folded),
-            Some(SagaInstance::Completed { version }) => (Loaded::Completed { version }, None, String::new()),
+            Some(SagaInstance::Running { state, version, folded }) => {
+                let context = StateContext {
+                    kind: "saga",
+                    identity: instance_id,
+                    type_name: saga,
+                    version,
+                    tenant: raw.tenant.as_deref(),
+                    subject: raw.subject.as_deref(),
+                    marks: &folded,
+                    completed: false,
+                };
+                let (state, completed) = (self.decode_state)(state, &context, self.sealing.as_deref())?;
+                (
+                    if completed {
+                        Loaded::Completed { version }
+                    } else {
+                        Loaded::Active { version }
+                    },
+                    state,
+                    folded,
+                )
+            }
+            Some(SagaInstance::Completed { version }) => {
+                if let Some(sealing) = &self.sealing {
+                    let context = StateContext {
+                        kind: "saga",
+                        identity: instance_id,
+                        type_name: saga,
+                        version,
+                        tenant: raw.tenant.as_deref(),
+                        subject: raw.subject.as_deref(),
+                        marks: "",
+                        completed: true,
+                    };
+                    // Historical native tombstones have no authenticated owner or encryption record.
+                    // Only explicit legacy compatibility may read them in a protected runner.
+                    sealing.open_state(&context, None, b"null")?;
+                }
+                (Loaded::Completed { version }, None, String::new())
+            }
         };
         // The kernel skips a tombstone, an event the instance folded already and one below its mark:
         // no fold, no write.
-        let SagaAdmit::Fold { folded } = saga_admit(saga, loaded, &folded, event)? else {
+        let SagaAdmit::Fold { folded } = saga_admit(saga, loaded, &folded, raw)? else {
             return Ok(());
         };
         let (new_state, commands) = self.saga.handle(state, event);
@@ -281,12 +512,39 @@ where
             (SagaWrite::Nothing, _) => {}
             (SagaWrite::Save { expected, version }, Some(state)) => {
                 let rows = self.rows(instance_id, version, &commands, event)?;
+                let context = StateContext {
+                    kind: "saga",
+                    identity: instance_id,
+                    type_name: saga,
+                    version,
+                    tenant: raw.tenant.as_deref(),
+                    subject: raw.subject.as_deref(),
+                    marks: &folded,
+                    completed: false,
+                };
+                let state = (self.encode_state)(Some(state), &context, self.sealing.as_deref())?;
                 self.store
                     .save(tx, saga, instance_id, &state, expected, &folded, &rows)?;
             }
             (SagaWrite::Complete { expected, version }, _) => {
                 let rows = self.rows(instance_id, version, &commands, event)?;
-                self.store.complete(tx, saga, instance_id, expected, &rows)?;
+                if self.sealing.is_some() {
+                    let context = StateContext {
+                        kind: "saga",
+                        identity: instance_id,
+                        type_name: saga,
+                        version,
+                        tenant: raw.tenant.as_deref(),
+                        subject: raw.subject.as_deref(),
+                        marks: &folded,
+                        completed: true,
+                    };
+                    let state = (self.encode_state)(None, &context, self.sealing.as_deref())?;
+                    self.store
+                        .save(tx, saga, instance_id, &state, expected, &folded, &rows)?;
+                } else {
+                    self.store.complete(tx, saga, instance_id, expected, &rows)?;
+                }
             }
             // The kernel answers `Save` only for a fold that keeps state, so this is a kernel change no
             // runner arm covers: refused the same on every retry.
@@ -311,7 +569,7 @@ where
             .zip(commands)
             .map(|(index, command)| {
                 let payload = self.commands.marshal(command)?;
-                Ok(saga_command(
+                let row = saga_command(
                     self.saga.name(),
                     instance_id,
                     version,
@@ -319,7 +577,11 @@ where
                     Cause::from(cause),
                     payload,
                     issued_at,
-                ))
+                );
+                match &self.sealing {
+                    Some(sealing) => sealing.seal_command(row),
+                    None => Ok(row),
+                }
             })
             .collect()
     }
@@ -337,6 +599,404 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::cell::{Cell, RefCell};
     use std::sync::{Arc, Mutex};
+
+    #[derive(Serialize, Deserialize)]
+    struct PrivateState {
+        email: String,
+    }
+
+    struct PrivateSaga {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Saga for PrivateSaga {
+        type State = PrivateState;
+        type Command = OrderCommand;
+        fn name(&self) -> &str {
+            "private-saga"
+        }
+        fn instance_id(&self, _: &EventMessage) -> Option<String> {
+            Some("workflow".into())
+        }
+        fn handle(
+            &self,
+            state: Option<PrivateState>,
+            event: &EventMessage,
+        ) -> (Option<PrivateState>, Vec<OrderCommand>) {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(event.data, b"private@example.test");
+            assert!(event.encryption.is_none());
+            if let Some(state) = state {
+                assert_eq!(state.email, "private@example.test");
+            }
+            if event.name == "Complete" {
+                return (None, vec![]);
+            }
+            (
+                Some(PrivateState {
+                    email: "private@example.test".into(),
+                }),
+                vec![OrderCommand::Fulfill(Fulfill {
+                    order_id: "private@example.test".into(),
+                })],
+            )
+        }
+    }
+
+    fn private_event(sealing: &Sealing, version: u64, name: &str, subject: &str) -> EventMessage {
+        let mut draft = crate::testkit::draft("aggregate", name, version, b"private@example.test");
+        draft.subject = Some(subject.into());
+        sealing.seal_event(draft).unwrap().record(42)
+    }
+
+    #[test]
+    fn sealed_saga_command_delivery_distinguishes_destruction_from_invalid_rows() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        for (case, expected) in [
+            ("valid", None),
+            ("bad ciphertext", Some(ErrorCode::Codec)),
+            ("bad nonce", Some(ErrorCode::Codec)),
+            ("bad nonce after destruction", Some(ErrorCode::Codec)),
+            ("bad payload", Some(ErrorCode::Codec)),
+            ("unknown generation", Some(ErrorCode::KeyMissing)),
+            ("destroyed", None),
+        ] {
+            let keys = Arc::new(MemoryKeys::new());
+            let sealing = Arc::new(Sealing::new(keys.clone(), "production", Cipher::default()).unwrap());
+            let db = MemoryTransactor::new();
+            let runner = SagaRunner::new_sealed(
+                PrivateSaga { calls: Arc::default() },
+                db.saga_store::<serde_json::Value>(),
+                JsonRegistryCodec::new().unwrap(),
+                sealing.clone(),
+            );
+            runner
+                .run_committed(&db, &private_event(&sealing, 1, "Changed", "person"))
+                .unwrap();
+            let mut row = runner.outbox().unpublished(1).unwrap().remove(0);
+            match case {
+                "bad ciphertext" => row.data[0] ^= 1,
+                "bad nonce" => row.encryption.as_mut().unwrap().nonce.clear(),
+                "bad nonce after destruction" => {
+                    row.encryption.as_mut().unwrap().nonce.clear();
+                    keys.destroy(&sealing.scope(None, Some("person")).unwrap()).unwrap();
+                }
+                "bad payload" => {
+                    row.encryption = None;
+                    row.data = b"{".to_vec();
+                    row = sealing.seal_command(row).unwrap();
+                }
+                "unknown generation" => row.encryption.as_mut().unwrap().key_id = "missing-generation".into(),
+                "destroyed" => {
+                    keys.destroy(&sealing.scope(None, Some("person")).unwrap()).unwrap();
+                }
+                _ => {}
+            }
+            let result = runner.command_delivery(&row);
+            if let Some(expected) = expected {
+                assert_eq!(result.unwrap_err().code, expected, "{case}");
+            } else if case == "destroyed" {
+                assert!(result.unwrap().is_none());
+                assert_eq!(runner.command(&row).unwrap_err().code, ErrorCode::Shredded);
+                let relay = Relay::<_, CommandMessage>::new(runner.outbox());
+                assert_eq!(
+                    relay
+                        .drain(10, |raw| {
+                            assert!(runner.command_delivery(raw)?.is_none());
+                            Ok(())
+                        })
+                        .unwrap(),
+                    1
+                );
+                assert!(runner.outbox().unpublished(1).unwrap().is_empty());
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    Some(OrderCommand::Fulfill(Fulfill {
+                        order_id: "private@example.test".into()
+                    }))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sealed_saga_failure_compensates_once_without_persisting_error_text() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, MemoryKeys};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production", Cipher::default()).unwrap());
+        let db = MemoryTransactor::new();
+        let store = db.saga_store::<serde_json::Value>();
+        let saga = OrderSaga::default();
+        let failures = saga.failures.clone();
+        let runner = SagaRunner::new_sealed(saga, store.clone(), JsonRegistryCodec::new().unwrap(), sealing.clone());
+        for (version, name) in [(1, "Created"), (2, "Shipped")] {
+            let mut draft = crate::testkit::draft("order-7", name, version, br#"{"order_id":"order-7"}"#);
+            draft.subject = Some("person-42".into());
+            draft.tenant = Some("tenant-7".into());
+            draft.metadata.insert("order".into(), "order-7".into());
+            runner
+                .run_committed(&db, &sealing.seal_event(draft).unwrap().record(42))
+                .unwrap();
+        }
+        let failed = runner.outbox().unpublished(1).unwrap().remove(0);
+        let secret = "private@example.test: card declined at 17 Example Lane";
+        let failure: HandlerError = Error::new(ErrorCode::Rejected, secret).into();
+        for _ in 0..2 {
+            runner
+                .command_failed_committed(
+                    &db,
+                    DeadLetter {
+                        message: &failed,
+                        attempt: 1,
+                        failure: &failure,
+                    },
+                )
+                .unwrap();
+        }
+        let failures = failures.lock().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].command_id, failed.id);
+        assert_eq!(failures[0].code.as_deref(), Some("rejected"));
+        assert_eq!(failures[0].error, "");
+        let Some(SagaInstance::Running { state, version, folded }) =
+            store.load(&mut MemoryTx::auto_commit(), "order", "order-7").unwrap()
+        else {
+            panic!("missing protected completion");
+        };
+        assert_eq!(version, 3);
+        assert!(!state.to_string().contains(secret));
+        assert!(!folded.contains(secret));
+        let protected = decode_protected_state(&state.to_string()).unwrap().unwrap();
+        assert!(protected.completed);
+        assert_eq!(protected.subject.as_deref(), Some("person-42"));
+        assert_eq!(protected.tenant.as_deref(), Some("tenant-7"));
+        let rows = runner.outbox().unpublished(10).unwrap();
+        assert_eq!(rows.len(), 2, "one original command and one compensation");
+        for row in &rows {
+            assert_eq!(row.subject.as_deref(), Some("person-42"));
+            assert_eq!(row.tenant.as_deref(), Some("tenant-7"));
+            assert!(row.encryption.is_some());
+            let plaintext = sealing.open_command(row).unwrap();
+            assert!(!String::from_utf8(plaintext).unwrap().contains(secret));
+        }
+        assert_eq!(
+            runner.command(&rows[1]).unwrap(),
+            OrderCommand::Refund(Refund {
+                order_id: "order-7".into()
+            })
+        );
+    }
+
+    #[test]
+    fn sealed_saga_keeps_provider_guard_until_commit_returns() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        struct CommitProbe {
+            db: MemoryTransactor,
+            keys: Arc<MemoryKeys>,
+            scope: edax_seal::KeyScope,
+        }
+        impl Transactor for CommitProbe {
+            type Tx = MemoryTx;
+            fn identity(&self) -> usize {
+                self.db.identity()
+            }
+            fn begin(&self) -> Result<Self::Tx, Error> {
+                self.db.begin()
+            }
+            fn commit(&self, tx: Self::Tx) -> Result<(), Error> {
+                // MemoryKeys refuses same-thread revocation while admitted work is still fenced.
+                assert_eq!(self.keys.revoke(&self.scope).unwrap_err().code, ErrorCode::BadHandle);
+                self.db.commit(tx)
+            }
+            fn rollback(&self, tx: Self::Tx) {
+                self.db.rollback(tx);
+            }
+        }
+        let keys = Arc::new(MemoryKeys::new());
+        let sealing = Arc::new(Sealing::new(keys.clone(), "production", Cipher::default()).unwrap());
+        let db = MemoryTransactor::new();
+        let runner = SagaRunner::new_sealed(
+            PrivateSaga { calls: Arc::default() },
+            db.saga_store::<serde_json::Value>(),
+            JsonRegistryCodec::new().unwrap(),
+            sealing.clone(),
+        );
+        let transactor = CommitProbe {
+            db,
+            keys: keys.clone(),
+            scope: sealing.scope(None, Some("person")).unwrap(),
+        };
+        runner
+            .run_committed(&transactor, &private_event(&sealing, 1, "Changed", "person"))
+            .unwrap();
+        keys.revoke(&transactor.scope).unwrap();
+    }
+
+    #[test]
+    fn sealed_router_preserves_raw_envelope_for_nested_saga() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, MemoryKeys};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production", Cipher::default()).unwrap());
+        let db = MemoryTransactor::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = SagaRunner::new_sealed(
+            PrivateSaga { calls: calls.clone() },
+            db.saga_store::<serde_json::Value>(),
+            JsonRegistryCodec::new().unwrap(),
+            sealing.clone(),
+        );
+        let mut router = crate::EventRouter::default().sealing(sealing.clone());
+        router
+            .register("Changed", Box::new(move |view| runner.run_committed(&db, view)))
+            .unwrap();
+        let event = private_event(&sealing, 1, "Changed", "person");
+        router.dispatch(&event).unwrap();
+        router.dispatch(&event).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sealed_saga_encrypts_state_commands_and_owner_preserving_completion() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for cipher in [Cipher::Aes256Gcm, Cipher::XChaCha20Poly1305] {
+            let keys = Arc::new(MemoryKeys::new());
+            let sealing = Arc::new(Sealing::new(keys.clone(), "production", cipher).unwrap());
+            let db = MemoryTransactor::new();
+            let store = db.saga_store::<serde_json::Value>();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let runner = SagaRunner::new_sealed(
+                PrivateSaga { calls: calls.clone() },
+                store.clone(),
+                JsonRegistryCodec::new().unwrap(),
+                sealing.clone(),
+            );
+            let first = private_event(&sealing, 1, "Changed", "person");
+            runner.run_committed(&db, &first).unwrap();
+            runner.run_committed(&db, &first).unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let Some(SagaInstance::Running { state, .. }) = store
+                .load(&mut MemoryTx::auto_commit(), "private-saga", "workflow")
+                .unwrap()
+            else {
+                panic!("running protected state");
+            };
+            let record = state.to_string();
+            assert!(!record.contains("private@example.test"));
+            let protected = decode_protected_state(&record).unwrap().unwrap();
+            assert_eq!(protected.subject.as_deref(), Some("person"));
+            assert!(!protected.completed);
+            let outbox = runner.outbox().unpublished(100).unwrap();
+            assert_eq!(outbox.len(), 1);
+            assert!(outbox[0].encryption.is_some());
+            assert_eq!(
+                runner.command(&outbox[0]).unwrap(),
+                OrderCommand::Fulfill(Fulfill {
+                    order_id: "private@example.test".into()
+                })
+            );
+            let other = private_event(&sealing, 2, "Changed", "different-person");
+            assert!(runner.run_committed(&db, &other).is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let finished = private_event(&sealing, 2, "Complete", "person");
+            runner.run_committed(&db, &finished).unwrap();
+            runner.run_committed(&db, &finished).unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            let Some(SagaInstance::Running { state, version, folded }) = store
+                .load(&mut MemoryTx::auto_commit(), "private-saga", "workflow")
+                .unwrap()
+            else {
+                panic!("protected completion record");
+            };
+            let protected = decode_protected_state(&state.to_string()).unwrap().unwrap();
+            assert!(protected.completed);
+            let context = StateContext {
+                kind: "saga",
+                identity: "workflow",
+                type_name: "private-saga",
+                version,
+                tenant: None,
+                subject: Some("person"),
+                marks: &folded,
+                completed: true,
+            };
+            assert_eq!(
+                sealing
+                    .open_state(&context, Some(&protected.encryption), &protected.data)
+                    .unwrap(),
+                b"null"
+            );
+            assert!(runner.run_committed(&db, &other).is_err());
+            let rewrite = store.save(
+                &mut MemoryTx::auto_commit(),
+                "private-saga",
+                "workflow",
+                &state,
+                version,
+                &folded,
+                &[],
+            );
+            assert_eq!(rewrite.unwrap_err().code, ErrorCode::Concurrency);
+            let scope = sealing.scope(None, Some("person")).unwrap();
+            keys.revoke(&scope).unwrap();
+            keys.destroy(&scope).unwrap();
+            runner.run_committed(&db, &finished).unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn sealed_saga_refuses_borrowed_transactions_plaintext_and_tampered_state() {
+        use crate::backend::MemoryTransactor;
+        use crate::sealing::{Cipher, MemoryKeys};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production", Cipher::default()).unwrap());
+        let db = MemoryTransactor::new();
+        let store = db.saga_store::<serde_json::Value>();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runner = SagaRunner::new_sealed(
+            PrivateSaga { calls: calls.clone() },
+            store.clone(),
+            JsonRegistryCodec::new().unwrap(),
+            sealing.clone(),
+        );
+        let first = private_event(&sealing, 1, "Changed", "person");
+        assert!(runner.run(&mut MemoryTx::auto_commit(), &first).is_err());
+        let ambient: Result<(), HandlerError> = db.transaction(|_| runner.run_committed(&db, &first));
+        assert!(ambient.is_err());
+        let mut plaintext = first.clone();
+        plaintext.encryption = None;
+        assert!(runner.run_committed(&db, &plaintext).is_err());
+        runner.run_committed(&db, &first).unwrap();
+        let Some(SagaInstance::Running { state, version, folded }) = store
+            .load(&mut MemoryTx::auto_commit(), "private-saga", "workflow")
+            .unwrap()
+        else {
+            panic!("protected state");
+        };
+        let mut protected = decode_protected_state(&state.to_string()).unwrap().unwrap();
+        protected.completed = true;
+        let forged = serde_json::from_str(&encode_protected_state(&protected).unwrap()).unwrap();
+        store
+            .save(
+                &mut MemoryTx::auto_commit(),
+                "private-saga",
+                "workflow",
+                &forged,
+                version,
+                &folded,
+                &[],
+            )
+            .unwrap();
+        assert!(runner
+            .run_committed(&db, &private_event(&sealing, 2, "Changed", "person"))
+            .is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     // --- an order saga over a cross-aggregate instance ---
 

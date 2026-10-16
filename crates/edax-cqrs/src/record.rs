@@ -423,8 +423,10 @@ pub enum Settle<R> {
 }
 
 /// The failure half of the guard's settle table, as the write itself: a failure whose `code` is terminal
-/// is cached as [`Record::failed`] under `payload_hash` with its `message`, anything else releases the
-/// claim. `code` is the failure's taxonomy code, `None` for a failure no code classifies (a host's own
+/// is cached as [`Record::failed`] under `payload_hash` with an empty message; anything else releases the
+/// claim. Exception text can contain opened sensitive data and is never persisted by this decision.
+/// The message argument remains for source compatibility with existing callers; its value is ignored.
+/// `code` is the failure's taxonomy code, `None` for a failure no code classifies (a host's own
 /// error, a panic, a cancellation), which [`edax_core::is_terminal`] reads as transient. A fatal code
 /// ([`ErrorCode::is_fatal`]) releases too: the wiring failed, not the work, and a cached record would
 /// replay the failure after the host fixed the wiring, so the consumer would dead-letter a message it
@@ -434,13 +436,18 @@ pub enum Settle<R> {
 /// `reason` is why a host's rejection refused. The cached record keeps it only beside the `rejected` code
 /// and only when [`check_reason`] accepts it; any other is dropped, never refused, so a reason cannot keep
 /// a failure from caching.
-pub fn settle_failure<R>(payload_hash: u64, code: Option<ErrorCode>, message: &str, reason: Option<&str>) -> Settle<R> {
+pub fn settle_failure<R>(
+    payload_hash: u64,
+    code: Option<ErrorCode>,
+    _message: &str,
+    reason: Option<&str>,
+) -> Settle<R> {
     match code {
         Some(code) if code.is_terminal() && !code.is_fatal() => Settle::Cache(Record {
             payload_hash,
             state: State::Failed {
                 code: Some(code),
-                message: message.to_owned(),
+                message: String::new(),
                 reason: usable_reason(Some(code), reason).map(str::to_owned),
             },
         }),
@@ -546,7 +553,7 @@ mod tests {
         for code in ErrorCode::ALL {
             let cached = code.is_terminal() && !code.is_fatal();
             let want = if cached {
-                Settle::Cache(Record::failed(HASH, *code, "boom"))
+                Settle::Cache(Record::failed(HASH, *code, ""))
             } else {
                 Settle::Release
             };
@@ -1081,13 +1088,16 @@ mod tests {
         ];
         for (name, code, reason, kept) in settles {
             let Settle::Cache(Record {
-                state: State::Failed { reason: got, .. },
+                state: State::Failed {
+                    reason: got, message, ..
+                },
                 ..
             }) = settle_failure::<()>(HASH, Some(code), "no such order", reason)
             else {
                 panic!("{name}: a terminal code caches");
             };
             assert_eq!(got.as_deref(), kept, "{name}");
+            assert!(message.is_empty(), "{name}: settlement must omit exception text");
         }
 
         let bytes = encode_record(&rejected(Some("not_found"))).unwrap();

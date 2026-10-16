@@ -1,4 +1,4 @@
--- edax Postgres table contract 1: a reference schema. Copy it into your own migration.
+-- edax Postgres table contract 2: a reference schema. Copy it into your own migration.
 
 CREATE TABLE "public"."edax_events" (
   id text COLLATE "C" NOT NULL,
@@ -6,6 +6,8 @@ CREATE TABLE "public"."edax_events" (
   sequence bigint NOT NULL,
   aggregate_id text NOT NULL,
   tenant text,
+  subject text,
+  encryption text,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
@@ -21,6 +23,9 @@ CREATE TABLE "public"."edax_events" (
 
 CREATE TABLE "public"."edax_snapshots" (
   stream text COLLATE "C" NOT NULL,
+  tenant text,
+  subject text,
+  encryption text,
   type_name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
@@ -40,6 +45,8 @@ CREATE TABLE "public"."edax_command_outbox" (
   idempotency_key text,
   aggregate_id text,
   tenant text,
+  subject text,
+  encryption text,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
@@ -88,6 +95,8 @@ CREATE TABLE "public"."edax_saga_outbox" (
   idempotency_key text,
   aggregate_id text,
   tenant text,
+  subject text,
+  encryption text,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,

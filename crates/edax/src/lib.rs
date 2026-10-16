@@ -12,6 +12,10 @@ mod chain;
 pub mod codec;
 pub mod command;
 pub mod dispatcher;
+pub mod erasure;
+pub use erasure::{
+    ErasureCleanup, ErasureCoordinator, ErasureNotification, ErasureStore, MemoryErasureStore, StoredErasure,
+};
 mod failure;
 pub mod idempotency;
 pub mod outbox;
@@ -20,6 +24,8 @@ pub mod projection;
 pub mod repository;
 pub mod router;
 pub mod saga;
+pub mod sealing;
+pub use sealing::{Cipher, EncryptionInfo, KeyGuard, KeyProvider, KeyScope, MemoryKeys, SealedValue, Sealing};
 mod settle;
 pub mod store;
 #[cfg(any(test, feature = "testkit"))]
@@ -36,7 +42,8 @@ pub use codec::{
     SerdeCodec, UpcastStep, Upcaster,
 };
 pub use command::{
-    command_message, idempotent, idempotent_in, retry, Command, CommandBus, DispatchOptions, Handler, Middleware, Next,
+    command_message, current_command, idempotent, idempotent_in, protected_idempotent, retry, Command, CommandBus,
+    DispatchOptions, Handler, Middleware, Next,
 };
 pub use dispatcher::{Delivery, DispatcherBuilder, HandlerFailure, KeyOrderedDispatcher};
 /// The SDK's one failure type is the kernel's: a [`ErrorCode`] and a message, whose `Display` is the

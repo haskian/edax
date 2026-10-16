@@ -6,17 +6,22 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from dataclasses import replace as replace_snapshot
 from typing import Generic
 
 from . import _native
 from ._lineage import stamp
 from ._observer import wrap
-from ._units import open_transaction
+from ._units import open_transaction, transaction_guard
+from ._values import replace
 from ._wiring import wiring_u64
 from .aggregate import A, AggregateCodec, EventCodec, stand_at
-from .message import CommandMessage, EventMessage, Lineage
+from .errors import BadHandle
+from .message import CommandMessage, EventDraft, EventMessage, Lineage, Payload
 from .observe import Observer
 from .outbox import CommandOutbox
+from .sealing import SealedValue, Sealing
 from .store import EventStore, Snapshot, check_sequence_batch
 from .tenancy import Tenancy, tenant_key
 from .unit_of_work import TxT, current_tx
@@ -24,6 +29,15 @@ from .unit_of_work import TxT, current_tx
 logger = logging.getLogger("edax.repository")
 
 __all__ = ["Repository"]
+
+
+@dataclass
+class _PreparedSave:
+    repository: object
+    signature: tuple[object, ...]
+    drafts: list[EventDraft]
+    commands: list[CommandMessage]
+    snapshot: Snapshot | None
 
 
 class Repository(Generic[A, TxT]):
@@ -70,7 +84,9 @@ class Repository(Generic[A, TxT]):
         snapshot_every: int = 1,
         commands: CommandOutbox[TxT] | None = None,
         tenancy: Tenancy = Tenancy.SILO,
+        sealing: Sealing | None = None,
     ) -> None:
+        self._sealing = sealing
         self._snapshot_every = wiring_u64(snapshot_every, "snapshot_every")
         self._tenancy = tenancy
         self._store = store
@@ -105,7 +121,14 @@ class Repository(Generic[A, TxT]):
         stand_at(agg, 0, tenant=tenant)
         return agg
 
-    async def load(self, aggregate_id: str, *, tenant: str | None = None, tx: TxT | None = None) -> A:
+    async def load(
+        self,
+        aggregate_id: str,
+        *,
+        tenant: str | None = None,
+        subject: str | None = None,
+        tx: TxT | None = None,
+    ) -> A:
         """Rehydrate the aggregate: snapshot, then replay the events after it.
 
         ``tenant`` names whose aggregate this is. The key the store is called with follows from it and
@@ -120,16 +143,60 @@ class Repository(Generic[A, TxT]):
         key = tenant_key(self._tenancy, tenant, aggregate_id)
         async with self._enlist(tx) as tx:
             snap = await self._store.load_snapshot(tx, key)
+            if snap is not None and snap.type_name != self._aggregates.type:
+                snap = None
+            if snap is not None and snap.encryption is not None and self._sealing is None:
+                raise BadHandle("encrypted snapshots require repository sealing")
+            if self._sealing is not None and snap is not None:
+                if snap.encryption is not None or snap.tenant is not None:
+                    _native.check_sealed_owner(True, tenant, snap.tenant)
+                if snap.encryption is None:
+                    await self._sealing.check_legacy(tenant, subject if subject is not None else snap.subject)
+                else:
+                    plaintext = await self._sealing.open_state(
+                        "snapshot",
+                        key,
+                        snap.type_name,
+                        snap.version,
+                        SealedValue(encryption=snap.encryption, data=snap.data),
+                        tenant=tenant,
+                        subject=subject if subject is not None else snap.subject,
+                    )
+                    snap = replace_snapshot(snap, data=plaintext)
             cached = self._from_snapshot(aggregate_id, snap)
             base, agg = cached if cached is not None else (0, self._aggregates.load(aggregate_id, 0, None))
             stored = await self._store.load(tx, key, after=base)
             version = check_sequence_batch(base, [msg.sequence for msg in stored])
             # Before the fold, so a replayed transition sees the tenant a live apply() sees.
             stand_at(agg, base, tenant=tenant)
+            owner = snap.subject if cached is not None and snap is not None else subject
+            committed = base > 0
+            # Validate the complete ownership batch before application transitions run.
             for msg in stored:
-                # transition(), not apply(): a replayed event must not be re-queued as pending
-                agg.transition(self._events.unmarshal(msg))
+                if self._sealing is not None:
+                    _native.check_sealed_owner(True, tenant, msg.tenant)
+                    _native.check_sealed_owner(True, aggregate_id, msg.aggregate_id)
+                    _native.check_sealed_owner(committed, owner, msg.subject)
+                    if subject is not None:
+                        _native.check_sealed_owner(True, subject, msg.subject)
+                if not committed:
+                    owner = msg.subject
+                committed = True
+            payload: Payload | EventMessage
+            for msg in stored:
+                if msg.encryption is not None and self._sealing is None:
+                    raise BadHandle("encrypted events require repository sealing")
+                if self._sealing is not None:
+                    data = await self._sealing.open_event(msg)
+                    payload = Payload(name=msg.name, version=msg.version, data=data)
+                else:
+                    payload = msg
+                agg.transition(self._events.unmarshal(payload))
             stand_at(agg, version, tenant=tenant)
+            if self._sealing is not None and version > 0 and subject is not None:
+                _native.check_sealed_owner(True, owner, subject)
+            agg.subject = owner
+            agg._owner = owner
             return agg
 
     def _from_snapshot(self, aggregate_id: str, snap: Snapshot | None) -> tuple[int, A] | None:
@@ -152,7 +219,7 @@ class Repository(Generic[A, TxT]):
                 "edax repository: the snapshot of %r at version %d does not load; replaying from version 0",
                 aggregate_id,
                 snap.version,
-                exc_info=True,
+                exc_info=self._sealing is None,
             )
             return None
 
@@ -190,6 +257,9 @@ class Repository(Generic[A, TxT]):
         # The tenant is the aggregate's, never this call's, so a save cannot name one the load did
         # not. A bare aggregate under a mode that requires a tenant fails here, before any write.
         tenant = aggregate.tenant
+        subject = aggregate.subject
+        if self._sealing is not None:
+            _native.check_sealed_owner(aggregate.version.initial > 0, aggregate._owner, subject)
         key = tenant_key(self._tenancy, tenant, aggregate.id)
         payloads = [self._events.marshal(e) for e in aggregate.pending]
         # A value the binding cannot convert (a lone surrogate in an id, a non-str metadata value) fails
@@ -207,20 +277,93 @@ class Repository(Generic[A, TxT]):
             meta,
             tenant,
             occurred_at,
+            subject,
         )
         owned = [_native.own_command(command, tenant) for command in commands or ()]
         # Dumped before the first write, like the events: a snapshot that cannot be written fails the save
         # outright, before it costs a staged append.
         snapshot = (
-            Snapshot(key, self._aggregates.type, batch.version, self._aggregates.dump(aggregate))
+            Snapshot(
+                key, self._aggregates.type, batch.version, self._aggregates.dump(aggregate), tenant, subject
+            )
             if batch.snapshot
             else None
         )
-        async with self._enlist(tx) as tx:
-            stored = await self._store.append(tx, key, aggregate.version.initial, batch.drafts)
-            if owned and self._commands is not None:
-                await self._commands.enqueue(tx, owned)
-            if snapshot is not None:
-                await self._store.save_snapshot(tx, snapshot)
-        stand_at(aggregate, batch.version, tenant=tenant)
-        return stored
+        signature: tuple[object, ...] = (
+            aggregate.version.initial,
+            tenant,
+            subject,
+            tuple((p.name, p.version, p.data) for p in payloads),
+            None if lineage is None else (lineage.correlation_id, lineage.causation_id),
+            tuple(sorted((extensions or {}).items())),
+            tuple(sorted((metadata or {}).items())),
+            occurred_at,
+            tuple(_native.encode_command("json", c) for c in commands or ())
+            if self._sealing is not None
+            else (),
+            None if snapshot is None else snapshot.data,
+        )
+        previous = aggregate._prepared
+        if previous is not None and (
+            not isinstance(previous, _PreparedSave)
+            or previous.repository is not self
+            or previous.signature != signature
+        ):
+            raise BadHandle("prepared save inputs changed; reload to reconcile the original write")
+        async with self._write_guard(tenant, subject, tx):
+            drafts = batch.drafts
+            if isinstance(previous, _PreparedSave):
+                drafts, owned, snapshot = previous.drafts, previous.commands, previous.snapshot
+                if not drafts:
+                    raise BadHandle("uncertain command-only save requires reconciliation before retry")
+            elif self._sealing is not None:
+                drafts = [await self._sealing.seal_event(draft) for draft in drafts]
+                for command in owned:
+                    if command.subject is not None:
+                        _native.check_sealed_owner(True, subject, command.subject)
+                owned = [
+                    await self._sealing.seal_command(replace(command, subject=subject)) for command in owned
+                ]
+                if snapshot is not None:
+                    sealed = await self._sealing.seal_state(
+                        "snapshot",
+                        key,
+                        snapshot.type_name,
+                        snapshot.version,
+                        snapshot.data,
+                        tenant=tenant,
+                        subject=subject,
+                    )
+                    snapshot = replace_snapshot(snapshot, data=sealed.data, encryption=sealed.encryption)
+                aggregate._prepared = _PreparedSave(self, signature, drafts, owned, snapshot)
+            async with self._enlist(tx) as tx:
+                existing = (
+                    await self._store.load(tx, key, after=aggregate.version.initial)
+                    if previous is not None
+                    else []
+                )
+                reconciled = (
+                    _native.reconcile_prepared_events(drafts, existing) if previous is not None else False
+                )
+                if reconciled:
+                    stored = existing[: len(drafts)]
+                else:
+                    stored = await self._store.append(tx, key, aggregate.version.initial, drafts)
+                    if owned and self._commands is not None:
+                        await self._commands.enqueue(tx, owned)
+                    if snapshot is not None:
+                        await self._store.save_snapshot(tx, snapshot)
+            aggregate._prepared = None
+            stand_at(aggregate, batch.version, tenant=tenant)
+            aggregate._owner = subject
+            return stored
+
+    @asynccontextmanager
+    async def _write_guard(
+        self, tenant: str | None, subject: str | None, tx: TxT | None
+    ) -> AsyncIterator[None]:
+        if self._sealing is None:
+            yield
+        else:
+            async with transaction_guard(self._store, self._sealing.write_guard(tenant, subject), tx):
+                yield

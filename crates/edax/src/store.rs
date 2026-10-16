@@ -15,6 +15,12 @@ use crate::Error;
 /// A marshaled aggregate at a given version, so a load can skip replaying the whole stream.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    /// Persisted tenant and immutable erasure owner.
+    pub tenant: Option<String>,
+    /// Immutable erasure owner.
+    pub subject: Option<String>,
+    /// The state encryption format and data-key generation.
+    pub encryption: Option<edax_seal::EncryptionInfo>,
     pub aggregate_id: String,
     pub type_name: String,
     pub version: u64,

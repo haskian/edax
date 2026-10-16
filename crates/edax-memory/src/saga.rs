@@ -134,7 +134,14 @@ impl MemorySagaStore {
             let held = others.values().map(|set| &set.sagas);
             let admit = |stored: u64, row: &SagaRow| match row {
                 SagaRow::Completed => Err(saga_completed(saga, id, stored)),
-                SagaRow::Active { .. } => Ok(()),
+                SagaRow::Active { state, .. } => {
+                    let json = serde_json::to_string(state).map_err(|_| Error::codec("invalid saga state"))?;
+                    if edax_event::sealing::decode_protected_state(&json)?.is_some_and(|state| state.completed) {
+                        Err(saga_completed(saga, id, stored))
+                    } else {
+                        Ok(())
+                    }
+                }
             };
             let next = committed.sagas.next(
                 held,

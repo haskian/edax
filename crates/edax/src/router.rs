@@ -3,11 +3,15 @@
 //! [`idempotent_by_id`] claims the event id under the consumer's scope, so a handler's side effect is
 //! effectively-once.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use edax_event::{event_idempotency, EventMessage};
 
 use crate::chain::Chain;
 use crate::failure::HandlerError;
 use crate::idempotency::{Guard, IdempotencyStore};
+use crate::sealing::Sealing;
 use crate::{Error, Tenancy};
 
 /// Handles one committed event. `Send + Sync` so a router can sit behind a worker pool. It fails with
@@ -18,7 +22,8 @@ pub type EventMiddleware = Box<dyn Fn(EventHandler) -> EventHandler + Send + Syn
 
 /// Routes a committed event to the handler for its event name, through a middleware chain baked around each
 /// handler at register time (first middleware is outermost); the unhandled fallback is wrapped too. Pass
-/// [`EventRouter::dispatch`] to a [`crate::dispatcher::KeyOrderedDispatcher`] to keep same-aggregate ordering.
+/// `|event| router.deliver(event).map(|_| ())` to a [`crate::dispatcher::KeyOrderedDispatcher`] to keep
+/// same-aggregate ordering and settle deliveries whose keys have been destroyed.
 ///
 /// The middleware is given once, to [`new`](Self::new), so a handler can never be registered before a
 /// middleware that should wrap it, such as [`idempotent_by_id`]. There is no way to add one later:
@@ -31,6 +36,53 @@ pub type EventMiddleware = Box<dyn Fn(EventHandler) -> EventHandler + Send + Syn
 pub struct EventRouter {
     chain: Chain<EventHandler, EventMiddleware>,
     on_unhandled: Option<EventHandler>,
+    sealing: Option<Arc<Sealing>>,
+}
+
+thread_local! {
+    static OPENED_EVENT: RefCell<Option<(EventMessage, EventMessage)>> = const { RefCell::new(None) };
+    static ROUTING_EVENT: RefCell<Option<(EventMessage, EventMessage)>> = const { RefCell::new(None) };
+}
+
+struct Routing(Option<(EventMessage, EventMessage)>);
+impl Drop for Routing {
+    fn drop(&mut self) {
+        ROUTING_EVENT.replace(self.0.take());
+    }
+}
+
+struct OpenedEvent(Option<(EventMessage, EventMessage)>);
+impl Drop for OpenedEvent {
+    fn drop(&mut self) {
+        OPENED_EVENT.replace(self.0.take());
+    }
+}
+
+pub(crate) fn original_event(view: &EventMessage) -> EventMessage {
+    OPENED_EVENT.with_borrow(|pair| match pair {
+        Some((raw, opened)) if opened == view => raw.clone(),
+        _ => view.clone(),
+    })
+}
+
+fn opened_handler(handler: EventHandler) -> EventHandler {
+    Box::new(move |raw| {
+        check_authenticated_event(raw)?;
+        match ROUTING_EVENT.with_borrow(Clone::clone) {
+            Some((original, opened)) => {
+                let _view = OpenedEvent(OPENED_EVENT.replace(Some((original, opened.clone()))));
+                handler(&opened)
+            }
+            None => handler(raw),
+        }
+    })
+}
+
+fn check_authenticated_event(event: &EventMessage) -> Result<(), Error> {
+    if ROUTING_EVENT.with_borrow(|pair| pair.as_ref().is_some_and(|(raw, _)| raw != event)) {
+        return Err(Error::codec("middleware changed the authenticated event envelope"));
+    }
+    Ok(())
 }
 
 impl Default for EventRouter {
@@ -45,27 +97,78 @@ impl EventRouter {
         Self {
             chain: Chain::new(middleware),
             on_unhandled: None,
+            sealing: None,
         }
+    }
+
+    /// Authenticate protected deliveries before middleware and decode only the handler's view.
+    pub fn sealing(mut self, sealing: Arc<Sealing>) -> Self {
+        self.sealing = Some(sealing);
+        self
     }
 
     /// Fallback for events with no registered handler, wrapped in the chain. Without one they are ignored.
     pub fn on_unhandled(&mut self, handler: EventHandler) {
-        self.on_unhandled = Some(self.chain.wrap(handler));
+        self.on_unhandled = Some(self.chain.wrap(opened_handler(handler)));
     }
 
     /// Register a handler for an event name, baking the middleware chain around it. The terminal
     /// [`ErrorCode::AlreadyRegistered`](crate::ErrorCode::AlreadyRegistered) if the name already has a
     /// handler.
     pub fn register(&mut self, name: impl Into<String>, handler: EventHandler) -> Result<(), Error> {
-        self.chain.register(name.into(), handler)
+        self.chain.register(name.into(), opened_handler(handler))
     }
 
     /// Route `event` to the handler for `event.name`. An unregistered name is ignored unless a fallback is set.
+    /// Confirmed destruction raises `Shredded`. Consumers use [`Self::deliver`] to settle destroyed rows.
     pub fn dispatch(&self, event: &EventMessage) -> Result<(), HandlerError> {
+        self.dispatch_received(event, false).map(|_| ())
+    }
+
+    fn dispatch_received(&self, event: &EventMessage, delivery: bool) -> Result<bool, HandlerError> {
+        let mut opened_pair = None;
+        let _guard = if let Some(sealing) = &self.sealing {
+            crate::command::check_protected_transaction()?;
+            let data = if delivery {
+                let Some(data) = sealing.open_event_delivery(event)? else {
+                    return Ok(true);
+                };
+                data
+            } else {
+                sealing.open_event(event)?
+            };
+            let scope = if event.encryption.is_some() {
+                sealing.scope(event.tenant.as_deref(), event.subject.as_deref())?
+            } else {
+                sealing.legacy_scope(event.tenant.as_deref(), event.subject.as_deref())?
+            };
+            let guard = match sealing.hold(&scope) {
+                Err(error) if delivery && error.code == crate::ErrorCode::Shredded => return Ok(true),
+                result => result?,
+            };
+            let mut opened = event.clone();
+            opened.data = data;
+            opened.encryption = None;
+            opened_pair = Some((event.clone(), opened));
+            Some(guard)
+        } else {
+            if event.encryption.is_some() {
+                return Err(Error::bad_handle("encrypted events require router sealing").into());
+            }
+            None
+        };
+        let _routing = Routing(ROUTING_EVENT.replace(opened_pair));
         match self.chain.get(&event.name).or(self.on_unhandled.as_ref()) {
             Some(handler) => handler(event),
             None => Ok(()),
-        }
+        }?;
+        Ok(false)
+    }
+
+    /// Return true only when trusted opening or admission confirms destruction and skips delivery.
+    /// Handler errors, including `Shredded`, remain errors.
+    pub fn deliver(&self, event: &EventMessage) -> Result<bool, HandlerError> {
+        self.dispatch_received(event, true)
     }
 }
 
@@ -108,6 +211,7 @@ where
     Box::new(move |next: EventHandler| {
         let guard = guard.clone();
         Box::new(move |event: &EventMessage| -> Result<(), HandlerError> {
+            check_authenticated_event(event)?;
             let rule = event_idempotency(event, tenancy, guard.scope())?;
             guard.run(event, &rule.key, rule.payload_hash, || next(event))
         })
@@ -416,7 +520,7 @@ mod tests {
                 errors: &[Some(codec)],
                 want: [
                     Some(Error::codec("bad bytes")),
-                    Some(Error::new(ErrorCode::CachedFailure, "codec: bad bytes")),
+                    Some(Error::new(ErrorCode::CachedFailure, "codec: ")),
                 ],
                 held: false,
                 redelivered: DEPOSITED,
@@ -745,12 +849,9 @@ mod tests {
         );
     }
 
-    /// The shared-ledger half the Python suite reads back (`test_cross_sdk.py`): the bytes this guard
-    /// caches for a host's `Terminal` rejection are exactly the golden row
-    /// `cached_rejection_written_by_rust`, code included, so a Python consumer of the same event replays
-    /// it as a terminal `cached_failure` that names `rejected`.
+    /// Historical records remain readable, but a new rejection retains only its stable code.
     #[test]
-    fn a_rejection_the_guard_caches_is_the_golden_row_python_reads() {
+    fn a_rejection_from_the_historical_golden_row_is_now_persisted_code_only() {
         let row = edax_golden::read("idempotency_record.json")
             .into_iter()
             .find(|c| c["name"] == "cached_rejection_written_by_rust")
@@ -774,6 +875,221 @@ mod tests {
             Claim::Won(_) => panic!("nothing was cached"),
         };
         let bytes = edax_cqrs::encode_record(&stored).unwrap();
-        assert_eq!(std::str::from_utf8(&bytes).unwrap(), row["stored"].as_str().unwrap());
+        assert!(
+            matches!(stored.state, crate::State::Failed { code: Some(ErrorCode::Rejected), ref message, .. } if message.is_empty())
+        );
+        assert!(!std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains(row["error"].as_str().unwrap()));
+    }
+
+    #[test]
+    fn unconfigured_router_refuses_encrypted_event_before_handlers() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let sealing = Sealing::new(Arc::new(MemoryKeys::new()), "test", Cipher::default()).unwrap();
+        let mut draft = crate::testkit::account::deposited("account-42", 1, DEPOSITED);
+        draft.subject = Some("owner".into());
+        let raw = sealing.seal_event(draft).unwrap().record(42);
+        let mut router = EventRouter::default();
+        router
+            .register("Deposited", Box::new(|_| panic!("encrypted event reached handler")))
+            .unwrap();
+        assert_eq!(
+            crate::failure::code_of(router.dispatch(&raw).unwrap_err().as_ref()),
+            Some(edax_core::ErrorCode::BadHandle)
+        );
+        assert_eq!(
+            crate::failure::code_of(router.deliver(&raw).unwrap_err().as_ref()),
+            Some(edax_core::ErrorCode::BadHandle)
+        );
+    }
+
+    #[test]
+    fn nested_plain_router_retains_the_outer_handlers_raw_provenance() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+        let mut draft = crate::testkit::account::deposited("account-42", 1, DEPOSITED);
+        draft.subject = Some("person-42".into());
+        let raw = sealing.seal_event(draft).unwrap().record(42);
+        let expected = raw.clone();
+        let mut inner = EventRouter::default();
+        inner
+            .register(
+                "Deposited",
+                Box::new(move |opened| {
+                    assert_eq!(original_event(opened), expected);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let expected = raw.clone();
+        let mut outer = EventRouter::default().sealing(sealing);
+        outer
+            .register(
+                "Deposited",
+                Box::new(move |opened| {
+                    inner.dispatch(opened)?;
+                    assert_eq!(original_event(opened), expected);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        outer.deliver(&raw).unwrap();
+        assert!(OPENED_EVENT.with_borrow(|pair| pair.is_none()));
+        assert!(ROUTING_EVENT.with_borrow(|pair| pair.is_none()));
+    }
+
+    #[test]
+    fn protected_router_admission_opens_once_and_fences_legacy() {
+        use crate::command::admission_test_keys::ObservedKeys;
+        use crate::sealing::Cipher;
+        for (name, legacy, tamper, destroy, delivery) in [
+            ("delivery opens once", false, false, false, true),
+            ("direct opens once", false, false, false, false),
+            ("legacy without owner", true, false, false, true),
+            ("changed envelope refused", false, true, false, true),
+            ("destroyed at admission settles", false, false, true, true),
+            ("direct destruction raises", false, false, true, false),
+        ] {
+            let keys = Arc::new(ObservedKeys::default());
+            let sealing = Arc::new(
+                Sealing::new(keys.clone(), "production-eu", Cipher::default())
+                    .unwrap()
+                    .allow_plaintext(true),
+            );
+            let mut draft = crate::testkit::account::deposited("account-42", 1, DEPOSITED);
+            if !legacy {
+                draft.subject = Some("person-42".into());
+                draft = sealing.seal_event(draft).unwrap();
+            }
+            let event = draft.record(42);
+            let mut middleware: Vec<EventMiddleware> = vec![];
+            if tamper {
+                middleware.push(Box::new(|next| {
+                    Box::new(move |raw| {
+                        let mut changed = raw.clone();
+                        changed.id.push_str("-changed");
+                        next(&changed)
+                    })
+                }));
+            }
+            middleware.push(idempotent_by_id(MemoryIdempotencyStore::new(), SCOPE, Tenancy::Silo));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = calls.clone();
+            let mut router = EventRouter::new(middleware).sealing(sealing);
+            router
+                .register(
+                    "Deposited",
+                    Box::new(move |opened| {
+                        assert_eq!(opened.data, DEPOSITED);
+                        assert!(opened.encryption.is_none());
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+            keys.destroy_on_hold.store(destroy, Ordering::SeqCst);
+            let result = if delivery {
+                router.deliver(&event)
+            } else {
+                router.dispatch(&event).map(|()| false)
+            };
+            if tamper || destroy && !delivery {
+                assert_eq!(
+                    result.unwrap_err().downcast_ref::<Error>().unwrap().code,
+                    if destroy { ErrorCode::Shredded } else { ErrorCode::Codec },
+                    "{name}"
+                );
+            } else {
+                assert_eq!(result.unwrap(), destroy, "{name}");
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(!tamper && !destroy), "{name}");
+            assert_eq!(keys.resolutions.load(Ordering::SeqCst), usize::from(!legacy), "{name}");
+        }
+    }
+
+    #[test]
+    fn protected_router_keeps_ciphertext_in_guards_and_opens_only_handler_view() {
+        use crate::sealing::{Cipher, KeyProvider, MemoryKeys};
+        let keys = Arc::new(MemoryKeys::new());
+        let sealing = Arc::new(Sealing::new(keys.clone(), "production-eu", Cipher::default()).unwrap());
+        let mut draft = crate::testkit::account::deposited("account-42", 1, DEPOSITED);
+        draft.subject = Some("person-42".into());
+        let event = sealing.seal_event(draft).unwrap().record(42);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let inspect: EventMiddleware = Box::new(|next| {
+            Box::new(move |raw| {
+                assert!(raw.encryption.is_some());
+                assert_ne!(raw.data, DEPOSITED);
+                next(raw)
+            })
+        });
+        let mut router = EventRouter::new(vec![
+            inspect,
+            idempotent_by_id(MemoryIdempotencyStore::new(), SCOPE, Tenancy::Silo),
+        ]);
+        router
+            .register(
+                "Deposited",
+                Box::new(move |opened| {
+                    assert!(opened.encryption.is_none());
+                    assert_eq!(opened.data, DEPOSITED);
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let router = router.sealing(sealing.clone());
+        assert!(!router.deliver(&event).unwrap());
+        assert!(!router.deliver(&event).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(event.encryption.is_some());
+        let scope = sealing.scope(None, Some("person-42")).unwrap();
+        keys.destroy(&scope).unwrap();
+        assert!(router.deliver(&event).unwrap());
+        assert_eq!(
+            router
+                .dispatch(&event)
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::Shredded
+        );
+    }
+
+    #[test]
+    fn protected_router_never_turns_handler_errors_into_skips() {
+        use crate::sealing::{Cipher, MemoryKeys};
+        let sealing = Arc::new(Sealing::new(Arc::new(MemoryKeys::new()), "production-eu", Cipher::default()).unwrap());
+        let mut draft = crate::testkit::account::deposited("account-42", 1, DEPOSITED);
+        draft.subject = Some("person-42".into());
+        let event = sealing.seal_event(draft).unwrap().record(42);
+        let mut router = EventRouter::default().sealing(sealing);
+        router
+            .register(
+                "Deposited",
+                Box::new(|_| Err(Error::new(ErrorCode::Shredded, "handler failed").into())),
+            )
+            .unwrap();
+        assert_eq!(
+            router
+                .deliver(&event)
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::Shredded
+        );
+        assert_eq!(
+            router
+                .dispatch(&deposited(DEPOSITED))
+                .unwrap_err()
+                .downcast_ref::<Error>()
+                .unwrap()
+                .code,
+            ErrorCode::Codec
+        );
     }
 }

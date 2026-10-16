@@ -20,6 +20,11 @@ use serde_json::{json, Value};
 fn error_taxonomy_cases() -> Vec<Value> {
     // Exhaustive: a new code needs an example message here before the vector regenerates.
     let message = |code: ErrorCode| match code {
+        ErrorCode::Shredded => "scope destroyed",
+        ErrorCode::KeyUnavailable => "provider unavailable",
+        ErrorCode::KeyRevoking => "scope revoking",
+        ErrorCode::KeyMissing => "generation missing",
+        ErrorCode::KeyUnauthorized => "access denied",
         ErrorCode::Concurrency => "expected 3, stored 4",
         ErrorCode::Codec => "invalid type: string, expected u64",
         ErrorCode::Store => "connection to the event store was reset",

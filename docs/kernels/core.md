@@ -84,10 +84,14 @@ two jobs:
 | `fnv1a32` | `0x811c9dc5` | `0x01000193` | `partition` — `fnv1a32(aggregate_id) % n` |
 | `fnv1a64` | `0xcbf29ce484222325` | `0x00000100000001b3` | `payload_hash` |
 
-`payload_hash` is the one hash both idempotency guards bind a key to: `edax-cqrs`'s `command_hash`
-hashes a command's canonical JSON with it, and `edax-event`'s `event_idempotency` hashes an event's raw
-`data`. One function, so the two guards cannot drift apart. `edax-cqrs` re-exports it.
+Both ordinary idempotency guards use `payload_hash`. For unprotected commands, `edax-cqrs`'s
+`command_hash` hashes canonical JSON with it. For events, `edax-event`'s `event_idempotency` hashes
+the raw `data`. `edax-cqrs` re-exports the same function.
 `testdata/golden/payload_hash.json` pins it.
+
+Protected command ledgers use a full keyed HMAC-SHA256 fingerprint instead of storing a plaintext
+payload hash. The outer ledger hash is zero; the CQRS kernel compares the protected fingerprint.
+See [protected command results](../guides/crypto-shredding.md#snapshots-saga-completion-and-command-results).
 
 Neither FNV function is on the ABI surface. Only its users are: `partition`, `payload_hash` and
 `payload_hash_json`. So a host cannot hash the wrong bytes by reaching past the decision that chose

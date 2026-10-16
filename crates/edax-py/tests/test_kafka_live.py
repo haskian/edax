@@ -25,6 +25,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from conftest import SeqSerializer, build_message, handling, publish_all, sequence_of, sink_ok
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
+from edax.sealing import Cipher
 
 BOOTSTRAP: str | None = os.environ.get("EDAX_KAFKA_BOOTSTRAP")
 CONTAINER: str | None = os.environ.get("EDAX_KAFKA_CONTAINER")
@@ -503,3 +504,45 @@ async def test_a_broker_restart_during_publishes_loses_nothing_acked(topic: Any)
         await reader.stop()
     assert acked == list(range(1, 61))
     assert set(acked) <= seen, f"acked publishes missing after the restart: {sorted(set(acked) - seen)}"
+
+
+@pytest.mark.parametrize("cipher", ["aes-256-gcm", "xchacha20-poly1305"])
+async def test_protected_record_and_dead_letter_never_persist_opened_payload(
+    topic: Callable[[int], Awaitable[str]], producer: AIOKafkaProducer, cipher: Cipher
+) -> None:
+    from edax import _native
+    from edax._values import replace
+    from edax.backend.kafka import KafkaDeadLetterSink, KafkaFetched
+    from edax.testing import drafted
+
+    name, dead_name = await topic(1), await topic(1)
+    secret = b"customer-private-address@example.test"
+    keys = edax.MemoryKeys()
+    sealing = edax.Sealing(keys, key_namespace="live-test", cipher=cipher)
+    raw = replace(build_message("opaque-aggregate", "Protected", 1, data=secret), subject="opaque-subject")
+    encrypted = _native.record_event(await sealing.seal_event(drafted(raw)), raw.recorded_at)
+    consumer = AIOKafkaConsumer(
+        bootstrap_servers=SERVERS, enable_auto_commit=False, auto_offset_reset="earliest"
+    )
+    await consumer.start()
+    try:
+        consumer.assign([TopicPartition(name, 0), TopicPartition(dead_name, 0)])
+        await KafkaProducer(producer, name).publish(encrypted)
+        fetched = await asyncio.wait_for(consumer.getone(TopicPartition(name, 0)), 10)
+        assert isinstance(fetched.value, bytes) and isinstance(fetched.key, bytes)
+        assert secret not in fetched.value
+        decoded = edax.KernelSerializer().decode(fetched.value)
+        assert isinstance(decoded, edax.EventMessage)
+        assert await sealing.open_event(decoded) == secret
+        origin = KafkaFetched(
+            name, fetched.partition, fetched.offset, fetched.key, fetched.value, tuple(fetched.headers)
+        )
+        await KafkaDeadLetterSink(producer, dead_name)(
+            edax.DeadLetter(decoded, 1, edax.Rejected(secret.decode()), origin)
+        )
+        dead = await asyncio.wait_for(consumer.getone(TopicPartition(dead_name, 0)), 10)
+        assert dead.value == fetched.value
+        assert dict(dead.headers)["edax-dlq-error"] == b"rejected"
+        assert all(secret not in value for _, value in dead.headers)
+    finally:
+        await consumer.stop()

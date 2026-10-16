@@ -44,20 +44,22 @@ edax_core::closed_names! {
         Terminal = "terminal",
         /// May succeed on a later attempt; counts toward `max_attempts`.
         Transient = "transient",
-        /// Another consumer holds the message's idempotency claim. Not a failed attempt.
+        /// A claim is held, a key provider is unavailable, or revocation is awaiting cleanup.
+        /// Does not count toward `max_attempts`; retries can continue indefinitely.
         Contended = "contended",
     }
 }
 
 impl Failure {
     /// The kind of a failure that carries `code`, `None` for one no code classifies: contention for
-    /// [`ErrorCode::InProgress`], fatal for a fatal code ([`ErrorCode::is_fatal`]: a wiring mistake,
+    /// [`ErrorCode::InProgress`], [`ErrorCode::KeyUnavailable`] or [`ErrorCode::KeyRevoking`],
+    /// fatal for a fatal code ([`ErrorCode::is_fatal`]: a wiring mistake,
     /// which fails every message alike), terminal for another terminal code, and transient otherwise (the
     /// kernel's default for an unclassified failure, [`edax_core::is_terminal`]). One rule, so two SDKs
     /// consuming one topic count, kill and stop on the same failures.
     pub fn of(code: Option<ErrorCode>) -> Failure {
         match code {
-            Some(ErrorCode::InProgress) => Failure::Contended,
+            Some(ErrorCode::InProgress | ErrorCode::KeyUnavailable | ErrorCode::KeyRevoking) => Failure::Contended,
             Some(code) if code.is_fatal() => Failure::Fatal,
             code if edax_core::is_terminal(code) => Failure::Terminal,
             _ => Failure::Transient,
@@ -359,7 +361,19 @@ mod tests {
             Failure::Fatal,
             "bad_handle is a wiring fault"
         );
-        for &code in ErrorCode::ALL.iter().filter(|&&c| c != ErrorCode::InProgress) {
+        for code in [ErrorCode::KeyUnavailable, ErrorCode::KeyRevoking] {
+            assert_eq!(
+                Failure::of(Some(code)),
+                Failure::Contended,
+                "provider deferral must not charge poison retries"
+            );
+        }
+        for &code in ErrorCode::ALL.iter().filter(|&&c| {
+            !matches!(
+                c,
+                ErrorCode::InProgress | ErrorCode::KeyUnavailable | ErrorCode::KeyRevoking
+            )
+        }) {
             let want = match (code.is_fatal(), code.is_terminal()) {
                 (true, _) => Failure::Fatal,
                 (false, true) => Failure::Terminal,

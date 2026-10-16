@@ -79,3 +79,6 @@ func EncodeCommand(format string, message CommandMessage) ([]byte, error) {
 func DecodeCommand(format string, wire []byte) (*CommandMessage, error) {
 	return kernel.DecodeCommand(format, wire)
 }
+
+// EncryptionInfo is the typed public payload encryption record.
+type EncryptionInfo = kernel.EncryptionInfo

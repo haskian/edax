@@ -18,6 +18,61 @@ type invoiceIssued struct {
 	CustomerID string `json:"customer_id"`
 }
 
+func TestUnsealedSiloRepositoryLoadsWithoutStoredTenant(t *testing.T) {
+	for _, snapshotEvery := range []uint64{0, 1} {
+		name := "events"
+		if snapshotEvery != 0 {
+			name = "snapshot"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := memory.New()
+			defer db.Close()
+			store, err := db.EventStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return new(invoiceIssued) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo, err := edax.NewRepository[*invoice](store, codec, invoiceCodec{}, edax.RepositoryOptions{Tenancy: edax.TenancySilo, SnapshotEvery: &snapshotEvery})
+			if err != nil {
+				t.Fatal(err)
+			}
+			aggregate, err := repo.Load(ctx, "invoice-42", edax.Ptr("tenant-acme"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := aggregate.SetSubject(edax.Ptr("customer-17")); err != nil {
+				t.Fatal(err)
+			}
+			if err := edax.Apply(aggregate, &invoiceIssued{Total: 1250, CustomerID: "customer-17"}); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := repo.Save(ctx, aggregate, edax.SaveOptions{})
+			if err != nil || len(rows) != 1 || rows[0].Tenant == nil || *rows[0].Tenant != "tenant-acme" {
+				t.Fatalf("saved tenant: rows=%+v err=%v", rows, err)
+			}
+			loaded, err := repo.Load(ctx, "invoice-42", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Total != 1250 || loaded.CustomerID != "customer-17" || loaded.Version() != (edax.Version{Initial: 1}) || loaded.Tenant() != nil || loaded.Subject() == nil || *loaded.Subject() != "customer-17" {
+				t.Fatalf("unsealed Silo load changed state or ownership: %+v tenant=%v subject=%v version=%+v", loaded, loaded.Tenant(), loaded.Subject(), loaded.Version())
+			}
+			wantFolds := 1
+			if snapshotEvery != 0 {
+				wantFolds = 0
+			}
+			if len(loaded.TenantsSeen) != wantFolds {
+				t.Fatalf("load did not use the intended storage path: folds=%d want=%d", len(loaded.TenantsSeen), wantFolds)
+			}
+		})
+	}
+}
+
 func TestRepositorySnapshotFallbackAndEmptySaves(t *testing.T) {
 	for _, test := range []struct {
 		name, snapshot string

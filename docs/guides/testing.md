@@ -5,7 +5,11 @@ tests), and how a host reuses the same suites against its own backend.
 
 The three layers answer different questions. Golden vectors ask "do two languages agree?". Model
 tests ask "does the rule hold over thousands of histories?". Unit tests ask "is this one failure
-window handled?". A bug that escapes all three is a bug in a seam no backend implements yet.
+window handled?". Each layer can miss cases outside its inputs or model.
+
+The [crypto-shredding verification record](crypto-shredding-verification.md) links encrypted-payload,
+key-lifecycle, erasure, and integration tests. It separates recorded results from the provider and
+participant checks required in a production deployment.
 
 ```mermaid
 flowchart TB

@@ -70,7 +70,7 @@ pub fn saga_admit(
     message: EventMessage,
     version: Option<u64>,
 ) -> Result<SagaAdmit, String> {
-    let msg = edax_event::EventMessage::from(message);
+    let msg = edax_event::EventMessage::try_from(message).map_err(to_wire)?;
     let admit = edax_event::saga_admit(saga, saga_loaded(completed, version)?, folded, &msg).map_err(to_wire)?;
     let action = admit.kind().as_str().to_owned();
     let folded = match admit {
@@ -111,9 +111,14 @@ pub fn saga_command_failed(
     code: Option<String>,
 ) -> Result<EventMessage, String> {
     let code = error_code(code)?;
-    edax_event::saga_command_failed(&edax_event::CommandMessage::from(command), code, error, recorded_at)
-        .map(EventMessage::from)
-        .map_err(to_wire)
+    edax_event::saga_command_failed(
+        &edax_event::CommandMessage::try_from(command).map_err(to_wire)?,
+        code,
+        error,
+        recorded_at,
+    )
+    .map(EventMessage::from)
+    .map_err(to_wire)
 }
 
 /// The `index`-th command the instance `instance_id` of the saga named `saga` decided at the step that
@@ -136,11 +141,13 @@ pub fn saga_command(
     cause_correlation_id: &str,
     issued_at: i64,
     tenant: Option<String>,
+    subject: Option<String>,
 ) -> CommandMessage {
     let cause = edax_event::Cause {
         id: cause_id,
         correlation_id: cause_correlation_id,
         tenant: tenant.as_deref(),
+        subject: subject.as_deref(),
     };
     CommandMessage::from(edax_event::saga_command(
         saga,
@@ -236,8 +243,11 @@ mod tests {
             &cause.correlation_id,
             7,
             None,
+            None,
         );
         let want = CommandMessage {
+            subject: None,
+            encryption: None,
             tenant: None,
             id: "8:shipping:order-7:2:1".to_owned(),
             idempotency_key: Some("8:shipping:order-7:2:1".to_owned()),

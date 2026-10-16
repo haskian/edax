@@ -133,6 +133,17 @@ pub fn guard_key(
     tenant_key(mode, tenant, &format!("edax:{}:{}", kind.as_str(), scoped(scope, key)))
 }
 
+/// Longest erasure-owner identifier in UTF-8 bytes.
+pub const SUBJECT_MAX: usize = 256;
+
+/// Validate an opaque erasure owner without normalizing its identity.
+pub fn check_subject(subject: &str) -> Result<(), Error> {
+    if subject.is_empty() || subject.len() > SUBJECT_MAX {
+        return Err(Error::codec("subject must contain 1 to 256 UTF-8 bytes"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

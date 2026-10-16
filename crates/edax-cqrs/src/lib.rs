@@ -20,6 +20,9 @@
 //!   the verdict a losing claimant reaches from it (in flight, cached failure, cached success). The
 //!   event guard (`edax-event`'s `event_idempotency`) keeps the same record: the state machine serves
 //!   both guards.
+//! - [`protected`] — keyed command fingerprints, encrypted result records, and authenticated scope
+//!   checks. Protected claims preserve the ordinary ledger key so migration cannot bypass an
+//!   existing result or in-flight claim. `testdata/golden/protected_ledger.json` pins the bytes.
 //! - [`Claimed`] / [`complete_fence`] / [`release_fence`] — what a claim finds, and the fence every
 //!   ledger store applies to a settling write, pinned for stores that cannot call Rust (Redis's Lua)
 //!   by `testdata/golden/idempotency_fence.json`.
@@ -59,6 +62,7 @@ pub mod filter;
 mod host_value;
 mod json_numbers;
 mod ledger;
+pub mod protected;
 mod query;
 mod record;
 mod timestamp;

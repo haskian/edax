@@ -86,7 +86,7 @@ pub fn kafka_event_record(
     key: Option<String>,
 ) -> Result<KafkaRecord, String> {
     let tenancy = tenancy_mode(tenancy)?;
-    let message = edax_event::EventMessage::from(message);
+    let message = edax_event::EventMessage::try_from(message).map_err(to_wire)?;
     edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type)
         .map(KafkaRecord::from)
         .map_err(to_wire)
@@ -102,7 +102,7 @@ pub fn kafka_command_record(
     key: Option<String>,
 ) -> Result<KafkaRecord, String> {
     let tenancy = tenancy_mode(tenancy)?;
-    let message = edax_event::CommandMessage::from(message);
+    let message = edax_event::CommandMessage::try_from(message).map_err(to_wire)?;
     edax_kafka::record(&message, tenancy, key.as_deref(), value, content_type)
         .map(KafkaRecord::from)
         .map_err(to_wire)
@@ -169,9 +169,10 @@ pub fn kafka_check_media_types(registered: Vec<String>) -> Result<(), String> {
 }
 
 /// The record a dead-letter sink publishes for `record`, fetched from `topic`/`partition`/`offset`:
-/// key, value and headers verbatim, plus the four `edax-dlq-*` headers. The failure is its taxonomy
-/// `code` (`None` for a failure no code classifies) and its `message`; the kernel renders the header. A
-/// code the taxonomy does not know is a `codec:` error. `code` trails because alef moves optional
+/// key, value and headers verbatim except prior error headers, plus four `edax-dlq-*` headers.
+/// The error header contains only `code`, or `unclassified` when absent. The compatibility
+/// `message` argument is never persisted. An unknown code is a `codec:` error.
+/// `code` trails because alef moves optional
 /// parameters to the end. See [`edax_kafka::dead_letter_record`].
 pub fn kafka_dead_letter_record(
     record: KafkaRecord,
@@ -570,7 +571,7 @@ mod tests {
                 ("edax-dlq-topic", &b"orders"[..]),
                 ("edax-dlq-partition", b"3"),
                 ("edax-dlq-offset", b"42"),
-                ("edax-dlq-error", b"codec: bad")
+                ("edax-dlq-error", b"codec")
             ]
         );
         let refused = kafka_dead_letter_record(

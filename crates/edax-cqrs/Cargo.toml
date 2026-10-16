@@ -4,9 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-and-query consistency kernel of edax: canonical JSON, command hash, received and claim keys, idempotency record, ledger fence (complete_fence, release_fence, Claimed), host values, filter, query"
+description = "Command-and-query consistency kernel of edax: canonical JSON, command hash, received and claim keys, idempotency record, protected fingerprints and results, ledger fence (complete_fence, release_fence, Claimed), host values, filter, query"
 
 [dependencies]
+edax-seal.workspace = true
 edax-core.workspace = true
 serde.workspace = true
 serde_json = "1"

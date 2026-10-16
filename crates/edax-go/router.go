@@ -1,6 +1,7 @@
 package edax
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/haskian/edax/crates/edax-go/internal/kernel"
@@ -19,6 +20,7 @@ type EventRouter struct {
 	handlers   map[string]EventHandler
 	middleware []EventMiddleware
 	unhandled  EventHandler
+	sealing    *Sealing
 }
 
 // NewEventRouter creates an empty registry with the supplied middleware.
@@ -26,9 +28,87 @@ func NewEventRouter(middleware ...EventMiddleware) *EventRouter {
 	return &EventRouter{handlers: make(map[string]EventHandler), middleware: append([]EventMiddleware(nil), middleware...)}
 }
 
+// NewSealedEventRouter opens authenticated payloads at the handler boundary.
+func NewSealedEventRouter(sealing *Sealing, middleware ...EventMiddleware) *EventRouter {
+	r := NewEventRouter(middleware...)
+	r.sealing = sealing
+	return r
+}
+
+type openedEventKey struct{}
+type openedEventPair struct {
+	raw      EventMessage
+	viewWire []byte
+}
+
+type authenticatedEventKey struct{}
+type authenticatedEvent struct {
+	sealing      *Sealing
+	wire, opened []byte
+}
+
+func (event authenticatedEvent) openedPayload(message EventMessage) ([]byte, error) {
+	wire, err := EncodeEvent("json", message)
+	if err != nil {
+		return nil, err
+	}
+	if event.sealing == nil || !bytes.Equal(wire, event.wire) {
+		return nil, &Error{Code: CodeCodec, Message: "event changed after authentication"}
+	}
+	return append([]byte(nil), event.opened...), nil
+}
+
+func originalEvent(ctx context.Context, message EventMessage) EventMessage {
+	if pair, ok := ctx.Value(openedEventKey{}).(openedEventPair); ok {
+		wire, err := EncodeEvent("json", message)
+		if err == nil && bytes.Equal(wire, pair.viewWire) {
+			return pair.raw
+		}
+	}
+	return message
+}
+
+func openedEventView(raw EventMessage, data []byte) (EventMessage, error) {
+	encoded, err := EncodeEvent("json", raw)
+	if err != nil {
+		return EventMessage{}, err
+	}
+	view, err := DecodeEvent("json", encoded)
+	if err != nil {
+		return EventMessage{}, err
+	}
+	view.Data = append([]byte(nil), data...)
+	view.Encryption = nil
+	return *view, nil
+}
+
 // wrap runs the factories outside the lock, so one may register or dispatch on
 // this router. The middleware list never changes after construction.
 func (r *EventRouter) wrap(handler EventHandler) (EventHandler, error) {
+	if r.sealing != nil {
+		next := handler
+		handler = func(ctx context.Context, raw EventMessage) error {
+			authenticated, _ := ctx.Value(authenticatedEventKey{}).(authenticatedEvent)
+			if authenticated.sealing != r.sealing {
+				return &Error{Code: CodeBadHandle, Message: "event handler requires authenticated dispatch"}
+			}
+			data, err := authenticated.openedPayload(raw)
+			if err != nil {
+				return err
+			}
+			view, err := openedEventView(raw, data)
+			if err != nil {
+				return err
+			}
+			viewWire, err := EncodeEvent("json", view)
+			if err != nil {
+				return err
+			}
+			ctx = context.WithValue(ctx, openedEventKey{}, openedEventPair{raw: raw, viewWire: viewWire})
+			return next(ctx, view)
+		}
+	}
+
 	for i := len(r.middleware) - 1; i >= 0; i-- {
 		if r.middleware[i] == nil {
 			return nil, &Error{Code: CodeBadHandle, Message: "nil event middleware"}
@@ -86,6 +166,26 @@ func (r *EventRouter) OnUnhandled(handler EventHandler) error {
 // Dispatch invokes the named or fallback handler with child-message lineage in ctx.
 // Different dispatches may invoke handlers concurrently; the router does not settle broker deliveries.
 func (r *EventRouter) Dispatch(ctx context.Context, message EventMessage) error {
+	if r.sealing == nil && message.Encryption != nil {
+		return &Error{Code: CodeBadHandle, Message: "encrypted events require router sealing"}
+	}
+	if r.sealing != nil {
+		wire, err := EncodeEvent("json", message)
+		if err != nil {
+			return err
+		}
+		owned, err := DecodeEvent("json", wire)
+		if err != nil {
+			return err
+		}
+		message = *owned
+		data, skip, err := r.sealing.OpenEventDelivery(ctx, message)
+		if err != nil || skip {
+			return err
+		}
+		defer clear(data)
+		ctx = context.WithValue(ctx, authenticatedEventKey{}, authenticatedEvent{sealing: r.sealing, wire: wire, opened: data})
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -97,6 +197,23 @@ func (r *EventRouter) Dispatch(ctx context.Context, message EventMessage) error 
 	r.mu.RUnlock()
 	if handler == nil {
 		return nil
+	}
+	if r.sealing != nil {
+		scope, err := r.sealing.Scope(message.Tenant, message.Subject)
+		if err != nil {
+			return err
+		}
+		guarded, release, err := r.sealing.Guard(ctx, scope)
+		if err != nil {
+			if destroyedKey(err) {
+				return nil
+			}
+			return err
+		}
+		ctx = guarded
+		if !HoldCurrentTransactionResource(ctx, release) {
+			defer release()
+		}
 	}
 	handlerContext, err := CausedBy(ctx, message.ID, message.CorrelationID)
 	if err != nil {
@@ -118,6 +235,11 @@ func IdempotentByID(store IdempotencyStore, options IdempotentOptions) (EventMid
 	}
 	return func(next EventHandler) EventHandler {
 		return func(ctx context.Context, message EventMessage) error {
+			if authenticated, ok := ctx.Value(authenticatedEventKey{}).(authenticatedEvent); ok {
+				if _, err := authenticated.openedPayload(message); err != nil {
+					return err
+				}
+			}
 			input, err := kernel.GetEventIdempotency(message, string(options.Tenancy), options.Scope)
 			if err != nil {
 				return err

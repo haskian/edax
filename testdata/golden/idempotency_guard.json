@@ -49,7 +49,7 @@
       "error": "codec: unknown field `amount`"
     },
     "want_reason": null,
-    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"unknown field `amount`\",\"error_code\":\"codec\",\"pending\":false}"
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"codec\",\"pending\":false}"
   },
   {
     "key": "req-1",
@@ -67,7 +67,7 @@
       "error": "rejected: insufficient funds"
     },
     "want_reason": null,
-    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"insufficient funds\",\"error_code\":\"rejected\",\"pending\":false}"
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"rejected\",\"pending\":false}"
   },
   {
     "key": "req-1",
@@ -85,7 +85,7 @@
       "error": "rejected: no such order"
     },
     "want_reason": null,
-    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"no such order\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
+    "want_record": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"rejected\",\"error_reason\":\"not_found\",\"pending\":false}"
   },
   {
     "key": "req-1",

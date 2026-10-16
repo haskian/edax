@@ -21,6 +21,8 @@ pub fn base_event() -> EventMessage {
         id: "evt-1".to_owned(),
         aggregate_id: "agg-1".to_owned(),
         tenant: None,
+        subject: None,
+        encryption: None,
         sequence: Some(7),
         name: "InvoiceIssued".to_owned(),
         version: 1,
@@ -40,6 +42,8 @@ pub fn base_draft() -> EventDraft {
         id,
         aggregate_id,
         tenant,
+        subject,
+        encryption,
         sequence,
         name,
         version,
@@ -55,6 +59,8 @@ pub fn base_draft() -> EventDraft {
         id,
         aggregate_id,
         tenant,
+        subject,
+        encryption,
         sequence,
         name,
         version,
@@ -74,6 +80,8 @@ pub fn base_command() -> CommandMessage {
         idempotency_key: Some("req-1".to_owned()),
         aggregate_id: Some("agg-1".to_owned()),
         tenant: None,
+        subject: None,
+        encryption: None,
         name: "IssueInvoice".to_owned(),
         version: 1,
         data: br#"{"amount":10}"#.to_vec(),
@@ -98,6 +106,7 @@ pub fn saga_command(saga: &str, id: &str, version: u64, index: u64) -> CommandMe
         id: &cause_id,
         correlation_id: "corr-1",
         tenant: None,
+        subject: None,
     };
     kernel_saga_command(saga, id, version, index, cause, payload, RECORDED_AT)
 }

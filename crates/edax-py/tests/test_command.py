@@ -605,7 +605,7 @@ async def test_terminal_failure_is_cached_and_replayed() -> None:
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
     # Terminal error cached: the redelivery replays it without re-running the handler, and the replay
     # is itself terminal so a dispatcher dead-letters it instead of redelivering forever.
-    with pytest.raises(C.CachedFailure, match="bad payload") as info:
+    with pytest.raises(C.CachedFailure, match=r"^codec: $") as info:
         await bus.dispatch(CreateUser("a@b.c"), idempotency_key="req-1")
     assert info.value.terminal
     assert calls == 1

@@ -8,6 +8,9 @@ use crate::{tenancy_mode, to_wire, ClaimResult, CommandMessage, EventDraft, Even
 /// A stored snapshot as the event store holds it.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotResult {
+    pub tenant: Option<String>,
+    pub subject: Option<String>,
+    pub encryption: Option<crate::EncryptionInfo>,
     pub type_name: String,
     pub version: u64,
     #[serde(default)]
@@ -167,7 +170,11 @@ impl MemoryEventStore {
         drafts: Vec<EventDraft>,
         recorded_at: i64,
     ) -> Result<Vec<EventMessage>, String> {
-        let drafts = drafts.into_iter().map(edax_event::EventDraft::from).collect();
+        let drafts = drafts
+            .into_iter()
+            .map(edax_event::EventDraft::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_wire)?;
         let events = self
             .inner
             .append(tx_of(tx), aggregate_id, expected_version, drafts, recorded_at)
@@ -179,6 +186,9 @@ impl MemoryEventStore {
     pub fn load_snapshot(&self, tx: i64, aggregate_id: &str) -> Result<Option<SnapshotResult>, String> {
         let snapshot = self.inner.load_snapshot(tx_of(tx), aggregate_id).map_err(to_wire)?;
         Ok(snapshot.map(|s| SnapshotResult {
+            tenant: s.tenant,
+            subject: s.subject,
+            encryption: s.encryption.map(Into::into),
             type_name: s.type_name,
             version: s.version,
             data: s.data,
@@ -196,6 +206,28 @@ impl MemoryEventStore {
     ) -> Result<(), String> {
         self.inner
             .save_snapshot(tx_of(tx), aggregate_id, type_name, version, data)
+            .map_err(to_wire)
+    }
+
+    /// Store the complete protected snapshot envelope.
+    pub fn save_snapshot_record(&self, tx: i64, aggregate_id: &str, snapshot: SnapshotResult) -> Result<(), String> {
+        self.inner
+            .save_snapshot_record(
+                tx_of(tx),
+                aggregate_id,
+                edax_memory::Snapshot {
+                    type_name: snapshot.type_name,
+                    version: snapshot.version,
+                    data: snapshot.data,
+                    tenant: snapshot.tenant,
+                    subject: snapshot.subject,
+                    encryption: snapshot
+                        .encryption
+                        .map(TryInto::try_into)
+                        .transpose()
+                        .map_err(to_wire)?,
+                },
+            )
             .map_err(to_wire)
     }
 
@@ -359,7 +391,11 @@ impl MemorySagaStore {
         commands: Vec<CommandMessage>,
     ) -> Result<u64, String> {
         let state: serde_json::Value = edax_cqrs::read_json("saga state", state_json.as_bytes()).map_err(to_wire)?;
-        let commands = commands.into_iter().map(edax_event::CommandMessage::from).collect();
+        let commands = commands
+            .into_iter()
+            .map(edax_event::CommandMessage::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_wire)?;
         self.inner
             .save(tx_of(tx), saga, id, version, state, folded.to_owned(), commands)
             .map_err(to_wire)
@@ -375,7 +411,11 @@ impl MemorySagaStore {
         version: u64,
         commands: Vec<CommandMessage>,
     ) -> Result<u64, String> {
-        let commands = commands.into_iter().map(edax_event::CommandMessage::from).collect();
+        let commands = commands
+            .into_iter()
+            .map(edax_event::CommandMessage::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_wire)?;
         self.inner
             .complete(tx_of(tx), saga, id, version, commands)
             .map_err(to_wire)
@@ -412,7 +452,11 @@ impl MemoryCommandOutbox {
     /// Stage `commands` in the outbox under `tx`, to commit with the transaction's events. An id already
     /// waiting, or repeated in the batch, is a `codec:` error and stages nothing.
     pub fn enqueue(&self, tx: i64, commands: Vec<CommandMessage>) -> Result<(), String> {
-        let commands = commands.into_iter().map(edax_event::CommandMessage::from).collect();
+        let commands = commands
+            .into_iter()
+            .map(edax_event::CommandMessage::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_wire)?;
         self.inner.enqueue(tx_of(tx), commands).map_err(to_wire)
     }
 
@@ -478,7 +522,7 @@ impl MemoryBroker {
     /// message that names none is a `codec:` error, and nothing is appended.
     pub fn publish_event(&self, message: EventMessage) -> Result<(), String> {
         self.inner
-            .publish_event(edax_event::EventMessage::from(message))
+            .publish_event(edax_event::EventMessage::try_from(message).map_err(to_wire)?)
             .map_err(to_wire)
     }
 
@@ -486,7 +530,7 @@ impl MemoryBroker {
     /// none, scoped as [`MemoryBroker::publish_event`] scopes it. Every group reads it. Fails as that does.
     pub fn publish_command(&self, message: CommandMessage) -> Result<(), String> {
         self.inner
-            .publish_command(edax_event::CommandMessage::from(message))
+            .publish_command(edax_event::CommandMessage::try_from(message).map_err(to_wire)?)
             .map_err(to_wire)
     }
 
@@ -902,6 +946,7 @@ mod tests {
                 &cause.id,
                 &cause.correlation_id,
                 7,
+                None,
                 None,
             )
         };

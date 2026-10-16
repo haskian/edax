@@ -142,6 +142,8 @@ fn envelope_cases() -> Vec<Value> {
         (
             "unsequenced_empty_payload_empty_maps",
             EventMessage {
+                subject: None,
+                encryption: None,
                 id: "evt-2".into(),
                 aggregate_id: "agg-2".into(),
                 tenant: None,
@@ -519,7 +521,7 @@ fn envelope_decode_cases() -> Vec<Value> {
     let positional = || W::Arr(wire_fields().into_iter().map(|(_, v)| v).collect());
     // The tenant rule counts bytes: 32 two-byte characters are at the limit, 33 are past it.
     let tenant = |text: &str, times: usize| W::Text(text.repeat(times));
-    let cases: Vec<(&str, Kind, W, &[u8])> = vec![
+    let mut cases: Vec<(&str, Kind, W, &[u8])> = vec![
         ("the_base_message", Event, W::Map(wire_fields()), b""),
         // A newer writer's field: ignored, so adding a field is forward compatible.
         (
@@ -690,6 +692,103 @@ fn envelope_decode_cases() -> Vec<Value> {
             b"",
         ),
     ];
+    for kind in [Event, Command] {
+        let fields = || match kind {
+            Event => wire_fields(),
+            Command => command_wire_fields(),
+        };
+        for (name, subject) in [
+            ("a_missing_subject_reads_as_none", None),
+            ("an_empty_subject_is_refused", Some(W::Str(""))),
+            ("a_subject_of_256_utf8_bytes_reads_back", Some(W::Text("é".repeat(128)))),
+            (
+                "a_subject_of_257_utf8_bytes_is_refused",
+                Some(W::Text(format!("{}x", "é".repeat(128)))),
+            ),
+        ] {
+            let mut wire = fields();
+            if let Some(subject) = subject {
+                wire.push(("subject", subject));
+            }
+            cases.push((name, kind, W::Map(wire), b""));
+        }
+        let encryption = |changed: Option<(&str, W)>| {
+            let mut wire = vec![
+                ("format_version", W::Int(1)),
+                ("key_namespace", W::Str("production-eu")),
+                ("key_id", W::Str("data-key-1")),
+                ("cipher", W::Str("xchacha20-poly1305")),
+                ("nonce", W::Bytes(&[0x24; 24])),
+            ];
+            if let Some((field, value)) = changed {
+                wire.iter_mut().find(|(name, _)| *name == field).unwrap().1 = value;
+            }
+            W::Map(wire)
+        };
+        for (name, subject, info, data) in [
+            (
+                "valid_encryption_framing_reads_back",
+                Some(W::Str("customer-42")),
+                encryption(None),
+                &[0x47; 16][..],
+            ),
+            (
+                "encryption_without_subject_is_refused",
+                None,
+                encryption(None),
+                &[0x47; 16][..],
+            ),
+            (
+                "encryption_with_null_subject_is_refused",
+                Some(W::Null),
+                encryption(None),
+                &[0x47; 16][..],
+            ),
+            (
+                "encryption_without_full_tag_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(None),
+                &[0x47; 15][..],
+            ),
+            (
+                "unsupported_encryption_version_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(Some(("format_version", W::Int(2)))),
+                &[0x47; 16][..],
+            ),
+            (
+                "unsupported_encryption_cipher_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(Some(("cipher", W::Str("unknown")))),
+                &[0x47; 16][..],
+            ),
+            (
+                "invalid_encryption_nonce_length_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(Some(("nonce", W::Bytes(&[0x24; 12])))),
+                &[0x47; 16][..],
+            ),
+            (
+                "empty_encryption_namespace_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(Some(("key_namespace", W::Str("")))),
+                &[0x47; 16][..],
+            ),
+            (
+                "empty_encryption_key_id_is_refused",
+                Some(W::Str("customer-42")),
+                encryption(Some(("key_id", W::Str("")))),
+                &[0x47; 16][..],
+            ),
+        ] {
+            let mut wire: Vec<_> = fields().into_iter().filter(|(name, _)| *name != "data").collect();
+            wire.extend([("data", W::Bytes(data)), ("encryption", info)]);
+            if let Some(subject) = subject {
+                wire.push(("subject", subject));
+            }
+            cases.push((name, kind, W::Map(wire), b""));
+        }
+    }
     cases
         .into_iter()
         .map(|(name, kind, wire, trailing)| {
@@ -821,6 +920,8 @@ fn snapshot_due_cases() -> Vec<Value> {
 /// ledger. A mode that wants a tenant and an event that names none is the `codec` error.
 fn event_idempotency_cases() -> Vec<Value> {
     let base = EventMessage {
+        subject: None,
+        encryption: None,
         id: "acct-1-3".to_owned(),
         aggregate_id: "acct-1".to_owned(),
         tenant: None,
@@ -1718,6 +1819,7 @@ fn draft_batch_cases() -> Vec<Value> {
                 "occurred_at": c.occurred_at,
             });
             let context = edax_event::SaveContext {
+        subject: None,
                 tenant: c.tenant,
                 lineage: &lineage,
                 extensions: &c.extensions,
@@ -1955,6 +2057,39 @@ fn saga_cases() -> Vec<Value> {
         },
         "want": serde_json::to_value(&command).unwrap(),
     }));
+    let owned_cause = EventMessage {
+        subject: Some("customer-42".into()),
+        ..cause
+    };
+    let owned_command = edax_event::saga_command(
+        "shipping",
+        &instance,
+        5,
+        0,
+        edax_event::Cause::from(&owned_cause),
+        payload.clone(),
+        1_700_000_000_000_000_001,
+    );
+    assert_eq!(owned_command.subject.as_deref(), Some("customer-42"));
+    cases.push(json!({
+        "saga_command": {
+            "saga": "shipping", "instance_id": instance, "version": 5, "index": 0,
+            "issued_at": 1_700_000_000_000_000_001_i64, "command": payload, "cause": owned_cause,
+        },
+        "want": owned_command,
+    }));
+    let sealed_command = edax_event::sealing::seal_command(
+        owned_command,
+        edax_seal::EncryptionInfo {
+            format_version: 1,
+            key_namespace: "production-eu".into(),
+            key_id: "data-key-1".into(),
+            cipher: edax_seal::Cipher::XChaCha20Poly1305,
+            nonce: vec![0x24; 24],
+        },
+        &[0x47; 32],
+    )
+    .unwrap();
     // The event a dead saga command folds back into its instance, and a row that names no instance.
     let stray = edax_event::CommandMessage {
         aggregate_id: None,
@@ -1964,10 +2099,23 @@ fn saga_cases() -> Vec<Value> {
         (command.clone(), Some(edax_core::ErrorCode::Rejected), "out of stock"),
         (command, None, "warehouse API timed out"),
         (stray, Some(edax_core::ErrorCode::Rejected), "out of stock"),
+        (
+            sealed_command.clone(),
+            Some(edax_core::ErrorCode::Rejected),
+            "private address: 17 Example Lane",
+        ),
+        (sealed_command, None, "private address: 17 Example Lane"),
     ];
     for (row, code, error) in failures {
         let want = match edax_event::saga_command_failed(&row, code, error, 1_700_000_000_000_000_002) {
-            Ok(event) => serde_json::to_value(&event).unwrap(),
+            Ok(event) => {
+                if row.encryption.is_some() {
+                    let payload: Value = serde_json::from_slice(&event.data).unwrap();
+                    assert_eq!(payload["error"], "");
+                    assert_eq!(event.subject, row.subject);
+                }
+                serde_json::to_value(&event).unwrap()
+            }
             Err(e) => json!({ "error": e.to_string() }),
         };
         cases.push(json!({

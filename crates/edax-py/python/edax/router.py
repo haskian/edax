@@ -7,15 +7,20 @@ and :func:`idempotent_by_id` is the consume-path middleware. See ``docs/sdk/cons
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 
 from . import _native
 from ._chain import Registry, require_async
 from ._observer import wrap
+from ._units import current_transaction_guard
+from ._values import replace
 from ._wiring import wiring_str
 from .causation import caused_by
+from .errors import BadHandle, Shredded
 from .idempotency import Guard, IdempotencyStore, guarded
 from .message import EventMessage
 from .observe import Observer
+from .sealing import Sealing, authenticated_event, cached_event, opened_event
 from .tenancy import Tenancy
 from .unit_of_work import Transactor, TxT
 
@@ -41,18 +46,41 @@ class EventRouter:
     Every handler is a coroutine function, as on :class:`~edax.command.CommandBus`: a sync one raises
     :class:`TypeError` when it is wired, not when the first event reaches it."""
 
-    def __init__(self, *middleware: EventMiddleware, on_unhandled: EventHandler | None = None) -> None:
+    def __init__(
+        self,
+        *middleware: EventMiddleware,
+        on_unhandled: EventHandler | None = None,
+        sealing: Sealing | None = None,
+    ) -> None:
+        self._sealing = sealing
         self._handlers: Registry[EventHandler] = Registry(middleware)
         if on_unhandled is not None:
             require_async(on_unhandled, "on_unhandled")
-        self._on_unhandled = self._handlers.wrap(on_unhandled) if on_unhandled is not None else None
+        self._on_unhandled = (
+            self._handlers.wrap(self._opening(on_unhandled)) if on_unhandled is not None else None
+        )
 
     def register(self, name: str, handler: EventHandler) -> None:
         """Install ``handler`` for events named ``name``, wrapped in the middleware. A second handler for
         one name raises the terminal :class:`~edax.errors.AlreadyRegistered`, and a handler that is not a
         coroutine function :class:`TypeError`."""
         require_async(handler, f"event handler for {name!r}")
-        self._handlers.register(name, handler)
+        self._handlers.register(name, self._opening(handler))
+
+    def _opening(self, handler: EventHandler) -> EventHandler:
+        if self._sealing is None:
+            return handler
+        sealing = self._sealing
+
+        async def opened(raw: EventMessage) -> None:
+            data = cached_event(raw, sealing)
+            if data is None:
+                raise BadHandle("router handler requires its authenticated dispatch context")
+            message = replace(raw, data=data, encryption=None)
+            with opened_event(raw, message):
+                await handler(message)
+
+        return opened
 
     def on(self, name: str) -> Callable[[EventHandler], EventHandler]:
         """Decorator form of :meth:`register`. Returns the bare handler, not the wrapped one."""
@@ -66,12 +94,29 @@ class EventRouter:
     async def dispatch(self, msg: EventMessage) -> None:
         """Route ``msg`` to the handler for ``msg.name``. The handler runs under the ambient lineage
         :func:`~edax.causation.propagate` of ``msg``, so an event it saves continues the flow."""
+        if self._sealing is None and msg.encryption is not None:
+            raise BadHandle("encrypted events require router sealing")
         handler = self._handlers.get(msg.name)
         if handler is None:
             handler = self._on_unhandled
-        if handler is not None:
-            with caused_by(msg):
-                await handler(msg)
+        if self._sealing is None:
+            if handler is not None:
+                with caused_by(msg):
+                    await handler(msg)
+            return
+        opened = await self._sealing.open_event_for_consumer(msg)
+        if opened is None:
+            return
+        async with AsyncExitStack() as resources:
+            try:
+                await resources.enter_async_context(
+                    current_transaction_guard(self._sealing.write_guard(msg.tenant, msg.subject))
+                )
+            except Shredded:
+                return
+            with authenticated_event(self._sealing, msg, opened.data), caused_by(msg):
+                if handler is not None:
+                    await handler(msg)
 
 
 def idempotent_by_id(
@@ -114,6 +159,7 @@ def idempotent_by_id(
 
     def mw(next_: EventHandler) -> EventHandler:
         async def handler(msg: EventMessage) -> None:
+            cached_event(msg)
             rule = _native.event_idempotency(msg, tenancy.value, scope)
             guard = Guard(store, msg.name, rule.key, rule.payload_hash, observe)
             await guarded(guard, lambda: next_(msg), unit_of_work)

@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use edax_event::{CommandMessage, EventDraft};
-use edax_golden::{refusal, write_or_check};
+use edax_golden::{hex, refusal, write_or_check};
 use edax_postgres::ledger::{claim_read, complete_write, forget_write, release_write, LedgerRow};
 use edax_postgres::rows::{Call, Outbox, Param};
 use edax_postgres::{
@@ -32,6 +32,8 @@ fn schema() -> Tables {
 
 fn draft(sequence: u64) -> EventDraft {
     EventDraft {
+        subject: None,
+        encryption: None,
         id: format!("evt-{sequence}"),
         aggregate_id: "invoice-7".into(),
         tenant: Some("acme".into()),
@@ -49,6 +51,8 @@ fn draft(sequence: u64) -> EventDraft {
 
 fn command(id: &str, aggregate: &str) -> CommandMessage {
     CommandMessage {
+        subject: None,
+        encryption: None,
         id: id.into(),
         idempotency_key: Some("req-7".into()),
         aggregate_id: Some(aggregate.into()),
@@ -293,6 +297,22 @@ fn reference_schema_document() {
     }
 }
 
+/// The erasure schema has the same drift protection as the application-store schema.
+#[test]
+fn reference_erasure_schema_document() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/backends/postgres-erasure-schema.sql");
+    let ddl = edax_postgres::erasure::reference_ddl("public").unwrap();
+    if std::env::var(edax_golden::ENV_REGEN).as_deref() == Ok("1") {
+        std::fs::write(&path, &ddl).unwrap();
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            ddl,
+            "docs/backends/postgres-erasure-schema.sql drifted: regenerate with EDAX_REGEN=1"
+        );
+    }
+}
+
 /// `postgres_statements.json`: every statement, byte for byte, for the `public` schema, and what opens a
 /// transaction under the default settings.
 #[test]
@@ -322,6 +342,104 @@ fn params(answer: Result<Vec<Param>, edax_core::Error>) -> Result<Value, edax_co
 
 fn chosen(answer: Result<Call, edax_core::Error>) -> Result<Value, edax_core::Error> {
     answer.map(|call| json!({"statement": call.statement, "params": call.params}))
+}
+
+fn sealed_row_cases() -> Vec<Value> {
+    const KEY: [u8; 32] = [0x47; 32];
+    const STREAM: &str = "acme:invoice-7";
+    let mut cases = Vec::new();
+    for cipher in edax_seal::Cipher::ALL {
+        let info = edax_seal::EncryptionInfo {
+            format_version: 1,
+            key_namespace: "production-eu".into(),
+            key_id: "data-key-1".into(),
+            cipher: *cipher,
+            nonce: vec![0x24; cipher.nonce_len()],
+        };
+        let original = EventDraft {
+            subject: Some("customer-42".into()),
+            ..draft(1)
+        };
+        let sealed = edax_event::sealing::seal_event(original.clone(), info.clone(), &KEY).unwrap();
+        let append = rows::append_params(STREAM, 0, std::slice::from_ref(&sealed)).unwrap();
+        let result = json!({"stored":0,"recorded_at":1_700_000_001_000_000_000_i64}).to_string();
+        let event = rows::append_result(0, vec![sealed], &result).unwrap().remove(0);
+        let mut event_row: Value = serde_json::from_str::<Vec<Value>>(append[2].as_deref().unwrap())
+            .unwrap()
+            .remove(0);
+        event_row["recorded_at"] = json!(event.recorded_at);
+        let decoded = rows::decode_events(&[event_row.to_string()]).unwrap().remove(0);
+        assert_eq!(decoded, event);
+        assert_eq!(edax_event::sealing::open_event(&decoded, &KEY).unwrap(), original.data);
+        cases.push(json!({
+            "name":format!("sealed_event_{}",cipher.as_str()), "kind":"sealed_event",
+            "stream":STREAM,"expected":0,"params":append,"result":result,
+            "row":event_row.to_string(),"message":event,"key_hex":hex(&KEY),"plaintext_hex":hex(&original.data),
+        }));
+
+        let original = CommandMessage {
+            tenant: Some("acme".into()),
+            subject: Some("customer-42".into()),
+            ..command("cmd-1", "order-1")
+        };
+        let sealed = edax_event::sealing::seal_command(original.clone(), info.clone(), &KEY).unwrap();
+        let enqueue = rows::enqueue_params(std::slice::from_ref(&sealed)).unwrap();
+        let command_row = serde_json::from_str::<Vec<Value>>(enqueue[0].as_deref().unwrap())
+            .unwrap()
+            .remove(0)
+            .to_string();
+        let decoded = rows::decode_commands(std::slice::from_ref(&command_row))
+            .unwrap()
+            .remove(0);
+        assert_eq!(decoded, sealed);
+        assert_eq!(
+            edax_event::sealing::open_command(&decoded, &KEY).unwrap(),
+            original.data
+        );
+        cases.push(json!({
+            "name":format!("sealed_command_{}",cipher.as_str()), "kind":"sealed_command",
+            "params":enqueue,"row":command_row,"message":sealed,"key_hex":hex(&KEY),"plaintext_hex":hex(&original.data),
+        }));
+
+        let plaintext = br#"{"invoice_id":"invoice-7","total":"9.50"}"#;
+        let aad = edax_event::sealing::state_context(
+            "snapshot",
+            STREAM,
+            "Invoice",
+            1,
+            Some("acme"),
+            Some("customer-42"),
+            "",
+            false,
+            &info,
+        )
+        .unwrap();
+        let ciphertext = edax_seal::seal(&info, &KEY, &aad, plaintext).unwrap();
+        let snapshot_params = rows::protected_snapshot_params(
+            STREAM,
+            "Invoice",
+            1,
+            &ciphertext,
+            Some("acme"),
+            Some("customer-42"),
+            Some(&info),
+        )
+        .unwrap();
+        let snapshot_row = json!({"type_name":"Invoice","version":1,"data":hex(&ciphertext),"tenant":"acme","subject":"customer-42","encryption":serde_json::to_string(&info).unwrap()}).to_string();
+        let snapshot = rows::decode_snapshot(&snapshot_row).unwrap();
+        assert_eq!(snapshot.data, ciphertext);
+        assert_eq!(snapshot.encryption.as_ref(), Some(&info));
+        assert_eq!(
+            edax_seal::open(snapshot.encryption.as_ref().unwrap(), &KEY, &aad, &snapshot.data).unwrap(),
+            plaintext
+        );
+        cases.push(json!({
+            "name":format!("sealed_snapshot_{}",cipher.as_str()),"kind":"sealed_snapshot",
+            "stream":STREAM,"params":snapshot_params,"row":snapshot_row,"key_hex":hex(&KEY),
+            "plaintext_hex":hex(plaintext),"aad_hex":hex(&aad),
+        }));
+    }
+    cases
 }
 
 /// `postgres_rows.json`: the parameters each statement binds, the statement a call chooses, and the values
@@ -549,6 +667,7 @@ fn golden_rows() {
             params(ledger::key_params("o\0")),
         ),
     ]);
+    cases.extend(sealed_row_cases());
     write_or_check("postgres_rows.json", cases);
 }
 

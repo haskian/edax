@@ -49,6 +49,9 @@ class Aggregate:
         #: it empty at version 0 with the tenant set and reads nothing. One built with this constructor has
         #: none, and its save raises :class:`~edax.errors.CodecError`.
         self.tenant: str | None = None
+        self.subject: str | None = None
+        self._owner: str | None = None
+        self._prepared: object | None = None
 
     @property
     def version(self) -> Version:
@@ -64,6 +67,10 @@ class Aggregate:
         raise NotImplementedError
 
     def apply(self, *events: Any) -> None:
+        if self._prepared is not None:
+            from .errors import BadHandle
+
+            raise BadHandle("reconcile the prepared save before changing the aggregate")
         for e in events:
             self.transition(e)
             self._pending.append(e)

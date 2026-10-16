@@ -1,0 +1,353 @@
+[
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"data\":\"vJYRU7KVun856k5vayk3P/X0KbrZD0R1XSNVIX7VgxHH7Mux/r0RVg9oXxZ0LIX0ZLZst91eCMNEHDA7xH/9UDIedoBHTTTMgid7vXL2sZv/c8lwc9o8Nw==\"}}}",
+    "encryption": {
+      "cipher": "aes-256-gcm",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "namespace_aes-256-gcm",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": null,
+      "tenant": null
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000003100000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750000000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": null,
+      "tenant": null
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750000",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"data\":\"/3MCAk9HaFb2hb7HqHNSnIsySAxdgFHQzlmxaaTnN3amYUoZ6fpSsSnVJ8/20ukE91zj3HDIkEgtJNUGIZj1givXa39kyLrhQ2N0U7HjuEuNcqw1UzUG2g==\"}}}",
+    "encryption": {
+      "cipher": "xchacha20-poly1305",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "namespace_xchacha20-poly1305",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": null,
+      "tenant": null
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000003100000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750000000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c79313330350000000000000018242424242424242424242424242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": null,
+      "tenant": null
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750000",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"data\":\"vJYRU7KVun856k5vayk3P/X0KbrZD0R1XSNVIX7VgxHH7Mux/r0RVg9oXxZ0LIX0ZLZst91eCMNEHDA7xH/9UDIedoBHTTTM1gw4MGekI79joegFdb4zzw==\"}}}",
+    "encryption": {
+      "cipher": "aes-256-gcm",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "tenant_aes-256-gcm",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": null,
+      "tenant": "tenant-7"
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000004100000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3700000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": null,
+      "tenant": "tenant-7"
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3700",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"data\":\"/3MCAk9HaFb2hb7HqHNSnIsySAxdgFHQzlmxaaTnN3amYUoZ6fpSsSnVJ8/20ukE91zj3HDIkEgtJNUGIZj1givXa39kyLrhQ1tWXdzTYfKu5luxCVLjww==\"}}}",
+    "encryption": {
+      "cipher": "xchacha20-poly1305",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "tenant_xchacha20-poly1305",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": null,
+      "tenant": "tenant-7"
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":null},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000004100000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3700000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c79313330350000000000000018242424242424242424242424242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": null,
+      "tenant": "tenant-7"
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3700",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"data\":\"vJYRU7KVun856k5vayk3P/X0KbrZD0R1XSNVIX7VgxHH7Mux/r0RVg9oXxZ0LIX0ZLZst91eCMNEHDA7xH/9UDIedoBHTTTMgOn7GWY8LuiuT69li4jI6Q==\"}}}",
+    "encryption": {
+      "cipher": "aes-256-gcm",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "subject_aes-256-gcm",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": "customer-42",
+      "tenant": null
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000004400000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750001000000000000000b637573746f6d65722d3432000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": null
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750001000000000000000b637573746f6d65722d3432",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"data\":\"/3MCAk9HaFb2hb7HqHNSnIsySAxdgFHQzlmxaaTnN3amYUoZ6fpSsSnVJ8/20ukE91zj3HDIkEgtJNUGIZj1givXa39kyLrhxE8mKbBsGEvhKtAOCAWTaQ==\"}}}",
+    "encryption": {
+      "cipher": "xchacha20-poly1305",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "subject_xchacha20-poly1305",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": "customer-42",
+      "tenant": null
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":null,\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000004400000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750001000000000000000b637573746f6d65722d3432000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c79313330350000000000000018242424242424242424242424242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": null
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d65750001000000000000000b637573746f6d65722d3432",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"data\":\"vJYRU7KVun856k5vayk3P/X0KbrZD0R1XSNVIX7VgxHH7Mux/r0RVg9oXxZ0LIX0ZLZst91eCMNEHDA7xH/9UDIedoBHTTTMHB/X+B1qqkwbN8v49lJfcg==\"}}}",
+    "encryption": {
+      "cipher": "aes-256-gcm",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "tenant_subject_aes-256-gcm",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000005400000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3701000000000000000b637573746f6d65722d3432000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3701000000000000000b637573746f6d65722d3432",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "command_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65227d",
+    "command_name": "UpdateAddress",
+    "command_version": 1,
+    "data_key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
+    "done_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"done\",\"result\":{\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"data\":\"/3MCAk9HaFb2hb7HqHNSnIsySAxdgFHQzlmxaaTnN3amYUoZ6fpSsSnVJ8/20ukE91zj3HDIkEgtJNUGIZj1givXa39kyLrhTQdnXwa7wVajr2S9zbBEyA==\"}}}",
+    "encryption": {
+      "cipher": "xchacha20-poly1305",
+      "format_version": 1,
+      "key_id": "data-key-1",
+      "key_namespace": "production-eu",
+      "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+    },
+    "failed_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"failed\",\"code\":\"rejected\"}}",
+    "fingerprint_hex": "2e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e64",
+    "fingerprint_json": "{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]}",
+    "fingerprint_key_hex": "3131313131313131313131313131313131313131313131313131313131313131",
+    "fingerprint_key_id": "fingerprint-1",
+    "kind": "record",
+    "name": "tenant_subject_xchacha20-poly1305",
+    "other_scope": {
+      "key_namespace": "production-us",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "other_scope_error": "codec: protected claim identity does not match",
+    "owner": "claim-owner-1",
+    "pending_record": "{\"format_version\":1,\"scope\":{\"key_namespace\":\"production-eu\",\"tenant\":\"tenant-7\",\"subject\":\"customer-42\"},\"claim_id\":\"edax:cmd:9:addresses:request-17\",\"owner\":\"claim-owner-1\",\"fingerprint\":{\"algorithm\":\"hmac-sha256\",\"key_id\":\"fingerprint-1\",\"value\":[46,5,42,30,16,91,84,126,154,82,73,50,189,193,191,214,26,129,192,211,104,73,192,197,138,151,159,92,166,165,126,100]},\"state\":{\"kind\":\"pending\"}}",
+    "result_aad_hex": "000000010000000000000015656461782e6c65646765722d726573756c742e763100000001000000000000005400000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3701000000000000000b637573746f6d65722d3432000000000000001f656461783a636d643a393a6164647265737365733a726571756573742d3137000000000000000d636c61696d2d6f776e65722d310000000000000004646f6e65000000000000000b686d61632d736861323536000000000000000d66696e6765727072696e742d3100000000000000202e052a1e105b547e9a524932bdc1bfd61a81c0d36849c0c58a979f5ca6a57e6400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c79313330350000000000000018242424242424242424242424242424242424242424242424",
+    "result_hex": "7b22637573746f6d65725f6964223a22637573746f6d65722d3432222c2261646472657373223a223137204578616d706c65204c616e65222c2275706461746564223a747275657d",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "scope_hex": "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d657501000000000000000874656e616e742d3701000000000000000b637573746f6d65722d3432",
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "error": "codec: invalid protected idempotency record",
+    "kind": "legacy",
+    "name": "pending",
+    "record": "{\"payload_hash\":42,\"result\":null,\"error\":null,\"error_code\":null,\"pending\":true}",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "error": "codec: invalid protected idempotency record",
+    "kind": "legacy",
+    "name": "done",
+    "record": "{\"payload_hash\":42,\"result\":{\"customer_id\":\"customer-42\",\"updated\":true},\"error\":null,\"error_code\":null,\"pending\":false}",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  },
+  {
+    "claim_key": "edax:cmd:9:addresses:request-17",
+    "error": "codec: invalid protected idempotency record",
+    "kind": "legacy",
+    "name": "failed",
+    "record": "{\"payload_hash\":42,\"result\":null,\"error\":\"address refused\",\"error_code\":\"rejected\",\"pending\":false}",
+    "scope": {
+      "key_namespace": "production-eu",
+      "subject": "customer-42",
+      "tenant": "tenant-7"
+    },
+    "storage_key": "edax:cmd:9:addresses:request-17"
+  }
+]

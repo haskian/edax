@@ -8,6 +8,7 @@ description = "Postgres store kernel of edax: schema, statements, row layout, qu
 
 [dependencies]
 edax-core.workspace = true
+edax-seal.workspace = true
 edax-event.workspace = true
 edax-cqrs.workspace = true
 serde.workspace = true

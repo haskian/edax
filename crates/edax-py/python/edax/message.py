@@ -10,6 +10,7 @@ from ._values import give_value_semantics
 
 __all__ = [
     "CommandMessage",
+    "EncryptionInfo",
     "EventDraft",
     "EventMessage",
     "Lineage",
@@ -23,6 +24,8 @@ __all__ = [
 
 # The native binding classes are the models: a message crosses the binding as itself, with no parallel
 # dataclass or field-by-field marshaling. Field types live in `_native.pyi`.
+EncryptionInfo = _native.EncryptionInfo
+
 #: A codec's output: an event's or a command's name, schema version and payload bytes. An aggregate holds its
 #: pending events in this shape, and a saga hands the commands it sends over in it.
 Payload = _native.Payload
@@ -65,6 +68,7 @@ class Marshaled(Protocol):
 # are heap types, so the SDK gives them value semantics here, once, at import: equality and hashing by
 # value, a repr naming the fields, the public module, sorted dictionaries (the kernel's own order on the
 # wire), and copy/pickle reducers. The classes still cannot be subclassed; compose instead.
+give_value_semantics(_native.EncryptionInfo)
 give_value_semantics(_native.Payload)
 give_value_semantics(_native.Lineage)
 give_value_semantics(_native.EventDraft)

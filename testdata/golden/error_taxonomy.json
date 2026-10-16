@@ -68,5 +68,40 @@
     "message": "insufficient funds: balance 300, withdrawal 500",
     "terminal": true,
     "wire": "rejected: insufficient funds: balance 300, withdrawal 500"
+  },
+  {
+    "code": "shredded",
+    "fatal": false,
+    "message": "scope destroyed",
+    "terminal": true,
+    "wire": "shredded: scope destroyed"
+  },
+  {
+    "code": "key_unavailable",
+    "fatal": false,
+    "message": "provider unavailable",
+    "terminal": false,
+    "wire": "key_unavailable: provider unavailable"
+  },
+  {
+    "code": "key_revoking",
+    "fatal": false,
+    "message": "scope revoking",
+    "terminal": false,
+    "wire": "key_revoking: scope revoking"
+  },
+  {
+    "code": "key_missing",
+    "fatal": true,
+    "message": "generation missing",
+    "terminal": true,
+    "wire": "key_missing: generation missing"
+  },
+  {
+    "code": "key_unauthorized",
+    "fatal": true,
+    "message": "access denied",
+    "terminal": true,
+    "wire": "key_unauthorized: access denied"
   }
 ]

@@ -7,6 +7,7 @@ repository.workspace = true
 description = "In-memory stores and broker for the edax seams, shared by both SDKs"
 
 [dependencies]
+edax-seal.workspace = true
 edax-core = { workspace = true }
 edax-cqrs = { workspace = true }
 edax-event = { workspace = true }

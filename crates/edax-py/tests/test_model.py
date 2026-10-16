@@ -434,7 +434,7 @@ def decide(prior: Record | None, op: Dispatch, hash_: int) -> Expectation:
         # Free key: this dispatch wins the claim and runs the handler exactly once.
         value = op.payload + 10 * op.kind
         done: Record = (hash_, ("done", value))
-        failed: Record = (hash_, ("failed", "terminal"))
+        failed: Record = (hash_, ("failed", ""))
         if op.lost == 2:
             # The outcome write lands, then loses its response, and the middleware answers with a
             # release. A released claim is gone either way. A `complete` that landed stays: the release
@@ -471,7 +471,7 @@ def decide(prior: Record | None, op: Dispatch, hash_: int) -> Expectation:
     if slot[0] == "done":
         return Expectation(value=slot[1])
     # The cached failure replays as a terminal error, so a dispatcher dead-letters it.
-    return Expectation(raises=C.CachedFailure, match=slot[1])
+    return Expectation(raises=C.CachedFailure, match=slot[1] or "^codec: $")
 
 
 class BusReplay:

@@ -72,6 +72,12 @@ fn refuse_known_ids(
 /// A stored aggregate snapshot: the host-marshaled state plus its type and version.
 #[derive(Clone)]
 pub struct Snapshot {
+    /// Persisted tenant and immutable erasure owner.
+    pub tenant: Option<String>,
+    /// Immutable erasure owner.
+    pub subject: Option<String>,
+    /// The state encryption format and data-key generation.
+    pub encryption: Option<edax_seal::EncryptionInfo>,
     /// The aggregate type the host's codec names, so a load ignores another type's snapshot.
     pub type_name: String,
     /// The aggregate version the snapshot was taken at.
@@ -208,11 +214,28 @@ impl MemoryEventStore {
         version: u64,
         data: Vec<u8>,
     ) -> Result<(), Error> {
-        let snapshot = Snapshot {
-            type_name: type_name.to_owned(),
-            version,
-            data,
-        };
+        self.save_snapshot_record(
+            tx,
+            aggregate_id,
+            Snapshot {
+                type_name: type_name.to_owned(),
+                version,
+                data,
+                tenant: None,
+                subject: None,
+                encryption: None,
+            },
+        )
+    }
+
+    /// Preserve the protected snapshot envelope without opening its state.
+    pub fn save_snapshot_record(&self, tx: Tx, aggregate_id: &str, snapshot: Snapshot) -> Result<(), Error> {
+        edax_event::sealing::check_protection(
+            snapshot.subject.as_deref(),
+            snapshot.encryption.as_ref(),
+            &snapshot.data,
+        )?;
+        let version = snapshot.version;
         lock(&self.state).write(tx, |committed, _, own| {
             let stream = own
                 .stream_version(aggregate_id)

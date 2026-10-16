@@ -144,7 +144,7 @@ stateDiagram-v2
     delivered --> handled : the handler returned
     delivered --> failed_transient : transient failure
     delivered --> failed_terminal : terminal failure
-    delivered --> contended : InProgress, another worker holds the claim
+    delivered --> contended : InProgress, KeyUnavailable, KeyRevoking
     contended --> delivered : nack after one backoff step, budget untouched
     failed_transient --> delivered : nack, attempt count plus one
     failed_transient --> dead_letter : attempt count reached max_attempts
@@ -153,7 +153,8 @@ stateDiagram-v2
     dead_letter --> [*] : on_dead ran, then ack
 ```
 
-`InProgress` is exempt from the attempt budget. See
+`InProgress`, `KeyUnavailable`, and `KeyRevoking` are exempt from the attempt budget. Revocation
+awaiting destruction can block ordered delivery indefinitely. See
 [consuming](../sdk/consuming.md#inprogress-is-contention-not-a-failed-attempt).
 
 Without `on_dead` there is no `dead_letter` state at all. A failing delivery nacks forever, which

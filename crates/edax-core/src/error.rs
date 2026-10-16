@@ -124,6 +124,16 @@ error_codes! {
     /// A host's own business rejection ("insufficient funds"), marked terminal by the host. The same
     /// command is rejected the same way on every retry, so the guard caches it.
     Rejected = "rejected" => terminal,
+    /// The trusted key provider confirms permanent destruction of this scope.
+    Shredded = "shredded" => terminal,
+    /// Provider I/O is unavailable; defer without charging poison-message attempts.
+    KeyUnavailable = "key_unavailable" => transient,
+    /// Permanent revocation is installed and destruction is still in progress.
+    KeyRevoking = "key_revoking" => transient,
+    /// An expected generation does not exist; absence is not evidence of erasure.
+    KeyMissing = "key_missing" => fatal,
+    /// Provider access or configuration does not authorize the requested scope.
+    KeyUnauthorized = "key_unauthorized" => fatal,
 }
 
 impl ErrorCode {

@@ -7,6 +7,9 @@ import (
 )
 
 type Snapshot struct {
+	Tenant      *string
+	Subject     *string
+	Encryption  *EncryptionInfo
 	AggregateID string
 	TypeName    string
 	Version     uint64
