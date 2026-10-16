@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.12.0](https://github.com/haskian/edax/compare/b0710b6d981d362cc35de70d05762830d70f9a0e..v0.12.0) - 2026-10-16
+#### Features
+- (**edax-py**) fence sealed writes inside the write's own transaction (#27) - ([b0710b6](https://github.com/haskian/edax/commit/b0710b6d981d362cc35de70d05762830d70f9a0e)) - Črtomir Majer
+
+- - -
+
 ## [v0.11.0](https://github.com/haskian/edax/compare/413361ef4337fa865a56d6a86733c03cd935fd83..v0.11.0) - 2026-10-16
 #### Features
 - add scoped payload encryption and tracked erasure (#26) - ([413361e](https://github.com/haskian/edax/commit/413361ef4337fa865a56d6a86733c03cd935fd83)) - Črtomir Majer

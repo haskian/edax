@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "edax"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax",
  "edax-core",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "edax-abi"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "edax-abi-ffi"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ahash",
  "cbindgen",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "edax-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-golden",
  "proptest",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "edax-cqrs"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "bigdecimal",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "edax-event"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "edax-core",
@@ -426,14 +426,14 @@ dependencies = [
 
 [[package]]
 name = "edax-golden"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "edax-kafka"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-core",
  "edax-event",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "edax-memory"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "edax-postgres"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "edax-py"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-abi",
  "pyo3",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "edax-redis"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "edax-core",
  "edax-cqrs",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "edax-seal"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "aes-gcm",
  "base64",
