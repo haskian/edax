@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Literal, Protocol, TypeVar, get_args
 
 from .. import _json, _names, _native, errors
 from .._deadline import within
-from .._units import enlisted
+from .._units import enlisted, own_transaction
 from .._wiring import wiring_int, wiring_str
 from ..errors import BadHandle, CodecError, EdaxError, StoreError
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
@@ -74,6 +74,8 @@ _Op = Literal[
     "saga_write",
 ]
 _names.check(get_args(_Op), _native.postgres_ops(), "postgres operations")
+#: The operations that only read: a short transaction of their own takes no pending write fence.
+_READS: frozenset[_Op] = frozenset({"check", "load", "projection_read", "saga_load"})
 
 #: The failures a client reports without a SQLSTATE: the kernel's, checked at import.
 _ClientFailure = Literal["encode", "other"]
@@ -346,18 +348,25 @@ class PostgresTransactor:
             )
         return handle
 
-    async def run(self, op: _Op, tx: Tx | None, call: Callable[[PgConnection], Awaitable[T]]) -> T:
+    async def run(
+        self, op: _Op, tx: Tx | None, call: Callable[[PgConnection], Awaitable[T]], *, fenced: bool = True
+    ) -> T:
         """Run ``call`` on the connection of ``tx`` (or the ambient unit of work), else in a short transaction
-        of its own, so a call that reads then writes holds its row lock for both. Store-internal."""
+        of its own, so a call that reads then writes holds its row lock for both. ``fenced=False``: the call
+        writes no payload (it removes rows), so no erasure must wait for it. Store-internal."""
         handle = self._handle(tx)
         if handle is None:
-            return await self._alone(op, call)
+            return await self._alone(op, call, fenced=fenced)
         await self._ensure()
         return await self._call(op, handle, lambda: call(handle.connection))
 
-    async def _alone(self, op: _Op, call: Callable[[PgConnection], Awaitable[T]]) -> T:
-        """Run ``call`` in a transaction of its own on a pooled connection, outside any unit of work."""
-        async with self.begin() as tx:
+    async def _alone(
+        self, op: _Op, call: Callable[[PgConnection], Awaitable[T]], *, fenced: bool = True
+    ) -> T:
+        """Run ``call`` in a transaction of its own on a pooled connection, outside any unit of work. A write
+        takes this task's pending write fences inside it, as a unit of work does."""
+        opened = own_transaction(self) if fenced and op not in _READS else self.begin()
+        async with opened as tx:
             return await self._call(op, tx, lambda: call(tx.connection))
 
     async def _call(self, op: _Op, tx: PostgresTx, call: Callable[[], Awaitable[T]]) -> T:
@@ -473,9 +482,10 @@ class _OutboxReads(_StoreView):
             transactor.use(("relay_leases",))
 
     async def _rows(self, call: _native.PostgresCall) -> list[Any]:
-        """The rows the kernel's ``call`` returns, run in a transaction of its own."""
+        """The rows the kernel's ``call`` returns, run in a transaction of its own. The relay's reads and
+        publication marks hold no payload, so they take no write fence."""
         sql, params = self._sql(call.statement), postgres_params(call.params_json)
-        return await self._transactor._alone("outbox", lambda conn: conn.fetch(sql, *params))
+        return await self._transactor._alone("outbox", lambda conn: conn.fetch(sql, *params), fenced=False)
 
     async def _unpublished(self, saga: str | None, limit: int) -> list[str]:
         lease = self._lease
@@ -708,7 +718,7 @@ class PostgresIdempotencyStore(_StoreView):
             if _native.postgres_release_write(await self._hold(conn, key_params), handle):
                 await conn.execute(self._sql("ledger_delete"), *key_params)
 
-        await self._transactor.run("settle", tx, release)
+        await self._transactor.run("settle", tx, release, fenced=False)
 
     async def forget(self, key: str, tx: Tx | None = None) -> None:
         key_params = postgres_params(_native.postgres_ledger_key_params(key))
@@ -718,7 +728,7 @@ class PostgresIdempotencyStore(_StoreView):
             if _native.postgres_forget_write(key, await self._hold(conn, key_params)):
                 await conn.execute(self._sql("ledger_delete"), *key_params)
 
-        await self._transactor.run("settle", tx, forget)
+        await self._transactor.run("settle", tx, forget, fenced=False)
 
 
 class PostgresSagaStore(_OutboxReads):

@@ -114,6 +114,7 @@ class EventRouter:
                 )
             except Shredded:
                 return
+            await resources.enter_async_context(self._sealing.skip_destroyed(msg.tenant, msg.subject))
             with authenticated_event(self._sealing, msg, opened.data), caused_by(msg):
                 if handler is not None:
                     await handler(msg)

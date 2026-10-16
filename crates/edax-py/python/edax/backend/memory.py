@@ -14,13 +14,13 @@ import asyncio
 import logging
 import weakref
 from collections.abc import AsyncIterator, Callable, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Protocol, TypeVar, cast
 
 from .. import _json, _native
 from .._owned import ThreadBound
-from .._units import enlisted
+from .._units import enlisted, own_write
 from .._wiring import wiring_str
 from ..broker import consume
 from ..delivery import Delivery
@@ -137,6 +137,15 @@ class _StoreView:
         """The native token a call under ``tx`` runs with: see :meth:`MemoryTransactor.token`."""
         return self._transactor.token(tx)
 
+    @asynccontextmanager
+    async def _writing(self, tx: Tx | None) -> AsyncIterator[int]:
+        """The token a write under ``tx`` runs with. A write that lands on its own, in no unit of work,
+        holds this task's pending write fences through it (:func:`~edax._units.own_write`). A delete takes
+        none: removing a row never brings erased data back."""
+        token = self._token(tx)
+        async with own_write() if token == _NO_TX else nullcontext():
+            yield token
+
 
 class _NativeOutbox(Protocol[R]):
     """The outbox read side a native seam has: the event store's, and the command outbox's."""
@@ -200,25 +209,27 @@ class MemoryEventStore(_OutboxView[EventMessage]):
         )
 
     async def save_snapshot(self, tx: Tx, snapshot: Snapshot) -> None:
-        self._seam().save_snapshot_record(
-            self._token(tx),
-            snapshot.aggregate_id,
-            _native.SnapshotResult(
-                type_name=snapshot.type_name,
-                version=snapshot.version,
-                data=snapshot.data,
-                tenant=snapshot.tenant,
-                subject=snapshot.subject,
-                encryption=snapshot.encryption,
-            ),
-        )
+        async with self._writing(tx) as token:
+            self._seam().save_snapshot_record(
+                token,
+                snapshot.aggregate_id,
+                _native.SnapshotResult(
+                    type_name=snapshot.type_name,
+                    version=snapshot.version,
+                    data=snapshot.data,
+                    tenant=snapshot.tenant,
+                    subject=snapshot.subject,
+                    encryption=snapshot.encryption,
+                ),
+            )
 
     async def append(
         self, tx: Tx, aggregate_id: str, expected_version: int, drafts: Sequence[EventDraft]
     ) -> list[EventMessage]:
         recorded_at = self._now()
         # Native `concurrency:` is ConcurrencyError, anything else StoreError.
-        return self._seam().append(self._token(tx), aggregate_id, expected_version, list(drafts), recorded_at)
+        async with self._writing(tx) as token:
+            return self._seam().append(token, aggregate_id, expected_version, list(drafts), recorded_at)
 
 
 class MemoryIdempotencyStore(_StoreView):
@@ -242,12 +253,14 @@ class MemoryIdempotencyStore(_StoreView):
         return _native.handle(self._db().idempotency_store())
 
     async def claim(self, key: str, payload_hash: int, tx: Tx | None = None) -> Claimed:
-        claimed = self._seam().claim(self._token(tx), key, payload_hash)
+        async with self._writing(tx) as token:
+            claimed = self._seam().claim(token, key, payload_hash)
         return decode_claim(claimed, payload_hash)
 
     async def complete(self, key: str, handle: bytes, record: Record, tx: Tx | None = None) -> None:
         # A handle that names no claim on `key` any more: the fence's StoreError.
-        self._seam().complete(self._token(tx), key, handle, encode_record(record))
+        async with self._writing(tx) as token:
+            self._seam().complete(token, key, handle, encode_record(record))
 
     async def release(self, key: str, handle: bytes, tx: Tx | None = None) -> None:
         self._seam().release(self._token(tx), key, handle)
@@ -335,9 +348,10 @@ class MemoryProjectionStore(_StoreView):
 
     async def save(self, entity: Entity, tx: Tx | None = None) -> int:
         # Native `concurrency:` is ConcurrencyError, anything else StoreError.
-        return self._seam().save(
-            self._token(tx), self._projection, entity.id, entity.version, _json.encode(entity.document)
-        )
+        async with self._writing(tx) as token:
+            return self._seam().save(
+                token, self._projection, entity.id, entity.version, _json.encode(entity.document)
+            )
 
     async def get_many(self, query: Query = Query(), *, tx: Tx | None = None) -> Page:
         # A malformed spec/cursor is tagged `codec:`: terminal.
@@ -386,12 +400,14 @@ class MemorySagaStore(_StoreView):
             if isinstance(state, ProtectedSagaState)
             else _json.encode(state)
         )
-        return self._seam().save(self._token(tx), saga, id, version, encoded, folded, list(commands))
+        async with self._writing(tx) as token:
+            return self._seam().save(token, saga, id, version, encoded, folded, list(commands))
 
     async def complete(
         self, saga: str, id: str, version: int, commands: Sequence[CommandMessage], tx: Tx | None = None
     ) -> int:
-        return self._seam().complete(self._token(tx), saga, id, version, list(commands))
+        async with self._writing(tx) as token:
+            return self._seam().complete(token, saga, id, version, list(commands))
 
     async def unpublished(self, saga: str, limit: int) -> list[CommandMessage]:
         # A negative limit cannot cross the unsigned boundary: CodecError.
@@ -417,7 +433,8 @@ class MemoryCommandOutbox(_OutboxView[CommandMessage]):
         return _native.handle(self._db().command_outbox())
 
     async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
-        self._seam().enqueue(self._token(tx), list(commands))
+        async with self._writing(tx) as token:
+            self._seam().enqueue(token, list(commands))
 
 
 class _Log:

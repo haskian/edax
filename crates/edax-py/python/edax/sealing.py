@@ -8,11 +8,12 @@ and tombstones on restart. Neither adapter nor :class:`Sealing` caches key mater
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Literal, Protocol, cast, get_args
+from types import TracebackType
+from typing import Any, Literal, Protocol, cast, get_args, runtime_checkable
 
 from . import _names, _native
 from ._owned import ThreadBound
@@ -31,10 +32,15 @@ __all__ = [
     "Opened",
     "SealedValue",
     "Sealing",
+    "TransactionFence",
+    "WriteFence",
 ]
 
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
+#: How :meth:`Sealing.write_guard` fences a write: ``"guard"`` holds the provider's ``guard`` from before
+#: the transaction through its commit; ``"transaction"`` fences inside each transaction that opens.
+WriteFence = Literal["guard", "transaction"]
 EncryptionInfo = _native.EncryptionInfo
 KeyScope = _native.KeyScope
 SealedValue = _native.SealedValue
@@ -81,6 +87,30 @@ class KeyProvider(Protocol):
         ...
 
 
+@runtime_checkable
+class TransactionFence(KeyProvider, Protocol):
+    """A provider that fences writes inside the transaction that makes them, for
+    ``Sealing(write_fence="transaction")``.
+
+    ``transactor`` names the database where ``revoke`` drains writers: edax fences inside a transaction
+    only when its transactor's :func:`~edax.unit_of_work.database_of` is this one's, and holds ``guard``
+    around transactions on any other database.
+    """
+
+    transactor: object
+
+    async def fence(self, tx: Any, scopes: Sequence[KeyScope]) -> None:
+        """Admit writes to ``scopes`` inside ``tx``, a READ COMMITTED transaction of ``transactor``, until it
+        commits or rolls back. Raise :class:`~edax.errors.KeyRevoking` or :class:`~edax.errors.Shredded` for
+        a fenced scope, as ``guard`` does. Idempotent within one transaction.
+
+        A Postgres provider takes the kernel's lock calls for all ``scopes`` at once
+        (``postgres_erasure_writer_locks``), then reads the status in a separate statement: a snapshot
+        taken before the lock wait can miss a revoke that committed during it.
+        """
+        ...
+
+
 _write_guards: ContextVar[dict[int, object] | None] = ContextVar("edax_write_guards", default=None)
 _managed_write_guards: ContextVar[bool] = ContextVar("edax_managed_write_guards", default=False)
 
@@ -103,6 +133,7 @@ def detach_sealing_context() -> None:
     """Background workers must not inherit an application's write admission."""
     _write_guards.set(None)
     _managed_write_guards.set(False)
+    _pending_fences.set(())
     _authenticated_event.set(None)
     _opened_event.set(None)
 
@@ -206,6 +237,35 @@ class MemoryKeys:
                 self._guard.release()
 
 
+class PendingFence(AbstractAsyncContextManager[None]):
+    """A write guard under ``write_fence="transaction"``. Entering it admits nothing: while it is entered,
+    every edax transaction that opens fences its scope (:mod:`edax._units`), so a handler that writes
+    nothing pays no fence. Enter it outside the transaction, as any write guard."""
+
+    def __init__(self, keys: TransactionFence, scope: KeyScope) -> None:
+        self.keys = keys
+        self.scope = scope
+
+    async def __aenter__(self) -> None:
+        pending = _pending_fences.get()
+        # An equal fence already pending covers this one: guards nest, so it outlives this block.
+        if not any(other.keys is self.keys and other.scope == self.scope for other in pending):
+            _pending_fences.set((*pending, self))
+
+    async def __aexit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> None:
+        _pending_fences.set(tuple(pending for pending in _pending_fences.get() if pending is not self))
+
+
+_pending_fences: ContextVar[tuple[PendingFence, ...]] = ContextVar("edax_pending_fences", default=())
+
+
+def pending_fences() -> tuple[PendingFence, ...]:
+    """The fences a transaction opening now in this task must take."""
+    return _pending_fences.get()
+
+
 @dataclass(frozen=True, slots=True)
 class Opened:
     """Authenticated bytes returned by the consumer opening stage, before handler execution."""
@@ -220,6 +280,11 @@ class Sealing:
     returned sealed envelopes across ambiguous storage retries instead of sealing the same ID again.
     A destroyed scope raises on direct reads. Only the consumer-specific methods return ``None`` for
     provider-confirmed destruction; exceptions from handlers never pass through those methods.
+
+    ``write_fence="transaction"`` needs a :class:`TransactionFence` provider. It fences only writes made
+    in edax transactions: inside each one on the provider's database, with ``guard`` around each one on
+    another. Writes through connections edax does not manage, and side effects outside storage, are not
+    fenced; each such destination needs its own write fence before its cleanup acknowledges.
     """
 
     def __init__(
@@ -229,7 +294,13 @@ class Sealing:
         *,
         cipher: Cipher | None = None,
         allow_plaintext: bool = False,
+        write_fence: WriteFence = "guard",
     ) -> None:
+        if write_fence not in get_args(WriteFence):
+            raise BadHandle(f"unknown write fence {write_fence!r}: use one of {get_args(WriteFence)}")
+        if write_fence == "transaction" and not isinstance(keys, TransactionFence):
+            raise BadHandle("write_fence='transaction' needs a provider with transactor and fence()")
+        self._fencing = cast(TransactionFence, keys) if write_fence == "transaction" else None
         self.keys = keys
         self.key_namespace = key_namespace
         selected = _native.default_cipher() if cipher is None else cipher
@@ -245,8 +316,32 @@ class Sealing:
         return scope
 
     def write_guard(self, tenant: str | None, subject: str | None) -> AbstractAsyncContextManager[None]:
-        """Hold the provider's storage fence outside the transaction context, through commit."""
-        return self.keys.guard(self.scope(tenant, subject))
+        """Hold the provider's storage fence outside the transaction context, through commit; under
+        ``write_fence="transaction"``, fence each transaction that opens while it is entered."""
+        scope = self.scope(tenant, subject)
+        if self._fencing is not None:
+            return PendingFence(self._fencing, scope)
+        return self.keys.guard(scope)
+
+    @property
+    def write_fence(self) -> WriteFence:
+        return "guard" if self._fencing is None else "transaction"
+
+    def skip_destroyed(self, tenant: str | None, subject: str | None) -> AbstractAsyncContextManager[None]:
+        """A consumer's handler boundary. Under ``write_fence="transaction"`` a fence refuses inside the
+        handler, so its :class:`~edax.errors.Shredded` is swallowed when the provider confirms the scope
+        destroyed: the provider is trusted, the exception is not, since a handler may raise it for another
+        scope. In the default mode the guard admitted the scope before the handler ran, so a handler's
+        ``Shredded`` always propagates."""
+        return nullcontext() if self._fencing is None else self._skip_destroyed(self.scope(tenant, subject))
+
+    @asynccontextmanager
+    async def _skip_destroyed(self, scope: KeyScope) -> AsyncIterator[None]:
+        try:
+            yield
+        except Shredded:
+            if not _native.erasure_provider_confirmed("destroy", await self.keys.status(scope)):
+                raise
 
     async def check_active(self, tenant: str | None, subject: str | None) -> None:
         """Check revocation before returning a cached result or other previously decoded data."""

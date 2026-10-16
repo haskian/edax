@@ -178,7 +178,8 @@ Direct reads and direct command execution raise `Shredded` after confirmed destr
 trusted delivery opener converts provider-confirmed destruction into a consumed skip. Python's
 `CommandBus.deliver_message` and Go's `Deliver` use that path; Python `dispatch_message` and Go
 `Execute` remain direct execution. A `Shredded` raised by application handler code is not mistaken
-for a successful opening skip.
+for a successful opening skip. Python's `write_fence="transaction"` is the one exception, described
+under "Fence writes through commit".
 
 In Rust, use `CommandBus::deliver` for consumer delivery and `dispatch_message` for direct calls.
 `SagaRunner::command_delivery` likewise returns `None` only for a trusted destroyed-scope decision.
@@ -268,6 +269,21 @@ transaction commit or rollback. SDK-managed transaction resources retain the gua
 boundary. The memory implementation serializes only participating writers in one process.
 It is not a distributed transaction fence. A production implementation must coordinate with the
 actual destination transaction, not merely lock a remote key-service request.
+
+Python's `Sealing(..., write_fence="transaction")` moves the fence inside the transaction that
+writes. It needs a provider with `transactor` and `fence(tx, scopes)`, the `TransactionFence`
+protocol. A write guard then admits nothing on its own. Each edax transaction that opens while it is
+entered fences the scope. On the provider's database the lock goes inside the transaction. A
+transaction on another database, or one another task opened, holds `guard` through its commit. An edax store writing outside any unit
+of work fences its own short transaction the same way. A Redis or memory store, which has no
+transaction to fence, holds `guard` through the write. Deletes take no fence: removing a row never
+brings erased data back. The lock shares the write's connection, so a dropped connection takes the
+write with it. A handler that writes nothing pays no fence. Writes through connections edax does
+not manage, and side effects outside storage, are not fenced in this mode. When a fence refuses
+inside a handler, a consumer skips the message only if the provider confirms the scope destroyed. A Postgres `fence`
+takes the kernel's locks for all its scopes in one call and reads the status in a separate statement.
+`PostgresErasureStore.guard_in_transaction` does both against the edax erasure tables. It refuses a
+tombstoned scope with `Rejected`, so a provider maps that refusal to its own key status.
 
 Python's reference guard permits nesting within an admitted operation. Structured child tasks in
 one managed transaction share its guard lifetime; independent operations wait. Revoking or destroying

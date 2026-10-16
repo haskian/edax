@@ -183,21 +183,26 @@ class PostgresErasureStore:
                 )
             )
 
-    async def guard_in_transaction(self, connection: PgErasureConnection, scope: KeyScope) -> None:
-        """Fence writes on this connection through its existing transaction's commit.
+    async def guard_in_transaction(self, connection: PgErasureConnection, *scopes: KeyScope) -> None:
+        """Fence writes to ``scopes`` on this connection through its existing transaction's commit.
 
-        Call before reading sensitive state or taking application row locks. The kernel refuses
-        isolation modes whose snapshot could miss revocation after a lock wait. Autocommit is refused.
+        Call before reading sensitive state or taking application row locks. Pass every scope the
+        transaction writes in one call: the kernel then takes their locks in one order for every writer.
+        The kernel refuses isolation modes whose snapshot could miss revocation after a lock wait.
+        Autocommit is refused.
         """
+        if not scopes:
+            raise BadHandle("an erasure write guard requires a scope")
         if not connection.is_in_transaction():
             raise BadHandle("an erasure write guard requires an open transaction")
-        await self._locks(connection, _native.postgres_erasure_writer_locks(scope))
-        row = await self._await(
-            connection.fetchval(
-                self._sql["check_revoked"], *postgres_params(_native.postgres_erasure_guard_params(scope))
+        await self._locks(connection, _native.postgres_erasure_writer_locks(list(scopes)))
+        for scope in scopes:
+            row = await self._await(
+                connection.fetchval(
+                    self._sql["check_revoked"], *postgres_params(_native.postgres_erasure_guard_params(scope))
+                )
             )
-        )
-        _native.postgres_erasure_check_guard(cast(str, row))
+            _native.postgres_erasure_check_guard(cast(str, row))
 
     @asynccontextmanager
     async def writer_guard(self, scope: KeyScope) -> AsyncIterator[PgErasureConnection]:

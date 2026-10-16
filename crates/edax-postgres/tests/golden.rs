@@ -344,6 +344,40 @@ fn chosen(answer: Result<Call, edax_core::Error>) -> Result<Value, edax_core::Er
     answer.map(|call| json!({"statement": call.statement, "params": call.params}))
 }
 
+/// The writer fence's lock order: every SDK fencing the same scopes in one transaction takes the same
+/// advisory locks in the same order, whatever order and repeats its caller passed.
+fn erasure_lock_cases() -> Vec<Value> {
+    let scope = |tenant: &str, subject: Option<&str>| edax_seal::KeyScope {
+        key_namespace: "production-eu".into(),
+        tenant: Some(tenant.into()),
+        subject: subject.map(str::to_owned),
+    };
+    let case = |name: &str, scopes: &[edax_seal::KeyScope]| {
+        let answer = edax_postgres::erasure::writer_locks(scopes);
+        let error = refusal(&answer);
+        json!({"name": name, "kind": "erasure_writer_locks", "scopes": scopes, "want": answer.ok(), "error": error})
+    };
+    let one = [scope("clinic-7", Some("patient-42"))];
+    let several = [
+        scope("clinic-8", Some("patient-c")),
+        scope("clinic-7", Some("patient-b")),
+        scope("clinic-7", None),
+        scope("clinic-7", Some("patient-a")),
+        scope("clinic-7", Some("patient-b")),
+    ];
+    let mut bad = scope("clinic-7", Some("patient-42"));
+    bad.key_namespace = String::new();
+    [
+        ("erasure_writer_locks_one_subject", &one[..]),
+        ("erasure_writer_locks_several_scopes", &several[..]),
+        ("erasure_writer_locks_none", &[][..]),
+        ("erasure_writer_locks_refuses_a_bad_scope", std::slice::from_ref(&bad)),
+    ]
+    .into_iter()
+    .map(|(name, scopes)| case(name, scopes))
+    .collect()
+}
+
 fn sealed_row_cases() -> Vec<Value> {
     const KEY: [u8; 32] = [0x47; 32];
     const STREAM: &str = "acme:invoice-7";
@@ -667,6 +701,7 @@ fn golden_rows() {
             params(ledger::key_params("o\0")),
         ),
     ]);
+    cases.extend(erasure_lock_cases());
     cases.extend(sealed_row_cases());
     write_or_check("postgres_rows.json", cases);
 }

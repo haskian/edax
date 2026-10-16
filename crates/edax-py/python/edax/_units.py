@@ -4,16 +4,25 @@ open, enlisting a store's call in one, and leaving every one when a task starts.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
-from collections.abc import AsyncIterator, Mapping
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager, nullcontext
+from dataclasses import dataclass, field
 from time import perf_counter_ns
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import BadHandle
 from .observe import Observer, TransactionOutcome
-from .sealing import detach_sealing_context, sealing_context
+from .sealing import (
+    KeyScope,
+    PendingFence,
+    TransactionFence,
+    detach_sealing_context,
+    pending_fences,
+    sealing_context,
+)
 
 if TYPE_CHECKING:
     from .unit_of_work import Transactor, TxT
@@ -30,28 +39,135 @@ AMBIENT: contextvars.ContextVar[Mapping[int, Any]] = contextvars.ContextVar(
 )
 
 
-# Resources registered here outlive every participant and are released only after commit/rollback.
-RESOURCES: contextvars.ContextVar[Mapping[int, AsyncExitStack]] = contextvars.ContextVar(
+@dataclass(eq=False)
+class _Unit:
+    """One open unit of work. ``resources`` outlive every participant and are released only after
+    commit/rollback; ``task`` opened it; ``fenced`` holds the (provider, scope) pairs admitted."""
+
+    resources: AsyncExitStack
+    task: asyncio.Task[Any] | None
+    fenced: set[tuple[int, KeyScope]] = field(default_factory=set)
+
+
+# The open units of work in this task, keyed by database as AMBIENT is.
+RESOURCES: contextvars.ContextVar[Mapping[int, _Unit]] = contextvars.ContextVar(
     "edax_transaction_resources", default=MappingProxyType({})
 )
+
+
+def _fences_in(keys: TransactionFence, database: int) -> bool:
+    return id(database_of(keys.transactor)) == database
+
+
+async def _admit(database: int, unit: _Unit, pending: Sequence[PendingFence], tx: object | None) -> None:
+    """Fence ``pending`` for ``unit``: inside ``tx``, once it has begun, on the provider's database; with the
+    provider's ``guard`` on its resources on any other database, since a lock taken in one database cannot
+    hold back a commit in another. A task that did not open ``unit`` takes the guard too: a transaction's
+    connection serves the task that opened it, one call at a time. Each provider fences all its scopes in
+    one call, so it takes their locks in one order."""
+    owned = unit.task is asyncio.current_task()
+    batches: dict[int, tuple[TransactionFence, dict[KeyScope, None]]] = {}
+    for fence in pending:
+        admitted = (id(fence.keys), fence.scope)
+        if admitted in unit.fenced:
+            continue
+        if not owned or not _fences_in(fence.keys, database):
+            await unit.resources.enter_async_context(fence.keys.guard(fence.scope))
+            unit.fenced.add(admitted)
+        elif tx is not None:
+            batches.setdefault(id(fence.keys), (fence.keys, {}))[1][fence.scope] = None
+    for keys, scopes in batches.values():
+        await keys.fence(tx, list(scopes))
+        unit.fenced.update((id(keys), scope) for scope in scopes)
+
+
+@asynccontextmanager
+async def _begun(transactor: Transactor[TxT], database: int, unit: _Unit) -> AsyncIterator[TxT]:
+    """Begin ``transactor``'s transaction for ``unit`` with this task's pending fences: a guard on another
+    database is held from before ``begin``, as an eager write guard is; a fence on the provider's database
+    goes inside, before the caller's first statement."""
+    pending = pending_fences()
+    if pending:
+        await _admit(database, unit, pending, None)
+    async with transactor.begin() as tx:
+        if pending:
+            await _admit(database, unit, pending, tx)
+        yield tx
+
+
+@asynccontextmanager
+async def _fenced(fence: PendingFence) -> AsyncIterator[None]:
+    """Enter ``fence`` and fence every unit of work already open in this task now. A transaction that opens
+    while it is pending takes it as it begins: a unit of work's, or a store's own (:func:`own_transaction`,
+    :func:`own_write`)."""
+    for database, unit in RESOURCES.get().items():
+        await _admit(database, unit, [fence], AMBIENT.get().get(database))
+    async with fence:
+        yield
+
+
+@asynccontextmanager
+async def _own_transaction(transactor: Transactor[TxT]) -> AsyncIterator[TxT]:
+    async with AsyncExitStack() as resources:
+        unit = _Unit(resources, asyncio.current_task())
+        async with _begun(transactor, id(database_of(transactor)), unit) as tx:
+            yield tx
+
+
+def own_transaction(transactor: Transactor[TxT]) -> AbstractAsyncContextManager[TxT]:
+    """A store's own short transaction, outside any unit of work: it takes this task's pending fences as a
+    unit of work does, so a write a handler makes through a store alone is fenced too."""
+    return _own_transaction(transactor) if pending_fences() else transactor.begin()
+
+
+@asynccontextmanager
+async def _guards(pending: Sequence[PendingFence]) -> AsyncIterator[None]:
+    async with AsyncExitStack() as guards:
+        for fence in pending:
+            await guards.enter_async_context(fence.keys.guard(fence.scope))
+        yield
+
+
+def own_write() -> AbstractAsyncContextManager[None]:
+    """A store write that lands on its own, with no transaction to fence in: hold each pending fence's guard
+    through it."""
+    pending = pending_fences()
+    return _guards(pending) if pending else nullcontext()
+
+
+@asynccontextmanager
+async def _retained(unit: _Unit | None, guard: AbstractAsyncContextManager[None]) -> AsyncIterator[None]:
+    """Hold ``guard`` through the commit of ``unit``, else around the block; a pending fence is admitted by
+    every transaction it meets instead."""
+    if isinstance(guard, PendingFence):
+        async with _fenced(guard):
+            yield
+    elif unit is not None:
+        await unit.resources.enter_async_context(guard)
+        yield
+    else:
+        async with guard:
+            yield
 
 
 @asynccontextmanager
 async def transaction_guard(
     transactor: object, guard: AbstractAsyncContextManager[None], tx: object | None = None
 ) -> AsyncIterator[None]:
-    stack = RESOURCES.get().get(id(database_of(transactor)))
-    if stack is not None:
-        await stack.enter_async_context(guard)
+    """Hold ``guard`` around a write through ``transactor``'s stores, through the commit of the unit of work
+    that holds it."""
+    database = id(database_of(transactor))
+    unit = RESOURCES.get().get(database)
+    if unit is None and tx is not None:
+        # A borrowed transaction no unit of work holds: only a fence inside it lasts until it ends.
+        if not isinstance(guard, PendingFence) or not _fences_in(guard.keys, database):
+            raise BadHandle(
+                "protected writes with an explicit transaction require transaction() to retain the scope "
+                "fence through commit, unless the key provider fences inside that transaction"
+            )
+        await guard.keys.fence(tx, [guard.scope])
+    async with _retained(unit, guard):
         yield
-    elif tx is not None:
-        raise BadHandle(
-            "protected writes with an explicit transaction require transaction() "
-            "to retain the scope fence through commit"
-        )
-    else:
-        async with guard:
-            yield
 
 
 def database_of(transactor: object) -> object:
@@ -124,9 +240,10 @@ async def open_transaction(transactor: Transactor[TxT], observe: Observer) -> As
     try:
         async with AsyncExitStack() as resources:
             resources.enter_context(sealing_context())
-            resource_token = RESOURCES.set({**RESOURCES.get(), database: resources})
+            unit = _Unit(resources, asyncio.current_task())
+            resource_token = RESOURCES.set({**RESOURCES.get(), database: unit})
             try:
-                async with transactor.begin() as tx:
+                async with _begun(transactor, database, unit) as tx:
                     token = AMBIENT.set({**open_now, database: tx})
                     try:
                         yield tx
@@ -142,10 +259,5 @@ async def open_transaction(transactor: Transactor[TxT], observe: Observer) -> As
 @asynccontextmanager
 async def current_transaction_guard(guard: AbstractAsyncContextManager[None]) -> AsyncIterator[None]:
     """Retain a dispatch guard through the outermost managed transaction, if any."""
-    resources = RESOURCES.get()
-    if resources:
-        await next(iter(resources.values())).enter_async_context(guard)
+    async with _retained(next(iter(RESOURCES.get().values()), None), guard):
         yield
-    else:
-        async with guard:
-            yield

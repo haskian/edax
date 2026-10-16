@@ -28,7 +28,7 @@ fn operation() -> ErasureOperation {
 fn scope_locks_are_parent_first_and_erasure_conflicts_with_every_writer() {
     let subject = scope(Some("patient-42"));
     let tenant = scope(None);
-    let write = erasure::writer_locks(&subject).unwrap();
+    let write = erasure::writer_locks(std::slice::from_ref(&subject)).unwrap();
     let revoke_subject = erasure::revocation_locks(&subject).unwrap();
     let revoke_tenant = erasure::revocation_locks(&tenant).unwrap();
     assert_eq!(write.len(), 2);
@@ -42,7 +42,10 @@ fn scope_locks_are_parent_first_and_erasure_conflicts_with_every_writer() {
     assert_eq!(revoke_tenant[0].statement, "lock_exclusive");
     let mut another = subject.clone();
     another.tenant = Some("clinic-8".into());
-    assert_ne!(erasure::writer_locks(&another).unwrap()[0].params, write[0].params);
+    assert_ne!(
+        erasure::writer_locks(std::slice::from_ref(&another)).unwrap()[0].params,
+        write[0].params
+    );
     another = subject.clone();
     another.key_namespace = "staging-eu".into();
     assert_ne!(
@@ -53,6 +56,36 @@ fn scope_locks_are_parent_first_and_erasure_conflicts_with_every_writer() {
         erasure::guard_params(&subject).unwrap(),
         vec![write[0].params[0].clone(), write[1].params[0].clone()]
     );
+}
+
+#[test]
+fn writer_locks_for_several_scopes_take_every_tenant_then_every_subject_once_in_one_order() {
+    let a = scope(Some("patient-a"));
+    let b = scope(Some("patient-b"));
+    let mut other_tenant = scope(Some("patient-c"));
+    other_tenant.tenant = Some("clinic-8".into());
+    let tenant = scope(None);
+    let one_order = erasure::writer_locks(&[a.clone(), b.clone(), other_tenant.clone(), tenant.clone()]).unwrap();
+    let reversed = erasure::writer_locks(&[tenant, other_tenant.clone(), b.clone(), a.clone(), b.clone()]).unwrap();
+    assert_eq!(
+        one_order, reversed,
+        "callers' order and repeats must not change the lock order"
+    );
+    let ids: Vec<String> = one_order.iter().map(|call| call.params[0].clone().unwrap()).collect();
+    let id = |scope: &KeyScope| erasure::scope_id(scope).unwrap();
+    let parent = |scope: &KeyScope| {
+        id(&KeyScope {
+            subject: None,
+            ..scope.clone()
+        })
+    };
+    let mut tenants = vec![parent(&a), parent(&other_tenant)];
+    tenants.sort();
+    let mut subjects = vec![id(&a), id(&b), id(&other_tenant)];
+    subjects.sort();
+    assert_eq!(ids, [tenants, subjects].concat());
+    assert!(one_order.iter().all(|call| call.statement == "lock_shared"));
+    assert!(erasure::writer_locks(&[]).unwrap().is_empty());
 }
 
 #[test]
@@ -297,7 +330,7 @@ mod live {
         let patient = scope(Some("patient-42"));
         let mut writer = Session::new(&db);
         writer.run("BEGIN ISOLATION LEVEL READ COMMITTED");
-        writer.run(&db.calls(&erasure::writer_locks(&patient).unwrap()));
+        writer.run(&db.calls(&erasure::writer_locks(std::slice::from_ref(&patient)).unwrap()));
         let guard = writer.run(&bind(&db.sql.check_revoked, &erasure::guard_params(&patient).unwrap()));
         erasure::check_guard(&guard).unwrap();
 
@@ -316,7 +349,7 @@ mod live {
         for subject in ["patient-42", "never-created"] {
             let scope = scope(Some(subject));
             writer.run("BEGIN ISOLATION LEVEL READ COMMITTED");
-            writer.run(&db.calls(&erasure::writer_locks(&scope).unwrap()));
+            writer.run(&db.calls(&erasure::writer_locks(std::slice::from_ref(&scope)).unwrap()));
             let row = writer.run(&bind(&db.sql.check_revoked, &erasure::guard_params(&scope).unwrap()));
             assert!(erasure::check_guard(&row).is_err());
             writer.run("ROLLBACK");

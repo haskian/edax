@@ -1748,12 +1748,12 @@ func PostgresErasureUpdateResult(version *int64) (uint64, error) {
 }
 
 // PostgresErasureWriterLocks calls the shared kernel.
-func PostgresErasureWriterLocks(scope KeyScope) (string, error) {
+func PostgresErasureWriterLocks(scopes []KeyScope) (string, error) {
 	var zero string
-	if err := checkNativeValue("scope", scope); err != nil {
+	if err := checkNativeValue("scopes", scopes); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresErasureWriterLocks(normalizeNative(scope))
+	nativeValue, nativeError := native.PostgresErasureWriterLocks(normalizeNative(scopes))
 	return nativeValue, mapNativeError(nativeError)
 }
 

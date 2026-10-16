@@ -241,11 +241,21 @@ async def test_router_authenticates_before_handler_and_only_skips_confirmed_dest
 
 
 async def test_handler_shredded_error_is_never_treated_as_a_consumer_skip() -> None:
-    sealing = Sealing(MemoryKeys(), "profiles")
+    class Confirming(MemoryKeys):
+        """Reports the scope destroyed once the handler runs: even the provider's word skips nothing here."""
+
+        destroyed = False
+
+        async def status(self, scope: KeyScope) -> Any:
+            return "destroyed" if self.destroyed else await super().status(scope)
+
+    keys = Confirming()
+    sealing = Sealing(keys, "profiles")
     raw = await event(sealing)
     router = edax.EventRouter(sealing=sealing)
 
     async def fail(msg: edax.EventMessage) -> None:
+        keys.destroyed = True
         raise Shredded("handler failure")
 
     router.register(raw.name, fail)
