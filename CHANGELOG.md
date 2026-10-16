@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.11.0](https://github.com/haskian/edax/compare/413361ef4337fa865a56d6a86733c03cd935fd83..v0.11.0) - 2026-10-16
+#### Features
+- add scoped payload encryption and tracked erasure (#26) - ([413361e](https://github.com/haskian/edax/commit/413361ef4337fa865a56d6a86733c03cd935fd83)) - Črtomir Majer
+
+- - -
+
 ## [v0.10.0](https://github.com/haskian/edax/compare/7bc3e479a4d45f3c298b4427508ff41f70b4bcf7..v0.10.0) - 2026-10-15
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) add create, Instant.now, read-model names and rejection reasons (#25) - ([7bc3e47](https://github.com/haskian/edax/commit/7bc3e479a4d45f3c298b4427508ff41f70b4bcf7)) - Črtomir Majer
