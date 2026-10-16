@@ -302,9 +302,10 @@ class SagaRunner(Generic[TxT]):
                         transaction_guard(self._store, sealing.write_guard(raw.tenant, raw.subject), tx)
                     )
                 except Shredded:
-                    # Only the trusted guard acquisition can skip an erasure race. Handler exceptions
-                    # below this boundary propagate unchanged.
+                    # Only the trusted guard acquisition, or the provider's own status below, can skip an
+                    # erasure race. Other exceptions below this boundary propagate unchanged.
                     return
+                await resources.enter_async_context(sealing.skip_destroyed(raw.tenant, raw.subject))
             with caused_by(msg):
                 instance_id = self._saga.instance_id(msg)
                 if instance_id is not None:
@@ -338,6 +339,9 @@ class SagaRunner(Generic[TxT]):
                     )
                 except Shredded:
                     return
+                await resources.enter_async_context(
+                    sealing.skip_destroyed(dead.message.tenant, dead.message.subject)
+                )
             failed = _native.saga_command_failed(
                 dead.message, str(dead.failure), self._now(), code_of(dead.failure)
             )

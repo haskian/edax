@@ -315,9 +315,10 @@ Edax never provisions these tables.
 
 Durable erasure uses the separate [reference control schema](postgres-erasure-schema.sql) and
 `edax.backend.erasure_postgres.PostgresErasureStore`. Its operation records and control outbox use
-no subject payload key. `guard_in_transaction(connection, scope)` must run on the same connection
+no subject payload key. `guard_in_transaction(connection, *scopes)` must run on the same connection
 as participant writes and hold through commit; cleanup uses `revoke_in_transaction` before deletion.
-Acquire scope fences before application row locks. These helpers require READ COMMITTED because
+Acquire scope fences before application row locks. Pass every scope a transaction writes in one call,
+so every writer takes their locks in one order. These helpers require READ COMMITTED because
 revocation must be read in a fresh statement snapshot after a lock wait.
 
 A provider guard and a Postgres destination guard protect different resources. A production

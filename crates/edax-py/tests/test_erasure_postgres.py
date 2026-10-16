@@ -9,7 +9,7 @@ import asyncio
 import base64
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -19,17 +19,21 @@ from conftest import CreateUser
 from edax import _native
 from edax.backend.erasure_postgres import PostgresErasureStore
 from edax.backend.erasure_postgres import reference_ddl as erasure_ddl
+from edax.backend.memory import MemoryEventStore
 from edax.backend.postgres import (
     PostgresCommandOutbox,
     PostgresEventStore,
+    PostgresProjectionStore,
     PostgresSagaStore,
     PostgresTransactor,
     reference_ddl,
 )
 from edax.erasure import ErasureCoordinator, ErasureOperation
 from edax.errors import BadHandle, ConcurrencyError, EdaxError, Rejected, Shredded
+from edax.projection import Entity
 from edax.saga import ProtectedSagaState, RunningInstance
 from edax.sealing import Cipher, KeyScope, MemoryKeys, Sealing
+from edax.unit_of_work import transaction
 
 URL = os.environ.get("EDAX_POSTGRES_URL")
 if URL is None:
@@ -161,6 +165,75 @@ async def test_cleanup_drains_committing_writer_before_deleting_plaintext(
             pass
 
 
+class PostgresFence(MemoryKeys):
+    """Memory key material, fenced inside the application's Postgres transaction by the erasure store."""
+
+    def __init__(self, transactor: PostgresTransactor, erasure: PostgresErasureStore) -> None:
+        super().__init__()
+        self.transactor = transactor
+        self.erasure = erasure
+
+    async def fence(self, tx: Any, scopes: Sequence[KeyScope]) -> None:
+        await self.erasure.guard_in_transaction(tx.connection, *scopes)
+
+
+@pytest.mark.parametrize("outcome", ["commit", "connection-killed"])
+async def test_transaction_fence_drains_its_writer_and_dies_with_its_connection(
+    database: tuple[Any, str], outcome: str
+) -> None:
+    pool, schema = database
+    erasure = PostgresErasureStore(pool, schema=schema)
+    db = PostgresTransactor(pool, schema=schema)
+    sealing = Sealing(PostgresFence(db, erasure), "production", write_fence="transaction")
+    await pool.execute(f'CREATE TABLE "{schema}".plaintext (value text)')
+    staged = asyncio.Event()
+    commit = asyncio.Event()
+    writer_pid: list[int] = []
+
+    async def writer() -> None:
+        # One transaction, one connection: no second pool, and the lock dies with the write.
+        async with sealing.write_guard("tenant", "person"), transaction(db) as tx:
+            writer_pid.append(await tx.connection.fetchval("SELECT pg_backend_pid()"))
+            await tx.connection.execute(
+                f'INSERT INTO "{schema}".plaintext VALUES ($1)', "private@example.test"
+            )
+            staged.set()
+            await commit.wait()
+
+    writing = asyncio.create_task(writer())
+    async with pool.acquire() as cleaner:
+
+        async def cleanup() -> int:
+            async with cleaner.transaction():
+                await erasure.revoke_in_transaction(cleaner, scope())
+                return int((await cleaner.execute(f'DELETE FROM "{schema}".plaintext')).split()[-1])
+
+        await asyncio.wait_for(staged.wait(), 3)
+        cleaning = asyncio.create_task(cleanup())
+        try:
+            await wait_for_blocked_lock(pool, cleaner.get_server_pid())
+            assert not cleaning.done(), "cleanup must wait for the admitted writer"
+            if outcome == "commit":
+                commit.set()
+                await asyncio.wait_for(writing, 3)
+            else:
+                await pool.execute("SELECT pg_terminate_backend($1)", writer_pid[0])
+                commit.set()
+                with pytest.raises(EdaxError):
+                    await asyncio.wait_for(writing, 3)
+            assert await asyncio.wait_for(cleaning, 3) == int(outcome == "commit")
+        finally:
+            commit.set()
+            for task in (writing, cleaning):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(writing, cleaning, return_exceptions=True)
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".plaintext') == 0
+    with pytest.raises(Rejected):
+        async with sealing.write_guard("tenant", "person"), transaction(db):
+            pytest.fail("revoked scope admitted a writer")
+
+
 async def test_tenant_revocation_blocks_new_child_waiting_for_commit(database: tuple[Any, str]) -> None:
     pool, schema = database
     store = PostgresErasureStore(pool, schema=schema)
@@ -195,6 +268,9 @@ async def test_guards_reject_autocommit_stale_snapshots_and_preserve_rollback(
     async with pool.acquire() as connection:
         with pytest.raises(BadHandle):
             await store.guard_in_transaction(connection, scope())
+        async with connection.transaction():
+            with pytest.raises(BadHandle):
+                await store.guard_in_transaction(connection)
         with pytest.raises(BadHandle):
             await store.revoke_in_transaction(connection, scope())
         async with connection.transaction(isolation="repeatable_read"):
@@ -381,3 +457,58 @@ async def test_plaintext_saga_update_preserves_json_escaped_nul(database: tuple[
     store = PostgresSagaStore(PostgresTransactor(pool, schema=schema))
     await store.save("notification", "workflow", {"message": "before\x00after"}, 0, "", [])
     assert await store.save("notification", "workflow", {"message": "updated"}, 1, "", []) == 2
+
+
+@pytest.mark.parametrize(
+    ("subjects", "refused"),
+    [(("revoked", "active"), True), (("active", "revoked"), True), (("active", "another"), False)],
+    ids=["revoked-scope-first", "revoked-scope-last", "all-active"],
+)
+async def test_guard_for_several_scopes_refuses_when_any_one_is_revoked(
+    database: tuple[Any, str], subjects: tuple[str, str], refused: bool
+) -> None:
+    pool, schema = database
+    store = PostgresErasureStore(pool, schema=schema)
+    await store.revoke(scope("revoked"))
+    async with pool.acquire() as connection, connection.transaction():
+        if refused:
+            with pytest.raises(Rejected):
+                await store.guard_in_transaction(connection, *map(scope, subjects))
+        else:
+            await store.guard_in_transaction(connection, *map(scope, subjects))
+
+
+async def test_handler_write_through_a_store_alone_is_refused_after_revoke(database: tuple[Any, str]) -> None:
+    pool, schema = database
+    erasure = PostgresErasureStore(pool, schema=schema)
+    db = PostgresTransactor(pool, schema=schema)
+    keys = PostgresFence(db, erasure)
+    sealing = Sealing(keys, "production", write_fence="transaction")
+    repo = edax.Repository(MemoryEventStore(), EVENTS, Profiles(), sealing=sealing)
+    profile = await repo.load("profile", tenant="tenant", subject="person")
+    profile.apply(CreateUser(PRIVATE))
+    raw = (await repo.save(profile))[0]
+    projections = PostgresProjectionStore(db, "profiles")
+    read = asyncio.Event()
+    erased = asyncio.Event()
+    router = edax.EventRouter(sealing=sealing)
+
+    async def project(msg: edax.EventMessage) -> None:
+        document = json.loads(bytes(msg.data))
+        read.set()
+        await erased.wait()
+        # No unit of work: the store writes in a short transaction of its own, which takes the fence.
+        await projections.save(Entity("profile", 0, document))
+
+    router.register(raw.name, project)
+    handling = asyncio.create_task(router.dispatch(raw))
+    try:
+        await asyncio.wait_for(read.wait(), 3)
+        await asyncio.wait_for(erasure.revoke(scope()), 3)  # nothing admitted: no wait
+        erased.set()
+        with pytest.raises(Rejected):
+            await asyncio.wait_for(handling, 3)
+    finally:
+        erased.set()
+        await asyncio.gather(handling, return_exceptions=True)
+    assert await projections.get("profile") is None

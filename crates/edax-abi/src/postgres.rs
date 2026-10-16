@@ -573,9 +573,14 @@ fn erasure_calls(calls: Vec<edax_postgres::rows::Call>) -> Result<String, String
         .collect();
     erasure_json(&calls)
 }
-/// Ordered shared transaction locks for protected writers.
-pub fn postgres_erasure_writer_locks(scope: crate::KeyScope) -> Result<String, String> {
-    erasure_calls(edax_postgres::erasure::writer_locks(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
+/// Ordered shared transaction locks for one transaction's protected writes to `scopes`.
+pub fn postgres_erasure_writer_locks(scopes: Vec<crate::KeyScope>) -> Result<String, String> {
+    let scopes = scopes
+        .into_iter()
+        .map(edax_seal::KeyScope::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
+    erasure_calls(edax_postgres::erasure::writer_locks(&scopes).map_err(to_wire)?)
 }
 /// Conflicting transaction locks for cleanup and permanent revocation.
 pub fn postgres_erasure_revocation_locks(scope: crate::KeyScope) -> Result<String, String> {

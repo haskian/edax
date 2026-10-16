@@ -658,6 +658,116 @@
     "want": null
   },
   {
+    "error": null,
+    "kind": "erasure_writer_locks",
+    "name": "erasure_writer_locks_one_subject",
+    "scopes": [
+      {
+        "key_namespace": "production-eu",
+        "subject": "patient-42",
+        "tenant": "clinic-7"
+      }
+    ],
+    "want": [
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3700"
+        ],
+        "statement": "lock_shared"
+      },
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3701000000000000000a70617469656e742d3432"
+        ],
+        "statement": "lock_shared"
+      }
+    ]
+  },
+  {
+    "error": null,
+    "kind": "erasure_writer_locks",
+    "name": "erasure_writer_locks_several_scopes",
+    "scopes": [
+      {
+        "key_namespace": "production-eu",
+        "subject": "patient-c",
+        "tenant": "clinic-8"
+      },
+      {
+        "key_namespace": "production-eu",
+        "subject": "patient-b",
+        "tenant": "clinic-7"
+      },
+      {
+        "key_namespace": "production-eu",
+        "subject": null,
+        "tenant": "clinic-7"
+      },
+      {
+        "key_namespace": "production-eu",
+        "subject": "patient-a",
+        "tenant": "clinic-7"
+      },
+      {
+        "key_namespace": "production-eu",
+        "subject": "patient-b",
+        "tenant": "clinic-7"
+      }
+    ],
+    "want": [
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3700"
+        ],
+        "statement": "lock_shared"
+      },
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3800"
+        ],
+        "statement": "lock_shared"
+      },
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3701000000000000000970617469656e742d61"
+        ],
+        "statement": "lock_shared"
+      },
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3701000000000000000970617469656e742d62"
+        ],
+        "statement": "lock_shared"
+      },
+      {
+        "params": [
+          "00000001000000000000000e656461782e6b65792d73636f7065000000000000000d70726f64756374696f6e2d6575010000000000000008636c696e69632d3801000000000000000970617469656e742d63"
+        ],
+        "statement": "lock_shared"
+      }
+    ]
+  },
+  {
+    "error": null,
+    "kind": "erasure_writer_locks",
+    "name": "erasure_writer_locks_none",
+    "scopes": [],
+    "want": []
+  },
+  {
+    "error": "codec: key namespace is empty",
+    "kind": "erasure_writer_locks",
+    "name": "erasure_writer_locks_refuses_a_bad_scope",
+    "scopes": [
+      {
+        "key_namespace": "",
+        "subject": "patient-42",
+        "tenant": "clinic-7"
+      }
+    ],
+    "want": null
+  },
+  {
     "expected": 0,
     "key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
     "kind": "sealed_event",

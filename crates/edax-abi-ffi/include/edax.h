@@ -5929,11 +5929,11 @@ uintptr_t edax_postgres_erasure_update_params_len(const char *_previous,
 uint64_t edax_postgres_erasure_update_result(int64_t version);
 
 /**
- * Ordered shared transaction locks for protected writers.
+ * Ordered shared transaction locks for one transaction's protected writes to `scopes`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_erasure_writer_locks(EDAXAlefHandle scope);
+char *edax_postgres_erasure_writer_locks(const char *scopes);
 
 /**
  * Return the byte length of the C string most recently returned by
@@ -5943,7 +5943,7 @@ char *edax_postgres_erasure_writer_locks(EDAXAlefHandle scope);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_erasure_writer_locks`.
  */
-uintptr_t edax_postgres_erasure_writer_locks_len(EDAXAlefHandle _scope);
+uintptr_t edax_postgres_erasure_writer_locks_len(const char *_scopes);
 
 /**
  * Whether a `forget` of `key` deletes `row`. See `edax_postgres.forget_write`.

@@ -374,7 +374,10 @@ class CommandBus:
                     return None
                 raise
             cmd = self._codec.unmarshal(Payload(name=msg.name, version=msg.version, data=data))
+            if delivery:
+                await resources.enter_async_context(self._sealing.skip_destroyed(msg.tenant, msg.subject))
             return await _run(handler, _Dispatch(msg, received=True, sealing=self._sealing), cmd)
+        return None  # a delivery the provider confirmed destroyed
 
     def _handler(self, name: str) -> Next:
         handler = self._handlers.get(name)

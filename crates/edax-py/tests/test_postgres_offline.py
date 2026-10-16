@@ -287,6 +287,11 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _native.open_bytes(
             snapshot.encryption, bytes.fromhex(case["key_hex"]), aad, snapshot.data
         ) == bytes.fromhex(case["plaintext_hex"])
+    elif case.get("kind") == "erasure_writer_locks":
+        scopes = [_native.KeyScope(**scope) for scope in case["scopes"]]
+        assert _refusal(lambda: _native.postgres_erasure_writer_locks(scopes)) == case["error"]
+        if case["error"] is None:
+            assert json.loads(_native.postgres_erasure_writer_locks(scopes)) == case["want"]
     elif "call" in case:
         call = getattr(_native, f"postgres_{case['call']}")
         assert _refusal(lambda: call(*case["args"])) == case["error"]

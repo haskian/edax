@@ -6,14 +6,14 @@
 //! Keep the transaction open through the protected write's commit. Cleanup instead acquires
 //! [`revocation_locks`], writes the permanent tombstone, and deletes plaintext in that transaction.
 //! A tenant exclusive lock drains every child subject, including subjects with no existing rows.
-//! Acquire fences before application row locks. For work touching multiple scopes, acquire all
-//! tenant locks in canonical scope order, then all subject locks in that order.
+//! Acquire fences before application row locks. For work touching multiple scopes, pass them all to
+//! one [`writer_locks`] call: it returns every tenant lock, then every subject lock, in one order.
 //!
 //! Separate commands matter: READ COMMITTED obtains a new snapshot per command. A read in the
 //! statement that waited for an advisory lock can predate the revocation it waited behind.
 //! See PostgreSQL 17 `transaction-iso.html` and `functions-admin.html` (transaction advisory locks).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use edax_core::{Error, ErrorCode};
 use edax_event::erasure::{ErasureOperation, ErasureStage};
@@ -372,28 +372,34 @@ fn parent_scope(scope: &KeyScope) -> KeyScope {
     }
 }
 
-fn lock(scope: &KeyScope, exclusive: bool) -> Result<Call, Error> {
-    Ok(Call {
+fn lock(scope_id: String, exclusive: bool) -> Call {
+    Call {
         statement: if exclusive { "lock_exclusive" } else { "lock_shared" },
-        params: vec![Some(scope_id(scope)?)],
-    })
+        params: vec![Some(scope_id)],
+    }
 }
 
-/// Acquire a shared tenant fence first, then a shared subject fence when a subject is present.
-pub fn writer_locks(scope: &KeyScope) -> Result<Vec<Call>, Error> {
-    let mut locks = vec![lock(&parent_scope(scope), false)?];
-    if scope.subject.is_some() {
-        locks.push(lock(scope, false)?);
+/// Shared fences for one transaction's writes to `scopes`: every tenant fence, then every subject fence,
+/// each set in scope-ID order and without repeats. One order for every writer keeps two writers that
+/// fence the same scopes from waiting on each other behind a queued cleanup.
+pub fn writer_locks(scopes: &[KeyScope]) -> Result<Vec<Call>, Error> {
+    let mut tenants = BTreeSet::new();
+    let mut subjects = BTreeSet::new();
+    for scope in scopes {
+        tenants.insert(scope_id(&parent_scope(scope))?);
+        if scope.subject.is_some() {
+            subjects.insert(scope_id(scope)?);
+        }
     }
-    Ok(locks)
+    Ok(tenants.into_iter().chain(subjects).map(|id| lock(id, false)).collect())
 }
 
 /// Tenant cleanup takes the exclusive parent fence; subject cleanup shares the parent and excludes
 /// its subject. Hash collisions can delay unrelated work but never permit a conflicting writer.
 pub fn revocation_locks(scope: &KeyScope) -> Result<Vec<Call>, Error> {
-    let mut locks = vec![lock(&parent_scope(scope), scope.subject.is_none())?];
+    let mut locks = vec![lock(scope_id(&parent_scope(scope))?, scope.subject.is_none())];
     if scope.subject.is_some() {
-        locks.push(lock(scope, true)?);
+        locks.push(lock(scope_id(scope)?, true));
     }
     Ok(locks)
 }

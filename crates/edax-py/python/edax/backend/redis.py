@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast, get_ar
 from .. import _native, errors
 from .._deadline import within
 from .._observer import wrap
+from .._units import own_write
 from .._wiring import wiring_int
 from ..errors import BadHandle, CodecError, EdaxError, StoreError
 from ..idempotency import Claimed, Record, Won, decode_claim, encode_record
@@ -166,7 +167,8 @@ class RedisIdempotencyStore:
         claim = _native.redis_new_claim(payload_hash)
         # Read before the send: the claim's lease runs from when it lands, never earlier.
         sent_at = self._now()
-        reply = await self._eval("claim", key, [claim, self._claim_ttl_ms])
+        async with own_write():
+            reply = await self._eval("claim", key, [claim, self._claim_ttl_ms])
         # A reply equal to this claim is its own first send, landed with its reply lost: won. A value
         # the kernel cannot read comes back as its unreadable record, a terminal codec failure.
         claimed = decode_claim(_native.redis_claim_outcome(claim, _reply_bytes(reply)), payload_hash)
@@ -185,7 +187,8 @@ class RedisIdempotencyStore:
         # Stopped before the call, not after it: a beat while the reply is late would find the settled
         # value and report the claim lost.
         self._stop_renewing(handle)
-        written = await self._eval("complete", key, [handle, value, self._ttl_ms])
+        async with own_write():
+            written = await self._eval("complete", key, [handle, value, self._ttl_ms])
         # Loud on purpose: a refused write recorded no outcome, so the caller must not report success.
         _native.redis_complete_outcome(key, bool(written))
 
