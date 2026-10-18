@@ -61,6 +61,21 @@ class StoreError(EdaxError, code="store"):
     """The backing store failed for a reason other than a concurrency conflict."""
 
 
+class TransactionFailure(StoreError):
+    """An owned transaction's cause and recovery evidence.
+
+    A confirmed rollback proves no write committed only when ``commit_started`` is false.
+    Once commit starts, losing its reply leaves the outcome unknown even if rollback succeeds.
+    Runners classify ``cause`` using the kernel's error taxonomy.
+    """
+
+    def __init__(self, cause: Exception, *, rolled_back: bool, commit_started: bool) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.rolled_back = rolled_back
+        self.commit_started = commit_started
+
+
 class CodecError(EdaxError, code="codec"):
     """A value could not be marshaled or unmarshaled. Deterministic."""
 

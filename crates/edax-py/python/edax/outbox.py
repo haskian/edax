@@ -1,7 +1,8 @@
 """The transactional outbox: the :class:`Outbox` read side a :class:`Relay` drains, the
 :class:`CommandOutbox` write side a save sends commands through, and :func:`pump` for change data
 capture. Every write port stages its outbox rows in the caller's ``tx``; the read side is always this one
-separate port, which one object may implement beside a write port."""
+separate port, which one object may implement beside a write port. Events, saga commands, projection
+effect intents and ingestion rejections all drain through one :class:`Relay`."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from . import _names, _native, errors
 from ._async import MaybeAwaitable, maybe_await
 from ._observer import wrap
 from ._settle import Dead, HandBack, Stop, dead_letter, drain_policy, row_verdict
+from ._wiring import is_int
 from .delivery import DeadLetter, DeadLetterSink
 from .errors import code_of
 from .message import CommandMessage, EventMessage
@@ -35,14 +37,24 @@ __all__ = [
     "OutboxRow",
     "Publish",
     "Relay",
+    "check_page",
     "pump",
 ]
 
 
-#: A row an :class:`Outbox` holds: an :class:`~edax.message.EventMessage`, or a
-#: :class:`~edax.message.CommandMessage`. Its ``id`` is what it is marked by; its tenant and ordering key are
-#: what a :class:`Relay` orders it by.
-OutboxRow = EventMessage | CommandMessage
+class OutboxRow(Protocol):
+    """What a :class:`Relay` reads of a row: ``id`` marks it and keys its retry budget; ``tenant`` and
+    ``aggregate_id`` order it, through :func:`~edax.message.ordering_key` (a row with no aggregate is ordered
+    by its own id). :class:`~edax.message.EventMessage`, :class:`~edax.message.CommandMessage`,
+    :class:`~edax.projection.EffectIntent` and :class:`~edax.ingestion.Rejection` are rows."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def tenant(self) -> str | None: ...
+    @property
+    def aggregate_id(self) -> str | None: ...
+
 
 R = TypeVar("R", bound=OutboxRow)
 
@@ -54,15 +66,17 @@ DEFAULT_BATCH: Final[int] = 100
 class Outbox(Protocol[R]):
     """The read side of a transactional outbox, as :class:`Relay` drains it: the rows a write port staged
     in its ``tx``, once committed. The event outbox an :class:`~edax.store.EventStore`'s ``append`` writes
-    is one (its rows are event messages), a saga's command outbox another (:class:`~edax.saga.SagaOutbox`),
-    and the read side of a :class:`CommandOutbox` a third. What a backend must guarantee:
+    is one (its rows are event messages). Others: a saga's command outbox (:class:`~edax.saga.SagaOutbox`),
+    the read side of a :class:`CommandOutbox`, a :class:`~edax.projection.ProjectionStateStore` (effect
+    intents) and a :class:`~edax.ingestion.RejectionOutbox` (ingestion rejections). What a backend must
+    guarantee:
 
     - *Committed only.* ``unpublished`` returns committed unmarked rows, never a row a ``tx`` staged and
       may still roll back, each as the write port stored it, every field intact.
     - *Order.* Oldest commit first, at minimum one aggregate's rows in ``sequence`` order, and ``limit``
       decides the page.
     - *Acknowledgement.* Rows stay until ``mark_published``, so publishing is at-least-once and downstream
-      dedups by ``msg.id``. ``mark_published`` is idempotent and durable; an unknown id and an empty list
+      dedups by row ``id``. ``mark_published`` is idempotent and durable; an unknown id and an empty list
       are no-ops.
     - Both run outside any ``tx``. One :class:`Relay` per outbox, unless ``unpublished`` leases the rows it
       returns. Feed change data capture to :func:`pump` instead, where the stream position is the ack.
@@ -106,7 +120,7 @@ Publish = Callable[[R], MaybeAwaitable[None]]
 class DrainStats:
     """What the last completed :meth:`Relay.drain` did. ``oldest_timestamp`` is when the oldest row in the
     batch was written, its ``recorded_at`` (an event) or ``issued_at`` (a command), or ``None`` for an
-    empty batch; against the reader's clock it is the
+    empty batch or one whose rows carry no time; against the reader's clock it is the
     outbox lag a health check reads. ``dead_lettered`` counts the rows the drain handed to ``on_dead``
     instead of publishing them."""
 
@@ -118,7 +132,7 @@ class DrainStats:
 
 class Relay(Generic[R]):
     """Drains an :class:`Outbox` of ``R`` to ``publish`` by polling: the transactional-outbox publisher, for
-    the event outbox and a saga's command outbox alike. ``publish`` may be sync or async, and must return
+    every :class:`Outbox` alike. ``publish`` may be sync or async, and must return
     only after the transport has durably accepted the row (every in-sync replica: Kafka ``acks="all"``, not
     the leader alone); one that returns earlier loses the row. For change data capture use :func:`pump`.
 
@@ -206,7 +220,7 @@ class Relay(Generic[R]):
                 if drained.wait_step is not None:
                     await self._pacing.wait(drained.wait_step)
                 raise error
-            oldest = min((_written_at(row) for row in rows), default=None)
+            oldest = min((t for t in map(_written_at, rows) if t is not None), default=None)
             last = self.last = DrainStats(published, perf_counter_ns() - started, oldest, dead)
             self._observer.drain(last.published, last.dead_lettered, last.duration_ns, last.oldest_timestamp)
             return published + dead
@@ -278,6 +292,14 @@ class Relay(Generic[R]):
                 _names.unreachable(unknown)
 
 
+def check_page(limit: int) -> int:
+    """``limit`` as an outbox page size; a non-positive one is the terminal
+    :class:`~edax.errors.BadHandle`."""
+    if not is_int(limit) or limit <= 0:
+        raise errors.BadHandle("outbox page limit must be positive")
+    return limit
+
+
 def _begin(drain: _native.Drain, rows: Sequence[OutboxRow]) -> None:
     """Hand the kernel's ``drain`` the keys of the page it decides over; it reads nothing else of a row. One
     outbox holds one kind of row, so a page that mixes events with commands is a backend fault: the terminal
@@ -288,9 +310,14 @@ def _begin(drain: _native.Drain, rows: Sequence[OutboxRow]) -> None:
     drain.begin([_native.DrainRow(row.id, row.tenant, row.aggregate_id) for row in rows])
 
 
-def _written_at(row: OutboxRow) -> int:
-    """When an outbox row was written: an event's ``recorded_at``, a command's ``issued_at``."""
-    return row.recorded_at if isinstance(row, EventMessage) else row.issued_at
+def _written_at(row: OutboxRow) -> int | None:
+    """When an outbox row was written: an event's ``recorded_at``, a command's ``issued_at``; ``None`` for a
+    row that carries no time."""
+    if isinstance(row, EventMessage):
+        return row.recorded_at
+    if isinstance(row, CommandMessage):
+        return row.issued_at
+    return None
 
 
 async def pump(source: AsyncIterable[R], publish: Publish[R]) -> int:

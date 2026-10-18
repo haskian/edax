@@ -56,8 +56,12 @@ consumer.rebalance_listener(drain_timeout_s=30.0)
 ```
 
 `client` is an already-started `AIOKafkaProducer` or an already-started, already-subscribed
-`AIOKafkaConsumer`, or any client with the same calls: the `ProducerClient` and `ConsumerClient`
-protocols in `edax.backend.kafka` list them. A serializer encodes one kind of message. On the
+`AIOKafkaConsumer`, or a client that follows the `ProducerClient` or `ConsumerClient` contract
+in `edax.backend.kafka`. A custom consumer using the rebalance listener must invoke its assignment
+callback before returning records from the new assignment, including newly gained partitions. The adapter relies
+on this ordering to reset delivery tokens before admitting those records.
+
+A serializer encodes one kind of message. On the
 producer, `serializer` encodes events and `command_serializer` commands. They default to
 `edax.KernelSerializer("json")` and `edax.KernelSerializer("json", "command")`, and a serializer of the
 other kind raises the fatal `BadHandle` at wiring. On the consumer, `serializer` defaults to the JSON event
@@ -278,7 +282,7 @@ tracker.ack(token)  # settles; never waits on the broker
 due = tracker.due()  # the committer, every commit_interval_s
 await asyncio.wait_for(client.commit({tp(d): d.offset for d in due}), commit_timeout_s)
 for d in due:
-    tracker.committed(d.topic, d.partition, d.offset)
+    tracker.committed_generation(d.topic, d.partition, d.offset, d.generation)
 ```
 
 Two properties follow from that shape.
@@ -296,11 +300,24 @@ ends. Each commit runs under `commit_timeout_s`: `aiokafka` retries a commit whi
 away, without end, and the deadline stops that from hanging the consumer. `flush()` commits
 on demand; call it after `dispatcher.stop()` to commit the drained work before closing the client.
 
-**A commit is recorded only after the client confirms it.** A commit that raised or timed out is
-never recorded as done, so the same watermark is due again. The monotonic guard lives in the kernel
-too: two commits that returned out of order leave the higher one recorded. `stats()` exposes the
+**A commit is recorded only after the client confirms it.** A failed commit leaves its watermark due.
+Each completion carries its partition generation. The kernel ignores completions from before a reset,
+revoke, or rewind. Confirmations within one generation preserve the highest watermark. `stats()` exposes the
 whole record per `TopicPartition`: unsettled count, how many are still live, highest offset
 delivered, and last committed watermark.
+
+A deadline or caller cancellation ends the wait without cancelling the client commit. aiokafka shields
+its broker request, so cancelling the client call would hide an operation that can still finish later.
+The adapter retains the entire call until it finishes. No new commit or poll starts while that call
+remains unresolved; attempts raise `BadHandle`. A late successful reply updates only its original
+generation. Stop the caller-owned client before replacing the adapter after this failure.
+
+Fetches and bookings share one task. A rewind invalidates an outstanding fetch and restores the
+kernel's safe cursor after that fetch finishes. Cooperative poll cancellation permits another poll.
+An unresolved cancelled fetch stops consumption on that adapter. Stop its caller-owned client before
+constructing a replacement. A final flush remains available.
+Use the rebalance listener for assignment changes. If assignment overlaps a fetch without a prior
+revoke, the minimum client protocol cannot prove where to resume. The adapter stops with `BadHandle`.
 
 ```mermaid
 sequenceDiagram
@@ -428,8 +445,10 @@ It leaves the rest to the host:
 - **Rebalance.** The watermark bookkeeping holds only while the partition is assigned. Pass
   `consumer.rebalance_listener()` to `subscribe`. On revoke the kernel's `revoke` hands back each
   revoked partition's last due watermark as it drops the partition, so the queued deliveries are
-  skipped. The listener commits those watermarks and waits for the handlers still running,
-  up to `drain_timeout_s`. The new owner starts from the commit, so the skipped work runs there:
+  skipped. Retirement happens before waiting for an older commit. One absolute `drain_timeout_s`
+  deadline covers the pending fetch, commit, and running handlers. An unfinished fetch or commit
+  stops admission with `BadHandle`. Cancelling the callback also cancels any queued commit.
+  The new owner starts from the commit, so the skipped work runs there:
   at-least-once. Keep `drain_timeout_s` above the slowest handler and below the client's
   `max_poll_interval_ms`. The wait makes overlap rare, not impossible. A handler still running at the
   deadline overlaps the new owner, which `revoke_overrun` reports. A member the group evicts (a pause

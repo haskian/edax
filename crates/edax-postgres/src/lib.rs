@@ -17,6 +17,9 @@
 //! - [`query`](mod@query) — the read-model query compiled to SQL, and the page from its rows.
 //! - [`ledger`] — the claim owner, what a claim does with the row it read, its parameters, and the fence on
 //!   each settling write.
+//! - [`ingest`] — the optional ingestion table, its locks, writes and rollback-aware recovery.
+//! - [`projection`] — the optional projection state table, its generation lock and historical outbox
+//!   suppression.
 //!
 //! `testdata/golden/postgres_*.json` pin what is here, and `crates/edax-postgres/live-check` replays
 //! them, and the filter and query vectors, against a real server.
@@ -28,7 +31,9 @@ pub mod config;
 pub mod documents;
 pub mod erasure;
 pub mod error;
+pub mod ingest;
 pub mod ledger;
+pub mod projection;
 pub mod query;
 pub mod rows;
 pub mod schema;

@@ -313,3 +313,11 @@ group has one consumer: there is no partition assignment between several members
   `joins_transaction`.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [testing](../guides/testing.md) — golden vectors, model tests, proptest and Hypothesis.
+
+## Ingestion reference
+
+`edax.ingestion.MemoryIngestionSink` uses the kernel's independent `MemoryIngest` database.
+It binds the immutable target contract and atomically applies the same append/upsert plans and
+rejection records as PostgreSQL. Keep the sink instance across runner restarts when testing replay.
+It is separate from `MemoryTransactor`; ingestion commits own their transaction boundary.
+See [microbatch ingestion](ingestion.md) for the API and recovery contract.

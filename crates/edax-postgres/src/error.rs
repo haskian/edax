@@ -1,8 +1,8 @@
 //! What a failed call means: the verdict on a server error (its SQLSTATE and the unique key it names,
 //! read against the operation that ran), and on a failure the client reports without a SQLSTATE.
 //!
-//! The operation matters. A lock wait that runs out is contention on a ledger claim, which a
-//! dispatcher retries without counting an attempt (`in_progress`). On a compare-and-set write it is a
+//! The operation matters. A lock wait that runs out is contention on a ledger claim or a projection
+//! generation, which a dispatcher or runner retries without counting an attempt (`in_progress`). On a compare-and-set write it is a
 //! lost race (`concurrency`). Anywhere else it is a transient `store` failure, because the store
 //! contracts keep `concurrency` for a version conflict. A unique violation is a version conflict on an
 //! event stream and a reused id on an outbox row. `testdata/golden/postgres_error.json` pins every row.
@@ -41,6 +41,8 @@ edax_core::closed_names! {
         SagaLoad = "saga_load",
         /// A saga `save` or `complete`.
         SagaWrite = "saga_write",
+        /// Any projection state operation, each run under its generation's advisory lock.
+        ProjectionState = "projection_state",
     }
 }
 
@@ -67,7 +69,8 @@ impl Op {
 /// - `23505`, a unique violation: of the events' `(stream, sequence)` a `concurrency` conflict (another
 ///   writer appended first); of any other key a reused id, `codec`, which fails the same way again.
 /// - `55P03` (a lock wait ran out) and `57014` (a statement ran out) on a claim: `in_progress`, since
-///   another unit of work holds the key.
+///   another unit of work holds the key. `55P03` on projection state: `in_progress`, since another
+///   runner holds the generation lock.
 /// - `55P03` on an append, a projection save, a saga write or a settle: `concurrency`, since another unit
 ///   of work holds the row it would write. Elsewhere, and `57014` everywhere but a claim, `store`: a read
 ///   or an unversioned write that ran out of time is transient, not a version conflict.
@@ -81,7 +84,7 @@ pub fn verdict(op: Op, sqlstate: &str, unique: Option<UniqueKey>, message: &str)
     let code = match (sqlstate, op) {
         ("23505", _) if unique == Some(UniqueKey::EventsStreamSequence) => ErrorCode::Concurrency,
         ("23505", _) => ErrorCode::Codec,
-        ("55P03" | "57014", Op::Claim) => ErrorCode::InProgress,
+        ("55P03" | "57014", Op::Claim) | ("55P03", Op::ProjectionState) => ErrorCode::InProgress,
         ("55P03", _) if op.waits_on_a_writer() => ErrorCode::Concurrency,
         ("40001" | "40P01" | "25006" | "25P02", _) => ErrorCode::Store,
         ("22P05" | "22021" | "22P02" | "22003" | "2201W" | "54000", _) => ErrorCode::Codec,

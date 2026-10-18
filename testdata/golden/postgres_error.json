@@ -592,6 +592,22 @@
     "unique": null
   },
   {
+    "error": "in_progress: postgres projection_state failed with 55P03: server text",
+    "message": "server text",
+    "name": "projection_state_55P03_none",
+    "op": "projection_state",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 57014: server text",
+    "message": "server text",
+    "name": "projection_state_57014_none",
+    "op": "projection_state",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
     "error": "codec: postgres load failed on the client (encode): client text",
     "kind": "encode",
     "message": "client text",

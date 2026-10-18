@@ -38,6 +38,11 @@
 //!   command, and the value order the decimal [`Collation`] gives a filter and a sort.
 //! - [`canonical_timestamp`] — the one text an instant travels as: fixed-width UTC, so string order
 //!   is instant order.
+//! - [`namespace`] — the length-prefixed key namespace of a generation, shared by ingestion and
+//!   projection state.
+//! - [`ingest`] — append/upsert identity, ownership, compaction, durable rejections and target contracts.
+//! - [`projection`] — ordered projection state: canonical reducer input, event and sequence receipts,
+//!   source continuity, checkpoint leases and effect cutovers.
 //!
 //! [`Decimal`] / [`Instant`] are the host-value types that hold those texts. They live here because
 //! both halves read them. A Rust host declares a field with them, so its command hashes, and its event
@@ -60,8 +65,11 @@ mod decimal_text;
 // at the root, the one path a caller names.
 pub mod filter;
 mod host_value;
+pub mod ingest;
 mod json_numbers;
 mod ledger;
+pub mod namespace;
+pub mod projection;
 pub mod protected;
 mod query;
 mod record;
@@ -76,7 +84,7 @@ use edax_core::Error;
 pub use host_value::{Decimal, Instant};
 pub use ledger::{complete_fence, release_fence, Claimed, Fence, Holder};
 pub use timestamp::{canonical_timestamp, timestamp_from_unix_nanos};
-pub use value::{read_json, type_rank, TYPE_ORDER};
+pub use value::{holds_nul, read_json, type_rank, TYPE_ORDER};
 
 pub use filter::{eval, eval_json, Filter, Operator};
 pub use query::{

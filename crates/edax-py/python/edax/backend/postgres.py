@@ -24,7 +24,7 @@ from .. import _json, _names, _native, errors
 from .._deadline import within
 from .._units import enlisted, own_transaction
 from .._wiring import wiring_int, wiring_str
-from ..errors import BadHandle, CodecError, EdaxError, StoreError
+from ..errors import BadHandle, CodecError, EdaxError, StoreError, TransactionFailure
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
 from ..message import CommandMessage, EventDraft, EventMessage
 from ..projection import Entity
@@ -43,6 +43,7 @@ __all__ = [
     "PostgresSagaStore",
     "PostgresSettings",
     "PostgresTransactor",
+    "PostgresTransactionFailure",
     "PostgresTx",
     "RelayLease",
     "TableRole",
@@ -72,6 +73,7 @@ _Op = Literal[
     "settle",
     "saga_load",
     "saga_write",
+    "projection_state",
 ]
 _names.check(get_args(_Op), _native.postgres_ops(), "postgres operations")
 #: The operations that only read: a short transaction of their own takes no pending write fence.
@@ -180,6 +182,10 @@ class PostgresTx:
     closed: bool = False
 
 
+class PostgresTransactionFailure(TransactionFailure):
+    """PostgreSQL transaction failure with the shared cause and recovery evidence contract."""
+
+
 # One transactor per pool: two would be two transaction identities over one pool, and a store of one would
 # auto-commit on a second connection inside the other's unit of work, and could wait on its own row lock.
 _TRANSACTORS: dict[int, weakref.ref[PostgresTransactor]] = {}
@@ -270,8 +276,7 @@ class PostgresTransactor:
         """Hold the server and the tables of ``roles`` to the contract, in a transaction of its own."""
 
         async def checked(conn: PgConnection) -> str:
-            row = await conn.fetchrow(self._sql["server"])
-            _native.postgres_check_server(row[0], row[1], row[2], self._settings)
+            await self.check_server(conn)
             param = _native.postgres_catalog_param(self._tables, roles)
             catalog: str = await conn.fetchval(self._sql["catalog"], param)
             return _native.postgres_check_catalog(self._tables, roles, catalog)
@@ -314,9 +319,9 @@ class PostgresTransactor:
                 )
             await self._call("transaction", tx, lambda: conn.execute(self._sql["commit"]))
 
-    async def _end(self, conn: PgConnection) -> None:
+    async def _end(self, conn: PgConnection) -> bool:
         """Roll back; a connection that cannot (a cancel landed mid-statement) is closed instead, which the
-        server reads as a rollback, and the pool replaces it."""
+        server reads as a rollback, and the pool replaces it. Only a confirmed reply returns true."""
         try:
             await within(conn.execute(self._sql["rollback"]), self._op_timeout_s, "postgres rollback")
         except (Exception, asyncio.CancelledError) as error:
@@ -328,6 +333,8 @@ class PostgresTransactor:
                 logger.warning("edax postgres: connection termination failed", exc_info=True)
             if isinstance(error, asyncio.CancelledError):
                 raise
+            return False
+        return True
 
     def _acquire(self) -> AbstractAsyncContextManager[PgConnection]:
         return _Acquired(self._pool, self._acquire_timeout_s)
@@ -359,6 +366,51 @@ class PostgresTransactor:
             return await self._alone(op, call, fenced=fenced)
         await self._ensure()
         return await self._call(op, handle, lambda: call(handle.connection))
+
+    async def call(self, call: Awaitable[T]) -> T:
+        """Await one adapter statement under the deadline, preserving its driver error. Store-internal."""
+        return await within(call, self._op_timeout_s, "postgres statement")
+
+    async def check_server(self, conn: PgConnection) -> None:
+        """Check a server on an already-owned connection. Store-internal."""
+        row = await self.call(conn.fetchrow(self._sql["server"]))
+        _native.postgres_check_server(row[0], row[1], row[2], self._settings)
+
+    async def run_owned(self, call: Callable[[PgConnection], Awaitable[T]], *, op: _Op | None = None) -> T:
+        """Run an adapter call in its own transaction, refusing an ambient unit of work.
+
+        The adapter uses :meth:`call` for each statement. Failures retain their rollback/commit evidence so
+        its kernel can choose recovery; cancellation stays cancellation. With ``op``, a failure's cause is
+        the kernel's typed verdict for that operation, the raw error its ``__cause__``; without, the raw
+        error. Store-internal.
+        """
+        if self._handle(None) is not None:
+            raise BadHandle(
+                "postgres operation requires its own transaction, outside an ambient unit of work"
+            )
+        rolled_back = False
+        commit_started = False
+        try:
+            async with self._acquire() as conn:
+                try:
+                    await self.call(conn.execute(self._begin))
+                    result = await call(conn)
+                    commit_started = True
+                    await self.call(conn.execute(self._sql["commit"]))
+                    return result
+                except BaseException:
+                    rolled_back = await self._end(conn)
+                    raise
+        except BadHandle:
+            raise
+        except Exception as error:
+            cause: Exception = error
+            if op is not None and not isinstance(error, EdaxError):
+                cause = postgres_error(op, error)
+                cause.__cause__ = error
+            raise PostgresTransactionFailure(
+                cause, rolled_back=rolled_back, commit_started=commit_started
+            ) from error
 
     async def _alone(
         self, op: _Op, call: Callable[[PgConnection], Awaitable[T]], *, fenced: bool = True

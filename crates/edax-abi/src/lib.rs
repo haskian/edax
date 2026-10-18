@@ -51,6 +51,14 @@ fn to_wire(error: edax_core::Error) -> String {
     error.to_string()
 }
 
+fn read_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, String> {
+    serde_json::from_str(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+}
+
+fn write_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+}
+
 /// The taxonomy code a host names, `None` for a failure no code classifies. A code the kernel does not
 /// know is a `codec:` error.
 fn error_code(code: Option<String>) -> Result<Option<ErrorCode>, String> {

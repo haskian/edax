@@ -1,0 +1,850 @@
+[
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_safe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "10480275631342393387",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "status": "paid"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_safe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "9962133478494676937",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "total": 9007199254740991
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_safe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "10480275631342393387",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "status": "paid"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_safe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "9962133478494676937",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "total": 9007199254740991
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "name": "projection_payload_safe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":9007199254740991,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_metadata_safe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":9007199254740991}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_state_safe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":9007199254740991,\"intents\":[]}]}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_intent_safe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":9007199254740991}]}]}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_unsafe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_unsafe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 22 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_unsafe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_unsafe_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 22 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_payload_unsafe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":9007199254740992,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_metadata_unsafe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":9007199254740992}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_state_unsafe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":9007199254740992,\"intents\":[]}]}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 77 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_intent_unsafe_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":9007199254740992}]}]}}",
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_beyond_u64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_beyond_u64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_beyond_u64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_beyond_u64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_payload_beyond_u64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":18446744073709551617,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_metadata_beyond_u64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":18446744073709551617}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_state_beyond_u64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":18446744073709551617,\"intents\":[]}]}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 77 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_intent_beyond_u64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":18446744073709551617}]}]}}",
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_negative_beyond_i64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_negative_beyond_i64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_negative_beyond_i64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_negative_beyond_i64",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_payload_negative_beyond_i64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":-9223372036854775809,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_metadata_negative_beyond_i64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":-9223372036854775809}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_state_negative_beyond_i64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":-9223372036854775809,\"intents\":[]}]}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 77 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_intent_negative_beyond_i64",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":-9223372036854775809}]}]}}",
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_wide_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_wide_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_wide_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_wide_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_payload_wide_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":1000000000000000000001,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_metadata_wide_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":1000000000000000000001}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_state_wide_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":1000000000000000000001,\"intents\":[]}]}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 77 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_intent_wide_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":1000000000000000000001}]}]}}",
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_negative_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_negative_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_negative_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_negative_scientific_integer",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
+          "error": "codec: integer at byte 9 is outside the 64-bit range",
+          "fingerprint": "3548288475906304936",
+          "published": false,
+          "raw": "orders:0:9223372036854775807"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_payload_negative_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":-1000000000000000000001,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_metadata_negative_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":-1000000000000000000001}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_state_negative_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":-1000000000000000000001,\"intents\":[]}]}}",
+    "want": null
+  },
+  {
+    "error": "codec: integer at byte 77 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "name": "projection_intent_negative_scientific_integer",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":-1000000000000000000001}]}]}}",
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_content_exponent_float",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "653615509270149261",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "status": "paid"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "append",
+    "name": "append_value_exponent_float",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "13210991620364307555",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "total": 1e+21
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_content_exponent_float",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "653615509270149261",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "status": "paid"
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "mode": "upsert",
+    "name": "upsert_value_exponent_float",
+    "op": "plan",
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
+          "fingerprint": "13210991620364307555",
+          "sequence": 9223372036854775807,
+          "stream": "order-42",
+          "value": {
+            "total": 1e+21
+          }
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "name": "projection_payload_exponent_float",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":1e+21,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_metadata_exponent_float",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"prepare_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":1e+21}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_state_exponent_float",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":1e+21,\"intents\":[]}]}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  },
+  {
+    "error": null,
+    "name": "projection_intent_exponent_float",
+    "op": "projection_keys",
+    "request_json": "{\"contract\":{\"generation\":\"orders-v1\",\"source_identity\":\"source-v1\",\"source_history\":\"history-v1\",\"topic\":\"orders\",\"reducer_id\":\"order-v1\",\"envelope_id\":\"event-v1\",\"keying_id\":\"key-v1\",\"effect_namespace\":\"effects-v1\",\"starts\":{\"0\":9223372036854775807}},\"operation\":{\"op\":\"apply_batch\",\"lease\":{\"checkpoint_key\":\"checkpoint\",\"partition\":0,\"owner\":\"worker\",\"epoch\":9223372036854775807,\"next_offset\":9223372036854775807,\"expires_ms\":9223372036854775807},\"inputs\":[{\"offset\":9223372036854775807,\"event\":{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":null}}],\"proof\":{\"identity\":\"source-v1\",\"history\":\"history-v1\",\"beginning\":0,\"end\":9223372036854775807}, \"reduced\":[{\"state\":null,\"intents\":[{\"key\":\"receipt\",\"destination\":\"billing\",\"payload\":1e+21}]}]}}",
+    "want": [
+      "9:orders-v1:[\"projection\",\"manifest\"]",
+      "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
+      "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
+    ]
+  }
+]

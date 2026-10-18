@@ -197,14 +197,14 @@ dependencies = [
 
 [[package]]
 name = "edax-core"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "edax-cqrs"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "bigdecimal",
@@ -228,14 +228,14 @@ dependencies = [
 
 [[package]]
 name = "edax-golden"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "edax-seal"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "aes-gcm",
  "base64",

@@ -103,7 +103,7 @@ impl Logical {
 
 /// A validated identifier: one or more of `a-z`, `0-9` and `_`, not starting with a digit, at most 63 bytes
 /// (the server's limit), so it is quoted without escaping and never case-folded.
-fn identifier(what: &str, name: &str) -> Result<String, Error> {
+pub(crate) fn identifier(what: &str, name: &str) -> Result<String, Error> {
     let valid = !name.is_empty()
         && name.len() <= 63
         && !name.starts_with(|c: char| c.is_ascii_digit())

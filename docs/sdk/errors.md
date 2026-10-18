@@ -314,6 +314,19 @@ on the redelivery, which is still terminal. The dispatcher dead-letters it on
 its first attempt rather than nacking forever. A transient failure released the claim, so the
 redelivery re-runs the handler for real.
 
+## Transaction failure evidence
+
+Python stores can raise `edax.errors.TransactionFailure` with the original `cause`, whether a
+rollback was confirmed (`rolled_back`), and whether a commit was attempted (`commit_started`).
+`PostgresTransactionFailure` is its PostgreSQL subclass and retains the same import and fields.
+These fields describe what storage observed; they add no kernel error code.
+
+`KafkaProjection` classifies the original cause through the shared error taxonomy. It can do this for
+any projection state store, without importing a database adapter. After a retryable failure it reloads the
+database checkpoint before replaying. A lost commit reply remains uncertain even when a later
+rollback succeeds. The append/upsert adapter uses the same evidence to distinguish a safe
+record-isolation attempt from a retry of unchanged originals.
+
 ## The golden vector
 
 `testdata/golden/error_taxonomy.json` is the committed copy of the kernel's table: one row per code,

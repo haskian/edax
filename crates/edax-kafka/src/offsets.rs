@@ -22,7 +22,7 @@
 //!
 //! Settlement is also data, not a callback: [`ack`](OffsetTracker::ack) and
 //! [`nack`](OffsetTracker::nack) return the decision, and the IO shell performs it. The shell
-//! reports a commit back with [`committed`](OffsetTracker::committed), so a client commit that
+//! reports a commit back with [`committed_generation`](OffsetTracker::committed_generation), so a client commit that
 //! failed is not recorded as one.
 
 use std::collections::{BTreeMap, HashMap};
@@ -68,6 +68,8 @@ pub struct Due {
     pub partition: i32,
     /// The watermark to commit: the next offset the group reads after a restart.
     pub offset: i64,
+    /// The partition generation that requested this commit. Return it with the completion.
+    pub generation: i64,
 }
 
 /// One partition's bookkeeping, for a health check or a gauge.
@@ -89,6 +91,8 @@ pub struct PartitionStats {
 }
 
 struct PartitionState {
+    /// Changes on initial booking and every rewind; asynchronous commits belong to one generation.
+    generation: i64,
     /// Booked but unsettled offsets, each with the token that settles it — or the retired token a
     /// rewind left behind, which no longer settles anything. Ordered, so the lowest — the watermark
     /// and the offset a nack seeks to — is the first key.
@@ -102,8 +106,9 @@ struct PartitionState {
 
 impl PartitionState {
     /// The bookkeeping of a partition whose first booking is `offset`.
-    fn new(offset: i64) -> Self {
+    fn new(offset: i64, generation: i64) -> Self {
         Self {
+            generation,
             inflight: BTreeMap::new(),
             first: offset,
             max_delivered: offset,
@@ -149,8 +154,9 @@ struct Inner {
     /// Live tokens only. A token leaves on ack, on re-booking of its offset, on a nack of any offset
     /// in its partition, and on reset of its partition; from then on it is stale and settles nothing.
     bookings: HashMap<i64, Booking>,
-    /// This tracker's own token mint: a token settles only on the tracker that issued it.
+    /// Delivery and generation identities are separate namespaces within this tracker.
     tokens: TokenMint,
+    generations: TokenMint,
 }
 
 impl Inner {
@@ -204,12 +210,14 @@ impl OffsetTracker {
             Some((shared, _)) => Arc::clone(shared),
             None => Arc::from(topic),
         };
-        let state = inner
-            .topics
+        let Inner {
+            topics, generations, ..
+        } = &mut *inner;
+        let state = topics
             .entry(Arc::clone(&topic))
             .or_default()
             .entry(partition)
-            .or_insert_with(|| PartitionState::new(offset));
+            .or_insert_with(|| PartitionState::new(offset, generations.issue()));
         let replaced = state.inflight.insert(offset, token);
         state.first = state.first.min(offset);
         state.max_delivered = state.max_delivered.max(offset);
@@ -256,7 +264,7 @@ impl OffsetTracker {
 
     /// The watermark of every partition whose watermark is higher than the last one committed,
     /// ordered by topic then partition. The shell commits them in one call and reports each back
-    /// with [`committed`](Self::committed); a commit that failed is due again next time.
+    /// with [`committed_generation`](Self::committed_generation); a commit that failed is due again next time.
     pub fn due(&self) -> Vec<Due> {
         lock(&self.state)
             .topics
@@ -267,6 +275,7 @@ impl OffsetTracker {
                         topic: topic.to_string(),
                         partition: *partition,
                         offset,
+                        generation: state.generation,
                     })
                 })
             })
@@ -278,9 +287,24 @@ impl OffsetTracker {
     /// Max-merge, so two commits that returned out of order leave the higher watermark recorded. A
     /// no-op for a partition never booked or since reset: recording a watermark for one nobody owns
     /// would refuse a lower, correct commit if it were assigned back.
+    ///
+    /// Synchronous callers only: the partition must not change between reading the watermark and
+    /// recording completion. Asynchronous shells must use [`committed_generation`](Self::committed_generation).
     pub fn committed(&self, topic: &str, partition: i32, offset: i64) {
         if let Some(state) = lock(&self.state).partition_mut(topic, partition) {
             state.committed = state.committed.max(Some(offset));
+        }
+    }
+
+    /// Record a successful commit only if its partition generation still owns the bookkeeping.
+    ///
+    /// A reset, revoke, or rewind makes an older completion on this tracker a no-op. This
+    /// fences local bookkeeping; the shell must still serialize broker commit requests.
+    pub fn committed_generation(&self, topic: &str, partition: i32, offset: i64, generation: i64) {
+        if let Some(state) = lock(&self.state).partition_mut(topic, partition) {
+            if state.generation == generation {
+                state.committed = state.committed.max(Some(offset));
+            }
         }
     }
 
@@ -297,20 +321,26 @@ impl OffsetTracker {
     /// between) pins the watermark until the partition is reset by a rebalance or a restart.
     pub fn nack(&self, token: i64) -> NackDecision {
         let mut inner = lock(&self.state);
-        let Inner { topics, bookings, .. } = &mut *inner;
+        let Inner {
+            topics,
+            bookings,
+            generations,
+            ..
+        } = &mut *inner;
         let Some(booking) = bookings.get(&token) else {
             return NackDecision::Stale;
         };
         let (partition, offset) = (booking.partition, booking.offset);
         let Some(state) = topics
             .get_mut(&*booking.topic)
-            .and_then(|partitions| partitions.get(&partition))
+            .and_then(|partitions| partitions.get_mut(&partition))
         else {
             return NackDecision::Stale;
         };
         // The nacked offset is still in flight, so the map is never empty here; its own offset is
         // the answer either way.
         let target = state.inflight.keys().next().copied().unwrap_or(offset);
+        state.generation = generations.issue();
         for stale in state.inflight.values() {
             bookings.remove(stale);
         }
@@ -343,6 +373,7 @@ impl OffsetTracker {
             topic: topic.to_owned(),
             partition,
             offset,
+            generation: state.generation,
         })
     }
 

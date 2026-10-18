@@ -25,6 +25,7 @@
 mod broker;
 mod event;
 mod idempotency;
+mod ingest;
 mod outbox;
 mod outbox_rows;
 mod projection;
@@ -37,6 +38,7 @@ mod versioned;
 pub use broker::{LogMessage, MemoryBroker, PolledDelivery};
 pub use event::{MemoryEventStore, Snapshot};
 pub use idempotency::MemoryIdempotencyStore;
+pub use ingest::MemoryIngest;
 pub use outbox::MemoryCommandOutbox;
 pub use projection::{Document, MemoryProjectionStore};
 pub use saga::{MemorySagaStore, SagaRow};

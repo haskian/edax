@@ -19,6 +19,8 @@ is one JSON text column. Each SDK ships only the client calls around it.
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
 | `erasure` | durable operations, atomic control outbox, permanent revocations, catalog checks and transaction advisory fences | erasure unit and live tests |
+| `ingest` | optional ingestion table contracts, row locks, atomic state/rejection writes and rollback-aware recovery | `postgres_ingest.json` |
+| `projection` | optional projection state and intent tables, shared and partition locks, one read and one write per kind per batch, indexed pending delivery, delete on delivery and pruning | `postgres_projection_state.json` |
 | `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,
@@ -143,7 +145,9 @@ integer as the nearest `f64`. Two rules make the two agree.
   `exact_json` writes such a double as its exact digits and a `.0`: `58088200776852272.0`. `jsonb`
   keeps that value, and every reader reads it back as the same double.
 
-No value is refused for its size. The compiler binds comparands and cursor values through the same
+This read-model document/query contract does not reject a number for its magnitude. Ingestion and
+fold application values have the stricter [canonical JSON numeric contract](cqrs.md#numbers).
+The compiler binds comparands and cursor values through the same
 exact text. A document written to the table by other means is outside the guarantee. `jsonb` also
 spells numbers its own way on the way out: `1e-7` comes back as `0.0000001`, and `-0.0` as `0`. Each
 reads back as the same value.
@@ -228,6 +232,40 @@ its key forever. That mode is at-least-once: a handler slower than the TTL can r
 A claim that lost its insert reads the row, and `claim_read` names what it does next: `prior`,
 `take_over` or `vanished`. A lost take-over counts as a vanished row. The kernel bounds the loop: a
 row still gone on the third read gives the claim up as the transient `store` error.
+
+## Optional ingestion and projection state storage
+
+`ingest` and `projection` each provide optional table contracts and reference DDL. They do not extend the
+base event-store schema or provision tables at runtime. Hosts apply the DDL through migrations.
+
+`ingest::statements` supplies target-manifest checks, row-locking plan reads, inserts and updates,
+and pending rejection reads and marks. No statement takes an advisory lock: a plan read locks the
+rows it finds, and an absent key is inserted without `ON CONFLICT`, so a concurrent insert fails
+and retries. A key range bounds each target, so the key index serves it on every supported
+version. The partial index selects unpublished rejections so delivery does not scan lifetime
+publication history. The adapter commits accepted writes and durable rejections in one owned
+transaction. Recovery verdicts distinguish confirmed rollback from an unknown commit outcome; only
+a rolled-back record-local failure permits batch isolation. A unique violation always retries.
+
+`projection::statements` supplies two tables. The state table holds the manifest, checkpoints,
+states and receipts as key/value rows with no secondary index and fillfactor 70, so updates stay
+heap-only (HOT).
+The intents table holds undelivered intents with an index on their source position. A transaction
+takes the generation lock (shared for partition work, exclusive for initialization, freeze and
+activation) and its partition's lock before it reads. It reads with one statement, then inserts,
+updates and inserts intents with one statement each. An insert has no `ON CONFLICT`, so a concurrent
+insert of one key fails the transaction instead of overwriting. Backup and restore must preserve
+both tables together.
+
+The projection adapter executes the plan from `edax-cqrs::projection` under those locks. `pending`
+reads the manifest first, so an inactive generation reads no intent. Then it reads each
+partition's eligible range through the index, in source order. Delivery deletes the intent;
+`prune` deletes intents a cutover made permanently ineligible. Activation rewrites no intent.
+`postgres_ingest.json` and `postgres_projection_state.json` pin the SQL. Live tests cover rollback, ownership races,
+query plans and restore behavior beyond what pure vectors establish.
+
+See [ingestion](../backends/ingestion.md) for migrations and batch recovery, and
+[projection processing](../sdk/projection-processing.md) for cutover and restore procedures.
 
 ## See also
 

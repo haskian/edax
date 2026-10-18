@@ -98,7 +98,8 @@ EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
 ```
 
 **One kernel crate per concern.** Each kernel's full scope, module by module, is the table at the top
-of its `docs/kernels/<crate>.md`; every other description lists the same module names.
+of its page in `docs/kernels/` (for example, `cqrs.md` for `edax-cqrs`); every other
+description lists the same module names.
 `edax-core` is primitives only: `hash` (with `payload_hash`, the one hash both idempotency guards bind),
 `key` (tenancy, the tenant key, the guard key), `backoff`,
 `clock`, `guid`, `version` (`next_version`), `names` (`closed_names!`, the one shape of a closed set
@@ -108,7 +109,8 @@ runtime helpers, `lock` and `TokenMint`, which no binding crosses and no golden 
 `causation`, `partition` (local fan-out), `staleness`, `idempotency` (the event guard's key and hash),
 `sequence` (and a save's `draft_batch`), `upcast`,
 and the orchestration decisions the SDKs make: `retry` (`Retries`, which every dispatcher performs, and
-`retry_step`), `drain` (the relay's `Drain`) and `saga` (`saga_admit`, `saga_write`, `saga_command_id`).
+`retry_step`), `drain` (the relay's `Drain`), `saga` (`saga_admit`, `saga_write`, `saga_command_id`)
+and `batch` (microbatch limits, admission, cutting and recovery).
 `sealing` owns authenticated message/state context, protected-state completion and opening policy;
 `erasure` owns frozen participants, workflow transitions, control notifications and configuration validation.
 `edax-seal` owns cryptography, `Cipher`, `EncryptionInfo`, scope encoding, and `keys` (the reference
@@ -119,7 +121,7 @@ not proof of complete process-memory zeroization.
 winner's `settle_failure`), `protected` (keyed command fingerprints, encrypted results and authenticated
 scope checks while preserving ordinary claim keys), the ledger fence every store applies (`complete_fence`, `release_fence`; Redis's
 Lua replays it from `idempotency_fence.json`), the host values `Decimal` and `Instant`, *and* the read side's `filter` and
-`query`. The `record` serves the event guard too: `edax-event` names the key and hash, `edax-cqrs` keeps
+`query`, plus `namespace` (the generation key namespace both features share), `ingest` (append/upsert identity, ownership, compaction, durable rejections and target contracts), and `projection` (ordered projection state: delta transitions, canonical reducer input, dual receipts, source continuity, scoped checkpoint leases and effect cutovers). The `record` serves the event guard too: `edax-event` names the key and hash, `edax-cqrs` keeps
 the state machine. Filter and query live together because both read documents through one value model
 and one collation (the crate-private `value` and `collation` modules) — never split them across crates.
 
@@ -131,8 +133,9 @@ and one collation (the crate-private `value` and `collation` modules) — never 
 `edax-redis` owns `ledger` (the key, settings and their defaults, value layout, claim handle and reply outcomes) and
 `scripts` (the fence scripts and the reply verdict). `edax-postgres` owns `config`, `error` (the SQLSTATE verdict per
 operation), `schema` (the table contract and its catalog check; edax provisions no table), `statements`, `rows` (the row layout), `documents` (exact number text), `query`
-(the read-model query compiled to SQL, and the page), `ledger` (the claim owner and the fence), and
-`erasure` (durable operations, notification outbox and destination revocation fences). A Postgres
+(the read-model query compiled to SQL, and the page), `ledger` (the claim owner and the fence),
+`erasure` (durable operations, notification outbox and destination revocation fences),
+`ingest` (optional ingestion tables, locks, writes and rollback-aware recovery), and `projection` (atomic projection state and intent storage, shared and partition locks, delivery and pruning). A Postgres
 statement, row layout or query rule every SDK must match is the kernel's: change it there, never in the adapter. The adapter is the input and output (I/O) shell: it
 calls the client and the kernel, and decides nothing on its own.
 

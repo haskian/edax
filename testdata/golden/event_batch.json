@@ -1,0 +1,657 @@
+[
+  {
+    "config": {},
+    "error": null,
+    "name": "default_limits",
+    "op": "config",
+    "want": {
+      "concurrency": 4,
+      "flush_ms": 50,
+      "max_attempts": 5,
+      "max_bytes": 1048576,
+      "max_mapped_bytes": 1048576,
+      "max_record_bytes": 1048576,
+      "max_records": 500,
+      "retained_bytes": 16777216,
+      "retained_records": 2000
+    }
+  },
+  {
+    "config": {
+      "concurrency": 2,
+      "flush_ms": 100
+    },
+    "error": null,
+    "name": "partial_limits",
+    "op": "config",
+    "want": {
+      "concurrency": 2,
+      "flush_ms": 100,
+      "max_attempts": 5,
+      "max_bytes": 1048576,
+      "max_mapped_bytes": 1048576,
+      "max_record_bytes": 1048576,
+      "max_records": 500,
+      "retained_bytes": 16777216,
+      "retained_records": 2000
+    }
+  },
+  {
+    "config": {
+      "max_records": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_records",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_bytes": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_bytes",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "flush_ms": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_age",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "concurrency": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_concurrency",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_records": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_retained_records",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_bytes": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_retained_bytes",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_record_bytes": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_record_bytes",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_mapped_bytes": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_mapped_bytes",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_attempts": 0
+    },
+    "error": "bad_handle: microbatch limits must be positive",
+    "name": "zero_attempts",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_record_bytes": 1048577
+    },
+    "error": "bad_handle: max_record_bytes must not exceed max_bytes",
+    "name": "record_larger_than_batch",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_records": 500
+    },
+    "error": "bad_handle: retained_records must exceed max_records for admission headroom",
+    "name": "missing_record_headroom",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_bytes": 4194303
+    },
+    "error": "bad_handle: retained_bytes must cover six source and mapped serialization copies",
+    "name": "insufficient_byte_headroom",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_bytes": 12582911
+    },
+    "error": "bad_handle: retained_bytes must cover six source and mapped serialization copies",
+    "name": "below_minimum_byte_headroom",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "retained_bytes": 12582912
+    },
+    "error": null,
+    "name": "minimum_byte_headroom_accepted",
+    "op": "config",
+    "want": {
+      "concurrency": 4,
+      "flush_ms": 50,
+      "max_attempts": 5,
+      "max_bytes": 1048576,
+      "max_mapped_bytes": 1048576,
+      "max_record_bytes": 1048576,
+      "max_records": 500,
+      "retained_bytes": 12582912,
+      "retained_records": 2000
+    }
+  },
+  {
+    "config": {
+      "max_mapped_bytes": 18446744073709551615
+    },
+    "error": "bad_handle: microbatch byte limits overflow",
+    "name": "byte_addition_overflow",
+    "op": "config",
+    "want": null
+  },
+  {
+    "config": {
+      "max_mapped_bytes": 9223372036854775807
+    },
+    "error": "bad_handle: microbatch byte limits overflow",
+    "name": "byte_multiplication_overflow",
+    "op": "config",
+    "want": null
+  },
+  {
+    "age_ms": 0,
+    "bytes": 0,
+    "config": {},
+    "error": null,
+    "name": "empty_fresh_batch",
+    "op": "cut",
+    "records": 0,
+    "want": false
+  },
+  {
+    "age_ms": 49,
+    "bytes": 1048575,
+    "config": {},
+    "error": null,
+    "name": "below_all_flush_thresholds",
+    "op": "cut",
+    "records": 499,
+    "want": false
+  },
+  {
+    "age_ms": 0,
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "record_flush_threshold",
+    "op": "cut",
+    "records": 500,
+    "want": true
+  },
+  {
+    "age_ms": 0,
+    "bytes": 1048576,
+    "config": {},
+    "error": null,
+    "name": "byte_flush_threshold",
+    "op": "cut",
+    "records": 1,
+    "want": true
+  },
+  {
+    "age_ms": 50,
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "age_flush_threshold",
+    "op": "cut",
+    "records": 1,
+    "want": true
+  },
+  {
+    "age_ms": 51,
+    "bytes": 1048577,
+    "config": {},
+    "error": null,
+    "name": "past_all_flush_thresholds",
+    "op": "cut",
+    "records": 501,
+    "want": true
+  },
+  {
+    "bytes": 0,
+    "config": {},
+    "error": null,
+    "name": "empty_admission",
+    "op": "admit",
+    "records": 0,
+    "used_bytes": 0,
+    "used_records": 0,
+    "want": true
+  },
+  {
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "first_record",
+    "op": "admit",
+    "records": 1,
+    "used_bytes": 0,
+    "used_records": 0,
+    "want": true
+  },
+  {
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "exact_caps",
+    "op": "admit",
+    "records": 1,
+    "used_bytes": 16777215,
+    "used_records": 1999,
+    "want": true
+  },
+  {
+    "bytes": 0,
+    "config": {},
+    "error": null,
+    "name": "record_cap_exceeded",
+    "op": "admit",
+    "records": 1,
+    "used_bytes": 0,
+    "used_records": 2000,
+    "want": false
+  },
+  {
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "byte_cap_exceeded",
+    "op": "admit",
+    "records": 0,
+    "used_bytes": 16777216,
+    "used_records": 0,
+    "want": false
+  },
+  {
+    "bytes": 0,
+    "config": {},
+    "error": null,
+    "name": "record_sum_overflow",
+    "op": "admit",
+    "records": 1,
+    "used_bytes": 0,
+    "used_records": 18446744073709551615,
+    "want": false
+  },
+  {
+    "bytes": 1,
+    "config": {},
+    "error": null,
+    "name": "byte_sum_overflow",
+    "op": "admit",
+    "records": 0,
+    "used_bytes": 18446744073709551615,
+    "used_records": 0,
+    "want": false
+  },
+  {
+    "attempt": 1,
+    "count": 500,
+    "error": null,
+    "kind": "fatal",
+    "max_attempts": 5,
+    "name": "fatal_stops",
+    "op": "recover",
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 0,
+    "count": 500,
+    "error": null,
+    "kind": "retry",
+    "max_attempts": 5,
+    "name": "retry_initial_step",
+    "op": "recover",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 500,
+    "error": null,
+    "kind": "retry",
+    "max_attempts": 5,
+    "name": "retry_first_failure",
+    "op": "recover",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 4,
+    "count": 500,
+    "error": null,
+    "kind": "retry",
+    "max_attempts": 5,
+    "name": "retry_later_failure",
+    "op": "recover",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 3
+    }
+  },
+  {
+    "attempt": 5,
+    "count": 500,
+    "error": null,
+    "kind": "retry",
+    "max_attempts": 5,
+    "name": "outage_exhaustion_stops_without_rejection",
+    "op": "recover",
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 500,
+    "error": null,
+    "kind": "uncertain",
+    "max_attempts": 5,
+    "name": "uncertain_commit_retries_original_batch",
+    "op": "recover",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 5,
+    "count": 500,
+    "error": null,
+    "kind": "uncertain",
+    "max_attempts": 5,
+    "name": "uncertain_commit_exhaustion_stops",
+    "op": "recover",
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 500,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "split_even_originals_left_first",
+    "op": "recover",
+    "want": {
+      "action": "split",
+      "split": 250,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 5,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "split_odd_originals_left_first",
+    "op": "recover",
+    "want": {
+      "action": "split",
+      "split": 2,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 2,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "split_two_originals",
+    "op": "recover",
+    "want": {
+      "action": "split",
+      "split": 1,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "single_record_isolated_rejection",
+    "op": "recover",
+    "want": {
+      "action": "reject",
+      "rejection": "rejected: ingestion sink refused this original",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": null,
+    "kind": "invalid",
+    "max_attempts": 5,
+    "name": "invalid_record_rejection",
+    "op": "recover",
+    "want": {
+      "action": "reject",
+      "rejection": "rejected: ingestion sink refused this original",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 500,
+    "error": null,
+    "kind": "invalid",
+    "max_attempts": 5,
+    "name": "invalid_batch_rejects_all",
+    "op": "recover",
+    "want": {
+      "action": "reject",
+      "rejection": "rejected: ingestion sink refused this original",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": "bad_handle: unknown microbatch recovery kind: unrecognized",
+    "kind": "unrecognized",
+    "max_attempts": 5,
+    "name": "unknown_failure_is_refused",
+    "op": "recover",
+    "want": null
+  },
+  {
+    "attempt": 1,
+    "count": 0,
+    "error": "bad_handle: recovery requires records and a positive attempt limit",
+    "kind": "retry",
+    "max_attempts": 5,
+    "name": "empty_recovery_is_refused",
+    "op": "recover",
+    "want": null
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": "bad_handle: recovery requires records and a positive attempt limit",
+    "kind": "retry",
+    "max_attempts": 0,
+    "name": "zero_retry_limit_is_refused",
+    "op": "recover",
+    "want": null
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "rejection_persistence_retries",
+    "op": "recover_rejected",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 5,
+    "count": 1,
+    "error": null,
+    "kind": "isolate",
+    "max_attempts": 5,
+    "name": "rejection_persistence_exhaustion",
+    "op": "recover_rejected",
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "count": 1,
+    "error": null,
+    "kind": "invalid",
+    "max_attempts": 5,
+    "name": "invalid_rejection_persistence_retries",
+    "op": "recover_rejected",
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 5,
+    "count": 1,
+    "error": null,
+    "kind": "invalid",
+    "max_attempts": 5,
+    "name": "invalid_rejection_persistence_exhaustion",
+    "op": "recover_rejected",
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "config": {},
+    "error": null,
+    "name": "default_reservation",
+    "op": "reserve",
+    "want": 12582912
+  },
+  {
+    "bytes": 1000,
+    "config": {},
+    "error": null,
+    "name": "charge_counts_three_copies",
+    "op": "charge",
+    "want": 3000
+  },
+  {
+    "bytes": 4194304,
+    "config": {},
+    "error": null,
+    "name": "charge_at_the_reserve",
+    "op": "charge",
+    "want": 12582912
+  },
+  {
+    "bytes": 4194305,
+    "config": {},
+    "error": "bad_handle: prepared input exceeds the reserved serialized memory",
+    "name": "charge_past_the_reserve",
+    "op": "charge",
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "batch_failure_kind_names",
+    "op": "names",
+    "set": "batch_failure_kind",
+    "want": [
+      "fatal",
+      "retry",
+      "uncertain",
+      "isolate",
+      "invalid"
+    ]
+  },
+  {
+    "error": null,
+    "name": "batch_action_names",
+    "op": "names",
+    "set": "batch_action",
+    "want": [
+      "stop",
+      "retry",
+      "split",
+      "reject"
+    ]
+  }
+]

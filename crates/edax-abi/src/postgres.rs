@@ -616,6 +616,23 @@ pub fn postgres_erasure_update_result(version: Option<i64>) -> Result<u64, Strin
     edax_postgres::erasure::update_result(version).map_err(to_wire)
 }
 
+/// SQL and reference DDL for the optional ingestion tables.
+pub fn postgres_ingest_statements(config: &str) -> Result<String, String> {
+    crate::write_json(&edax_postgres::ingest::statements(config).map_err(crate::to_wire)?)
+}
+
+/// Batch recovery classification; record-local isolation requires a confirmed rollback.
+pub fn postgres_ingest_recovery(rolled_back: bool, sqlstate: Option<String>) -> String {
+    edax_postgres::ingest::recovery(sqlstate.as_deref(), rolled_back).to_owned()
+}
+
+/// Statements and host-owned DDL for atomic projection state, receipts, checkpoints and intents.
+pub fn postgres_projection_statements(config_json: &str) -> Result<String, String> {
+    serde_json::to_string(&edax_postgres::projection::statements(config_json).map_err(to_wire)?)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;

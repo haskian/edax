@@ -9,6 +9,13 @@ The module includes an in-memory backend. Redis supplies a separate idempotency 
 adapters support managed franz-go clients and custom client interfaces. See [Go backends](../backends/go.md) for their setup
 and limits. You still supply durable event, projection and saga stores.
 
+Append/upsert ingestion and projection processing currently have internal kernel bindings only. Go examples
+[20](../../crates/edax-go/examples/20_ingestion/main.go) and
+[21](../../crates/edax-go/examples/21_projection_processing/main.go) run inside this module to show their decisions.
+External modules cannot import `internal/kernel`. Go has no public ingestion/projection runner or
+PostgreSQL adapter; see the [Python ingestion](../backends/ingestion.md) and
+[projection processing](projection-processing.md) APIs for the available orchestration.
+
 ## Build from source
 
 The binding uses cgo and a native Rust static library. Install a C compiler and the repository's
@@ -39,7 +46,7 @@ source installation workflow; the Python wheel does not install the Go library.
 
 ## Examples
 
-The [nineteen Go examples](../../crates/edax-go/examples/README.md) follow the Python learning order.
+The [twenty-one Go examples](../../crates/edax-go/examples/README.md) follow the Python learning order.
 Each program checks its results. Run them after building the native library:
 
 ```sh

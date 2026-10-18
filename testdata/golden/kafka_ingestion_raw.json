@@ -1,0 +1,4113 @@
+[
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        }
+      ],
+      "key": [],
+      "value": [
+        123,
+        125
+      ]
+    },
+    "error": null,
+    "limit": 392,
+    "name": "compact_headers_exact_json_size_fits",
+    "offset": 0,
+    "op": "encode",
+    "partition": 0,
+    "record": {
+      "headers": [
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        }
+      ],
+      "key": [],
+      "value": [
+        123,
+        125
+      ]
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ],
+        [
+          "x",
+          ""
+        ]
+      ],
+      "key": "",
+      "offset": 0,
+      "oversized": false,
+      "partition": 0,
+      "sha256": "4b9690d1ae68244bea6390a3ab6b9a87b0dded06416ca6c8d6fe0220619b1c8e",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": "e30="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "error": null,
+    "limit": 391,
+    "name": "compact_headers_one_byte_below_json_size_is_stub",
+    "offset": 0,
+    "op": "encode",
+    "partition": 0,
+    "record": {
+      "headers": [
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        },
+        {
+          "key": "x",
+          "value": []
+        }
+      ],
+      "key": [],
+      "value": [
+        123,
+        125
+      ]
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "",
+      "offset": 0,
+      "oversized": true,
+      "partition": 0,
+      "sha256": "4b9690d1ae68244bea6390a3ab6b9a87b0dded06416ca6c8d6fe0220619b1c8e",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": ""
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 332,
+    "name": "binary_unicode_ordered_duplicate_headers",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "error": null,
+    "limit": 331,
+    "name": "one_byte_below_json_size_is_stub",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "",
+      "offset": 9223372036854775807,
+      "oversized": true,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": ""
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "error": null,
+    "limit": 0,
+    "name": "zero_limit_is_stub",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "",
+      "offset": 9223372036854775807,
+      "oversized": true,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": ""
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "topic_changes_identity",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders-v2",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "859a7af4566c91018ecaddf6ee4e230a52edcf3360eb5c19aefe3d361a830925",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders-v2",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "partition_changes_identity",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 8,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 8,
+      "sha256": "57577284ae2155404f0b16317453fe99c3cf84eb3a430f98947ea5343437fd7d",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "offset_changes_identity",
+    "offset": 9223372036854775806,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775806,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "8a510bff1db66f32fd7db43c608482e5bcca4033d9426439bb633a6ed76bbf2c",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "timestamp_changes_identity",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 9223372036854775807,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "8aaecfbcf8bc74d6b7d23bafc24c6505b1da15e9828bcdb0ea11e12afac32af4",
+      "timestamp": 9223372036854775807,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "timestamp_type_changes_identity",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 1,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "2182b9d3727d8455903690cc8d69bd2e8680c6a8401bb6e9cbb90bebc24a0bcf",
+      "timestamp": 0,
+      "timestamp_type": 1,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "absent_timestamps_differ_from_zero",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "6b0302a6434a5246647a971884af110c517cf5471d9f55e68c04b0386e0eaf8c",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "error": null,
+    "limit": 4096,
+    "name": "ordered_headers_change_identity",
+    "offset": 9223372036854775807,
+    "op": "encode",
+    "partition": 7,
+    "record": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    },
+    "timestamp": 0,
+    "timestamp_type": 0,
+    "topic": "orders",
+    "want": {
+      "headers": [
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "93d4af1471b6a34f3bac8956933a45e1ebd1e91b276afe4ada22070cdfb8e780",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "error": null,
+    "limit": 500,
+    "name": "base64_expansion_exceeds_limit",
+    "offset": 0,
+    "op": "encode",
+    "partition": 0,
+    "record": {
+      "headers": [],
+      "key": [
+        111,
+        114,
+        100,
+        101,
+        114,
+        45,
+        55
+      ],
+      "value": [
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "",
+      "offset": 0,
+      "oversized": true,
+      "partition": 0,
+      "sha256": "15924540de1696599452355fc70434485e70697b8c9dcfbbbee8a98da21ebf9a",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": ""
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [
+        111,
+        114,
+        100,
+        101,
+        114,
+        45,
+        55
+      ],
+      "value": [
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "error": null,
+    "limit": 1024,
+    "name": "same_expanded_record_fits",
+    "offset": 0,
+    "op": "encode",
+    "partition": 0,
+    "record": {
+      "headers": [],
+      "key": [
+        111,
+        114,
+        100,
+        101,
+        114,
+        45,
+        55
+      ],
+      "value": [
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255
+      ]
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "b3JkZXItNw==",
+      "offset": 0,
+      "oversized": false,
+      "partition": 0,
+      "sha256": "15924540de1696599452355fc70434485e70697b8c9dcfbbbee8a98da21ebf9a",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    }
+  },
+  {
+    "decoded": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "error": null,
+    "limit": 1024,
+    "name": "empty_original",
+    "offset": 0,
+    "op": "encode",
+    "partition": 0,
+    "record": {
+      "headers": [],
+      "key": [],
+      "value": []
+    },
+    "timestamp": null,
+    "timestamp_type": null,
+    "topic": "orders",
+    "want": {
+      "headers": [],
+      "key": "",
+      "offset": 0,
+      "oversized": false,
+      "partition": 0,
+      "sha256": "a8c23d4a302c67b40c420f65d66e136e3f402d4a9d513e2eceb23b26d362c1c2",
+      "timestamp": null,
+      "timestamp_type": null,
+      "topic": "orders",
+      "value": ""
+    }
+  },
+  {
+    "error": "codec: Invalid symbol 33, offset 0.",
+    "name": "invalid_base64_key",
+    "op": "decode",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "!",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    },
+    "want": null
+  },
+  {
+    "error": "codec: Invalid symbol 33, offset 0.",
+    "name": "invalid_base64_value",
+    "op": "decode",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "!"
+    },
+    "want": null
+  },
+  {
+    "error": "codec: Invalid symbol 33, offset 0.",
+    "name": "invalid_base64_header",
+    "op": "decode",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "!"
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "rejection_keeps_original_and_source_identity",
+    "op": "rejection",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    },
+    "source": "9:orders-v1:[\"source\",\"cluster-a/orders-1\",\"orders\",7,\"9223372036854775807\"]",
+    "want": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        },
+        {
+          "key": "edax-ingest-source",
+          "value": [
+            57,
+            58,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            118,
+            49,
+            58,
+            91,
+            34,
+            115,
+            111,
+            117,
+            114,
+            99,
+            101,
+            34,
+            44,
+            34,
+            99,
+            108,
+            117,
+            115,
+            116,
+            101,
+            114,
+            45,
+            97,
+            47,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            49,
+            34,
+            44,
+            34,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            34,
+            44,
+            55,
+            44,
+            34,
+            57,
+            50,
+            50,
+            51,
+            51,
+            55,
+            50,
+            48,
+            51,
+            54,
+            56,
+            53,
+            52,
+            55,
+            55,
+            53,
+            56,
+            48,
+            55,
+            34,
+            93
+          ]
+        },
+        {
+          "key": "edax-ingest-sha256",
+          "value": [
+            98,
+            97,
+            101,
+            53,
+            48,
+            56,
+            51,
+            100,
+            100,
+            101,
+            54,
+            102,
+            100,
+            48,
+            98,
+            102,
+            48,
+            56,
+            54,
+            52,
+            57,
+            53,
+            55,
+            51,
+            51,
+            53,
+            97,
+            101,
+            52,
+            52,
+            50,
+            101,
+            57,
+            99,
+            51,
+            55,
+            98,
+            100,
+            56,
+            50,
+            102,
+            97,
+            50,
+            49,
+            52,
+            51,
+            48,
+            57,
+            53,
+            98,
+            101,
+            57,
+            99,
+            101,
+            51,
+            51,
+            102,
+            48,
+            55,
+            97,
+            100,
+            55,
+            50,
+            98
+          ]
+        },
+        {
+          "key": "edax-ingest-oversized",
+          "value": [
+            102,
+            97,
+            108,
+            115,
+            101
+          ]
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    }
+  },
+  {
+    "error": null,
+    "name": "rejection_distinguishes_replaced_source",
+    "op": "rejection",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    },
+    "source": "9:orders-v2:[\"source\",\"cluster-a/orders-2\",\"orders\",7,\"9223372036854775807\"]",
+    "want": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        },
+        {
+          "key": "edax-ingest-source",
+          "value": [
+            57,
+            58,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            118,
+            50,
+            58,
+            91,
+            34,
+            115,
+            111,
+            117,
+            114,
+            99,
+            101,
+            34,
+            44,
+            34,
+            99,
+            108,
+            117,
+            115,
+            116,
+            101,
+            114,
+            45,
+            97,
+            47,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            50,
+            34,
+            44,
+            34,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            34,
+            44,
+            55,
+            44,
+            34,
+            57,
+            50,
+            50,
+            51,
+            51,
+            55,
+            50,
+            48,
+            51,
+            54,
+            56,
+            53,
+            52,
+            55,
+            55,
+            53,
+            56,
+            48,
+            55,
+            34,
+            93
+          ]
+        },
+        {
+          "key": "edax-ingest-sha256",
+          "value": [
+            98,
+            97,
+            101,
+            53,
+            48,
+            56,
+            51,
+            100,
+            100,
+            101,
+            54,
+            102,
+            100,
+            48,
+            98,
+            102,
+            48,
+            56,
+            54,
+            52,
+            57,
+            53,
+            55,
+            51,
+            51,
+            53,
+            97,
+            101,
+            52,
+            52,
+            50,
+            101,
+            57,
+            99,
+            51,
+            55,
+            98,
+            100,
+            56,
+            50,
+            102,
+            97,
+            50,
+            49,
+            52,
+            51,
+            48,
+            57,
+            53,
+            98,
+            101,
+            57,
+            99,
+            101,
+            51,
+            51,
+            102,
+            48,
+            55,
+            97,
+            100,
+            55,
+            50,
+            98
+          ]
+        },
+        {
+          "key": "edax-ingest-oversized",
+          "value": [
+            102,
+            97,
+            108,
+            115,
+            101
+          ]
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    }
+  },
+  {
+    "error": null,
+    "name": "rejection_stub_keeps_digest_and_identity",
+    "op": "rejection",
+    "raw": {
+      "headers": [],
+      "key": "",
+      "offset": 9223372036854775807,
+      "oversized": true,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": ""
+    },
+    "source": "9:orders-v1:[\"source\",\"cluster-a/orders-1\",\"orders\",7,\"9223372036854775807\"]",
+    "want": {
+      "headers": [
+        {
+          "key": "edax-ingest-source",
+          "value": [
+            57,
+            58,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            118,
+            49,
+            58,
+            91,
+            34,
+            115,
+            111,
+            117,
+            114,
+            99,
+            101,
+            34,
+            44,
+            34,
+            99,
+            108,
+            117,
+            115,
+            116,
+            101,
+            114,
+            45,
+            97,
+            47,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            49,
+            34,
+            44,
+            34,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            34,
+            44,
+            55,
+            44,
+            34,
+            57,
+            50,
+            50,
+            51,
+            51,
+            55,
+            50,
+            48,
+            51,
+            54,
+            56,
+            53,
+            52,
+            55,
+            55,
+            53,
+            56,
+            48,
+            55,
+            34,
+            93
+          ]
+        },
+        {
+          "key": "edax-ingest-sha256",
+          "value": [
+            98,
+            97,
+            101,
+            53,
+            48,
+            56,
+            51,
+            100,
+            100,
+            101,
+            54,
+            102,
+            100,
+            48,
+            98,
+            102,
+            48,
+            56,
+            54,
+            52,
+            57,
+            53,
+            55,
+            51,
+            51,
+            53,
+            97,
+            101,
+            52,
+            52,
+            50,
+            101,
+            57,
+            99,
+            51,
+            55,
+            98,
+            100,
+            56,
+            50,
+            102,
+            97,
+            50,
+            49,
+            52,
+            51,
+            48,
+            57,
+            53,
+            98,
+            101,
+            57,
+            99,
+            101,
+            51,
+            51,
+            102,
+            48,
+            55,
+            97,
+            100,
+            55,
+            50,
+            98
+          ]
+        },
+        {
+          "key": "edax-ingest-oversized",
+          "value": [
+            116,
+            114,
+            117,
+            101
+          ]
+        }
+      ],
+      "key": [],
+      "value": []
+    }
+  },
+  {
+    "error": null,
+    "name": "rejection_appends_authoritative_headers_after_originals",
+    "op": "rejection",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ],
+        [
+          "edax-ingest-source",
+          "Zm9yZ2VkLXNvdXJjZQ=="
+        ],
+        [
+          "edax-ingest-sha256",
+          "Zm9yZ2VkLWRpZ2VzdA=="
+        ],
+        [
+          "edax-ingest-oversized",
+          "dHJ1ZQ=="
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "1c4b92e04e28cc9559c0d614a3fa0c8acd830ff1b7d654ddb8918ab0f89e7f80",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "AP+AASo="
+    },
+    "source": "9:orders-v1:[\"source\",\"cluster-a/orders-1\",\"orders\",7,\"9223372036854775807\"]",
+    "want": {
+      "headers": [
+        {
+          "key": "trace-id",
+          "value": [
+            0,
+            255
+          ]
+        },
+        {
+          "key": "équipe",
+          "value": [
+            230,
+            148,
+            175,
+            230,
+            137,
+            149,
+            230,
+            184,
+            136,
+            227,
+            129,
+            191
+          ]
+        },
+        {
+          "key": "trace-id",
+          "value": [
+            115,
+            101,
+            99,
+            111,
+            110,
+            100
+          ]
+        },
+        {
+          "key": "empty",
+          "value": []
+        },
+        {
+          "key": "edax-ingest-source",
+          "value": [
+            102,
+            111,
+            114,
+            103,
+            101,
+            100,
+            45,
+            115,
+            111,
+            117,
+            114,
+            99,
+            101
+          ]
+        },
+        {
+          "key": "edax-ingest-sha256",
+          "value": [
+            102,
+            111,
+            114,
+            103,
+            101,
+            100,
+            45,
+            100,
+            105,
+            103,
+            101,
+            115,
+            116
+          ]
+        },
+        {
+          "key": "edax-ingest-oversized",
+          "value": [
+            116,
+            114,
+            117,
+            101
+          ]
+        },
+        {
+          "key": "edax-ingest-source",
+          "value": [
+            57,
+            58,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            118,
+            49,
+            58,
+            91,
+            34,
+            115,
+            111,
+            117,
+            114,
+            99,
+            101,
+            34,
+            44,
+            34,
+            99,
+            108,
+            117,
+            115,
+            116,
+            101,
+            114,
+            45,
+            97,
+            47,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            45,
+            49,
+            34,
+            44,
+            34,
+            111,
+            114,
+            100,
+            101,
+            114,
+            115,
+            34,
+            44,
+            55,
+            44,
+            34,
+            57,
+            50,
+            50,
+            51,
+            51,
+            55,
+            50,
+            48,
+            51,
+            54,
+            56,
+            53,
+            52,
+            55,
+            55,
+            53,
+            56,
+            48,
+            55,
+            34,
+            93
+          ]
+        },
+        {
+          "key": "edax-ingest-sha256",
+          "value": [
+            49,
+            99,
+            52,
+            98,
+            57,
+            50,
+            101,
+            48,
+            52,
+            101,
+            50,
+            56,
+            99,
+            99,
+            57,
+            53,
+            53,
+            57,
+            99,
+            48,
+            100,
+            54,
+            49,
+            52,
+            97,
+            51,
+            102,
+            97,
+            48,
+            99,
+            56,
+            97,
+            99,
+            100,
+            56,
+            51,
+            48,
+            102,
+            102,
+            49,
+            98,
+            55,
+            100,
+            54,
+            53,
+            52,
+            100,
+            100,
+            98,
+            56,
+            57,
+            49,
+            56,
+            97,
+            98,
+            48,
+            102,
+            56,
+            57,
+            101,
+            55,
+            102,
+            56,
+            48
+          ]
+        },
+        {
+          "key": "edax-ingest-oversized",
+          "value": [
+            102,
+            97,
+            108,
+            115,
+            101
+          ]
+        }
+      ],
+      "key": [
+        99,
+        97,
+        102,
+        195,
+        169,
+        47,
+        232,
+        168,
+        130,
+        229,
+        150,
+        174
+      ],
+      "value": [
+        0,
+        255,
+        128,
+        1,
+        42
+      ]
+    }
+  },
+  {
+    "error": "codec: Invalid symbol 33, offset 0.",
+    "name": "rejection_refuses_invalid_original",
+    "op": "rejection",
+    "raw": {
+      "headers": [
+        [
+          "trace-id",
+          "AP8="
+        ],
+        [
+          "équipe",
+          "5pSv5omV5riI44G/"
+        ],
+        [
+          "trace-id",
+          "c2Vjb25k"
+        ],
+        [
+          "empty",
+          ""
+        ]
+      ],
+      "key": "Y2Fmw6kv6KiC5Zau",
+      "offset": 9223372036854775807,
+      "oversized": false,
+      "partition": 7,
+      "sha256": "bae5083dde6fd0bf0864957335ae442e9c37bd82fa2143095be9ce33f07ad72b",
+      "timestamp": 0,
+      "timestamp_type": 0,
+      "topic": "orders",
+      "value": "!"
+    },
+    "source": "9:orders-v1:[\"source\",\"cluster-a/orders-1\",\"orders\",7,\"9223372036854775807\"]",
+    "want": null
+  }
+]

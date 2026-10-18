@@ -435,12 +435,14 @@ dependencies = [
 name = "edax-kafka"
 version = "0.12.0"
 dependencies = [
+ "base64",
  "edax-core",
  "edax-event",
  "edax-golden",
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
