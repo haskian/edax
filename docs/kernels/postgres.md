@@ -251,6 +251,9 @@ version. The partial index selects unpublished rejections so delivery does not s
 publication history. The adapter commits accepted writes and durable rejections in one owned
 transaction. A failure carries the `ingest` verdict and the rollback evidence, and
 `edax_event::batch::recover` decides from both. A unique violation is `concurrency`, so it retries.
+`delete_scope_events` and `delete_scope_state` take the bounds `ingest::scope_range` returns and
+report how many rows they deleted: an erasure cleanup of a plaintext target. They never touch
+rejections.
 
 `projection::statements` supplies two tables. The state table holds the manifest, checkpoints,
 states, receipts and a delivery cursor as key/value rows with no secondary index and fillfactor 70,
@@ -270,6 +273,9 @@ last partition of the previous page and atomically saves the new turn in a separ
 This scheduling row uses the existing table and needs no DDL migration. Empty pages leave it unchanged;
 failed delivery still advances the turn so healthy partitions remain reachable. Delivery deletes the intent;
 `prune` deletes intents a cutover made permanently ineligible. Activation rewrites no intent.
+`delete_scope` takes the bounds of `state_scope_range` and deletes that scope's state records, never
+receipts or checkpoints. The erasure statements add `revoked_operations`, a page of every operation
+past `persisted`, which a cleanup participant's sweep reads after a restore.
 `postgres_ingest.json` and `postgres_projection_state.json` pin the SQL. Live tests cover rollback, ownership races,
 query plans and restore behavior beyond what pure vectors establish.
 

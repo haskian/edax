@@ -29,7 +29,7 @@ and the two travel together because the query evaluates the filter.
 | `complete_fence` / `release_fence` | whether a claim owner may complete or release the record currently held by a ledger key |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
-| `namespace` | the length-prefixed key namespace of a generation, shared by `ingest` and `projection` |
+| `namespace` | the length-prefixed key namespace of a generation, its erasure key ranges, and `AtRest` with the sealed-part check, shared by `ingest` and `projection` |
 | `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts and exact source coordinates (`ingest.json`) |
 | `projection` | canonical ordered delta transitions, dual receipts, source continuity, scoped leases, checkpoint recovery and outbox activation |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
@@ -505,7 +505,7 @@ The total order, the tiebreak and the cursor are documented from the host's side
 `Contract` fixes a target generation's mode, source incarnation, mapper identity and `at_rest`. Key helpers
 scope row identities by generation, tenant and erasure subject, and source coordinates by source
 incarnation, topic, partition and offset. `scope_range` names the key range that holds every row of
-one subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
+one subject, or of a whole tenant without a subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
 contract. `check_sealed` runs after the sink seals and before it writes. On a sealed target, every
 written input of a subject must carry a keyed fingerprint. Its `private` part must be absent or a
 protected-state envelope of the row key's tenant and subject.
@@ -557,7 +557,7 @@ overwriting. The kernel does no I/O and never invokes a reducer.
 Two receipts bind each event to its event ID and aggregate sequence. Each holds a hash of the
 canonical event, not the event itself. For a sealed event the hash is `keyed_fingerprint`, an HMAC
 under the subject's fingerprint key. State keys carry the event's erasure subject, so an aggregate cannot change
-subjects. `state_scope_range` names one subject's state for a plaintext generation's cleanup. A reducer result holds a `private` and a `public` part. On a `sealed` generation (`Contract.at_rest`),
+subjects. `state_scope_range` names one subject's state, or a whole tenant's, for a plaintext generation's cleanup. A reducer result holds a `private` and a `public` part. On a `sealed` generation (`Contract.at_rest`),
 `ApplyBatch` refuses a subject's `private` part unless the host sealed it under the event's scope. It
 refuses a subject's intent payload unless sealed whatever `at_rest` says. `state_key` and `intent_id`
 name the identities that sealing binds. An

@@ -5,21 +5,23 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import build_message
 from edax import _json, _native
 from edax._values import replace
 from edax.backend.kafka_projection import KafkaProjection
-from edax.errors import BadHandle, CodecError, KeyMissing, KeyRevoking, Rejected, StoreError
+from edax.errors import BadHandle, CodecError, KeyMissing, KeyRevoking, Rejected, Shredded, StoreError
 from edax.message import EventMessage
 from edax.projection import (
     MemoryProjectionStateStore,
     ProjectionEvent,
     ProjectionInput,
+    ProjectionIntent,
     ProjectionLease,
     ProjectionResult,
+    ProjectionState,
     Reducer,
     SourceProof,
 )
@@ -27,7 +29,7 @@ from edax.sealing import MemoryKeys, Sealing
 from edax.serializer import KernelSerializer
 from edax.testing import drafted
 from test_kafka_projection import TP, Client, Source, decode
-from test_projection_state import target
+from test_projection_state import initial_cutover, target
 
 PAYLOAD = {"amount_minor": 1250, "currency": "EUR", "email": "ana@example.com"}
 
@@ -300,3 +302,34 @@ async def test_a_commit_past_its_deadline_holds_the_write_fence_until_it_ends() 
     # Once the commit ended, erasure ran; the subject is no longer active, so the runner waits.
     with pytest.raises(KeyRevoking):
         await asyncio.wait_for(partition, 1)
+
+
+async def test_erasure_mid_stream_through_a_sealing_store() -> None:
+    """The whole path: the runner opens, the store seals the subject's state and receipt, an erasure
+    destroys the key, and the partition moves on without the subject's data."""
+    keys = MemoryKeys()
+    sealing, records = await sealed_records(keys, 3)
+
+    def statement(state: ProjectionState | None, event: ProjectionEvent) -> ProjectionResult:
+        balance = (state.public["balance_minor"] if state else 0) + event.payload["amount_minor"]
+        receipt = ProjectionIntent("receipt", "statements", {"email": event.payload["email"]})
+        return ProjectionResult(
+            private={"email": event.payload["email"]}, public={"balance_minor": balance}, intents=[receipt]
+        )
+
+    store = MemoryProjectionStateStore(target(), sealing=sealing)
+    run, _ = await projection(sealing, records[:2], statement, store)
+    await run._partition(TP, run._parts[TP])
+    await store.activate(initial_cutover(store.target))
+    saved = await store.get("bank-eu", "account-42", "person-42")
+    assert saved is not None and saved["private"] == {"email": PAYLOAD["email"]}
+    assert [intent.payload for intent in await store.unpublished(10)] == [{"email": PAYLOAD["email"]}] * 2
+    await keys.revoke(sealing.scope("bank-eu", "person-42"))
+    await keys.destroy(sealing.scope("bank-eu", "person-42"))
+    cast(Client, run.client).records = records
+    await run._partition(TP, run._parts[TP])
+    lease = run._parts[TP].lease
+    assert lease is not None and lease.next_offset == 3, "the erased event still advances the cursor"
+    with pytest.raises(Shredded):
+        await store.get("bank-eu", "account-42", "person-42")
+    assert await store.unpublished(10) == [], "a destroyed subject's receipts are dropped, not delivered"

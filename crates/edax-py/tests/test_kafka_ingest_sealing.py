@@ -12,7 +12,7 @@ from edax import _json, _native
 from edax._values import replace
 from edax.backend.kafka_ingest import KafkaIngestion
 from edax.delivery import DeadLetter
-from edax.errors import CodecError, KeyMissing, Rejected
+from edax.errors import CodecError, KeyMissing, Rejected, Shredded
 from edax.ingestion import BatchInput, BatchResult, MappedRow, MemoryIngestionSink
 from edax.message import EventMessage
 from edax.pacing import Pacing
@@ -230,3 +230,24 @@ async def test_revocation_waits_back_off_and_reset_on_progress() -> None:
     # Each wait waits longer; progress resets the count.
     assert steps[:3] == [0, 1, 2]
     assert run._parts[TP].contended == 0
+
+
+async def test_sealed_row_at_rest_until_its_key_is_destroyed() -> None:
+    """The whole path: the runner opens, the sink seals the row's private part, and destroying the key
+    leaves only ciphertext."""
+    keys = MemoryKeys()
+    sealing, messages = await sealed(keys)
+    sink = MemoryIngestionSink(target(), sealing=sealing)
+    run, client = runner(sealing, messages, sink, private_row, await dead_letters([]))
+    async with running(run):
+        await until(lambda: client.commits == [{TP: 1}])
+    key = sink.target.row_key("acme", "order-42", "person-42")
+    stored = _json.decode(sink._database.get().get(key))
+    assert "ana@example.com" not in _json.encode(stored), "no plaintext of the subject at rest"
+    assert stored["public"] == {"status": "paid"}
+    row = await sink.get("acme", "order-42", "person-42")
+    assert row is not None and row["private"] == {"data": SECRET.decode()}
+    await keys.revoke(sealing.scope("acme", "person-42"))
+    await keys.destroy(sealing.scope("acme", "person-42"))
+    with pytest.raises(Shredded):
+        await sink.get("acme", "order-42", "person-42")

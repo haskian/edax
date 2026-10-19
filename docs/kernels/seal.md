@@ -93,7 +93,7 @@ authentication failing. AEAD itself does not prevent replay of the unchanged val
 the sequencing and idempotency kernels supply that behavior.
 See [RFC 5116](https://www.rfc-editor.org/rfc/rfc5116.html#section-1.2).
 
-### Snapshots and saga state
+### Stored state
 
 Domain: `edax.state.v1`.
 
@@ -102,9 +102,13 @@ str(kind), encryption, str(identity), str(type_name), u64(version),
 opt_str(tenant), opt_str(subject), str(marks), u32(completed)
 ```
 
-`kind` is exactly `snapshot` or `saga`; `completed` is 0 or 1.
+`kind` is exactly `snapshot`, `saga`, `ingestion`, `projection` or `intent`; `completed` is 0 or 1.
 Snapshot identity is its storage key; saga identity is its instance ID, with saga name as
-`type_name`. Marks are the stored serialized processing marks.
+`type_name`. Marks are the stored serialized processing marks. The other three seal a subject's
+private data in the CQRS stores. `ingestion` binds the row key and its sequence, `projection` binds the
+state key and the event sequence, and `intent` binds the intent ID with version 0. Each leaves
+`type_name` and marks empty and `completed` 0. Their key carries the generation, tenant and subject,
+so a sealed value copied to another row fails authentication.
 
 The protected-state JSON envelope carries `edax_protected_state: 1`, `tenant`, `subject`,
 `completed`, `encryption`, and `data`. `completed` must be present and boolean.
@@ -157,7 +161,10 @@ completed records.
 
 The reference `MemoryKeyProvider` is mutable synchronous state. Sharing hosts serialize its calls
 with a mutex. Its `reserve(scope, cipher)` atomically chooses a generation and charges one
-invocation; exhausted generations rotate while remaining readable. Encryption generations are
+invocation; exhausted generations rotate while remaining readable. `reserve_many(scope, cipher,
+count)` charges `count` invocations to one generation, so a batch seals many values under one
+reservation, each with its own nonce. A generation with fewer than `count` left rotates; unused uses
+stay charged. A count of zero or above the cipher's limit is `bad_handle`. Encryption generations are
 separate per cipher. `fingerprint(scope)` selects a separate stable-purpose key.
 
 `resolve(scope, cipher, key_id)` and `resolve_fingerprint(scope, key_id)` never create keys.

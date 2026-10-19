@@ -25,6 +25,10 @@ Message and aggregate IDs, tenant, subject, payload name and version stay public
 So do correlation and causation IDs, times, event sequence, command idempotency key,
 `extensions`, `metadata`, and the encryption information. Broker keys and headers stay public too.
 State identity, version, processing marks, owner, and completion marker are public.
+In ingestion rows and projection state, only the `private` part is sealed. The row or state key
+(generation, tenant, subject, row or aggregate ID), the stream owner, the sequence, the `public` part
+and the keyed fingerprints stay readable. Rejections keep the raw source record, which a sealed event
+keeps sealed, and only the error code of a sealed record.
 The [message field table](../kernels/event.md#message--the-messages) lists each envelope field and its type.
 
 Use opaque identifiers and keep personal data out of those fields. Encryption does not conceal

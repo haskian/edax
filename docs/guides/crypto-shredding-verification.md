@@ -1,6 +1,6 @@
 # Crypto-shredding verification
 
-This page records the implementation review and verification completed on 2026-10-15.
+This page records the implementation review and verification completed on 2026-10-15, and the ingestion and projection sealing verified on 2026-10-19.
 Use the [crypto-shredding guide](crypto-shredding.md) for configuration and migration, and the
 [seal kernel reference](../kernels/seal.md) for exact formats and authenticated bytes.
 
@@ -24,6 +24,9 @@ Production key providers and application cleanup participants remain deployment 
 | Paused writers drain before cleanup; cancellation releases guards; expired contexts cannot admit work; nested guards avoid deadlocks | [Python workflows](../../crates/edax-py/tests/test_crypto_workflows.py), [Go sealing tests](../../crates/edax-go/sealing_test.go), [live Postgres erasure tests](../../crates/edax-py/tests/test_erasure_postgres.py) |
 | Every workflow stage recovers after a lost response; cleanup failures do not starve healthy participants; offline participants and delayed destruction remain pending | [Kernel workflow tests](../../crates/edax-event/tests/erasure.rs), [Rust coordinator](../../crates/edax/src/erasure.rs), [Python coordinator](../../crates/edax-py/tests/test_erasure.py), [Go coordinator](../../crates/edax-go/erasure_test.go) |
 | Postgres stores encrypted rows and protected saga completion; schema, SQL parameters, outbox updates, and destination fences agree | [Row goldens](../../testdata/golden/postgres_rows.json), [live reference checks](../../crates/edax-postgres/live-check/tests/coordination.rs), [Python Postgres tests](../../crates/edax-py/tests/test_postgres.py), [erasure tests](../../crates/edax-py/tests/test_erasure_postgres.py) |
+| Ingestion and projection runners open sealed events once per batch; destroyed keys become erased inputs; revoking keys wait uncounted; receipts and row fingerprints are HMACs | [Ingestion runner](../../crates/edax-py/tests/test_kafka_ingest_sealing.py), [projection runner](../../crates/edax-py/tests/test_kafka_projection_sealing.py), [ingestion goldens](../../testdata/golden/ingest.json), [projection goldens](../../testdata/golden/projection_state.json) |
+| Sinks and projection stores keep a subject's `private` part and intent payloads sealed; the kernel refuses plaintext; a moved ciphertext fails authentication; one reservation per subject per batch | [Ingestion at rest](../../crates/edax-py/tests/test_ingestion_at_rest.py), [projection at rest](../../crates/edax-py/tests/test_projection_at_rest.py), [provider tests](../../crates/edax-seal/tests/keys.rs) |
+| Plaintext targets' cleanup deletes a subject's or a tenant's rows once; `resweep` finds what a missing participant left; the Postgres cleanup revokes in its delete transaction; memory and Postgres delete the same records | [Cleanup participants](../../crates/edax-py/tests/test_erasure_cleanup.py), [live reference checks](../../crates/edax-postgres/live-check/tests/projection_state.rs) |
 
 These tests exercise specific failure paths. Fixture scans check for known plaintext in persisted
 records; they do not establish that arbitrary application metadata, logs, or external systems are
@@ -78,6 +81,7 @@ libraries before the full Python and Go suites. Skipped tests are listed separat
 | Static and generated checks during hardening | Clippy with warnings denied, Ruff, formatting, ty, strict mypy, stubtest, facade generator tests, documentation lint, and binding regeneration passed. CQRS alternate-feature tests: 5 passed. | Generated bindings were rebuilt through the prescribed tasks. |
 | Simplification pass, 2026-10-15 | Rust: 525 passed, one ignored doctest. Python: 2,460 passed, 16 skipped. Go: all packages passed uncached race tests. Type and formatting checks passed. | Live Postgres ran. Live Kafka and Redis were skipped, along with the 14 nonjoining-ledger contracts. |
 | Merge with `main` at `5605d6c`, 2026-10-15 | Rust: 527 passed, one ignored doctest. Python: 2,497 passed, 16 skipped. All Go packages passed uncached race tests after binding regeneration and native rebuilds. | Live Postgres ran. Live Kafka and Redis were skipped, along with the 14 nonjoining-ledger contracts. |
+| Ingestion and projection sealing, 2026-10-19 | Rust: 568 passed, one ignored doctest. Python: 3,021 passed, 18 skipped. All Go packages passed uncached race tests. Postgres reference: 6 coordination, 8 differential and 2 projection-state tests passed. CQRS alternate-feature tests: 6 passed. | Live Postgres ran with `EDAX_REQUIRE_POSTGRES=1`. Live Kafka and Redis were skipped. |
 
 The merge preserves `main`'s aggregate creation API and validated rejection reasons in ordinary
 ledgers. Exception text remains omitted; protected failures also omit reasons. Regression cases
