@@ -191,7 +191,7 @@ fn postgres_and_memory_delete_the_same_subject_scope() {
     );
     let lease = stores.credit_of(&lease, Some("person-7"), "account-1", &[0]);
     let lease = stores.credit_of(&lease, Some("person-7"), "account-2", &[1]);
-    stores.credit_of(&lease, Some("person-8"), "account-3", &[2]);
+    stores.credit_of(&lease, Some("person-70"), "account-3", &[2]);
     assert_eq!(delete_scope(&mut stores, "person-7"), 2);
     assert_eq!(
         delete_scope(&mut stores, "person-7"),
@@ -201,7 +201,7 @@ fn postgres_and_memory_delete_the_same_subject_scope() {
     let get =
         |subject: &str, aggregate: &str| json!({"op":"get","tenant":"bank-eu","subject":subject,"aggregate":aggregate});
     assert_eq!(stores.run(get("person-7", "account-1"), 30), Value::Null);
-    assert_eq!(stores.run(get("person-8", "account-3"), 30)["sequence"], 1);
+    assert_eq!(stores.run(get("person-70", "account-3"), 30)["sequence"], 1);
 }
 
 fn positions(intents: &[Value]) -> Vec<(i64, i64)> {

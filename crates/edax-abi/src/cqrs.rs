@@ -503,6 +503,21 @@ pub fn projection_state_scope_range(
     crate::write_json(&contract.state_scope_range(&tenant, subject).map_err(to_wire)?)
 }
 
+/// The batch input of a sealed record: `event_json`, the host's decoding of the opened record, checked
+/// against `envelope_json` and owned by its subject; or, without it, the erased input of a record whose
+/// key was destroyed. See [`edax_cqrs::projection::sealed_input`].
+pub fn projection_sealed_input(offset: i64, envelope_json: &str, event_json: Option<String>) -> Result<String, String> {
+    let envelope: edax_cqrs::projection::Envelope = projection_value(envelope_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    let event = event_json
+        .map(|text| projection_value::<edax_cqrs::projection::Event>(&text))
+        .transpose()
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::projection::sealed_input(offset, &envelope, event).map_err(to_wire)?)
+}
+
 /// The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
 pub fn projection_keyed_fingerprint(key: Vec<u8>, event_json: &str) -> Result<String, String> {
     let event: edax_cqrs::projection::Event = projection_value(event_json)

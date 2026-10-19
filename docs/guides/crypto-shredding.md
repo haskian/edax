@@ -256,7 +256,9 @@ Secret destruction does not guarantee that every process-memory copy is zeroized
 `KeyMaterial` zeroizes its owned buffer. Go clears operation-owned key slices, but host and native
 transfers can leave other copies. Python immutable bytes cannot be deterministically cleared.
 Already returned keys or plaintext cannot be recalled. Keep keys out of diagnostics and avoid
-retaining them beyond the operation.
+retaining them beyond the operation. A Kafka batch runner treats one batch as one operation: its
+`Sealing.for_batch` view reads each subject's keys once, under the operation deadline, and drops
+them with the batch. Its commit's write fence still reads the status afresh.
 
 ## Fence writes through commit
 
@@ -402,5 +404,5 @@ For each cleanup participant, exercise a paused writer through commit, erasure r
 writer, an offline participant, repeated callbacks, and recovery after every persisted stage.
 The [live Postgres tests](../../crates/edax-py/tests/test_erasure_postgres.py) cover those destination
 fences and durable notifications for the supplied Postgres adapter. Other destinations need their
-own evidence. SDKs do not keep a reusable key cache, but that does not erase plaintext already
+own evidence. SDKs keep no key cache beyond one batch, but that does not erase plaintext already
 retained by application code or guarantee deterministic wiping of Python's immutable bytes.

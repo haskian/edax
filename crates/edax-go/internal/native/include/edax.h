@@ -6969,6 +6969,28 @@ char *edax_projection_reads(const char *request_json);
 uintptr_t edax_projection_reads_len(const char *_request_json);
 
 /**
+ * The batch input of a sealed record: `event_json`, the host's decoding of the opened record, checked
+ * against `envelope_json` and owned by its subject; or, without it, the erased input of a record whose
+ * key was destroyed. See `edax_cqrs.projection.sealed_input`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_sealed_input(int64_t offset,
+                                   const char *envelope_json,
+                                   const char *event_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_sealed_input` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_sealed_input`.
+ */
+uintptr_t edax_projection_sealed_input_len(int64_t _offset,
+                                           const char *_envelope_json,
+                                           const char *_event_json);
+
+/**
  * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.

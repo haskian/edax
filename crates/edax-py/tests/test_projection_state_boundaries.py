@@ -25,6 +25,17 @@ def test_projection_state_boundary_golden(fixture: str) -> None:
                     return _edax.projection_intent_eligible(
                         _json.encode(case["manifest"]), _json.encode(case["intent"])
                     )
+                case "sealed_input":
+                    event = None if case["event"] is None else _json.encode(case["event"])
+                    return _json.decode(
+                        _edax.projection_sealed_input(case["offset"], _json.encode(case["envelope"]), event)
+                    )
+                case "state_scope_range":
+                    return _json.decode(
+                        _edax.projection_state_scope_range(
+                            _json.encode(case["contract"]), case["subject"], case["tenant"]
+                        )
+                    )
                 case "sql":
                     return _json.decode(_edax.postgres_projection_statements(_json.encode(case["config"])))
                 case _:

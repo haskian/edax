@@ -12,7 +12,7 @@ from aiokafka import TopicPartition
 from conftest import build_message
 from edax import _json
 from edax.backend.kafka_projection import KafkaProjection
-from edax.errors import BadHandle
+from edax.errors import BadHandle, CodecError
 from edax.message import EventMessage
 from edax.projection import MemoryProjectionStateStore, ProjectionEvent
 from edax.serializer import KernelSerializer
@@ -217,3 +217,20 @@ async def test_cancellation_suppression_retains_data_until_actual_completion(
     await run.wait_closed()
     assert await store.get("bank-eu", "account-42") is None
     assert run.retained_records == run.retained_bytes == 0
+
+
+@pytest.mark.parametrize("case", ["undecodable_bytes", "command_message"])
+async def test_records_that_are_no_event_stop_before_any_commit(case: str) -> None:
+    from edax.message import CommandMessage
+    from edax.testing import command
+
+    run, client, _, store = await runner()
+    if case == "undecodable_bytes":
+        client.records[0].value = b"not an edax record"
+    else:
+        message: CommandMessage = command("account-42")
+        client.records[0].value = KernelSerializer("json", kind="command").encode(message)
+    with pytest.raises(CodecError):
+        await run._partition(TP, run._parts[TP])
+    lease = run._parts[TP].lease
+    assert lease is not None and (await store.recover(lease)).next_offset == 0

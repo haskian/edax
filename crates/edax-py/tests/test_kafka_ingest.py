@@ -612,7 +612,7 @@ async def test_exact_i64_sequence_source_offset_and_nanosecond_event_envelope() 
     assert await sink.pending() == {}
 
     # MAX itself has no representable next broker offset, but its provenance still encodes exactly.
-    prepared = (await runner._prepare(_Partition(0, 0), fetched._replace(offset=maximum)))[0]
+    prepared = await runner._prepare(_Partition(0, 0), fetched._replace(offset=maximum))
     assert prepared.source == sink.target.key(
         [
             "source",
@@ -1135,7 +1135,7 @@ async def test_rejected_source_replays_across_raw_size_limits(limits: tuple[int,
             settings=settings(max_record_bytes=limit),
             serializer=EventIds(messages),
         )
-        prepared = (await runner._prepare(_Partition(0, 0), fetched))[0]
+        prepared = await runner._prepare(_Partition(0, 0), fetched)
         result = await sink.commit([prepared])
         assert result.outcomes == ("rejected",)
     assert len(await sink.pending()) == 1

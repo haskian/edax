@@ -2371,6 +2371,41 @@ fn ingest_cases() -> Vec<Value> {
                 ..created.clone()
             }],
         ),
+        (
+            "short_keyed_fingerprint_refused",
+            vec![Input {
+                fingerprint: Some("0123456789abcdef".into()),
+                ..created.clone()
+            }],
+        ),
+        (
+            "uppercase_keyed_fingerprint_refused",
+            vec![Input {
+                fingerprint: Some(created.raw_fingerprint.to_uppercase()),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_subject_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", "", "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "non_string_subject_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", 42, "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "pre_subject_row_key_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
     ] {
         let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
         rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
@@ -2425,47 +2460,95 @@ fn ingest_cases() -> Vec<Value> {
         let result = ingest::source_key(target, incarnation, topic, partition, offset);
         rows.push(json!({"name":name,"op":"source","target":target,"incarnation":incarnation,"topic":topic,"partition":partition,"offset":offset,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
-    for (name, target, mode, tenant, row_id) in [
-        ("row_key_upsert", "orders-v1", "upsert", Some("acme"), "order-42"),
-        ("row_key_append", "orders-v1", "append", Some("acme"), "event-42"),
-        ("row_key_absent_tenant", "orders-v1", "upsert", None, "order-42"),
-        ("row_key_empty_tenant", "orders-v1", "upsert", Some(""), "order-42"),
+    for (name, target, mode, tenant, subject, row_id) in [
+        ("row_key_upsert", "orders-v1", "upsert", Some("acme"), None, "order-42"),
+        ("row_key_append", "orders-v1", "append", Some("acme"), None, "event-42"),
+        ("row_key_absent_tenant", "orders-v1", "upsert", None, None, "order-42"),
+        (
+            "row_key_empty_tenant",
+            "orders-v1",
+            "upsert",
+            Some(""),
+            None,
+            "order-42",
+        ),
         (
             "row_key_nul_tenant",
             "orders-v1",
             "upsert",
             Some("acme\0store"),
+            None,
             "order-42",
         ),
-        ("row_key_nul_row", "orders-v1", "upsert", None, "order\0-42"),
+        ("row_key_nul_row", "orders-v1", "upsert", None, None, "order\0-42"),
         (
             "row_key_unicode",
             "naročila-v1",
             "upsert",
             Some("trgovina-ž"),
+            None,
             "naročilo-42",
         ),
-        ("row_key_empty_row_refused", "orders-v1", "upsert", None, ""),
-        ("row_key_empty_event_refused", "orders-v1", "append", None, ""),
-        ("row_key_invalid_mode_refused", "orders-v1", "fold", None, "order-42"),
-        ("row_key_empty_target_refused", "", "upsert", None, "order-42"),
-        ("row_key_nul_target_refused", "orders\0v1", "upsert", None, "order-42"),
+        ("row_key_empty_row_refused", "orders-v1", "upsert", None, None, ""),
+        ("row_key_empty_event_refused", "orders-v1", "append", None, None, ""),
+        (
+            "row_key_invalid_mode_refused",
+            "orders-v1",
+            "fold",
+            None,
+            None,
+            "order-42",
+        ),
+        ("row_key_empty_target_refused", "", "upsert", None, None, "order-42"),
+        (
+            "row_key_nul_target_refused",
+            "orders\0v1",
+            "upsert",
+            None,
+            None,
+            "order-42",
+        ),
+        (
+            "row_key_with_subject",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some("person-42"),
+            "order-42",
+        ),
+        (
+            "row_key_subject_without_tenant",
+            "orders-v1",
+            "upsert",
+            None,
+            Some("person-42"),
+            "order-42",
+        ),
+        (
+            "row_key_empty_subject_refused",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some(""),
+            "order-42",
+        ),
+        (
+            "row_key_nul_subject_refused",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some("person\0-42"),
+            "order-42",
+        ),
     ] {
-        let result = ingest::row_key(target, mode, tenant, None, row_id);
-        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"subject":null,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
-    }
-    for (name, tenant, subject) in [
-        ("row_key_with_subject", Some("acme"), Some("person-42")),
-        ("row_key_subject_without_tenant", None, Some("person-42")),
-        ("row_key_empty_subject_refused", Some("acme"), Some("")),
-    ] {
-        let result = ingest::row_key("orders-v1", "upsert", tenant, subject, "order-42");
-        rows.push(json!({"name":name,"op":"row_key","target":"orders-v1","mode":"upsert","tenant":tenant,"subject":subject,"row_id":"order-42","want":result.as_ref().ok(),"error":refusal(&result)}));
+        let result = ingest::row_key(target, mode, tenant, subject, row_id);
+        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"subject":subject,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
     for (name, mode, tenant, subject) in [
         ("scope_range_of_a_subject", "upsert", Some("acme"), "person-42"),
         ("scope_range_without_tenant", "append", None, "person-42"),
         ("scope_range_empty_subject_refused", "upsert", Some("acme"), ""),
+        ("scope_range_invalid_mode_refused", "fold", Some("acme"), "person-42"),
     ] {
         let result = ingest::scope_range("orders-v1", mode, tenant, subject);
         rows.push(json!({"name":name,"op":"scope_range","target":"orders-v1","mode":mode,"tenant":tenant,"subject":subject,"want":result.as_ref().ok(),"error":refusal(&result)}));

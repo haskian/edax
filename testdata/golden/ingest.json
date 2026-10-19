@@ -3011,6 +3011,193 @@
     "contract": {
       "generation": "orders-v1",
       "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "0123456789abcdef",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "short_keyed_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "EEB1FE2DDE07DE4405DDF8B7520559D586ED87C4BE72C72A433760EBCF1F0253",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "uppercase_keyed_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"\",\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "empty_subject_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",42,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "non_string_subject_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "pre_subject_row_key_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
       "mode": "append",
       "source_incarnation": "cluster-a/orders-v1"
     },
@@ -3583,12 +3770,23 @@
     "want": "9:orders-v1:[\"upsert\",null,\"person-42\",\"order-42\"]"
   },
   {
-    "error": "bad_handle: invalid ingestion row identity",
+    "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
     "mode": "upsert",
     "name": "row_key_empty_subject_refused",
     "op": "row_key",
     "row_id": "order-42",
     "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": "codec: subject holds a NUL character",
+    "mode": "upsert",
+    "name": "row_key_nul_subject_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person\u0000-42",
     "target": "orders-v1",
     "tenant": "acme",
     "want": null
@@ -3620,11 +3818,21 @@
     ]
   },
   {
-    "error": "bad_handle: an erasure scope needs a subject",
+    "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
     "mode": "upsert",
     "name": "scope_range_empty_subject_refused",
     "op": "scope_range",
     "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion row identity",
+    "mode": "fold",
+    "name": "scope_range_invalid_mode_refused",
+    "op": "scope_range",
+    "subject": "person-42",
     "target": "orders-v1",
     "tenant": "acme",
     "want": null

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from .. import _json, _native, _values
 from ..batch import BatchSettings, recover
-from ..errors import BadHandle, CodecError, KeyRevoking, StoreError, TransactionFailure
+from ..errors import BadHandle, CodecError, KeyRevoking, Shredded, StoreError, TransactionFailure
 from ..message import EventMessage
 from ..pacing import Pacing
 from ..projection import (
@@ -242,40 +242,44 @@ class KafkaProjection:
             raise CodecError("projection requires an event message")
         if keys is None:
             return ProjectionInput(record.offset, self.decode(decoded))
+        envelope = _json.encode(
+            {
+                "tenant": decoded.tenant,
+                "subject": decoded.subject,
+                "aggregate": decoded.aggregate_id,
+                "event_id": decoded.id,
+                "sequence": decoded.sequence,
+                "event_type": decoded.name,
+                "schema_version": str(decoded.version),
+            }
+        )
+
+        def erased() -> ProjectionInput:
+            # The kernel builds an erased input from the envelope alone: nothing of the event can be read.
+            return _input(_json.decode(_native.projection_sealed_input(record.offset, envelope, None)))
+
         opened = await keys.open_event_for_consumer(decoded)
         if opened is None:
-            # Nothing of an erased event can be read: its receipts take the envelope's identity.
-            erased = ProjectionEvent(
-                decoded.tenant,
-                decoded.aggregate_id,
-                decoded.id,
-                decoded.sequence or 0,
-                decoded.name,
-                str(decoded.version),
-                None,
-                {},
-                decoded.subject,
-            )
-            return ProjectionInput(record.offset, erased, erased=True)
+            return erased()
         event = self.decode(_values.replace(decoded, data=opened.data, encryption=None))
-        if (event.tenant, event.aggregate, event.event_id, event.sequence) != (
-            decoded.tenant,
-            decoded.aggregate_id,
-            decoded.id,
-            decoded.sequence,
-        ):
-            raise BadHandle("a sealed projection event must keep its envelope's identity")
-        event = replace(event, subject=decoded.subject)
-        fingerprint = None
-        if decoded.subject is not None:
+        # The kernel refuses an event that left its envelope's identity, and sets the envelope's subject.
+        item = _input(
+            _json.decode(_native.projection_sealed_input(record.offset, envelope, _json.encode(event)))
+        )
+        if decoded.subject is None:
+            return item
+        try:
             key = await keys.fingerprint_key(decoded.tenant, decoded.subject)
-            fingerprint = _native.projection_keyed_fingerprint(key, _json.encode(event))
-        return ProjectionInput(record.offset, event, fingerprint=fingerprint)
+        except Shredded:
+            # Destroyed after the record opened: the provider confirms it, as the open does.
+            return erased()
+        fingerprint = _native.projection_keyed_fingerprint(key, _json.encode(item.event))
+        return replace(item, fingerprint=fingerprint)
 
     async def _fenced(
         self, assigned: _Assigned, inputs: Sequence[ProjectionInput], commit: Callable[[], Awaitable[T]]
     ) -> T:
-        """Commit under the write fence of every sealed scope the batch writes. A scope destroyed since the
+        """Commit under the write fence of every subject the batch writes. A subject destroyed since the
         batch was staged waits as contention: the next attempt stages its events erased."""
         if self.sealing is None:
             return await self._operation(assigned, commit())
@@ -283,13 +287,14 @@ class KafkaProjection:
         for item in inputs:
             if not item.erased and item.event.subject is not None:
                 scopes.add((item.event.tenant, item.event.subject))
-
-        async def write(destroyed: frozenset[Scope]) -> T:
+        async with self.sealing.fenced(scopes, timeout_s=self.timeout) as destroyed:
             if destroyed:
                 raise KeyRevoking("a staged subject was erased before its commit")
-            return await self._operation(assigned, commit())
-
-        return await self.sealing.fenced_write(scopes, write)
+            try:
+                return await self._operation(assigned, commit())
+            finally:
+                # A commit past its deadline may still land: the fence holds until it really ends.
+                await _settled(assigned.unresolved)
 
     async def _proof(
         self, tp: TopicPartition, assigned: _Assigned, lease: ProjectionLease | None = None
@@ -334,7 +339,7 @@ class KafkaProjection:
                 assigned.seek_needed = False
         inputs: list[ProjectionInput] = []
         # The batch's sealing view reads each scope's keys once and drops them with the batch.
-        keys = None if self.sealing is None else self.sealing.for_batch()
+        keys = None if self.sealing is None else self.sealing.for_batch(self.timeout)
         size = charged = 0
         opened = asyncio.get_running_loop().time()
         try:
@@ -528,3 +533,25 @@ class KafkaProjection:
         if self._releases:
             await asyncio.shield(asyncio.gather(*self._releases, return_exceptions=True))
         await asyncio.sleep(0)  # complete data-credit release callbacks
+
+
+def _input(record: dict[str, Any]) -> ProjectionInput:
+    """A batch input from the kernel's JSON form."""
+    return ProjectionInput(
+        record["offset"],
+        ProjectionEvent(**record["event"]),
+        record.get("erased", False),
+        record.get("fingerprint"),
+    )
+
+
+async def _settled(task: asyncio.Future[Any] | None) -> None:
+    """Wait until ``task`` has really ended. A cancellation of this wait is absorbed: cancelling never
+    proves that a commit stopped, so the caller still holds its fence until the task is done."""
+    while task is not None and not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:  # noqa: BLE001 - its failure belongs to the operation that owns it
+            break

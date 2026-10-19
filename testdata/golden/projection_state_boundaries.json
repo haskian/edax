@@ -922,5 +922,179 @@
     "name": "invalid_offset",
     "op": "eligible",
     "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "account-7",
+      "event_id": "credit-1",
+      "event_type": "CreditPosted",
+      "schema_version": "1",
+      "sequence": 1,
+      "subject": "person-7",
+      "tenant": "bank-eu"
+    },
+    "error": null,
+    "event": {
+      "aggregate": "account-7",
+      "event_id": "credit-1",
+      "event_type": "CreditPosted",
+      "metadata": {},
+      "payload": {
+        "amount_minor": 1250
+      },
+      "schema_version": "1",
+      "sequence": 1,
+      "tenant": "bank-eu"
+    },
+    "name": "sealed_input_takes_the_envelope_subject",
+    "offset": 9,
+    "op": "sealed_input",
+    "want": {
+      "event": {
+        "aggregate": "account-7",
+        "event_id": "credit-1",
+        "event_type": "CreditPosted",
+        "metadata": {},
+        "payload": {
+          "amount_minor": 1250
+        },
+        "schema_version": "1",
+        "sequence": 1,
+        "subject": "person-7",
+        "tenant": "bank-eu"
+      },
+      "offset": 9
+    }
+  },
+  {
+    "envelope": {
+      "aggregate": "account-7",
+      "event_id": "credit-1",
+      "event_type": "CreditPosted",
+      "schema_version": "1",
+      "sequence": 1,
+      "subject": "person-7",
+      "tenant": "bank-eu"
+    },
+    "error": null,
+    "event": null,
+    "name": "sealed_input_of_a_destroyed_key_is_erased",
+    "offset": 9,
+    "op": "sealed_input",
+    "want": {
+      "erased": true,
+      "event": {
+        "aggregate": "account-7",
+        "event_id": "credit-1",
+        "event_type": "CreditPosted",
+        "metadata": {},
+        "payload": null,
+        "schema_version": "1",
+        "sequence": 1,
+        "subject": "person-7",
+        "tenant": "bank-eu"
+      },
+      "offset": 9
+    }
+  },
+  {
+    "envelope": {
+      "aggregate": "account-7",
+      "event_id": "credit-1",
+      "event_type": "CreditPosted",
+      "schema_version": "1",
+      "sequence": 1,
+      "subject": "person-7",
+      "tenant": "bank-eu"
+    },
+    "error": "bad_handle: a sealed projection event must keep its envelope's identity",
+    "event": {
+      "aggregate": "account-7",
+      "event_id": "credit-1",
+      "event_type": "CreditPosted",
+      "metadata": {},
+      "payload": {
+        "amount_minor": 1250
+      },
+      "schema_version": "1",
+      "sequence": 2,
+      "tenant": "bank-eu"
+    },
+    "name": "sealed_input_must_keep_the_envelope_identity",
+    "offset": 9,
+    "op": "sealed_input",
+    "want": null
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "state_scope_range_of_a_subject",
+    "op": "state_scope_range",
+    "subject": "person-7",
+    "tenant": "bank-eu",
+    "want": [
+      "11:balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"",
+      "11:balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",#"
+    ]
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "state_scope_range_without_tenant",
+    "op": "state_scope_range",
+    "subject": "person-7",
+    "tenant": null,
+    "want": [
+      "11:balances-v1:[\"projection\",\"state\",null,\"person-7\",\"",
+      "11:balances-v1:[\"projection\",\"state\",null,\"person-7\",#"
+    ]
+  },
+  {
+    "contract": {
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
+    "name": "state_scope_range_empty_subject_refused",
+    "op": "state_scope_range",
+    "subject": "",
+    "tenant": "bank-eu",
+    "want": null
   }
 ]

@@ -189,5 +189,33 @@ fn projection_state_boundary_golden() {
             result.map(Value::Bool),
         ));
     }
+    let envelope = json!({"tenant":"bank-eu","subject":"person-7","aggregate":"account-7","event_id":"credit-1","sequence":1,"event_type":"CreditPosted","schema_version":"1"});
+    let opened = json!({"tenant":"bank-eu","aggregate":"account-7","event_id":"credit-1","sequence":1,"event_type":"CreditPosted","schema_version":"1","payload":{"amount_minor":1250},"metadata":{}});
+    let mut moved = opened.clone();
+    moved["sequence"] = json!(2);
+    for (name, event) in [
+        ("sealed_input_takes_the_envelope_subject", Some(opened)),
+        ("sealed_input_of_a_destroyed_key_is_erased", None),
+        ("sealed_input_must_keep_the_envelope_identity", Some(moved)),
+    ] {
+        let parsed = event.clone().map(|e| serde_json::from_value(e).unwrap());
+        let result = projection::sealed_input(9, &serde_json::from_value(envelope.clone()).unwrap(), parsed);
+        cases.push(case(
+            json!({"name":name,"op":"sealed_input","offset":9,"envelope":envelope,"event":event}),
+            result.map(|input| json!(input)),
+        ));
+    }
+    let c: Contract = serde_json::from_value(contract()).unwrap();
+    for (name, tenant, subject) in [
+        ("state_scope_range_of_a_subject", Some("bank-eu"), "person-7"),
+        ("state_scope_range_without_tenant", None, "person-7"),
+        ("state_scope_range_empty_subject_refused", Some("bank-eu"), ""),
+    ] {
+        let result = c.state_scope_range(&tenant.map(str::to_owned), subject);
+        cases.push(case(
+            json!({"name":name,"op":"state_scope_range","contract":contract(),"tenant":tenant,"subject":subject}),
+            result.map(|range| json!(range)),
+        ));
+    }
     edax_golden::write_or_check("projection_state_boundaries.json", cases);
 }

@@ -16,6 +16,11 @@ func TestProjectionStateBoundariesGolden(t *testing.T) {
 			Manifest json.RawMessage
 			Intent   json.RawMessage
 			Config   json.RawMessage
+			Offset   int64
+			Envelope json.RawMessage
+			Event    json.RawMessage
+			Tenant   *string
+			Subject  string
 		}](t, fixture) {
 			t.Run(fixture+"/"+row.Name, func(t *testing.T) {
 				var got any
@@ -39,6 +44,18 @@ func TestProjectionStateBoundariesGolden(t *testing.T) {
 					err = ProjectionCheckSource(string(row.Contract), string(row.Proof), row.Cursor)
 				case "eligible":
 					got, err = ProjectionIntentEligible(string(row.Manifest), string(row.Intent))
+				case "sealed_input":
+					var event *string
+					if text := string(row.Event); text != "null" {
+						event = &text
+					}
+					var value string
+					value, err = ProjectionSealedInput(row.Offset, string(row.Envelope), event)
+					got = json.RawMessage(value)
+				case "state_scope_range":
+					var value string
+					value, err = ProjectionStateScopeRange(string(row.Contract), row.Subject, row.Tenant)
+					got = json.RawMessage(value)
 				case "sql":
 					var value string
 					value, err = PostgresProjectionStatements(string(row.Config))

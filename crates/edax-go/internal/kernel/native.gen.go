@@ -2495,6 +2495,21 @@ func ProjectionReads(requestJSON string) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// ProjectionSealedInput calls the shared kernel.
+func ProjectionSealedInput(offset int64, envelopeJSON string, eventJSON *string) (string, error) {
+	var zero string
+	if err := checkNativeString("envelopeJSON", envelopeJSON); err != nil {
+		return zero, err
+	}
+	if eventJSON != nil {
+		if err := checkNativeString("eventJSON", *eventJSON); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ProjectionSealedInput(offset, envelopeJSON, eventJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // ProjectionStateScopeRange calls the shared kernel.
 func ProjectionStateScopeRange(contractJSON string, subject string, tenant *string) (string, error) {
 	var zero string

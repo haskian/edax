@@ -512,8 +512,8 @@ contract.
 rejections before selecting owners. In append mode, identical event replay succeeds and changed
 content under the same identity is rejected. In upsert mode, one aggregate stream owns each row.
 A higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
-sequence is rejected. A row holds a `private` part and a plaintext `public` part. The
-host seals `private` when sealing is configured. Both parts absent retain a deletion marker. An `erased` input,
+sequence is rejected. A row holds a `private` part and a `public` part. Both are plaintext today; sealing `private`
+at rest is planned. Both parts absent retain a deletion marker. An `erased` input,
 whose key was destroyed, is accepted without a write. A sealed input carries `keyed_fingerprint`, an
 HMAC under the subject's fingerprint key. Once the key is gone, no stored hash can test a guessed
 value. A sealed and an unsealed copy of one sequence conflict. The planner validates every original

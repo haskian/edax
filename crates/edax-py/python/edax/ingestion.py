@@ -33,8 +33,8 @@ __all__ = [
 @dataclass(frozen=True)
 class MappedRow:
     """A mapper's row key and complete state, in two parts. ``private`` holds what belongs to the event's
-    erasure subject: a sink seals it at rest when sealing is configured. ``public`` is stored as plaintext
-    and stays queryable. Both ``None`` retains a deletion marker."""
+    erasure subject; ``public`` stays queryable. Both are stored as plaintext today: sealing ``private`` at
+    rest is planned, not yet done. Both ``None`` retains a deletion marker."""
 
     key: str
     private: Any = None
@@ -60,6 +60,10 @@ class BatchInput:
     erased: bool = False
     #: The kernel's keyed fingerprint of a sealed record; ``None`` hashes the plaintext unkeyed.
     fingerprint: str | None = None
+    #: The tenant and erasure subject the row key scopes: the write fence a sealed commit takes. The
+    #: kernel reads them from the key, not from these fields.
+    tenant: str | None = None
+    subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +143,8 @@ class IngestionTarget:
             failure=failure,
             erased=erased,
             fingerprint=fingerprint,
+            tenant=tenant,
+            subject=subject,
         )
         self.validate((original,))
         return original

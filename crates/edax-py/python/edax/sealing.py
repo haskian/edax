@@ -2,7 +2,8 @@
 
 Providers must resolve exact scope, purpose, and generation before reporting destruction. They must
 fence revocation atomically with reservations. The reference provider is process-local and loses keys
-and tombstones on restart. Neither adapter nor :class:`Sealing` caches key material.
+and tombstones on restart. :class:`Sealing` keeps no key cache of its own; a consumer batch runner reads
+each scope's keys once through :meth:`Sealing.for_batch` and drops them with that batch.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any, Literal, Protocol, TypeVar, cast, get_args, runtime_chec
 from . import _names, _native
 from ._owned import ThreadBound
 from ._values import give_value_semantics
-from .errors import BadHandle, CodecError, KeyRevoking, Shredded
+from .errors import BadHandle, CodecError, KeyRevoking, KeyUnavailable, Shredded
 from .message import CommandMessage, EventDraft, EventMessage
 
 __all__ = [
@@ -76,7 +77,8 @@ class KeyProvider(Protocol):
 
     ``reserve`` charges an invocation atomically and rotates exhausted generations. ``resolve`` never
     creates material and checks exact ownership and purpose before returning ``Shredded``. Revoking a
-    tenant scope fences every current and future subject. Returned keys belong to one operation only.
+    tenant scope fences every current and future subject. Returned keys belong to one operation only: a
+    batch runner's :meth:`Sealing.for_batch` view, which keeps them until its batch ends, is one operation.
     Production providers must retain permanent tombstones across restarts and backup restoration.
     """
 
@@ -283,31 +285,41 @@ class Opened:
     data: bytes = field(repr=False)
 
 
-class _BatchKeys:
-    """A provider that reads each scope's key, status and fingerprint key once. Every other call passes
-    through. Failures are not kept: the next call asks the provider again."""
+async def _bounded(call: Awaitable[T], timeout_s: float | None) -> T:
+    """Await a key-provider call under ``timeout_s``. A provider that does not answer in time is
+    unavailable, which a runner waits on uncounted, rather than a hang that stalls every partition."""
+    if timeout_s is None:
+        return await call
+    try:
+        return await asyncio.wait_for(call, timeout_s)
+    except asyncio.TimeoutError as error:
+        raise KeyUnavailable("key provider call exceeded its deadline") from error
 
-    def __init__(self, keys: KeyProvider) -> None:
+
+class _BatchKeys:
+    """The provider calls a consumer opens records with, each read once per scope and bounded by
+    ``timeout_s``. Failures are not kept: the next call asks the provider again."""
+
+    def __init__(self, keys: KeyProvider, timeout_s: float | None) -> None:
         self._keys = keys
+        self._timeout_s = timeout_s
         self._known: dict[tuple[Any, ...], Any] = {}
 
-    async def _once(self, name: str, scope: KeyScope, *rest: Any) -> Any:
-        known = (name, scope.key_namespace, scope.tenant, scope.subject, *rest)
+    async def _once(self, known: tuple[Any, ...], call: Callable[[], Awaitable[T]]) -> T:
         if known not in self._known:
-            self._known[known] = await getattr(self._keys, name)(scope, *rest)
-        return self._known[known]
+            self._known[known] = await _bounded(call(), self._timeout_s)
+        return cast(T, self._known[known])
 
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
-        return cast(bytes, await self._once("resolve", scope, cipher, key_id))
+        return await self._once(
+            ("resolve", scope, cipher, key_id), lambda: self._keys.resolve(scope, cipher, key_id)
+        )
 
     async def status(self, scope: KeyScope) -> KeyStatus:
-        return cast(KeyStatus, await self._once("status", scope))
+        return await self._once(("status", scope), lambda: self._keys.status(scope))
 
     async def fingerprint(self, scope: KeyScope) -> KeyReservation:
-        return cast(KeyReservation, await self._once("fingerprint", scope))
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._keys, name)
+        return await self._once(("fingerprint", scope), lambda: self._keys.fingerprint(scope))
 
 
 class Sealing:
@@ -352,46 +364,52 @@ class Sealing:
         _native.check_key_scope(scope)
         return scope
 
-    def for_batch(self) -> Sealing:
-        """A view for one consumer batch: each scope's key, status and fingerprint key is read from the
-        provider once and kept only as long as the view. A batch runner drops the view with its batch, so
-        no key outlives it; its commit's write fence still decides against revocation."""
-        view = Sealing(
-            cast(KeyProvider, _BatchKeys(self.keys)),
+    def for_batch(self, timeout_s: float | None = None) -> Sealing:
+        """A view for one consumer batch that opens records: each scope's key, status and fingerprint key
+        is read from the provider once, under ``timeout_s``, and kept only as long as the view. A batch
+        runner drops the view with its batch, so no key outlives it; the commit's write fence still reads
+        status afresh and decides against revocation."""
+        return Sealing(
+            cast(KeyProvider, _BatchKeys(self.keys, timeout_s)),
             self.key_namespace,
             cipher=self.cipher,
             allow_plaintext=self.allow_plaintext,
         )
-        view._fencing = self._fencing
-        return view
 
-    async def fenced_write(
-        self, scopes: Collection[Scope], write: Callable[[frozenset[Scope]], Awaitable[T]]
-    ) -> T:
-        """Run a batch ``write`` under the write fence of every scope in ``scopes``, entered in one order.
-        Each scope's status is read fresh first. A revoking one raises :class:`~edax.errors.KeyRevoking`,
-        which a runner waits on uncounted. Destroyed ones are handed to ``write``, which must leave their
-        data out. The fence decides the race against an erasure that lands after this read: a refused
-        write whose scope is no longer active raises ``KeyRevoking`` too, so the next attempt reads the
-        new status."""
+    async def _statuses(self, scopes: Sequence[Scope], timeout_s: float | None) -> list[KeyStatus]:
+        reads = (_bounded(self.keys.status(self.scope(*scope)), timeout_s) for scope in scopes)
+        return list(await asyncio.gather(*reads))
+
+    @asynccontextmanager
+    async def fenced(
+        self, scopes: Collection[Scope], *, timeout_s: float | None = None
+    ) -> AsyncIterator[frozenset[Scope]]:
+        """Hold the write fence of every scope in ``scopes``, entered in one order, around a batch write,
+        and yield the destroyed ones, whose data the write must leave out. Each scope's status is read
+        afresh first and classified by the kernel: a revoking scope raises
+        :class:`~edax.errors.KeyRevoking`, which a runner waits on uncounted. The fence decides the race
+        against an erasure that lands after this read: a refused write whose scope is no longer active
+        raises ``KeyRevoking`` too, so the next attempt reads the new status. The write must have really
+        ended when the block exits: a fence released while a commit may still land lets erasure pass it."""
         order = sorted(set(scopes), key=lambda scope: (scope[0] or "", scope[1]))
         destroyed: set[Scope] = set()
-        for scope in order:
-            status = await self.keys.status(self.scope(*scope))
-            if status == "destroyed":
+        for scope, status in zip(order, await self._statuses(order, timeout_s), strict=True):
+            try:
+                _native.check_key_write_status(status)
+            except Shredded:
                 destroyed.add(scope)
-            elif status == "revoking":
-                raise KeyRevoking("a written subject's revocation awaits destruction")
         fenced = [scope for scope in order if scope not in destroyed]
         try:
             async with AsyncExitStack() as guards:
                 for scope in fenced:
                     await guards.enter_async_context(self.write_guard(*scope))
-                return await write(frozenset(destroyed))
-        except Exception as error:
-            for scope in fenced:
-                if await self.keys.status(self.scope(*scope)) not in ("active", "unknown"):
-                    raise KeyRevoking("a written subject was erased during the write") from error
+                yield frozenset(destroyed)
+        except Exception:
+            for status in await self._statuses(fenced, timeout_s):
+                try:
+                    _native.check_key_write_status(status)
+                except (Shredded, KeyRevoking) as erased:
+                    raise KeyRevoking("a written subject was erased during the write") from erased
             raise
 
     async def fingerprint_key(self, tenant: str | None, subject: str | None) -> bytes:

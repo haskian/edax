@@ -36,6 +36,13 @@ mod testkit;
 mod tx;
 mod versioned;
 
+/// Delete the keys of `map` in `[start, end)`, an erasure scope's key range; return how many.
+pub(crate) fn delete_range<V>(map: &mut std::collections::BTreeMap<String, V>, start: &str, end: &str) -> usize {
+    let before = map.len();
+    map.retain(|key, _| key.as_str() < start || key.as_str() >= end);
+    before - map.len()
+}
+
 pub use broker::{LogMessage, MemoryBroker, PolledDelivery};
 pub use event::{MemoryEventStore, Snapshot};
 pub use idempotency::MemoryIdempotencyStore;

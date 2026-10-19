@@ -53,10 +53,7 @@ impl MemoryIngest {
     /// Delete every row in the key range `[start, end)`, an erasure scope from
     /// [`edax_cqrs::ingest::scope_range`]; return how many it deleted. Rejections stay.
     pub fn delete_scope(&self, start: &str, end: &str) -> usize {
-        let mut state = lock(&self.state);
-        let before = state.rows.len();
-        state.rows.retain(|key, _| key.as_str() < start || key.as_str() >= end);
-        before - state.rows.len()
+        crate::delete_range(&mut lock(&self.state).rows, start, end)
     }
 
     /// Record a confirmed publication without accepting another record at the source coordinate.
@@ -159,7 +156,7 @@ mod tests {
         let inputs = [
             input(0, "person-7", "order-1", None),
             input(1, "person-7", "order-2", None),
-            input(2, "person-8", "order-3", None),
+            input(2, "person-70", "order-3", None),
             input(3, "person-7", "order-4", Some("codec: refused")),
         ];
         database.commit(&contract, &inputs).unwrap();

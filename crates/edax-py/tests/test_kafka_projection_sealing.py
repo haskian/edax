@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +12,7 @@ from conftest import build_message
 from edax import _json, _native
 from edax._values import replace
 from edax.backend.kafka_projection import KafkaProjection
-from edax.errors import BadHandle, KeyMissing, KeyRevoking, Rejected
+from edax.errors import BadHandle, CodecError, KeyMissing, KeyRevoking, Rejected, StoreError
 from edax.message import EventMessage
 from edax.projection import (
     MemoryProjectionStateStore,
@@ -181,3 +182,118 @@ async def test_erasure_racing_the_commit_restages_the_batch_erased() -> None:
     lease = run._parts[TP].lease
     assert lease is not None and lease.next_offset == 1
     assert await store.get("bank-eu", "account-42", "person-42") is None
+
+
+async def test_unsealed_replay_of_a_sealed_event_conflicts_with_its_keyed_receipt() -> None:
+    sealing, records = await sealed_records(MemoryKeys())
+    run, store = await projection(sealing, records, balance([]))
+    await run._partition(TP, run._parts[TP])
+    # The same event id and sequence published unsealed: its plaintext hash cannot match the keyed receipt.
+    plain = replace(
+        build_message(
+            "account-42",
+            "CreditPosted",
+            1,
+            id="credit-1",
+            data=_json.encode(PAYLOAD).encode(),
+            tenant="bank-eu",
+        ),
+        subject="person-42",
+    )
+    lease = run._parts[TP].lease
+    assert lease is not None
+    replay = ProjectionInput(lease.next_offset, dataclasses.replace(decode(plain), subject="person-42"))
+    with pytest.raises(CodecError, match="conflicting projection event identity"):
+        await store.commit(lease, [replay], await Source().verify(TP), balance([]))
+
+
+class ErasingSource(Source):
+    """A source whose second proof, the one taken before the commit, runs ``erase`` first."""
+
+    def __init__(self, erase: Any) -> None:
+        super().__init__()
+        self.erase = erase
+        self.proofs = 0
+
+    async def verify(self, tp: Any) -> Any:
+        self.proofs += 1
+        if self.proofs == 2:
+            await self.erase()
+        return await super().verify(tp)
+
+
+@pytest.mark.parametrize("destroyed", [False, True], ids=["revoking", "destroyed"])
+async def test_subject_erased_after_staging_never_commits_its_state(destroyed: bool) -> None:
+    keys = MemoryKeys()
+    sealing, records = await sealed_records(keys)
+    scope = sealing.scope("bank-eu", "person-42")
+
+    async def erase() -> None:
+        await keys.revoke(scope)
+        if destroyed:
+            await keys.destroy(scope)
+
+    seen: list[Any] = []
+    run, store = await projection(sealing, records, balance(seen))
+    run.source = ErasingSource(erase)
+    with pytest.raises(KeyRevoking):
+        await run._partition(TP, run._parts[TP])
+    lease = run._parts[TP].lease
+    assert lease is not None and (await store.recover(lease)).next_offset == 0
+    if destroyed:
+        # The next pass stages the batch again and finds it erased.
+        await keys.status(scope)
+        run._parts[TP].seek_needed = True
+        await run._partition(TP, run._parts[TP])
+        lease = run._parts[TP].lease
+        assert lease is not None and lease.next_offset == 1
+        assert await store.get("bank-eu", "account-42", "person-42") is None
+
+
+async def test_a_store_failure_with_every_subject_active_keeps_its_own_error() -> None:
+    sealing, records = await sealed_records(MemoryKeys())
+
+    class Failing(MemoryProjectionStateStore):
+        async def commit(self, *args: Any, **options: Any) -> ProjectionLease:
+            raise StoreError("database unreachable")
+
+    run, _ = await projection(sealing, records, balance([]), Failing(target()))
+    with pytest.raises(StoreError, match="database unreachable") as caught:
+        await run._partition(TP, run._parts[TP])
+    assert not isinstance(caught.value, KeyRevoking)
+
+
+async def test_a_commit_past_its_deadline_holds_the_write_fence_until_it_ends() -> None:
+    keys = MemoryKeys()
+    sealing, records = await sealed_records(keys)
+    scope = sealing.scope("bank-eu", "person-42")
+    release = asyncio.Event()
+
+    class Slow(MemoryProjectionStateStore):
+        async def commit(self, *args: Any, **options: Any) -> ProjectionLease:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+            return await super().commit(*args, **options)
+
+    store = Slow(target())
+    await store.initialize()
+    client = Client()
+    client.records = records
+    run = KafkaProjection(
+        client, store, Source(), decode, balance([]), sealing=sealing, operation_timeout_s=0.02, lease_ms=1000
+    )
+    await run.rebalance_listener().on_partitions_assigned({TP})
+    partition = asyncio.create_task(run._partition(TP, run._parts[TP]))
+    await asyncio.sleep(0.05)
+    revoking = asyncio.create_task(keys.revoke(scope))
+    await asyncio.sleep(0.05)
+    # The commit outlived its deadline but may still land, so erasure waits behind its write fence.
+    assert not revoking.done() and not partition.done()
+    release.set()
+    await asyncio.wait_for(revoking, 1)
+    # Once the commit ended, erasure ran; the subject is no longer active, so the runner waits.
+    with pytest.raises(KeyRevoking):
+        await asyncio.wait_for(partition, 1)

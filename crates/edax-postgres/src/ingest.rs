@@ -116,10 +116,7 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
                 format!("SELECT key, (value - 'private' - 'public')::text AS value FROM {table} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key FOR UPDATE"),
             );
             // An erasure cleanup: every row of one subject, the key range `ingest::scope_range` names.
-            sql.insert(
-                format!("delete_scope_{short}"),
-                format!("WITH gone AS (DELETE FROM {table} WHERE key >= $1::text AND key < $2::text RETURNING 1) SELECT count(*) FROM gone"),
-            );
+            sql.insert(format!("delete_scope_{short}"), delete_range(&table));
             // Only rows the plan read, and so locked, are updated.
             sql.insert(
                 format!("update_{short}"),
@@ -159,6 +156,14 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
         format!("WITH marked AS (UPDATE {rejections} AS saved SET value = jsonb_set(saved.value, '{{published}}', 'true'::jsonb) FROM jsonb_each_text($1::jsonb) AS confirmed(key, fingerprint) WHERE saved.key = confirmed.key AND saved.value->>'fingerprint' = confirmed.fingerprint AND {} RETURNING 1) SELECT count(*) FROM marked", in_target("saved.key", 2)),
     );
     Ok(sql)
+}
+
+/// An erasure cleanup of one key table: delete the keys in `[$1, $2)` and return how many it deleted.
+/// Ingestion and projection state both delete a subject's key range this way.
+pub(crate) fn delete_range(table: &str) -> String {
+    format!(
+        "WITH gone AS (DELETE FROM {table} WHERE key >= $1::text AND key < $2::text RETURNING 1) SELECT count(*) FROM gone"
+    )
 }
 
 /// The catalog check for a `key text COLLATE "C" PRIMARY KEY, value jsonb` table, shared by the

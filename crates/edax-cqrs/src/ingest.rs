@@ -10,8 +10,8 @@ use edax_core::{Error, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::namespace::{key, prefix};
-use crate::{canonical_json, holds_nul, payload_hash};
+use crate::namespace::{self, key, prefix};
+use crate::{canonical_json, holds_nul, is_digest_hex, keyed_digest, payload_hash};
 
 edax_core::closed_names! {
     /// The interpretation of rows in one ingestion target.
@@ -55,9 +55,10 @@ pub fn row_key(
     row_id: &str,
 ) -> Result<String, Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
-    if row_id.is_empty() || subject.is_some_and(str::is_empty) {
+    if row_id.is_empty() {
         return Err(Error::bad_handle("invalid ingestion row identity"));
     }
+    subject.map(namespace::check_subject).transpose()?;
     key(
         target,
         &serde_json::json!([mode.as_str(), tenant, subject, row_id]).to_string(),
@@ -65,17 +66,11 @@ pub fn row_key(
 }
 
 /// The half-open key range `[start, end)` holding every row of one tenant and subject in a target:
-/// what an erasure cleanup deletes. Keys compare byte-wise (`COLLATE "C"`).
+/// what an erasure cleanup deletes.
 pub fn scope_range(target: &str, mode: &str, tenant: Option<&str>, subject: &str) -> Result<(String, String), Error> {
-    let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion mode"))?;
-    if subject.is_empty() {
-        return Err(Error::bad_handle("an erasure scope needs a subject"));
-    }
-    // The canonical array text up to the comma before the row identity, a JSON string, so every
-    // key of the range continues with `"` and the next byte, `#`, bounds it.
-    let open = serde_json::json!([mode.as_str(), tenant, subject]).to_string();
-    let head = format!("{}{},", prefix(target)?, open.trim_end_matches(']'));
-    Ok((format!("{head}\""), format!("{head}#")))
+    let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
+    namespace::check_subject(subject)?;
+    namespace::range(target, &serde_json::json!([mode.as_str(), tenant, subject]))
 }
 
 /// Immutable interpretation of one target generation.
@@ -149,12 +144,12 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
         {
             return Err(Error::bad_handle("invalid ingestion source or row identity"));
         }
-        if !is_fingerprint(&input.raw_fingerprint) {
+        if !is_digest_hex(&input.raw_fingerprint) {
             return Err(Error::bad_handle(
                 "ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
             ));
         }
-        if input.fingerprint.as_deref().is_some_and(|f| !is_fingerprint(f)) {
+        if input.fingerprint.as_deref().is_some_and(|f| !is_digest_hex(f)) {
             return Err(Error::bad_handle(
                 "ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
             ));
@@ -307,16 +302,17 @@ fn fingerprint(input: &Input) -> Result<String, Error> {
 
 /// The fingerprint of a sealed record: HMAC-SHA-256 under the subject's fingerprint key over the
 /// canonical `content` and the plaintext `private` and `public` parts, before `private` is sealed.
-/// Erasure destroys the key, and with it any way to test a guessed value against the hash.
 pub fn keyed_fingerprint(
     key: &[u8],
     content: &Value,
     private: Option<&Value>,
     public: Option<&Value>,
 ) -> Result<String, Error> {
-    let canonical = canonical_state(content, private, public)?;
-    let mac = edax_seal::fingerprint(key, &[b"edax.ingestion.state/v1\0".as_slice(), &canonical].concat())?;
-    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
+    keyed_digest(
+        key,
+        b"edax.ingestion.state/v1\0",
+        &canonical_state(content, private, public)?,
+    )
 }
 
 /// The raw fingerprint of a source record whose `raw` representation is the whole record.
@@ -329,10 +325,6 @@ pub fn raw_fingerprint(raw: &[u8]) -> String {
             .chain_update(raw)
             .finalize()
     )
-}
-
-fn is_fingerprint(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn reject(plan: &mut Plan, input: &Input, error: String) {

@@ -6,7 +6,7 @@
 //! which events are novel, the host calls its reducer once per novel event, and `ApplyBatch` checks the
 //! results and returns every write. The host reads each record once and writes each change once.
 
-use crate::{canonical_json, holds_nul, namespace, payload_hash};
+use crate::{canonical_json, holds_nul, is_digest_hex, keyed_digest, namespace, payload_hash};
 use edax_core::{Error, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -128,6 +128,70 @@ pub struct Input {
     /// canonical event, which suits plaintext only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+}
+
+/// The identity a sealed record's envelope fixes, readable without its key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Envelope {
+    /// Tenant namespace, or absence for a single tenant.
+    pub tenant: Option<String>,
+    /// Erasure subject that owns the aggregate's state.
+    pub subject: Option<String>,
+    /// Complete aggregate stream identity.
+    pub aggregate: String,
+    /// Stable logical event identity.
+    pub event_id: String,
+    /// Aggregate sequence.
+    pub sequence: i64,
+    /// Event type.
+    pub event_type: String,
+    /// Event schema version.
+    pub schema_version: String,
+}
+
+/// The batch input of a sealed record at `offset`. With `event`, the host's decoding of the opened
+/// record: it must keep the envelope's tenant, aggregate, event id and sequence, and takes the
+/// envelope's subject. Without, the record's key was destroyed: an erased input that carries only the
+/// envelope's identity, so its receipts sit where the event's would.
+pub fn sealed_input(offset: i64, envelope: &Envelope, event: Option<Event>) -> Result<Input, Error> {
+    let Some(mut event) = event else {
+        return Ok(Input {
+            offset,
+            event: Event {
+                tenant: envelope.tenant.clone(),
+                subject: envelope.subject.clone(),
+                aggregate: envelope.aggregate.clone(),
+                event_id: envelope.event_id.clone(),
+                sequence: envelope.sequence,
+                event_type: envelope.event_type.clone(),
+                schema_version: envelope.schema_version.clone(),
+                payload: Value::Null,
+                metadata: json!({}),
+            },
+            erased: true,
+            fingerprint: None,
+        });
+    };
+    if (&event.tenant, &event.aggregate, &event.event_id, event.sequence)
+        != (
+            &envelope.tenant,
+            &envelope.aggregate,
+            &envelope.event_id,
+            envelope.sequence,
+        )
+    {
+        return Err(Error::bad_handle(
+            "a sealed projection event must keep its envelope's identity",
+        ));
+    }
+    event.subject.clone_from(&envelope.subject);
+    Ok(Input {
+        offset,
+        event,
+        erased: false,
+        fingerprint: None,
+    })
 }
 
 /// One deterministic external effect.
@@ -376,26 +440,14 @@ impl Contract {
     }
     fn state_key(&self, tenant: &Option<String>, subject: &Option<String>, aggregate: &str) -> Result<String, Error> {
         required(aggregate)?;
-        if subject.as_deref().is_some_and(|s| s.is_empty() || s.contains('\0')) {
-            return Err(Error::codec("projection subject must be non-empty without NUL"));
-        }
+        subject.as_deref().map(namespace::check_subject).transpose()?;
         self.key(json!(["projection", "state", tenant, subject, aggregate]))
     }
     /// The half-open key range `[start, end)` holding every state record of one tenant and subject:
-    /// what an erasure cleanup of a plaintext generation deletes. Keys compare byte-wise.
+    /// what an erasure cleanup of a plaintext generation deletes.
     pub fn state_scope_range(&self, tenant: &Option<String>, subject: &str) -> Result<(String, String), Error> {
-        if subject.is_empty() {
-            return Err(Error::bad_handle("an erasure scope needs a subject"));
-        }
-        // Every key of the range continues with the aggregate, a JSON string: `"` opens it and `#`
-        // bounds it.
-        let open = json!(["projection", "state", tenant, subject]).to_string();
-        let head = format!(
-            "{}{},",
-            namespace::prefix(&self.generation)?,
-            open.trim_end_matches(']')
-        );
-        Ok((format!("{head}\""), format!("{head}#")))
+        namespace::check_subject(subject)?;
+        namespace::range(&self.generation, &json!(["projection", "state", tenant, subject]))
     }
     fn event_keys(&self, event: &Event) -> Result<[String; 3], Error> {
         required(&event.event_id)?;
@@ -607,7 +659,7 @@ fn run_batch(
         *normalized_event
             .get_mut("sequence")
             .ok_or_else(|| Error::codec("missing sequence"))? = json!(event.sequence);
-        if fingerprint.as_deref().is_some_and(|f| !is_mac(f)) {
+        if fingerprint.as_deref().is_some_and(|f| !is_digest_hex(f)) {
             return Err(Error::bad_handle(
                 "projection keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
             ));
@@ -652,82 +704,77 @@ fn run_batch(
                 batch.writes.insert(event_key, receipt.clone());
                 batch.writes.insert(sequence_key, receipt);
             }
-            checkpoint.next_offset = offset
-                .checked_add(1)
-                .ok_or_else(|| Error::bad_handle("projection offset exhausted"))?;
-            let key = c.checkpoint_key(checkpoint.partition)?;
-            batch.writes.insert(key, json!(checkpoint));
-            continue;
-        }
-        let state = staged(&batch.writes, records, &state_key)
-            .map(StateHead::deserialize)
-            .transpose()
-            .map_err(Error::codec)?;
-        if state.as_ref().is_some_and(|s| s.partition != checkpoint.partition) {
-            return Err(Error::codec("aggregate moved to another source partition"));
-        }
-        if !duplicate && state.as_ref().is_some_and(|s| s.sequence >= event.sequence) {
-            return Err(Error::bad_handle(
-                "projection state is ahead of its deduplication records",
-            ));
-        }
-        if !duplicate && state.as_ref().map_or(Some(1), |s| s.sequence.checked_add(1)) != Some(event.sequence) {
-            return Err(Error::codec("projection aggregate sequence gap"));
-        }
-        if duplicate && state.as_ref().is_none_or(|s| s.sequence < event.sequence) {
-            return Err(Error::bad_handle("projection state and deduplication restore disagree"));
-        }
-        if reduced.is_none() {
-            // The reducer starts from the state the batch read; the host carries it between deltas.
-            let first = !duplicate && sent_state.insert(state_key.clone());
-            let before = first
-                .then(|| records.get(&state_key).and_then(|v| v.get("value")))
-                .flatten();
-            batch
-                .items
-                .push(json!({"novel": !duplicate, "state": before, "event": normalized_event}));
-        }
-        if !duplicate {
-            let result = match reduced.and_then(|r| r.get(index)) {
-                None => None,
-                Some(None) => return Err(Error::bad_handle("projection reducer result missing for a novel event")),
-                Some(Some(result)) => Some(checked(result)?),
-            };
-            let value = result.as_ref().map_or(Value::Null, |r| r.state.clone());
-            let state = json!(State {
-                sequence: event.sequence,
-                partition: checkpoint.partition,
-                value
-            });
-            for (key, value) in [
-                (state_key, state),
-                (event_key, receipt.clone()),
-                (sequence_key, receipt),
-            ] {
-                batch.writes.insert(key, value);
+        } else {
+            let state = staged(&batch.writes, records, &state_key)
+                .map(StateHead::deserialize)
+                .transpose()
+                .map_err(Error::codec)?;
+            if state.as_ref().is_some_and(|s| s.partition != checkpoint.partition) {
+                return Err(Error::codec("aggregate moved to another source partition"));
             }
-            for (ordinal, intent) in result.iter().flat_map(|r| r.intents.iter()).enumerate() {
-                let id = intent_id(c, event, intent)?;
-                let key = c.intent_key(&id)?;
-                let record = json!({
-                    "id": id,
-                    "generation": c.generation,
-                    "tenant": event.tenant,
-                    "aggregate": event.aggregate,
-                    "destination": intent.destination,
-                    "payload": intent.payload,
-                    "partition": checkpoint.partition,
-                    "offset": offset,
-                    "ordinal": ordinal
+            if !duplicate && state.as_ref().is_some_and(|s| s.sequence >= event.sequence) {
+                return Err(Error::bad_handle(
+                    "projection state is ahead of its deduplication records",
+                ));
+            }
+            if !duplicate && state.as_ref().map_or(Some(1), |s| s.sequence.checked_add(1)) != Some(event.sequence) {
+                return Err(Error::codec("projection aggregate sequence gap"));
+            }
+            if duplicate && state.as_ref().is_none_or(|s| s.sequence < event.sequence) {
+                return Err(Error::bad_handle("projection state and deduplication restore disagree"));
+            }
+            if reduced.is_none() {
+                // The reducer starts from the state the batch read; the host carries it between deltas.
+                let first = !duplicate && sent_state.insert(state_key.clone());
+                let before = first
+                    .then(|| records.get(&state_key).and_then(|v| v.get("value")))
+                    .flatten();
+                batch
+                    .items
+                    .push(json!({"novel": !duplicate, "state": before, "event": normalized_event}));
+            }
+            if !duplicate {
+                let result = match reduced.and_then(|r| r.get(index)) {
+                    None => None,
+                    Some(None) => return Err(Error::bad_handle("projection reducer result missing for a novel event")),
+                    Some(Some(result)) => Some(checked(result)?),
+                };
+                let value = result.as_ref().map_or(Value::Null, |r| r.state.clone());
+                let state = json!(State {
+                    sequence: event.sequence,
+                    partition: checkpoint.partition,
+                    value
                 });
-                if batch.intents.insert(key, record).is_some() {
-                    return Err(Error::codec("duplicate projection intent key"));
+                for (key, value) in [
+                    (state_key, state),
+                    (event_key, receipt.clone()),
+                    (sequence_key, receipt),
+                ] {
+                    batch.writes.insert(key, value);
                 }
+                for (ordinal, intent) in result.iter().flat_map(|r| r.intents.iter()).enumerate() {
+                    let id = intent_id(c, event, intent)?;
+                    let key = c.intent_key(&id)?;
+                    let record = json!({
+                        "id": id,
+                        "generation": c.generation,
+                        "tenant": event.tenant,
+                        "aggregate": event.aggregate,
+                        "destination": intent.destination,
+                        "payload": intent.payload,
+                        "partition": checkpoint.partition,
+                        "offset": offset,
+                        "ordinal": ordinal
+                    });
+                    if batch.intents.insert(key, record).is_some() {
+                        return Err(Error::codec("duplicate projection intent key"));
+                    }
+                }
+            } else if reduced.and_then(|r| r.get(index)).is_some_and(Option::is_some) {
+                return Err(Error::bad_handle(
+                    "projection reducer result given for a replayed event",
+                ));
             }
-        } else if reduced.and_then(|r| r.get(index)).is_some_and(Option::is_some) {
-            return Err(Error::bad_handle(
-                "projection reducer result given for a replayed event",
-            ));
         }
         checkpoint.next_offset = offset
             .checked_add(1)
@@ -740,10 +787,6 @@ fn run_batch(
 
 /// The receipt fingerprint of an erased event: no hash, since nothing of the event can be read.
 const ERASED: &str = "erased";
-
-fn is_mac(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
 
 /// The canonical bytes a receipt binds: the event with its sequence as decimal text, so a 64-bit
 /// sequence survives JSON. Normalized values must remain valid reducer inputs after storage and
@@ -762,9 +805,7 @@ fn canonical_event(event: &Event) -> Result<Vec<u8>, Error> {
 /// the canonical opened event. Erasure destroys the key, and with it any way to test a guessed
 /// payload against the receipt.
 pub fn keyed_fingerprint(key: &[u8], event: &Event) -> Result<String, Error> {
-    let canonical = canonical_event(event)?;
-    let mac = edax_seal::fingerprint(key, &[b"edax.projection.event/v1\0".as_slice(), &canonical].concat())?;
-    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
+    keyed_digest(key, b"edax.projection.event/v1\0", &canonical_event(event)?)
 }
 
 /// A reducer result in canonical form, refused as `codec` when no store could keep it.

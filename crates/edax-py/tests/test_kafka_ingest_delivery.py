@@ -56,7 +56,7 @@ async def test_rejection_publication_keeps_full_source_identity(representation: 
             settings=settings(),
             serializer=EventIds(messages),
         )
-        item = (await runner._prepare(_Partition(0, 0), original))[0]
+        item = await runner._prepare(_Partition(0, 0), original)
         source_keys.append(item.source)
         digests.append(json.loads(item.raw)["sha256"])
         assert (await sink.commit([item])).outcomes == ("rejected",)

@@ -465,6 +465,31 @@ fn ordered_projection_fences_and_cutovers() {
         false,
     );
     m.expect_error("bad_handle");
+    for (name, subject) in [
+        ("empty_subject_refused", json!("")),
+        ("nul_subject_refused", json!("person\u{0}-7")),
+    ] {
+        let mut refused = event(2, "credit-77c");
+        refused["aggregate"] = json!("account-77");
+        refused["subject"] = subject;
+        m.call(
+            name,
+            apply(&fresh, vec![input(12, refused)], vec![reduce("25.00")]),
+            2025,
+            false,
+        );
+        m.expect_error("codec");
+    }
+    // A rewind after erasure replays an event applied before it: its old receipts stand.
+    let mut applied = event(1, "credit-1");
+    applied["payload"] = Value::Null;
+    let fresh = m.call(
+        "erased_replay_of_an_applied_event_is_a_duplicate",
+        apply(&fresh, vec![erased(12, applied)], vec![Value::Null]),
+        2025,
+        true,
+    );
+    assert_eq!(fresh["next_offset"], 13);
 
     let cutover = json!({"source_identity":m.c.source_identity,"source_history":m.c.source_history,"topic":m.c.topic,"cutoffs":{"0":0,"1":0}});
     m.call(
@@ -480,7 +505,7 @@ fn ordered_projection_fences_and_cutovers() {
         true,
     );
     let frozen = m.call("freeze_captures_database_cutoffs", json!({"op":"freeze"}), 2027, true);
-    assert_eq!(frozen["cutoffs"], json!({"0":12,"1":0}));
+    assert_eq!(frozen["cutoffs"], json!({"0":13,"1":0}));
     m.call(
         "frozen_generation_rejects_new_write",
         prepare(&fresh, vec![input(9, event(4, "credit-4"))]),

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from .. import _json, _native, _values, errors
 from ..batch import BatchSettings, recover
 from ..delivery import DeadLetter
-from ..errors import BadHandle, CodecError
+from ..errors import BadHandle, CodecError, Shredded
 from ..ingestion import BatchInput, BatchResult, BatchSink, MappedRow, Rejection
 from ..message import EventMessage
 from ..pacing import Pacing
@@ -80,8 +80,8 @@ class _Partition:
     retry_batches: dict[str, tuple[str, str]] = field(default_factory=dict)
     # The open batch's sealing view: each scope's keys are read once and dropped with the batch.
     keys: Sealing | None = None
-    # Source of each sealed original the batch may write, to its (tenant, subject) write fence.
-    scopes: dict[str, Scope] = field(default_factory=dict)
+    # Consecutive contention waits; paces them, and resets once the partition makes progress.
+    contended: int = 0
 
 
 class KafkaIngestion:
@@ -289,7 +289,6 @@ class KafkaIngestion:
         part.bytes = part.serialized_bytes = 0
         part.opened = 0
         part.keys = None
-        part.scopes.clear()
         self._changed.set()
 
     def _room(self) -> bool:
@@ -361,11 +360,9 @@ class KafkaIngestion:
             fetched = replace(fetched, key=b"", value=b"", headers=())
         return raw, fetched, decoded
 
-    async def _prepare(
-        self, part: _Partition, record: FetchedRecord
-    ) -> tuple[BatchInput, tuple[str | None, str] | None]:
-        """The original for ``record`` and, for a sealed one the batch may write, its write-fence scope.
-        With sealing, the mapper reads the opened event; a destroyed key makes an erased original."""
+    async def _prepare(self, part: _Partition, record: FetchedRecord) -> BatchInput:
+        """The original for ``record``. With sealing, the mapper reads the opened event; a destroyed key
+        makes an erased original."""
         raw, fetched, decoded_raw = self._raw(record)
         oversized = bool(decoded_raw["oversized"])
         target = self.sink.target
@@ -428,11 +425,11 @@ class KafkaIngestion:
             if self.sealing is not None:
                 sealed = decoded.encryption is not None
                 if part.keys is None:
-                    part.keys = self.sealing.for_batch()
+                    part.keys = self.sealing.for_batch(self._timeout)
                 opened = await part.keys.open_event_for_consumer(decoded)
                 if opened is None:
                     erased = True
-                    return built(), None
+                    return built()
                 message = _values.replace(decoded, data=opened.data, encryption=None)
             mapped = self.mapper(message)
             if inspect.isawaitable(mapped):
@@ -446,12 +443,16 @@ class KafkaIngestion:
             snapshot = _json.decode(mapped_json)
             row_key, private, public = snapshot["key"], snapshot["private"], snapshot["public"]
             if part.keys is not None and subject is not None:
-                key = await part.keys.fingerprint_key(tenant, subject)
+                try:
+                    key = await part.keys.fingerprint_key(tenant, subject)
+                except Shredded:
+                    # Destroyed after the record opened: the provider confirms it, as the open does.
+                    erased, private, public = True, None, None
+                    return built()
                 state = _json.encode({"content": content, "private": private, "public": public})
                 fingerprint = _native.ingest_keyed_fingerprint(key, state)
             # Inside the try: an input the kernel refuses becomes a rejection, as a decode failure does.
-            item = built()
-            return item, (tenant, subject) if part.keys is not None and subject is not None else None
+            return built()
         except Exception as error:
             if errors.failure_kind(error) != "terminal":
                 raise
@@ -459,7 +460,7 @@ class KafkaIngestion:
             code = errors.code_of(error) or "codec"
             failure = f"{code}: sealed record refused" if sealed else f"{code}: {error}"
             content, private, public, fingerprint = None, None, None, None
-        return built(), None
+        return built()
 
     async def _admit(self, tp: TopicPartition, part: _Partition, record: FetchedRecord) -> bool:
         booked = Booked(
@@ -470,12 +471,10 @@ class KafkaIngestion:
             self._rewind,
         )
         try:
-            item, scope = await self._prepare(part, record)
+            item = await self._prepare(part, record)
             if self._parts.get(tp) is not part or not booked.live():
                 # Revoked while the keys were read: the new owner fetches the record again.
                 return False
-            if scope is not None:
-                part.scopes[item.source] = scope
             serialized_bytes = len(_json.encode(item).encode())
             # A later isolated rejection replaces the failure field. Reserve its bounded
             # kernel diagnostic now, before any partition can spend the remaining capacity.
@@ -506,10 +505,14 @@ class KafkaIngestion:
             source = self.sink.target.source_key(record.topic, record.partition, record.offset)
             attempt = part.attempts.get(source, 0) + 1
             # Nothing was written, but admission has no rejection path: a repeating failure stops.
-            decision = recover(error, self.settings, attempt=attempt, count=1, isolable=False)
+            decision = recover(
+                error, self.settings, attempt=attempt, count=1, isolable=False, waits=part.contended + 1
+            )
             if decision["action"] not in ("retry", "wait"):
                 raise
-            if decision["action"] == "retry":
+            if decision["action"] == "wait":
+                part.contended += 1
+            else:
                 part.attempts[source] = attempt
             part.retry_batches[source] = (source, source)
             delay = self._pacing.delay(decision["step"])
@@ -587,6 +590,7 @@ class KafkaIngestion:
                         booked.ack()
                         part.attempts.pop(item.source, None)
                         part.retry_batches.pop(item.source, None)
+                    part.contended = 0
                 # This frontier covers actual originals, including legitimate source offset gaps.
                 if inputs and self._parts.get(tp) is part:
                     due = self._offsets.tracker.get().due()
@@ -604,6 +608,7 @@ class KafkaIngestion:
                     attempt=attempt,
                     count=len(inputs),
                     isolable=not all(item.failure is not None for item in inputs),
+                    waits=part.contended + 1,
                 )
                 action = decision["action"]
                 if action == "stop":
@@ -628,7 +633,9 @@ class KafkaIngestion:
                     continue
                 if action not in ("retry", "wait"):
                     raise BadHandle("unknown batch recovery action") from error
-                # A wait is contention: it spends no attempt.
+                # A wait is contention: it spends no attempt, and each one waits longer.
+                if action == "wait":
+                    part.contended += 1
                 for item in inputs if action == "retry" else ():
                     part.attempts[item.source] = attempt
                     # A refetched parent retry must not replace an existing child's scope.
@@ -645,26 +652,23 @@ class KafkaIngestion:
     async def _commit(
         self, part: _Partition, inputs: tuple[BatchInput, ...]
     ) -> tuple[tuple[BatchInput, ...], BatchResult]:
-        """Commit ``inputs`` under the write fence of every sealed scope they may write; the originals of a
-        scope the provider reports destroyed commit erased."""
+        """Commit ``inputs`` under the write fence of every subject they write; the originals of a subject
+        the provider reports destroyed commit erased."""
         if self.sealing is None:
             return inputs, await self._operation(self.sink.commit(inputs))
-        scopes = {
-            part.scopes[item.source]
-            for item in inputs
-            if item.source in part.scopes and not item.erased and item.failure is None
-        }
-
-        async def write(destroyed: frozenset[Scope]) -> tuple[tuple[BatchInput, ...], BatchResult]:
+        written = [
+            item for item in inputs if item.subject is not None and not item.erased and item.failure is None
+        ]
+        scopes: set[Scope] = {(item.tenant, cast(str, item.subject)) for item in written}
+        async with self.sealing.fenced(scopes, timeout_s=self._timeout) as destroyed:
             final = tuple(
                 replace(item, erased=True, private=None, public=None, fingerprint=None)
-                if part.scopes.get(item.source) in destroyed
+                if item in written and (item.tenant, item.subject) in destroyed
                 else item
                 for item in inputs
             )
+            # The sink call is shielded until it really ends, so the fence is never released early.
             return final, await self._operation(self.sink.commit(final))
-
-        return await self.sealing.fenced_write(scopes, write)
 
     async def _flush(self) -> None:
         for attempt in range(1, self.settings.max_attempts + 1):

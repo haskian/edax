@@ -97,6 +97,19 @@ pub use record::{
     outcome, replay, settle_failure, unsettled_claim, Outcome, OutcomeKind, Record, Settle, State, StateKind,
 };
 
+/// HMAC-SHA-256 of `canonical` under `key`, tagged with `domain`, as lowercase hex: the keyed
+/// fingerprint ingestion and projection store for a sealed record. Erasure destroys the key, and with
+/// it any way to test a guessed value against the stored digest.
+pub(crate) fn keyed_digest(key: &[u8], domain: &[u8], canonical: &[u8]) -> Result<String, edax_core::Error> {
+    let mac = edax_seal::fingerprint(key, &[domain, canonical].concat())?;
+    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Whether `value` is a SHA-256 or HMAC-SHA-256 digest in lowercase hex.
+pub(crate) fn is_digest_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// The idempotency hash of a command: its **name and the whole command value** serialized as one JSON
 /// object `{"name": name, "payload": value}`, then [`canonical_json`], then [`payload_hash`].
 ///

@@ -108,12 +108,7 @@ impl MemoryProjectionState {
     /// Delete every record in the key range `[start, end)`, an erasure scope from
     /// `Contract::state_scope_range`; return how many it deleted.
     pub fn delete_scope(&self, start: &str, end: &str) -> usize {
-        let mut state = lock(&self.state);
-        let before = state.records.len();
-        state
-            .records
-            .retain(|key, _| key.as_str() < start || key.as_str() >= end);
-        before - state.records.len()
+        crate::delete_range(&mut lock(&self.state).records, start, end)
     }
 
     /// Up to `limit` intents of `generation` its manifest at `manifest_key` lets deliver: each
