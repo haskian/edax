@@ -253,8 +253,8 @@ transaction. A failure carries the `ingest` verdict and the rollback evidence, a
 `edax_event::batch::recover` decides from both. A unique violation is `concurrency`, so it retries.
 
 `projection::statements` supplies two tables. The state table holds the manifest, checkpoints,
-states and receipts as key/value rows with no secondary index and fillfactor 70, so updates stay
-heap-only (HOT).
+states, receipts and a delivery cursor as key/value rows with no secondary index and fillfactor 70,
+so updates stay heap-only (HOT).
 The intents table holds undelivered intents with an index on their source position. A transaction
 takes the generation lock (shared for partition work, exclusive for initialization, freeze and
 activation) and its partition's lock before it reads. It reads with one statement, then inserts,
@@ -264,7 +264,11 @@ both tables together.
 
 The projection adapter executes the plan from `edax-cqrs::projection` under those locks. `pending`
 reads the manifest first, so an inactive generation reads no intent. Then it reads each
-partition's eligible range through the index, in source order. Delivery deletes the intent;
+partition's eligible range through the index, in source order. It rotates partition order after the
+last partition of the previous page and atomically saves the new turn in a separate row at
+`manifest_key + ":delivery"`. The suffix cannot collide with a canonical projection record key.
+This scheduling row uses the existing table and needs no DDL migration. Empty pages leave it unchanged;
+failed delivery still advances the turn so healthy partitions remain reachable. Delivery deletes the intent;
 `prune` deletes intents a cutover made permanently ineligible. Activation rewrites no intent.
 `postgres_ingest.json` and `postgres_projection_state.json` pin the SQL. Live tests cover rollback, ownership races,
 query plans and restore behavior beyond what pure vectors establish.

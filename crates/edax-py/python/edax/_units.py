@@ -82,14 +82,19 @@ async def _admit(database: int, unit: _Unit, pending: Sequence[PendingFence], tx
 
 
 @asynccontextmanager
-async def _begun(transactor: Transactor[TxT], database: int, unit: _Unit) -> AsyncIterator[TxT]:
+async def _begun(
+    transactor: Transactor[TxT],
+    database: int,
+    unit: _Unit,
+    opened: AbstractAsyncContextManager[TxT] | None = None,
+) -> AsyncIterator[TxT]:
     """Begin ``transactor``'s transaction for ``unit`` with this task's pending fences: a guard on another
     database is held from before ``begin``, as an eager write guard is; a fence on the provider's database
     goes inside, before the caller's first statement."""
     pending = pending_fences()
     if pending:
         await _admit(database, unit, pending, None)
-    async with transactor.begin() as tx:
+    async with transactor.begin() if opened is None else opened as tx:
         if pending:
             await _admit(database, unit, pending, tx)
         yield tx
@@ -107,17 +112,23 @@ async def _fenced(fence: PendingFence) -> AsyncIterator[None]:
 
 
 @asynccontextmanager
-async def _own_transaction(transactor: Transactor[TxT]) -> AsyncIterator[TxT]:
+async def _own_transaction(
+    transactor: Transactor[TxT], opened: AbstractAsyncContextManager[TxT]
+) -> AsyncIterator[TxT]:
     async with AsyncExitStack() as resources:
         unit = _Unit(resources, asyncio.current_task())
-        async with _begun(transactor, id(database_of(transactor)), unit) as tx:
+        async with _begun(transactor, id(database_of(transactor)), unit, opened) as tx:
             yield tx
 
 
-def own_transaction(transactor: Transactor[TxT]) -> AbstractAsyncContextManager[TxT]:
+def own_transaction(
+    transactor: Transactor[TxT], *, opened: AbstractAsyncContextManager[TxT] | None = None
+) -> AbstractAsyncContextManager[TxT]:
     """A store's own short transaction, outside any unit of work: it takes this task's pending fences as a
-    unit of work does, so a write a handler makes through a store alone is fenced too."""
-    return _own_transaction(transactor) if pending_fences() else transactor.begin()
+    unit of work does, so a write a handler makes through a store alone is fenced too. ``opened`` lets an
+    adapter retain its own commit/rollback evidence while using the same fence admission."""
+    opened = transactor.begin() if opened is None else opened
+    return _own_transaction(transactor, opened) if pending_fences() else opened
 
 
 @asynccontextmanager

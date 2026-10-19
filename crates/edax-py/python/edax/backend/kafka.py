@@ -520,7 +520,14 @@ class KafkaConsumer:
                 finally:
                     if task.done():
                         self._fetch_task = None
-                self._check_running()
+                try:
+                    self._check_running()
+                except Exception:
+                    # A concurrent commit can lose its waiter while this fetch finishes. The
+                    # application never received this booking, so rewind it before refusing the poll.
+                    if booked is not None:
+                        booked.nack()
+                    raise
                 if booked is not None and booked.live():
                     break
                 tp = _kafka.topic_partition(msg.topic, msg.partition)

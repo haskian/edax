@@ -76,7 +76,11 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
 /// order), so a concurrent writer of the same key waits. Keys it does not find are inserted without
 /// `ON CONFLICT`, so a concurrent first insert fails with 23505 and the batch retries against the
 /// committed row. Reads take JSON key arrays; writes take JSON objects mapping keys to records.
-/// `read_rejections_for_plan` takes `[{"source", "fingerprinted"}]`. `pending` takes the exact
+/// Read target metadata before rejections: under READ COMMITTED, the rejection read must see any
+/// rejection committed by the target writer the metadata read waited for. Reading rejections first
+/// could combine their earlier absence with a later target version and accept a rejected input as
+/// stale. The immutable mapper/source contract keeps a source's target key stable.
+/// `read_rejections_for_plan` takes a JSON source-key array. `pending` takes the exact
 /// target prefix and a textual limit. `mark_published` takes `{source: fingerprint}` and the exact
 /// target prefix, and returns how many rows it marked. `check` returns one boolean column,
 /// `compatible`. No statement creates tables implicitly.

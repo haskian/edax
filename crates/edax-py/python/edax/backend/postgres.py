@@ -391,17 +391,26 @@ class PostgresTransactor:
             )
         rolled_back = False
         commit_started = False
-        try:
+
+        @asynccontextmanager
+        async def opened() -> AsyncIterator[PostgresTx]:
+            nonlocal rolled_back, commit_started
             async with self._acquire() as conn:
+                tx = PostgresTx(self, conn, asyncio.current_task())
                 try:
                     await self.call(conn.execute(self._begin))
-                    result = await call(conn)
+                    yield tx
                     commit_started = True
                     await self.call(conn.execute(self._sql["commit"]))
-                    return result
                 except BaseException:
                     rolled_back = await self._end(conn)
                     raise
+                finally:
+                    tx.closed = True
+
+        try:
+            async with own_transaction(self, opened=opened()) as tx:
+                return await call(tx.connection)
         except BadHandle:
             raise
         except Exception as error:

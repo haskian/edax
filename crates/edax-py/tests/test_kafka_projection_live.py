@@ -20,7 +20,8 @@ from uuid import uuid4
 import pytest
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
-from edax import _json
+from aiokafka.errors import OffsetOutOfRangeError
+from edax import BadHandle, _json
 from edax.backend.kafka_projection import KafkaProjection
 from edax.backend.postgres import PostgresTransactor
 from edax.backend.projection_postgres import PostgresProjectionStateStore, reference_projection_state_ddl
@@ -213,8 +214,16 @@ async def test_real_source_loss_cannot_advance_database_checkpoint(
             assert (await resources.source.verify(partition)).identity != original_identity
             expected = "continuity is unproven"
 
-        with pytest.raises(Exception, match=expected):
+        refused = (BadHandle, OffsetOutOfRangeError) if discontinuity == "topic_recreation" else BadHandle
+        with pytest.raises(refused) as failure:
             await runner._partition(partition, assigned)
+        if isinstance(failure.value, OffsetOutOfRangeError):
+            # The old client's prefetched position can fail before the next identity proof.
+            # Only the recreated partition's out-of-range fetch is an equivalent refusal.
+            offsets = failure.value.args[0]
+            assert set(offsets) == {partition} and offsets[partition] >= 3
+        else:
+            assert expected in str(failure.value)
         assert (await store.recover(assigned.lease)).next_offset == 3
         assert await store.get("bank-eu", "account-42") == state
         assert await store.get("bank-eu", "account-43") is None

@@ -20,6 +20,7 @@ from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from . import _json, _native
 from ._owned import ThreadBound
+from ._units import own_write
 from .errors import BadHandle, StoreError
 from .outbox import check_page
 from .query import Document, Page, Query
@@ -543,12 +544,13 @@ class MemoryProjectionStateStore(ProjectionStateStore):
         self._database = ThreadBound(_native.memory_projection_database(), "MemoryProjectionStateStore")
 
     async def _transaction(self, call: Callable[[ProjectionSession], Awaitable[T]]) -> T:
-        session = _MemorySession(self)
-        result = await call(session)
-        # Only a finished transaction lands, as a database commit does.
-        writes = {"inserts": session.inserts, "updates": session.updates, "intents": session.intents}
-        self._database.get().commit(_json.encode(session.versions), _json.encode(writes))
-        return result
+        async with own_write():
+            session = _MemorySession(self)
+            result = await call(session)
+            # Only a finished transaction lands, as a database commit does.
+            writes = {"inserts": session.inserts, "updates": session.updates, "intents": session.intents}
+            self._database.get().commit(_json.encode(session.versions), _json.encode(writes))
+            return result
 
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         check_page(limit)

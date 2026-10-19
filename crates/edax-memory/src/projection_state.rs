@@ -19,6 +19,8 @@ struct State {
     records: BTreeMap<String, (u64, Value)>,
     intents: BTreeMap<String, Value>,
     version: u64,
+    /// Last partition selected by each generation's delivery page.
+    delivery: BTreeMap<(String, String), i64>,
 }
 
 /// What a transaction read: each present record, and the version of every key it asked for.
@@ -104,9 +106,11 @@ impl MemoryProjectionState {
     }
 
     /// Up to `limit` intents of `generation` its manifest at `manifest_key` lets deliver: each
-    /// partition's oldest `(offset, ordinal)` first, partitions taking turns, as Postgres pages them.
+    /// partition's oldest `(offset, ordinal)` first, partitions taking turns across pages, as Postgres pages them.
     pub fn unpublished(&self, manifest_key: &str, generation: &str, limit: usize) -> Result<Vec<Value>, Error> {
-        let state = lock(&self.state);
+        let mut state = lock(&self.state);
+        let delivery_key = (manifest_key.to_owned(), generation.to_owned());
+        let after = state.delivery.get(&delivery_key).copied().unwrap_or(-1);
         let Some((_, manifest)) = state.records.get(manifest_key) else {
             return Ok(Vec::new());
         };
@@ -127,12 +131,16 @@ impl MemoryProjectionState {
                 (*rank, partition, intent)
             })
             .collect();
-        ranked.sort_by_key(|(rank, partition, _)| (*rank, *partition));
-        Ok(ranked
+        ranked.sort_by_key(|(rank, partition, _)| (*rank, *partition <= after, *partition));
+        let page: Vec<Value> = ranked
             .into_iter()
             .take(limit)
             .map(|(_, _, intent)| intent.clone())
-            .collect())
+            .collect();
+        if let Some(last) = page.last() {
+            state.delivery.insert(delivery_key, position(last, "partition"));
+        }
+        Ok(page)
     }
 
     /// Delete each intent at `keys` that is still eligible; return how many. An unknown or ineligible one
@@ -337,7 +345,7 @@ mod tests {
         assert_eq!(offsets(&page), [(0, 5), (1, 2), (0, 7)]);
         assert_eq!(
             offsets(&store.unpublished(&manifest, &generation, 1).unwrap()),
-            [(0, 5)]
+            [(1, 2)]
         );
         assert!(store
             .unpublished(&manifest, "another-generation", 10)
@@ -371,6 +379,46 @@ mod tests {
         assert_eq!(store.prune(&manifest, &generation, 10).unwrap(), 1);
         assert_eq!(store.prune(&manifest, &generation, 10).unwrap(), 0);
         assert_eq!(store.state.lock().unwrap().intents.len(), 2);
+    }
+
+    #[test]
+    fn short_delivery_pages_keep_their_turn_while_low_partitions_refill() {
+        let store = MemoryProjectionState::default();
+        let c = contract();
+        let manifest = c.manifest_key().unwrap();
+        run(&store, json!({"op":"initialize"}), 0).unwrap();
+        run(&store, json!({"op":"activate","cutover":{"source_identity":c.source_identity,"source_history":c.source_history,"topic":c.topic,"cutoffs":{"0":0,"1":0}}}), 1).unwrap();
+        let acquire = |partition| {
+            run(
+                &store,
+                json!({"op":"acquire","partition":partition,"owner":"worker","lease_ms":100_000,"proof":proof()}),
+                10,
+            )
+            .unwrap()
+        };
+        let mut zero = acquire(0);
+        let one = acquire(1);
+        credit(&store, one, "old-high-partition", &[0]);
+        for offset in 0..4 {
+            zero = credit(&store, zero, &format!("low-{offset}"), &[offset]);
+            let page = store.unpublished(&manifest, &c.generation, 1).unwrap();
+            assert_eq!(position(&page[0], "partition"), offset % 2);
+            // Leave partition 1 unacknowledged: it remains retryable without blocking partition 0.
+            if offset % 2 == 0 {
+                store
+                    .mark_published(
+                        &manifest,
+                        &c.generation,
+                        &[c.intent_key(page[0]["id"].as_str().unwrap()).unwrap()],
+                    )
+                    .unwrap();
+            }
+        }
+        assert!(store.unpublished(&manifest, &c.generation, 0).unwrap().is_empty());
+        assert_eq!(
+            position(&store.unpublished(&manifest, &c.generation, 1).unwrap()[0], "partition"),
+            0
+        );
     }
 
     #[test]

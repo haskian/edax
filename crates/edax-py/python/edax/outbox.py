@@ -67,9 +67,8 @@ class Outbox(Protocol[R]):
     """The read side of a transactional outbox, as :class:`Relay` drains it: the rows a write port staged
     in its ``tx``, once committed. The event outbox an :class:`~edax.store.EventStore`'s ``append`` writes
     is one (its rows are event messages). Others: a saga's command outbox (:class:`~edax.saga.SagaOutbox`),
-    the read side of a :class:`CommandOutbox`, a :class:`~edax.projection.ProjectionStateStore` (effect
-    intents) and a :class:`~edax.ingestion.RejectionOutbox` (ingestion rejections). What a backend must
-    guarantee:
+    the read side of a :class:`CommandOutbox` and a :class:`~edax.projection.ProjectionStateStore` (effect
+    intents). What a backend must guarantee:
 
     - *Committed only.* ``unpublished`` returns committed unmarked rows, never a row a ``tx`` staged and
       may still roll back, each as the write port stored it, every field intact.
@@ -81,7 +80,11 @@ class Outbox(Protocol[R]):
     - Both run outside any ``tx``. One :class:`Relay` per outbox, unless ``unpublished`` leases the rows it
       returns. Feed change data capture to :func:`pump` instead, where the stream position is the ack.
 
-    ``OutboxContract`` in :mod:`edax.testing` holds a backend to every clause."""
+    ``OutboxContract`` in :mod:`edax.testing` holds a backend to every clause.
+
+    :class:`~edax.ingestion.RejectionOutbox` also works with :class:`Relay`, but has a stricter
+    acknowledgement contract: decoded source/fingerprint pairs must name an existing rejection with
+    the same fingerprint. It does not implement the general unknown-id no-op."""
 
     async def unpublished(self, limit: int) -> list[R]: ...
     async def mark_published(self, ids: Sequence[str]) -> None: ...

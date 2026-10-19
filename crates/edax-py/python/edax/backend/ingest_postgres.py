@@ -122,10 +122,12 @@ class PostgresIngestionSink:
         keys = [item.key for item in originals]
 
         async def apply(conn: PgConnection) -> BatchResult:
-            # Both reads lock the rows they find, in key order, before the plan reads them.
+            # Lock target rows first. A fresh rejection read must follow any wait for a target
+            # writer, whose commit may have rejected this source and advanced the row together.
+            # Missing targets still use plain INSERT: a concurrent first write aborts this plan.
+            stored = await self._read(conn, f"{self._role}_metadata", keys)
             rows = await self._call(conn.fetch(self._sql["read_rejections_for_plan"], sources))
             rejected = {row["key"]: _json.decode(row["value"]) for row in rows}
-            stored = await self._read(conn, f"{self._role}_metadata", keys)
             plan_text = _native.ingest_plan(
                 self.target.mode, encoded, _json.encode(stored), _json.encode(rejected)
             )

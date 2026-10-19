@@ -52,7 +52,8 @@ async def test_offline_restore_repeats_effect_and_checks_required_history() -> N
                 f'SELECT key, value::text FROM "{schema}".edax_projection_state ORDER BY key'
             )
             backup_intents = await admin.fetch(intents_sql)
-        assert len(backup) == 6  # manifest, two cursors, state, two receipts
+        assert len(backup) == 7  # manifest, two checkpoints, state, two receipts, delivery cursor
+        assert any(row["key"] == old.target.manifest_key + ":delivery" for row in backup)
         assert len(backup_intents) == 1
         calls: list[str] = []
 

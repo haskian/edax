@@ -116,8 +116,8 @@ state, receipts, outbox and checkpoints from a consistent backup.
 
 Hosts run the returned DDL through their migration tooling. No runtime API creates tables.
 The two projection tables are optional and do not change ordinary PostgreSQL or ingestion tables.
-`edax_projection_state` holds manifests, checkpoints, states and receipts as key/value rows with no
-secondary index, so state updates stay heap-only (HOT). `edax_projection_intents` holds undelivered
+`edax_projection_state` holds manifests, checkpoints, states, receipts and delivery cursors as key/value
+rows with no secondary index, so state updates stay heap-only (HOT). `edax_projection_intents` holds undelivered
 effect intents with an index on their source position.
 
 ```python
@@ -255,8 +255,11 @@ await relay.run(stop=stopping)
 ```
 
 `unpublished` returns eligible intents oldest first within each partition, taking each partition's
-next in turn: offsets of two partitions say nothing about which is older. Each aggregate stays on
-one partition, so its intents keep their order. The
+next in turn across pages, even when a page fits fewer intents than there are busy partitions.
+The turn advances when a page is selected, including when delivery fails, and PostgreSQL persists
+it across relay restarts in the existing state table. Empty pages do not change it. Offsets of two
+partitions say nothing about which is older. Each aggregate stays on one partition, so its intents
+keep their order. The
 relay holds back only the aggregate whose delivery failed. `mark_published` deletes the intent. A refused intent goes
 to `on_dead` after its attempts, so it cannot block the others. The destination must atomically
 deduplicate `EffectIntent.id` with its business effect. Delivery is at least once: a lost

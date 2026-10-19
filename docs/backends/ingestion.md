@@ -39,7 +39,10 @@ rejection rows: replay needs their decisions. The partial index lets pending pag
 retained history.
 
 A commit takes no advisory lock. Its plan reads lock the rows they find, in key order, so a
-concurrent writer of the same key waits. It inserts keys it did not find without `ON CONFLICT`. Two
+concurrent writer of the same key waits. It reads target metadata first, then durable rejections in
+a fresh statement, so a writer's rejection remains visible even when that same writer advances the
+target version. The generation's immutable mapper keeps each source's target key stable.
+It inserts keys it did not find without `ON CONFLICT`. Two
 batches racing to create one key therefore cannot both win: the loser rolls back and runs again,
 and its next read finds the committed row. A batch's published rejections are marked in one
 statement. A record whose mapped value or identity holds a NUL character becomes a durable
@@ -194,6 +197,11 @@ relay = Relay(RejectionOutbox(sink), runner.publish_rejection)
 while await relay.drain(100):
     pass
 ```
+
+The adapter's acknowledgement contract is stricter than the general `Outbox` contract. Malformed
+ids are ignored, but a decoded source/fingerprint pair raises `BadHandle` if its source is missing
+or its fingerprint differs from the stored rejection. Only mark ids returned by this adapter.
+This preserves the sink's publication checks; it does not promise unknown-id no-ops.
 
 A separate recovery process can reopen the same sink and target and pass its own `publish` callback.
 It receives a `Rejection` with the durable source identity, the kernel error and the raw record. It

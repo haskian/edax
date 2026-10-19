@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol, cast
 from . import _native
 from ._json import decode, encode
 from ._owned import ThreadBound
+from ._units import own_write
 from .errors import CodecError
 
 __all__ = [
@@ -184,7 +185,8 @@ class MemoryIngestionSink:
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         originals = tuple(inputs)
-        return BatchResult.from_json(self._database.get().commit(self.target.manifest, encode(originals)))
+        async with own_write():
+            return BatchResult.from_json(self._database.get().commit(self.target.manifest, encode(originals)))
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]:
         return cast(
@@ -226,10 +228,11 @@ class Rejection:
 
 
 class RejectionOutbox:
-    """A :class:`BatchSink`'s committed rejections as an :class:`~edax.outbox.Outbox`. Drain it with
+    """A :class:`BatchSink`'s committed rejections for :class:`~edax.outbox.Relay`. Drain it with
     ``Relay(RejectionOutbox(sink), publish)``. Delivery is at least once: a crash between delivery and
-    marking repeats it. A mark whose record changed its fingerprint raises
-    :class:`~edax.errors.BadHandle`."""
+    marking repeats it. Unlike the general :class:`~edax.outbox.Outbox` unknown-id no-op, a decoded
+    source/fingerprint pair raises :class:`~edax.errors.BadHandle` if the source is missing or its
+    fingerprint changed. Malformed ids are ignored. Mark only ids returned by this adapter."""
 
     def __init__(self, sink: BatchSink) -> None:
         self.sink = sink
@@ -241,7 +244,7 @@ class RejectionOutbox:
     async def mark_published(self, ids: Sequence[str]) -> None:
         confirmed: dict[str, str] = {}
         for row_id in ids:
-            # Not a rejection's id, so no rejection to mark: the Outbox contract's unknown-id no-op.
+            # Ignore malformed ids; decoded pairs retain the sink's strict publication checks.
             with contextlib.suppress(CodecError, TypeError, ValueError):
                 source, fingerprint = decode(row_id)
                 confirmed[source] = fingerprint

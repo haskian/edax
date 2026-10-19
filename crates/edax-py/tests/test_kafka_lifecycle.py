@@ -73,6 +73,71 @@ async def seed(client: FakeKafkaClient, count: int = 3) -> None:
     )
 
 
+@pytest.mark.parametrize("interrupt", ["deadline", "caller-cancel"])
+async def test_fetch_booked_during_an_interrupted_commit_is_replayed_in_order(interrupt: str) -> None:
+    class Client(HeldFetch):
+        def __init__(self) -> None:
+            super().__init__()
+            self.commit_started = asyncio.Event()
+            self.commit_release = asyncio.Event()
+
+        async def commit(self, offsets: dict[TopicPartition, int]) -> None:
+            self.commit_started.set()
+            await self.commit_release.wait()
+            await super().commit(offsets)
+
+    client = Client()
+    await seed(client)
+    consumer = KafkaConsumer(
+        client, serializer=IdSerializer(), commit_timeout_s=0.01 if interrupt == "deadline" else 10
+    )
+    first = delivered(await consumer.poll())
+    await first.ack()
+    client.hold = True
+    polling = asyncio.create_task(consumer.poll())
+    await asyncio.wait_for(client.fetched.wait(), 1)
+    flushing = asyncio.create_task(consumer.flush())
+    await asyncio.wait_for(client.commit_started.wait(), 1)
+    try:
+        if interrupt == "caller-cancel":
+            flushing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await flushing
+        else:
+            with pytest.raises(edax.StoreError, match="no reply"):
+                await flushing
+        # The client has advanced past offset 1, but the poll must return it to the broker
+        # when the still-running commit prevents handing its booking to the application.
+        client.release.set()
+        with pytest.raises(edax.StoreError, match="commit still running"):
+            await asyncio.wait_for(polling, 1)
+        pending = consumer._offsets.unfinished()
+        assert pending is not None
+        client.commit_release.set()
+        await asyncio.wait_for(pending, 1)
+        seen = [first.message.id]
+        for expected in ("1", "2"):
+            item = delivered(await asyncio.wait_for(consumer.poll(), 1))
+            seen.append(item.message.id)
+            assert item.message.id == expected
+            await item.ack()
+        await consumer.flush()
+        assert seen == ["0", "1", "2"]
+        assert client.commits == [1, 3]
+        stats = consumer.stats()[TP]
+        assert stats.committed == 3 and stats.unsettled == stats.live == 0
+    finally:
+        client.release.set()
+        client.commit_release.set()
+        for task in (polling, flushing):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(polling, flushing, return_exceptions=True)
+        pending = consumer._offsets.unfinished()
+        if pending is not None:
+            await pending
+
+
 async def test_revoke_retires_deliveries_before_waiting_for_an_older_commit() -> None:
     client = HeldCommit()
     await seed(client)

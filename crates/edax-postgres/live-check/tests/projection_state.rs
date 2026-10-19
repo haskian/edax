@@ -182,13 +182,10 @@ fn postgres_and_memory_store_the_same_state_and_deliver_the_same_intents() {
     let cutover = json!({"source_identity":c.source_identity,"source_history":c.source_history,"topic":c.topic,"cutoffs":{"0":4,"1":0}});
     stores.run(json!({"op":"activate","cutover":cutover}), 30);
     assert_eq!(positions(&stores.pending(10)), [(0, 5), (1, 2), (0, 7)]);
-    assert_eq!(positions(&stores.pending(1)), [(0, 5)]);
+    assert_eq!(positions(&stores.pending(1)), [(1, 2)]);
 
     let key = |id: &Value| c.intent_key(id.as_str().unwrap()).unwrap();
-    let all = stores
-        .memory
-        .unpublished(&stores.manifest, &stores.generation, 10)
-        .unwrap();
+    let all = stores.pending(10);
     let delivered = key(&all[1]["id"]);
     let below: String = stores
         .client

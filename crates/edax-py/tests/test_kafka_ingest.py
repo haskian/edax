@@ -221,12 +221,12 @@ async def test_four_retries_cannot_starve_a_fifth_partition(monkeypatch: pytest.
     # Backoffs stay pending throughout the assertion; healthy work must gain admission by eviction.
     monkeypatch.setattr(_native, "backoff_millis", lambda *args: 10_000)
     healthy = asyncio.Event()
-    failed: set[str] = set()
+    failed_streams: set[str] = set()
 
     class OutageSink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             if inputs[0].stream != "order-4":
-                failed.add(inputs[0].stream)
+                failed_streams.add(inputs[0].stream)
                 raise failed(StoreError("partition unavailable"))
             result = await super().commit(inputs)
             healthy.set()
@@ -246,7 +246,7 @@ async def test_four_retries_cannot_starve_a_fifth_partition(monkeypatch: pytest.
     async with running(runner):
         await asyncio.wait_for(healthy.wait(), 1)
         await until(lambda: any(batch.get(TopicPartition("orders", 4)) == 1 for batch in client.commits))
-    assert failed == {f"order-{p}" for p in range(4)}
+    assert failed_streams == {f"order-{p}" for p in range(4)}
     assert runner.peak_records <= 4
     assert runner.peak_bytes <= runner.settings.retained_bytes
     assert await sink.get("tenant-7", "order-4") is not None

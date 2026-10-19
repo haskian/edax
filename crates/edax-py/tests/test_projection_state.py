@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from conftest import NO_WAIT, golden
 from edax import _edax, _json
-from edax.errors import BadHandle, CodecError, StoreError
+from edax.errors import BadHandle, CodecError, ConcurrencyError, StoreError
 from edax.outbox import Relay
 from edax.projection import (
     MemoryProjectionStateStore,
@@ -465,3 +465,117 @@ async def test_commit_refuses_a_cursor_the_store_moved(stores: Any) -> None:
         await store.commit(ahead, [ProjectionInput(5, event())], proof(), reducer)
     assert (await store.recover(lease)).next_offset == 0
     assert await store.get("bank-eu", "account-42") is None
+
+
+@pytest.mark.parametrize("page_size,partitions", [(1, 2), (2, 5), (100, 101)])
+async def test_delivery_turn_survives_short_pages_and_continuous_refill(
+    stores: Any, page_size: int, partitions: int
+) -> None:
+    t = replace(target(), starts={p: 0 for p in range(partitions)})
+    store = stores(t)
+    await store.initialize()
+    await store.activate(initial_cutover(t))
+    leases = [await store.acquire(p, str(p), proof()) for p in range(partitions)]
+
+    async def append(partition: int) -> None:
+        lease = leases[partition]
+        offset = lease.next_offset
+        value = replace(
+            event(), aggregate=f"account-{partition}-{offset}", event_id=f"credit-{partition}-{offset}"
+        )
+        leases[partition] = await store.commit(lease, [ProjectionInput(offset, value)], proof(), reducer)
+
+    for partition in range(partitions):
+        await append(partition)
+    seen: set[int] = set()
+    for _ in range((partitions + page_size - 1) // page_size):
+        page = await store.unpublished(page_size)
+        assert len(page) == page_size
+        seen.update(intent.partition for intent in page)
+        await store.mark_published([intent.id for intent in page])
+        # Keep every served partition busy: a stateless page always chooses the same low partitions.
+        for intent in page:
+            await append(intent.partition)
+    assert seen == set(range(partitions))
+
+
+async def test_failed_delivery_does_not_reset_partition_turn(stores: Any) -> None:
+    t = target()
+    store = stores(t)
+    await store.initialize()
+    await store.activate(initial_cutover(t))
+    for partition in t.starts:
+        lease = await store.acquire(partition, str(partition), proof())
+        value = replace(event(), aggregate=f"account-{partition}", event_id=f"credit-{partition}")
+        await store.commit(lease, [ProjectionInput(0, value)], proof(), reducer)
+    # No acknowledgement: each partition's oldest stays retryable, but does not monopolize pages.
+    assert [(await store.unpublished(1))[0].partition for _ in range(4)] == [0, 1, 0, 1]
+    # Refused reads must not move the turn.
+    with pytest.raises(BadHandle):
+        await store.unpublished(0)
+    assert (await store.unpublished(1))[0].partition == 0
+    if not isinstance(store, MemoryProjectionStateStore):
+        # PostgreSQL persists the position, even if a relay restarts with a new store instance.
+        store = stores(t)
+    assert (await store.unpublished(1))[0].partition == 1
+
+
+@pytest.mark.parametrize("same_aggregate", [False, True], ids=["shared-event-id", "shared-aggregate"])
+async def test_cross_partition_absent_insert_race_has_one_winner(
+    stores: Any, monkeypatch: pytest.MonkeyPatch, same_aggregate: bool
+) -> None:
+    from edax.backend.projection_postgres import _Session
+    from edax.projection import _MemorySession
+
+    store = stores(target())
+    await store.initialize()
+    leases = [await store.acquire(p, str(p), proof()) for p in (0, 1)]
+    values = [
+        event(),
+        replace(
+            event(),
+            aggregate="account-42" if same_aggregate else "account-43",
+            event_id="credit-2" if same_aggregate else "credit-1",
+        ),
+    ]
+    session_class = _MemorySession if isinstance(store, MemoryProjectionStateStore) else _Session
+    original = session_class._read
+    both = asyncio.Event()
+    reads = 0
+
+    async def paused(session: Any, keys: Any) -> Any:
+        nonlocal reads
+        found = await original(session, keys)
+        reads += 1
+        if reads == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 3)
+        return found
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session_class, "_read", paused)
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    store.commit(lease, [ProjectionInput(0, value)], proof(), reducer)
+                    for lease, value in zip(leases, values, strict=True)
+                ),
+                return_exceptions=True,
+            ),
+            5,
+        )
+    losers = [p for p, result in enumerate(results) if isinstance(result, ConcurrencyError)]
+    assert len(losers) == 1, results
+    loser = losers[0]
+    assert not isinstance(results[1 - loser], BaseException)
+    with pytest.raises(CodecError, match="conflicting projection event identity"):
+        await store.commit(leases[loser], [ProjectionInput(0, values[loser])], proof(), reducer)
+    cursors = [(await store.recover(lease)).next_offset for lease in leases]
+    assert cursors[loser] == 0 and cursors[1 - loser] == 1
+    winner = values[1 - loser]
+    state = await store.get(winner.tenant, winner.aggregate)
+    assert state is not None and state["sequence"] == 1 and state["value"]["balance_minor"] == 1250
+    if not same_aggregate:
+        assert await store.get(values[loser].tenant, values[loser].aggregate) is None
+    await store.activate(initial_cutover(store.target))
+    assert len(await store.unpublished(10)) == 1

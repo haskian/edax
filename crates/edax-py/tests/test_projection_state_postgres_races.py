@@ -240,7 +240,10 @@ async def test_real_commit_with_lost_response_recovers_runner_without_reducing_a
     for key, value in committed_records.items():
         if "expires_ms" not in value:
             assert after[key] == value
-    assert after.keys() == committed_records.keys()
+    # Reading the outbox above creates only its scheduling cursor; recovery adds no data records.
+    delivery_key = store.target.manifest_key + ":delivery"
+    assert after.keys() == committed_records.keys() | {delivery_key}
+    assert after[delivery_key] == {"partition": 0}
     assert runner.retained_records == runner.retained_bytes == 0
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any, Literal, cast
@@ -15,7 +15,7 @@ from edax import _json, _native
 from edax.backend.ingest_postgres import PostgresIngestionSink, reference_ingestion_ddl
 from edax.backend.postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 from edax.batch import BatchSettings, recover
-from edax.errors import BadHandle
+from edax.errors import BadHandle, CodecError, ConcurrencyError
 from edax.ingestion import (
     BatchInput,
     BatchSink,
@@ -134,6 +134,117 @@ async def test_concurrent_first_owner_is_preserved(database: tuple[Any, Postgres
     assert stored is not None and stored["stream"] == winner.stream
 
 
+async def test_concurrent_rejection_cannot_become_an_accepted_stale_replay(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    first = sink_for(database)
+    _, transactor, schema = database
+    before_target_read, resume = asyncio.Event(), asyncio.Event()
+
+    class PausedSink(PostgresIngestionSink):
+        async def _read(self, conn: PgConnection, role: str, keys: Sequence[str]) -> dict[str, Any]:
+            if role == "state_metadata":
+                before_target_read.set()
+                await resume.wait()
+            return await super()._read(conn, role, keys)
+
+    second = PausedSink(transactor, first.target, schema=schema)
+    original = record(first, 0)
+    conflict = record(first, 1, state="cancelled")
+    newer = record(first, 2, sequence=2, state="paid")
+    await first.commit([original])
+    await second.pending()  # Bind before racing, so manifest insertion cannot serialize the calls.
+
+    replay = asyncio.create_task(second.commit([conflict]))
+    try:
+        await asyncio.wait_for(before_target_read.wait(), 5)
+        decided = await asyncio.wait_for(first.commit([conflict, newer]), 5)
+    finally:
+        resume.set()
+        repeated = await asyncio.wait_for(replay, 5)
+
+    assert decided.outcomes == ("rejected", "accepted")
+    assert repeated.outcomes == ("rejected",)
+    assert repeated.rejections == decided.rejections
+    # The caller still owes publication before acknowledging this source coordinate.
+    assert repeated.rejections[conflict.source]["published"] is False
+    assert await first.pending() == repeated.rejections
+    await second.published({conflict.source: repeated.rejections[conflict.source]["fingerprint"]})
+    assert await first.pending() == {}
+    assert (await first.commit([conflict])).rejections[conflict.source]["published"] is True
+
+
+@pytest.mark.parametrize("mode", ["append", "upsert"])
+async def test_concurrent_absent_target_insert_rolls_back_then_replays(
+    database: tuple[Any, PostgresTransactor, str], mode: Literal["append", "upsert"]
+) -> None:
+    first = sink_for(database, mode)
+    _, transactor, schema = database
+    both_read = asyncio.Event()
+    readers = 0
+
+    class ConcurrentSink(PostgresIngestionSink):
+        async def _read(self, conn: PgConnection, role: str, keys: Sequence[str]) -> dict[str, Any]:
+            nonlocal readers
+            rows = await super()._read(conn, role, keys)
+            if role.endswith("_metadata"):
+                assert rows == {}
+                readers += 1
+                if readers == 2:
+                    both_read.set()
+                await asyncio.wait_for(both_read.wait(), 5)
+            return rows
+
+    sinks = [ConcurrentSink(transactor, first.target, schema=schema) for _ in range(2)]
+    for sink in sinks:
+        await sink.pending()
+    original = record(first, 0)
+    results = await asyncio.wait_for(
+        asyncio.gather(*(sink.commit([original]) for sink in sinks), return_exceptions=True), 5
+    )
+    failures = [result for result in results if isinstance(result, BaseException)]
+    assert len(failures) == 1
+    failure = failures[0]
+    assert isinstance(failure, PostgresTransactionFailure)
+    assert isinstance(failure.cause, ConcurrencyError)
+    assert failure.rolled_back and not failure.commit_started
+    assert (await first.commit([original])).outcomes == ("accepted",)
+    assert await first.pending() == {}
+
+
+async def test_locked_target_does_not_block_an_unrelated_ingestion_row(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    first = sink_for(database)
+    _, transactor, schema = database
+    locked, resume = asyncio.Event(), asyncio.Event()
+
+    class PausedSink(PostgresIngestionSink):
+        async def _read(self, conn: PgConnection, role: str, keys: Sequence[str]) -> dict[str, Any]:
+            rows = await super()._read(conn, role, keys)
+            if role == "state_metadata":
+                locked.set()
+                await resume.wait()
+            return rows
+
+    held = PausedSink(transactor, first.target, schema=schema)
+    original = record(first, 0)
+    unrelated = replace(
+        record(first, 10, stream="other-order"), key=first.target.row_key("shop-a", "other-summary")
+    )
+    await first.commit([original, unrelated])
+    await held.pending()
+    task = asyncio.create_task(held.commit([record(first, 1, sequence=2, state="paid")]))
+    try:
+        await asyncio.wait_for(locked.wait(), 5)
+        update = replace(record(first, 11, stream="other-order", sequence=2), key=unrelated.key)
+        other_result = await asyncio.wait_for(first.commit([update]), 5)
+        assert other_result.outcomes == ("accepted",)
+    finally:
+        resume.set()
+        await asyncio.wait_for(task, 5)
+
+
 async def test_published_rejection_survives_original_replay(
     database: tuple[Any, PostgresTransactor, str],
 ) -> None:
@@ -150,6 +261,28 @@ async def test_published_rejection_survives_original_replay(
     assert replay.outcomes == ("rejected",)
     assert replay.rejections[poison.source]["published"] is True
     assert await sink.pending() == {}
+
+
+@pytest.mark.parametrize("case", ["unknown_source", "changed_fingerprint"])
+async def test_rejection_outbox_preserves_strict_publication_checks(
+    database: tuple[Any, PostgresTransactor, str], case: str
+) -> None:
+    sink = sink_for(database)
+    rejected = record(sink, 0, failure="codec: invalid order")
+    await sink.commit([rejected])
+    outbox = RejectionOutbox(sink)
+    pending = await outbox.unpublished(100)
+    changed = (
+        replace(pending[0], source=record(sink, 1).source)
+        if case == "unknown_source"
+        else replace(pending[0], fingerprint="changed")
+    )
+    with pytest.raises(BadHandle):
+        await outbox.mark_published([changed.id])
+    assert await outbox.unpublished(100) == pending
+    await outbox.mark_published([pending[0].id])
+    await outbox.mark_published([pending[0].id])
+    assert await outbox.unpublished(100) == []
 
 
 @pytest.mark.parametrize("case", ["foreign_source", "foreign_fingerprint", "unknown_source"])
@@ -346,7 +479,7 @@ async def test_constraint_failure_requires_confirmed_rollback(
     sink = sink_for(database)
     with pytest.raises(PostgresTransactionFailure) as failed:
         await sink.commit([record(sink, 0), record(sink, 1, sequence=2, state="forbidden")])
-    assert failed.value.cause.code == "codec"
+    assert isinstance(failed.value.cause, CodecError)
     assert recover(failed.value, BatchSettings(), attempt=1, count=2, isolable=True)["action"] == action
     assert await sink.get("shop-a", "order-summary-42") is None
     assert await sink.pending() == {}

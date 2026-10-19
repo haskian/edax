@@ -56,11 +56,14 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
              SELECT key, value->>'generation', (value->>'partition')::integer, (value->>'offset')::bigint, (value->>'ordinal')::integer, value \
              FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\""
         )),
-        // The manifest comes first: an inactive generation reads no intent. Each partition reads only
-        // its eligible range through the index, so suppressed history is never scanned. Offsets of two
-        // partitions are not comparable, so a page takes each partition's oldest in turn by rank.
+        // Round-robin position survives pages and relay restarts. The reserved suffix cannot collide
+        // with a projection record key, whose generation suffix is always a complete JSON array.
+        // Advance on selection, even if delivery subsequently fails, so one failing partition cannot
+        // starve others. No cursor is written for an empty page. One relay per generation is required.
         ("pending".into(), format!(
-            "SELECT i.key, i.value::text AS value FROM {table} AS m \
+            "WITH page AS MATERIALIZED (SELECT i.key, i.value, i.source_partition, i.rank, \
+               i.source_partition <= COALESCE((d.value->>'partition')::integer, -1) AS wrapped \
+             FROM {table} AS m LEFT JOIN {table} AS d ON d.key = $1 || ':delivery' \
              CROSS JOIN LATERAL jsonb_each_text(m.value->'cutoffs') AS c(part, cutoff) \
              CROSS JOIN LATERAL (SELECT key, value, source_partition, row_number() OVER (ORDER BY source_offset, ordinal) AS rank \
                FROM (SELECT key, value, source_partition, source_offset, ordinal FROM {intents} AS i \
@@ -68,7 +71,12 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
                AND (NOT (m.value->>'frozen')::boolean OR i.source_offset < (m.value->'upper'->>c.part)::bigint) \
                ORDER BY i.source_offset, i.ordinal LIMIT $3::text::bigint) AS page) AS i \
              WHERE m.key = $1 AND (m.value->>'active')::boolean \
-             ORDER BY i.rank, i.source_partition LIMIT $3::text::bigint"
+             ORDER BY i.rank, wrapped, i.source_partition LIMIT $3::text::bigint), \
+             advanced AS (INSERT INTO {table} (key, value) \
+               SELECT $1 || ':delivery', jsonb_build_object('partition', source_partition) FROM page \
+               ORDER BY rank DESC, wrapped DESC, source_partition DESC LIMIT 1 \
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value) \
+             SELECT key, value::text AS value FROM page ORDER BY rank, wrapped, source_partition"
         )),
         // Delivery deletes the intent. An unknown or ineligible one is a no-op.
         ("mark_published".into(), format!(

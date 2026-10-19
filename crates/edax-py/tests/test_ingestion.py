@@ -212,3 +212,25 @@ async def test_rejection_outbox_ignores_ids_that_name_no_rejection(target: Inges
     outbox = RejectionOutbox(sink)
     await outbox.mark_published(["not-json", "42", '["only-one"]'])
     assert len(await outbox.unpublished(100)) == 1
+
+
+@pytest.mark.parametrize("case", ["unknown_source", "changed_fingerprint"])
+async def test_rejection_outbox_preserves_strict_publication_checks(
+    target: IngestionTarget, case: str
+) -> None:
+    sink = MemoryIngestionSink(target)
+    rejected = original(target, failure="codec: invalid order")
+    await sink.commit([rejected])
+    outbox = RejectionOutbox(sink)
+    pending = await outbox.unpublished(100)
+    changed = (
+        replace(pending[0], source=original(target, offset=1).source)
+        if case == "unknown_source"
+        else replace(pending[0], fingerprint="changed")
+    )
+    with pytest.raises(BadHandle):
+        await outbox.mark_published([changed.id])
+    assert await outbox.unpublished(100) == pending
+    await outbox.mark_published([pending[0].id])
+    await outbox.mark_published([pending[0].id])
+    assert await outbox.unpublished(100) == []
