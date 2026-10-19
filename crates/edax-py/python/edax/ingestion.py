@@ -98,6 +98,7 @@ class IngestionTarget:
     source_incarnation: str
     mapper_id: str
     at_rest: AtRest = "sealed"
+    partition: Literal["event_id_uuid7"] | None = None
 
     def __post_init__(self) -> None:
         self.validate(())
@@ -105,7 +106,16 @@ class IngestionTarget:
     @property
     def manifest(self) -> str:
         """The immutable target contract encoded for the kernel and durable sink manifest."""
-        return encode(self)
+        manifest = dict(
+            mode=self.mode,
+            generation=self.generation,
+            source_incarnation=self.source_incarnation,
+            mapper_id=self.mapper_id,
+            at_rest=self.at_rest,
+        )
+        if self.partition is not None:
+            manifest["partition"] = self.partition
+        return encode(manifest)
 
     @property
     def prefix(self) -> str:
@@ -349,6 +359,8 @@ def plan_ingestion(
     check/bind the target manifest and serialize these reads with its writes. This function neither
     locks nor persists. Read rejections after acquiring row locks so a waited-for writer is visible.
     """
+    if target.partition is not None:
+        raise BadHandle("partitioned targets require a locked horizon and ingest_target_plan")
     encoded = encode(inputs)
     _native.ingest_check_sealed(target.manifest, encoded)
     return IngestionPlan(_native.ingest_plan(target.mode, encoded, encode(stored), encode(rejected)))
@@ -373,6 +385,13 @@ async def prepare_ingestion(
     if tx is not None and transactor is None:
         raise BadHandle("preparing ingestion with tx requires its transactor to retain scope fences")
     originals = deepcopy(tuple(inputs))
+    if target.partition is not None:
+        failures: list[str | None] = decode(
+            _native.ingest_partition_failures(target.manifest, encode(originals))
+        )
+        originals = tuple(
+            replace(item, failure=failure) for item, failure in zip(originals, failures, strict=True)
+        )
     scopes: list[tuple[str | None, str | None]] = [
         tuple(scope) for scope in decode(_native.ingest_write_scopes(target.manifest, encode(originals)))
     ]
@@ -471,6 +490,11 @@ class MemoryIngestionSink:
     @property
     def target(self) -> IngestionTarget:
         return self._target
+
+    async def advance_horizon(self, to: int) -> int:
+        """Raise the admission floor in Unix microseconds; refuse an ambient unit of work."""
+        async with own_write():
+            return self._database.get().advance_horizon(self.target.manifest, to)
 
     def cleanup(self, *, key_namespace: str | None = None) -> ScopeCleanup:
         """The erasure participant that deletes a scope's rows: a subject's, or a whole tenant's. A

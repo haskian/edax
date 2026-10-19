@@ -1183,3 +1183,48 @@ pub fn stored_encryption_context(part_json: &str, info: crate::EncryptionInfo) -
     let info = edax_seal::EncryptionInfo::try_from(info).map_err(to_wire)?;
     part.context(&info).map_err(to_wire)
 }
+
+/// Validate and decide an ingestion batch with its table-wide admission floor.
+pub fn ingest_target_plan(
+    manifest: &str,
+    inputs: &str,
+    stored: &str,
+    rejected: &str,
+    horizon: i64,
+) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    crate::write_json(
+        &edax_cqrs::ingest::partition::plan(
+            &contract,
+            &inputs,
+            &crate::read_json(stored)?,
+            &crate::read_json(rejected)?,
+            horizon,
+        )
+        .map_err(to_wire)?,
+    )
+}
+
+/// Preparation failures in input order, before provider acquisition.
+pub fn ingest_partition_failures(manifest: &str, inputs: &str) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::ingest::partition::failures(&contract, &inputs).map_err(to_wire)?)
+}
+
+/// Exact UUIDv7 coordinates as decimal strings indexed by canonical row key.
+pub fn ingest_partition_coordinates(manifest: &str, keys: &str) -> Result<String, String> {
+    crate::write_json(
+        &edax_cqrs::ingest::partition::coordinates(
+            &crate::read_json(manifest)?,
+            &crate::read_json::<Vec<String>>(keys)?,
+        )
+        .map_err(to_wire)?,
+    )
+}
+
+/// Validate a table-wide admission floor without host clock arithmetic.
+pub fn ingest_check_horizon(horizon: i64) -> Result<i64, String> {
+    edax_cqrs::ingest::partition::horizon(horizon).map_err(to_wire)
+}

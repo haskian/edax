@@ -460,6 +460,12 @@ class KafkaIngestion:
                 decoded.id,
                 decoded.sequence,
             )
+            if target.partition is not None:
+                failures = _json.decode(
+                    _native.ingest_partition_failures(target.manifest, _json.encode([built()]))
+                )
+                if failures[0] is not None:
+                    raise errors.from_wire(failures[0])
             canonical = self._canonical.encode(decoded)
             if len(canonical) > self.settings.max_mapped_bytes:
                 raise CodecError("decoded event exceeds max_mapped_bytes")
@@ -656,7 +662,7 @@ class KafkaIngestion:
                                     self.publish_rejection(Rejection.saved(item.source, record))
                                 )
                                 confirmed[item.source] = record["fingerprint"]
-                        elif outcome != "accepted":
+                        elif outcome not in ("accepted", "expired"):
                             raise BadHandle("sink returned an unknown ingestion outcome")
                     # One statement marks every rejection this batch published.
                     await self._operation(self.sink.published(confirmed))

@@ -4,6 +4,8 @@
 //! resulting writes and rejections together. `source` identifies a record in an immutable
 //! source incarnation; `key` already includes the target generation and tenant.
 
+pub mod partition;
+
 use std::collections::BTreeMap;
 
 use edax_core::{Error, ErrorCode};
@@ -32,6 +34,8 @@ edax_core::closed_names! {
         Accepted = "accepted",
         /// Refused; its durable rejection must complete publication.
         Rejected = "rejected",
+        /// Discarded below the explicitly configured admission floor.
+        Expired = "expired",
     }
 }
 
@@ -137,6 +141,9 @@ pub struct Contract {
     pub mapper_id: String,
     /// How the target stores a subject's private part: [`AtRest`] by name.
     pub at_rest: String,
+    /// Opt-in deterministic time placement, currently `event_id_uuid7` for append only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
 }
 
 /// A restored/reused target cannot silently change how records are interpreted.
@@ -144,6 +151,10 @@ pub fn bind_contract(previous: Option<&Contract>, expected: &Contract) -> Result
     prefix(&expected.generation)?;
     if Mode::by_name(&expected.mode).is_none()
         || AtRest::by_name(&expected.at_rest).is_none()
+        || expected
+            .partition
+            .as_deref()
+            .is_some_and(|p| p != "event_id_uuid7" || expected.mode != "append")
         || expected.source_incarnation.is_empty()
         || expected.mapper_id.is_empty()
         || expected.source_incarnation.contains('\0')
@@ -505,6 +516,16 @@ pub fn plan(
     stored: &BTreeMap<String, Stored>,
     rejected: &BTreeMap<String, Rejection>,
 ) -> Result<Plan, Error> {
+    plan_at(mode, inputs, stored, rejected, None)
+}
+
+fn plan_at(
+    mode: &str,
+    inputs: &[Input],
+    stored: &BTreeMap<String, Stored>,
+    rejected: &BTreeMap<String, Rejection>,
+    floor: Option<i64>,
+) -> Result<Plan, Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("ingestion mode must be append or upsert"))?;
     let mut sources = BTreeMap::<&str, &Input>::new();
     for input in inputs {
@@ -574,7 +595,8 @@ pub fn plan(
             result.outcomes.push(Outcome::Rejected.as_str().into());
             continue;
         }
-        if input.erased {
+        // A caller's erased flag cannot bypass a partitioned target's identity admission.
+        if input.erased && (floor.is_none() || edax_core::uuid7_micros(&input.event_id).is_ok()) {
             result.outcomes.push(Outcome::Accepted.as_str().into());
             continue;
         }
@@ -617,6 +639,12 @@ pub fn plan(
                 continue;
             }
         };
+        if let Some(floor) = floor {
+            if edax_core::uuid7_micros(&input.event_id)? < floor {
+                result.outcomes.push(Outcome::Expired.as_str().into());
+                continue;
+            }
+        }
         if mode == Mode::Append {
             if let Some(prior) = result.writes.get(&input.key).or_else(|| stored.get(&input.key)) {
                 if prior.fingerprint != fingerprint {

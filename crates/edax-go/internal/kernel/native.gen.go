@@ -1204,6 +1204,12 @@ func IngestBindContract(previous string, expected string) error {
 	return mapNativeError(native.IngestBindContract(previous, expected))
 }
 
+// IngestCheckHorizon calls the shared kernel.
+func IngestCheckHorizon(horizon int64) (int64, error) {
+	nativeValue, nativeError := native.IngestCheckHorizon(horizon)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // IngestCheckSealed calls the shared kernel.
 func IngestCheckSealed(manifest string, inputs string) error {
 	if err := checkNativeString("manifest", manifest); err != nil {
@@ -1251,6 +1257,32 @@ func IngestOpenPlan(manifest string, key string, stored string) (string, error) 
 func IngestOutcomeNames() []string {
 	nativeValue := native.IngestOutcomeNames()
 	return nativeValue
+}
+
+// IngestPartitionCoordinates calls the shared kernel.
+func IngestPartitionCoordinates(manifest string, keys string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("keys", keys); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestPartitionCoordinates(manifest, keys)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestPartitionFailures calls the shared kernel.
+func IngestPartitionFailures(manifest string, inputs string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestPartitionFailures(manifest, inputs)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // IngestPlan calls the shared kernel.
@@ -1354,6 +1386,25 @@ func IngestSourceKey(target string, incarnation string, topic string, partition 
 		return zero, err
 	}
 	nativeValue, nativeError := native.IngestSourceKey(target, incarnation, topic, partition, offset)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestTargetPlan calls the shared kernel.
+func IngestTargetPlan(manifest string, inputs string, stored string, rejected string, horizon int64) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("stored", stored); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("rejected", rejected); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestTargetPlan(manifest, inputs, stored, rejected, horizon)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2263,6 +2314,25 @@ func PostgresPage(spec string, rows []string) (string, error) {
 	}
 	nativeValue, nativeError := native.PostgresPage(spec, normalizeNative(rows))
 	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresPartitionedIngestError calls the shared kernel.
+func PostgresPartitionedIngestError(sqlstate string, constraint string, table string, message string) (string, error) {
+	var zero string
+	if err := checkNativeString("sqlstate", sqlstate); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("constraint", constraint); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("table", table); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("message", message); err != nil {
+		return zero, err
+	}
+	nativeValue := native.PostgresPartitionedIngestError(sqlstate, constraint, table, message)
+	return nativeValue, nil
 }
 
 // PostgresProjectionGet calls the shared kernel.
@@ -4112,6 +4182,25 @@ func (h *MemoryIdempotencyStore) PutRaw(key string, recordJSON string) error {
 		return err
 	}
 	return mapNativeError(h.inner.PutRaw(key, recordJSON))
+}
+
+// AdvanceHorizon calls the shared kernel.
+func (h *MemoryIngestion) AdvanceHorizon(manifest string, to int64) (int64, error) {
+	var zero int64
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.AdvanceHorizon(manifest, to)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // Commit calls the shared kernel.

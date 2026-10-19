@@ -5626,7 +5626,8 @@
     "set": "ingest_outcome",
     "want": [
       "accepted",
-      "rejected"
+      "rejected",
+      "expired"
     ]
   }
 ]

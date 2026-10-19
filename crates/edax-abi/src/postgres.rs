@@ -637,6 +637,11 @@ pub fn postgres_projection_statements(config_json: &str) -> Result<String, Strin
     crate::write_json(&edax_postgres::projection::statements(config_json).map_err(to_wire)?)
 }
 
+/// Diagnose a partitioned payload write without treating ordinary CHECK failures as transient.
+pub fn postgres_partitioned_ingest_error(sqlstate: &str, constraint: &str, table: &str, message: &str) -> String {
+    edax_postgres::partitioned_ingest_verdict(sqlstate, constraint, table, message).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::*;

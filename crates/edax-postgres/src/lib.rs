@@ -52,3 +52,6 @@ pub use schema::{
     CONTRACT_VERSION,
 };
 pub use statements::{begin, statements, Statements};
+
+/// Diagnostic-aware verdict for partitioned ingestion writes.
+pub use error::partitioned_ingest_verdict;

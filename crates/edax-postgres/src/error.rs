@@ -228,3 +228,35 @@ mod tests {
         );
     }
 }
+
+/// Classify a partitioned payload write from PostgreSQL diagnostics. A missing destination
+/// has no named constraint and identifies a routing relation (possibly a child). Ordinary CHECK failures stay codec.
+pub fn partitioned_ingest_verdict(sqlstate: &str, constraint: &str, table: &str, message: &str) -> Error {
+    if sqlstate == "23514" && constraint.is_empty() && !table.is_empty() {
+        return Error::new(
+            ErrorCode::Store,
+            format_args!("postgres ingestion partition unavailable: {message}"),
+        );
+    }
+    verdict(Op::Ingest, sqlstate, None, message)
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+    #[test]
+    fn missing_partition_is_distinct_from_named_checks() {
+        for (state, constraint, table, expected) in [
+            ("23514", "", "events", ErrorCode::Store),
+            ("23514", "valid_pulse", "events", ErrorCode::Codec),
+            ("23514", "", "child", ErrorCode::Store),
+            ("23514", "", "", ErrorCode::Codec),
+            ("23505", "events_pkey", "events", ErrorCode::Concurrency),
+        ] {
+            assert_eq!(
+                partitioned_ingest_verdict(state, constraint, table, "failure").code,
+                expected
+            );
+        }
+    }
+}

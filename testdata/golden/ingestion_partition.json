@@ -1,0 +1,216 @@
+[
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "pulse-v1",
+      "mapper_id": "pulse-v1",
+      "mode": "append",
+      "partition": "event_id_uuid7",
+      "source_incarnation": "sensor-a"
+    },
+    "floor": "1000",
+    "inputs": [
+      {
+        "content": {
+          "heart_rate": 72
+        },
+        "erased": false,
+        "event_id": "00000000-0001-7000-8000-000000000001",
+        "failure": null,
+        "key": "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"00000000-0001-7000-8000-000000000001\"]",
+        "private": {
+          "heart_rate": 72
+        },
+        "public": null,
+        "raw": "heart_rate=72",
+        "raw_fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+        "sequence": null,
+        "source": "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]",
+        "stream": "session-7"
+      }
+    ],
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"00000000-0001-7000-8000-000000000001\"]": {
+          "fingerprint": "10100612809577411538",
+          "private": {
+            "heart_rate": 72
+          },
+          "public": null,
+          "sequence": null,
+          "stream": "session-7"
+        }
+      }
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "pulse-v1",
+      "mapper_id": "pulse-v1",
+      "mode": "append",
+      "partition": "event_id_uuid7",
+      "source_incarnation": "sensor-a"
+    },
+    "floor": "1001",
+    "inputs": [
+      {
+        "content": {
+          "heart_rate": 72
+        },
+        "erased": false,
+        "event_id": "00000000-0001-7000-8000-000000000001",
+        "failure": null,
+        "key": "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"00000000-0001-7000-8000-000000000001\"]",
+        "private": {
+          "heart_rate": 72
+        },
+        "public": null,
+        "raw": "heart_rate=72",
+        "raw_fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+        "sequence": null,
+        "source": "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]",
+        "stream": "session-7"
+      }
+    ],
+    "want": {
+      "outcomes": [
+        "expired"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "pulse-v1",
+      "mapper_id": "pulse-v1",
+      "mode": "append",
+      "partition": "event_id_uuid7",
+      "source_incarnation": "sensor-a"
+    },
+    "floor": "281474976710655001",
+    "inputs": [
+      {
+        "content": {
+          "heart_rate": 72
+        },
+        "erased": false,
+        "event_id": "ffffffff-ffff-7000-bfff-ffffffffffff",
+        "failure": null,
+        "key": "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"ffffffff-ffff-7000-bfff-ffffffffffff\"]",
+        "private": {
+          "heart_rate": 72
+        },
+        "public": null,
+        "raw": "heart_rate=72",
+        "raw_fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+        "sequence": null,
+        "source": "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]",
+        "stream": "session-7"
+      }
+    ],
+    "want": {
+      "outcomes": [
+        "expired"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "pulse-v1",
+      "mapper_id": "pulse-v1",
+      "mode": "append",
+      "partition": "event_id_uuid7",
+      "source_incarnation": "sensor-a"
+    },
+    "floor": "1001",
+    "inputs": [
+      {
+        "content": {
+          "heart_rate": 72
+        },
+        "erased": false,
+        "event_id": "not-a-uuid",
+        "failure": null,
+        "key": "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"not-a-uuid\"]",
+        "private": {
+          "heart_rate": 72
+        },
+        "public": null,
+        "raw": "heart_rate=72",
+        "raw_fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+        "sequence": null,
+        "source": "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]",
+        "stream": "session-7"
+      }
+    ],
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]": {
+          "error": "codec: invalid UUIDv7: invalid character: found `n` at 0",
+          "fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+          "published": false,
+          "raw": "heart_rate=72"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "pulse-v1",
+      "mapper_id": "pulse-v1",
+      "mode": "append",
+      "partition": "event_id_uuid7",
+      "source_incarnation": "sensor-a"
+    },
+    "floor": "1001",
+    "inputs": [
+      {
+        "content": {
+          "heart_rate": 72
+        },
+        "erased": false,
+        "event_id": "00000000-0001-4000-8000-000000000001",
+        "failure": null,
+        "key": "8:pulse-v1:[\"append\",\"clinic\",\"person-7\",\"00000000-0001-4000-8000-000000000001\"]",
+        "private": {
+          "heart_rate": 72
+        },
+        "public": null,
+        "raw": "heart_rate=72",
+        "raw_fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+        "sequence": null,
+        "source": "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]",
+        "stream": "session-7"
+      }
+    ],
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "8:pulse-v1:[\"source-id\",\"sensor-a\",\"measurement-1\"]": {
+          "error": "codec: expected an RFC 4122 UUIDv7",
+          "fingerprint": "42821a327295699482765d497770b27db476c9cd6ba3fd6b25c094707a2933fa",
+          "published": false,
+          "raw": "heart_rate=72"
+        }
+      },
+      "writes": {}
+    }
+  }
+]
