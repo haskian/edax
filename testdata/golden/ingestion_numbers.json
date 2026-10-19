@@ -1,7 +1,7 @@
 [
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_safe_integer",
     "op": "plan",
@@ -11,20 +11,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "10480275631342393387",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "759135924599716328",
+          "private": {
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_safe_integer",
     "op": "plan",
@@ -34,20 +35,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "9962133478494676937",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "13158805896711331166",
+          "private": {
             "total": 9007199254740991
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_safe_integer",
     "op": "plan",
@@ -57,20 +59,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "10480275631342393387",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "759135924599716328",
+          "private": {
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_safe_integer",
     "op": "plan",
@@ -80,13 +83,14 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "9962133478494676937",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "13158805896711331166",
+          "private": {
             "total": 9007199254740991
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
@@ -99,7 +103,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -112,7 +116,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -125,7 +129,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -138,14 +142,14 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_unsafe_integer",
     "op": "plan",
@@ -166,7 +170,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_unsafe_integer",
     "op": "plan",
@@ -187,7 +191,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_unsafe_integer",
     "op": "plan",
@@ -208,7 +212,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_unsafe_integer",
     "op": "plan",
@@ -257,7 +261,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_beyond_u64",
     "op": "plan",
@@ -278,7 +282,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_beyond_u64",
     "op": "plan",
@@ -299,7 +303,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_beyond_u64",
     "op": "plan",
@@ -320,7 +324,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_beyond_u64",
     "op": "plan",
@@ -369,7 +373,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_negative_beyond_i64",
     "op": "plan",
@@ -390,7 +394,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_negative_beyond_i64",
     "op": "plan",
@@ -411,7 +415,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_negative_beyond_i64",
     "op": "plan",
@@ -432,7 +436,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_negative_beyond_i64",
     "op": "plan",
@@ -481,7 +485,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_wide_scientific_integer",
     "op": "plan",
@@ -502,7 +506,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_wide_scientific_integer",
     "op": "plan",
@@ -523,7 +527,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_wide_scientific_integer",
     "op": "plan",
@@ -544,7 +548,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_wide_scientific_integer",
     "op": "plan",
@@ -593,7 +597,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_negative_scientific_integer",
     "op": "plan",
@@ -614,7 +618,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_negative_scientific_integer",
     "op": "plan",
@@ -635,7 +639,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_negative_scientific_integer",
     "op": "plan",
@@ -656,7 +660,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_negative_scientific_integer",
     "op": "plan",
@@ -705,7 +709,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_exponent_float",
     "op": "plan",
@@ -715,20 +719,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "653615509270149261",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "808479384556088306",
+          "private": {
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_exponent_float",
     "op": "plan",
@@ -738,20 +743,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "13210991620364307555",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "17806968822467979312",
+          "private": {
             "total": 1e+21
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"private\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_exponent_float",
     "op": "plan",
@@ -761,20 +767,21 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "653615509270149261",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "808479384556088306",
+          "private": {
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",null,\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"private\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_exponent_float",
     "op": "plan",
@@ -784,13 +791,14 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"tenant-7\",\"order-paid\"]": {
-          "fingerprint": "13210991620364307555",
-          "sequence": 9223372036854775807,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"tenant-7\",null,\"order-paid\"]": {
+          "fingerprint": "17806968822467979312",
+          "private": {
             "total": 1e+21
-          }
+          },
+          "public": null,
+          "sequence": 9223372036854775807,
+          "stream": "order-42"
         }
       }
     }
@@ -803,7 +811,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -816,7 +824,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -829,7 +837,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]
@@ -842,7 +850,7 @@
     "want": [
       "9:orders-v1:[\"projection\",\"manifest\"]",
       "9:orders-v1:[\"projection\",\"checkpoint\",\"source-v1\",\"orders\",0]",
-      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",\"order-42\"]",
+      "9:orders-v1:[\"projection\",\"state\",\"tenant-7\",null,\"order-42\"]",
       "9:orders-v1:[\"projection\",\"event\",\"tenant-7\",\"order-paid\"]",
       "9:orders-v1:[\"projection\",\"sequence\",\"tenant-7\",\"order-42\",\"9223372036854775807\"]"
     ]

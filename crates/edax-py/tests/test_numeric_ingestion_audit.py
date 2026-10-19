@@ -43,7 +43,7 @@ async def sink(request: Any) -> AsyncIterator[BatchSink]:
 
 @pytest.mark.parametrize("number", [2**64, 2**64 + 1, 10**21, 10**21 + 1, -(10**21) - 1])
 async def test_ingestion_rejects_original_unsafe_integer(sink: BatchSink, number: int) -> None:
-    first = replace(original(sink.target), value={"order_id": "order-42", "total_minor": number})
+    first = replace(original(sink.target), private={"order_id": "order-42", "total_minor": number})
     result = await sink.commit([first])
     assert result.outcomes == ("rejected",)
     assert "64-bit range" in result.rejections[first.source]["error"]

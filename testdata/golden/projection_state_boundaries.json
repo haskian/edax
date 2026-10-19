@@ -55,7 +55,7 @@
     },
     "want": [
       "11:balances-v1:[\"projection\",\"manifest\"]",
-      "11:balances-v1:[\"projection\",\"state\",\"bank\\u0000eu\",\"račun-42\"]"
+      "11:balances-v1:[\"projection\",\"state\",\"bank\\u0000eu\",null,\"račun-42\"]"
     ]
   },
   {
@@ -126,7 +126,7 @@
     "want": [
       "11:balances-v1:[\"projection\",\"manifest\"]",
       "11:balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
-      "11:balances-v1:[\"projection\",\"state\",null,\"a-1\"]",
+      "11:balances-v1:[\"projection\",\"state\",null,null,\"a-1\"]",
       "11:balances-v1:[\"projection\",\"event\",null,\"e-1\"]",
       "11:balances-v1:[\"projection\",\"sequence\",null,\"a-1\",\"1\"]",
       "11:balances-v1:[\"projection\",\"event\",null,\"e-2\"]",

@@ -93,6 +93,9 @@ pub struct Proof {
 pub struct Event {
     /// Tenant namespace, or absence for a single tenant.
     pub tenant: Option<String>,
+    /// Erasure subject that owns the aggregate's state, from the sealed envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     /// Complete aggregate stream identity.
     pub aggregate: String,
     /// Stable logical event identity.
@@ -117,6 +120,14 @@ pub struct Input {
     pub offset: i64,
     /// Canonical reducer input.
     pub event: Event,
+    /// The record's key was destroyed: record its receipts and move past it, without a reducer call
+    /// or a state change, so an erased subject neither stops the partition nor regains state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erased: bool,
+    /// [`keyed_fingerprint`] of a sealed event. Without it the receipts bind an unkeyed hash of the
+    /// canonical event, which suits plaintext only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// One deterministic external effect.
@@ -241,6 +252,9 @@ pub enum Operation {
     Get {
         /// Tenant namespace, or absence for a single tenant.
         tenant: Option<String>,
+        /// Erasure subject that owns the state, or absence for unsealed data.
+        #[serde(default)]
+        subject: Option<String>,
         /// Complete aggregate stream identity.
         aggregate: String,
     },
@@ -360,9 +374,28 @@ impl Contract {
             partition
         ]))
     }
-    fn state_key(&self, tenant: &Option<String>, aggregate: &str) -> Result<String, Error> {
+    fn state_key(&self, tenant: &Option<String>, subject: &Option<String>, aggregate: &str) -> Result<String, Error> {
         required(aggregate)?;
-        self.key(json!(["projection", "state", tenant, aggregate]))
+        if subject.as_deref().is_some_and(|s| s.is_empty() || s.contains('\0')) {
+            return Err(Error::codec("projection subject must be non-empty without NUL"));
+        }
+        self.key(json!(["projection", "state", tenant, subject, aggregate]))
+    }
+    /// The half-open key range `[start, end)` holding every state record of one tenant and subject:
+    /// what an erasure cleanup of a plaintext generation deletes. Keys compare byte-wise.
+    pub fn state_scope_range(&self, tenant: &Option<String>, subject: &str) -> Result<(String, String), Error> {
+        if subject.is_empty() {
+            return Err(Error::bad_handle("an erasure scope needs a subject"));
+        }
+        // Every key of the range continues with the aggregate, a JSON string: `"` opens it and `#`
+        // bounds it.
+        let open = json!(["projection", "state", tenant, subject]).to_string();
+        let head = format!(
+            "{}{},",
+            namespace::prefix(&self.generation)?,
+            open.trim_end_matches(']')
+        );
+        Ok((format!("{head}\""), format!("{head}#")))
     }
     fn event_keys(&self, event: &Event) -> Result<[String; 3], Error> {
         required(&event.event_id)?;
@@ -375,7 +408,7 @@ impl Contract {
             return Err(Error::codec("projection tenant holds a NUL character"));
         }
         Ok([
-            self.state_key(&event.tenant, &event.aggregate)?,
+            self.state_key(&event.tenant, &event.subject, &event.aggregate)?,
             self.key(json!(["projection", "event", event.tenant, event.event_id]))?,
             self.key(json!([
                 "projection",
@@ -430,7 +463,11 @@ pub fn keys(request: &Request) -> Result<Vec<String>, Error> {
                 keys.extend(c.event_keys(&input.event)?);
             }
         }
-        Operation::Get { tenant, aggregate } => keys.push(c.state_key(tenant, aggregate)?),
+        Operation::Get {
+            tenant,
+            subject,
+            aggregate,
+        } => keys.push(c.state_key(tenant, subject, aggregate)?),
     }
     // The manifest stays first; a batch names each record once.
     let mut seen = std::collections::BTreeSet::new();
@@ -552,41 +589,75 @@ fn run_batch(
         intents: BTreeMap::new(),
         lease: lease_check(c, records, lease, now)?,
     };
-    for (index, Input { offset, event }) in inputs.iter().enumerate() {
+    for (index, input) in inputs.iter().enumerate() {
+        let Input {
+            offset,
+            event,
+            erased,
+            fingerprint,
+        } = input;
         let checkpoint = &mut batch.lease;
         c.continuity(proof, checkpoint.next_offset)?;
         if *offset < checkpoint.next_offset || *offset >= proof.end {
             return Err(Error::bad_handle("projection record outside proven source interval"));
         }
         let [state_key, event_key, sequence_key] = c.event_keys(event)?;
-        let mut canonical_event = json!(event);
-        *canonical_event
-            .get_mut("sequence")
-            .ok_or_else(|| Error::codec("missing event sequence"))? = json!(event.sequence.to_string());
-        let canonical = canonical_json(&serde_json::to_vec(&canonical_event).map_err(Error::codec)?)?;
-        // Normalized values must remain valid reducer inputs after storage and replay.
-        // A float such as 1e18 otherwise becomes an unsafe integer on the next JSON crossing.
-        canonical_json(&canonical)?;
+        let canonical = canonical_event(event)?;
         let mut normalized_event: Value = serde_json::from_slice(&canonical).map_err(Error::codec)?;
         *normalized_event
             .get_mut("sequence")
             .ok_or_else(|| Error::codec("missing sequence"))? = json!(event.sequence);
+        if fingerprint.as_deref().is_some_and(|f| !is_mac(f)) {
+            return Err(Error::bad_handle(
+                "projection keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+            ));
+        }
         // The receipt binds a hash of the canonical event: the same conflict check, without keeping
-        // a second copy of every payload.
-        let receipt = json!({"fingerprint": payload_hash(&canonical).to_string(), "partition": checkpoint.partition});
+        // a second copy of every payload. An erased event binds no hash: nothing of it can be read.
+        let bound = if *erased {
+            ERASED.to_owned()
+        } else {
+            fingerprint
+                .clone()
+                .unwrap_or_else(|| payload_hash(&canonical).to_string())
+        };
+        let receipt = json!({"fingerprint": bound, "partition": checkpoint.partition});
         let by_event = staged(&batch.writes, records, &event_key);
         let by_sequence = staged(&batch.writes, records, &sequence_key);
         let duplicate = by_event.is_some() || by_sequence.is_some();
-        // A receipt that differs blames the message; a missing partner receipt blames the store.
-        if [by_event, by_sequence]
-            .into_iter()
-            .flatten()
-            .any(|saved| *saved != receipt)
+        // A receipt that differs blames the message; a missing partner receipt blames the store. An
+        // erased replay matches any receipt: one from before erasure holds its earlier fingerprint.
+        if !*erased
+            && [by_event, by_sequence]
+                .into_iter()
+                .flatten()
+                .any(|saved| *saved != receipt)
         {
             return Err(Error::codec("conflicting projection event identity"));
         }
         if by_event.is_some() != by_sequence.is_some() {
             return Err(Error::bad_handle("incomplete projection deduplication indexes"));
+        }
+        if *erased {
+            if reduced.and_then(|r| r.get(index)).is_some_and(Option::is_some) {
+                return Err(Error::bad_handle("projection reducer result given for an erased event"));
+            }
+            if reduced.is_none() {
+                batch
+                    .items
+                    .push(json!({"novel": false, "state": null, "event": normalized_event}));
+            }
+            // A receipt from before erasure stays: it holds no plaintext, and replays still match it.
+            if !duplicate {
+                batch.writes.insert(event_key, receipt.clone());
+                batch.writes.insert(sequence_key, receipt);
+            }
+            checkpoint.next_offset = offset
+                .checked_add(1)
+                .ok_or_else(|| Error::bad_handle("projection offset exhausted"))?;
+            let key = c.checkpoint_key(checkpoint.partition)?;
+            batch.writes.insert(key, json!(checkpoint));
+            continue;
         }
         let state = staged(&batch.writes, records, &state_key)
             .map(StateHead::deserialize)
@@ -665,6 +736,35 @@ fn run_batch(
         batch.writes.insert(key, json!(checkpoint));
     }
     Ok(batch)
+}
+
+/// The receipt fingerprint of an erased event: no hash, since nothing of the event can be read.
+const ERASED: &str = "erased";
+
+fn is_mac(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The canonical bytes a receipt binds: the event with its sequence as decimal text, so a 64-bit
+/// sequence survives JSON. Normalized values must remain valid reducer inputs after storage and
+/// replay: a float such as 1e18 otherwise becomes an unsafe integer on the next JSON crossing.
+fn canonical_event(event: &Event) -> Result<Vec<u8>, Error> {
+    let mut value = json!(event);
+    *value
+        .get_mut("sequence")
+        .ok_or_else(|| Error::codec("missing event sequence"))? = json!(event.sequence.to_string());
+    let canonical = canonical_json(&serde_json::to_vec(&value).map_err(Error::codec)?)?;
+    canonical_json(&canonical)?;
+    Ok(canonical)
+}
+
+/// The receipt fingerprint of a sealed event: HMAC-SHA-256 under the subject's fingerprint key over
+/// the canonical opened event. Erasure destroys the key, and with it any way to test a guessed
+/// payload against the receipt.
+pub fn keyed_fingerprint(key: &[u8], event: &Event) -> Result<String, Error> {
+    let canonical = canonical_event(event)?;
+    let mac = edax_seal::fingerprint(key, &[b"edax.projection.event/v1\0".as_slice(), &canonical].concat())?;
+    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// A reducer result in canonical form, refused as `codec` when no store could keep it.
@@ -872,9 +972,13 @@ pub fn transition(request: &Request, records: &BTreeMap<String, Value>, now: i64
             manifest.cutoffs.clone_from(cutoffs);
             writes.insert(manifest_key, json!(manifest));
         }
-        Operation::Get { tenant, aggregate } => {
+        Operation::Get {
+            tenant,
+            subject,
+            aggregate,
+        } => {
             plan.result = records
-                .get(&c.state_key(tenant, aggregate)?)
+                .get(&c.state_key(tenant, subject, aggregate)?)
                 .cloned()
                 .unwrap_or(Value::Null);
         }

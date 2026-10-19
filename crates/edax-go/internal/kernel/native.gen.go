@@ -1188,6 +1188,16 @@ func IngestBindContract(previous string, expected string) error {
 	return mapNativeError(native.IngestBindContract(previous, expected))
 }
 
+// IngestKeyedFingerprint calls the shared kernel.
+func IngestKeyedFingerprint(key []byte, state string) (string, error) {
+	var zero string
+	if err := checkNativeString("state", state); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestKeyedFingerprint(key, state)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // IngestModeNames calls the shared kernel.
 func IngestModeNames() []string {
 	nativeValue := native.IngestModeNames()
@@ -1239,6 +1249,24 @@ func IngestRowKey(manifest string, identity string) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.IngestRowKey(manifest, identity)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestScopeRange calls the shared kernel.
+func IngestScopeRange(manifest string, subject string, tenant *string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("subject", subject); err != nil {
+		return zero, err
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.IngestScopeRange(manifest, subject, tenant)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2437,6 +2465,16 @@ func ProjectionIntentKey(contractJSON string, intentID string) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// ProjectionKeyedFingerprint calls the shared kernel.
+func ProjectionKeyedFingerprint(key []byte, eventJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("eventJSON", eventJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProjectionKeyedFingerprint(key, eventJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // ProjectionKeys calls the shared kernel.
 func ProjectionKeys(requestJSON string) (string, error) {
 	var zero string
@@ -2454,6 +2492,24 @@ func ProjectionReads(requestJSON string) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.ProjectionReads(requestJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProjectionStateScopeRange calls the shared kernel.
+func ProjectionStateScopeRange(contractJSON string, subject string, tenant *string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("subject", subject); err != nil {
+		return zero, err
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ProjectionStateScopeRange(contractJSON, subject, tenant)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -3913,6 +3969,28 @@ func (h *MemoryIngestion) Pending(prefix string, limit uint32) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// DeleteScope calls the shared kernel.
+func (h *MemoryIngestion) DeleteScope(start string, end string) (uint64, error) {
+	var zero uint64
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("start", start); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("end", end); err != nil {
+		return zero, err
+	}
+	nativeValue := h.inner.DeleteScope(start, end)
+	return nativeValue, nil
+}
+
 // Published calls the shared kernel.
 func (h *MemoryIngestion) Published(source string, fingerprint string) error {
 	if h == nil || h.nativeState == nil {
@@ -4162,6 +4240,28 @@ func (h *MemoryProjectionDatabase) MarkPublished(manifestKey string, generation 
 	}
 	nativeValue, nativeError := h.inner.MarkPublished(manifestKey, generation, keys)
 	return nativeValue, mapNativeError(nativeError)
+}
+
+// DeleteScope calls the shared kernel.
+func (h *MemoryProjectionDatabase) DeleteScope(start string, end string) (uint64, error) {
+	var zero uint64
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("start", start); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("end", end); err != nil {
+		return zero, err
+	}
+	nativeValue := h.inner.DeleteScope(start, end)
+	return nativeValue, nil
 }
 
 // Prune calls the shared kernel.

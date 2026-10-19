@@ -372,34 +372,48 @@ fn parent_scope(scope: &KeyScope) -> KeyScope {
     }
 }
 
-fn lock(scope_id: String, exclusive: bool) -> Call {
+fn lock(name: String, exclusive: bool) -> Call {
     Call {
         statement: if exclusive { "lock_exclusive" } else { "lock_shared" },
-        params: vec![Some(scope_id)],
+        params: vec![Some(name)],
     }
 }
 
-/// Shared fences for one transaction's writes to `scopes`: every tenant fence, then every subject fence,
-/// each set in scope-ID order and without repeats. One order for every writer keeps two writers that
+/// Fence buckets per kind. A writer takes at most this many tenant fences and this many subject
+/// fences, however many scopes its batch touches: one advisory lock per scope would fill the server's
+/// shared lock table (`max_locks_per_transaction * max_connections`) under concurrent batches. A
+/// revocation waits for every writer in its bucket, so a collision delays unrelated work; the
+/// revocation check after the lock still reads the exact scope, so no conflicting writer passes.
+pub const FENCE_BUCKETS: u64 = 32;
+
+fn bucket(kind: &str, id: &str) -> String {
+    format!("{kind}/{}", edax_core::payload_hash(id.as_bytes()) % FENCE_BUCKETS)
+}
+
+/// Shared fences for one transaction's writes to `scopes`: every tenant bucket, then every subject
+/// bucket, each in name order and without repeats. One order for every writer keeps two writers that
 /// fence the same scopes from waiting on each other behind a queued cleanup.
 pub fn writer_locks(scopes: &[KeyScope]) -> Result<Vec<Call>, Error> {
     let mut tenants = BTreeSet::new();
     let mut subjects = BTreeSet::new();
     for scope in scopes {
-        tenants.insert(scope_id(&parent_scope(scope))?);
+        tenants.insert(bucket("tenant", &scope_id(&parent_scope(scope))?));
         if scope.subject.is_some() {
-            subjects.insert(scope_id(scope)?);
+            subjects.insert(bucket("subject", &scope_id(scope)?));
         }
     }
     Ok(tenants.into_iter().chain(subjects).map(|id| lock(id, false)).collect())
 }
 
-/// Tenant cleanup takes the exclusive parent fence; subject cleanup shares the parent and excludes
-/// its subject. Hash collisions can delay unrelated work but never permit a conflicting writer.
+/// Tenant cleanup takes its tenant bucket exclusively; subject cleanup shares the tenant bucket and
+/// excludes its subject bucket.
 pub fn revocation_locks(scope: &KeyScope) -> Result<Vec<Call>, Error> {
-    let mut locks = vec![lock(scope_id(&parent_scope(scope))?, scope.subject.is_none())];
+    let mut locks = vec![lock(
+        bucket("tenant", &scope_id(&parent_scope(scope))?),
+        scope.subject.is_none(),
+    )];
     if scope.subject.is_some() {
-        locks.push(lock(scope_id(scope)?, true));
+        locks.push(lock(bucket("subject", &scope_id(scope)?), true));
     }
     Ok(locks)
 }

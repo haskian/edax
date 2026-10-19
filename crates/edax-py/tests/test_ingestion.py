@@ -64,12 +64,12 @@ async def test_rejected_original_cannot_claim_owner_on_replay(target: IngestionT
     stored = await sink.get("tenant-7", "order-42")
     assert stored is not None
     assert stored["stream"] == "new-owner"
-    assert stored["value"] == valid.value
+    assert stored["private"] == valid.private
 
 
 async def test_tombstone_keeps_sequence_and_owner(target: IngestionTarget) -> None:
     sink = MemoryIngestionSink(target)
-    deleted = replace(original(target, 3, 3, "deleted"), value=None)
+    deleted = replace(original(target, 3, 3, "deleted"), private=None)
     assert (await sink.commit([deleted])).outcomes == ("accepted",)
     result = await sink.commit(
         [
@@ -83,7 +83,7 @@ async def test_tombstone_keeps_sequence_and_owner(target: IngestionTarget) -> No
     assert stored is not None
     assert stored["sequence"] == 3
     assert stored["stream"] == "order-42"
-    assert stored["value"] is None
+    assert stored["private"] is None
 
 
 async def test_append_replays_and_conflicts_are_atomic() -> None:
@@ -96,7 +96,7 @@ async def test_append_replays_and_conflicts_are_atomic() -> None:
     assert result.outcomes == ("accepted", "accepted", "rejected")
     stored = await sink.get("tenant-7", first.event_id)
     assert stored is not None
-    assert stored["value"] == first.value
+    assert stored["private"] == first.private
     assert (await sink.commit([first, duplicate, conflict])).outcomes == result.outcomes
     assert list(await sink.pending()) == [conflict.source]
 

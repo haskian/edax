@@ -21,12 +21,15 @@ fn event(offset: u64, sequence: u64, status: &str) -> Input {
     .to_string();
     Input {
         source: source_key("projection-v1", "orders-v1", "orders", 0, offset.try_into().unwrap()).unwrap(),
-        key: row_key("projection-v1", "upsert", Some("tenant-7"), "order-42").unwrap(),
+        key: row_key("projection-v1", "upsert", Some("tenant-7"), None, "order-42").unwrap(),
         stream: "order-42".into(),
         event_id: format!("order-42:{sequence}"),
         sequence: Some(sequence),
         content: content.clone(),
-        value: Some(json!({"order_id": "order-42", "status": status})),
+        private: Some(json!({"order_id": "order-42", "status": status})),
+        public: None,
+        erased: false,
+        fingerprint: None,
         raw_fingerprint: raw_fingerprint(raw.as_bytes()),
         raw,
         failure: None,
@@ -36,7 +39,7 @@ fn event(offset: u64, sequence: u64, status: &str) -> Input {
 #[allow(clippy::unwrap_used, reason = "test fixture must be valid")]
 fn append_event(offset: u64, sequence: u64, status: &str) -> Input {
     let mut input = event(offset, sequence, status);
-    input.key = row_key("projection-v1", "append", Some("tenant-7"), &input.event_id).unwrap();
+    input.key = row_key("projection-v1", "append", Some("tenant-7"), None, &input.event_id).unwrap();
     input
 }
 
@@ -80,10 +83,10 @@ fn row_keys_match_validated_input_identities() {
         };
         let mut input = event(0, 1, "open");
         let row_id = if mode == "append" { &input.event_id } else { "order-42" };
-        input.key = row_key(&contract.generation, mode, tenant, row_id).unwrap();
+        input.key = row_key(&contract.generation, mode, tenant, None, row_id).unwrap();
         assert_eq!(
             input.key,
-            key(&contract.generation, &json!([mode, tenant, row_id]).to_string()).unwrap()
+            key(&contract.generation, &json!([mode, tenant, null, row_id]).to_string()).unwrap()
         );
         assert_eq!(validate_inputs(&contract, &[input]), Ok(()));
     }
@@ -95,14 +98,14 @@ fn row_keys_match_validated_input_identities() {
         ("NUL target", "v1\0", "upsert", "order-42"),
     ] {
         assert_eq!(
-            row_key(target, mode, None, row_id).unwrap_err().code,
+            row_key(target, mode, None, None, row_id).unwrap_err().code,
             ErrorCode::BadHandle,
             "{name}"
         );
     }
     assert_ne!(
-        row_key("v1", "upsert", None, "order-42").unwrap(),
-        row_key("v1", "upsert", Some(""), "order-42").unwrap()
+        row_key("v1", "upsert", None, None, "order-42").unwrap(),
+        row_key("v1", "upsert", Some(""), None, "order-42").unwrap()
     );
 }
 
@@ -148,7 +151,7 @@ fn validates_originals_before_compaction_and_retains_first_owner() {
         ["accepted", "rejected", "rejected", "accepted", "accepted"]
     );
     assert_eq!(result.writes[&first.key].sequence, Some(5));
-    assert_eq!(result.writes[&first.key].value, newer.value);
+    assert_eq!(result.writes[&first.key].private, newer.private);
     assert_eq!(result.writes[&first.key].stream, first.stream);
 }
 
@@ -199,7 +202,7 @@ fn invalid_records_never_propose_owners() {
 #[test]
 fn tombstones_keep_the_owner_and_sequence() {
     let mut deleted = event(1, 3, "deleted");
-    deleted.value = None;
+    deleted.private = None;
     let stored = current(&deleted);
     let mut different_owner = event(4, 5, "new");
     different_owner.stream = "different-order".into();
@@ -233,7 +236,7 @@ fn append_exact_replays_and_conflicts() {
     .unwrap();
     assert_eq!(result.outcomes, ["accepted", "accepted", "rejected"]);
     assert_eq!(result.writes.len(), 1);
-    assert_eq!(result.writes[&first.key].value, first.value);
+    assert_eq!(result.writes[&first.key].private, first.private);
     let replay = plan("append", &[first, different], &result.writes, &result.rejections).unwrap();
     assert_eq!(replay.outcomes, ["accepted", "rejected"]);
     assert!(replay.writes.is_empty());
@@ -325,7 +328,7 @@ fn preserves_published_rejections_and_handles_empty_and_invalid_modes() {
 #[test]
 fn valid_updates_survive_every_permutation_batch_cut_and_replay() {
     let mut deletion = event(2, 3, "deleted");
-    deletion.value = None;
+    deletion.private = None;
     let originals = [event(0, 1, "open"), event(1, 2, "paid"), deletion.clone()];
     for permutation in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         for cut in 0..4 {
@@ -344,7 +347,7 @@ fn valid_updates_survive_every_permutation_batch_cut_and_replay() {
                 start = end;
             }
             assert_eq!(stored[&deletion.key].sequence, Some(3));
-            assert_eq!(stored[&deletion.key].value, None);
+            assert_eq!(stored[&deletion.key].private, None);
         }
     }
 }

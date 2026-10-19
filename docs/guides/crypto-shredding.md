@@ -282,6 +282,9 @@ write with it. A handler that writes nothing pays no fence. Writes through conne
 not manage, and side effects outside storage, are not fenced in this mode. When a fence refuses
 inside a handler, a consumer skips the message only if the provider confirms the scope destroyed. A Postgres `fence`
 takes the kernel's locks for all its scopes in one call and reads the status in a separate statement.
+The locks are hash buckets, at most 32 tenant and 32 subject buckets per transaction, so a batch that
+writes for many subjects cannot fill the server's shared lock table. A cleanup waits for every writer
+in its bucket, so a collision delays unrelated writes; the status read stays exact.
 `PostgresErasureStore.guard_in_transaction` does both against the edax erasure tables. It refuses a
 tombstoned scope with `Rejected`, so a provider maps that refusal to its own key status.
 

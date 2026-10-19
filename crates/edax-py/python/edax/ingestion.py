@@ -32,10 +32,13 @@ __all__ = [
 
 @dataclass(frozen=True)
 class MappedRow:
-    """A mapper's row key and complete state. ``None`` retains a deletion marker."""
+    """A mapper's row key and complete state, in two parts. ``private`` holds what belongs to the event's
+    erasure subject: a sink seals it at rest when sealing is configured. ``public`` is stored as plaintext
+    and stays queryable. Both ``None`` retains a deletion marker."""
 
     key: str
-    value: Any
+    private: Any = None
+    public: Any = None
 
 
 @dataclass(frozen=True)
@@ -48,10 +51,15 @@ class BatchInput:
     event_id: str
     sequence: int | None
     content: Any
-    value: Any
+    private: Any
+    public: Any
     raw: str
     raw_fingerprint: str
     failure: str | None = None
+    #: The record's key was destroyed: the sink accepts it without a write.
+    erased: bool = False
+    #: The kernel's keyed fingerprint of a sealed record; ``None`` hashes the plaintext unkeyed.
+    fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,29 +107,38 @@ class IngestionTarget:
         event_id: str,
         sequence: int | None,
         content: Any,
-        value: Any,
+        private: Any,
         raw: str,
         failure: str | None = None,
         raw_fingerprint: str | None = None,
+        *,
+        public: Any = None,
+        subject: str | None = None,
+        erased: bool = False,
+        fingerprint: str | None = None,
     ) -> BatchInput:
         """Build an original with scoped source and row keys, then validate its target contract.
 
         In append mode ``row_key`` must equal ``event_id``. ``raw`` is the lossless JSON source
         representation used by rejection publication. Content includes the full event envelope.
         ``raw_fingerprint`` identifies the original source record; a source whose ``raw`` is the
-        whole record omits it, and the kernel fingerprints ``raw``.
+        whole record omits it, and the kernel fingerprints ``raw``. ``subject`` is the event's erasure
+        subject: it scopes the row key, so an erasure cleanup finds every row of the subject.
         """
         original = BatchInput(
             source=self.source_key(topic, partition, offset),
-            key=self.row_key(tenant, row_key),
+            key=self.row_key(tenant, row_key, subject),
             stream=stream,
             event_id=event_id,
             sequence=sequence,
             content=content,
-            value=value,
+            private=private,
+            public=public,
             raw=raw,
             raw_fingerprint=raw_fingerprint or _native.ingest_raw_fingerprint(raw),
             failure=failure,
+            erased=erased,
+            fingerprint=fingerprint,
         )
         self.validate((original,))
         return original
@@ -130,9 +147,11 @@ class IngestionTarget:
         """The key of one source record in this generation: the kernel's exact coordinates."""
         return _native.ingest_source_key(self.generation, self.source_incarnation, topic, partition, offset)
 
-    def row_key(self, tenant: str | None, row_key: str) -> str:
-        """The key of one target row in this generation, scoped by its tenant."""
-        return _native.ingest_row_key(self.manifest, encode({"row_id": row_key, "tenant": tenant}))
+    def row_key(self, tenant: str | None, row_key: str, subject: str | None = None) -> str:
+        """The key of one target row in this generation, scoped by its tenant and erasure subject."""
+        return _native.ingest_row_key(
+            self.manifest, encode({"row_id": row_key, "tenant": tenant, "subject": subject})
+        )
 
 
 @dataclass(frozen=True)
@@ -165,7 +184,9 @@ class BatchSink(Protocol):
 
     async def published(self, confirmed: Mapping[str, str]) -> None: ...
 
-    async def get(self, tenant: str | None, row_key: str) -> dict[str, Any] | None: ...
+    async def get(
+        self, tenant: str | None, row_key: str, subject: str | None = None
+    ) -> dict[str, Any] | None: ...
 
 
 class MemoryIngestionSink:
@@ -198,8 +219,10 @@ class MemoryIngestionSink:
         for source, fingerprint in confirmed.items():
             database.published(source, fingerprint)
 
-    async def get(self, tenant: str | None, row_key: str) -> dict[str, Any] | None:
-        key = self.target.row_key(tenant, row_key)
+    async def get(
+        self, tenant: str | None, row_key: str, subject: str | None = None
+    ) -> dict[str, Any] | None:
+        key = self.target.row_key(tenant, row_key, subject)
         return cast(dict[str, Any] | None, decode(self._database.get().get(key)))
 
 

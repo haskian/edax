@@ -2,7 +2,8 @@
 
 `KafkaIngestion` collects Kafka events into database batches. Append mode stores one row per event.
 Upsert mode maintains the latest complete state for each mapped key. The mapper returns a
-`MappedRow(key, value)`; it does not read the previous row.
+`MappedRow(key, private, public)`; it does not read the previous row. `private` holds what belongs
+to the event's erasure subject, and `public` is stored as plaintext for queries.
 
 The Python SDK provides `PostgresIngestionSink` and `MemoryIngestionSink` behind the atomic
 `BatchSink` interface. Rust kernels own admission, recovery, identity, conflict resolution,
@@ -135,10 +136,14 @@ a reused topic name alone is not an identity check.
 
 | Mode | Identity and accepted write | Replay/conflict behavior |
 | --- | --- | --- |
-| `append` | Target generation, tenant and stable event ID. The mapper's row key is ignored. | Exact replay is accepted without rewriting. Different content under that identity becomes a durable rejection. |
-| `upsert` | Target generation, tenant and mapped row key; one aggregate stream permanently owns it. Each original needs a sequence in `0..=i64::MAX`. | A higher sequence replaces complete state. A lower sequence is ignored. An equal sequence preserves the first committed value: identical content is accepted; different content is rejected. |
+| `append` | Target generation, tenant, erasure subject and stable event ID. The mapper's row key is ignored. | Exact replay is accepted without rewriting. Different content under that identity becomes a durable rejection. |
+| `upsert` | Target generation, tenant, erasure subject and mapped row key; one aggregate stream permanently owns it. Each original needs a sequence in `0..=i64::MAX`. | A higher sequence replaces complete state. A lower sequence is ignored. An equal sequence preserves the first committed value: identical content is accepted; different content is rejected. |
 
-A mapped `None` is a retained deletion marker. It retains the stream owner and sequence, so an old
+The erasure subject comes from the event envelope, never from the mapper. It sits in the row key
+before the row identity, so one key range holds every row of a subject. An event with no subject
+uses `null` there.
+
+A row whose `private` and `public` are both `None` is a retained deletion marker. It retains the stream owner and sequence, so an old
 update cannot resurrect the row and another stream cannot take its key. Keep those markers; removing
 them weakens replay protection. There is no offset or timestamp fallback for a missing sequence.
 

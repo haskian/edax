@@ -105,6 +105,17 @@ impl MemoryProjectionState {
         Ok(())
     }
 
+    /// Delete every record in the key range `[start, end)`, an erasure scope from
+    /// `Contract::state_scope_range`; return how many it deleted.
+    pub fn delete_scope(&self, start: &str, end: &str) -> usize {
+        let mut state = lock(&self.state);
+        let before = state.records.len();
+        state
+            .records
+            .retain(|key, _| key.as_str() < start || key.as_str() >= end);
+        before - state.records.len()
+    }
+
     /// Up to `limit` intents of `generation` its manifest at `manifest_key` lets deliver: each
     /// partition's oldest `(offset, ordinal)` first, partitions taking turns across pages, as Postgres pages them.
     pub fn unpublished(&self, manifest_key: &str, generation: &str, limit: usize) -> Result<Vec<Value>, Error> {

@@ -161,7 +161,7 @@ async def test_live_upsert_replay_and_durable_conflict_rejection(
     first = await sink.get("tenant-7", "order-42")
     assert first is not None
     assert first["sequence"] == 20
-    assert first["value"] == {"id": "order-42", "status": "paid", "sequence": 20}
+    assert first["private"] == {"id": "order-42", "status": "paid", "sequence": 20}
     assert dead == []
 
     # A new client seeks behind the committed group offset. Require a fresh commit from that client.

@@ -370,7 +370,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -469,7 +469,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -577,7 +577,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -704,7 +704,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -805,7 +805,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -908,7 +908,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -1028,7 +1028,7 @@
           "fingerprint": "9187739256296792245",
           "partition": 0
         },
-        "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
           "partition": 0,
           "sequence": 1,
           "value": {
@@ -1160,7 +1160,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -1207,7 +1207,7 @@
         "fingerprint": "9187739256296792245",
         "partition": 0
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1293,7 +1293,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -1340,7 +1340,7 @@
         "fingerprint": "9187739256296792245",
         "partition": 0
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1433,7 +1433,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"2\"]"
     ],
@@ -1476,7 +1476,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1545,7 +1545,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"other\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -1588,7 +1588,7 @@
         "fingerprint": "9187739256296792245",
         "partition": 0
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1657,7 +1657,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-3\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"3\"]"
     ],
@@ -1696,7 +1696,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1765,7 +1765,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -1812,7 +1812,7 @@
         "fingerprint": "9187739256296792245",
         "partition": 0
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -1881,7 +1881,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-2\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"2\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-3\"]",
@@ -1922,7 +1922,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -2095,7 +2095,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-2\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"2\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-3\"]",
@@ -2136,7 +2136,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 1,
         "value": {
@@ -2331,7 +2331,7 @@
           "owner": "worker-a",
           "partition": 0
         },
-        "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+        "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
           "partition": 0,
           "sequence": 3,
           "value": {
@@ -2477,7 +2477,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -2516,7 +2516,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -2609,7 +2609,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -2648,7 +2648,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -2717,7 +2717,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -2756,7 +2756,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -2825,7 +2825,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -2864,7 +2864,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -2941,7 +2941,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -2984,7 +2984,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -3053,7 +3053,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -3092,7 +3092,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -3161,7 +3161,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-1\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"1\"]"
     ],
@@ -3269,7 +3269,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -3308,7 +3308,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -3377,7 +3377,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -3416,7 +3416,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -3485,7 +3485,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -3524,7 +3524,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -3593,7 +3593,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -3632,7 +3632,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -4070,7 +4070,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -4109,7 +4109,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -4288,7 +4288,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -4327,7 +4327,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -4554,7 +4554,7 @@
     "error": null,
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]"
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]"
     ],
     "lock": {
       "exclusive": false,
@@ -4583,7 +4583,7 @@
         "frozen": false,
         "upper": {}
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -4610,6 +4610,615 @@
       "operation": {
         "aggregate": "account-42",
         "op": "get",
+        "subject": null,
+        "tenant": "bank-eu"
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      },
+      "updates": {}
+    }
+  },
+  {
+    "error": "bad_handle: projection reducer result given for an erased event",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "erased_event_refuses_a_reducer_result",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 9,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "erased": true,
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "credit-4",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": null,
+              "schema_version": "1",
+              "sequence": 4,
+              "tenant": "bank-eu"
+            },
+            "offset": 9
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 9,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          {
+            "intents": [
+              {
+                "destination": "email",
+                "key": "receipt",
+                "payload": {
+                  "account": "account-42"
+                }
+              }
+            ],
+            "state": {
+              "balance": "50.00",
+              "currency": "EUR"
+            }
+          }
+        ]
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "prepare_marks_an_erased_event_not_novel",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 9,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "erased": true,
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "credit-4",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": null,
+              "schema_version": "1",
+              "sequence": 4,
+              "tenant": "bank-eu"
+            },
+            "offset": 9
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 9,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "prepare_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "items": [
+          {
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "credit-4",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": null,
+              "schema_version": "1",
+              "sequence": 4,
+              "tenant": "bank-eu"
+            },
+            "novel": false,
+            "state": null
+          }
+        ]
+      },
+      "updates": {}
+    }
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "erased_event_writes_receipts_only",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 9,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "erased": true,
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "credit-4",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": null,
+              "schema_version": "1",
+              "sequence": 4,
+              "tenant": "bank-eu"
+            },
+            "offset": 9
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 9,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          null
+        ]
+      }
+    },
+    "want": {
+      "inserts": {
+        "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]": {
+          "fingerprint": "erased",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]": {
+          "fingerprint": "erased",
+          "partition": 0
+        }
+      },
+      "intents": {},
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 10,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 10,
+          "owner": "worker-b",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "erased_replay_is_a_duplicate",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 10,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]": {
+        "fingerprint": "erased",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]": {
+        "fingerprint": "erased",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "erased": true,
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "credit-4",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": null,
+              "schema_version": "1",
+              "sequence": 4,
+              "tenant": "bank-eu"
+            },
+            "offset": 10
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 10,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          null
+        ]
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 11,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 11,
+          "owner": "worker-b",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": null
+    },
+    "name": "erased_event_leaves_state_unchanged",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
+        "partition": 0,
+        "sequence": 3,
+        "value": {
+          "balance": "37.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "aggregate": "account-42",
+        "op": "get",
+        "subject": null,
         "tenant": "bank-eu"
       }
     },
@@ -4632,6 +5241,620 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"opened-77\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"1\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "keyed_fingerprint_binds_the_receipts",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 11,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "event": {
+              "aggregate": "account-77",
+              "event_id": "opened-77",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": {
+                "amount": "12.50",
+                "currency": "EUR"
+              },
+              "schema_version": "1",
+              "sequence": 1,
+              "subject": "person-7",
+              "tenant": "bank-eu"
+            },
+            "fingerprint": "c37f2a22c23f14cec9b61483f3f47c1f9bc59c616f13c463a9fb98e0c2982389",
+            "offset": 11
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 11,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          {
+            "intents": [
+              {
+                "destination": "email",
+                "key": "receipt",
+                "payload": {
+                  "account": "account-42"
+                }
+              }
+            ],
+            "state": {
+              "balance": "12.50",
+              "currency": "EUR"
+            }
+          }
+        ]
+      }
+    },
+    "want": {
+      "inserts": {
+        "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"opened-77\"]": {
+          "fingerprint": "c37f2a22c23f14cec9b61483f3f47c1f9bc59c616f13c463a9fb98e0c2982389",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"1\"]": {
+          "fingerprint": "c37f2a22c23f14cec9b61483f3f47c1f9bc59c616f13c463a9fb98e0c2982389",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]": {
+          "partition": 0,
+          "sequence": 1,
+          "value": {
+            "balance": "12.50",
+            "currency": "EUR"
+          }
+        }
+      },
+      "intents": {
+        "19:account-balances-v1:[\"projection\",\"intent\",\"18:account-effects-v1:[\\\"bank-eu\\\",\\\"account-77\\\",\\\"opened-77\\\",\\\"receipt\\\"]\"]": {
+          "aggregate": "account-77",
+          "destination": "email",
+          "generation": "account-balances-v1",
+          "id": "18:account-effects-v1:[\"bank-eu\",\"account-77\",\"opened-77\",\"receipt\"]",
+          "offset": 11,
+          "ordinal": 0,
+          "partition": 0,
+          "payload": {
+            "account": "account-42"
+          },
+          "tenant": "bank-eu"
+        }
+      },
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 12,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 12,
+          "owner": "worker-b",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": null
+    },
+    "name": "get_reads_the_state_of_a_subject",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "aggregate": "account-77",
+        "op": "get",
+        "subject": "person-7",
+        "tenant": "bank-eu"
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      },
+      "updates": {}
+    }
+  },
+  {
+    "error": "codec: conflicting projection event identity",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"opened-77\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"1\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "unkeyed_replay_of_a_keyed_event_conflicts",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 12,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"opened-77\"]": {
+        "fingerprint": "c37f2a22c23f14cec9b61483f3f47c1f9bc59c616f13c463a9fb98e0c2982389",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"1\"]": {
+        "fingerprint": "c37f2a22c23f14cec9b61483f3f47c1f9bc59c616f13c463a9fb98e0c2982389",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "event": {
+              "aggregate": "account-77",
+              "event_id": "opened-77",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": {
+                "amount": "12.50",
+                "currency": "EUR"
+              },
+              "schema_version": "1",
+              "sequence": 1,
+              "subject": "person-7",
+              "tenant": "bank-eu"
+            },
+            "offset": 12
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 12,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          null
+        ]
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: projection aggregate sequence gap",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-8\",\"account-77\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-77\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"2\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "aggregate_cannot_change_its_subject",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 12,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "event": {
+              "aggregate": "account-77",
+              "event_id": "credit-77",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": {
+                "amount": "12.50",
+                "currency": "EUR"
+              },
+              "schema_version": "1",
+              "sequence": 2,
+              "subject": "person-8",
+              "tenant": "bank-eu"
+            },
+            "offset": 12
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 12,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          {
+            "intents": [
+              {
+                "destination": "email",
+                "key": "receipt",
+                "payload": {
+                  "account": "account-42"
+                }
+              }
+            ],
+            "state": {
+              "balance": "25.00",
+              "currency": "EUR"
+            }
+          }
+        ]
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: projection keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]",
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-77b\"]",
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-77\",\"2\"]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "keyed_fingerprint_must_be_hex_digest",
+    "now": 2025,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 3,
+        "expires_ms": 3021,
+        "next_offset": 12,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-77\"]": {
+        "partition": 0,
+        "sequence": 1,
+        "value": {
+          "balance": "12.50",
+          "currency": "EUR"
+        }
+      }
+    },
+    "request": {
+      "contract": {
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "event": {
+              "aggregate": "account-77",
+              "event_id": "credit-77b",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": {
+                "amount": "12.50",
+                "currency": "EUR"
+              },
+              "schema_version": "1",
+              "sequence": 2,
+              "subject": "person-7",
+              "tenant": "bank-eu"
+            },
+            "fingerprint": "abc",
+            "offset": 12
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 3,
+          "expires_ms": 3021,
+          "next_offset": 12,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "op": "apply_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        },
+        "reduced": [
+          {
+            "intents": [
+              {
+                "destination": "email",
+                "key": "receipt",
+                "payload": {
+                  "account": "account-42"
+                }
+              }
+            ],
+            "state": {
+              "balance": "25.00",
+              "currency": "EUR"
+            }
+          }
+        ]
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
     ],
     "lock": {
@@ -4645,7 +5868,7 @@
         "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
         "epoch": 3,
         "expires_ms": 3021,
-        "next_offset": 9,
+        "next_offset": 12,
         "owner": "worker-b",
         "partition": 0
       },
@@ -4755,7 +5978,7 @@
         "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
         "epoch": 3,
         "expires_ms": 3021,
-        "next_offset": 9,
+        "next_offset": 12,
         "owner": "worker-b",
         "partition": 0
       },
@@ -4868,7 +6091,7 @@
         "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
         "epoch": 3,
         "expires_ms": 3021,
-        "next_offset": 9,
+        "next_offset": 12,
         "owner": "worker-b",
         "partition": 0
       },
@@ -4928,7 +6151,7 @@
       "intents": {},
       "result": {
         "cutoffs": {
-          "0": 9,
+          "0": 12,
           "1": 0
         },
         "source_history": "no-rollback-policy-1",
@@ -4940,7 +6163,7 @@
           "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
           "epoch": 3,
           "expires_ms": 0,
-          "next_offset": 9,
+          "next_offset": 12,
           "owner": "",
           "partition": 0
         },
@@ -4974,7 +6197,7 @@
           },
           "frozen": true,
           "upper": {
-            "0": 9,
+            "0": 12,
             "1": 0
           }
         }
@@ -4986,7 +6209,7 @@
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]",
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]",
       "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]",
       "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]"
     ],
@@ -5001,8 +6224,12 @@
         "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
         "epoch": 3,
         "expires_ms": 0,
-        "next_offset": 9,
+        "next_offset": 12,
         "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"event\",\"bank-eu\",\"credit-4\"]": {
+        "fingerprint": "erased",
         "partition": 0
       },
       "19:account-balances-v1:[\"projection\",\"manifest\"]": {
@@ -5027,11 +6254,15 @@
         },
         "frozen": true,
         "upper": {
-          "0": 9,
+          "0": 12,
           "1": 0
         }
       },
-      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",\"account-42\"]": {
+      "19:account-balances-v1:[\"projection\",\"sequence\",\"bank-eu\",\"account-42\",\"4\"]": {
+        "fingerprint": "erased",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"state\",\"bank-eu\",null,\"account-42\"]": {
         "partition": 0,
         "sequence": 3,
         "value": {
@@ -5080,7 +6311,7 @@
           "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
           "epoch": 3,
           "expires_ms": 3021,
-          "next_offset": 9,
+          "next_offset": 12,
           "owner": "worker-b",
           "partition": 0
         },
@@ -5113,7 +6344,7 @@
         "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
         "epoch": 3,
         "expires_ms": 0,
-        "next_offset": 9,
+        "next_offset": 12,
         "owner": "",
         "partition": 0
       },
@@ -5147,7 +6378,7 @@
         },
         "frozen": true,
         "upper": {
-          "0": 9,
+          "0": 12,
           "1": 0
         }
       }

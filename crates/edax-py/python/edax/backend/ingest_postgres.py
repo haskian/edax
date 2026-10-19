@@ -171,9 +171,11 @@ class PostgresIngestionSink:
 
         await self._typed(mark)
 
-    async def get(self, tenant: str | None, row_key: str) -> dict[str, Any] | None:
+    async def get(
+        self, tenant: str | None, row_key: str, subject: str | None = None
+    ) -> dict[str, Any] | None:
         """Read one committed event/state envelope, including a retained deletion marker."""
-        key = self.target.row_key(tenant, row_key)
+        key = self.target.row_key(tenant, row_key, subject)
 
         async def read(conn: PgConnection) -> dict[str, Any] | None:
             return (await self._read(conn, self._role, [key])).get(key)

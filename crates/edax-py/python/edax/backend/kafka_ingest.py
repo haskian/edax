@@ -358,10 +358,12 @@ class KafkaIngestion:
         target = self.sink.target
         fallback = _native.kafka_poison_id(record.topic, record.partition, record.offset)
         tenant: str | None = None
+        subject: str | None = None
         stream = event_id = row_key = fallback
         sequence: int | None = None
         content: Any = None
-        value: Any = None
+        private: Any = None
+        public: Any = None
         failure: str | None = None
 
         def built() -> BatchInput:
@@ -375,10 +377,12 @@ class KafkaIngestion:
                 event_id,
                 sequence,
                 content,
-                value,
+                private,
                 raw,
                 failure,
                 decoded_raw["sha256"],
+                public=public,
+                subject=subject,
             )
 
         try:
@@ -389,8 +393,9 @@ class KafkaIngestion:
                 raise CodecError(str(decoded.cause)) from decoded.cause
             if not isinstance(decoded, EventMessage):
                 raise CodecError("ingestion requires an event message")
-            tenant, stream, event_id, sequence = (
+            tenant, subject, stream, event_id, sequence = (
                 decoded.tenant,
+                decoded.subject,
                 decoded.aggregate_id,
                 decoded.id,
                 decoded.sequence,
@@ -410,14 +415,14 @@ class KafkaIngestion:
                 raise CodecError("mapped event exceeds max_mapped_bytes")
             # Snapshot host values so a mapper cannot mutate already admitted originals.
             snapshot = _json.decode(mapped_json)
-            row_key, value = snapshot["key"], snapshot["value"]
+            row_key, private, public = snapshot["key"], snapshot["private"], snapshot["public"]
             # Inside the try: an input the kernel refuses becomes a rejection, as a decode failure does.
             return built()
         except Exception as error:
             if errors.failure_kind(error) != "terminal":
                 raise
             failure = f"{errors.code_of(error) or 'codec'}: {error}"
-            content, value = None, None
+            content, private, public = None, None, None
         return built()
 
     def _admit(self, tp: TopicPartition, part: _Partition, record: FetchedRecord) -> bool:
@@ -576,7 +581,7 @@ class KafkaIngestion:
                     # The singleton child already executed and rolled back before this verdict.
                     # The rejection keeps the original raw record; the mapped values that failed go.
                     inputs = tuple(
-                        replace(item, failure=decision["rejection"], content=None, value=None)
+                        replace(item, failure=decision["rejection"], content=None, private=None, public=None)
                         for item in inputs
                     )
                     continue

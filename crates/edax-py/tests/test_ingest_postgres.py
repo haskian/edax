@@ -81,7 +81,7 @@ def record(
         event_id=event_id,
         sequence=sequence,
         content={"name": "OrderChanged", "aggregate_id": stream, "sequence": sequence, "state": state},
-        value=None if state is None else {"order_id": "order-42", "state": state},
+        private=None if state is None else {"order_id": "order-42", "state": state},
         raw=f"orders:0:{offset}:{stream}:{sequence}:{state}",
         failure=failure,
     )
@@ -95,7 +95,7 @@ async def test_append_replay_and_conflicting_identity(database: tuple[Any, Postg
     conflict = record(sink, 1, event_id=original.event_id, state="cancelled")
     assert (await sink.commit([conflict])).outcomes == ("rejected",)
     stored = await sink.get("shop-a", original.event_id)
-    assert stored is not None and stored["value"]["state"] == "placed"
+    assert stored is not None and stored["private"]["state"] == "placed"
     assert list(await sink.pending()) == [conflict.source]
 
 
@@ -121,7 +121,7 @@ async def test_tombstone_and_older_updates_keep_owner(database: tuple[Any, Postg
     competing_owner = record(sink, 3, stream="other-order", sequence=4)
     assert (await sink.commit([stale, competing_owner])).outcomes == ("accepted", "rejected")
     stored = await sink.get("shop-a", "order-summary-42")
-    assert stored is not None and stored["sequence"] == 3 and stored["value"] is None
+    assert stored is not None and stored["sequence"] == 3 and stored["private"] is None
 
 
 async def test_concurrent_first_owner_is_preserved(database: tuple[Any, PostgresTransactor, str]) -> None:
@@ -472,7 +472,7 @@ async def test_constraint_failure_requires_confirmed_rollback(
     pool, transactor, schema = database
     await pool.execute(
         f'ALTER TABLE "{schema}".edax_ingest_state ADD CHECK '
-        "(value->'value'->>'state' IS DISTINCT FROM 'forbidden')"
+        "(value->'private'->>'state' IS DISTINCT FROM 'forbidden')"
     )
     if rollback_fails:
         transactor._pool = _FaultPool(pool, rollback_fails=True)
@@ -514,7 +514,7 @@ async def test_bound_sink_does_not_serialize_unrelated_rows(
     blocked = record(sink, 0)
     await sink.commit([blocked])
     blocked = replace(record(sink, 2), key=blocked.key, sequence=2)
-    independent = replace(record(sink, 1), key=sink.target.key(["upsert", "shop-a", "other-summary"]))
+    independent = replace(record(sink, 1), key=sink.target.key(["upsert", "shop-a", None, "other-summary"]))
     async with pool.acquire() as connection:
         await connection.execute("BEGIN")
         # Hold the committed row the next batch must lock, as a concurrent writer of that key would.
@@ -562,7 +562,7 @@ async def test_shared_append_events_bind_manifest_despite_different_state_tables
         await second.commit([different])
     assert await first.get("shop-a", different.event_id) is None
     stored = await first.get("shop-a", original.event_id)
-    assert stored is not None and stored["value"]["state"] == "placed"
+    assert stored is not None and stored["private"]["state"] == "placed"
     assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".alternate_state') == 0
 
 
@@ -635,7 +635,7 @@ async def test_planning_reads_metadata_without_historical_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sink = sink_for(database, mode)
-    original = replace(record(sink, 0), value={"order_id": "order-42", "history": "x" * (1024 * 1024)})
+    original = replace(record(sink, 0), private={"order_id": "order-42", "history": "x" * (1024 * 1024)})
     await sink.commit([original])
     native_plan = _native.ingest_plan
     observed: list[dict[str, Any]] = []
@@ -655,7 +655,7 @@ async def test_planning_reads_metadata_without_historical_payload(
     assert len(_json.encode(observed[0])) < 1024
     row_key = original.event_id if mode == "append" else "order-summary-42"
     stored = await sink.get("shop-a", row_key)
-    assert stored is not None and stored["value"] == original.value
+    assert stored is not None and stored["private"] == original.private
 
 
 @pytest.mark.parametrize("backend", ["postgres", "memory"])

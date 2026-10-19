@@ -209,6 +209,8 @@ class ProjectionEvent:
     schema_version: str
     payload: Any
     metadata: Any
+    #: The erasure subject that owns the aggregate's state, from the sealed envelope.
+    subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,10 +258,14 @@ class ProjectionCutover:
 
 @dataclass(frozen=True)
 class ProjectionInput:
-    """One source record of a batch: its offset and its decoded event."""
+    """One source record of a batch: its offset and its decoded event. ``erased`` marks a record whose
+    key was destroyed: the store records its receipts without a reducer call. ``fingerprint`` is the
+    kernel's keyed fingerprint of a sealed event; ``None`` binds an unkeyed hash of the plaintext."""
 
     offset: int
     event: ProjectionEvent
+    erased: bool = False
+    fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -495,9 +501,14 @@ class ProjectionStateStore:
         """Enable effects at/above immutable cutoffs after every partition catches up."""
         await self._execute(op="activate", cutover=cutover)
 
-    async def get(self, tenant: str | None, aggregate: str) -> dict[str, Any] | None:
+    async def get(
+        self, tenant: str | None, aggregate: str, subject: str | None = None
+    ) -> dict[str, Any] | None:
         """The stored state of one aggregate, ``{"sequence", "partition", "value"}``, or ``None``."""
-        return cast(dict[str, Any] | None, await self._execute(op="get", tenant=tenant, aggregate=aggregate))
+        return cast(
+            dict[str, Any] | None,
+            await self._execute(op="get", tenant=tenant, subject=subject, aggregate=aggregate),
+        )
 
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         """Committed effect intents the generation's activation allows, oldest offset first: the

@@ -45,13 +45,37 @@ pub fn source_key(target: &str, incarnation: &str, topic: &str, partition: i32, 
     key(target, &parts.to_string())
 }
 
-/// Scope an append event identity or upsert row identity to its generation and tenant.
-pub fn row_key(target: &str, mode: &str, tenant: Option<&str>, row_id: &str) -> Result<String, Error> {
+/// Scope an append event identity or upsert row identity to its generation, tenant and erasure
+/// subject. The subject sits before the row identity, so one key range holds every row of a subject.
+pub fn row_key(
+    target: &str,
+    mode: &str,
+    tenant: Option<&str>,
+    subject: Option<&str>,
+    row_id: &str,
+) -> Result<String, Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
-    if row_id.is_empty() {
+    if row_id.is_empty() || subject.is_some_and(str::is_empty) {
         return Err(Error::bad_handle("invalid ingestion row identity"));
     }
-    key(target, &serde_json::json!([mode.as_str(), tenant, row_id]).to_string())
+    key(
+        target,
+        &serde_json::json!([mode.as_str(), tenant, subject, row_id]).to_string(),
+    )
+}
+
+/// The half-open key range `[start, end)` holding every row of one tenant and subject in a target:
+/// what an erasure cleanup deletes. Keys compare byte-wise (`COLLATE "C"`).
+pub fn scope_range(target: &str, mode: &str, tenant: Option<&str>, subject: &str) -> Result<(String, String), Error> {
+    let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion mode"))?;
+    if subject.is_empty() {
+        return Err(Error::bad_handle("an erasure scope needs a subject"));
+    }
+    // The canonical array text up to the comma before the row identity, a JSON string, so every
+    // key of the range continues with `"` and the next byte, `#`, bounds it.
+    let open = serde_json::json!([mode.as_str(), tenant, subject]).to_string();
+    let head = format!("{}{},", prefix(target)?, open.trim_end_matches(']'));
+    Ok((format!("{head}\""), format!("{head}#")))
 }
 
 /// Immutable interpretation of one target generation.
@@ -112,11 +136,14 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
                 .get(4)
                 .and_then(Value::as_str)
                 .is_none_or(|v| !v.parse::<i64>().is_ok_and(|n| n >= 0 && n.to_string() == v))
-            || row.len() != 3
+            || row.len() != 4
             || row.first().and_then(Value::as_str) != Some(&contract.mode)
             || row.get(1).is_none_or(|v| !v.is_null() && !v.is_string())
-            || row.get(2).and_then(Value::as_str).is_none_or(str::is_empty)
-            || (contract.mode == Mode::Append.as_str() && row.get(2).and_then(Value::as_str) != Some(&input.event_id))
+            || row
+                .get(2)
+                .is_none_or(|v| !v.is_null() && v.as_str().is_none_or(str::is_empty))
+            || row.get(3).and_then(Value::as_str).is_none_or(str::is_empty)
+            || (contract.mode == Mode::Append.as_str() && row.get(3).and_then(Value::as_str) != Some(&input.event_id))
             || input.stream.is_empty()
             || input.event_id.is_empty()
         {
@@ -125,6 +152,11 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
         if !is_fingerprint(&input.raw_fingerprint) {
             return Err(Error::bad_handle(
                 "ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+            ));
+        }
+        if input.fingerprint.as_deref().is_some_and(|f| !is_fingerprint(f)) {
+            return Err(Error::bad_handle(
+                "ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
             ));
         }
     }
@@ -146,8 +178,19 @@ pub struct Input<T = Value> {
     pub sequence: Option<u64>,
     /// Canonical event content used to detect conflicting replays.
     pub content: T,
-    /// Complete mapped state; absence is a retained deletion marker.
-    pub value: Option<T>,
+    /// The mapped state's private part: sealed at rest when the host configures sealing.
+    pub private: Option<T>,
+    /// The mapped state's public part, stored as plaintext. Both parts absent: a retained deletion
+    /// marker.
+    pub public: Option<T>,
+    /// The record's key was destroyed: accept it without a write, so an erased subject's event never
+    /// recreates its data.
+    #[serde(default)]
+    pub erased: bool,
+    /// [`keyed_fingerprint`] of a sealed record. Without it the plan hashes `content`, `private` and
+    /// `public` unkeyed, which suits plaintext only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     /// Lossless source representation retained by a rejection.
     pub raw: String,
     /// SHA-256 of the original source record, 64 lowercase hex digits, independent of a retained
@@ -174,11 +217,19 @@ pub fn inputs_json(text: &str) -> Result<Vec<Input>, Error> {
                 check_integers(raw.get().as_bytes(), Width::Bits64)?;
                 serde_json::from_str(raw.get()).map_err(Error::codec)
             };
-            let payload = parse(input.content)
-                .and_then(|content| input.value.map(parse).transpose().map(|value| (content, value)));
-            let (content, value, failure) = match payload {
-                Ok((content, value)) => (content, value, input.failure),
-                Err(error) => (Value::Null, None, input.failure.or_else(|| Some(error.to_string()))),
+            let payload = parse(input.content).and_then(|content| {
+                let private = input.private.map(parse).transpose()?;
+                let public = input.public.map(parse).transpose()?;
+                Ok((content, private, public))
+            });
+            let (content, private, public, failure) = match payload {
+                Ok((content, private, public)) => (content, private, public, input.failure),
+                Err(error) => (
+                    Value::Null,
+                    None,
+                    None,
+                    input.failure.or_else(|| Some(error.to_string())),
+                ),
             };
             Ok(Input {
                 source: input.source,
@@ -187,7 +238,10 @@ pub fn inputs_json(text: &str) -> Result<Vec<Input>, Error> {
                 event_id: input.event_id,
                 sequence: input.sequence,
                 content,
-                value,
+                private,
+                public,
+                erased: input.erased,
+                fingerprint: input.fingerprint,
                 raw: input.raw,
                 raw_fingerprint: input.raw_fingerprint,
                 failure,
@@ -203,10 +257,12 @@ pub struct Stored {
     pub stream: String,
     /// Last accepted aggregate sequence; append mode does not require one.
     pub sequence: Option<u64>,
-    /// Hash of canonical event content and mapped value.
+    /// Hash of canonical event content and mapped state: keyed for a sealed record.
     pub fingerprint: String,
-    /// Complete state or a retained deletion marker.
-    pub value: Option<Value>,
+    /// Private part of the state, sealed when the host configures sealing.
+    pub private: Option<Value>,
+    /// Public part of the state. Both parts absent: a retained deletion marker.
+    pub public: Option<Value>,
 }
 
 /// Durable refusal, independent of later target state.
@@ -234,9 +290,33 @@ pub struct Plan {
     pub rejections: BTreeMap<String, Rejection>,
 }
 
+fn canonical_state(content: &Value, private: Option<&Value>, public: Option<&Value>) -> Result<Vec<u8>, Error> {
+    let bytes = serde_json::to_vec(&(content, private, public)).map_err(Error::codec)?;
+    canonical_json(&bytes)
+}
+
+/// The fingerprint of an input: the host's keyed fingerprint when it has one, else an unkeyed hash.
+/// Canonicalizing still refuses a number no store can hold exactly.
 fn fingerprint(input: &Input) -> Result<String, Error> {
-    let bytes = serde_json::to_vec(&(&input.content, &input.value)).map_err(Error::codec)?;
-    Ok(payload_hash(&canonical_json(&bytes)?).to_string())
+    let canonical = canonical_state(&input.content, input.private.as_ref(), input.public.as_ref())?;
+    Ok(input
+        .fingerprint
+        .clone()
+        .unwrap_or_else(|| payload_hash(&canonical).to_string()))
+}
+
+/// The fingerprint of a sealed record: HMAC-SHA-256 under the subject's fingerprint key over the
+/// canonical `content` and the plaintext `private` and `public` parts, before `private` is sealed.
+/// Erasure destroys the key, and with it any way to test a guessed value against the hash.
+pub fn keyed_fingerprint(
+    key: &[u8],
+    content: &Value,
+    private: Option<&Value>,
+    public: Option<&Value>,
+) -> Result<String, Error> {
+    let canonical = canonical_state(content, private, public)?;
+    let mac = edax_seal::fingerprint(key, &[b"edax.ingestion.state/v1\0".as_slice(), &canonical].concat())?;
+    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// The raw fingerprint of a source record whose `raw` representation is the whole record.
@@ -322,13 +402,18 @@ pub fn plan(
             result.outcomes.push(Outcome::Rejected.as_str().into());
             continue;
         }
+        if input.erased {
+            result.outcomes.push(Outcome::Accepted.as_str().into());
+            continue;
+        }
         if let Some(failure) = &input.failure {
             reject(&mut result, input, failure.clone());
             continue;
         }
         // Postgres cannot store NUL in jsonb: refuse the record here, as every store would.
         if holds_nul(&input.content)
-            || input.value.as_ref().is_some_and(holds_nul)
+            || input.private.as_ref().is_some_and(holds_nul)
+            || input.public.as_ref().is_some_and(holds_nul)
             || input.stream.contains('\0')
             || input.event_id.contains('\0')
         {
@@ -371,7 +456,8 @@ pub fn plan(
                         stream: input.stream.clone(),
                         sequence: input.sequence,
                         fingerprint,
-                        value: input.value.clone(),
+                        private: input.private.clone(),
+                        public: input.public.clone(),
                     },
                 );
             }
@@ -445,7 +531,8 @@ pub fn plan(
                     stream: input.stream.clone(),
                     sequence: Some(sequence),
                     fingerprint,
-                    value: input.value.clone(),
+                    private: input.private.clone(),
+                    public: input.public.clone(),
                 },
             );
         }

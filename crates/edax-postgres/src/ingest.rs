@@ -80,7 +80,8 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
 /// rejection committed by the target writer the metadata read waited for. Reading rejections first
 /// could combine their earlier absence with a later target version and accept a rejected input as
 /// stale. The immutable mapper/source contract keeps a source's target key stable.
-/// `read_rejections_for_plan` takes a JSON source-key array. `pending` takes the exact
+/// `delete_scope_{events,state}` take the bounds of `ingest::scope_range` and return how many rows
+/// they deleted. `read_rejections_for_plan` takes a JSON source-key array. `pending` takes the exact
 /// target prefix and a textual limit. `mark_published` takes `{source: fingerprint}` and the exact
 /// target prefix, and returns how many rows it marked. `check` returns one boolean column,
 /// `compatible`. No statement creates tables implicitly.
@@ -112,7 +113,12 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
             // Planning compares owner, sequence and fingerprint, never the previous payload.
             sql.insert(
                 format!("read_{short}_metadata"),
-                format!("SELECT key, (value - 'value')::text AS value FROM {table} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key FOR UPDATE"),
+                format!("SELECT key, (value - 'private' - 'public')::text AS value FROM {table} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key FOR UPDATE"),
+            );
+            // An erasure cleanup: every row of one subject, the key range `ingest::scope_range` names.
+            sql.insert(
+                format!("delete_scope_{short}"),
+                format!("WITH gone AS (DELETE FROM {table} WHERE key >= $1::text AND key < $2::text RETURNING 1) SELECT count(*) FROM gone"),
             );
             // Only rows the plan read, and so locked, are updated.
             sql.insert(

@@ -69,11 +69,16 @@ impl Stores {
 
     /// One credit per offset on `aggregate`, each with a receipt intent.
     fn credit(&mut self, lease: &Value, aggregate: &str, offsets: &[i64]) -> Value {
+        self.credit_of(lease, None, aggregate, offsets)
+    }
+
+    /// [`Stores::credit`] for an aggregate an erasure subject owns.
+    fn credit_of(&mut self, lease: &Value, subject: Option<&str>, aggregate: &str, offsets: &[i64]) -> Value {
         let inputs: Vec<Value> = offsets
             .iter()
             .zip(1..)
             .map(|(offset, sequence)| {
-                json!({"offset": offset, "event": {"tenant":"bank-eu","aggregate":aggregate,"event_id":format!("{aggregate}-credit-{sequence}"),"sequence":sequence,"event_type":"CreditPosted","schema_version":"1","payload":{"currency":"EUR","amount":"12.50"},"metadata":{"correlation_id":"payment-99"}}})
+                json!({"offset": offset, "event": {"tenant":"bank-eu","subject":subject,"aggregate":aggregate,"event_id":format!("{aggregate}-credit-{sequence}"),"sequence":sequence,"event_type":"CreditPosted","schema_version":"1","payload":{"currency":"EUR","amount":"12.50"},"metadata":{"correlation_id":"payment-99"}}})
             })
             .collect();
         let reduced: Vec<Value> = inputs
@@ -136,6 +141,67 @@ impl Stores {
         assert_eq!(postgres, memory as i64, "both stores prune the same intents");
         postgres
     }
+}
+
+/// Delete one subject's state records on both stores; both must delete the same number.
+fn delete_scope(stores: &mut Stores, subject: &str) -> i64 {
+    let (start, end) = contract().state_scope_range(&Some("bank-eu".into()), subject).unwrap();
+    let memory = stores.memory.delete_scope(&start, &end);
+    let postgres: i64 = stores
+        .client
+        .query_one(&stores.sql["delete_scope"], &[&start, &end])
+        .unwrap()
+        .get(0);
+    assert_eq!(postgres, memory as i64, "both stores delete the same records");
+    postgres
+}
+
+fn provision(schema: &str) -> Option<Stores> {
+    let mut client = common::connect()?;
+    let sql = edax_postgres::projection::statements(
+        &json!({"schema": schema, "table": "edax_projection_state", "intents": "edax_projection_intents"}).to_string(),
+    )
+    .unwrap();
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE; CREATE SCHEMA \"{schema}\"; {}",
+            sql["ddl"]
+        ))
+        .unwrap();
+    assert!(client.query_one(&sql["check"], &[]).unwrap().get::<_, bool>(0));
+    let c = contract();
+    Some(Stores {
+        client,
+        sql,
+        memory: MemoryProjectionState::default(),
+        manifest: c.manifest_key().unwrap(),
+        generation: c.generation,
+    })
+}
+
+#[test]
+fn postgres_and_memory_delete_the_same_subject_scope() {
+    let Some(mut stores) = provision("edax_live_projection_scope") else {
+        return;
+    };
+    stores.run(json!({"op":"initialize"}), 0);
+    let lease = stores.run(
+        json!({"op":"acquire","partition":0,"owner":"worker-a","lease_ms":100_000,"proof":proof()}),
+        10,
+    );
+    let lease = stores.credit_of(&lease, Some("person-7"), "account-1", &[0]);
+    let lease = stores.credit_of(&lease, Some("person-7"), "account-2", &[1]);
+    stores.credit_of(&lease, Some("person-8"), "account-3", &[2]);
+    assert_eq!(delete_scope(&mut stores, "person-7"), 2);
+    assert_eq!(
+        delete_scope(&mut stores, "person-7"),
+        0,
+        "a repeated cleanup deletes nothing"
+    );
+    let get =
+        |subject: &str, aggregate: &str| json!({"op":"get","tenant":"bank-eu","subject":subject,"aggregate":aggregate});
+    assert_eq!(stores.run(get("person-7", "account-1"), 30), Value::Null);
+    assert_eq!(stores.run(get("person-8", "account-3"), 30)["sequence"], 1);
 }
 
 fn positions(intents: &[Value]) -> Vec<(i64, i64)> {

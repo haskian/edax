@@ -10,18 +10,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "note": "a\u0000b",
+          "order_id": "order-42"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "note": "a\u0000b",
-          "order_id": "order-42"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -55,18 +57,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order\u000042",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order\u000042"
       }
     ],
     "mode": "upsert",
@@ -100,18 +104,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "append",
@@ -125,14 +131,15 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]": {
-          "fingerprint": "12942986674456958375",
-          "sequence": null,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
             "order_id": "order-42",
             "status": "created"
-          }
+          },
+          "public": null,
+          "sequence": null,
+          "stream": "order-42"
         }
       }
     }
@@ -148,18 +155,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "append",
@@ -167,14 +176,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]": {
-        "fingerprint": "12942986674456958375",
-        "sequence": null,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+        "fingerprint": "680257454214511780",
+        "private": {
           "order_id": "order-42",
           "status": "created"
-        }
+        },
+        "public": null,
+        "sequence": null,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -196,18 +206,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "append",
@@ -215,14 +227,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]": {
-        "fingerprint": "12942986674456958375",
-        "sequence": null,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+        "fingerprint": "680257454214511780",
+        "private": {
           "order_id": "order-42",
           "status": "created"
-        }
+        },
+        "public": null,
+        "sequence": null,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -251,18 +264,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -272,18 +287,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "append",
@@ -298,14 +315,15 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]": {
-          "fingerprint": "12942986674456958375",
-          "sequence": null,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
             "order_id": "order-42",
             "status": "created"
-          }
+          },
+          "public": null,
+          "sequence": null,
+          "stream": "order-42"
         }
       }
     }
@@ -321,18 +339,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -342,18 +362,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-3",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
         "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
-        "stream": "order-99",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-99"
       }
     ],
     "mode": "upsert",
@@ -375,14 +397,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "12942986674456958375",
-          "sequence": 1,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
             "order_id": "order-42",
             "status": "created"
-          }
+          },
+          "public": null,
+          "sequence": 1,
+          "stream": "order-42"
         }
       }
     }
@@ -398,18 +421,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -417,14 +442,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "15183107714512202142",
-        "sequence": 2,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
           "order_id": "order-42",
           "status": "paid"
-        }
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -446,18 +472,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -465,14 +493,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "15183107714512202142",
-        "sequence": 2,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
           "order_id": "order-42",
           "status": "paid"
-        }
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -494,18 +523,20 @@
           "status": "cancelled",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-conflicting-payment",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
         "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -513,14 +544,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "15183107714512202142",
-        "sequence": 2,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
           "order_id": "order-42",
           "status": "paid"
-        }
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -549,18 +581,20 @@
           "status": "shipped",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-2",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
         "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "shipped"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -568,14 +602,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "15183107714512202142",
-        "sequence": 2,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
           "order_id": "order-42",
           "status": "paid"
-        }
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -584,14 +619,15 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "11515106155824945819",
-          "sequence": 3,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
             "order_id": "order-42",
             "status": "shipped"
-          }
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
         }
       }
     }
@@ -607,18 +643,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -628,18 +666,20 @@
           "status": "cancelled",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-conflicting-payment",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
         "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -661,14 +701,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "15183107714512202142",
-          "sequence": 2,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "17311780243056210839",
+          "private": {
             "order_id": "order-42",
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 2,
+          "stream": "order-42"
         }
       }
     }
@@ -684,18 +725,20 @@
           "status": "shipped",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-2",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
         "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "shipped"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -705,18 +748,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -726,18 +771,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -753,14 +800,15 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "11515106155824945819",
-          "sequence": 3,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
             "order_id": "order-42",
             "status": "shipped"
-          }
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
         }
       }
     }
@@ -776,18 +824,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -797,18 +847,20 @@
           "status": "cancelled",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-conflicting-payment",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
         "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -816,14 +868,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "11515106155824945819",
-        "sequence": 3,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "6452331707120442648",
+        "private": {
           "order_id": "order-42",
           "status": "shipped"
-        }
+        },
+        "public": null,
+        "sequence": 3,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -843,18 +896,277 @@
           "aggregate_id": "order-42",
           "name": "OrderState",
           "sequence": 4,
+          "status": "erased",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"erased\"}",
+        "raw_fingerprint": "814f7278d8580eb720c22e09f4a6489d0944a5cf05588056c477320a9765207c",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "erased_input_accepted_without_write",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "erased",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"erased\"}",
+        "raw_fingerprint": "814f7278d8580eb720c22e09f4a6489d0944a5cf05588056c477320a9765207c",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "erased_input_never_creates_a_row",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "keyed_fingerprint_is_stored",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": {
+            "status": "paid"
+          },
+          "sequence": 2,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "keyed_fingerprint_exact_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "unsealed_replay_of_a_sealed_sequence_conflicts",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
+          "error": "rejected: committed aggregate sequence has different content",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+          "published": false,
+          "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
           "status": "deleted",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-5",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
         "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
         "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
-        "stream": "order-42",
-        "value": null
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -862,14 +1174,15 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "15183107714512202142",
-        "sequence": 2,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
           "order_id": "order-42",
           "status": "paid"
-        }
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -878,11 +1191,12 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "10916968670030566025",
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "5707849114940592798",
+          "private": null,
+          "public": null,
           "sequence": 4,
-          "stream": "order-42",
-          "value": null
+          "stream": "order-42"
         }
       }
     }
@@ -898,15 +1212,17 @@
           "status": "deleted",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-5",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
         "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
         "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
-        "stream": "order-42",
-        "value": null
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -914,11 +1230,12 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "10916968670030566025",
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
         "sequence": 4,
-        "stream": "order-42",
-        "value": null
+        "stream": "order-42"
       }
     },
     "want": {
@@ -940,18 +1257,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-3",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
         "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
-        "stream": "order-99",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-99"
       }
     ],
     "mode": "upsert",
@@ -959,11 +1278,12 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "10916968670030566025",
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
         "sequence": 4,
-        "stream": "order-42",
-        "value": null
+        "stream": "order-42"
       }
     },
     "want": {
@@ -992,18 +1312,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1011,11 +1333,12 @@
     "op": "plan",
     "rejected": {},
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "10916968670030566025",
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
         "sequence": 4,
-        "stream": "order-42",
-        "value": null
+        "stream": "order-42"
       }
     },
     "want": {
@@ -1037,18 +1360,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-6",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":6,\"sequence\":null,\"status\":\"created\"}",
         "raw_fingerprint": "5f0e2231da834a5a75b8043191858a1cbcbc654e15667990856d7dce694aa0f5",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"6\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1082,18 +1407,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-7",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":7,\"sequence\":9223372036854775808,\"status\":\"created\"}",
         "raw_fingerprint": "d3ed49dc36489070f7b04bf46f09021ddd56adf0d72db6bfae3cd338fcab6a65",
         "sequence": 9223372036854775808,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"7\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1127,18 +1454,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-8",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":8,\"sequence\":0,\"status\":\"created\"}",
         "raw_fingerprint": "9c6c6543b7a220b13ebdf79729c315f2b37b604895742dd2024d929fd24ddd22",
         "sequence": 0,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"8\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1152,14 +1481,15 @@
       ],
       "rejections": {},
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "11862980315713067668",
-          "sequence": 0,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "4719886521861365861",
+          "private": {
             "order_id": "order-42",
             "status": "created"
-          }
+          },
+          "public": null,
+          "sequence": 0,
+          "stream": "order-42"
         }
       }
     }
@@ -1175,18 +1505,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1196,18 +1528,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-3",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
         "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
-        "stream": "order-99",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-99"
       }
     ],
     "mode": "upsert",
@@ -1229,14 +1563,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "6091690412142963908",
-          "sequence": 4,
-          "stream": "order-99",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
             "order_id": "order-42",
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
         }
       }
     }
@@ -1252,18 +1587,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1273,18 +1610,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-3",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
         "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
-        "stream": "order-99",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-99"
       }
     ],
     "mode": "upsert",
@@ -1313,14 +1652,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "6091690412142963908",
-          "sequence": 4,
-          "stream": "order-99",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
             "order_id": "order-42",
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
         }
       }
     }
@@ -1336,18 +1676,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1357,18 +1699,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-3",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
         "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
-        "stream": "order-99",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-99"
       }
     ],
     "mode": "upsert",
@@ -1397,14 +1741,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "6091690412142963908",
-          "sequence": 4,
-          "stream": "order-99",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
             "order_id": "order-42",
             "status": "paid"
-          }
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
         }
       }
     }
@@ -1420,18 +1765,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1441,18 +1788,20 @@
           "status": "cancelled",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-conflicting-payment",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
         "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1462,18 +1811,20 @@
           "status": "shipped",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-2",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
         "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "shipped"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1496,14 +1847,15 @@
         }
       },
       "writes": {
-        "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-          "fingerprint": "11515106155824945819",
-          "sequence": 3,
-          "stream": "order-42",
-          "value": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
             "order_id": "order-42",
             "status": "shipped"
-          }
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
         }
       }
     }
@@ -1519,18 +1871,20 @@
           "status": "paid",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-1",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
         "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "paid"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1540,18 +1894,20 @@
           "status": "cancelled",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-conflicting-payment",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
         "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "cancelled"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1561,18 +1917,20 @@
           "status": "shipped",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-2",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
         "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "shipped"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1587,14 +1945,15 @@
       }
     },
     "stored": {
-      "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]": {
-        "fingerprint": "11515106155824945819",
-        "sequence": 3,
-        "stream": "order-42",
-        "value": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "6452331707120442648",
+        "private": {
           "order_id": "order-42",
           "status": "shipped"
-        }
+        },
+        "public": null,
+        "sequence": 3,
+        "stream": "order-42"
       }
     },
     "want": {
@@ -1625,18 +1984,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "changed-source-record",
         "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1664,18 +2025,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1685,18 +2048,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "changed-source-record",
         "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1717,18 +2082,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
         "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1769,18 +2136,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1821,18 +2190,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1842,18 +2213,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
         "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1888,18 +2261,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
         "raw_fingerprint": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1927,18 +2302,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       },
       {
         "content": {
@@ -1948,18 +2325,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": "codec: order status is malformed",
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
         "raw_fingerprint": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "upsert",
@@ -1980,18 +2359,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "mode": "fold",
@@ -2125,18 +2506,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "valid_scoped_input",
@@ -2160,18 +2543,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740992\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "source_offset_at_json_safe_integer_boundary",
@@ -2195,18 +2580,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775807\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "source_offset_at_postgres_bigint_maximum",
@@ -2230,18 +2617,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v2:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v2:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "foreign_target_refused",
@@ -2265,18 +2654,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"other-cluster\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "foreign_source_incarnation_refused",
@@ -2300,18 +2691,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
         "key": "9:orders-v1:[\"upsert\", \"acme\", \"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "noncanonical_identity_refused",
@@ -2335,18 +2728,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": ""
       }
     ],
     "name": "empty_stream_refused",
@@ -2370,18 +2765,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "row_mode_must_match_contract",
@@ -2405,18 +2802,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",2147483648,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "source_partition_above_i32_maximum_refused",
@@ -2440,18 +2839,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",42,\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",42,null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "non_string_tenant_refused",
@@ -2475,18 +2876,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "empty_row_id_refused",
@@ -2510,18 +2913,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "empty_event_id_refused",
@@ -2545,18 +2950,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "EEB1FE2DDE07DE4405DDF8B7520559D586ED87C4BE72C72A433760EBCF1F0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "uppercase_raw_fingerprint_refused",
@@ -2580,18 +2987,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "0123456789abcdef",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "short_raw_fingerprint_refused",
@@ -2615,18 +3024,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "valid_append_contract_input",
@@ -2650,18 +3061,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"append\",\"acme\",\"different-event\"]",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"different-event\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "append_row_id_must_equal_event_id",
@@ -2685,18 +3098,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,0]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "numeric_source_offset_refused",
@@ -2720,18 +3135,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"00\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "leading_zero_source_offset_refused",
@@ -2755,18 +3172,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"+1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "positive_sign_source_offset_refused",
@@ -2790,18 +3209,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "negative_source_offset_refused",
@@ -2825,18 +3246,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-0\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "negative_zero_source_offset_refused",
@@ -2860,18 +3283,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\" 1\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "whitespace_source_offset_refused",
@@ -2895,18 +3320,20 @@
           "status": "created",
           "version": 1
         },
+        "erased": false,
         "event_id": "order-42-event-0",
         "failure": null,
-        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
         "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775808\"]",
-        "stream": "order-42",
-        "value": {
-          "order_id": "order-42",
-          "status": "created"
-        }
+        "stream": "order-42"
       }
     ],
     "name": "source_offset_beyond_bigint_refused",
@@ -3007,9 +3434,10 @@
     "name": "row_key_upsert",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": "acme",
-    "want": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]"
+    "want": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]"
   },
   {
     "error": null,
@@ -3017,9 +3445,10 @@
     "name": "row_key_append",
     "op": "row_key",
     "row_id": "event-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": "acme",
-    "want": "9:orders-v1:[\"append\",\"acme\",\"event-42\"]"
+    "want": "9:orders-v1:[\"append\",\"acme\",null,\"event-42\"]"
   },
   {
     "error": null,
@@ -3027,9 +3456,10 @@
     "name": "row_key_absent_tenant",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": null,
-    "want": "9:orders-v1:[\"upsert\",null,\"order-42\"]"
+    "want": "9:orders-v1:[\"upsert\",null,null,\"order-42\"]"
   },
   {
     "error": null,
@@ -3037,9 +3467,10 @@
     "name": "row_key_empty_tenant",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": "",
-    "want": "9:orders-v1:[\"upsert\",\"\",\"order-42\"]"
+    "want": "9:orders-v1:[\"upsert\",\"\",null,\"order-42\"]"
   },
   {
     "error": null,
@@ -3047,9 +3478,10 @@
     "name": "row_key_nul_tenant",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": "acme\u0000store",
-    "want": "9:orders-v1:[\"upsert\",\"acme\\u0000store\",\"order-42\"]"
+    "want": "9:orders-v1:[\"upsert\",\"acme\\u0000store\",null,\"order-42\"]"
   },
   {
     "error": null,
@@ -3057,9 +3489,10 @@
     "name": "row_key_nul_row",
     "op": "row_key",
     "row_id": "order\u0000-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": null,
-    "want": "9:orders-v1:[\"upsert\",null,\"order\\u0000-42\"]"
+    "want": "9:orders-v1:[\"upsert\",null,null,\"order\\u0000-42\"]"
   },
   {
     "error": null,
@@ -3067,9 +3500,10 @@
     "name": "row_key_unicode",
     "op": "row_key",
     "row_id": "naročilo-42",
+    "subject": null,
     "target": "naročila-v1",
     "tenant": "trgovina-ž",
-    "want": "12:naročila-v1:[\"upsert\",\"trgovina-ž\",\"naročilo-42\"]"
+    "want": "12:naročila-v1:[\"upsert\",\"trgovina-ž\",null,\"naročilo-42\"]"
   },
   {
     "error": "bad_handle: invalid ingestion row identity",
@@ -3077,6 +3511,7 @@
     "name": "row_key_empty_row_refused",
     "op": "row_key",
     "row_id": "",
+    "subject": null,
     "target": "orders-v1",
     "tenant": null,
     "want": null
@@ -3087,6 +3522,7 @@
     "name": "row_key_empty_event_refused",
     "op": "row_key",
     "row_id": "",
+    "subject": null,
     "target": "orders-v1",
     "tenant": null,
     "want": null
@@ -3097,6 +3533,7 @@
     "name": "row_key_invalid_mode_refused",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders-v1",
     "tenant": null,
     "want": null
@@ -3107,6 +3544,7 @@
     "name": "row_key_empty_target_refused",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "",
     "tenant": null,
     "want": null
@@ -3117,8 +3555,218 @@
     "name": "row_key_nul_target_refused",
     "op": "row_key",
     "row_id": "order-42",
+    "subject": null,
     "target": "orders\u0000v1",
     "tenant": null,
+    "want": null
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_with_subject",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",\"order-42\"]"
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_subject_without_tenant",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": null,
+    "want": "9:orders-v1:[\"upsert\",null,\"person-42\",\"order-42\"]"
+  },
+  {
+    "error": "bad_handle: invalid ingestion row identity",
+    "mode": "upsert",
+    "name": "row_key_empty_subject_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "scope_range_of_a_subject",
+    "op": "scope_range",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": [
+      "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",\"",
+      "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",#"
+    ]
+  },
+  {
+    "error": null,
+    "mode": "append",
+    "name": "scope_range_without_tenant",
+    "op": "scope_range",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": null,
+    "want": [
+      "9:orders-v1:[\"append\",null,\"person-42\",\"",
+      "9:orders-v1:[\"append\",null,\"person-42\",#"
+    ]
+  },
+  {
+    "error": "bad_handle: an erasure scope needs a subject",
+    "mode": "upsert",
+    "name": "scope_range_empty_subject_refused",
+    "op": "scope_range",
+    "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": null,
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "ana@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
+    "want": "b3572bba1f1a4c5732194883f73d99b085859a5402fb424acf920e20f7eb37f3"
+  },
+  {
+    "error": null,
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint_other_value",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "bob@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
+    "want": "e01c8e0167e3a6216fbf806d00f37d338e9f4e29b29d9dbfb5b3aebcdd49cb97"
+  },
+  {
+    "error": "codec: invalid encryption key length",
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint_short_key_refused",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "ana@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
     "want": null
   },
   {

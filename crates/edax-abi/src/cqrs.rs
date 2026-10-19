@@ -418,9 +418,12 @@ pub fn ingest_validate_inputs(manifest: &str, inputs: &str) -> Result<(), String
 /// Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
 pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> {
     #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Identity {
         row_id: String,
         tenant: Option<String>,
+        #[serde(default)]
+        subject: Option<String>,
     }
     let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
     let identity: Identity = crate::read_json(identity)?;
@@ -428,9 +431,33 @@ pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> 
         &contract.generation,
         &contract.mode,
         identity.tenant.as_deref(),
+        identity.subject.as_deref(),
         &identity.row_id,
     )
     .map_err(crate::to_wire)
+}
+
+/// The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair.
+pub fn ingest_scope_range(manifest: &str, subject: &str, tenant: Option<String>) -> Result<String, String> {
+    let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
+    let range = edax_cqrs::ingest::scope_range(&contract.generation, &contract.mode, tenant.as_deref(), subject)
+        .map_err(crate::to_wire)?;
+    crate::write_json(&range)
+}
+
+/// The keyed fingerprint of a sealed ingestion record, from the subject's fingerprint key. `state` is
+/// the JSON `{"content", "private", "public"}` before `private` is sealed.
+pub fn ingest_keyed_fingerprint(key: Vec<u8>, state: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct State {
+        content: serde_json::Value,
+        private: Option<serde_json::Value>,
+        public: Option<serde_json::Value>,
+    }
+    let state: State = crate::read_json(state)?;
+    edax_cqrs::ingest::keyed_fingerprint(&key, &state.content, state.private.as_ref(), state.public.as_ref())
+        .map_err(crate::to_wire)
 }
 
 fn projection_value<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
@@ -461,6 +488,27 @@ pub fn projection_intent_key(contract_json: &str, intent_id: &str) -> Result<Str
         .map_err(to_wire)?;
     contract.validate().map_err(to_wire)?;
     contract.intent_key(intent_id).map_err(to_wire)
+}
+
+/// The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
+pub fn projection_state_scope_range(
+    contract_json: &str,
+    subject: &str,
+    tenant: Option<String>,
+) -> Result<String, String> {
+    let contract: edax_cqrs::projection::Contract = projection_value(contract_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    contract.validate().map_err(to_wire)?;
+    crate::write_json(&contract.state_scope_range(&tenant, subject).map_err(to_wire)?)
+}
+
+/// The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
+pub fn projection_keyed_fingerprint(key: Vec<u8>, event_json: &str) -> Result<String, String> {
+    let event: edax_cqrs::projection::Event = projection_value(event_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    edax_cqrs::projection::keyed_fingerprint(&key, &event).map_err(to_wire)
 }
 
 /// Pure projection transition. Persist every returned write atomically under the generation lock.

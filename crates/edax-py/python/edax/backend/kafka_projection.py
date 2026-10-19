@@ -308,7 +308,14 @@ class KafkaProjection:
                     raise CodecError("projection canonical envelope exceeds configured input limit")
                 # Own a snapshot before another callback can mutate its payload/metadata.
                 decoded = _json.decode(encoded)
-                inputs.append(ProjectionInput(decoded["offset"], ProjectionEvent(**decoded["event"])))
+                inputs.append(
+                    ProjectionInput(
+                        decoded["offset"],
+                        ProjectionEvent(**decoded["event"]),
+                        decoded["erased"],
+                        decoded["fingerprint"],
+                    )
+                )
                 charge = _native.batch_charge(serialized, self.settings.json)
                 size += serialized
                 charged += charge

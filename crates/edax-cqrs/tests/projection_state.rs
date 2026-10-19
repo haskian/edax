@@ -370,6 +370,102 @@ fn ordered_projection_fences_and_cutovers() {
         true,
     );
     assert_eq!(state["sequence"], 3);
+
+    // A destroyed key: the receipts move past the event, the reducer never runs, the state stays.
+    let erased = |offset: i64, event: Value| json!({"offset":offset,"event":event,"erased":true});
+    let mut erased_credit = event(4, "credit-4");
+    erased_credit["payload"] = Value::Null;
+    m.call(
+        "erased_event_refuses_a_reducer_result",
+        apply(&fresh, vec![erased(9, erased_credit.clone())], vec![reduce("50.00")]),
+        2025,
+        false,
+    );
+    m.expect_error("bad_handle");
+    let prepared = m.call(
+        "prepare_marks_an_erased_event_not_novel",
+        prepare(&fresh, vec![erased(9, erased_credit.clone())]),
+        2025,
+        true,
+    );
+    assert_eq!(prepared["items"][0]["novel"], false);
+    let fresh = m.call(
+        "erased_event_writes_receipts_only",
+        apply(&fresh, vec![erased(9, erased_credit.clone())], vec![Value::Null]),
+        2025,
+        true,
+    );
+    assert_eq!(fresh["next_offset"], 10);
+    let fresh = m.call(
+        "erased_replay_is_a_duplicate",
+        apply(&fresh, vec![erased(10, erased_credit)], vec![Value::Null]),
+        2025,
+        true,
+    );
+    let state = m.call(
+        "erased_event_leaves_state_unchanged",
+        json!({"op":"get","tenant":"bank-eu","aggregate":"account-42"}),
+        2025,
+        true,
+    );
+    assert_eq!(state["sequence"], 3);
+
+    // A sealed event: its receipts bind the keyed fingerprint, and its state sits under its subject.
+    let mut sealed = event(1, "opened-77");
+    sealed["aggregate"] = json!("account-77");
+    sealed["subject"] = json!("person-7");
+    let parsed: edax_cqrs::projection::Event = serde_json::from_value(sealed.clone()).unwrap();
+    let keyed = projection::keyed_fingerprint(&[7u8; 32], &parsed).unwrap();
+    let sealed_input = json!({"offset":11,"event":sealed,"fingerprint":keyed});
+    let fresh = m.call(
+        "keyed_fingerprint_binds_the_receipts",
+        apply(&fresh, vec![sealed_input.clone()], vec![reduce("12.50")]),
+        2025,
+        true,
+    );
+    let stored = m.call(
+        "get_reads_the_state_of_a_subject",
+        json!({"op":"get","tenant":"bank-eu","subject":"person-7","aggregate":"account-77"}),
+        2025,
+        true,
+    );
+    assert_eq!(stored["sequence"], 1);
+    m.call(
+        "unkeyed_replay_of_a_keyed_event_conflicts",
+        apply(
+            &fresh,
+            vec![json!({"offset":12,"event":sealed_input["event"]})],
+            vec![Value::Null],
+        ),
+        2025,
+        false,
+    );
+    m.expect_error("codec");
+    let mut moved = event(2, "credit-77");
+    moved["aggregate"] = json!("account-77");
+    moved["subject"] = json!("person-8");
+    m.call(
+        "aggregate_cannot_change_its_subject",
+        apply(&fresh, vec![input(12, moved)], vec![reduce("25.00")]),
+        2025,
+        false,
+    );
+    m.expect_error("codec");
+    let mut short_mac = event(2, "credit-77b");
+    short_mac["aggregate"] = json!("account-77");
+    short_mac["subject"] = json!("person-7");
+    m.call(
+        "keyed_fingerprint_must_be_hex_digest",
+        apply(
+            &fresh,
+            vec![json!({"offset":12,"event":short_mac,"fingerprint":"abc"})],
+            vec![reduce("25.00")],
+        ),
+        2025,
+        false,
+    );
+    m.expect_error("bad_handle");
+
     let cutover = json!({"source_identity":m.c.source_identity,"source_history":m.c.source_history,"topic":m.c.topic,"cutoffs":{"0":0,"1":0}});
     m.call(
         "activate_initial_generation",
@@ -384,7 +480,7 @@ fn ordered_projection_fences_and_cutovers() {
         true,
     );
     let frozen = m.call("freeze_captures_database_cutoffs", json!({"op":"freeze"}), 2027, true);
-    assert_eq!(frozen["cutoffs"], json!({"0":9,"1":0}));
+    assert_eq!(frozen["cutoffs"], json!({"0":12,"1":0}));
     m.call(
         "frozen_generation_rejects_new_write",
         prepare(&fresh, vec![input(9, event(4, "credit-4"))]),

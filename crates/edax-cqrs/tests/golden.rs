@@ -1830,12 +1830,15 @@ fn ingest_cases() -> Vec<Value> {
         let raw = json!({"offset":offset,"sequence":sequence,"status":status}).to_string();
         Input {
             source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
-            key: namespace::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
+            key: namespace::key(target, &json!(["upsert", "acme", null, "order-42"]).to_string()).unwrap(),
             stream: "order-42".into(),
             event_id: format!("order-42-event-{offset}"),
             sequence,
             content: json!({"aggregate_id":"order-42", "sequence":sequence, "name":"OrderState", "version":1, "status":status}),
-            value: Some(json!({"order_id":"order-42", "status":status})),
+            private: Some(json!({"order_id":"order-42", "status":status})),
+            public: None,
+            erased: false,
+            fingerprint: None,
             raw_fingerprint: ingest::raw_fingerprint(raw.as_bytes()),
             raw,
             failure: None,
@@ -1868,17 +1871,17 @@ fn ingest_cases() -> Vec<Value> {
     conflicting_paid.event_id = "order-42-conflicting-payment".into();
     let mut append = created.clone();
     append.sequence = None;
-    append.key = namespace::key(target, &json!(["append", "acme", append.event_id]).to_string()).unwrap();
+    append.key = namespace::key(target, &json!(["append", "acme", null, append.event_id]).to_string()).unwrap();
     let append_state = ingest::plan("append", std::slice::from_ref(&append), &empty, &no_rejections).unwrap();
     let append_conflict = Input {
-        value: Some(json!({"order_id":"order-42","status":"cancelled"})),
+        private: Some(json!({"order_id":"order-42","status":"cancelled"})),
         ..append.clone()
     };
     for (name, nul) in [
         (
             "nul_in_value_rejected_as_record",
             Input {
-                value: Some(json!({"order_id":"order-42","note":"a\u{0}b"})),
+                private: Some(json!({"order_id":"order-42","note":"a\u{0}b"})),
                 ..paid.clone()
             },
         ),
@@ -1978,8 +1981,68 @@ fn ingest_cases() -> Vec<Value> {
             .writes,
         &no_rejections,
     );
+    let erased = Input {
+        erased: true,
+        private: None,
+        ..input(5, Some(4), "erased")
+    };
+    add(
+        "erased_input_accepted_without_write",
+        "upsert",
+        vec![erased.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "erased_input_never_creates_a_row",
+        "upsert",
+        vec![erased],
+        &empty,
+        &no_rejections,
+    );
+    let sealed_key = [9u8; 32];
+    let keyed = |input: Input| {
+        let input = Input {
+            public: Some(json!({"status":"paid"})),
+            ..input
+        };
+        let fingerprint = ingest::keyed_fingerprint(
+            &sealed_key,
+            &input.content,
+            input.private.as_ref(),
+            input.public.as_ref(),
+        )
+        .unwrap();
+        Input {
+            fingerprint: Some(fingerprint),
+            ..input
+        }
+    };
+    let sealed_paid = keyed(paid.clone());
+    let sealed_state = ingest::plan("upsert", std::slice::from_ref(&sealed_paid), &empty, &no_rejections).unwrap();
+    add(
+        "keyed_fingerprint_is_stored",
+        "upsert",
+        vec![sealed_paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "keyed_fingerprint_exact_replay",
+        "upsert",
+        vec![sealed_paid],
+        &sealed_state.writes,
+        &no_rejections,
+    );
+    add(
+        "unsealed_replay_of_a_sealed_sequence_conflicts",
+        "upsert",
+        vec![paid.clone()],
+        &sealed_state.writes,
+        &no_rejections,
+    );
     let tombstone = Input {
-        value: None,
+        private: None,
         ..input(5, Some(4), "deleted")
     };
     let deleted = ingest::plan(
@@ -2227,7 +2290,7 @@ fn ingest_cases() -> Vec<Value> {
         (
             "foreign_target_refused",
             vec![Input {
-                key: namespace::key("orders-v2", r#"["upsert","acme","order-42"]"#).unwrap(),
+                key: namespace::key("orders-v2", r#"["upsert","acme",null,"order-42"]"#).unwrap(),
                 ..created.clone()
             }],
         ),
@@ -2258,7 +2321,7 @@ fn ingest_cases() -> Vec<Value> {
         (
             "row_mode_must_match_contract",
             vec![Input {
-                key: ingest::row_key(target, "append", Some("acme"), &created.event_id).unwrap(),
+                key: ingest::row_key(target, "append", Some("acme"), None, &created.event_id).unwrap(),
                 ..created.clone()
             }],
         ),
@@ -2276,14 +2339,14 @@ fn ingest_cases() -> Vec<Value> {
         (
             "non_string_tenant_refused",
             vec![Input {
-                key: namespace::key(target, &json!(["upsert", 42, "order-42"]).to_string()).unwrap(),
+                key: namespace::key(target, &json!(["upsert", 42, null, "order-42"]).to_string()).unwrap(),
                 ..created.clone()
             }],
         ),
         (
             "empty_row_id_refused",
             vec![Input {
-                key: namespace::key(target, &json!(["upsert", "acme", ""]).to_string()).unwrap(),
+                key: namespace::key(target, &json!(["upsert", "acme", null, ""]).to_string()).unwrap(),
                 ..created.clone()
             }],
         ),
@@ -2321,7 +2384,7 @@ fn ingest_cases() -> Vec<Value> {
         ("append_row_id_must_equal_event_id", "different-event"),
     ] {
         let inputs = vec![Input {
-            key: ingest::row_key(target, "append", Some("acme"), row_id).unwrap(),
+            key: ingest::row_key(target, "append", Some("acme"), None, row_id).unwrap(),
             ..created.clone()
         }];
         let result = ingest::validate_inputs(&append_contract, &inputs).map(|()| true);
@@ -2388,8 +2451,43 @@ fn ingest_cases() -> Vec<Value> {
         ("row_key_empty_target_refused", "", "upsert", None, "order-42"),
         ("row_key_nul_target_refused", "orders\0v1", "upsert", None, "order-42"),
     ] {
-        let result = ingest::row_key(target, mode, tenant, row_id);
-        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+        let result = ingest::row_key(target, mode, tenant, None, row_id);
+        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"subject":null,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, tenant, subject) in [
+        ("row_key_with_subject", Some("acme"), Some("person-42")),
+        ("row_key_subject_without_tenant", None, Some("person-42")),
+        ("row_key_empty_subject_refused", Some("acme"), Some("")),
+    ] {
+        let result = ingest::row_key("orders-v1", "upsert", tenant, subject, "order-42");
+        rows.push(json!({"name":name,"op":"row_key","target":"orders-v1","mode":"upsert","tenant":tenant,"subject":subject,"row_id":"order-42","want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, mode, tenant, subject) in [
+        ("scope_range_of_a_subject", "upsert", Some("acme"), "person-42"),
+        ("scope_range_without_tenant", "append", None, "person-42"),
+        ("scope_range_empty_subject_refused", "upsert", Some("acme"), ""),
+    ] {
+        let result = ingest::scope_range("orders-v1", mode, tenant, subject);
+        rows.push(json!({"name":name,"op":"scope_range","target":"orders-v1","mode":mode,"tenant":tenant,"subject":subject,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let key = [7u8; 32];
+    for (name, key, private) in [
+        ("keyed_fingerprint", key.as_slice(), json!({"email":"ana@example.com"})),
+        (
+            "keyed_fingerprint_other_value",
+            key.as_slice(),
+            json!({"email":"bob@example.com"}),
+        ),
+        (
+            "keyed_fingerprint_short_key_refused",
+            &key[..16],
+            json!({"email":"ana@example.com"}),
+        ),
+    ] {
+        let content = json!({"name":"OrderPlaced","aggregate_id":"order-42"});
+        let public = json!({"status":"paid"});
+        let result = ingest::keyed_fingerprint(key, &content, Some(&private), Some(&public));
+        rows.push(json!({"name":name,"op":"keyed_fingerprint","key":key,"state":{"content":content,"private":private,"public":public},"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
     for (set, names) in [
         ("ingest_mode", ingest::Mode::NAMES),

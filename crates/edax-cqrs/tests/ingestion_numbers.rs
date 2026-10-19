@@ -28,7 +28,7 @@ pub fn replay(case: &Value) -> Result<Value, Error> {
 
 fn inputs(mode: &str, field: &str, token: &str) -> String {
     let source = ingest::source_key("orders-v1", "source-v1", "orders", 0, i64::MAX).unwrap();
-    let key = ingest::row_key("orders-v1", mode, Some("tenant-7"), "order-paid").unwrap();
+    let key = ingest::row_key("orders-v1", mode, Some("tenant-7"), None, "order-paid").unwrap();
     let content = if field == "content" {
         format!(r#"{{"total":{token}}}"#)
     } else {
@@ -40,7 +40,7 @@ fn inputs(mode: &str, field: &str, token: &str) -> String {
         r#"{"status":"paid"}"#.into()
     };
     format!(
-        r#"[{{"source":{},"key":{},"stream":"order-42","event_id":"order-paid","sequence":9223372036854775807,"content":{content},"value":{value},"raw":"orders:0:9223372036854775807","raw_fingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","failure":null}}]"#,
+        r#"[{{"source":{},"key":{},"stream":"order-42","event_id":"order-paid","sequence":9223372036854775807,"content":{content},"private":{value},"raw":"orders:0:9223372036854775807","raw_fingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","failure":null}}]"#,
         json!(source),
         json!(key)
     )

@@ -43,8 +43,20 @@ def replay(case: dict[str, Any]) -> Any:
                     "source_incarnation": "test-source",
                 }
             ),
-            json.dumps({"row_id": case["row_id"], "tenant": case["tenant"]}),
+            json.dumps({"row_id": case["row_id"], "tenant": case["tenant"], "subject": case["subject"]}),
         )
+    if op == "scope_range":
+        manifest = json.dumps(
+            {
+                "generation": case["target"],
+                "mode": case["mode"],
+                "mapper_id": "test-mapper",
+                "source_incarnation": "test-source",
+            }
+        )
+        return json.loads(_edax.ingest_scope_range(manifest, case["subject"], case["tenant"]))
+    if op == "keyed_fingerprint":
+        return _edax.ingest_keyed_fingerprint(bytes(case["key"]), json.dumps(case["state"]))
     if op == "source":
         return _edax.ingest_source_key(
             case["target"], case["incarnation"], case["topic"], case["partition"], case["offset"]

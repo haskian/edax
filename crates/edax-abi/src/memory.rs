@@ -1261,6 +1261,11 @@ impl MemoryIngestion {
         crate::write_json(&self.inner.pending(prefix, limit as usize))
     }
 
+    /// Delete every row in the erasure key range `[start, end)`; return how many.
+    pub fn delete_scope(&self, start: &str, end: &str) -> u64 {
+        count(self.inner.delete_scope(start, end))
+    }
+
     /// Confirm publication of a rejection whose original fingerprint still matches.
     pub fn published(&self, source: &str, fingerprint: &str) -> Result<(), String> {
         self.inner.published(source, fingerprint).map_err(crate::to_wire)
@@ -1327,6 +1332,11 @@ impl MemoryProjectionDatabase {
                 .mark_published(manifest_key, generation, &keys)
                 .map_err(to_wire)?,
         ))
+    }
+
+    /// Delete every record in the erasure key range `[start, end)`; return how many.
+    pub fn delete_scope(&self, start: &str, end: &str) -> u64 {
+        count(self.inner.delete_scope(start, end))
     }
 
     /// Delete up to `limit` intents a cutover made permanently ineligible; return how many.

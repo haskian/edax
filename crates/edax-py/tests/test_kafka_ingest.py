@@ -185,7 +185,7 @@ async def test_batches_originals_and_replays_tombstones() -> None:
             await until(lambda client=client: any(batch.get(TP) == 4 for batch in client.commits))
         assert runner.retained_records == runner.retained_bytes == 0
     stored = await sink.get("tenant-7", "order-0")
-    assert stored is not None and stored["sequence"] == 4 and stored["value"] is None
+    assert stored is not None and stored["sequence"] == 4 and stored["private"] is None
     assert sink.batches == [tuple(message.id for message in messages)] * 2
     assert await sink.pending() == {}
 
@@ -1177,4 +1177,4 @@ async def test_admission_snapshots_reused_mutable_mapper_values() -> None:
     for message in messages:
         row = await sink.get("tenant-7", message.id)
         assert row is not None
-        assert row["value"] == {"event_id": message.id, "lines": [{"quantity": 1}], "total": "9.5"}
+        assert row["private"] == {"event_id": message.id, "lines": [{"quantity": 1}], "total": "9.5"}

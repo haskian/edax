@@ -131,7 +131,10 @@ func TestIngestionGolden(t *testing.T) {
 		Expected    json.RawMessage
 		Contract    json.RawMessage
 		Tenant      *string
+		Subject     *string
 		RowID       string `json:"row_id"`
+		Key         []byte
+		State       json.RawMessage
 		Target      string
 		Incarnation string
 		Topic       string
@@ -165,11 +168,25 @@ func TestIngestionGolden(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				identity, err := json.Marshal(map[string]any{"row_id": row.RowID, "tenant": row.Tenant})
+				identity, err := json.Marshal(map[string]any{"row_id": row.RowID, "tenant": row.Tenant, "subject": row.Subject})
 				if err != nil {
 					t.Fatal(err)
 				}
 				got, err := IngestRowKey(string(manifest), string(identity))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
+			case "scope_range":
+				manifest, err := json.Marshal(map[string]string{"generation": row.Target, "mode": row.Mode, "mapper_id": "test-mapper", "source_incarnation": "test-source"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got json.RawMessage
+				text, err := IngestScopeRange(string(manifest), *row.Subject, row.Tenant)
+				if err == nil {
+					got = json.RawMessage(text)
+				}
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
+			case "keyed_fingerprint":
+				got, err := IngestKeyedFingerprint(row.Key, string(row.State))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
 			case "source":
 				got, err := IngestSourceKey(row.Target, row.Incarnation, row.Topic, row.Partition, row.Offset)

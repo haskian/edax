@@ -50,6 +50,9 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
         ("read".into(), format!("SELECT key, value::text AS value FROM {table} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key")),
         // No ON CONFLICT: a concurrent insert of the same key fails the transaction, which retries.
         ("insert".into(), format!("INSERT INTO {table} (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\"")),
+        // An erasure cleanup of a plaintext generation: every state record of one subject, the key
+        // range `Contract::state_scope_range` names. Receipts hold no plaintext and stay.
+        ("delete_scope".into(), format!("WITH gone AS (DELETE FROM {table} WHERE key >= $1::text AND key < $2::text RETURNING 1) SELECT count(*) FROM gone")),
         ("update".into(), format!("WITH changed AS (UPDATE {table} AS t SET value = u.value FROM jsonb_each($1::jsonb) AS u(key, value) WHERE t.key = u.key RETURNING 1) SELECT count(*) FROM changed")),
         ("insert_intents".into(), format!(
             "INSERT INTO {intents} (key, generation, source_partition, source_offset, ordinal, value) \

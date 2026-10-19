@@ -40,22 +40,42 @@ fn scope_locks_are_parent_first_and_erasure_conflicts_with_every_writer() {
     assert_eq!(revoke_tenant.len(), 1);
     assert_eq!(revoke_tenant[0].params, write[0].params);
     assert_eq!(revoke_tenant[0].statement, "lock_exclusive");
+    let bucket = |call: &edax_postgres::Call, kind: &str| {
+        let name = call.params[0].clone().unwrap();
+        let n: u64 = name.strip_prefix(&format!("{kind}/")).unwrap().parse().unwrap();
+        assert!(n < erasure::FENCE_BUCKETS, "{name}");
+    };
+    bucket(&write[0], "tenant");
+    bucket(&write[1], "subject");
     let mut another = subject.clone();
-    another.tenant = Some("clinic-8".into());
-    assert_ne!(
-        erasure::writer_locks(std::slice::from_ref(&another)).unwrap()[0].params,
-        write[0].params
-    );
-    another = subject.clone();
     another.key_namespace = "staging-eu".into();
     assert_ne!(
         erasure::scope_id(&another).unwrap(),
         erasure::scope_id(&subject).unwrap()
     );
+    // The revocation read stays exact: buckets only order writers against cleanup.
+    let parent = KeyScope {
+        subject: None,
+        ..subject.clone()
+    };
     assert_eq!(
         erasure::guard_params(&subject).unwrap(),
-        vec![write[0].params[0].clone(), write[1].params[0].clone()]
+        vec![
+            Some(erasure::scope_id(&parent).unwrap()),
+            Some(erasure::scope_id(&subject).unwrap())
+        ]
     );
+}
+
+#[test]
+fn writer_locks_stay_bounded_however_many_subjects_a_batch_touches() {
+    let scopes: Vec<KeyScope> = (0..500).map(|n| scope(Some(&format!("patient-{n}")))).collect();
+    let locks = erasure::writer_locks(&scopes).unwrap();
+    assert_eq!(
+        locks[0].params[0].as_deref().map(|n| n.starts_with("tenant/")),
+        Some(true)
+    );
+    assert!(locks.len() <= 1 + erasure::FENCE_BUCKETS as usize, "{}", locks.len());
 }
 
 #[test]
@@ -72,18 +92,17 @@ fn writer_locks_for_several_scopes_take_every_tenant_then_every_subject_once_in_
         "callers' order and repeats must not change the lock order"
     );
     let ids: Vec<String> = one_order.iter().map(|call| call.params[0].clone().unwrap()).collect();
-    let id = |scope: &KeyScope| erasure::scope_id(scope).unwrap();
-    let parent = |scope: &KeyScope| {
-        id(&KeyScope {
-            subject: None,
-            ..scope.clone()
-        })
-    };
-    let mut tenants = vec![parent(&a), parent(&other_tenant)];
-    tenants.sort();
-    let mut subjects = vec![id(&a), id(&b), id(&other_tenant)];
-    subjects.sort();
-    assert_eq!(ids, [tenants, subjects].concat());
+    let tenants: Vec<&String> = ids.iter().filter(|id| id.starts_with("tenant/")).collect();
+    let subjects: Vec<&String> = ids.iter().filter(|id| id.starts_with("subject/")).collect();
+    // Every tenant bucket, then every subject bucket, each sorted and without repeats.
+    assert_eq!(tenants.len() + subjects.len(), ids.len());
+    assert!(ids.iter().take(tenants.len()).all(|id| id.starts_with("tenant/")));
+    assert!(tenants.windows(2).all(|w| w[0] < w[1]) && subjects.windows(2).all(|w| w[0] < w[1]));
+    assert!((1..=2).contains(&tenants.len()) && (1..=3).contains(&subjects.len()));
+    for scope in [&a, &b, &other_tenant] {
+        let own = erasure::writer_locks(std::slice::from_ref(scope)).unwrap();
+        assert!(own.iter().all(|call| one_order.contains(call)));
+    }
     assert!(one_order.iter().all(|call| call.statement == "lock_shared"));
     assert!(erasure::writer_locks(&[]).unwrap().is_empty());
 }

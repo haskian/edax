@@ -2285,6 +2285,15 @@ char *edax_memory_ingestion_pending(EDAXAlefHandle this_,
                                     uint32_t limit);
 
 /**
+ * Delete every row in the erasure key range `[start, end)`; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_ingestion_delete_scope(EDAXAlefHandle this_,
+                                            const char *start,
+                                            const char *end);
+
+/**
  * Confirm publication of a rejection whose original fingerprint still matches.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -2410,6 +2419,15 @@ uint64_t edax_memory_projection_database_mark_published(EDAXAlefHandle this_,
                                                         const char *manifest_key,
                                                         const char *generation,
                                                         const char *keys);
+
+/**
+ * Delete every record in the erasure key range `[start, end)`; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_delete_scope(EDAXAlefHandle this_,
+                                                      const char *start,
+                                                      const char *end);
 
 /**
  * Delete up to `limit` intents a cutover made permanently ineligible; return how many.
@@ -5252,6 +5270,27 @@ int32_t edax_ingest_bind_contract(const char *previous,
                                   const char *expected);
 
 /**
+ * The keyed fingerprint of a sealed ingestion record, from the subject's fingerprint key. `state` is
+ * the JSON `{"content", "private", "public"}` before `private` is sealed.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_keyed_fingerprint(const uint8_t *key,
+                                    uintptr_t key_len,
+                                    const char *state);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_keyed_fingerprint` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_keyed_fingerprint`.
+ */
+uintptr_t edax_ingest_keyed_fingerprint_len(const uint8_t *_key,
+                                            uintptr_t _key_len,
+                                            const char *_state);
+
+/**
  * Every ingestion target mode, in the kernel's order.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5338,6 +5377,26 @@ char *edax_ingest_row_key(const char *manifest,
  */
 uintptr_t edax_ingest_row_key_len(const char *_manifest,
                                   const char *_identity);
+
+/**
+ * The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_scope_range(const char *manifest,
+                              const char *subject,
+                              const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_scope_range` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_scope_range`.
+ */
+uintptr_t edax_ingest_scope_range_len(const char *_manifest,
+                                      const char *_subject,
+                                      const char *_tenant);
 
 /**
  * Source coordinates preserve the full signed 64-bit offset range.
@@ -6856,6 +6915,26 @@ uintptr_t edax_projection_intent_key_len(const char *_contract_json,
                                          const char *_intent_id);
 
 /**
+ * The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_keyed_fingerprint(const uint8_t *key,
+                                        uintptr_t key_len,
+                                        const char *event_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_keyed_fingerprint`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_keyed_fingerprint`.
+ */
+uintptr_t edax_projection_keyed_fingerprint_len(const uint8_t *_key,
+                                                uintptr_t _key_len,
+                                                const char *_event_json);
+
+/**
  * Keys of the state records the projection operation reads, the manifest first.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -6888,6 +6967,26 @@ char *edax_projection_reads(const char *request_json);
  * with `edax_projection_reads`.
  */
 uintptr_t edax_projection_reads_len(const char *_request_json);
+
+/**
+ * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_state_scope_range(const char *contract_json,
+                                        const char *subject,
+                                        const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_state_scope_range`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_state_scope_range`.
+ */
+uintptr_t edax_projection_state_scope_range_len(const char *_contract_json,
+                                                const char *_subject,
+                                                const char *_tenant);
 
 /**
  * Pure projection transition. Persist every returned write atomically under the generation lock.

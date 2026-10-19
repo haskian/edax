@@ -503,14 +503,20 @@ The total order, the tiebreak and the cursor are documented from the host's side
 ## `ingest` — append and complete-state upsert
 
 `Contract` fixes a target generation's mode, source incarnation and mapper identity. Key helpers
-scope row identities by generation and tenant, and source coordinates by source incarnation,
-topic, partition and offset. `validate_inputs` refuses records outside that contract.
+scope row identities by generation, tenant and erasure subject, and source coordinates by source
+incarnation, topic, partition and offset. `scope_range` names the key range that holds every row of
+one subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
+contract.
 
 `plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
 rejections before selecting owners. In append mode, identical event replay succeeds and changed
-content under the same identity is rejected. In upsert mode, one aggregate stream owns each row:
-a higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
-sequence is rejected. A null value retains a deletion marker. The planner validates every original
+content under the same identity is rejected. In upsert mode, one aggregate stream owns each row.
+A higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
+sequence is rejected. A row holds a `private` part and a plaintext `public` part. The
+host seals `private` when sealing is configured. Both parts absent retain a deletion marker. An `erased` input,
+whose key was destroyed, is accepted without a write. A sealed input carries `keyed_fingerprint`, an
+HMAC under the subject's fingerprint key. Once the key is gone, no stored hash can test a guessed
+value. A sealed and an unsealed copy of one sequence conflict. The planner validates every original
 before compacting eligible replacements into the final writes.
 
 `inputs_json` checks original numeric tokens before decoding application values. Integer literals
@@ -547,7 +553,11 @@ overwriting. The kernel does no I/O and never invokes a reducer.
 | Get | Read one aggregate's state |
 
 Two receipts bind each event to its event ID and aggregate sequence. Each holds a hash of the
-canonical event, not the event itself. Identical replay skips the reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
+canonical event, not the event itself. For a sealed event the hash is `keyed_fingerprint`, an HMAC
+under the subject's fingerprint key. State keys carry the event's erasure subject, so an aggregate cannot change
+subjects. `state_scope_range` names one subject's state for a plaintext generation's cleanup. An
+`erased` input, whose key was destroyed, writes its receipts and advances the cursor. It calls no
+reducer and changes no state. An erased replay matches a receipt from before erasure. Identical replay skips the reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
 checks cover physical source identity, history and retained/readable boundaries. These checks
 cannot establish that a restored database contains every previously created aggregate; the host
 must restore a consistent generation and terminate every previous writer before recovery.
