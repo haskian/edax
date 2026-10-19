@@ -173,6 +173,8 @@ def detach_sealing_context() -> None:
     _pending_fences.set(())
     _authenticated_event.set(None)
     _opened_event.set(None)
+    _scope_guards.set(())
+    _joined_guards.set(None)
 
 
 class MemoryKeys:
@@ -272,6 +274,83 @@ class MemoryKeys:
             if self._guard_depth == 0:
                 self._guard_owner = None
                 self._guard.release()
+
+
+class ScopeGuard(AbstractAsyncContextManager[None]):
+    """One live provider guard. Borrowing never transfers its release responsibility."""
+
+    def __init__(self, keys: KeyProvider, scope: KeyScope) -> None:
+        self.keys = keys
+        self.scope = scope
+        self.task: asyncio.Task[Any] | None = None
+        self.active = False
+        self._guard = keys.guard(scope)
+
+    async def __aenter__(self) -> None:
+        await self._guard.__aenter__()
+        self.task = asyncio.current_task()
+        self.active = True
+        _scope_guards.set((*active_scope_guards(), self))
+
+    async def __aexit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> bool | None:
+        self.active = False
+        try:
+            return await self._guard.__aexit__(kind, error, trace)
+        finally:
+            _scope_guards.set(active_scope_guards())
+
+    def held(self) -> ScopeGuard | None:
+        return next(
+            (
+                guard
+                for guard in reversed(active_scope_guards())
+                if guard.keys is self.keys and guard.scope == self.scope
+            ),
+            None,
+        )
+
+    def borrowable(self) -> bool:
+        task = asyncio.current_task()
+        joined = _joined_guards.get()
+        return self.active and (
+            self.task is task or (joined is not None and joined.task is task and self in joined.guards)
+        )
+
+    def for_owned_write(self) -> AbstractAsyncContextManager[None]:
+        """Borrow only from this task or the parent that explicitly joins this operation."""
+        held = self.held()
+        if held is not None and held.borrowable():
+            return nullcontext()
+        return self
+
+
+_scope_guards: ContextVar[tuple[ScopeGuard, ...]] = ContextVar("edax_scope_guards", default=())
+
+
+@dataclass
+class _JoinedGuards:
+    guards: tuple[ScopeGuard, ...]
+    task: asyncio.Future[Any] | None = None
+
+
+_joined_guards: ContextVar[_JoinedGuards | None] = ContextVar("edax_joined_guards", default=None)
+
+
+def active_scope_guards() -> tuple[ScopeGuard, ...]:
+    return tuple(guard for guard in _scope_guards.get() if guard.active)
+
+
+@contextmanager
+def joined_scope_guards() -> Iterator[_JoinedGuards]:
+    """Authorize one child only. Set its task, then join it before releasing the parent's guards."""
+    joined = _JoinedGuards(tuple(guard for guard in active_scope_guards() if guard.borrowable()))
+    token = _joined_guards.set(joined)
+    try:
+        yield joined
+    finally:
+        _joined_guards.reset(token)
 
 
 class PendingFence(AbstractAsyncContextManager[None]):
@@ -528,7 +607,7 @@ class Sealing:
         scope = self.scope(tenant, subject)
         if self._fencing is not None:
             return PendingFence(self._fencing, scope)
-        return self.keys.guard(scope)
+        return ScopeGuard(self.keys, scope)
 
     @property
     def write_fence(self) -> WriteFence:

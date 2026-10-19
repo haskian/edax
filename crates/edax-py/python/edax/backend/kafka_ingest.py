@@ -21,7 +21,7 @@ from ..errors import BadHandle, CodecError, Shredded
 from ..ingestion import BatchInput, BatchResult, BatchSink, MappedRow, Rejection
 from ..message import EventMessage
 from ..pacing import Pacing
-from ..sealing import Scope, Sealing, provider_deadline
+from ..sealing import Scope, Sealing, joined_scope_guards, provider_deadline
 from ..serializer import KernelSerializer, Serializer
 from . import _kafka
 from ._kafka import (
@@ -271,13 +271,25 @@ class KafkaIngestion:
 
     async def _operation(self, call: Awaitable[T]) -> T:
         """:meth:`_bounded`, holding the caller until the call has actually ended."""
-        task = asyncio.ensure_future(call)
+        started = False
+
+        async def invoke() -> T:
+            nonlocal started
+            started = True
+            # Assign inside the child: eager task factories start it before ensure_future returns.
+            joined.task = asyncio.current_task()
+            return await call
+
+        with joined_scope_guards() as joined:
+            task = asyncio.ensure_future(invoke())
         try:
             return await self._bounded(task)
         finally:
             if not task.done():
                 # The worker retains its slot and credits through actual completion.
                 await _kafka.settled(task)
+            if not started and inspect.iscoroutine(call):
+                call.close()
 
     def _rewind(self, tp: TopicPartition, offset: int) -> None:
         part = self._parts.get(tp)

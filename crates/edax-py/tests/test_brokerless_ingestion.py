@@ -2,13 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
 from edax.errors import BadHandle
 from edax.ingestion import BatchInput, IngestionTarget, MappedRow, MemoryIngestionSink
-from edax.sealing import MemoryKeys, Sealing
+from edax.sealing import KeyScope, MemoryKeys, Sealing
 from edax.testing import BatchSinkContract
+
+
+class NonReentrantKeys(MemoryKeys):
+    """A provider need not support recursive acquisition of its storage fence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = asyncio.Lock()
+        self.acquisitions = 0
+        self.waiting = asyncio.Event()
+
+    @asynccontextmanager
+    async def guard(self, scope: KeyScope) -> AsyncIterator[None]:
+        self.waiting.set()
+        async with self.lock, super().guard(scope):
+            self.acquisitions += 1
+            task = asyncio.current_task()
+            try:
+                yield
+            finally:
+                assert asyncio.current_task() is task, "provider exit must stay with its owner"
 
 
 def reading(target: IngestionTarget) -> BatchInput:
@@ -35,6 +59,23 @@ async def test_direct_sealed_replay_uses_plaintext_fingerprint() -> None:
     stored = await sink.get("clinic-a", "reading-1", "patient-42")
     assert stored is not None and stored["private"] == {"pulse_bpm": 72}
     assert (await sink.commit([replace(original, private={"pulse_bpm": 73})])).outcomes == ("rejected",)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+async def test_failed_direct_original_is_rejected_after_subject_destruction(replay: bool) -> None:
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1")
+    keys = MemoryKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    sink = MemoryIngestionSink(target, sealing=sealing)
+    original = replace(reading(target), failure="codec: invalid reading")
+    if replay:
+        assert (await sink.commit([original])).outcomes == ("rejected",)
+    scope = sealing.scope("clinic-a", "patient-42")
+    await keys.revoke(scope)
+    await keys.destroy(scope)
+
+    assert (await sink.commit([original])).outcomes == ("rejected",)
+    assert (await sink.pending())[original.source]["error"] == "codec: invalid reading"
 
 
 @pytest.mark.parametrize("source_id", ["", "reading\x00id"])
@@ -97,3 +138,42 @@ async def test_preparation_refuses_transaction_without_its_owner() -> None:
     with pytest.raises(BadHandle, match="transactor"):
         async with prepare_ingestion(target, None, [], tx=object()):
             pytest.fail("an explicit transaction must not lose its fence lifetime")
+
+
+async def test_owned_commit_reuses_its_enclosing_scope_guard() -> None:
+    keys = NonReentrantKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-v1")
+    sink = MemoryIngestionSink(target, sealing=sealing)
+
+    async def write() -> None:
+        async with sealing.fenced({("clinic-a", "patient-42")}):
+            assert (await sink.commit([reading(target)])).outcomes == ("accepted",)
+            assert keys.lock.locked()
+
+    await asyncio.wait_for(write(), 1)
+    assert keys.acquisitions == 1 and not keys.lock.locked()
+
+
+@pytest.mark.parametrize("start_after_release", [False, True], ids=["live-parent", "expired-parent"])
+async def test_unjoined_child_cannot_borrow_parent_guard(start_after_release: bool) -> None:
+    keys = NonReentrantKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-v1")
+    sink = MemoryIngestionSink(target, sealing=sealing)
+    start = asyncio.Event()
+
+    async def child() -> None:
+        await start.wait()
+        assert (await sink.commit([reading(target)])).outcomes == ("accepted",)
+
+    async with sealing.fenced({("clinic-a", "patient-42")}):
+        writing = asyncio.create_task(child())
+        keys.waiting.clear()
+        if not start_after_release:
+            start.set()
+            await asyncio.wait_for(keys.waiting.wait(), 1)
+            assert not writing.done(), "an independent child must acquire its own fence"
+    start.set()
+    await asyncio.wait_for(writing, 1)
+    assert keys.acquisitions == 2 and not keys.lock.locked()

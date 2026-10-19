@@ -11,7 +11,7 @@ import edax
 import pytest
 from conftest import CreateUser
 from edax import _native
-from edax._units import leave_every_unit_of_work
+from edax._units import leave_every_unit_of_work, transaction_guard
 from edax.backend.memory import (
     MemoryEventStore,
     MemoryIdempotencyStore,
@@ -24,6 +24,7 @@ from edax.idempotency import Won
 from edax.projection import Entity
 from edax.sealing import KeyScope, MemoryKeys, Sealing, WriteFence, pending_fences
 from edax.unit_of_work import transaction
+from test_brokerless_ingestion import NonReentrantKeys
 from test_crypto_workflows import COMMANDS, EMAIL, SUBJECT, Profile, event, repository
 
 
@@ -403,3 +404,27 @@ async def test_a_task_that_leaves_every_unit_of_work_inherits_no_pending_fence()
         inherited = await asyncio.create_task(worker(leave=False))
         left = await asyncio.create_task(worker(leave=True))
     assert (inherited, left) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    "guard_in_outer", [True, False], ids=["outer-covers-inner", "inner-cannot-cover-outer"]
+)
+async def test_guard_reuse_respects_nested_database_lifetimes(guard_in_outer: bool) -> None:
+    outer, inner = MemoryTransactor(), MemoryTransactor()
+    keys = NonReentrantKeys()
+    sealing = Sealing(keys, "profiles")
+    owner, borrower = (outer, inner) if guard_in_outer else (inner, outer)
+    async with transaction(outer):
+        async with transaction(inner):
+            async with transaction_guard(owner, sealing.write_guard(None, SUBJECT)):
+                pass
+            if guard_in_outer:
+                async with transaction_guard(borrower, sealing.write_guard(None, SUBJECT)):
+                    assert keys.acquisitions == 1
+            else:
+                with pytest.raises(BadHandle, match="does not cover this transaction"):
+                    async with transaction_guard(borrower, sealing.write_guard(None, SUBJECT)):
+                        pytest.fail("an inner guard cannot cover the outer transaction's later commit")
+            assert keys.lock.locked()
+        assert keys.lock.locked() is guard_in_outer
+    assert keys.acquisitions == 1 and not keys.lock.locked()

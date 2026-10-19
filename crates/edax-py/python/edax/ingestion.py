@@ -21,7 +21,7 @@ from ._units import own_write, transaction_guard
 from .erasure import ScopeCleanup
 from .errors import BadHandle, CodecError
 from .outbox import check_page
-from .sealing import AtRest, KeyScope, Sealing, SealPart
+from .sealing import AtRest, KeyScope, ScopeGuard, Sealing, SealPart
 
 __all__ = [
     "BatchInput",
@@ -379,7 +379,11 @@ async def prepare_ingestion(
     async with contextlib.AsyncExitStack() as guards:
         if sealing is not None:
             order = sorted(
-                {scope for item, scope in zip(originals, scopes, strict=True) if not item.erased},
+                {
+                    scope
+                    for item, scope in zip(originals, scopes, strict=True)
+                    if not item.erased and item.failure is None
+                },
                 key=lambda scope: (
                     scope[0] is not None,
                     scope[0] or "",
@@ -391,6 +395,8 @@ async def prepare_ingestion(
                 guard = sealing.write_guard(*scope)
                 if transactor is not None:
                     guard = transaction_guard(transactor, guard, tx)
+                elif isinstance(guard, ScopeGuard):
+                    guard = guard.for_owned_write()
                 await guards.enter_async_context(guard)
             keys = sealing.for_batch(None)
             prepared = list(originals)

@@ -789,6 +789,34 @@ async def test_stage_requires_live_transaction_in_its_own_task(
     assert await sink.get("shop-a", "order-summary-42") is None
 
 
+@pytest.mark.parametrize("operation", ["stage", "get"])
+async def test_ingestion_refuses_explicit_handle_different_from_ambient(
+    database: tuple[Any, PostgresTransactor, str], operation: str
+) -> None:
+    from edax.sealing import MemoryKeys, Sealing
+    from test_brokerless_ingestion import reading
+
+    pool, transactor, schema = database
+    keys = MemoryKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1")
+    sink = PostgresIngestionSink(transactor, target, schema=schema, sealing=sealing)
+    item = reading(target)
+    async with transactor.begin() as explicit:
+        async with transaction(transactor) as ambient:
+            with pytest.raises(BadHandle, match="differs from the ambient transaction"):
+                if operation == "stage":
+                    await sink.stage([item], tx=explicit)
+                else:
+                    await sink.get("clinic-a", "reading-1", "patient-42", tx=explicit)
+            assert not explicit.aborted and not ambient.aborted
+        # The ambient unit's resources are gone, but the supplied transaction remains open.
+        # Admission must have refused the write before it could retain a fence on that unit.
+        await keys.revoke(sealing.scope("clinic-a", "patient-42"))
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_events') == 0
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_rejections') == 0
+
+
 @pytest.mark.parametrize("rollback", [False, True], ids=["commit", "rollback"])
 async def test_stage_retains_erasure_guard_until_outer_end(
     database: tuple[Any, PostgresTransactor, str], rollback: bool
@@ -846,6 +874,78 @@ async def test_caught_stage_failure_aborts_prior_staged_writes(
             with pytest.raises(BadHandle):
                 await sink.stage([replace(original, key="wrong-target")])
     assert await sink.get("shop-a", "order-summary-42") is None
+
+
+@pytest.mark.parametrize("placement", ["outside", "inside"])
+@pytest.mark.parametrize("rollback", [False, True], ids=["commit", "rollback"])
+async def test_stage_reuses_dispatch_guard_through_transaction_end(
+    database: tuple[Any, PostgresTransactor, str], placement: str, rollback: bool
+) -> None:
+    from edax._units import current_transaction_guard
+    from edax.sealing import Sealing
+    from test_brokerless_ingestion import NonReentrantKeys, reading
+
+    pool, transactor, schema = database
+    keys = NonReentrantKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1")
+    sink = PostgresIngestionSink(transactor, target, schema=schema, sealing=sealing)
+    item = reading(target)
+
+    async def stage_twice() -> None:
+        for _ in range(2):
+            assert (await sink.stage([item])).outcomes == ("accepted",)
+        assert keys.acquisitions == 1
+
+    async def write() -> None:
+        async with contextlib.AsyncExitStack() as resources:
+            if placement == "outside":
+                await resources.enter_async_context(
+                    current_transaction_guard(sealing.write_guard("clinic-a", "patient-42"))
+                )
+            await resources.enter_async_context(transaction(transactor))
+            if placement == "inside":
+                async with current_transaction_guard(sealing.write_guard("clinic-a", "patient-42")):
+                    await stage_twice()
+            else:
+                await stage_twice()
+            assert keys.lock.locked(), "dispatch return must not release the transaction's fence"
+            if rollback:
+                raise RuntimeError("handler failed after dispatch")
+
+    with pytest.raises(RuntimeError, match="handler failed") if rollback else contextlib.nullcontext():
+        await asyncio.wait_for(write(), 2)
+    assert keys.acquisitions == 1 and not keys.lock.locked()
+    count = await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_events WHERE key=$1', item.key)
+    assert count == (0 if rollback else 1)
+
+
+async def test_stage_refuses_lexical_guard_that_ends_before_transaction(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    from edax.errors import StoreError
+    from edax.sealing import Sealing
+    from test_brokerless_ingestion import NonReentrantKeys, reading
+
+    pool, transactor, schema = database
+    keys = NonReentrantKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1")
+    sink = PostgresIngestionSink(transactor, target, schema=schema, sealing=sealing)
+
+    async def write() -> None:
+        async with transaction(transactor) as tx:
+            async with sealing.write_guard("clinic-a", "patient-42"):
+                with pytest.raises(BadHandle, match="scope guard does not cover this transaction"):
+                    await sink.stage([reading(target)])
+                assert tx.aborted
+            assert not keys.lock.locked()
+
+    with pytest.raises(StoreError, match="rolled back"):
+        await asyncio.wait_for(write(), 2)
+    assert keys.acquisitions == 1
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_events') == 0
+    assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_rejections') == 0
 
 
 class TestPostgresIngestionContract(TransactionalBatchSinkContract):

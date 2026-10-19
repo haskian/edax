@@ -22,7 +22,7 @@ from typing import Any, ClassVar, Literal, Protocol, TypeVar, get_args
 
 from .. import _json, _names, _native, errors
 from .._deadline import within
-from .._units import enlisted, own_transaction
+from .._units import ambient_tx, enlisted, own_transaction
 from .._wiring import wiring_int, wiring_str
 from ..errors import BadHandle, CodecError, EdaxError, StoreError, TransactionFailure
 from ..idempotency import Claimed, Record, Won, decode_prior, encode_record
@@ -364,6 +364,12 @@ class PostgresTransactor:
             raise BadHandle("this operation requires an open Postgres transaction")
         if handle.aborted:
             raise BadHandle("this Postgres transaction has aborted and must roll back")
+        ambient = ambient_tx(self)
+        if ambient is not None and handle is not ambient:
+            raise BadHandle(
+                "this explicit Postgres transaction differs from the ambient transaction: "
+                "scope fences must remain attached to the transaction that writes"
+            )
         return handle
 
     async def run(

@@ -58,6 +58,7 @@ identity or upsert owner/sequence. A keyed command can additionally bind a reque
 `await sink.commit([original])` is a durable boundary. With `sealing=`, direct sinks derive keyed
 fingerprints before encryption and hold the provider's scope fences through the write. A destroyed
 scope refuses a new direct write; the Kafka runner separately handles already-erased deliveries.
+Inputs already marked as failures still persist or replay their durable rejection after erasure.
 Without `sealing=`, plaintext targets have no provider fence: the application must coordinate
 writers with cleanup. Raw rejection records retain their supplied representation independently of
 row encryption. Encrypt/redact them at the gateway according to the application's replay and
@@ -67,7 +68,8 @@ retention requirements; never assume sealing `private` protects `raw` or `public
 
 `PostgresIngestionSink.stage(inputs, tx=None)` requires an already-open transaction of its
 `PostgresTransactor`. Omitting `tx` joins that transactor's ambient unit of work. A missing, foreign,
-closed, aborted or other-task handle is refused. `StagedBatchResult` is provisional: acknowledge the
+closed, aborted or other-task handle is refused, as is an explicit handle different from the ambient
+transaction. `StagedBatchResult` is provisional: acknowledge the
 source or return success only after the outer transaction commits. Never publish its rejections
 before that commit. `pending()` remains a committed-only outbox read.
 
@@ -81,6 +83,9 @@ For read-own-writes, call `sink.get(..., tx=tx)` explicitly. With no `tx`, `get(
 committed-read boundary and refuses an ambient transaction. Guard-based key providers require
 `transaction(transactor)` so their guards survive until outer commit/rollback. An explicit handle
 from `transactor.begin()` is also usable when a provider fences inside that same transaction.
+If acquiring a scope guard manually, enter it before `transaction(transactor)` so it covers commit.
+The sink reuses guards held by enclosing dispatches and transactions; providers need not support
+reentrant acquisition of the same scope.
 
 [Example 22](../../examples/py/22_brokerless_ingestion.py) runs a keyed `RecordPulse`: sealed direct
 replay, changed-payload refusal, rollback after staging, and retry with a shared application counter.

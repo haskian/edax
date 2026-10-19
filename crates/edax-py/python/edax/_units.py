@@ -18,7 +18,9 @@ from .observe import Observer, TransactionOutcome
 from .sealing import (
     KeyScope,
     PendingFence,
+    ScopeGuard,
     TransactionFence,
+    active_scope_guards,
     detach_sealing_context,
     pending_fences,
     sealing_context,
@@ -47,6 +49,12 @@ class _Unit:
     resources: AsyncExitStack
     task: asyncio.Task[Any] | None
     fenced: set[tuple[int, KeyScope]] = field(default_factory=set)
+    guards: set[ScopeGuard] = field(default_factory=set)
+    outer_guards: tuple[ScopeGuard, ...] = field(
+        default_factory=lambda: tuple(
+            guard for guard in active_scope_guards() if guard.task is asyncio.current_task()
+        )
+    )
 
 
 # The open units of work in this task, keyed by database as AMBIENT is.
@@ -154,7 +162,27 @@ async def _retained(unit: _Unit | None, guard: AbstractAsyncContextManager[None]
         async with _fenced(guard):
             yield
     elif unit is not None:
+        if isinstance(guard, ScopeGuard):
+            held = guard.held()
+            if held is not None:
+                # Earlier units enclose this one, even if their guard was acquired after both began.
+                covering = set(unit.outer_guards) | unit.guards
+                for enclosing in RESOURCES.get().values():
+                    if enclosing.task is asyncio.current_task():
+                        covering.update(enclosing.guards)
+                        covering.update(enclosing.outer_guards)
+                    if enclosing is unit:
+                        break
+                if held not in covering:
+                    raise BadHandle(
+                        "the scope guard does not cover this transaction: acquire it before transaction() "
+                        "or let the store retain it through commit"
+                    )
+                yield
+                return
         await unit.resources.enter_async_context(guard)
+        if isinstance(guard, ScopeGuard):
+            unit.guards.add(guard)
         yield
     else:
         async with guard:

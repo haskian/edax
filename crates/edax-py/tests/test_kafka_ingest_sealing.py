@@ -19,6 +19,7 @@ from edax.pacing import Pacing
 from edax.sealing import MemoryKeys, Sealing
 from edax.serializer import KernelSerializer
 from edax.testing import drafted
+from test_brokerless_ingestion import NonReentrantKeys, reading
 from test_kafka_ingest import TP, BatchClient, EventIds, records, running, settings, target, until
 
 SECRET = b'{"email":"ana@example.com","status":"paid"}'
@@ -63,8 +64,11 @@ def runner(
     return run, client
 
 
-async def test_sealed_record_maps_its_opened_payload_with_a_keyed_fingerprint() -> None:
-    keys = MemoryKeys()
+@pytest.mark.parametrize("provider", [MemoryKeys, NonReentrantKeys])
+async def test_sealed_record_maps_its_opened_payload_with_a_keyed_fingerprint(
+    provider: type[MemoryKeys],
+) -> None:
+    keys = provider()
     sealing, messages = await sealed(keys)
     seen: list[bytes] = []
 
@@ -86,6 +90,87 @@ async def test_sealed_record_maps_its_opened_payload_with_a_keyed_fingerprint() 
     )
     key = await sealing.fingerprint_key("acme", "person-42")
     assert row["fingerprint"] == _native.ingest_keyed_fingerprint(key, state)
+    if isinstance(keys, NonReentrantKeys):
+        assert keys.acquisitions == 1 and not keys.lock.locked()
+
+
+async def test_joined_commit_borrows_guard_with_eager_task_startup() -> None:
+    eager_factory = getattr(asyncio, "eager_task_factory", None)
+    if eager_factory is None:
+        pytest.skip("eager task factories require Python 3.12")
+    keys = NonReentrantKeys()
+    sealing, messages = await sealed(keys)
+    sink = MemoryIngestionSink(target(), sealing=sealing)
+    run, _ = runner(sealing, messages, sink, private_row, await dead_letters([]))
+    item = reading(sink.target)
+    loop = asyncio.get_running_loop()
+    previous = loop.get_task_factory()
+    loop.set_task_factory(eager_factory)
+    try:
+        _, result = await asyncio.wait_for(
+            run._fenced_commit((item,), [item], {("clinic-a", "patient-42")}), 1
+        )
+    finally:
+        loop.set_task_factory(previous)
+    assert result.outcomes == ("accepted",)
+    assert keys.acquisitions == 1 and not keys.lock.locked()
+
+
+async def test_cancelled_joined_commit_keeps_guard_until_child_finishes() -> None:
+    keys = NonReentrantKeys()
+    sealing, messages = await sealed(keys)
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class DelayedSink(MemoryIngestionSink):
+        async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            return await super().commit(inputs)
+
+    sink = DelayedSink(target(), sealing=sealing)
+    run, _ = runner(sealing, messages, sink, private_row, await dead_letters([]))
+    item = reading(sink.target)
+    committing = asyncio.create_task(run._fenced_commit((item,), [item], {("clinic-a", "patient-42")}))
+    await asyncio.wait_for(entered.wait(), 1)
+    committing.cancel()
+    await asyncio.wait_for(cancelled.wait(), 1)
+    revoking = asyncio.create_task(keys.revoke(sealing.scope("clinic-a", "patient-42")))
+    await asyncio.sleep(0)
+    assert not committing.done() and not revoking.done() and keys.lock.locked()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(committing, 1)
+    assert await asyncio.wait_for(revoking, 1) == "revoking"
+    assert keys.acquisitions == 1 and not keys.lock.locked()
+    assert _json.decode(sink._database.get().get(item.key)) is not None
+
+
+async def test_joined_operation_does_not_authorize_an_unjoined_grandchild() -> None:
+    keys = NonReentrantKeys()
+    sealing, messages = await sealed(keys)
+    sink = MemoryIngestionSink(target(), sealing=sealing)
+    run, _ = runner(sealing, messages, sink, private_row, await dead_letters([]))
+
+    async def spawn() -> asyncio.Task[BatchResult]:
+        assert (await sink.commit([reading(sink.target)])).outcomes == ("accepted",)
+        child = asyncio.create_task(sink.commit([reading(sink.target)]))
+        await keys.waiting.wait()
+        assert not child.done()
+        return child
+
+    async def write() -> None:
+        async with sealing.fenced({("clinic-a", "patient-42")}):
+            keys.waiting.clear()
+            child = await run._operation(spawn())
+            assert keys.acquisitions == 1
+        assert (await child).outcomes == ("accepted",)
+
+    await asyncio.wait_for(write(), 1)
+    assert keys.acquisitions == 2 and not keys.lock.locked()
 
 
 @pytest.mark.parametrize("allow_plaintext", [False, True], ids=["refused", "allowed"])
