@@ -102,6 +102,35 @@ async def test_append_replay_and_conflicting_identity(database: tuple[Any, Postg
     assert list(await sink.pending()) == [conflict.source]
 
 
+async def test_same_source_mixed_decision_leaves_no_postgres_write_or_rejection(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    sink = sink_for(database, "append")
+    original = record(sink, 0)
+    failed = replace(original, failure="codec: mapping failed")
+    with pytest.raises(BadHandle):
+        await sink.commit([original, failed])
+    assert await sink.get("shop-a", original.event_id) is None
+    assert await sink.pending() == {}
+
+
+async def test_same_source_mixed_decision_rolls_back_prior_staged_write(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    _, transactor, _ = database
+    sink = sink_for(database, "append")
+    earlier = record(sink, 0)
+    original = record(sink, 1)
+    failed = replace(original, failure="codec: mapping failed")
+    with pytest.raises(BadHandle):
+        async with transaction(transactor):
+            assert (await sink.stage([earlier])).outcomes == ("accepted",)
+            await sink.stage([original, failed])
+    assert await sink.get("shop-a", earlier.event_id) is None
+    assert await sink.get("shop-a", original.event_id) is None
+    assert await sink.pending() == {}
+
+
 async def test_rejected_original_cannot_claim_owner_on_replay(
     database: tuple[Any, PostgresTransactor, str],
 ) -> None:

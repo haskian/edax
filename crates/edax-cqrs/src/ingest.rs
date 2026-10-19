@@ -445,6 +445,14 @@ fn fingerprint(input: &Input) -> Result<String, Error> {
         .unwrap_or_else(|| payload_hash(&canonical).to_string()))
 }
 
+fn input_holds_nul(input: &Input) -> bool {
+    holds_nul(&input.content)
+        || input.private.as_ref().is_some_and(holds_nul)
+        || input.public.as_ref().is_some_and(holds_nul)
+        || input.stream.contains('\0')
+        || input.event_id.contains('\0')
+}
+
 /// The fingerprint of a sealed record: HMAC-SHA-256 under the subject's fingerprint key over the
 /// canonical `content` and the plaintext `private` and `public` parts, before `private` is sealed.
 pub fn keyed_fingerprint(
@@ -500,16 +508,43 @@ pub fn plan(
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("ingestion mode must be append or upsert"))?;
     let mut sources = BTreeMap::<&str, &Input>::new();
     for input in inputs {
-        if sources
-            .insert(&input.source, input)
-            .is_some_and(|prior| prior.raw_fingerprint != input.raw_fingerprint)
-            || rejected
-                .get(&input.source)
-                .is_some_and(|prior| prior.fingerprint != input.raw_fingerprint)
+        if rejected
+            .get(&input.source)
+            .is_some_and(|prior| prior.fingerprint != input.raw_fingerprint)
         {
             return Err(Error::bad_handle(
                 "ingestion source coordinate reused with different raw content",
             ));
+        }
+        if rejected.contains_key(&input.source) {
+            // The durable decision wins regardless of how this replay was mapped.
+            continue;
+        }
+        if let Some(prior) = sources.get(input.source.as_str()) {
+            if prior.raw_fingerprint != input.raw_fingerprint {
+                return Err(Error::bad_handle(
+                    "ingestion source coordinate reused with different raw content",
+                ));
+            }
+            // A raw source can have alternate bounded representations and independently sealed
+            // ciphertext. Its target identity, decision path and logical fingerprint cannot change.
+            if prior.key != input.key
+                || prior.stream != input.stream
+                || prior.event_id != input.event_id
+                || prior.sequence != input.sequence
+                || prior.erased != input.erased
+                || prior.failure.is_some() != input.failure.is_some()
+                || (prior.failure.is_none()
+                    && !prior.erased
+                    && (input_holds_nul(prior) != input_holds_nul(input)
+                        || fingerprint(prior).ok() != fingerprint(input).ok()))
+            {
+                return Err(Error::bad_handle(
+                    "ingestion source has conflicting inputs in this batch",
+                ));
+            }
+        } else {
+            sources.insert(&input.source, input);
         }
     }
     let mut result = Plan {
@@ -559,12 +594,7 @@ pub fn plan(
             continue;
         }
         // Postgres cannot store NUL in jsonb: refuse the record here, as every store would.
-        if holds_nul(&input.content)
-            || input.private.as_ref().is_some_and(holds_nul)
-            || input.public.as_ref().is_some_and(holds_nul)
-            || input.stream.contains('\0')
-            || input.event_id.contains('\0')
-        {
+        if input_holds_nul(input) {
             reject(
                 &mut result,
                 input,

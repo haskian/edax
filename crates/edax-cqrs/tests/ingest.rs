@@ -278,6 +278,87 @@ fn source_coordinate_reuse_is_fatal_even_before_rejection() {
 }
 
 #[test]
+fn one_source_cannot_have_conflicting_decisions_or_mappings_in_a_batch() {
+    let original = append_event(0, 1, "open");
+    let mut failed = original.clone();
+    failed.failure = Some("codec: mapping failed".into());
+    let mut erased = original.clone();
+    erased.erased = true;
+    erased.private = None;
+    let mut remapped = original.clone();
+    remapped.private = Some(json!({"status": "closed"}));
+    let mut moved = original.clone();
+    moved.key = row_key("projection-v1", "append", Some("tenant-8"), None, &moved.event_id).unwrap();
+    for (name, other) in [
+        ("failed", failed),
+        ("erased", erased),
+        ("remapped", remapped),
+        ("moved", moved),
+    ] {
+        for inputs in [[original.clone(), other.clone()], [other, original.clone()]] {
+            assert_eq!(
+                plan("append", &inputs, &BTreeMap::new(), &BTreeMap::new())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::BadHandle,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn equivalent_source_duplicates_keep_first_failed_diagnostic_and_keyed_identity() {
+    let mut first = append_event(0, 1, "open");
+    first.failure = Some("codec: first diagnostic".into());
+    let mut second = first.clone();
+    second.failure = Some("codec: later diagnostic".into());
+    second.raw = "bounded alternate stub".into();
+    let rejected = plan("append", &[first.clone(), second], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+    assert_eq!(rejected.outcomes, ["rejected", "rejected"]);
+    assert_eq!(rejected.rejections[&first.source].error, "codec: first diagnostic");
+    assert_eq!(rejected.rejections[&first.source].raw, first.raw);
+
+    let mut sealed = append_event(0, 1, "open");
+    sealed.fingerprint = Some("a".repeat(64));
+    sealed.private = Some(json!({"ciphertext": "reservation-one"}));
+    let mut resealed = sealed.clone();
+    resealed.private = Some(json!({"ciphertext": "reservation-two"}));
+    resealed.raw = "bounded alternate stub".into();
+    let accepted = plan(
+        "append",
+        &[sealed.clone(), resealed],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(accepted.outcomes, ["accepted", "accepted"]);
+    assert_eq!(accepted.writes[&sealed.key].private, sealed.private);
+}
+
+#[test]
+fn persisted_rejection_wins_over_different_replay_mapping_in_one_batch() {
+    let mut failed = append_event(0, 1, "open");
+    failed.failure = Some("codec: original diagnostic".into());
+    let mut durable = plan(
+        "append",
+        std::slice::from_ref(&failed),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap()
+    .rejections;
+    durable.get_mut(&failed.source).unwrap().published = true;
+    let mut remapped = failed.clone();
+    remapped.failure = None;
+    remapped.private = Some(json!({"status": "changed"}));
+    let result = plan("append", &[failed.clone(), remapped], &BTreeMap::new(), &durable).unwrap();
+    assert_eq!(result.outcomes, ["rejected", "rejected"]);
+    assert!(result.writes.is_empty());
+    assert_eq!(result.rejections, durable);
+}
+
+#[test]
 fn source_digest_survives_full_record_to_stub_changes() {
     let mut original = event(0, 1, "open");
     original.raw_fingerprint = raw_fingerprint(b"stable original source record");

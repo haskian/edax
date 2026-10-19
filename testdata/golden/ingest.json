@@ -329,6 +329,228 @@
     }
   },
   {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: mapper refused this event",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_valid_then_failed_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: mapper refused this event",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_failed_then_valid_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_valid_then_erased_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_erased_then_valid_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
     "error": null,
     "inputs": [
       {

@@ -115,6 +115,17 @@ async def test_custom_plan_keeps_kernel_replay_and_manifest_rules() -> None:
     assert conflict.rejections[original.source]["raw"] == original.raw
 
 
+async def test_same_source_mixed_decision_leaves_no_memory_write_or_rejection() -> None:
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1", at_rest="plaintext")
+    sink = MemoryIngestionSink(target)
+    original = reading(target)
+    failed = replace(original, failure="codec: mapping failed")
+    with pytest.raises(BadHandle):
+        await sink.commit([original, failed])
+    assert await sink.get("clinic-a", "reading-1", "patient-42") is None
+    assert await sink.pending() == {}
+
+
 class TestMemoryIngestionContract(BatchSinkContract):
     @pytest.fixture(params=["append", "upsert"])
     def ingestion_sink(self, request: pytest.FixtureRequest) -> MemoryIngestionSink:

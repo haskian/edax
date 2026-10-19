@@ -1923,6 +1923,47 @@ fn ingest_cases() -> Vec<Value> {
         &empty,
         &no_rejections,
     );
+    let mut failed_append = created.clone();
+    failed_append.sequence = None;
+    failed_append.key = namespace::key(
+        target,
+        &json!(["append", "acme", null, failed_append.event_id]).to_string(),
+    )
+    .unwrap();
+    failed_append.failure = Some("codec: mapper refused this event".into());
+    let mut valid_append = failed_append.clone();
+    valid_append.failure = None;
+    add(
+        "one_source_valid_then_failed_refused",
+        "append",
+        vec![valid_append.clone(), failed_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "one_source_failed_then_valid_refused",
+        "append",
+        vec![failed_append, valid_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    let mut erased_append = valid_append.clone();
+    erased_append.erased = true;
+    erased_append.private = None;
+    add(
+        "one_source_valid_then_erased_refused",
+        "append",
+        vec![valid_append.clone(), erased_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "one_source_erased_then_valid_refused",
+        "append",
+        vec![erased_append, valid_append],
+        &empty,
+        &no_rejections,
+    );
     add(
         "upsert_absent_key_first_owner_wins",
         "upsert",
