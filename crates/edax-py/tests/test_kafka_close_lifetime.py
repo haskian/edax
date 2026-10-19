@@ -65,7 +65,7 @@ async def test_cancelled_ingestion_close_waiter_preserves_shielded_client_commit
     )
     await run._assign({TP})
     part = run._parts[TP]
-    run._admit(TP, part, client.logs[TP][0])
+    await run._admit(TP, part, client.logs[TP][0])
     await sink.commit(part.items)
     part.bookings[0].ack()
     try:

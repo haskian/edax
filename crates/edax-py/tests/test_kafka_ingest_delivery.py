@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 from conftest import SpyProducerClient
 from edax.backend.kafka import KafkaDeadLetterSink
-from edax.backend.kafka_ingest import KafkaIngestion
+from edax.backend.kafka_ingest import KafkaIngestion, _Partition
 from edax.errors import CodecError
 from edax.ingestion import MappedRow, MemoryIngestionSink, RejectionOutbox
 from edax.message import EventMessage
@@ -56,7 +56,7 @@ async def test_rejection_publication_keeps_full_source_identity(representation: 
             settings=settings(),
             serializer=EventIds(messages),
         )
-        item = runner._prepare(original)
+        item = (await runner._prepare(_Partition(0, 0), original))[0]
         source_keys.append(item.source)
         digests.append(json.loads(item.raw)["sha256"])
         assert (await sink.commit([item])).outcomes == ("rejected",)

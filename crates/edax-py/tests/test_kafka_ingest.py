@@ -16,7 +16,7 @@ import pytest
 from aiokafka import TopicPartition
 from conftest import IdSerializer, KafkaMsg, build_message
 from edax.backend.kafka import KafkaRecord
-from edax.backend.kafka_ingest import KafkaIngestion
+from edax.backend.kafka_ingest import KafkaIngestion, _Partition
 from edax.batch import BatchSettings
 from edax.delivery import DeadLetter
 from edax.errors import BadHandle, CodecError, StoreError, TransactionFailure
@@ -446,7 +446,7 @@ async def test_revoke_before_worker_first_instruction_releases_credits() -> None
     )
     await runner._assign({TP})
     part = runner._parts[TP]
-    runner._admit(TP, part, client.logs[TP][0])
+    await runner._admit(TP, part, client.logs[TP][0])
     assert runner.retained_records == 1 and runner.retained_bytes > 0
     runner._launch(TP, part)
     # Calling revoke immediately retires and cancels the task before the event loop can start it.
@@ -481,7 +481,7 @@ async def test_retry_eviction_after_left_child_commit_rewinds_first_live_right_c
     await runner._assign({TP})
     part = runner._parts[TP]
     for record in client.logs[TP]:
-        runner._admit(TP, part, record)
+        await runner._admit(TP, part, record)
     client.positions[TP] = 4
     runner._launch(TP, part)
     await until(lambda: part.backing_off)
@@ -612,7 +612,7 @@ async def test_exact_i64_sequence_source_offset_and_nanosecond_event_envelope() 
     assert await sink.pending() == {}
 
     # MAX itself has no representable next broker offset, but its provenance still encodes exactly.
-    prepared = runner._prepare(fetched._replace(offset=maximum))
+    prepared = (await runner._prepare(_Partition(0, 0), fetched._replace(offset=maximum)))[0]
     assert prepared.source == sink.target.key(
         [
             "source",
@@ -1006,7 +1006,7 @@ async def test_revoke_clean_commit_failure_allows_reassignment_and_replay() -> N
     )
     await runner._assign({TP})
     part = runner._parts[TP]
-    runner._admit(TP, part, client.logs[TP][0])
+    await runner._admit(TP, part, client.logs[TP][0])
     await sink.commit(tuple(part.items))
     part.bookings[0].ack()
     await runner.rebalance_listener().on_partitions_revoked({TP})
@@ -1135,7 +1135,7 @@ async def test_rejected_source_replays_across_raw_size_limits(limits: tuple[int,
             settings=settings(max_record_bytes=limit),
             serializer=EventIds(messages),
         )
-        prepared = runner._prepare(fetched)
+        prepared = (await runner._prepare(_Partition(0, 0), fetched))[0]
         result = await sink.commit([prepared])
         assert result.outcomes == ("rejected",)
     assert len(await sink.pending()) == 1
@@ -1161,9 +1161,9 @@ async def test_admission_snapshots_reused_mutable_mapper_values() -> None:
     runner = KafkaIngestion(client, sink, reuse, no_dead, settings=settings(), serializer=EventIds(messages))
     await runner._assign({TP})
     part = runner._parts[TP]
-    assert runner._admit(TP, part, fetched[0])
+    assert await runner._admit(TP, part, fetched[0])
     first_encoded = _json.encode(part.items[0])
-    assert runner._admit(TP, part, fetched[1])
+    assert await runner._admit(TP, part, fetched[1])
     assert _json.encode(part.items[0]) == first_encoded
     admitted_encoded = _json.encode(part.items)
     charged_bytes = runner.retained_bytes

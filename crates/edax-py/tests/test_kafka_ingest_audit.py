@@ -146,7 +146,7 @@ async def test_revoke_waits_for_client_commit_after_commit_deadline(completes_be
     )
     await runner._assign({TP})
     part = runner._parts[TP]
-    runner._admit(TP, part, client.logs[TP][0])
+    await runner._admit(TP, part, client.logs[TP][0])
     await sink.commit(part.items)
     part.bookings[0].ack()
     revoking = asyncio.create_task(runner.rebalance_listener().on_partitions_revoked({TP}))

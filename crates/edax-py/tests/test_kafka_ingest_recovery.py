@@ -75,7 +75,7 @@ async def test_repeated_isolation_after_eviction_preserves_child_retry_budget(
     try:
         for cycle in range(2):
             for record in client.logs[TP]:
-                runner._admit(TP, part, record)
+                await runner._admit(TP, part, record)
             client.positions[TP] = 2
             runner._launch(TP, part)
             await until(lambda: part.backing_off or runner._failure is not None)
@@ -124,7 +124,7 @@ async def test_new_isolation_resets_parent_retry_budget(monkeypatch: pytest.Monk
     await runner._assign({TP})
     part = runner._parts[TP]
     for record in client.logs[TP]:
-        runner._admit(TP, part, record)
+        await runner._admit(TP, part, record)
     runner._launch(TP, part)
     await runner.wait_closed()
     assert runner._failure is None

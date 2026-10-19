@@ -273,6 +273,33 @@ class Opened:
     data: bytes = field(repr=False)
 
 
+class _BatchKeys:
+    """A provider that reads each scope's key, status and fingerprint key once. Every other call passes
+    through. Failures are not kept: the next call asks the provider again."""
+
+    def __init__(self, keys: KeyProvider) -> None:
+        self._keys = keys
+        self._known: dict[tuple[Any, ...], Any] = {}
+
+    async def _once(self, name: str, scope: KeyScope, *rest: Any) -> Any:
+        known = (name, scope.key_namespace, scope.tenant, scope.subject, *rest)
+        if known not in self._known:
+            self._known[known] = await getattr(self._keys, name)(scope, *rest)
+        return self._known[known]
+
+    async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
+        return cast(bytes, await self._once("resolve", scope, cipher, key_id))
+
+    async def status(self, scope: KeyScope) -> KeyStatus:
+        return cast(KeyStatus, await self._once("status", scope))
+
+    async def fingerprint(self, scope: KeyScope) -> KeyReservation:
+        return cast(KeyReservation, await self._once("fingerprint", scope))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._keys, name)
+
+
 class Sealing:
     """Wire one authoritative provider into a deployment namespace.
 
@@ -314,6 +341,23 @@ class Sealing:
         scope = KeyScope(key_namespace=self.key_namespace, tenant=tenant, subject=subject)
         _native.check_key_scope(scope)
         return scope
+
+    def for_batch(self) -> Sealing:
+        """A view for one consumer batch: each scope's key, status and fingerprint key is read from the
+        provider once and kept only as long as the view. A batch runner drops the view with its batch, so
+        no key outlives it; its commit's write fence still decides against revocation."""
+        view = Sealing(
+            cast(KeyProvider, _BatchKeys(self.keys)),
+            self.key_namespace,
+            cipher=self.cipher,
+            allow_plaintext=self.allow_plaintext,
+        )
+        view._fencing = self._fencing
+        return view
+
+    async def fingerprint_key(self, tenant: str | None, subject: str | None) -> bytes:
+        """The scope's fingerprint key: what a keyed fingerprint of its plaintext binds."""
+        return bytes((await self.keys.fingerprint(self.scope(tenant, subject))).key)
 
     def write_guard(self, tenant: str | None, subject: str | None) -> AbstractAsyncContextManager[None]:
         """Hold the provider's storage fence outside the transaction context, through commit; under
