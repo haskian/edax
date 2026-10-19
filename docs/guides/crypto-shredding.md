@@ -27,8 +27,8 @@ So do correlation and causation IDs, times, event sequence, command idempotency 
 State identity, version, processing marks, owner, and completion marker are public.
 In ingestion rows and projection state, only the `private` part is sealed. The row or state key
 (generation, tenant, subject, row or aggregate ID), the stream owner, the sequence, the `public` part
-and the keyed fingerprints stay readable. Rejections keep the raw source record, which a sealed event
-keeps sealed, and only the error code of a sealed record.
+and the keyed fingerprints stay readable. A rejection keeps the raw source record: a sealed record
+stays sealed and keeps only its error code, and an unsealed one keeps its plaintext and error text.
 The [message field table](../kernels/event.md#message--the-messages) lists each envelope field and its type.
 
 Use opaque identifiers and keep personal data out of those fields. Encryption does not conceal
@@ -380,11 +380,17 @@ eraser = ErasureCoordinator(keys, operations, {"orders-ingestion": cleanup})
 ```
 
 A subject scope deletes that subject's rows; a tenant scope deletes every row of the tenant,
-unsealed rows included. Rejections and projection receipts stay: they hold no plaintext of the
-subject. Given the `PostgresErasureStore` of a `write_fence="transaction"` provider, the Postgres
+unsealed rows included. Projection receipts stay: they hold keyed fingerprints. Rejections stay too.
+A rejection of a sealed record holds its ciphertext and only the error code. A rejection of an
+unsealed (legacy) record keeps the raw plaintext record and its full error text. Cleanup does not
+delete it, so clear such rejections through your own retention process. Given the `PostgresErasureStore` of a `write_fence="transaction"` provider, the Postgres
 cleanup revokes the scope in its own transaction before the delete. A fenced writer therefore either
 committed before it or is refused after it. Memory cleanup only deletes. The provider's revoke
 already drained the guarded writers.
+
+The fence holds only for commits that take it. A Kafka runner fences each commit with its own
+`sealing=`, or the sink's or store's when it has none. A runner with sealing on neither refuses to
+commit a subject's rows with `BadHandle`, so a plaintext target of subject data still needs `sealing=`.
 
 Edax does not check that a plaintext target's cleanup is registered. `cleanup.resweep(operations)`
 deletes again for every scope the erasure store has revoked, and returns how many rows it found. Run

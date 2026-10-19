@@ -2,59 +2,45 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
-from uuid import uuid4
 
 import pytest
+from conftest import CountingKeys, postgres_schema
 from edax import _json, _native
 from edax.backend.ingest_postgres import PostgresIngestionSink, reference_ingestion_ddl
 from edax.backend.postgres import PgConnection, PostgresTransactor
 from edax.errors import BadHandle, CodecError, Shredded
 from edax.ingestion import BatchInput, IngestionTarget, MemoryIngestionSink
-from edax.sealing import Cipher, KeyReservation, KeyScope, MemoryKeys, Sealing
+from edax.sealing import MemoryKeys, Sealing
 
-URL = os.environ.get("EDAX_POSTGRES_URL")
 PRIVATE = {"email": "ana@example.com", "card": {"last4": "4242"}}
 PUBLIC = {"status": "paid", "total": "41.90"}
 
 Sink = MemoryIngestionSink | PostgresIngestionSink
 
 
-class CountingKeys(MemoryKeys):
-    """The reference provider, recording each reservation's scope and count."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.reserved: list[tuple[str | None, int]] = []
-
-    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
-        self.reserved.append((scope.subject, count))
-        return await super().reserve(scope, cipher, count)
-
-
 @pytest.fixture(params=["memory", "postgres"])
 async def backend(request: pytest.FixtureRequest) -> AsyncIterator[Callable[..., Sink]]:
+    """Builds sinks over one storage, so a second sink reads what the first wrote."""
     if request.param == "memory":
-        yield lambda target, sealing: MemoryIngestionSink(target, sealing=sealing)
+        built: list[MemoryIngestionSink] = []
+
+        def memory(target: IngestionTarget, sealing: Sealing | None) -> Sink:
+            sink = MemoryIngestionSink(target, sealing=sealing)
+            if built:
+                sink._database = built[0]._database
+            built.append(sink)
+            return sink
+
+        yield memory
         return
-    if URL is None:
-        pytest.skip("EDAX_POSTGRES_URL is not set: no live Postgres")
-    asyncpg = pytest.importorskip("asyncpg")
-    pool = await asyncpg.create_pool(URL, min_size=1, max_size=3)
-    schema = f"at_rest_{uuid4().hex}"
-    await pool.execute(f'CREATE SCHEMA "{schema}"')
-    try:
-        await pool.execute(reference_ingestion_ddl(schema))
+    async with postgres_schema("at_rest", reference_ingestion_ddl) as (pool, schema):
         transactor = PostgresTransactor(pool, schema=schema)
         yield lambda target, sealing: PostgresIngestionSink(
             transactor, target, schema=schema, sealing=sealing
         )
-    finally:
-        await pool.execute(f'DROP SCHEMA "{schema}" CASCADE')
-        await pool.close()
 
 
 def target(at_rest: Literal["sealed", "plaintext"] = "sealed") -> IngestionTarget:
@@ -116,7 +102,11 @@ async def original(
 class Case:
     name: str
     at_rest: Literal["sealed", "plaintext"] = "sealed"
-    subject: str | None = "person-7"
+    #: The rows written, as ``(subject, row, sequence)``; a row written twice keeps its later sequence.
+    rows: tuple[tuple[str | None, str, int], ...] = (
+        ("person-7", "customer-42", 1),
+        ("person-7", "customer-42", 2),
+    )
     deleted: bool = False
     #: Whether the stored ``private`` is a protected-state envelope rather than the plaintext.
     sealed: bool = True
@@ -124,9 +114,15 @@ class Case:
     reserved: tuple[tuple[str | None, int], ...] = (("person-7", 2),)
 
 
+UNOWNED = ((None, "customer-42", 1), (None, "customer-42", 2))
 CASES = [
     Case("sealed_subject_rows_share_one_reservation"),
-    Case("row_without_subject_stays_plaintext", subject=None, sealed=False, reserved=()),
+    Case(
+        "two_subjects_reserve_once_each",
+        rows=(("person-7", "customer-42", 1), ("person-8", "customer-43", 1)),
+        reserved=(("person-7", 1), ("person-8", 1)),
+    ),
+    Case("row_without_subject_stays_plaintext", rows=UNOWNED, sealed=False, reserved=()),
     Case("plaintext_target_keeps_private_readable", at_rest="plaintext", sealed=False, reserved=()),
     Case("deletion_marker_reserves_nothing", deleted=True, sealed=False, reserved=()),
 ]
@@ -137,27 +133,31 @@ async def test_private_at_rest(backend: Callable[..., Sink], case: Case) -> None
     keys = CountingKeys()
     sealing = Sealing(keys, "customers")
     sink = backend(target(case.at_rest), sealing)
-    first = await original(sink, sealing, 1, case.subject)
-    second = await original(sink, sealing, 2, case.subject, sequence=2)
+    inputs = [
+        await original(sink, sealing, offset, subject, row=row, sequence=sequence)
+        for offset, (subject, row, sequence) in enumerate(case.rows, 1)
+    ]
     if case.deleted:
-        first, second = replace(first, private=None, public=None), replace(second, private=None, public=None)
+        inputs = [replace(item, private=None, public=None) for item in inputs]
     keys.reserved.clear()  # the fingerprint key is no reservation
-    result = await sink.commit([first, second])
-    assert result.outcomes == ("accepted", "accepted")
-    assert tuple(keys.reserved) == case.reserved
-    raw = await stored(sink, first.key)
-    if case.deleted:
-        assert raw["private"] is None
-    elif case.sealed:
-        envelope = _native.decode_protected_state(_json.encode(raw["private"])).value
-        assert envelope is not None and (envelope.tenant, envelope.subject) == ("shop-a", case.subject)
-        assert "ana@example.com" not in _json.encode(raw)
-    else:
-        assert raw["private"] == PRIVATE
-    assert raw["public"] == (None if case.deleted else PUBLIC)
-    row = await sink.get("shop-a", "customer-42", case.subject)
-    assert row is not None and row["sequence"] == 2
-    assert (row["private"], row["public"]) == ((None, None) if case.deleted else (PRIVATE, PUBLIC))
+    result = await sink.commit(inputs)
+    assert result.outcomes == ("accepted",) * len(inputs)
+    assert sorted(keys.reserved, key=str) == sorted(case.reserved, key=str)
+    for subject, row, _ in case.rows:
+        raw = await stored(sink, sink.target.row_key("shop-a", row, subject))
+        if case.deleted:
+            assert raw["private"] is None
+        elif case.sealed:
+            envelope = _native.decode_protected_state(_json.encode(raw["private"])).value
+            assert envelope is not None and (envelope.tenant, envelope.subject) == ("shop-a", subject)
+            assert "ana@example.com" not in _json.encode(raw)
+        else:
+            assert raw["private"] == PRIVATE
+        assert raw["public"] == (None if case.deleted else PUBLIC)
+        got = await sink.get("shop-a", row, subject)
+        latest = max(later for _, other, later in case.rows if other == row)
+        assert got is not None and got["sequence"] == latest
+        assert (got["private"], got["public"]) == ((None, None) if case.deleted else (PRIVATE, PUBLIC))
 
 
 async def test_sealed_target_without_sealing_writes_nothing(backend: Callable[..., Sink]) -> None:
@@ -178,6 +178,15 @@ async def test_destroyed_key_refuses_the_read(backend: Callable[..., Sink]) -> N
         await sink.get("shop-a", "customer-42", "person-7")
 
 
+async def test_sealed_row_read_without_sealing_is_refused(backend: Callable[..., Sink]) -> None:
+    sealing = Sealing(MemoryKeys(), "customers")
+    writer = backend(target(), sealing)
+    await writer.commit([await original(writer, sealing, 1, "person-7")])
+    reader = backend(target(), None)
+    with pytest.raises(BadHandle, match="sealing="):
+        await reader.get("shop-a", "customer-42", "person-7")
+
+
 async def test_ciphertext_moved_to_another_row_fails_authentication() -> None:
     sealing = Sealing(MemoryKeys(), "customers")
     sink = MemoryIngestionSink(target(), sealing=sealing)
@@ -186,5 +195,6 @@ async def test_ciphertext_moved_to_another_row_fails_authentication() -> None:
     await sink.commit([ours, theirs])
     moved = await stored(sink, ours.key)
     # The authenticated context binds the row key, so a copy under another key never opens.
+    part = _json.decode(_native.ingest_open_plan(sink.target.manifest, theirs.key, _json.encode(moved)))
     with pytest.raises(CodecError):
-        await sealing.open_stored("ingestion", theirs.key, 1, moved["private"])
+        await sealing.open_stored(part, moved["private"])

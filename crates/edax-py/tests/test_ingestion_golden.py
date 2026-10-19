@@ -33,6 +33,12 @@ def replay(case: dict[str, Any]) -> Any:
     if op == "validate":
         _edax.ingest_validate_inputs(json.dumps(case["contract"]), json.dumps(case["inputs"]))
         return True
+    if op == "seal_plan":
+        return json.loads(_edax.ingest_seal_plan(json.dumps(case["contract"]), json.dumps(case["inputs"])))
+    if op == "open_plan":
+        return json.loads(
+            _edax.ingest_open_plan(json.dumps(case["contract"]), case["row_key"], json.dumps(case["stored"]))
+        )
     if op == "check_sealed":
         _edax.ingest_check_sealed(json.dumps(case["contract"]), json.dumps(case["inputs"]))
         return True

@@ -102,13 +102,15 @@ str(kind), encryption, str(identity), str(type_name), u64(version),
 opt_str(tenant), opt_str(subject), str(marks), u32(completed)
 ```
 
-`kind` is exactly `snapshot`, `saga`, `ingestion`, `projection` or `intent`; `completed` is 0 or 1.
-Snapshot identity is its storage key; saga identity is its instance ID, with saga name as
+`kind` is one of `snapshot`, `saga`, `ingestion`, `projection` and `intent`. `completed` is 0 or 1.
+Snapshot identity is its storage key. Saga identity is its instance ID, with saga name as
 `type_name`. Marks are the stored serialized processing marks. The other three seal a subject's
-private data in the CQRS stores. `ingestion` binds the row key and its sequence, `projection` binds the
-state key and the event sequence, and `intent` binds the intent ID with version 0. Each leaves
-`type_name` and marks empty and `completed` 0. Their key carries the generation, tenant and subject,
-so a sealed value copied to another row fails authentication.
+private data in the CQRS stores. `ingestion` binds the row key and its sequence, 0 in append mode.
+`projection` binds the state key and the event sequence. `intent` binds the intent's storage key
+with version 0. Each leaves `type_name` and marks empty and `completed` 0. The storage key carries the
+generation and the scope fields carry the tenant and subject. So a sealed value copied to another row,
+generation or subject fails authentication. The CQRS kernel's seal and open plans name these values;
+a store never builds them.
 
 The protected-state JSON envelope carries `edax_protected_state: 1`, `tenant`, `subject`,
 `completed`, `encryption`, and `data`. `completed` must be present and boolean.

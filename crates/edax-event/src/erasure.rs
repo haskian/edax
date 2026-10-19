@@ -124,6 +124,12 @@ impl ErasureOperation {
         self.0.stage
     }
 
+    /// Whether the provider confirmed the scope's revocation: every stage past `persisted`. A cleanup
+    /// participant's sweep deletes again for such a scope, since no fenced writer can recreate its data.
+    pub fn scope_revoked(&self) -> bool {
+        self.0.stage >= ErasureStage::Revoked
+    }
+
     /// Record successful permanent revocation. Repeated confirmations do not move backwards.
     pub fn confirm_revocation(&mut self) -> Result<(), Error> {
         self.advance(ErasureStage::Persisted, ErasureStage::Revoked)

@@ -196,23 +196,22 @@ class MemoryErasureStore:
                 self._notifications[next_operation.operation_id] = ErasureNotification(notification)
             return stored
 
-    async def pending(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+    async def _page(
+        self, limit: int, after: str | None, keep: Callable[[StoredErasure], bool]
+    ) -> list[StoredErasure]:
         limit = wiring_u64(limit, "limit")
         async with self._lock:
             return [
                 row
                 for key, row in sorted(self._operations.items())
-                if row.operation.stage != "complete" and (after is None or key > after)
+                if keep(row) and (after is None or key > after)
             ][:limit]
 
+    async def pending(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+        return await self._page(limit, after, lambda row: row.operation.stage != "complete")
+
     async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
-        limit = wiring_u64(limit, "limit")
-        async with self._lock:
-            return [
-                row
-                for key, row in sorted(self._operations.items())
-                if row.operation.stage != "persisted" and (after is None or key > after)
-            ][:limit]
+        return await self._page(limit, after, lambda row: _native.erasure_scope_revoked(row.operation.record))
 
     async def unpublished(self, limit: int = 100) -> list[ErasureNotification]:
         limit = wiring_u64(limit, "limit")

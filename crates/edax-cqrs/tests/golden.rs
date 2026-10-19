@@ -2455,6 +2455,10 @@ fn ingest_cases() -> Vec<Value> {
         at_rest: "plaintext".into(),
         ..contract.clone()
     };
+    let append_contract_for_open = Contract {
+        mode: "append".into(),
+        ..contract.clone()
+    };
     for (name, contract, input) in [
         ("sealed_subject_row_accepted", &contract, personal.clone()),
         (
@@ -2532,6 +2536,98 @@ fn ingest_cases() -> Vec<Value> {
         let inputs = vec![input];
         let result = ingest::check_sealed(contract, &inputs).map(|()| true);
         rows.push(json!({"name":name,"op":"check_sealed","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    // What a sink seals: the present private part of each written subject row of a sealed target, bound
+    // to its row key and sequence; and what it opens in a row it read.
+    let plain = |offset: i64, subject: Option<&str>, row: &str| {
+        let raw = json!({"offset":offset}).to_string();
+        Input {
+            source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
+            key: ingest::row_key(target, "upsert", Some("acme"), subject, row).unwrap(),
+            stream: row.into(),
+            private: Some(json!({"email": format!("{}@example.com", subject.unwrap_or("nobody"))})),
+            public: Some(json!({"status":"paid"})),
+            raw_fingerprint: ingest::raw_fingerprint(raw.as_bytes()),
+            raw,
+            ..created.clone()
+        }
+    };
+    let batch = vec![
+        plain(10, Some("person-7"), "order-1"),
+        plain(11, None, "order-2"),
+        Input {
+            erased: true,
+            private: None,
+            public: None,
+            ..plain(12, Some("person-7"), "order-3")
+        },
+        Input {
+            failure: Some("codec: sealed record refused".into()),
+            private: None,
+            public: None,
+            ..plain(13, Some("person-7"), "order-4")
+        },
+        Input {
+            private: None,
+            ..plain(14, Some("person-8"), "order-5")
+        },
+        plain(15, Some("person-8"), "order-6"),
+    ];
+    for (name, contract) in [
+        ("seal_plan_of_a_mixed_batch", &contract),
+        ("seal_plan_of_a_plaintext_target_is_empty", &plaintext_contract),
+    ] {
+        let result = ingest::seal_plan(contract, &batch);
+        rows.push(json!({"name":name,"op":"seal_plan","contract":contract,"inputs":batch,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let stored = |key: &str, sequence: Option<u64>, private: Option<Value>| {
+        (
+            key.to_owned(),
+            Stored {
+                stream: "order-1".into(),
+                sequence,
+                fingerprint: "ab".repeat(32),
+                private,
+                public: Some(json!({"status":"paid"})),
+            },
+        )
+    };
+    let subject_key = ingest::row_key(target, "upsert", Some("acme"), Some("person-7"), "order-1").unwrap();
+    let plain_key = ingest::row_key(target, "upsert", Some("acme"), None, "order-2").unwrap();
+    let sealed_private = Some(envelope("acme", "person-7"));
+    for (name, contract, (key, row)) in [
+        (
+            "open_plan_of_a_sealed_subject_row",
+            &contract,
+            stored(&subject_key, Some(3), sealed_private.clone()),
+        ),
+        (
+            "open_plan_of_a_row_without_subject",
+            &contract,
+            stored(&plain_key, Some(3), Some(json!({"email":"x"}))),
+        ),
+        (
+            "open_plan_of_a_deletion_marker",
+            &contract,
+            stored(&subject_key, Some(4), None),
+        ),
+        (
+            "open_plan_of_a_plaintext_target",
+            &plaintext_contract,
+            stored(&subject_key, Some(3), Some(json!({"email":"x"}))),
+        ),
+        (
+            "open_plan_of_an_append_row_binds_version_zero",
+            &append_contract_for_open,
+            stored(
+                &ingest::row_key(target, "append", Some("acme"), Some("person-7"), &created.event_id).unwrap(),
+                None,
+                sealed_private.clone(),
+            ),
+        ),
+    ] {
+        let result = ingest::open_plan(contract, &key, &row);
+        rows.push(json!({"name":name,"op":"open_plan","contract":contract,"row_key":key,"stored":row,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
     let append_contract = Contract {
         mode: "append".into(),

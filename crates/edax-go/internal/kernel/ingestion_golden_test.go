@@ -133,6 +133,7 @@ func TestIngestionGolden(t *testing.T) {
 		Tenant      *string
 		Subject     *string
 		RowID       string `json:"row_id"`
+		RowKey      string `json:"row_key"`
 		Key         []byte
 		State       json.RawMessage
 		Target      string
@@ -163,6 +164,12 @@ func TestIngestionGolden(t *testing.T) {
 			case "validate":
 				err := IngestValidateInputs(string(row.Contract), string(row.Inputs))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, true, err)
+			case "seal_plan":
+				value, err := IngestSealPlan(string(row.Contract), string(row.Inputs))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(value), err)
+			case "open_plan":
+				value, err := IngestOpenPlan(string(row.Contract), row.RowKey, string(row.Stored))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(value), err)
 			case "check_sealed":
 				err := IngestCheckSealed(string(row.Contract), string(row.Inputs))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, true, err)

@@ -796,6 +796,10 @@ pub fn erasure_apply(record: &str, action: &str, participant: Option<String>) ->
 pub fn erasure_can_destroy(record: &str) -> Result<bool, String> {
     Ok(erasure_record(record)?.can_destroy())
 }
+/// Whether the operation's scope is revoked: a cleanup sweep deletes for it.
+pub fn erasure_scope_revoked(record: &str) -> Result<bool, String> {
+    Ok(erasure_record(record)?.scope_revoked())
+}
 /// Validate request idempotency and its frozen participants.
 pub fn erasure_check_request(existing: &str, candidate: &str) -> Result<(), String> {
     edax_event::erasure::check_request(&erasure_record(existing)?, &erasure_record(candidate)?).map_err(to_wire)

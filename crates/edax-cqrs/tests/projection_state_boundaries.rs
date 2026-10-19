@@ -218,5 +218,91 @@ fn projection_state_boundary_golden() {
             result.map(|range| json!(range)),
         ));
     }
+    // What a host seals in reducer results and opens after reading, and the contract's at-rest rule.
+    let event = |subject: Option<&str>, aggregate: &str| json!({"tenant":"bank-eu","subject":subject,"aggregate":aggregate,"event_id":format!("{aggregate}-credit-2"),"sequence":2,"event_type":"CreditPosted","schema_version":"1","payload":{"amount_minor":1250},"metadata":{}});
+    let reduced = json!({"private":{"email":"ana@example.com"},"public":{"balance_minor":2500},"intents":[
+        {"key":"receipt","destination":"email","payload":{"email":"ana@example.com"}},
+        {"key":"ping","destination":"audit","payload":null}
+    ]});
+    let reductions = json!([
+        {"event":event(Some("person-7"), "account-7"),"reduced":reduced},
+        {"event":event(None, "account-8"),"reduced":reduced},
+        {"event":event(Some("person-9"), "account-9"),"reduced":{"private":null,"public":{"balance_minor":0},"intents":[]}}
+    ]);
+    let mut plaintext = contract();
+    plaintext["at_rest"] = json!("plaintext");
+    for (name, contract) in [
+        ("seal_plan_of_a_sealed_generation", contract()),
+        (
+            "seal_plan_of_a_plaintext_generation_seals_intents_only",
+            plaintext.clone(),
+        ),
+    ] {
+        let c: Contract = serde_json::from_value(contract.clone()).unwrap();
+        let result = projection::seal_plan(&c, &serde_json::from_value::<Vec<_>>(reductions.clone()).unwrap());
+        cases.push(case(
+            json!({"name":name,"op":"seal_plan","contract":contract,"reductions":reductions}),
+            result.map(|placed| json!(placed)),
+        ));
+    }
+    let state = |private: Value| json!({"sequence":3,"partition":0,"private":private,"public":{"balance_minor":2500}});
+    let sealed = json!({"edax_protected_state":1});
+    for (name, contract, subject, record) in [
+        (
+            "open_state_of_a_subject",
+            contract(),
+            Some("person-7"),
+            state(sealed.clone()),
+        ),
+        (
+            "open_state_without_subject",
+            contract(),
+            None,
+            state(json!({"email":"x"})),
+        ),
+        (
+            "open_state_without_private",
+            contract(),
+            Some("person-7"),
+            state(Value::Null),
+        ),
+        (
+            "open_state_of_a_plaintext_generation",
+            plaintext.clone(),
+            Some("person-7"),
+            state(json!({"email":"x"})),
+        ),
+    ] {
+        let c: Contract = serde_json::from_value(contract.clone()).unwrap();
+        let tenant = Some("bank-eu".to_owned());
+        let result = projection::open_state(&c, &tenant, &subject.map(str::to_owned), "account-7", &record);
+        cases.push(case(
+            json!({"name":name,"op":"open_state","contract":contract,"tenant":tenant,"subject":subject,"aggregate":"account-7","record":record}),
+            result.map(|part| json!(part)),
+        ));
+    }
+    let intent = |subject: Option<&str>, payload: Value| json!({"id":"10:receipt-v1:[\"bank-eu\",\"account-7\",\"account-7-credit-2\",\"receipt\"]","generation":"balances-v1","tenant":"bank-eu","subject":subject,"aggregate":"account-7","destination":"email","payload":payload,"partition":0,"offset":4,"ordinal":0});
+    for (name, record) in [
+        ("open_intent_of_a_subject", intent(Some("person-7"), sealed.clone())),
+        ("open_intent_without_subject", intent(None, json!({"email":"x"}))),
+        ("open_intent_without_payload", intent(Some("person-7"), Value::Null)),
+    ] {
+        let result = projection::open_intent(&c, &record);
+        cases.push(case(
+            json!({"name":name,"op":"open_intent","contract":contract(),"record":record}),
+            result.map(|part| json!(part)),
+        ));
+    }
+    let mut unknown = contract();
+    unknown["at_rest"] = json!("hashed");
+    let request = json!({"contract":unknown,"operation":{"op":"initialize"}});
+    let result = serde_json::from_value::<Request>(request.clone())
+        .map_err(Error::codec)
+        .and_then(|r| projection::keys(&r))
+        .map(|keys| json!(keys));
+    cases.push(case(
+        json!({"name":"unsupported_at_rest_refused","op":"keys","request":request}),
+        result,
+    ));
     edax_golden::write_or_check("projection_state_boundaries.json", cases);
 }

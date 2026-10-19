@@ -160,9 +160,7 @@ class PostgresIngestionSink:
         Rejections stay: they hold the raw record, which a sealed source keeps sealed."""
 
         async def delete(scope: KeyScope) -> int:
-            start, end = _json.decode(
-                _native.ingest_scope_range(self.target.manifest, scope.subject, scope.tenant)
-            )
+            start, end = self.target.scope_range(scope)
 
             async def run(conn: PgConnection) -> int:
                 if erasure is not None:
@@ -210,4 +208,4 @@ class PostgresIngestionSink:
         async def read(conn: PgConnection) -> dict[str, Any] | None:
             return (await self._read(conn, self._role, [key])).get(key)
 
-        return await open_private(self.target, self.sealing, key, subject, await self._typed(read))
+        return await open_private(self.target, self.sealing, key, await self._typed(read))

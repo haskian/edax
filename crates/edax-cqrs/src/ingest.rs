@@ -173,26 +173,79 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
     Ok(())
 }
 
+/// The tenant and subject whose key seals `input`'s private part on this target, or none: a plaintext
+/// target, an erased or refused input, or a row whose key names no subject.
+fn sealed_scope(contract: &Contract, input: &Input) -> Result<Option<(Option<String>, String)>, Error> {
+    if contract.at_rest == AtRest::Plaintext.as_str() || input.erased || input.failure.is_some() {
+        return Ok(None);
+    }
+    row_scope(contract, &input.key)
+}
+
+/// The tenant and subject a row key names, or none when it names no subject.
+fn row_scope(contract: &Contract, key: &str) -> Result<Option<(Option<String>, String)>, Error> {
+    let row = identity(contract, key)?;
+    Ok(row.get(2).and_then(Value::as_str).map(|subject| {
+        (
+            row.get(1).and_then(Value::as_str).map(str::to_owned),
+            subject.to_owned(),
+        )
+    }))
+}
+
+/// The sealed part of the row at `key`: its sequence, 0 in append mode, is the bound version.
+fn part(key: &str, sequence: Option<u64>, (tenant, subject): (Option<String>, String)) -> namespace::Part {
+    namespace::Part {
+        kind: "ingestion".into(),
+        identity: key.to_owned(),
+        version: sequence.unwrap_or(0),
+        tenant,
+        subject,
+    }
+}
+
 /// Refuse what a sealed target would store as plaintext, before the sink writes: every written input
 /// whose row key names a subject must carry a keyed fingerprint (a hash of ciphertext would never match
 /// a replay), and its `private` must be absent or sealed under the key's tenant and subject. A plaintext
 /// target passes; its erasure cleanup deletes the subject's rows instead.
 pub fn check_sealed(contract: &Contract, inputs: &[Input]) -> Result<(), Error> {
     validate_inputs(contract, inputs)?;
-    if contract.at_rest == AtRest::Plaintext.as_str() {
-        return Ok(());
-    }
-    for input in inputs.iter().filter(|input| !input.erased && input.failure.is_none()) {
-        let row = identity(contract, &input.key)?;
-        let Some(subject) = row.get(2).and_then(Value::as_str) else {
+    for input in inputs {
+        let Some((tenant, subject)) = sealed_scope(contract, input)? else {
             continue;
         };
         if input.fingerprint.is_none() {
             return Err(Error::bad_handle("a sealed ingestion row needs a keyed fingerprint"));
         }
-        namespace::check_sealed(input.private.as_ref(), row.get(1).and_then(Value::as_str), subject)?;
+        namespace::check_sealed(input.private.as_ref(), tenant.as_deref(), &subject)?;
     }
     Ok(())
+}
+
+/// What a sink seals before it writes, as `(input index, part)`: the present private part of each input
+/// [`check_sealed`] requires sealed.
+pub fn seal_plan(contract: &Contract, inputs: &[Input]) -> Result<Vec<(usize, namespace::Part)>, Error> {
+    validate_inputs(contract, inputs)?;
+    let mut parts = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        if input.private.as_ref().is_none_or(Value::is_null) {
+            continue;
+        }
+        if let Some(scope) = sealed_scope(contract, input)? {
+            parts.push((index, part(&input.key, input.sequence, scope)));
+        }
+    }
+    Ok(parts)
+}
+
+/// What a sink opens in the row it read at `key`, or none: a plaintext target, a row whose key names no
+/// subject, or a row without a private part.
+pub fn open_plan(contract: &Contract, key: &str, stored: &Stored) -> Result<Option<namespace::Part>, Error> {
+    bind_contract(None, contract)?;
+    if contract.at_rest == AtRest::Plaintext.as_str() || stored.private.as_ref().is_none_or(Value::is_null) {
+        return Ok(None);
+    }
+    Ok(row_scope(contract, key)?.map(|scope| part(key, stored.sequence, scope)))
 }
 
 /// One original source record, before compaction.

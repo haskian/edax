@@ -12,7 +12,7 @@ from edax import _json, _native
 from edax._values import replace
 from edax.backend.kafka_ingest import KafkaIngestion
 from edax.delivery import DeadLetter
-from edax.errors import CodecError, KeyMissing, Rejected, Shredded
+from edax.errors import BadHandle, CodecError, KeyMissing, Rejected, Shredded
 from edax.ingestion import BatchInput, BatchResult, MappedRow, MemoryIngestionSink
 from edax.message import EventMessage
 from edax.pacing import Pacing
@@ -251,3 +251,40 @@ async def test_sealed_row_at_rest_until_its_key_is_destroyed() -> None:
     await keys.destroy(sealing.scope("acme", "person-42"))
     with pytest.raises(Shredded):
         await sink.get("acme", "order-42", "person-42")
+
+
+@pytest.mark.parametrize("sink_has_sealing", [True, False], ids=["sink_sealing_used", "no_fence_refused"])
+async def test_runner_without_its_own_sealing(sink_has_sealing: bool) -> None:
+    """A runner built without ``sealing=`` takes the sink's, so a destroyed subject still commits erased.
+    With sealing on neither, a subject's rows would commit unfenced, and the runner stops instead."""
+    keys = MemoryKeys()
+    sealing, messages = await sealed(keys)
+    scope = sealing.scope("acme", "person-42")
+    await keys.revoke(scope)
+    await keys.destroy(scope)
+    if not sink_has_sealing:
+        # Without sealing nothing opens a sealed record: the source sends the subject's events in plaintext.
+        messages = [
+            replace(
+                build_message("order-42", "OrderPlaced", 1, id="e1", data=SECRET, tenant="acme"),
+                subject="person-42",
+            )
+        ]
+    sink = MemoryIngestionSink(target(), sealing=sealing if sink_has_sealing else None)
+    client = BatchClient(records(messages))
+    run = KafkaIngestion(
+        client,
+        sink,
+        private_row,
+        await dead_letters([]),
+        settings=settings(max_records=1),
+        serializer=EventIds(messages),
+    )
+    async with running(run) as task:
+        if sink_has_sealing:
+            await until(lambda: client.commits == [{TP: 1}])
+        else:
+            with pytest.raises(BadHandle, match="sealing="):
+                await asyncio.wait_for(asyncio.shield(task), 1)
+    assert await sink.get("acme", "order-42", "person-42") is None
+    assert client.commits == ([{TP: 1}] if sink_has_sealing else [])

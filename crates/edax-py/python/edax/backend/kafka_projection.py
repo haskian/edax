@@ -130,7 +130,9 @@ class KafkaProjection:
             raise BadHandle("projection lease must exceed the operation deadline")
         self.client, self.store, self.source = client, store, source
         self.decode, self.reducer = decode, reducer
-        self.sealing = sealing
+        # The store's sealing opens records too: a runner that cannot see a destroyed key would neither
+        # stage its events erased nor fence their commit.
+        self.sealing = sealing if sealing is not None else store.sealing
         self._decoder = RecordDecoder(serializer, serializers, middleware)
         self.settings = settings or BatchSettings()
         self._reserve = _native.batch_reserve(self.settings.json)
@@ -282,6 +284,11 @@ class KafkaProjection:
         """Commit under the write fence of every subject the batch writes. A subject destroyed since the
         batch was staged waits as contention: the next attempt stages its events erased."""
         if self.sealing is None:
+            if any(not item.erased and item.event.subject is not None for item in inputs):
+                # No fence: a commit landing after an erasure cleanup would bring the subject's state back.
+                raise BadHandle(
+                    "a subject's state needs sealing= on the runner or the store for the erasure fence"
+                )
             return await self._operation(assigned, commit())
         scopes: set[Scope] = set()
         for item in inputs:

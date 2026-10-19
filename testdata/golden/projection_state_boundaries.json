@@ -1153,5 +1153,553 @@
     "subject": "",
     "tenant": "bank-eu",
     "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "seal_plan_of_a_sealed_generation",
+    "op": "seal_plan",
+    "reductions": [
+      {
+        "event": {
+          "aggregate": "account-7",
+          "event_id": "account-7-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": "person-7",
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "email": "ana@example.com"
+              }
+            },
+            {
+              "destination": "audit",
+              "key": "ping",
+              "payload": null
+            }
+          ],
+          "private": {
+            "email": "ana@example.com"
+          },
+          "public": {
+            "balance_minor": 2500
+          }
+        }
+      },
+      {
+        "event": {
+          "aggregate": "account-8",
+          "event_id": "account-8-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": null,
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "email": "ana@example.com"
+              }
+            },
+            {
+              "destination": "audit",
+              "key": "ping",
+              "payload": null
+            }
+          ],
+          "private": {
+            "email": "ana@example.com"
+          },
+          "public": {
+            "balance_minor": 2500
+          }
+        }
+      },
+      {
+        "event": {
+          "aggregate": "account-9",
+          "event_id": "account-9-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": "person-9",
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [],
+          "private": null,
+          "public": {
+            "balance_minor": 0
+          }
+        }
+      }
+    ],
+    "want": [
+      {
+        "intent": null,
+        "item": 0,
+        "part": {
+          "identity": "11:balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-7\"]",
+          "kind": "projection",
+          "subject": "person-7",
+          "tenant": "bank-eu",
+          "version": 2
+        }
+      },
+      {
+        "intent": 0,
+        "item": 0,
+        "part": {
+          "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"receipt\\\"]\"]",
+          "kind": "intent",
+          "subject": "person-7",
+          "tenant": "bank-eu",
+          "version": 0
+        }
+      }
+    ]
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "seal_plan_of_a_plaintext_generation_seals_intents_only",
+    "op": "seal_plan",
+    "reductions": [
+      {
+        "event": {
+          "aggregate": "account-7",
+          "event_id": "account-7-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": "person-7",
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "email": "ana@example.com"
+              }
+            },
+            {
+              "destination": "audit",
+              "key": "ping",
+              "payload": null
+            }
+          ],
+          "private": {
+            "email": "ana@example.com"
+          },
+          "public": {
+            "balance_minor": 2500
+          }
+        }
+      },
+      {
+        "event": {
+          "aggregate": "account-8",
+          "event_id": "account-8-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": null,
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [
+            {
+              "destination": "email",
+              "key": "receipt",
+              "payload": {
+                "email": "ana@example.com"
+              }
+            },
+            {
+              "destination": "audit",
+              "key": "ping",
+              "payload": null
+            }
+          ],
+          "private": {
+            "email": "ana@example.com"
+          },
+          "public": {
+            "balance_minor": 2500
+          }
+        }
+      },
+      {
+        "event": {
+          "aggregate": "account-9",
+          "event_id": "account-9-credit-2",
+          "event_type": "CreditPosted",
+          "metadata": {},
+          "payload": {
+            "amount_minor": 1250
+          },
+          "schema_version": "1",
+          "sequence": 2,
+          "subject": "person-9",
+          "tenant": "bank-eu"
+        },
+        "reduced": {
+          "intents": [],
+          "private": null,
+          "public": {
+            "balance_minor": 0
+          }
+        }
+      }
+    ],
+    "want": [
+      {
+        "intent": 0,
+        "item": 0,
+        "part": {
+          "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"receipt\\\"]\"]",
+          "kind": "intent",
+          "subject": "person-7",
+          "tenant": "bank-eu",
+          "version": 0
+        }
+      }
+    ]
+  },
+  {
+    "aggregate": "account-7",
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_state_of_a_subject",
+    "op": "open_state",
+    "record": {
+      "partition": 0,
+      "private": {
+        "edax_protected_state": 1
+      },
+      "public": {
+        "balance_minor": 2500
+      },
+      "sequence": 3
+    },
+    "subject": "person-7",
+    "tenant": "bank-eu",
+    "want": {
+      "identity": "11:balances-v1:[\"projection\",\"state\",\"bank-eu\",\"person-7\",\"account-7\"]",
+      "kind": "projection",
+      "subject": "person-7",
+      "tenant": "bank-eu",
+      "version": 3
+    }
+  },
+  {
+    "aggregate": "account-7",
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_state_without_subject",
+    "op": "open_state",
+    "record": {
+      "partition": 0,
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "balance_minor": 2500
+      },
+      "sequence": 3
+    },
+    "subject": null,
+    "tenant": "bank-eu",
+    "want": null
+  },
+  {
+    "aggregate": "account-7",
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_state_without_private",
+    "op": "open_state",
+    "record": {
+      "partition": 0,
+      "private": null,
+      "public": {
+        "balance_minor": 2500
+      },
+      "sequence": 3
+    },
+    "subject": "person-7",
+    "tenant": "bank-eu",
+    "want": null
+  },
+  {
+    "aggregate": "account-7",
+    "contract": {
+      "at_rest": "plaintext",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_state_of_a_plaintext_generation",
+    "op": "open_state",
+    "record": {
+      "partition": 0,
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "balance_minor": 2500
+      },
+      "sequence": 3
+    },
+    "subject": "person-7",
+    "tenant": "bank-eu",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_intent_of_a_subject",
+    "op": "open_intent",
+    "record": {
+      "aggregate": "account-7",
+      "destination": "email",
+      "generation": "balances-v1",
+      "id": "10:receipt-v1:[\"bank-eu\",\"account-7\",\"account-7-credit-2\",\"receipt\"]",
+      "offset": 4,
+      "ordinal": 0,
+      "partition": 0,
+      "payload": {
+        "edax_protected_state": 1
+      },
+      "subject": "person-7",
+      "tenant": "bank-eu"
+    },
+    "want": {
+      "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"receipt\\\"]\"]",
+      "kind": "intent",
+      "subject": "person-7",
+      "tenant": "bank-eu",
+      "version": 0
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_intent_without_subject",
+    "op": "open_intent",
+    "record": {
+      "aggregate": "account-7",
+      "destination": "email",
+      "generation": "balances-v1",
+      "id": "10:receipt-v1:[\"bank-eu\",\"account-7\",\"account-7-credit-2\",\"receipt\"]",
+      "offset": 4,
+      "ordinal": 0,
+      "partition": 0,
+      "payload": {
+        "email": "x"
+      },
+      "subject": null,
+      "tenant": "bank-eu"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
+    "error": null,
+    "name": "open_intent_without_payload",
+    "op": "open_intent",
+    "record": {
+      "aggregate": "account-7",
+      "destination": "email",
+      "generation": "balances-v1",
+      "id": "10:receipt-v1:[\"bank-eu\",\"account-7\",\"account-7-credit-2\",\"receipt\"]",
+      "offset": 4,
+      "ordinal": 0,
+      "partition": 0,
+      "payload": null,
+      "subject": "person-7",
+      "tenant": "bank-eu"
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: projection at_rest must be sealed or plaintext",
+    "name": "unsupported_at_rest_refused",
+    "op": "keys",
+    "request": {
+      "contract": {
+        "at_rest": "hashed",
+        "effect_namespace": "receipt-v1",
+        "envelope_id": "event-v1",
+        "generation": "balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-v1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 10
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "initialize"
+      }
+    },
+    "want": null
   }
 ]

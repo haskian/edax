@@ -386,6 +386,12 @@ func Advance(storedPresent bool, stored uint64, incomingPresent bool, incoming u
 	return nativeValue
 }
 
+// AtRestNames calls the shared kernel.
+func AtRestNames() []string {
+	nativeValue := native.AtRestNames()
+	return nativeValue
+}
+
 // BackoffMillis calls the shared kernel.
 func BackoffMillis(baseMillis uint64, capMillis uint64, attempt uint64, entropy uint64) uint64 {
 	nativeValue := native.BackoffMillis(baseMillis, capMillis, attempt, entropy)
@@ -975,6 +981,16 @@ func ErasureProviderConfirmed(action string, status string) (bool, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// ErasureScopeRevoked calls the shared kernel.
+func ErasureScopeRevoked(record string) (bool, error) {
+	var zero bool
+	if err := checkNativeString("record", record); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ErasureScopeRevoked(record)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // ErasureStages calls the shared kernel.
 func ErasureStages() []string {
 	nativeValue := native.ErasureStages()
@@ -1215,6 +1231,22 @@ func IngestModeNames() []string {
 	return nativeValue
 }
 
+// IngestOpenPlan calls the shared kernel.
+func IngestOpenPlan(manifest string, key string, stored string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("key", key); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("stored", stored); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestOpenPlan(manifest, key, stored)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // IngestOutcomeNames calls the shared kernel.
 func IngestOutcomeNames() []string {
 	nativeValue := native.IngestOutcomeNames()
@@ -1280,6 +1312,19 @@ func IngestScopeRange(manifest string, subject *string, tenant *string) (string,
 		}
 	}
 	nativeValue, nativeError := native.IngestScopeRange(manifest, subject, tenant)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// IngestSealPlan calls the shared kernel.
+func IngestSealPlan(manifest string, inputs string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestSealPlan(manifest, inputs)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2465,22 +2510,6 @@ func ProjectionIntentEligible(manifestJSON string, intentJSON string) (bool, err
 	return nativeValue, mapNativeError(nativeError)
 }
 
-// ProjectionIntentID calls the shared kernel.
-func ProjectionIntentID(contractJSON string, eventJSON string, intentJSON string) (string, error) {
-	var zero string
-	if err := checkNativeString("contractJSON", contractJSON); err != nil {
-		return zero, err
-	}
-	if err := checkNativeString("eventJSON", eventJSON); err != nil {
-		return zero, err
-	}
-	if err := checkNativeString("intentJSON", intentJSON); err != nil {
-		return zero, err
-	}
-	nativeValue, nativeError := native.ProjectionIntentID(contractJSON, eventJSON, intentJSON)
-	return nativeValue, mapNativeError(nativeError)
-}
-
 // ProjectionIntentKey calls the shared kernel.
 func ProjectionIntentKey(contractJSON string, intentID string) (string, error) {
 	var zero string
@@ -2514,6 +2543,45 @@ func ProjectionKeys(requestJSON string) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// ProjectionOpenIntent calls the shared kernel.
+func ProjectionOpenIntent(contractJSON string, recordJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("recordJSON", recordJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProjectionOpenIntent(contractJSON, recordJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProjectionOpenState calls the shared kernel.
+func ProjectionOpenState(contractJSON string, recordJSON string, aggregate string, subject *string, tenant *string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("recordJSON", recordJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("aggregate", aggregate); err != nil {
+		return zero, err
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ProjectionOpenState(contractJSON, recordJSON, aggregate, subject, tenant)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // ProjectionReads calls the shared kernel.
 func ProjectionReads(requestJSON string) (string, error) {
 	var zero string
@@ -2521,6 +2589,19 @@ func ProjectionReads(requestJSON string) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.ProjectionReads(requestJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProjectionSealPlan calls the shared kernel.
+func ProjectionSealPlan(contractJSON string, reductionsJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("reductionsJSON", reductionsJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProjectionSealPlan(contractJSON, reductionsJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 

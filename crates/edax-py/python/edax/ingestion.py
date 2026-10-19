@@ -18,7 +18,7 @@ from ._owned import ThreadBound
 from ._units import own_write
 from .erasure import ScopeCleanup
 from .errors import BadHandle, CodecError
-from .sealing import KeyScope, Sealing
+from .sealing import AtRest, KeyScope, Sealing, SealPart
 
 __all__ = [
     "BatchInput",
@@ -86,7 +86,7 @@ class IngestionTarget:
     generation: str
     source_incarnation: str
     mapper_id: str
-    at_rest: Literal["sealed", "plaintext"] = "sealed"
+    at_rest: AtRest = "sealed"
 
     def __post_init__(self) -> None:
         self.validate(())
@@ -162,6 +162,11 @@ class IngestionTarget:
         """The key of one source record in this generation: the kernel's exact coordinates."""
         return _native.ingest_source_key(self.generation, self.source_incarnation, topic, partition, offset)
 
+    def scope_range(self, scope: KeyScope) -> tuple[str, str]:
+        """The key range ``[start, end)`` of ``scope``'s rows: a subject's, or a whole tenant's."""
+        start, end = decode(_native.ingest_scope_range(self.manifest, scope.subject, scope.tenant))
+        return start, end
+
     def row_key(self, tenant: str | None, row_key: str, subject: str | None = None) -> str:
         """The key of one target row in this generation, scoped by its tenant and erasure subject."""
         return _native.ingest_row_key(
@@ -193,6 +198,9 @@ class BatchSink(Protocol):
     @property
     def target(self) -> IngestionTarget: ...
 
+    #: Seals and opens each subject's private part; a runner without its own ``sealing=`` uses it.
+    sealing: Sealing | None
+
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult: ...
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]: ...
@@ -207,43 +215,32 @@ class BatchSink(Protocol):
 async def seal_private(
     target: IngestionTarget, sealing: Sealing | None, inputs: Sequence[BatchInput]
 ) -> tuple[BatchInput, ...]:
-    """``inputs`` as a sealed target stores them: each written subject's ``private`` sealed under its
-    scope, with one key reservation per subject. The kernel's ``check_sealed`` then refuses anything left
-    plaintext, so a sink without ``sealing`` fails before it writes."""
+    """``inputs`` as the target stores them: each private part the kernel's seal plan names, sealed with
+    one key reservation per subject. The kernel's ``check_sealed`` then refuses anything left plaintext,
+    so a sink without ``sealing`` fails before it writes."""
     originals = tuple(inputs)
-    if target.at_rest == "plaintext" or sealing is None:
+    plan: list[tuple[int, SealPart]] = decode(_native.ingest_seal_plan(target.manifest, encode(originals)))
+    if not plan or sealing is None:
         return originals
-    chosen = [
-        index
-        for index, item in enumerate(originals)
-        if item.subject is not None and not item.erased and item.failure is None and item.private is not None
-    ]
-    sealed = await sealing.seal_stored(
-        [
-            ("ingestion", item.key, item.sequence or 0, item.tenant, cast(str, item.subject), item.private)
-            for item in (originals[index] for index in chosen)
-        ]
-    )
+    sealed = await sealing.seal_stored([(part, originals[index].private) for index, part in plan])
     result = list(originals)
-    for index, private in zip(chosen, sealed, strict=True):
+    for (index, _), private in zip(plan, sealed, strict=True):
         result[index] = replace(originals[index], private=private)
     return tuple(result)
 
 
 async def open_private(
-    target: IngestionTarget,
-    sealing: Sealing | None,
-    key: str,
-    subject: str | None,
-    row: dict[str, Any] | None,
+    target: IngestionTarget, sealing: Sealing | None, key: str, row: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    """``row``, as a sink stores it at ``key`` under ``subject``, with its sealed ``private`` part opened."""
-    if row is None or row["private"] is None or subject is None or target.at_rest == "plaintext":
+    """``row``, as a sink stores it at ``key``, with the private part the kernel's open plan names opened."""
+    if row is None:
+        return None
+    part: SealPart | None = decode(_native.ingest_open_plan(target.manifest, key, encode(row)))
+    if part is None:
         return row
     if sealing is None:
         raise BadHandle("opening a sealed ingestion row needs the sink's sealing=")
-    private = await sealing.open_stored("ingestion", key, row["sequence"] or 0, row["private"])
-    return {**row, "private": private}
+    return {**row, "private": await sealing.open_stored(part, row["private"])}
 
 
 class MemoryIngestionSink:
@@ -269,8 +266,7 @@ class MemoryIngestionSink:
         they hold the raw record, which a sealed source keeps sealed."""
 
         async def delete(scope: KeyScope) -> int:
-            start, end = decode(_native.ingest_scope_range(self.target.manifest, scope.subject, scope.tenant))
-            return self._database.get().delete_scope(start, end)
+            return self._database.get().delete_scope(*self.target.scope_range(scope))
 
         return ScopeCleanup(delete)
 
@@ -294,7 +290,7 @@ class MemoryIngestionSink:
     ) -> dict[str, Any] | None:
         key = self.target.row_key(tenant, row_key, subject)
         row = cast(dict[str, Any] | None, decode(self._database.get().get(key)))
-        return await open_private(self.target, self.sealing, key, subject, row)
+        return await open_private(self.target, self.sealing, key, row)
 
 
 @dataclass(frozen=True)

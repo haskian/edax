@@ -150,8 +150,10 @@ plaintext. Where `private` goes depends on the target's `at_rest`:
 | `"sealed"` (default) | Sealed under the subject's key, in the protected-state envelope | Destroying the key erases it, backups included |
 | `"plaintext"` | Stored readable | The sink's cleanup participant deletes the subject's rows |
 
-Pass the same `sealing=` to the sink as to the runner. The sink seals before its transaction, with
-one key reservation per subject per batch. `get` returns the row with `private` opened, and raises
+Give the sink `sealing=`; a runner built without its own uses the sink's. The sink seals what the
+kernel's seal plan names before its transaction, with one key reservation per subject per batch. A
+runner with sealing on neither sink nor runner refuses a subject's rows with `BadHandle`: without it no
+write fence holds them against an erasure cleanup. `get` returns the row with `private` opened, and raises
 `Shredded` once the subject's key is destroyed. A sealed target whose sink has no `sealing=`
 refuses a subject's row with `BadHandle` and writes nothing. A row with no subject stays plaintext.
 `at_rest` is part of the target contract, so changing it needs a new generation.

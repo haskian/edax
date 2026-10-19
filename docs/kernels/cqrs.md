@@ -508,7 +508,9 @@ incarnation, topic, partition and offset. `scope_range` names the key range that
 one subject, or of a whole tenant without a subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
 contract. `check_sealed` runs after the sink seals and before it writes. On a sealed target, every
 written input of a subject must carry a keyed fingerprint. Its `private` part must be absent or a
-protected-state envelope of the row key's tenant and subject.
+protected-state envelope of the row key's tenant and subject. `seal_plan` names the parts a sink seals
+before that check, and `open_plan` the part it opens in a row it read: kind, storage key, version and
+scope. Every SDK seals exactly what they name, so a row one SDK writes opens in another.
 
 `plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
 rejections before selecting owners. In append mode, identical event replay succeeds and changed
@@ -559,8 +561,9 @@ canonical event, not the event itself. For a sealed event the hash is `keyed_fin
 under the subject's fingerprint key. State keys carry the event's erasure subject, so an aggregate cannot change
 subjects. `state_scope_range` names one subject's state, or a whole tenant's, for a plaintext generation's cleanup. A reducer result holds a `private` and a `public` part. On a `sealed` generation (`Contract.at_rest`),
 `ApplyBatch` refuses a subject's `private` part unless the host sealed it under the event's scope. It
-refuses a subject's intent payload unless sealed whatever `at_rest` says. `state_key` and `intent_id`
-name the identities that sealing binds. An
+refuses a subject's intent payload unless sealed whatever `at_rest` says. `seal_plan` names
+the parts a host seals in a batch's reducer results, and `open_state` and `open_intent` the parts it
+opens after a read, with the identity and version each binds. An
 `erased` input, whose key was destroyed, writes its receipts and advances the cursor. It calls no
 reducer and changes no state. An erased replay matches a receipt from before erasure. Identical replay skips the reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
 checks cover physical source identity, history and retained/readable boundaries. These checks

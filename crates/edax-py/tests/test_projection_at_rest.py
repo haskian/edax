@@ -3,13 +3,12 @@ per branch of sealing them."""
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
-from uuid import uuid4
 
 import pytest
+from conftest import CountingKeys, postgres_schema
 from edax import _json, _native
 from edax.backend.postgres import PgConnection, PostgresTransactor
 from edax.backend.projection_postgres import PostgresProjectionStateStore, reference_projection_state_ddl
@@ -22,23 +21,10 @@ from edax.projection import (
     ProjectionResult,
     ProjectionState,
 )
-from edax.sealing import Cipher, KeyReservation, KeyScope, MemoryKeys, Sealing
+from edax.sealing import KeyScope, MemoryKeys, Sealing
 from test_projection_state import event, initial_cutover, proof, target
 
-URL = os.environ.get("EDAX_POSTGRES_URL")
 EMAIL = "ana@example.com"
-
-
-class CountingKeys(MemoryKeys):
-    """The reference provider, recording each reservation's subject and count."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.reserved: list[tuple[str | None, int]] = []
-
-    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
-        self.reserved.append((scope.subject, count))
-        return await super().reserve(scope, cipher, count)
 
 
 Store = MemoryProjectionStateStore | PostgresProjectionStateStore
@@ -49,19 +35,9 @@ async def backend(request: pytest.FixtureRequest) -> AsyncIterator[Callable[...,
     if request.param == "memory":
         yield lambda t, sealing: MemoryProjectionStateStore(t, sealing=sealing)
         return
-    if URL is None:
-        pytest.skip("EDAX_POSTGRES_URL is not set: no live Postgres")
-    asyncpg = pytest.importorskip("asyncpg")
-    pool = await asyncpg.create_pool(URL, min_size=1, max_size=3)
-    schema = f"projection_at_rest_{uuid4().hex}"
-    await pool.execute(f'CREATE SCHEMA "{schema}"')
-    try:
-        await pool.execute(reference_projection_state_ddl(schema))
+    async with postgres_schema("projection_at_rest", reference_projection_state_ddl) as (pool, schema):
         tx = PostgresTransactor(pool, schema=schema)
         yield lambda t, sealing: PostgresProjectionStateStore(tx, t, schema=schema, sealing=sealing)
-    finally:
-        await pool.execute(f'DROP SCHEMA "{schema}" CASCADE')
-        await pool.close()
 
 
 async def raw_state(store: Store, key: str) -> Any:
@@ -102,12 +78,20 @@ def statement(state: ProjectionState | None, value: ProjectionEvent) -> Projecti
     return ProjectionResult(private=private, public={"balance_minor": balance}, intents=[receipt])
 
 
-async def committed(store: Store, subject: str | None, *sequences: int) -> None:
-    """Commit one batch of ``subject``'s credits at ``sequences`` and activate delivery."""
+async def committed(
+    store: Store, subject: str | None, *sequences: int, aggregate: str = "account-42"
+) -> None:
+    """Commit one batch of ``subject``'s credits of ``aggregate`` at ``sequences``."""
     await store.initialize()
     lease = await store.acquire(0, "worker-a", proof())
     lease = await store.recover(lease)
-    inputs = [ProjectionInput(lease.next_offset + i, owned(n, subject)) for i, n in enumerate(sequences)]
+    inputs = [
+        ProjectionInput(
+            lease.next_offset + i,
+            replace(owned(n, subject), aggregate=aggregate, event_id=f"{aggregate}-{n}"),
+        )
+        for i, n in enumerate(sequences)
+    ]
     await store.commit(lease, inputs, proof(), statement)
 
 
@@ -172,6 +156,56 @@ async def test_reducer_reads_the_sealed_state_a_previous_batch_left(backend: Cal
     await committed(store, "person-7", 2)
     state = await store.get("bank-eu", "account-42", "person-7")
     assert state is not None and state["private"] == {"email": EMAIL, "credits": 2}
+
+
+async def test_two_subjects_reserve_once_each(backend: Callable[..., Store]) -> None:
+    keys = CountingKeys()
+    sealing = Sealing(keys, "accounts")
+    store = backend(target(), sealing)
+    await store.initialize()
+    lease = await store.acquire(0, "worker-a", proof())
+    inputs = [
+        ProjectionInput(0, replace(owned(1, "person-7"), aggregate="account-7", event_id="account-7-1")),
+        ProjectionInput(1, replace(owned(1, "person-8"), aggregate="account-8", event_id="account-8-1")),
+    ]
+    await store.commit(lease, inputs, proof(), statement)
+    assert sorted(keys.reserved, key=str) == [("person-7", 2), ("person-8", 2)]
+    for subject, aggregate in (("person-7", "account-7"), ("person-8", "account-8")):
+        raw = await raw_state(store, store.target.state_key("bank-eu", subject, aggregate))
+        envelope = _native.decode_protected_state(_json.encode(raw["private"])).value
+        assert envelope is not None and envelope.subject == subject
+        state = await store.get("bank-eu", aggregate, subject)
+        assert state is not None and state["private"] == {"email": EMAIL, "credits": 1}
+
+
+class RevokingKeys(MemoryKeys):
+    """Reports one scope revoking, as a provider does while its erasure awaits destruction."""
+
+    def __init__(self, revoking: str) -> None:
+        super().__init__()
+        self.revoking = revoking
+
+    async def status(self, scope: KeyScope) -> Any:
+        return "revoking" if scope.subject == self.revoking else await super().status(scope)
+
+
+async def test_revoking_subject_holds_back_only_its_own_intents(backend: Callable[..., Store]) -> None:
+    keys = RevokingKeys("person-8")
+    sealing = Sealing(keys, "accounts")
+    store = backend(target(), sealing)
+    await store.initialize()
+    lease = await store.acquire(0, "worker-a", proof())
+    inputs = [
+        ProjectionInput(0, replace(owned(1, "person-8"), aggregate="account-8", event_id="account-8-1")),
+        ProjectionInput(1, replace(owned(1, "person-7"), aggregate="account-7", event_id="account-7-1")),
+    ]
+    keys.revoking = ""
+    await store.commit(lease, inputs, proof(), statement)
+    await store.activate(initial_cutover(store.target))
+    keys.revoking = "person-8"
+    delivered = await store.unpublished(100)
+    assert [intent.aggregate_id for intent in delivered] == ["account-7"]
+    assert len(await raw_intents(store)) == 2, "the held-back intent stays for a later page"
 
 
 async def test_store_without_sealing_writes_nothing(backend: Callable[..., Store]) -> None:

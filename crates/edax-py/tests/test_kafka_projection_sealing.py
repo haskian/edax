@@ -333,3 +333,45 @@ async def test_erasure_mid_stream_through_a_sealing_store() -> None:
     with pytest.raises(Shredded):
         await store.get("bank-eu", "account-42", "person-42")
     assert await store.unpublished(10) == [], "a destroyed subject's receipts are dropped, not delivered"
+
+
+@pytest.mark.parametrize("store_has_sealing", [True, False], ids=["store_sealing_used", "no_fence_refused"])
+async def test_runner_without_its_own_sealing(store_has_sealing: bool) -> None:
+    """A runner built without ``sealing=`` takes the store's, so a destroyed subject moves past erased.
+    With sealing on neither, a subject's state would commit unfenced, and the partition stops instead."""
+    keys = MemoryKeys()
+    sealing, records = await sealed_records(keys)
+    await keys.revoke(sealing.scope("bank-eu", "person-42"))
+    await keys.destroy(sealing.scope("bank-eu", "person-42"))
+    if not store_has_sealing:
+        # Without sealing nothing opens a sealed record: the source sends the subject's events in plaintext.
+        plain = replace(
+            build_message(
+                "account-42",
+                "CreditPosted",
+                1,
+                id="credit-1",
+                data=_json.encode(PAYLOAD).encode(),
+                tenant="bank-eu",
+            ),
+            subject="person-42",
+        )
+        records = [SimpleNamespace(**{**vars(records[0]), "value": KernelSerializer().encode(plain)})]
+    store = MemoryProjectionStateStore(target(), sealing=sealing if store_has_sealing else None)
+    await store.initialize()
+    client = Client()
+    client.records = records
+
+    def owned(message: EventMessage) -> ProjectionEvent:
+        return dataclasses.replace(decode(message), subject=message.subject)
+
+    run = KafkaProjection(client, store, Source(), owned, balance([]))
+    await run.rebalance_listener().on_partitions_assigned({TP})
+    if store_has_sealing:
+        await run._partition(TP, run._parts[TP])
+        lease = run._parts[TP].lease
+        assert lease is not None and lease.next_offset == 1
+    else:
+        with pytest.raises(BadHandle, match="sealing="):
+            await run._partition(TP, run._parts[TP])
+    assert await store.get("bank-eu", "account-42", "person-42") is None

@@ -16,16 +16,16 @@ from __future__ import annotations
 import functools
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Any, Literal, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from . import _json, _native
 from ._owned import ThreadBound
 from ._units import own_write
 from .erasure import ScopeCleanup
-from .errors import BadHandle, Shredded, StoreError
+from .errors import BadHandle, KeyRevoking, KeyUnavailable, Shredded, StoreError
 from .outbox import check_page
 from .query import Document, Page, Query
-from .sealing import KeyScope, Sealing, StoredPart
+from .sealing import AtRest, KeyScope, Sealing, SealPart
 from .unit_of_work import TxT_contra
 
 __all__ = [
@@ -165,7 +165,7 @@ class ProjectionTarget:
     keying_id: str
     effect_namespace: str
     starts: Mapping[int, int]
-    at_rest: Literal["sealed", "plaintext"] = "sealed"
+    at_rest: AtRest = "sealed"
     _contract: str = field(init=False, repr=False)
     _manifest_key: str = field(init=False, repr=False)
 
@@ -198,10 +198,6 @@ class ProjectionTarget:
     def state_key(self, tenant: str | None, subject: str | None, aggregate: str) -> str:
         """The storage key of one aggregate's state: what sealing its ``private`` part binds."""
         return _native.projection_state_key(self._contract, aggregate, subject, tenant)
-
-    def intent_id(self, event: Mapping[str, Any], intent: Mapping[str, Any]) -> str:
-        """The stable ID of ``intent``, a reducer's effect for ``event``: what sealing its payload binds."""
-        return _native.projection_intent_id(self._contract, _json.encode(event), _json.encode(intent))
 
     @property
     def manifest_key(self) -> str:
@@ -419,14 +415,17 @@ class ProjectionStateStore:
     opens them for the reducer, :meth:`get` and delivery. Each commit reads keys once through
     :meth:`~edax.sealing.Sealing.for_batch` and reserves one key per subject."""
 
-    def __init__(self, target: ProjectionTarget, *, sealing: Sealing | None = None) -> None:
+    def __init__(
+        self, target: ProjectionTarget, *, sealing: Sealing | None = None, key_timeout_s: float | None = 10.0
+    ) -> None:
         self.target = target
         self.sealing = sealing
+        #: Deadline of each key-provider call delivery makes; a hung provider then reads as unavailable.
+        self.key_timeout_s = key_timeout_s
 
-    def _sealed(self, subject: str | None) -> bool:
-        return subject is not None and self.target.at_rest == "sealed"
-
-    def _keys(self) -> Sealing:
+    def _keys(self, keys: Sealing | None = None) -> Sealing:
+        if keys is not None:
+            return keys
         if self.sealing is None:
             raise BadHandle("a subject's sealed projection data needs the store's sealing=")
         return self.sealing
@@ -439,52 +438,60 @@ class ProjectionStateStore:
         aggregate: str,
         record: Mapping[str, Any] | None,
     ) -> ProjectionState | None:
-        """``record``, a stored state, with its sealed ``private`` part opened through ``keys``."""
+        """``record``, a stored state, with the private part the kernel's open plan names opened."""
         if record is None:
             return None
+        part: SealPart | None = _json.decode(
+            _native.projection_open_state(
+                self.target._contract, _json.encode(record), aggregate, subject, tenant
+            )
+        )
         private = record["private"]
-        if private is not None and self._sealed(subject):
-            identity = self.target.state_key(tenant, subject, aggregate)
-            opener = keys if keys is not None else self._keys()
-            private = await opener.open_stored("projection", identity, record["sequence"], private)
+        if part is not None:
+            private = await self._keys(keys).open_stored(part, private)
         return ProjectionState(private, record["public"])
 
     async def _seal(self, novel: Sequence[tuple[Mapping[str, Any], dict[str, Any]]]) -> None:
-        """Seal, in place, each subject's ``private`` state and intent payloads of ``novel``, the
-        ``(event, result)`` pairs of a batch: one reservation per subject for all of them."""
-        parts: list[StoredPart] = []
+        """Seal, in place, what the kernel's seal plan names in ``novel``, a batch's ``(event, result)``
+        pairs: one reservation per subject for all of them."""
+        reductions = [{"event": event, "reduced": result} for event, result in novel]
+        plan = _json.decode(_native.projection_seal_plan(self.target._contract, _json.encode(reductions)))
+        if not plan:
+            return
         places: list[tuple[dict[str, Any], str]] = []
-        for event, result in novel:
-            tenant, subject = event["tenant"], event.get("subject")
-            if subject is None:
-                continue
-            if self._sealed(subject) and result["private"] is not None:
-                identity = self.target.state_key(tenant, subject, event["aggregate"])
-                parts.append(("projection", identity, event["sequence"], tenant, subject, result["private"]))
-                places.append((result, "private"))
-            for intent in result["intents"]:
-                if intent["payload"] is not None:
-                    identity = self.target.intent_id(event, intent)
-                    parts.append(("intent", identity, 0, tenant, subject, intent["payload"]))
-                    places.append((intent, "payload"))
-        if parts:
-            for (holder, name), sealed in zip(places, await self._keys().seal_stored(parts), strict=True):
-                holder[name] = sealed
+        for placed in plan:
+            result = novel[placed["item"]][1]
+            places.append(
+                (result, "private")
+                if placed["intent"] is None
+                else (result["intents"][placed["intent"]], "payload")
+            )
+        values = [holder[name] for holder, name in places]
+        sealed = await self._keys().seal_stored(
+            [(placed["part"], value) for placed, value in zip(plan, values, strict=True)]
+        )
+        for (holder, name), value in zip(places, sealed, strict=True):
+            holder[name] = value
 
     async def _delivered(self, records: Sequence[Mapping[str, Any]]) -> list[EffectIntent]:
-        """``records``, stored intents, with their sealed payloads opened. An intent whose key was
-        destroyed is deleted, never delivered: nothing of it can be read."""
-        keys = None if self.sealing is None else self.sealing.for_batch()
+        """``records``, stored intents, with the payloads the kernel's open plan names opened. An intent
+        whose key was destroyed is deleted, never delivered: nothing of it can be read. One whose key is
+        revoking or unreachable waits for a later page, so it never holds up the others."""
+        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
         intents: list[EffectIntent] = []
         shredded: list[str] = []
         for record in records:
             payload = record["payload"]
-            if record.get("subject") is not None and payload is not None:
-                opener = keys if keys is not None else self._keys()
+            part: SealPart | None = _json.decode(
+                _native.projection_open_intent(self.target._contract, _json.encode(record))
+            )
+            if part is not None:
                 try:
-                    payload = await opener.open_stored("intent", record["id"], 0, payload)
+                    payload = await self._keys(keys).open_stored(part, payload)
                 except Shredded:
                     shredded.append(record["id"])
+                    continue
+                except (KeyRevoking, KeyUnavailable):
                     continue
             intents.append(effect_intent({**record, "payload": payload}))
         if shredded:
@@ -564,7 +571,7 @@ class ProjectionStateStore:
         source order, and commit state, receipts, intents and the next offset together."""
         # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits.
         originals = _json.decode(_json.encode(inputs))
-        keys = None if self.sealing is None else self.sealing.for_batch()
+        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
 
         async def apply(session: ProjectionSession) -> ProjectionLease:
             # One read for the whole batch: the batch's records with the extension's checkpoint.
@@ -673,8 +680,9 @@ class MemoryProjectionStateStore(ProjectionStateStore):
         *,
         clock: Callable[[], int] | None = None,
         sealing: Sealing | None = None,
+        key_timeout_s: float | None = 10.0,
     ) -> None:
-        super().__init__(target, sealing=sealing)
+        super().__init__(target, sealing=sealing, key_timeout_s=key_timeout_s)
         self._clock = clock or (lambda: _native.current_timestamp() // 1_000_000)
         self._database = ThreadBound(_native.memory_projection_database(), "MemoryProjectionStateStore")
 

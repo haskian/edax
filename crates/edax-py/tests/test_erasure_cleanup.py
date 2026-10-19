@@ -3,26 +3,25 @@ branch of a scope's delete, plus the resweep after a restore and the revoke in t
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from typing import Any
-from uuid import uuid4
 
 import pytest
-from edax import _json
+from conftest import postgres_schema
+from edax import _json, _native
 from edax.backend.erasure_postgres import PostgresErasureStore, reference_ddl
 from edax.backend.ingest_postgres import PostgresIngestionSink, reference_ingestion_ddl
 from edax.backend.postgres import PostgresTransactor
 from edax.backend.projection_postgres import PostgresProjectionStateStore, reference_projection_state_ddl
-from edax.erasure import ErasureCoordinator, MemoryErasureStore, ScopeCleanup
+from edax.erasure import ErasureCoordinator, ErasureOperation, ErasureStore, MemoryErasureStore, ScopeCleanup
 from edax.errors import Rejected
 from edax.ingestion import IngestionTarget, MemoryIngestionSink
 from edax.projection import MemoryProjectionStateStore, ProjectionInput, ProjectionResult
 from edax.sealing import KeyScope, MemoryKeys
 from test_projection_state import event, proof, target
 
-URL = os.environ.get("EDAX_POSTGRES_URL")
 TENANTS = ("shop-a", "shop-b")
 #: Rows per tenant: two of person-7, one of person-8 and one with no subject.
 OWNERS: tuple[tuple[str | None, str], ...] = (
@@ -41,7 +40,8 @@ def scope(tenant: str, subject: str | None) -> KeyScope:
 class Participant:
     """One plaintext target with rows of two tenants, behind the cleanup it returns."""
 
-    cleanup: Callable[[], ScopeCleanup]
+    #: The participant's ``cleanup``; Postgres takes the erasure store whose revoke it runs in its delete.
+    cleanup: Callable[..., ScopeCleanup]
     write: Callable[[], Awaitable[None]]
     #: The rows still stored, as ``(tenant, subject, row)``.
     rows: Callable[[], Awaitable[set[tuple[str, str | None, str]]]]
@@ -129,8 +129,6 @@ async def participant(request: pytest.FixtureRequest) -> AsyncIterator[Participa
     if kind == "memory-projection":
         yield projection(MemoryProjectionStateStore(PROJECTION))
         return
-    if URL is None:
-        pytest.skip("EDAX_POSTGRES_URL is not set: no live Postgres")
     async with postgres() as (pool, schema):
         tx = PostgresTransactor(pool, schema=schema)
         if kind == "postgres-ingestion":
@@ -139,21 +137,9 @@ async def participant(request: pytest.FixtureRequest) -> AsyncIterator[Participa
             yield projection(PostgresProjectionStateStore(tx, PROJECTION, schema=schema))
 
 
-class postgres:
+def postgres() -> AbstractAsyncContextManager[tuple[Any, str]]:
     """An isolated schema holding the ingestion, projection and erasure tables."""
-
-    async def __aenter__(self) -> tuple[Any, str]:
-        asyncpg = pytest.importorskip("asyncpg")
-        self.pool = await asyncpg.create_pool(URL, min_size=1, max_size=4)
-        self.schema = f"cleanup_{uuid4().hex}"
-        await self.pool.execute(f'CREATE SCHEMA "{self.schema}"')
-        for ddl in (reference_ingestion_ddl, reference_projection_state_ddl, reference_ddl):
-            await self.pool.execute(ddl(self.schema))
-        return self.pool, self.schema
-
-    async def __aexit__(self, *_: object) -> None:
-        await self.pool.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
-        await self.pool.close()
+    return postgres_schema("cleanup", reference_ingestion_ddl, reference_projection_state_ddl, reference_ddl)
 
 
 EVERY = {(tenant, subject, row) for tenant in TENANTS for subject, row in OWNERS}
@@ -209,15 +195,18 @@ async def test_registered_cleanup_completes_the_erasure(participant: Participant
     assert await cleanup.resweep(store) == 0
 
 
-async def test_postgres_cleanup_revokes_in_its_transaction() -> None:
-    if URL is None:
-        pytest.skip("EDAX_POSTGRES_URL is not set: no live Postgres")
+@pytest.mark.parametrize("kind", ["ingestion", "projection"])
+async def test_postgres_cleanup_revokes_in_its_transaction(kind: str) -> None:
     async with postgres() as (pool, schema):
         erasure = PostgresErasureStore(pool, schema=schema)
-        sink = PostgresIngestionSink(PostgresTransactor(pool, schema=schema), INGESTION, schema=schema)
-        rows = ingestion(sink)
+        tx = PostgresTransactor(pool, schema=schema)
+        rows = (
+            ingestion(PostgresIngestionSink(tx, INGESTION, schema=schema))
+            if kind == "ingestion"
+            else projection(PostgresProjectionStateStore(tx, PROJECTION, schema=schema))
+        )
         await rows.write()
-        await sink.cleanup(erasure)(scope("shop-a", "person-7"))
+        await rows.cleanup(erasure)(scope("shop-a", "person-7"))
         assert ("shop-a", "person-7", "row-1") not in await rows.rows()
         # The tombstone committed with the delete: a fenced writer of the scope is refused.
         with pytest.raises(Rejected):
@@ -228,5 +217,28 @@ async def test_postgres_cleanup_revokes_in_its_transaction() -> None:
         await coordinator.erase(scope("shop-b", "person-8"), "request-1")
         await coordinator.erase(scope("shop-b", None), "request-2")
         assert [stored.operation.stage for stored in await erasure.revoked(1)] == ["notified"]
-        assert await sink.cleanup().resweep(erasure, limit=1) == 4  # person-8, then the rest of shop-b
+        assert await rows.cleanup().resweep(erasure, limit=1) == 4  # person-8, then the rest of shop-b
         assert {row for row in await rows.rows() if row[0] == "shop-b"} == set()
+
+
+@pytest.mark.parametrize("backend", ["memory", "postgres"])
+async def test_unrevoked_operation_is_not_swept(backend: str) -> None:
+    """An operation still at ``persisted`` has no confirmed revocation: a writer may still be fenced
+    in, so a sweep must not delete for it yet."""
+    participant = ingestion(MemoryIngestionSink(INGESTION))
+    await participant.write()
+    candidate = ErasureOperation(
+        _native.erasure_create(scope("shop-a", "person-7"), "operation-1", "request-1", ["rows"])
+    )
+    if backend == "memory":
+        store: ErasureStore = MemoryErasureStore()
+        await store.create(candidate)
+        assert await store.revoked() == []
+        assert await participant.cleanup().resweep(store) == 0
+    else:
+        async with postgres() as (pool, schema):
+            store = PostgresErasureStore(pool, schema=schema)
+            await store.create(candidate)
+            assert await store.revoked() == []
+            assert await participant.cleanup().resweep(store) == 0
+    assert await participant.rows() == EVERY

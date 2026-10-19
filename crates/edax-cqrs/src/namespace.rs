@@ -2,6 +2,7 @@
 //! under its generation's length-prefixed name, so two generations never share a key.
 
 use edax_core::Error;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canonical_json;
@@ -66,6 +67,24 @@ edax_core::closed_names! {
         /// Plaintext: an erasure cleanup participant must delete it.
         Plaintext = "plaintext",
     }
+}
+
+/// One stored part a host seals before it writes, or opens after it reads: the protected-state context
+/// the kernel binds. `kind` is `ingestion`, `projection` or `intent`; `identity` is the part's storage
+/// key, which carries the generation, tenant and subject; `version` is the row's sequence, 0 when it
+/// has none. The scope is the key's tenant and subject, never a value the host supplies.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Part {
+    /// Stored state kind, as `edax_event::sealing::state_context` names it.
+    pub kind: String,
+    /// Storage key the context binds.
+    pub identity: String,
+    /// Row sequence the context binds.
+    pub version: u64,
+    /// Tenant of the sealing scope.
+    pub tenant: Option<String>,
+    /// Erasure subject of the sealing scope.
+    pub subject: String,
 }
 
 /// Refuse a subject's private part that a sealed generation would store as plaintext: it must be

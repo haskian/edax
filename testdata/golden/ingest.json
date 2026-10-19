@@ -3675,6 +3675,482 @@
       "at_rest": "sealed",
       "generation": "orders-v1",
       "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":10}",
+        "raw_fingerprint": "7cf7ffbca89fec23888acfa1282424ec7cd21e009099af1d98ecef65428dd3bc",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"10\"]",
+        "stream": "order-1"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+        "private": {
+          "email": "nobody@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":11}",
+        "raw_fingerprint": "9ff5f85250bc6ac0e61e944731869eb0a6a485e7405b4eff2a1ca79932396149",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"11\"]",
+        "stream": "order-2"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-3\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":12}",
+        "raw_fingerprint": "e18d718b2ab7b25eb4791dde8ce36899bd3ddfbaacd80aee93ec17ac1fba9cea",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"12\"]",
+        "stream": "order-3"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: sealed record refused",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-4\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":13}",
+        "raw_fingerprint": "30c46c0ae90046bee5df5249cd9ff5db42b2779ad07a8ecb36a1942d7cc96f5d",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"13\"]",
+        "stream": "order-4"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-5\"]",
+        "private": null,
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":14}",
+        "raw_fingerprint": "6c59ee951c92f6856b67801219ede25133ba370be946087157d3b69de4966d5b",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"14\"]",
+        "stream": "order-5"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+        "private": {
+          "email": "person-8@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":15}",
+        "raw_fingerprint": "45ab0cdaa0417f2a90d78a54c57923234130bab528994acaf5150ef044c0fe04",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"15\"]",
+        "stream": "order-6"
+      }
+    ],
+    "name": "seal_plan_of_a_mixed_batch",
+    "op": "seal_plan",
+    "want": [
+      [
+        0,
+        {
+          "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+          "kind": "ingestion",
+          "subject": "person-7",
+          "tenant": "acme",
+          "version": 1
+        }
+      ],
+      [
+        5,
+        {
+          "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+          "kind": "ingestion",
+          "subject": "person-8",
+          "tenant": "acme",
+          "version": 1
+        }
+      ]
+    ]
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":10}",
+        "raw_fingerprint": "7cf7ffbca89fec23888acfa1282424ec7cd21e009099af1d98ecef65428dd3bc",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"10\"]",
+        "stream": "order-1"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+        "private": {
+          "email": "nobody@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":11}",
+        "raw_fingerprint": "9ff5f85250bc6ac0e61e944731869eb0a6a485e7405b4eff2a1ca79932396149",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"11\"]",
+        "stream": "order-2"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-3\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":12}",
+        "raw_fingerprint": "e18d718b2ab7b25eb4791dde8ce36899bd3ddfbaacd80aee93ec17ac1fba9cea",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"12\"]",
+        "stream": "order-3"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: sealed record refused",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-4\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":13}",
+        "raw_fingerprint": "30c46c0ae90046bee5df5249cd9ff5db42b2779ad07a8ecb36a1942d7cc96f5d",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"13\"]",
+        "stream": "order-4"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-5\"]",
+        "private": null,
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":14}",
+        "raw_fingerprint": "6c59ee951c92f6856b67801219ede25133ba370be946087157d3b69de4966d5b",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"14\"]",
+        "stream": "order-5"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+        "private": {
+          "email": "person-8@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":15}",
+        "raw_fingerprint": "45ab0cdaa0417f2a90d78a54c57923234130bab528994acaf5150ef044c0fe04",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"15\"]",
+        "stream": "order-6"
+      }
+    ],
+    "name": "seal_plan_of_a_plaintext_target_is_empty",
+    "op": "seal_plan",
+    "want": []
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_sealed_subject_row",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "completed": false,
+        "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+        "edax_protected_state": 1,
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "generation-7",
+          "key_namespace": "people",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "subject": "person-7",
+        "tenant": "acme"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": {
+      "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+      "kind": "ingestion",
+      "subject": "person-7",
+      "tenant": "acme",
+      "version": 3
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_row_without_subject",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_deletion_marker",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": null,
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 4,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_plaintext_target",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "append",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_an_append_row_binds_version_zero",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"append\",\"acme\",\"person-7\",\"order-42-event-0\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "completed": false,
+        "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+        "edax_protected_state": 1,
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "generation-7",
+          "key_namespace": "people",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "subject": "person-7",
+        "tenant": "acme"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": null,
+      "stream": "order-1"
+    },
+    "want": {
+      "identity": "9:orders-v1:[\"append\",\"acme\",\"person-7\",\"order-42-event-0\"]",
+      "kind": "ingestion",
+      "subject": "person-7",
+      "tenant": "acme",
+      "version": 0
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
       "mode": "append",
       "source_incarnation": "cluster-a/orders-v1"
     },

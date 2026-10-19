@@ -153,7 +153,8 @@ pub fn open_command(message: &CommandMessage, key: &[u8]) -> Result<Vec<u8>, Err
 
 /// Record-specific context for stored state: snapshots, saga application state, and the private parts
 /// of ingestion rows, projection state and projection intents. Those three bind their storage key as
-/// `identity`, which carries the generation, tenant and subject. Processing marks are public but
+/// `identity`, which carries the generation; the scope fields bind the tenant and subject. The kernels'
+/// seal plans name the identity and version. Processing marks are public but
 /// authenticated; completion and state version cannot be altered independently of the state.
 #[allow(clippy::too_many_arguments)]
 pub fn state_context(

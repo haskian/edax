@@ -114,7 +114,9 @@ class KafkaIngestion:
         sealing: Sealing | None = None,
     ) -> None:
         self.client, self.sink, self.mapper = client, sink, mapper
-        self.sealing = sealing
+        # The sink's sealing opens records too: a runner that cannot see a destroyed key would neither
+        # stage its records erased nor fence their commit.
+        self.sealing = sealing if sealing is not None else sink.sealing
         self.settings = settings or BatchSettings()
         self._config = self.settings.json
         self._pacing = pacing or Pacing()
@@ -655,6 +657,11 @@ class KafkaIngestion:
         """Commit ``inputs`` under the write fence of every subject they write; the originals of a subject
         the provider reports destroyed commit erased."""
         if self.sealing is None:
+            if any(item.subject is not None and not item.erased and item.failure is None for item in inputs):
+                # No fence: a commit landing after an erasure cleanup would bring the subject's rows back.
+                raise BadHandle(
+                    "a subject's rows need sealing= on the runner or the sink for the erasure fence"
+                )
             return inputs, await self._operation(self.sink.commit(inputs))
         written = [
             item for item in inputs if item.subject is not None and not item.erased and item.failure is None

@@ -21,7 +21,7 @@ from contextlib import (
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, Literal, Protocol, TypeVar, cast, get_args, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast, get_args, runtime_checkable
 
 from . import _json, _names, _native
 from ._owned import ThreadBound
@@ -40,8 +40,9 @@ __all__ = [
     "Opened",
     "SealedValue",
     "Sealing",
+    "AtRest",
+    "SealPart",
     "StoredKind",
-    "StoredPart",
     "TransactionFence",
     "WriteFence",
 ]
@@ -54,8 +55,22 @@ Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 #: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
 #: projection intent's payload.
 StoredKind = Literal["ingestion", "projection", "intent"]
-#: One part :meth:`Sealing.seal_stored` seals: kind, identity, version, tenant, subject and value.
-StoredPart = tuple[StoredKind, str, int, str | None, str, Any]
+#: Every kind of state the protected-state context binds.
+StateKind = Literal["snapshot", "saga", "ingestion", "projection", "intent"]
+#: How a generation stores a subject's private part: sealed under the subject's key, or plaintext.
+AtRest = Literal["sealed", "plaintext"]
+
+
+class SealPart(TypedDict):
+    """One part the kernel's seal or open plan names: what the protected-state context binds."""
+
+    kind: StoredKind
+    identity: str
+    version: int
+    tenant: str | None
+    subject: str
+
+
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
 #: How :meth:`Sealing.write_guard` fences a write: ``"guard"`` holds the provider's ``guard`` from before
 #: the transaction through its commit; ``"transaction"`` fences inside each transaction that opens.
@@ -75,6 +90,7 @@ class KeyReservation:
 
 _names.check(get_args(Cipher), _native.encryption_ciphers(), "encryption ciphers")
 _names.check(get_args(KeyStatus), _native.key_statuses(), "key statuses")
+_names.check(get_args(AtRest), _native.at_rest_names(), "at-rest modes")
 give_value_semantics(KeyScope)
 give_value_semantics(SealedValue)
 # A reservation contains a secret. Do not give it the field-printing repr of public value records.
@@ -527,6 +543,25 @@ class Sealing:
             return None
         return Opened(bytes(_native.open_command(message, key)))
 
+    def _seal_with(
+        self,
+        info: EncryptionInfo,
+        key: bytes,
+        kind: StateKind,
+        identity: str,
+        type_name: str,
+        version: int,
+        data: bytes,
+        tenant: str | None,
+        subject: str | None,
+        marks: str = "",
+        completed: bool = False,
+    ) -> SealedValue:
+        context = _native.state_encryption_context(
+            kind, identity, type_name, version, marks, completed, info, tenant, subject
+        )
+        return SealedValue(encryption=info, data=_native.seal_bytes(info, key, context, data))
+
     async def seal_state(
         self,
         kind: Literal["snapshot", "saga"],
@@ -540,14 +575,13 @@ class Sealing:
         completed: bool = False,
     ) -> SealedValue:
         info, key = await self.reserve(tenant, subject)
-        context = _native.state_encryption_context(
-            kind, identity, type_name, version, marks, completed, info, tenant, subject
+        return self._seal_with(
+            info, key, kind, identity, type_name, version, data, tenant, subject, marks, completed
         )
-        return SealedValue(encryption=info, data=_native.seal_bytes(info, key, context, data))
 
     async def open_state(
         self,
-        kind: Literal["snapshot", "saga"],
+        kind: StateKind,
         identity: str,
         type_name: str,
         version: int,
@@ -564,12 +598,12 @@ class Sealing:
         key = await self.resolve(info, tenant, subject)
         return bytes(_native.open_bytes(info, key, context, bytes(value.data)))
 
-    async def seal_stored(self, parts: Sequence[StoredPart]) -> list[Any]:
-        """Seal each part as its protected-state envelope. A part's kind, identity (the kernel's storage
-        key or intent ID) and version (the row's sequence) are bound as authenticated context. One
+    async def seal_stored(self, parts: Sequence[tuple[SealPart, Any]]) -> list[Any]:
+        """Seal each ``(part, value)`` as its protected-state envelope. The kernel's part names what the
+        context binds and the scope: a store takes it from the kernel's seal plan, never builds it. One
         reservation per scope covers all its parts, each sealed under its own nonce, so a batch costs one
         provider call per subject rather than one per row."""
-        counts = Counter((tenant, subject) for _, _, _, tenant, subject, _ in parts)
+        counts = Counter((part["tenant"], part["subject"]) for part, _ in parts)
         scopes = list(counts)
         reservations = await asyncio.gather(
             *(
@@ -581,30 +615,39 @@ class Sealing:
         )
         reserved = dict(zip(scopes, reservations, strict=True))
         sealed: list[Any] = []
-        for kind, identity, version, tenant, subject, value in parts:
+        for part, value in parts:
+            tenant, subject = part["tenant"], part["subject"]
             reservation = reserved[(tenant, subject)]
             info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
-            context = _native.state_encryption_context(
-                kind, identity, "", version, "", False, info, tenant, subject
+            data = _json.encode(value).encode()
+            value_sealed = self._seal_with(
+                info,
+                reservation.key,
+                part["kind"],
+                part["identity"],
+                "",
+                part["version"],
+                data,
+                tenant,
+                subject,
             )
-            data = _native.seal_bytes(info, reservation.key, context, _json.encode(value).encode())
-            state = _native.ProtectedState(False, info, data, tenant, subject)
+            state = _native.ProtectedState(False, info, bytes(value_sealed.data), tenant, subject)
             sealed.append(_json.decode(_native.encode_protected_state(state)))
         return sealed
 
-    async def open_stored(self, kind: StoredKind, identity: str, version: int, stored: Any) -> Any:
-        """Open a part :meth:`seal_stored` sealed. A destroyed scope raises
-        :class:`~edax.errors.Shredded`; any other envelope, or none, raises
+    async def open_stored(self, part: SealPart, stored: Any) -> Any:
+        """Open a value :meth:`seal_stored` sealed as ``part``, which the kernel's open plan names. The
+        scope comes from the part, so an envelope moved to another row or subject fails authentication. A
+        destroyed scope raises :class:`~edax.errors.Shredded`; any other envelope, or none, raises
         :class:`~edax.errors.CodecError`."""
         state = _native.decode_protected_state(_json.encode(stored)).value
         if state is None:
             raise CodecError("a sealed part is not a protected-state envelope")
-        info = state.encryption
-        context = _native.state_encryption_context(
-            kind, identity, "", version, "", False, info, state.tenant, state.subject
+        value = SealedValue(encryption=state.encryption, data=state.data)
+        opened = await self.open_state(
+            part["kind"], part["identity"], "", part["version"], value, part["tenant"], part["subject"]
         )
-        key = await self.resolve(info, state.tenant, state.subject)
-        return _json.decode(bytes(_native.open_bytes(info, key, context, bytes(state.data))))
+        return _json.decode(opened)
 
 
 # An opened view never replaces the ciphertext used by guards or nested saga runners.

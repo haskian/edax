@@ -83,8 +83,9 @@ class PostgresProjectionStateStore(ProjectionStateStore):
         table: str = "edax_projection_state",
         intents: str = "edax_projection_intents",
         sealing: Sealing | None = None,
+        key_timeout_s: float | None = 10.0,
     ) -> None:
-        super().__init__(target, sealing=sealing)
+        super().__init__(target, sealing=sealing, key_timeout_s=key_timeout_s)
         self._transactor = transactor
         self._sql = _statements(schema, table, intents)
         self._checked = False

@@ -848,15 +848,143 @@ fn checked(c: &Contract, event: &Event, reduced: &Reduced) -> Result<Reduced, Er
         ));
     }
     if let Some(subject) = &event.subject {
-        let tenant = event.tenant.as_deref();
-        if c.at_rest == namespace::AtRest::Sealed.as_str() {
-            namespace::check_sealed(Some(&reduced.private), tenant, subject)?;
-        }
-        for intent in &reduced.intents {
-            namespace::check_sealed(Some(&intent.payload), tenant, subject)?;
+        for (intent, _) in sealed_parts(c, event, &reduced)? {
+            let value = match intent {
+                None => &reduced.private,
+                Some(index) => {
+                    &reduced
+                        .intents
+                        .get(index)
+                        .ok_or_else(|| Error::bad_handle("missing intent"))?
+                        .payload
+                }
+            };
+            namespace::check_sealed(Some(value), event.tenant.as_deref(), subject)?;
         }
     }
     Ok(reduced)
+}
+
+/// The parts of `reduced` a host seals for `event`, each with the intent it sits in (none for the private
+/// state): a subject's present private state on a sealed generation, and every present intent payload of
+/// a subject. The state binds its key and the event's sequence; an intent binds its key and version 0.
+fn sealed_parts(
+    c: &Contract,
+    event: &Event,
+    reduced: &Reduced,
+) -> Result<Vec<(Option<usize>, namespace::Part)>, Error> {
+    let Some(subject) = &event.subject else {
+        return Ok(Vec::new());
+    };
+    let part = |kind: &str, identity: String, version: u64| namespace::Part {
+        kind: kind.into(),
+        identity,
+        version,
+        tenant: event.tenant.clone(),
+        subject: subject.clone(),
+    };
+    let mut parts = Vec::new();
+    if c.at_rest == namespace::AtRest::Sealed.as_str() && !reduced.private.is_null() {
+        let sequence =
+            u64::try_from(event.sequence).map_err(|_| Error::codec("projection sequence must start at one"))?;
+        let identity = c.state_key(&event.tenant, &event.subject, &event.aggregate)?;
+        parts.push((None, part("projection", identity, sequence)));
+    }
+    for (index, intent) in reduced.intents.iter().enumerate() {
+        if !intent.payload.is_null() {
+            let identity = c.intent_key(&intent_id(c, event, intent)?)?;
+            parts.push((Some(index), part("intent", identity, 0)));
+        }
+    }
+    Ok(parts)
+}
+
+/// One event's reducer result, as a host seals it before `ApplyBatch`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reduction {
+    /// The canonical event the reducer folded.
+    pub event: Event,
+    /// Its plaintext reducer result.
+    pub reduced: Reduced,
+}
+
+/// A part to seal in a batch's reducer results.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Placed {
+    /// Index of the reduction in the batch.
+    pub item: usize,
+    /// Index of the intent whose payload it is; none for the private state.
+    pub intent: Option<usize>,
+    /// What sealing it binds.
+    pub part: namespace::Part,
+}
+
+/// What a host seals in a batch's reducer results before `ApplyBatch`, which then refuses anything of a
+/// subject this plan names and the host left plaintext.
+pub fn seal_plan(c: &Contract, reductions: &[Reduction]) -> Result<Vec<Placed>, Error> {
+    c.validate()?;
+    let mut placed = Vec::new();
+    for (item, reduction) in reductions.iter().enumerate() {
+        for (intent, part) in sealed_parts(c, &reduction.event, &reduction.reduced)? {
+            placed.push(Placed { item, intent, part });
+        }
+    }
+    Ok(placed)
+}
+
+/// What a host opens in the state record it read for one aggregate, or none: a plaintext generation, an
+/// aggregate without a subject, or a state without a private part.
+pub fn open_state(
+    c: &Contract,
+    tenant: &Option<String>,
+    subject: &Option<String>,
+    aggregate: &str,
+    record: &Value,
+) -> Result<Option<namespace::Part>, Error> {
+    c.validate()?;
+    let state: State = serde_json::from_value(record.clone()).map_err(Error::codec)?;
+    let Some(subject) = subject
+        .as_ref()
+        .filter(|_| c.at_rest == namespace::AtRest::Sealed.as_str())
+    else {
+        return Ok(None);
+    };
+    if state.private.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(namespace::Part {
+        kind: "projection".into(),
+        identity: c.state_key(tenant, &Some(subject.clone()), aggregate)?,
+        version: u64::try_from(state.sequence).map_err(|_| Error::codec("invalid projection state sequence"))?,
+        tenant: tenant.clone(),
+        subject: subject.clone(),
+    }))
+}
+
+/// What a host opens in a stored intent record before delivery, or none: an intent without a subject or
+/// a payload.
+pub fn open_intent(c: &Contract, record: &Value) -> Result<Option<namespace::Part>, Error> {
+    c.validate()?;
+    let field = |name: &str| {
+        record
+            .get(name)
+            .ok_or_else(|| Error::codec(format_args!("intent record lacks {name}")))
+    };
+    let Some(subject) = record.get("subject").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if field("payload")?.is_null() {
+        return Ok(None);
+    }
+    let id = field("id")?.as_str().ok_or_else(|| Error::codec("invalid intent id"))?;
+    Ok(Some(namespace::Part {
+        kind: "intent".into(),
+        identity: c.intent_key(id)?,
+        version: 0,
+        tenant: record.get("tenant").and_then(Value::as_str).map(str::to_owned),
+        subject: subject.to_owned(),
+    }))
 }
 
 /// Apply one operation. The caller persists every write atomically, or none of them.

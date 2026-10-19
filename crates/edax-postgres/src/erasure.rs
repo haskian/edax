@@ -326,6 +326,14 @@ pub fn statements(schema: &str) -> Result<Statements, Error> {
     let notifications = table(tables.schema(), "notifications");
     let revocations = table(tables.schema(), "revocations");
     let row = "json_build_object('version', version, 'operation', record::json)::text";
+    // The stages whose scope is revoked, as `ErasureOperation::scope_revoked` reads them: kernel names,
+    // so the literals hold no apostrophe.
+    let revoked = edax_event::erasure::ErasureStage::ALL
+        .iter()
+        .filter(|stage| **stage >= edax_event::erasure::ErasureStage::Revoked)
+        .map(|stage| format!("'{}'", stage.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
     Ok(Statements {
         check_schema: catalog_query(&tables),
         create_operation: format!(
@@ -340,7 +348,7 @@ pub fn statements(schema: &str) -> Result<Statements, Error> {
              ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
         ),
         revoked_operations: format!(
-            "SELECT {row} FROM {operations} WHERE record::json->>'stage' <> 'persisted' AND ($2::text IS NULL OR operation_id > $2::text) \
+            "SELECT {row} FROM {operations} WHERE record::json->>'stage' IN ({revoked}) AND ($2::text IS NULL OR operation_id > $2::text) \
              ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
         ),
         update_operation: format!(

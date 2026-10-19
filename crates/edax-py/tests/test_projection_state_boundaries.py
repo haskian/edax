@@ -36,6 +36,28 @@ def test_projection_state_boundary_golden(fixture: str) -> None:
                             _json.encode(case["contract"]), case["subject"], case["tenant"]
                         )
                     )
+                case "seal_plan":
+                    return _json.decode(
+                        _edax.projection_seal_plan(
+                            _json.encode(case["contract"]), _json.encode(case["reductions"])
+                        )
+                    )
+                case "open_state":
+                    return _json.decode(
+                        _edax.projection_open_state(
+                            _json.encode(case["contract"]),
+                            _json.encode(case["record"]),
+                            case["aggregate"],
+                            case["subject"],
+                            case["tenant"],
+                        )
+                    )
+                case "open_intent":
+                    return _json.decode(
+                        _edax.projection_open_intent(
+                            _json.encode(case["contract"]), _json.encode(case["record"])
+                        )
+                    )
                 case "sql":
                     return _json.decode(_edax.postgres_projection_statements(_json.encode(case["config"])))
                 case _:

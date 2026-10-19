@@ -235,7 +235,9 @@ and the commit makes the fence refuse; the runner waits, stages the batch again 
 
 ### State and intents at rest
 
-Pass the same `sealing=` to the store. A subject's data is sealed before it reaches the kernel:
+Give the store `sealing=`; a runner built without its own uses the store's. A runner with sealing on
+neither refuses a subject's state with `BadHandle`: without it no write fence holds the commit against
+an erasure cleanup. The store seals what the kernel's seal plan names before it reaches `ApplyBatch`:
 
 | Data | Stored as | After the key is destroyed |
 |---|---|---|
@@ -243,6 +245,10 @@ Pass the same `sealing=` to the store. A subject's data is sealed before it reac
 | `private` state, target `at_rest="plaintext"` | Plaintext | The store's cleanup participant deletes it |
 | `public` state | Plaintext | Stays; it must hold nothing personal |
 | Intent payload of a subject | Protected-state envelope, whatever `at_rest` says | Deleted on the next `unpublished`, never delivered |
+
+A subject's key may be revoking, or the provider may not answer within the store's `key_timeout_s`
+(10 seconds by default). `unpublished` then leaves that subject's intents for a later page and
+delivers the rest.
 
 The store opens `private` for the reducer and in `get`. It reads keys once per commit and reserves one
 key per subject. The kernel refuses a subject's plaintext `private` part on a sealed target, and a

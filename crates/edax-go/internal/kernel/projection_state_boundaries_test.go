@@ -9,18 +9,21 @@ func TestProjectionStateBoundariesGolden(t *testing.T) {
 	for _, fixture := range []string{"projection_state_boundaries", "postgres_projection_state"} {
 		for _, row := range ingestionGoldenRows[struct {
 			ingestionGoldenResult
-			Request  json.RawMessage
-			Contract json.RawMessage
-			Proof    json.RawMessage
-			Cursor   int64
-			Manifest json.RawMessage
-			Intent   json.RawMessage
-			Config   json.RawMessage
-			Offset   int64
-			Envelope json.RawMessage
-			Event    json.RawMessage
-			Tenant   *string
-			Subject  *string
+			Request    json.RawMessage
+			Contract   json.RawMessage
+			Proof      json.RawMessage
+			Cursor     int64
+			Manifest   json.RawMessage
+			Intent     json.RawMessage
+			Config     json.RawMessage
+			Offset     int64
+			Envelope   json.RawMessage
+			Event      json.RawMessage
+			Tenant     *string
+			Subject    *string
+			Reductions json.RawMessage
+			Record     json.RawMessage
+			Aggregate  string
 		}](t, fixture) {
 			t.Run(fixture+"/"+row.Name, func(t *testing.T) {
 				var got any
@@ -55,6 +58,18 @@ func TestProjectionStateBoundariesGolden(t *testing.T) {
 				case "state_scope_range":
 					var value string
 					value, err = ProjectionStateScopeRange(string(row.Contract), row.Subject, row.Tenant)
+					got = json.RawMessage(value)
+				case "seal_plan":
+					var value string
+					value, err = ProjectionSealPlan(string(row.Contract), string(row.Reductions))
+					got = json.RawMessage(value)
+				case "open_state":
+					var value string
+					value, err = ProjectionOpenState(string(row.Contract), string(row.Record), row.Aggregate, row.Subject, row.Tenant)
+					got = json.RawMessage(value)
+				case "open_intent":
+					var value string
+					value, err = ProjectionOpenIntent(string(row.Contract), string(row.Record))
 					got = json.RawMessage(value)
 				case "sql":
 					var value string
