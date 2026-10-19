@@ -9,7 +9,8 @@ from typing import Any
 import pytest
 from edax import _native
 from edax.backend.kafka_ingest import KafkaIngestion
-from edax.ingestion import BatchCommitError, BatchInput, BatchResult
+from edax.errors import CodecError, StoreError, TransactionFailure
+from edax.ingestion import BatchInput, BatchResult
 from edax.pacing import Pacing
 from test_kafka_ingest import (
     TP,
@@ -17,6 +18,7 @@ from test_kafka_ingest import (
     EventIds,
     RecordingSink,
     events,
+    failed,
     mapper,
     no_dead,
     records,
@@ -42,13 +44,13 @@ async def test_repeated_isolation_after_eviction_preserves_child_retry_budget(
                 self.parent_attempts += 1
                 if self.parent_attempts % 2 == 1:
                     self.retrying_parent = True
-                    raise BatchCommitError("retry", OSError("temporary parent transaction failure"))
+                    raise failed(StoreError("temporary parent transaction failure"))
             if any(item.event_id == "p0-0" and item.failure is None for item in inputs):
-                raise BatchCommitError("isolate", ValueError("row constraint"))
+                raise failed(CodecError("row constraint"))
             if any(item.failure is not None for item in inputs):
                 self.retrying_parent = False
                 self.rejected_attempts += 1
-                raise BatchCommitError("retry", OSError("rejection outbox unavailable"))
+                raise failed(StoreError("rejection outbox unavailable"))
             return await super().commit(inputs)
 
     messages = events(2)
@@ -81,7 +83,7 @@ async def test_repeated_isolation_after_eviction_preserves_child_retry_budget(
                 assert runner._evict_retry()
                 await until(lambda: part.task is None)
                 part.ready_at = 0
-        assert isinstance(runner._failure, BatchCommitError)
+        assert isinstance(runner._failure, TransactionFailure)
         assert sink.rejected_attempts == 2
         assert client.commits == []
         assert await sink.pending() == {}
@@ -103,9 +105,9 @@ async def test_new_isolation_resets_parent_retry_budget(monkeypatch: pytest.Monk
             batch = tuple(item.event_id for item in inputs)
             self.attempts[batch] = attempt = self.attempts.get(batch, 0) + 1
             if attempt == 1:
-                raise BatchCommitError("retry", OSError("temporary connection loss"))
+                raise failed(StoreError("temporary connection loss"))
             if len(inputs) > 1:
-                raise BatchCommitError("isolate", ValueError("confirmed row constraint"))
+                raise failed(CodecError("confirmed row constraint"))
             return await super().commit(inputs)
 
     messages = events(2)

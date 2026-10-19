@@ -11,7 +11,7 @@ from typing import Any, TypeVar, cast
 
 from .. import _json, _native
 from ..errors import BadHandle
-from ..ingestion import BatchCommitError, BatchInput, BatchResult, IngestionTarget
+from ..ingestion import BatchInput, BatchResult, IngestionTarget
 from ..outbox import check_page
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
@@ -32,19 +32,6 @@ def _statements(schema: str, tables: Mapping[str, str] | None) -> dict[str, str]
 def reference_ingestion_ddl(schema: str = "public", tables: Mapping[str, str] | None = None) -> str:
     """DDL for the host's migration tool. The sink never creates tables."""
     return _statements(schema, tables)["ddl"]
-
-
-def _sqlstate(error: Exception) -> str | None:
-    """Acquisition and deadline wrappers preserve the driver error as their cause."""
-    current: BaseException | None = error
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        state = getattr(current, "sqlstate", None)
-        if isinstance(state, str):
-            return state
-        current = current.__cause__
-    return None
 
 
 class PostgresIngestionSink:
@@ -86,6 +73,8 @@ class PostgresIngestionSink:
         self._checked = True
 
     async def _own(self, call: Callable[[PgConnection], Awaitable[T]]) -> T:
+        """Run ``call`` in its own transaction. A failure raises :class:`PostgresTransactionFailure`: the
+        kernel's typed verdict as its cause, with the rollback evidence batch recovery reads."""
         needs_bind = not self._bound
 
         async def checked(conn: PgConnection) -> T:
@@ -104,17 +93,17 @@ class PostgresIngestionSink:
                         _native.ingest_bind_contract(_json.encode(bound), self.target.manifest)
             return await call(conn)
 
-        try:
-            result = await self._transactor.run_owned(checked)
-        except PostgresTransactionFailure as failure:
-            error = failure.cause
-            kind = _native.postgres_ingest_recovery(
-                failure.rolled_back and not failure.commit_started, _sqlstate(error)
-            )
-            raise BatchCommitError(kind, error) from failure
+        result = await self._transactor.run_owned(checked, op="ingest")
         # Only a confirmed commit proves the durable manifest exists.
         self._bound = True
         return result
+
+    async def _typed(self, call: Callable[[PgConnection], Awaitable[T]]) -> T:
+        """:meth:`_own` for callers that need no commit evidence: they get the kernel's typed verdict."""
+        try:
+            return await self._own(call)
+        except PostgresTransactionFailure as failure:
+            raise failure.cause from failure
 
     async def _read(self, conn: PgConnection, role: str, keys: Sequence[str]) -> dict[str, Any]:
         rows = await self._call(conn.fetch(self._sql[f"read_{role}"], _json.encode(keys)))
@@ -164,7 +153,7 @@ class PostgresIngestionSink:
             rows = await self._call(conn.fetch(self._sql["pending"], self.target.prefix, str(limit)))
             return {row["key"]: _json.decode(row["value"]) for row in rows}
 
-        return await self._own(read)
+        return await self._typed(read)
 
     async def published(self, confirmed: Mapping[str, str]) -> None:
         """Record confirmed publication of each source, guarded by its original raw fingerprint, in one
@@ -180,7 +169,7 @@ class PostgresIngestionSink:
             if marked != len(confirmed):
                 raise BadHandle("rejection is missing or its source fingerprint changed")
 
-        await self._own(mark)
+        await self._typed(mark)
 
     async def get(self, tenant: str | None, row_key: str) -> dict[str, Any] | None:
         """Read one committed event/state envelope, including a retained deletion marker."""
@@ -189,4 +178,4 @@ class PostgresIngestionSink:
         async def read(conn: PgConnection) -> dict[str, Any] | None:
             return (await self._read(conn, self._role, [key])).get(key)
 
-        return await self._own(read)
+        return await self._typed(read)

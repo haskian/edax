@@ -726,13 +726,17 @@ fn golden_error() {
         ("22P05", None),
         ("22021", None),
         ("54000", None),
+        ("23514", None),
+        ("22012", None),
         ("42P01", None),
+        ("3D000", None),
+        ("28P01", None),
         ("42501", None),
         ("XX000", None),
     ];
     // Every state on three operations, and the two timeout states, whose verdict turns on the operation,
     // on every operation.
-    let full = [Op::Append, Op::Claim, Op::ProjectionSave];
+    let full = [Op::Append, Op::Claim, Op::ProjectionSave, Op::Ingest];
     for op in Op::ALL.iter().copied() {
         let states: &[(&str, Option<UniqueKey>)] = if full.contains(&op) {
             &states
@@ -957,7 +961,7 @@ fn golden_query() {
     write_or_check("postgres_query.json", cases);
 }
 
-/// Optional ingestion SQL and recovery decisions, shared by every ingestion adapter.
+/// Optional ingestion SQL, shared by every ingestion adapter.
 #[test]
 fn golden_ingest() {
     let mut cases = Vec::new();
@@ -993,32 +997,6 @@ fn golden_ingest() {
             "name": name, "op": "statements", "config": config,
             "want": result.as_ref().ok(), "error": refusal(&result),
         }));
-    }
-    for (name, sqlstate) in [
-        ("connection", Some("08006")),
-        ("data_range", Some("22003")),
-        ("constraint", Some("23514")),
-        ("unique", Some("23505")),
-        ("missing_table", Some("42P01")),
-        ("authorization", Some("28P01")),
-        ("missing_database", Some("3D000")),
-        ("missing_schema", Some("3F000")),
-        ("serialization", Some("40001")),
-        ("deadlock", Some("40P01")),
-        ("resource", Some("53000")),
-        ("program_limit", Some("54000")),
-        ("timeout", Some("57014")),
-        ("unknown", Some("XX000")),
-        ("empty", Some("")),
-        ("missing", None),
-    ] {
-        for rolled_back in [false, true] {
-            cases.push(json!({
-                "name": format!("{name}_{}", if rolled_back { "rolled_back" } else { "uncertain" }),
-                "op": "recovery", "sqlstate": sqlstate, "rolled_back": rolled_back,
-                "want": edax_postgres::ingest::recovery(sqlstate, rolled_back), "error": null,
-            }));
-        }
     }
     write_or_check("postgres_ingest.json", cases);
 }

@@ -45,7 +45,10 @@ async def test_staging_expiry_refreshes_only_the_current_owner(takeover: bool) -
     try:
 
         async def settled() -> bool:
-            return bool(run.partition_failures) or await store.get("bank-eu", "account-42") is not None
+            # The commit lands in the store before the runner records the lease it returned.
+            return bool(run.partition_failures) or (
+                assigned.lease is not None and assigned.lease.next_offset == 3
+            )
 
         await eventually(settled)
         assert run._parts[TP] is assigned and TP in client.assignment()

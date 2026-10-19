@@ -17,7 +17,7 @@
 //! - [`query`](mod@query) — the read-model query compiled to SQL, and the page from its rows.
 //! - [`ledger`] — the claim owner, what a claim does with the row it read, its parameters, and the fence on
 //!   each settling write.
-//! - [`ingest`] — the optional ingestion table, its locks, writes and rollback-aware recovery.
+//! - [`ingest`] — the optional ingestion table, its locks and writes.
 //! - [`projection`] — the optional projection state table, its generation lock and historical outbox
 //!   suppression.
 //!

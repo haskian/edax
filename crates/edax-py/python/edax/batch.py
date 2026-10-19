@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
-from . import _native
+from . import _native, errors
 from ._json import decode, encode
 
-__all__ = ["BatchSettings"]
+__all__ = ["BatchSettings", "recover"]
 
 _DEFAULTS: dict[str, int] = decode(_native.batch_config("{}"))
 
@@ -38,3 +39,22 @@ class BatchSettings:
     def json(self) -> str:
         """The native policy configuration shared by admission, batching, and recovery."""
         return encode(self)
+
+
+def recover(
+    error: BaseException, settings: BatchSettings, *, attempt: int, count: int, isolable: bool, waits: int = 0
+) -> dict[str, Any]:
+    """The kernel's recovery after ``error`` failed an attempt of ``count`` originals: an ``action`` of
+    ``stop``, ``retry``, ``wait``, ``split`` or ``reject``. Only a :class:`~edax.errors.TransactionFailure`
+    that rolled back before its commit started proves nothing was written; any other failure may have."""
+    cause, rolled_back = error, False
+    if isinstance(error, errors.TransactionFailure):
+        cause, rolled_back = error.cause, error.rolled_back and not error.commit_started
+    return cast(
+        dict[str, Any],
+        decode(
+            _native.batch_recover(
+                attempt, waits, count, settings.max_attempts, rolled_back, isolable, errors.code_of(cause)
+            )
+        ),
+    )

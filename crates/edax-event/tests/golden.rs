@@ -2132,7 +2132,7 @@ fn saga_cases() -> Vec<Value> {
 }
 
 fn event_batch_cases() -> Vec<Value> {
-    use edax_event::batch::{admit, check, cut, recover, Config};
+    use edax_event::batch::{admit, check, cut, recover, Attempt, Config};
 
     let mut cases = Vec::new();
     for (name, config) in [
@@ -2196,39 +2196,107 @@ fn event_batch_cases() -> Vec<Value> {
             "want": admit(used_records, used_bytes, records, bytes, &config), "error": null,
         }));
     }
-    for (name, kind, attempt, count, max_attempts) in [
-        ("fatal_stops", "fatal", 1, 500, 5),
-        ("retry_initial_step", "retry", 0, 500, 5),
-        ("retry_first_failure", "retry", 1, 500, 5),
-        ("retry_later_failure", "retry", 4, 500, 5),
-        ("outage_exhaustion_stops_without_rejection", "retry", 5, 500, 5),
-        ("uncertain_commit_retries_original_batch", "uncertain", 1, 500, 5),
-        ("uncertain_commit_exhaustion_stops", "uncertain", 5, 500, 5),
-        ("split_even_originals_left_first", "isolate", 1, 500, 5),
-        ("split_odd_originals_left_first", "isolate", 1, 5, 5),
-        ("split_two_originals", "isolate", 1, 2, 5),
-        ("single_record_isolated_rejection", "isolate", 1, 1, 5),
-        ("invalid_record_rejection", "invalid", 1, 1, 5),
-        ("invalid_batch_rejects_all", "invalid", 1, 500, 5),
-        ("unknown_failure_is_refused", "unrecognized", 1, 1, 5),
-        ("empty_recovery_is_refused", "retry", 1, 0, 5),
-        ("zero_retry_limit_is_refused", "retry", 1, 1, 0),
+    // (name, code, attempt, waits, count, max_attempts, rolled_back, isolable)
+    for (name, code, attempt, waits, count, max_attempts, rolled_back, isolable) in [
+        ("fatal_stops", Some("bad_handle"), 1, 0, 500, 5, true, true),
+        (
+            "contention_waits_uncounted",
+            Some("in_progress"),
+            9,
+            1,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("contention_backs_off", Some("in_progress"), 9, 4, 500, 5, false, false),
+        ("retry_initial_step", Some("store"), 0, 0, 500, 5, true, true),
+        ("retry_first_failure", Some("store"), 1, 0, 500, 5, true, true),
+        ("retry_later_failure", Some("concurrency"), 4, 0, 500, 5, true, true),
+        (
+            "outage_exhaustion_stops_without_rejection",
+            Some("store"),
+            5,
+            0,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("uncoded_failure_is_transient", None, 1, 0, 500, 5, true, true),
+        (
+            "uncertain_commit_retries_original_batch",
+            Some("codec"),
+            1,
+            0,
+            500,
+            5,
+            false,
+            true,
+        ),
+        (
+            "uncertain_commit_exhaustion_stops",
+            Some("codec"),
+            5,
+            0,
+            500,
+            5,
+            false,
+            true,
+        ),
+        (
+            "split_even_originals_left_first",
+            Some("codec"),
+            1,
+            0,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("split_odd_originals_left_first", Some("codec"), 1, 0, 5, 5, true, true),
+        ("split_two_originals", Some("codec"), 1, 0, 2, 5, true, true),
+        (
+            "single_record_isolated_rejection",
+            Some("codec"),
+            1,
+            0,
+            1,
+            5,
+            true,
+            true,
+        ),
+        ("rejected_record_rejection", Some("rejected"), 1, 0, 1, 5, true, true),
+        (
+            "terminal_without_isolation_stops",
+            Some("codec"),
+            1,
+            0,
+            1,
+            5,
+            true,
+            false,
+        ),
+        ("unknown_code_is_refused", Some("unrecognized"), 1, 0, 1, 5, true, true),
+        ("empty_recovery_is_refused", Some("store"), 1, 0, 0, 5, true, true),
+        ("zero_retry_limit_is_refused", Some("store"), 1, 0, 1, 0, true, true),
     ] {
-        let result = recover(kind, attempt, count, max_attempts);
+        let result = recover(
+            code,
+            Attempt {
+                attempt,
+                waits,
+                count,
+                max_attempts,
+                rolled_back,
+                isolable,
+            },
+        );
         cases.push(json!({
-            "name": name, "op": "recover", "kind": kind, "attempt": attempt,
-            "count": count, "max_attempts": max_attempts,
+            "name": name, "op": "recover", "code": code, "attempt": attempt, "waits": waits,
+            "count": count, "max_attempts": max_attempts, "rolled_back": rolled_back, "isolable": isolable,
             "want": result.as_ref().ok(), "error": refusal(&result),
         }));
-    }
-    for (name, kind, attempt) in [
-        ("rejection_persistence_retries", "isolate", 1),
-        ("rejection_persistence_exhaustion", "isolate", 5),
-        ("invalid_rejection_persistence_retries", "invalid", 1),
-        ("invalid_rejection_persistence_exhaustion", "invalid", 5),
-    ] {
-        let result = edax_event::batch::recover_with_rejections(kind, attempt, 1, 5, true);
-        cases.push(json!({"name": name, "op":"recover_rejected", "kind":kind, "attempt":attempt, "count":1, "max_attempts":5, "want":result.as_ref().ok(), "error":refusal(&result)}));
     }
     cases.push(json!({"name":"default_reservation", "op":"reserve", "config":{}, "want":edax_event::batch::reserve(&config).unwrap(), "error":null}));
     let reserve = edax_event::batch::reserve(&config).unwrap();
@@ -2240,12 +2308,7 @@ fn event_batch_cases() -> Vec<Value> {
         let result = edax_event::batch::charge(bytes, &config);
         cases.push(json!({"name": name, "op":"charge", "config":{}, "bytes":bytes, "want":result.as_ref().ok(), "error":refusal(&result)}));
     }
-    for (set, names) in [
-        ("batch_failure_kind", edax_event::batch::FailureKind::NAMES),
-        ("batch_action", edax_event::batch::Action::NAMES),
-    ] {
-        cases.push(json!({"name":format!("{set}_names"), "op":"names", "set":set, "want":names, "error":null}));
-    }
+    cases.push(json!({"name":"batch_action_names", "op":"names", "set":"batch_action", "want":edax_event::batch::Action::NAMES, "error":null}));
     cases
 }
 

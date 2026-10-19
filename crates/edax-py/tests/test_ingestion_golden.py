@@ -16,7 +16,6 @@ def replay(case: dict[str, Any]) -> Any:
         return {
             "ingest_mode": _edax.ingest_mode_names,
             "ingest_outcome": _edax.ingest_outcome_names,
-            "batch_failure_kind": _edax.batch_failure_kind_names,
             "batch_action": _edax.batch_action_names,
         }[case["set"]]()
     if op == "plan":
@@ -52,21 +51,21 @@ def replay(case: dict[str, Any]) -> Any:
         )
     if op == "statements":
         return json.loads(_edax.postgres_ingest_statements(case["config"]))
-    if op == "recovery":
-        return _edax.postgres_ingest_recovery(case["rolled_back"], case["sqlstate"])
     if op == "reserve":
         return _edax.batch_reserve(json.dumps(case["config"]))
     if op == "charge":
         return _edax.batch_charge(case["bytes"], json.dumps(case["config"]))
-    if op == "recover_rejected":
-        return json.loads(
-            _edax.batch_recover_with_rejections(
-                case["kind"], case["attempt"], case["count"], case["max_attempts"], True
-            )
-        )
     if op == "recover":
         return json.loads(
-            _edax.batch_recover(case["kind"], case["attempt"], case["count"], case["max_attempts"])
+            _edax.batch_recover(
+                case["attempt"],
+                case["waits"],
+                case["count"],
+                case["max_attempts"],
+                case["rolled_back"],
+                case["isolable"],
+                case["code"],
+            )
         )
     config = json.dumps(case["config"])
     if op == "config":

@@ -329,12 +329,15 @@
   },
   {
     "attempt": 1,
+    "code": "bad_handle",
     "count": 500,
     "error": null,
-    "kind": "fatal",
+    "isolable": true,
     "max_attempts": 5,
     "name": "fatal_stops",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "stop",
       "split": 0,
@@ -342,13 +345,50 @@
     }
   },
   {
-    "attempt": 0,
+    "attempt": 9,
+    "code": "in_progress",
     "count": 500,
     "error": null,
-    "kind": "retry",
+    "isolable": true,
+    "max_attempts": 5,
+    "name": "contention_waits_uncounted",
+    "op": "recover",
+    "rolled_back": true,
+    "waits": 1,
+    "want": {
+      "action": "wait",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 9,
+    "code": "in_progress",
+    "count": 500,
+    "error": null,
+    "isolable": false,
+    "max_attempts": 5,
+    "name": "contention_backs_off",
+    "op": "recover",
+    "rolled_back": false,
+    "waits": 4,
+    "want": {
+      "action": "wait",
+      "split": 0,
+      "step": 3
+    }
+  },
+  {
+    "attempt": 0,
+    "code": "store",
+    "count": 500,
+    "error": null,
+    "isolable": true,
     "max_attempts": 5,
     "name": "retry_initial_step",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "retry",
       "split": 0,
@@ -357,12 +397,15 @@
   },
   {
     "attempt": 1,
+    "code": "store",
     "count": 500,
     "error": null,
-    "kind": "retry",
+    "isolable": true,
     "max_attempts": 5,
     "name": "retry_first_failure",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "retry",
       "split": 0,
@@ -371,12 +414,15 @@
   },
   {
     "attempt": 4,
+    "code": "concurrency",
     "count": 500,
     "error": null,
-    "kind": "retry",
+    "isolable": true,
     "max_attempts": 5,
     "name": "retry_later_failure",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "retry",
       "split": 0,
@@ -385,12 +431,15 @@
   },
   {
     "attempt": 5,
+    "code": "store",
     "count": 500,
     "error": null,
-    "kind": "retry",
+    "isolable": true,
     "max_attempts": 5,
     "name": "outage_exhaustion_stops_without_rejection",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "stop",
       "split": 0,
@@ -399,12 +448,32 @@
   },
   {
     "attempt": 1,
+    "code": null,
     "count": 500,
     "error": null,
-    "kind": "uncertain",
+    "isolable": true,
+    "max_attempts": 5,
+    "name": "uncoded_failure_is_transient",
+    "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "code": "codec",
+    "count": 500,
+    "error": null,
+    "isolable": true,
     "max_attempts": 5,
     "name": "uncertain_commit_retries_original_batch",
     "op": "recover",
+    "rolled_back": false,
+    "waits": 0,
     "want": {
       "action": "retry",
       "split": 0,
@@ -413,12 +482,15 @@
   },
   {
     "attempt": 5,
+    "code": "codec",
     "count": 500,
     "error": null,
-    "kind": "uncertain",
+    "isolable": true,
     "max_attempts": 5,
     "name": "uncertain_commit_exhaustion_stops",
     "op": "recover",
+    "rolled_back": false,
+    "waits": 0,
     "want": {
       "action": "stop",
       "split": 0,
@@ -427,12 +499,15 @@
   },
   {
     "attempt": 1,
+    "code": "codec",
     "count": 500,
     "error": null,
-    "kind": "isolate",
+    "isolable": true,
     "max_attempts": 5,
     "name": "split_even_originals_left_first",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "split",
       "split": 250,
@@ -441,12 +516,15 @@
   },
   {
     "attempt": 1,
+    "code": "codec",
     "count": 5,
     "error": null,
-    "kind": "isolate",
+    "isolable": true,
     "max_attempts": 5,
     "name": "split_odd_originals_left_first",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "split",
       "split": 2,
@@ -455,12 +533,15 @@
   },
   {
     "attempt": 1,
+    "code": "codec",
     "count": 2,
     "error": null,
-    "kind": "isolate",
+    "isolable": true,
     "max_attempts": 5,
     "name": "split_two_originals",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "split",
       "split": 1,
@@ -469,12 +550,15 @@
   },
   {
     "attempt": 1,
+    "code": "codec",
     "count": 1,
     "error": null,
-    "kind": "isolate",
+    "isolable": true,
     "max_attempts": 5,
     "name": "single_record_isolated_rejection",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "reject",
       "rejection": "rejected: ingestion sink refused this original",
@@ -484,12 +568,15 @@
   },
   {
     "attempt": 1,
+    "code": "rejected",
     "count": 1,
     "error": null,
-    "kind": "invalid",
+    "isolable": true,
     "max_attempts": 5,
-    "name": "invalid_record_rejection",
+    "name": "rejected_record_rejection",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": {
       "action": "reject",
       "rejection": "rejected: ingestion sink refused this original",
@@ -499,104 +586,59 @@
   },
   {
     "attempt": 1,
-    "count": 500,
-    "error": null,
-    "kind": "invalid",
-    "max_attempts": 5,
-    "name": "invalid_batch_rejects_all",
-    "op": "recover",
-    "want": {
-      "action": "reject",
-      "rejection": "rejected: ingestion sink refused this original",
-      "split": 0,
-      "step": 0
-    }
-  },
-  {
-    "attempt": 1,
+    "code": "codec",
     "count": 1,
-    "error": "bad_handle: unknown microbatch recovery kind: unrecognized",
-    "kind": "unrecognized",
+    "error": null,
+    "isolable": false,
     "max_attempts": 5,
-    "name": "unknown_failure_is_refused",
+    "name": "terminal_without_isolation_stops",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
+    "want": {
+      "action": "stop",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "code": "unrecognized",
+    "count": 1,
+    "error": "codec: unknown error code: unrecognized",
+    "isolable": true,
+    "max_attempts": 5,
+    "name": "unknown_code_is_refused",
+    "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": null
   },
   {
     "attempt": 1,
+    "code": "store",
     "count": 0,
     "error": "bad_handle: recovery requires records and a positive attempt limit",
-    "kind": "retry",
+    "isolable": true,
     "max_attempts": 5,
     "name": "empty_recovery_is_refused",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": null
   },
   {
     "attempt": 1,
+    "code": "store",
     "count": 1,
     "error": "bad_handle: recovery requires records and a positive attempt limit",
-    "kind": "retry",
+    "isolable": true,
     "max_attempts": 0,
     "name": "zero_retry_limit_is_refused",
     "op": "recover",
+    "rolled_back": true,
+    "waits": 0,
     "want": null
-  },
-  {
-    "attempt": 1,
-    "count": 1,
-    "error": null,
-    "kind": "isolate",
-    "max_attempts": 5,
-    "name": "rejection_persistence_retries",
-    "op": "recover_rejected",
-    "want": {
-      "action": "retry",
-      "split": 0,
-      "step": 0
-    }
-  },
-  {
-    "attempt": 5,
-    "count": 1,
-    "error": null,
-    "kind": "isolate",
-    "max_attempts": 5,
-    "name": "rejection_persistence_exhaustion",
-    "op": "recover_rejected",
-    "want": {
-      "action": "stop",
-      "split": 0,
-      "step": 0
-    }
-  },
-  {
-    "attempt": 1,
-    "count": 1,
-    "error": null,
-    "kind": "invalid",
-    "max_attempts": 5,
-    "name": "invalid_rejection_persistence_retries",
-    "op": "recover_rejected",
-    "want": {
-      "action": "retry",
-      "split": 0,
-      "step": 0
-    }
-  },
-  {
-    "attempt": 5,
-    "count": 1,
-    "error": null,
-    "kind": "invalid",
-    "max_attempts": 5,
-    "name": "invalid_rejection_persistence_exhaustion",
-    "op": "recover_rejected",
-    "want": {
-      "action": "stop",
-      "split": 0,
-      "step": 0
-    }
   },
   {
     "config": {},
@@ -631,25 +673,13 @@
   },
   {
     "error": null,
-    "name": "batch_failure_kind_names",
-    "op": "names",
-    "set": "batch_failure_kind",
-    "want": [
-      "fatal",
-      "retry",
-      "uncertain",
-      "isolate",
-      "invalid"
-    ]
-  },
-  {
-    "error": null,
     "name": "batch_action_names",
     "op": "names",
     "set": "batch_action",
     "want": [
       "stop",
       "retry",
+      "wait",
       "split",
       "reject"
     ]

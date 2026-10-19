@@ -495,11 +495,6 @@ pub fn own_command(command: CommandMessage, tenant: Option<String>) -> Result<Co
     .map_err(to_wire)
 }
 
-/// Every microbatch failure classification, in the kernel's order.
-pub fn batch_failure_kind_names() -> Vec<String> {
-    names(edax_event::batch::FailureKind::NAMES)
-}
-
 /// Every microbatch recovery action, in the kernel's order.
 pub fn batch_action_names() -> Vec<String> {
     names(edax_event::batch::Action::NAMES)
@@ -517,20 +512,6 @@ pub fn batch_reserve(config: &str) -> Result<u64, String> {
     edax_event::batch::reserve(&crate::read_json(config)?)
         .map(|n| n as u64)
         .map_err(crate::to_wire)
-}
-
-/// Recovery with the already-rejected fact supplied by the runner.
-pub fn batch_recover_with_rejections(
-    kind: &str,
-    attempt: u32,
-    count: u64,
-    max_attempts: u32,
-    rejected: bool,
-) -> Result<String, String> {
-    crate::write_json(
-        &edax_event::batch::recover_with_rejections(kind, attempt, count as usize, max_attempts, rejected)
-            .map_err(crate::to_wire)?,
-    )
 }
 
 /// Retained bytes for one prepared input. See [`edax_event::batch::charge`].
@@ -565,9 +546,25 @@ pub fn batch_admit(used_records: u64, used_bytes: u64, records: u64, bytes: u64,
     ))
 }
 
-/// The recovery action after a classified batch failure. Infrastructure never dead-letters.
-pub fn batch_recover(kind: &str, attempt: u32, count: u64, max_attempts: u32) -> Result<String, String> {
-    crate::write_json(&edax_event::batch::recover(kind, attempt, count as usize, max_attempts).map_err(crate::to_wire)?)
+/// The recovery after a failed microbatch attempt with error `code`. See [`edax_event::batch::recover`].
+pub fn batch_recover(
+    attempt: u32,
+    waits: u32,
+    count: u64,
+    max_attempts: u32,
+    rolled_back: bool,
+    isolable: bool,
+    code: Option<String>,
+) -> Result<String, String> {
+    let attempt = edax_event::batch::Attempt {
+        attempt,
+        waits,
+        count: usize::try_from(count).map_err(|_| to_wire(edax_core::Error::codec("count overflows")))?,
+        max_attempts,
+        rolled_back,
+        isolable,
+    };
+    crate::write_json(&edax_event::batch::recover(code.as_deref(), attempt).map_err(to_wire)?)
 }
 
 #[cfg(test)]

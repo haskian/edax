@@ -19,9 +19,8 @@ from edax.backend.kafka import KafkaRecord
 from edax.backend.kafka_ingest import KafkaIngestion
 from edax.batch import BatchSettings
 from edax.delivery import DeadLetter
-from edax.errors import BadHandle
+from edax.errors import BadHandle, CodecError, StoreError, TransactionFailure
 from edax.ingestion import (
-    BatchCommitError,
     BatchInput,
     BatchResult,
     IngestionTarget,
@@ -31,6 +30,12 @@ from edax.ingestion import (
 from edax.message import EventMessage
 
 TP = TopicPartition("orders", 0)
+
+
+def failed(cause: Exception, *, rolled_back: bool = True) -> TransactionFailure:
+    """A sink commit that failed with ``cause``. ``rolled_back`` proves nothing was written; without it
+    the commit had started and its outcome is unknown."""
+    return TransactionFailure(cause, rolled_back=rolled_back, commit_started=not rolled_back)
 
 
 class EventIds(IdSerializer):
@@ -192,7 +197,6 @@ async def test_failed_dead_publication_never_acknowledges_rejection() -> None:
     called: list[DeadLetter[Any]] = []
 
     def invalid(event: EventMessage) -> MappedRow:
-        from edax.errors import CodecError
 
         raise CodecError("invalid mapped order")
 
@@ -223,7 +227,7 @@ async def test_four_retries_cannot_starve_a_fifth_partition(monkeypatch: pytest.
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             if inputs[0].stream != "order-4":
                 failed.add(inputs[0].stream)
-                raise BatchCommitError("retry", OSError("partition unavailable"))
+                raise failed(StoreError("partition unavailable"))
             result = await super().commit(inputs)
             healthy.set()
             return result
@@ -256,7 +260,7 @@ async def test_known_rollback_bisects_originals_and_executes_each_child() -> Non
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             attempts.append(tuple((item.event_id, item.failure is not None) for item in inputs))
             if any(item.event_id == "p0-2" and item.failure is None for item in inputs):
-                raise BatchCommitError("isolate", ValueError("row constraint"))
+                raise failed(CodecError("row constraint"))
             return await super().commit(inputs)
 
     async def publish(letter: DeadLetter[Any]) -> None:
@@ -284,7 +288,7 @@ async def test_uncertain_commit_exhaustion_replays_without_dead_letter_or_ack() 
     class LostReplySink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             await super().commit(inputs)
-            raise BatchCommitError("uncertain", OSError("commit reply lost"))
+            raise failed(StoreError("commit reply lost"), rolled_back=False)
 
     messages = events(2)
     client = BatchClient(records(messages))
@@ -293,7 +297,7 @@ async def test_uncertain_commit_exhaustion_replays_without_dead_letter_or_ack() 
         client, sink, mapper, no_dead, settings=settings(max_records=2), serializer=EventIds(messages)
     )
     async with running(runner) as task:
-        with pytest.raises(BatchCommitError, match="commit reply lost"):
+        with pytest.raises(TransactionFailure, match="commit reply lost"):
             await asyncio.wait_for(asyncio.shield(task), 1)
     assert sink.batches == [("p0-0", "p0-1")] * 2
     assert client.commits == []
@@ -428,9 +432,9 @@ async def test_retry_eviction_after_left_child_commit_rewinds_first_live_right_c
 
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             if len(inputs) == 4:
-                raise BatchCommitError("isolate", ValueError("confirmed row-local rollback"))
+                raise failed(CodecError("confirmed row-local rollback"))
             if inputs[0].event_id == "p0-2" and self.retry:
-                raise BatchCommitError("retry", OSError("right child temporarily unavailable"))
+                raise failed(StoreError("right child temporarily unavailable"))
             return await super().commit(inputs)
 
     messages = events(4)
@@ -821,7 +825,7 @@ async def test_eviction_preserves_retry_exhaustion(monkeypatch: pytest.MonkeyPat
     class UnavailableSink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             self.batches.append(tuple(item.event_id for item in inputs))
-            raise BatchCommitError("retry", OSError("persistent sink outage"))
+            raise failed(StoreError("persistent sink outage"))
 
     messages = events(1)
     client = BatchClient(records(messages))
@@ -845,7 +849,7 @@ async def test_eviction_preserves_retry_exhaustion(monkeypatch: pytest.MonkeyPat
             assert runner.retained_records == runner.retained_bytes == 0
             part.ready_at = asyncio.get_running_loop().time()
             runner._changed.set()
-        with pytest.raises(BatchCommitError, match="persistent sink outage"):
+        with pytest.raises(TransactionFailure, match="persistent sink outage"):
             await asyncio.wait_for(asyncio.shield(task), 1)
     assert sink.batches == [("p0-0",)] * 3
     assert client.commits == []
@@ -991,7 +995,6 @@ async def test_revoke_clean_commit_failure_allows_reassignment_and_replay() -> N
 )
 async def test_prepare_failure_classification(case: str, fatal: bool) -> None:
     from conftest import build_command
-    from edax.errors import CodecError
     from edax.message import CommandMessage
 
     messages = events(1)
@@ -1044,15 +1047,15 @@ async def test_prepare_failure_classification(case: str, fatal: bool) -> None:
     assert await sink.pending() == {}
 
 
-@pytest.mark.parametrize("kind", ["isolate", "invalid"])
-async def test_rejected_input_isolation_exhausts_without_rejecting_forever(kind: str) -> None:
-    from edax.errors import CodecError
+@pytest.mark.parametrize(("rolled_back", "attempts"), [(True, 1), (False, 3)], ids=["refused", "uncertain"])
+async def test_rejected_input_failure_never_rejects_again(rolled_back: bool, attempts: int) -> None:
+    """A refused rejection write stops at once; one whose commit may have landed replays to the ceiling."""
 
     class FailedRejectionSink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             assert all(item.failure is not None for item in inputs)
             self.batches.append(tuple(item.event_id for item in inputs))
-            raise BatchCommitError(kind, ValueError("rejection row constraint"))
+            raise failed(CodecError("rejection row constraint"), rolled_back=rolled_back)
 
     def invalid(event: EventMessage) -> MappedRow:
         raise CodecError("invalid order payload")
@@ -1069,16 +1072,15 @@ async def test_rejected_input_isolation_exhausts_without_rejecting_forever(kind:
         serializer=EventIds(messages),
     )
     async with running(runner) as task:
-        with pytest.raises(BatchCommitError, match="rejection row constraint"):
+        with pytest.raises(TransactionFailure, match="rejection row constraint"):
             await asyncio.wait_for(asyncio.shield(task), 1)
-    assert sink.batches == [("p0-0",)] * 3
+    assert sink.batches == [("p0-0",)] * attempts
     assert client.commits == []
     assert await sink.pending() == {}
 
 
 @pytest.mark.parametrize("limits", [(4096, 1024), (1024, 4096)], ids=["full_to_stub", "stub_to_full"])
 async def test_rejected_source_replays_across_raw_size_limits(limits: tuple[int, int]) -> None:
-    from edax.errors import CodecError
 
     messages = events(1)
     fetched = records(messages)[0]._replace(headers=[("order-context", b"x" * 1500)])

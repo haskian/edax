@@ -135,7 +135,7 @@ and one collation (the crate-private `value` and `collation` modules) — never 
 operation), `schema` (the table contract and its catalog check; edax provisions no table), `statements`, `rows` (the row layout), `documents` (exact number text), `query`
 (the read-model query compiled to SQL, and the page), `ledger` (the claim owner and the fence),
 `erasure` (durable operations, notification outbox and destination revocation fences),
-`ingest` (optional ingestion tables, locks, writes and rollback-aware recovery), and `projection` (atomic projection state and intent storage, shared and partition locks, delivery and pruning). A Postgres
+`ingest` (optional ingestion tables, locks and writes), and `projection` (atomic projection state and intent storage, shared and partition locks, delivery and pruning). A Postgres
 statement, row layout or query rule every SDK must match is the kernel's: change it there, never in the adapter. The adapter is the input and output (I/O) shell: it
 calls the client and the kernel, and decides nothing on its own.
 

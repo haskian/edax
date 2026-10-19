@@ -258,7 +258,7 @@ that partition waits; a preparation failure never acknowledges or rejects an ori
 Serializers must be pure decoders: their exceptions classify malformed input as poison, as in the
 ordinary Kafka consumer. Put transient external lookups in record middleware.
 
-Only a known rolled-back, record-local database error permits bisection. Children preserve original
+Only a deterministic database error with a known rollback permits bisection. Children preserve original
 order and run left first; an isolated invalid original becomes a durable rejection. Authentication
 or schema failures stop. Infrastructure failures and uncertain commits retry unchanged originals,
 then stop at the attempt ceiling without advancing or turning healthy records into dead letters.

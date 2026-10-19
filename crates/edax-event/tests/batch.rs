@@ -1,5 +1,5 @@
 use edax_core::ErrorCode;
-use edax_event::batch::{admit, check, cut, recover, Config};
+use edax_event::batch::{admit, check, cut, recover, Attempt, Config};
 
 #[test]
 fn defaults_and_partial_json_are_valid() {
@@ -169,24 +169,50 @@ fn admission_enforces_exact_caps_without_overflow() {
     }
 }
 
+fn attempt(attempt: u32, count: usize, rolled_back: bool) -> Attempt {
+    Attempt {
+        attempt,
+        waits: 0,
+        count,
+        max_attempts: 5,
+        rolled_back,
+        isolable: true,
+    }
+}
+
 #[test]
 fn outage_and_uncertain_commit_never_reject_or_split() {
-    for kind in ["retry", "uncertain"] {
-        for attempt in 0..=6 {
-            let decision = recover(kind, attempt, 500, 5).unwrap();
-            assert_eq!(decision.action, if attempt < 5 { "retry" } else { "stop" });
-            assert_eq!(
-                decision.step,
-                if attempt < 5 {
-                    u64::from(attempt.saturating_sub(1))
-                } else {
-                    0
-                }
-            );
+    // A transient code, and a terminal one whose write may have landed, replay the originals.
+    for (code, rolled_back) in [(Some("store"), true), (None, true), (Some("codec"), false)] {
+        for n in 0..=6 {
+            let decision = recover(code, attempt(n, 500, rolled_back)).unwrap();
+            assert_eq!(decision.action, if n < 5 { "retry" } else { "stop" });
+            assert_eq!(decision.step, if n < 5 { u64::from(n.saturating_sub(1)) } else { 0 });
             assert_eq!(decision.split, 0);
         }
     }
-    assert_eq!(recover("fatal", 1, 500, 5).unwrap().action, "stop");
+    assert_eq!(
+        recover(Some("bad_handle"), attempt(1, 500, true)).unwrap().action,
+        "stop"
+    );
+}
+
+#[test]
+fn contention_waits_without_spending_attempts() {
+    for waits in 1..=3 {
+        let decision = recover(
+            Some("in_progress"),
+            Attempt {
+                waits,
+                ..attempt(99, 500, false)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (decision.action.as_str(), decision.step),
+            ("wait", u64::from(waits - 1))
+        );
+    }
 }
 
 #[test]
@@ -199,22 +225,41 @@ fn isolation_splits_originals_into_nonempty_ordered_children() {
         "order-closed",
     ];
     for count in 2..=originals.len() {
-        let decision = recover("isolate", 1, count, 5).unwrap();
+        let decision = recover(Some("codec"), attempt(1, count, true)).unwrap();
         assert_eq!(decision.action, "split");
         assert_eq!(decision.split, count / 2);
         let (left, right) = originals[..count].split_at(decision.split);
         assert!(!left.is_empty() && !right.is_empty());
         assert_eq!([left, right].concat(), originals[..count]);
     }
-    for kind in ["isolate", "invalid"] {
-        let decision = recover(kind, 1, 1, 5).unwrap();
-        assert_eq!(decision.action, "reject");
-        assert_eq!((decision.step, decision.split), (0, 0));
-    }
-    for (kind, count, attempts) in [("unknown", 1, 5), ("retry", 0, 5), ("retry", 1, 0)] {
+    let decision = recover(Some("codec"), attempt(1, 1, true)).unwrap();
+    assert_eq!(decision.action, "reject");
+    assert_eq!((decision.step, decision.split), (0, 0));
+    let held = recover(
+        Some("codec"),
+        Attempt {
+            isolable: false,
+            ..attempt(1, 1, true)
+        },
+    )
+    .unwrap();
+    assert_eq!(held.action, "stop");
+    for (code, count, attempts) in [("store", 0, 5), ("store", 1, 0)] {
         assert_eq!(
-            recover(kind, 1, count, attempts).unwrap_err().code,
+            recover(
+                Some(code),
+                Attempt {
+                    max_attempts: attempts,
+                    ..attempt(1, count, true)
+                }
+            )
+            .unwrap_err()
+            .code,
             ErrorCode::BadHandle
         );
     }
+    assert_eq!(
+        recover(Some("unknown"), attempt(1, 1, true)).unwrap_err().code,
+        ErrorCode::Codec
+    );
 }

@@ -19,7 +19,7 @@ is one JSON text column. Each SDK ships only the client calls around it.
 | `documents` | the stored text of a projection document, and exact number text | `postgres_rows.json`, `postgres_query.json` |
 | `query` | the read-model query compiled to one statement, and the page its rows make | `postgres_query.json` |
 | `erasure` | durable operations, atomic control outbox, permanent revocations, catalog checks and transaction advisory fences | erasure unit and live tests |
-| `ingest` | optional ingestion table contracts, row locks, atomic state/rejection writes and rollback-aware recovery | `postgres_ingest.json` |
+| `ingest` | optional ingestion table contracts, row locks and atomic state/rejection writes | `postgres_ingest.json` |
 | `projection` | optional projection state and intent tables, shared and partition locks, one read and one write per kind per batch, indexed pending delivery, delete on delivery and pruning | `postgres_projection_state.json` |
 | `ledger` | the claim owner, what a claim does with the row it read, the ledger's parameters, and the fence on each settling write | `postgres_ledger.json` |
 
@@ -202,14 +202,16 @@ contract was violated.
 | SQLSTATE | Verdict |
 |---|---|
 | `23505` on the `events_stream_sequence` key | `concurrency`: another writer appended first |
-| `23505` on any other key, or on none | `codec`: a reused id, which fails the same way again |
+| `23505` on an `ingest` | `concurrency`: another commit inserted the key first, so a retry reads it |
 | `55P03`, `57014` on a `claim` | `in_progress`: another unit of work holds the key, and a dispatcher retries it uncounted |
 | `55P03` on an `append`, `projection_save`, `saga_write` or `settle` | `concurrency`: another unit of work holds the row this write compares or fences |
 | `55P03` on any other operation, `57014` on any but a `claim` | `store`, transient: a read or an unversioned write ran out of time, which is no version conflict |
-| `40001`, `40P01`, `25006`, `25P02`, the `08` and `53` classes | `store`, transient |
-| `22P05`, `22021`, `22P02`, `22003`, `2201W`, `54000` | `codec`: data the server cannot store |
-| `42P01`, `42703`, `42883`, `3F000`, `42501`, `28P01` | `bad_handle`: a wiring mistake no retry fixes |
-| anything else | `store` |
+| `40001`, `40P01`, `25006`, `25P02` | `store`, transient |
+| the `22`, `23` and `54` classes, `23505` on any other key or on none | `codec`: data or a constraint the server refuses, which fails the same way again |
+| the `28`, `3D`, `3F` and `42` classes | `bad_handle`: a wiring mistake no retry fixes |
+| anything else, the `08` and `53` classes among them | `store`, transient |
+
+Exact states match first, then classes.
 
 `client_verdict(op, kind, message)` reads a failure the client reports without a SQLSTATE: its kind
 is `encode` or `other`. A parameter the client cannot encode is `codec`. Anything else, a timeout or a
@@ -244,8 +246,8 @@ rows it finds, and an absent key is inserted without `ON CONFLICT`, so a concurr
 and retries. A key range bounds each target, so the key index serves it on every supported
 version. The partial index selects unpublished rejections so delivery does not scan lifetime
 publication history. The adapter commits accepted writes and durable rejections in one owned
-transaction. Recovery verdicts distinguish confirmed rollback from an unknown commit outcome; only
-a rolled-back record-local failure permits batch isolation. A unique violation always retries.
+transaction. A failure carries the `ingest` verdict and the rollback evidence, and
+`edax_event::batch::recover` decides from both. A unique violation is `concurrency`, so it retries.
 
 `projection::statements` supplies two tables. The state table holds the manifest, checkpoints,
 states and receipts as key/value rows with no secondary index and fillfactor 70, so updates stay

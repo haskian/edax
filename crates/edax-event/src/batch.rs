@@ -1,28 +1,14 @@
 //! Microbatch admission, flush and recovery decisions shared by ingestion SDKs.
 //!
-//! Infrastructure failures stop at the retry ceiling. Only a known rolled-back,
-//! record-local failure permits isolation and rejection. Hosts retain admission
+//! Recovery reads a failure by its error code through [`crate::retry::Failure::of`], the one
+//! classifier every runner shares. Infrastructure failures stop at the retry ceiling. Only a
+//! deterministic failure with a proven rollback permits isolation and rejection. Hosts retain admission
 //! credits until the tasks and serialized data that consume them are released.
 
 use edax_core::{Error, ErrorCode};
 use serde::{Deserialize, Serialize};
 
-edax_core::closed_names! {
-    /// The failure classification supplied to microbatch recovery.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum FailureKind {
-        /// A configuration or ownership error that stops the runner.
-        Fatal = "fatal",
-        /// An infrastructure error that may succeed on another attempt.
-        Retry = "retry",
-        /// The previous commit may have succeeded; replay the originals.
-        Uncertain = "uncertain",
-        /// A rolled-back record-local error that permits isolation.
-        Isolate = "isolate",
-        /// A deterministic invalid-record verdict.
-        Invalid = "invalid",
-    }
-}
+use crate::retry::Failure;
 
 edax_core::closed_names! {
     /// The action a host must take after a microbatch failure.
@@ -32,6 +18,8 @@ edax_core::closed_names! {
         Stop = "stop",
         /// Back off and retry the unchanged originals.
         Retry = "retry",
+        /// Another owner holds the work: back off and retry without spending an attempt.
+        Wait = "wait",
         /// Split originals in order and execute the left child first.
         Split = "split",
         /// Persist deterministic rejections for the originals.
@@ -158,9 +146,9 @@ pub fn admit(used_records: usize, used_bytes: usize, records: usize, bytes: usiz
 /// A recovery instruction. Hosts must reject unknown action names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recovery {
-    /// One of `retry`, `stop`, `split` or `reject`.
+    /// One of `stop`, `retry`, `wait`, `split` or `reject`.
     pub action: String,
-    /// Zero-based backoff step for `retry`; zero for other actions.
+    /// Zero-based backoff step for `retry` and `wait`; zero for other actions.
     pub step: u64,
     /// Original-order left child length for `split`; zero for other actions.
     pub split: usize,
@@ -169,44 +157,49 @@ pub struct Recovery {
     pub rejection: Option<String>,
 }
 
-/// Decide recovery after an attempt has failed.
-///
-/// `retry` and `uncertain` replay the unchanged originals until the ceiling,
-/// then stop without acknowledging or rejecting them. `isolate` requires a
-/// known rollback and a record-local error: split original order and process
-/// the left child first, with each child's attempt count reset. `invalid` is a
-/// deterministic invalid-record verdict. `fatal` always stops the runner.
-pub fn recover(kind: &str, attempt: u32, count: usize, max_attempts: u32) -> Result<Recovery, Error> {
-    recover_with_rejections(kind, attempt, count, max_attempts, false)
+/// What the host knows about one failed attempt, beyond its error code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attempt {
+    /// Failed attempts of these originals so far, this one included.
+    pub attempt: u32,
+    /// Consecutive `wait` verdicts so far, this one included; paces contention.
+    pub waits: u32,
+    /// Originals in the failed attempt.
+    pub count: usize,
+    /// The attempt ceiling for transient failures.
+    pub max_attempts: u32,
+    /// Whether the store proved nothing was written: a confirmed rollback before any commit.
+    pub rolled_back: bool,
+    /// Whether the host may split and reject these originals. False when they already carry a
+    /// rejection, so rejecting them again cannot make progress, or when the host has no rejection path.
+    pub isolable: bool,
 }
 
-/// Recovery when every original already carries a rejection. A failure to persist those
-/// rejections is an infrastructure failure; rejecting them again cannot make progress.
-pub fn recover_with_rejections(
-    kind: &str,
-    attempt: u32,
-    count: usize,
-    max_attempts: u32,
-    rejected: bool,
-) -> Result<Recovery, Error> {
-    if count == 0 || max_attempts == 0 {
+/// Decide recovery after an attempt failed with error `code` (its wire name; `None` for a failure
+/// no code classifies).
+///
+/// - `fatal`: `stop`; the wiring is wrong, so every attempt fails alike.
+/// - `contended`: `wait` at step `waits - 1`, without spending an attempt.
+/// - `transient`, or `terminal` without a proven rollback (the write may have landed, so the replay
+///   decides): `retry` at step `attempt - 1` until `max_attempts`, then `stop` without
+///   acknowledging or rejecting the originals.
+/// - `terminal` with a proven rollback: `split` in original order, left child first, while more
+///   than one original remains, then `reject`; `stop` when the originals are not isolable.
+pub fn recover(code: Option<&str>, attempt: Attempt) -> Result<Recovery, Error> {
+    if attempt.count == 0 || attempt.max_attempts == 0 {
         return Err(invalid("recovery requires records and a positive attempt limit"));
     }
-    let kind =
-        FailureKind::by_name(kind).ok_or_else(|| invalid(format_args!("unknown microbatch recovery kind: {kind}")))?;
-    let kind = if rejected && matches!(kind, FailureKind::Isolate | FailureKind::Invalid) {
-        FailureKind::Retry
-    } else {
-        kind
-    };
-    let (action, step, split) = match kind {
-        FailureKind::Fatal => (Action::Stop, 0, 0),
-        FailureKind::Retry | FailureKind::Uncertain if attempt < max_attempts => {
-            (Action::Retry, u64::from(attempt.saturating_sub(1)), 0)
+    let code = code.map(str::parse::<ErrorCode>).transpose()?;
+    let (action, step, split) = match Failure::of(code) {
+        Failure::Fatal => (Action::Stop, 0, 0),
+        Failure::Contended => (Action::Wait, u64::from(attempt.waits.saturating_sub(1)), 0),
+        Failure::Terminal if attempt.rolled_back && !attempt.isolable => (Action::Stop, 0, 0),
+        Failure::Terminal if attempt.rolled_back && attempt.count > 1 => (Action::Split, 0, attempt.count / 2),
+        Failure::Terminal if attempt.rolled_back => (Action::Reject, 0, 0),
+        Failure::Transient | Failure::Terminal if attempt.attempt < attempt.max_attempts => {
+            (Action::Retry, u64::from(attempt.attempt.saturating_sub(1)), 0)
         }
-        FailureKind::Retry | FailureKind::Uncertain => (Action::Stop, 0, 0),
-        FailureKind::Isolate if count > 1 => (Action::Split, 0, count / 2),
-        FailureKind::Isolate | FailureKind::Invalid => (Action::Reject, 0, 0),
+        Failure::Transient | Failure::Terminal => (Action::Stop, 0, 0),
     };
     Ok(Recovery {
         action: action.as_str().to_owned(),

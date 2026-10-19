@@ -422,29 +422,15 @@ func BatchCut(records uint64, bytes uint64, ageMs uint64, config string) (bool, 
 	return nativeValue, mapNativeError(nativeError)
 }
 
-// BatchFailureKindNames calls the shared kernel.
-func BatchFailureKindNames() []string {
-	nativeValue := native.BatchFailureKindNames()
-	return nativeValue
-}
-
 // BatchRecover calls the shared kernel.
-func BatchRecover(kind string, attempt uint32, count uint64, maxAttempts uint32) (string, error) {
+func BatchRecover(attempt uint32, waits uint32, count uint64, maxAttempts uint32, rolledBack bool, isolable bool, code *string) (string, error) {
 	var zero string
-	if err := checkNativeString("kind", kind); err != nil {
-		return zero, err
+	if code != nil {
+		if err := checkNativeString("code", *code); err != nil {
+			return zero, err
+		}
 	}
-	nativeValue, nativeError := native.BatchRecover(kind, attempt, count, maxAttempts)
-	return nativeValue, mapNativeError(nativeError)
-}
-
-// BatchRecoverWithRejections calls the shared kernel.
-func BatchRecoverWithRejections(kind string, attempt uint32, count uint64, maxAttempts uint32, rejected bool) (string, error) {
-	var zero string
-	if err := checkNativeString("kind", kind); err != nil {
-		return zero, err
-	}
-	nativeValue, nativeError := native.BatchRecoverWithRejections(kind, attempt, count, maxAttempts, rejected)
+	nativeValue, nativeError := native.BatchRecover(attempt, waits, count, maxAttempts, rolledBack, isolable, code)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2028,18 +2014,6 @@ func PostgresForgetWrite(key string, row *string) (bool, error) {
 	}
 	nativeValue, nativeError := native.PostgresForgetWrite(key, row)
 	return nativeValue, mapNativeError(nativeError)
-}
-
-// PostgresIngestRecovery calls the shared kernel.
-func PostgresIngestRecovery(rolledBack bool, sqlstate *string) (string, error) {
-	var zero string
-	if sqlstate != nil {
-		if err := checkNativeString("sqlstate", *sqlstate); err != nil {
-			return zero, err
-		}
-	}
-	nativeValue := native.PostgresIngestRecovery(rolledBack, sqlstate)
-	return nativeValue, nil
 }
 
 // PostgresIngestStatements calls the shared kernel.

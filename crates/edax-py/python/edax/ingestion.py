@@ -8,17 +8,16 @@ rejections is a separate, at-least-once operation: a :class:`~edax.outbox.Relay`
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast
 
 from . import _native
 from ._json import decode, encode
 from ._owned import ThreadBound
-from .errors import BadHandle, CodecError, StoreError
+from .errors import CodecError
 
 __all__ = [
-    "BatchCommitError",
     "BatchInput",
     "BatchResult",
     "BatchSink",
@@ -151,19 +150,6 @@ class BatchResult:
         return cls(tuple(result["outcomes"]), result["rejections"])
 
 
-class BatchCommitError(StoreError):
-    """A classified commit failure. ``kind`` is a kernel recovery instruction input.
-
-    An uncertain commit must replay unchanged originals. Only a confirmed rolled-back,
-    record-local failure permits isolation. The original failure remains available as ``cause``.
-    """
-
-    def __init__(self, kind: str, cause: BaseException) -> None:
-        super().__init__(str(cause))
-        self.kind = kind
-        self.cause = cause
-
-
 class BatchSink(Protocol):
     """An atomic ingestion sink with a durable, independently publishable rejection outbox."""
 
@@ -247,8 +233,7 @@ class RejectionOutbox:
         self.sink = sink
 
     async def unpublished(self, limit: int) -> list[Rejection]:
-        with _fatal_kind():
-            pending = await self.sink.pending(limit)
+        pending = await self.sink.pending(limit)
         return [Rejection.saved(source, record) for source, record in pending.items()]
 
     async def mark_published(self, ids: Sequence[str]) -> None:
@@ -258,17 +243,4 @@ class RejectionOutbox:
             with contextlib.suppress(CodecError, TypeError, ValueError):
                 source, fingerprint = decode(row_id)
                 confirmed[source] = fingerprint
-        with _fatal_kind():
-            await self.sink.published(confirmed)
-
-
-@contextlib.contextmanager
-def _fatal_kind() -> Iterator[None]:
-    """Raise a batch failure the kernel classed ``fatal`` as :class:`~edax.errors.BadHandle`, so a
-    :class:`~edax.outbox.Relay` stops on a wiring fault instead of retrying it forever."""
-    try:
-        yield
-    except BatchCommitError as error:
-        if error.kind == "fatal":
-            raise BadHandle(str(error)) from error
-        raise
+        await self.sink.published(confirmed)

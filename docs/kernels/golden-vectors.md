@@ -286,7 +286,7 @@ Run both suites before you finish. `cargo test` alone misses binding regressions
 `event_batch.json` pins defaults, limits, admission, batch cutting, recovery transitions and their names.
 `ingest.json` pins append/upsert planning, durable-rejection precedence, target contracts and exact
 source coordinates, modes and outcomes. `kafka_ingestion_raw.json` pins stable original digests, size boundaries and
-raw decoding. `postgres_ingest.json` pins ingestion SQL and rollback-aware SQLSTATE verdicts.
+raw decoding. `postgres_ingest.json` pins ingestion SQL; `postgres_error.json` pins its SQLSTATE verdicts.
 The Rust generators, Python ABI reader and Go ABI reader replay every case. Asynchronous
 lifecycle and live Kafka/PostgreSQL tests cover behavior that these pure vectors cannot establish.
 `ingestion_numbers.json` adds 56 raw-text cases shared by ingestion and projection state. These preserve

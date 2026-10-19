@@ -13,10 +13,10 @@ from uuid import uuid4
 import pytest
 from edax import _json, _native
 from edax.backend.ingest_postgres import PostgresIngestionSink, reference_ingestion_ddl
-from edax.backend.postgres import PgConnection, PostgresTransactor
+from edax.backend.postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
+from edax.batch import BatchSettings, recover
 from edax.errors import BadHandle
 from edax.ingestion import (
-    BatchCommitError,
     BatchInput,
     BatchSink,
     IngestionTarget,
@@ -320,9 +320,10 @@ async def test_lost_commit_reply_retries_original_without_duplicate(
     transactor._pool = _FaultPool(pool, lose_commit=True)
     sink = sink_for(database)
     original = record(sink, 0)
-    with pytest.raises(BatchCommitError) as failed:
+    with pytest.raises(PostgresTransactionFailure) as failed:
         await sink.commit([original])
-    assert failed.value.kind == "retry"
+    assert failed.value.commit_started
+    assert recover(failed.value, BatchSettings(), attempt=1, count=1, isolable=True)["action"] == "retry"
     assert sink._bound is False, "a lost COMMIT reply cannot cache manifest binding"
     stored = await sink.get("shop-a", "order-summary-42")
     assert stored is not None and stored["sequence"] == 1
@@ -331,9 +332,9 @@ async def test_lost_commit_reply_retries_original_without_duplicate(
     assert await sink.pending() == {}
 
 
-@pytest.mark.parametrize("rollback_fails,kind", [(False, "isolate"), (True, "retry")])
+@pytest.mark.parametrize("rollback_fails,action", [(False, "split"), (True, "retry")])
 async def test_constraint_failure_requires_confirmed_rollback(
-    database: tuple[Any, PostgresTransactor, str], rollback_fails: bool, kind: str
+    database: tuple[Any, PostgresTransactor, str], rollback_fails: bool, action: str
 ) -> None:
     pool, transactor, schema = database
     await pool.execute(
@@ -343,9 +344,10 @@ async def test_constraint_failure_requires_confirmed_rollback(
     if rollback_fails:
         transactor._pool = _FaultPool(pool, rollback_fails=True)
     sink = sink_for(database)
-    with pytest.raises(BatchCommitError) as failed:
+    with pytest.raises(PostgresTransactionFailure) as failed:
         await sink.commit([record(sink, 0), record(sink, 1, sequence=2, state="forbidden")])
-    assert failed.value.kind == kind
+    assert failed.value.cause.code == "codec"
+    assert recover(failed.value, BatchSettings(), attempt=1, count=2, isolable=True)["action"] == action
     assert await sink.get("shop-a", "order-summary-42") is None
     assert await sink.pending() == {}
 

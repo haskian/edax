@@ -675,10 +675,13 @@ headroom for one additional record. `reserve` accounts for source and mapped ser
 `admit` checks both retained budgets without integer overflow. `cut` answers whether a nonempty
 batch has reached any flush threshold; the SDK supplies monotonic elapsed time.
 
-`recover` returns one of `retry`, `stop`, `split` or `reject`. A transient or uncertain failure
-retries unchanged originals until the ceiling. Only a confirmed rollback with a record-local failure
-allows a split. Children retain original order and the left child runs first. A failure to persist
-already-rejected originals is an infrastructure failure and cannot produce another rejection loop.
+`recover` reads the failure's error code through `retry::Failure::of`, the classifier every runner
+shares, and returns `stop`, `retry`, `wait`, `split` or `reject`. A fatal code stops. A contended
+code waits without spending an attempt. A transient failure retries unchanged originals until the
+ceiling, and so does a terminal one whose write may have landed. Only a terminal failure with a
+confirmed rollback splits, then rejects. Children retain original order and the left child runs
+first. Originals that already carry a rejection, or a host with no rejection path, are not
+isolable: a terminal failure then stops instead of looping on another rejection.
 
 The SDK owns task scheduling, cancellation and capacity accounting. It retains each task's credits
 until the task releases its data. The kernel supplies the admission decision; the runner must also

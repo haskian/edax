@@ -10,13 +10,15 @@ from typing import Any
 
 from edax import _json
 from edax.delivery import DeadLetter
-from edax.ingestion import BatchCommitError, BatchInput, BatchResult
+from edax.errors import BadHandle, CodecError
+from edax.ingestion import BatchInput, BatchResult
 from test_kafka_ingest import (
     BatchClient,
     EventIds,
     KafkaIngestion,
     RecordingSink,
     events,
+    failed,
     mapper,
     no_dead,
     records,
@@ -35,7 +37,7 @@ async def test_isolated_rejection_stays_within_reserved_bytes() -> None:
     class Sink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             if inputs[0].failure is None:
-                raise BatchCommitError("isolate", ValueError("bad row: " + "x" * 200_000))
+                raise failed(CodecError("bad row: " + "x" * 200_000))
             measured.append(len(_json.encode(inputs).encode()))
             entered.set()
             await release.wait()
@@ -66,7 +68,7 @@ async def test_failed_runner_releases_batch_references_after_wait_closed() -> No
     class Sink(RecordingSink):
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
             seen.extend(weakref.ref(item) for item in inputs)
-            raise BatchCommitError("fatal", ValueError("invalid schema"))
+            raise failed(BadHandle("invalid schema"))
 
     messages = events(1)
     runner = KafkaIngestion(

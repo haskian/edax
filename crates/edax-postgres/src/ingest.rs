@@ -1,5 +1,6 @@
 //! Standalone ingestion storage. These optional tables do not change the ordinary store contract.
-//! The host runs `ddl` through its migration tool. Every write must hold `lock` in the same transaction.
+//! The host runs `ddl` through its migration tool. A plan read locks the rows it finds; an absent key
+//! is inserted without `ON CONFLICT`, so a racing first insert fails as `concurrency` and retries.
 
 use std::collections::BTreeMap;
 
@@ -148,21 +149,6 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
         format!("WITH marked AS (UPDATE {rejections} AS saved SET value = jsonb_set(saved.value, '{{published}}', 'true'::jsonb) FROM jsonb_each_text($1::jsonb) AS confirmed(key, fingerprint) WHERE saved.key = confirmed.key AND saved.value->>'fingerprint' = confirmed.fingerprint AND {} RETURNING 1) SELECT count(*) FROM marked", in_target("saved.key", 2)),
     );
     Ok(sql)
-}
-
-/// Recovery after a failed ingestion transaction. Isolation requires proof of rollback.
-/// A concurrent first insert of the same key (23505) retries, so the next plan reads the committed
-/// row. An uncertain commit, connection failure, resource exhaustion or unknown failure retries
-/// unchanged.
-pub fn recovery(sqlstate: Option<&str>, rolled_back: bool) -> &'static str {
-    if sqlstate == Some("23505") {
-        return "retry";
-    }
-    match sqlstate.and_then(|state| state.get(..2)) {
-        Some("28" | "3D" | "3F" | "42") => "fatal",
-        Some("22" | "23" | "54") if rolled_back => "isolate",
-        _ => "retry",
-    }
 }
 
 /// The catalog check for a `key text COLLATE "C" PRIMARY KEY, value jsonb` table, shared by the

@@ -16,10 +16,10 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from .. import _json, _native, errors
-from ..batch import BatchSettings
+from ..batch import BatchSettings, recover
 from ..delivery import DeadLetter
 from ..errors import BadHandle, CodecError
-from ..ingestion import BatchCommitError, BatchInput, BatchSink, MappedRow, Rejection
+from ..ingestion import BatchInput, BatchSink, MappedRow, Rejection
 from ..message import EventMessage
 from ..pacing import Pacing
 from ..serializer import KernelSerializer, Serializer
@@ -133,7 +133,10 @@ class KafkaIngestion:
         # Reserve callback/encoding expansion BEFORE invoking either. Six copies cover the raw
         # JSON escaping, canonical content, mapped value, ABI JSON and driver parameter encoding.
         self._reserve = _native.batch_reserve(self._config)
-        self._rejection: str = _json.decode(_native.batch_recover("invalid", 1, 1, 1))["rejection"]
+        # The diagnostic of a rolled-back, isolable codec failure: the kernel's bounded rejection text.
+        self._rejection: str = _json.decode(_native.batch_recover(1, 0, 1, 1, True, True, "codec"))[
+            "rejection"
+        ]
         self._slots = asyncio.Semaphore(self.settings.concurrency)
         self._operations: set[asyncio.Task[Any]] = set()
         self._workers: set[asyncio.Task[None]] = set()
@@ -475,11 +478,12 @@ class KafkaIngestion:
                 raise
             source = self.sink.target.source_key(record.topic, record.partition, record.offset)
             attempt = part.attempts.get(source, 0) + 1
-            kind = "fatal" if errors.failure_kind(error) == "fatal" else "retry"
-            decision = _json.decode(_native.batch_recover(kind, attempt, 1, self.settings.max_attempts))
-            if decision["action"] != "retry":
+            # Nothing was written, but admission has no rejection path: a repeating failure stops.
+            decision = recover(error, self.settings, attempt=attempt, count=1, isolable=False)
+            if decision["action"] not in ("retry", "wait"):
                 raise
-            part.attempts[source] = attempt
+            if decision["action"] == "retry":
+                part.attempts[source] = attempt
             part.retry_batches[source] = (source, source)
             delay = self._pacing.delay(decision["step"])
             part.ready_at = asyncio.get_running_loop().time() + delay
@@ -565,20 +569,14 @@ class KafkaIngestion:
                 await self._flush()
                 return
             except Exception as error:
-                kind = (
-                    error.kind
-                    if isinstance(error, BatchCommitError)
-                    else ("fatal" if errors.failure_kind(error) == "fatal" else "retry")
-                )
                 attempt = 1 + max((part.attempts.get(item.source, 0) for item in inputs), default=0)
-                decision = _json.decode(
-                    _native.batch_recover_with_rejections(
-                        kind,
-                        attempt,
-                        len(inputs),
-                        self.settings.max_attempts,
-                        all(item.failure is not None for item in inputs),
-                    )
+                # Originals that already carry a rejection cannot be rejected again.
+                decision = recover(
+                    error,
+                    self.settings,
+                    attempt=attempt,
+                    count=len(inputs),
+                    isolable=not all(item.failure is not None for item in inputs),
                 )
                 action = decision["action"]
                 if action == "stop":
@@ -601,9 +599,10 @@ class KafkaIngestion:
                         for item in inputs
                     )
                     continue
-                if action != "retry":
+                if action not in ("retry", "wait"):
                     raise BadHandle("unknown batch recovery action") from error
-                for item in inputs:
+                # A wait is contention: it spends no attempt.
+                for item in inputs if action == "retry" else ():
                     part.attempts[item.source] = attempt
                     # A refetched parent retry must not replace an existing child's scope.
                     part.retry_batches.setdefault(item.source, (inputs[0].source, inputs[-1].source))
@@ -622,9 +621,8 @@ class KafkaIngestion:
                 await self._offsets.flush()
                 return
             except Exception as error:
-                kind = "fatal" if errors.failure_kind(error) == "fatal" else "retry"
-                decision = _json.decode(_native.batch_recover(kind, attempt, 1, self.settings.max_attempts))
-                if decision["action"] != "retry":
+                decision = recover(error, self.settings, attempt=attempt, count=1, isolable=False)
+                if decision["action"] not in ("retry", "wait"):
                     self._fail(error)
                     raise
                 await self._pacing.wait(decision["step"])

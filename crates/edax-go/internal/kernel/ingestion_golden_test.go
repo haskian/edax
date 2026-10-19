@@ -75,18 +75,19 @@ func TestBatchIngestionGolden(t *testing.T) {
 		AgeMS       uint64 `json:"age_ms"`
 		UsedRecords uint64 `json:"used_records"`
 		UsedBytes   uint64 `json:"used_bytes"`
-		Kind        string
+		Code        *string
 		Attempt     uint32
+		Waits       uint32
 		Count       uint64
 		MaxAttempts uint32 `json:"max_attempts"`
+		RolledBack  bool   `json:"rolled_back"`
+		Isolable    bool
 	}](t, "event_batch") {
 		t.Run(row.Name, func(t *testing.T) {
 			switch row.Op {
 			case "names":
 				var got []string
 				switch row.Set {
-				case "batch_failure_kind":
-					got = BatchFailureKindNames()
 				case "batch_action":
 					got = BatchActionNames()
 				default:
@@ -108,11 +109,8 @@ func TestBatchIngestionGolden(t *testing.T) {
 			case "charge":
 				got, err := BatchCharge(row.Bytes, string(row.Config))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
-			case "recover_rejected":
-				got, err := BatchRecoverWithRejections(row.Kind, row.Attempt, row.Count, row.MaxAttempts, true)
-				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
 			case "recover":
-				got, err := BatchRecover(row.Kind, row.Attempt, row.Count, row.MaxAttempts)
+				got, err := BatchRecover(row.Attempt, row.Waits, row.Count, row.MaxAttempts, row.RolledBack, row.Isolable, row.Code)
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
 			default:
 				t.Fatalf("unknown batch operation %q", row.Op)
@@ -186,18 +184,13 @@ func TestIngestionGolden(t *testing.T) {
 func TestPostgresIngestionGolden(t *testing.T) {
 	for _, row := range ingestionGoldenRows[struct {
 		ingestionGoldenResult
-		Config     string
-		RolledBack bool `json:"rolled_back"`
-		SQLState   *string
+		Config string
 	}](t, "postgres_ingest") {
 		t.Run(row.Name, func(t *testing.T) {
 			switch row.Op {
 			case "statements":
 				got, err := PostgresIngestStatements(row.Config)
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
-			case "recovery":
-				got, err := PostgresIngestRecovery(row.RolledBack, row.SQLState)
-				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
 			default:
 				t.Fatalf("unknown postgres ingestion operation %q", row.Op)
 			}

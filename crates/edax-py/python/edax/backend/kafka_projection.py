@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
-from .. import _json, _native, errors
-from ..batch import BatchSettings
+from .. import _json, _native
+from ..batch import BatchSettings, recover
 from ..errors import BadHandle, CodecError, StoreError, TransactionFailure
 from ..pacing import Pacing
 from ..projection import (
@@ -385,22 +385,25 @@ class KafkaProjection:
                         _kafka.clear_failure_frames(error)
                         if not self._live(tp, assigned):
                             continue
-                        cause = error.cause if isinstance(error, TransactionFailure) else error
+                        decision = recover(
+                            error,
+                            self.settings,
+                            attempt=assigned.attempts + 1,
+                            waits=assigned.contended + 1,
+                            count=1,
+                            isolable=False,
+                        )
                         now = asyncio.get_running_loop().time()
-                        if errors.code_of(cause) == "in_progress":
+                        if decision["action"] == "wait":
                             # Another fenced owner is still valid. Wait without spending the failure
                             # budget, longer each time, but never past one lease.
                             assigned.contended += 1
-                            wait = self.pacing.delay(assigned.contended - 1)
-                            assigned.ready_at = now + min(wait, self.lease_ms / 1000)
-                            continue
-                        decision = _json.decode(
-                            _native.batch_recover(
-                                "retry", assigned.attempts + 1, 1, self.settings.max_attempts
+                            assigned.ready_at = now + min(
+                                self.pacing.delay(decision["step"]), self.lease_ms / 1000
                             )
-                        )
-                        if errors.failure_kind(cause) != "transient" or decision["action"] != "retry":
-                            assigned.failure = cause
+                            continue
+                        if decision["action"] != "retry":
+                            assigned.failure = error.cause if isinstance(error, TransactionFailure) else error
                             if assigned.lease is not None:
                                 self._release(assigned.lease)
                             continue

@@ -4294,30 +4294,17 @@ int32_t edax_batch_cut(uint64_t records,
                        const char *config);
 
 /**
- * Every microbatch failure classification, in the kernel's order.
+ * The recovery after a failed microbatch attempt with error `code`. See `edax_event.batch.recover`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_batch_failure_kind_names(void);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_batch_failure_kind_names` on
- * this thread. Returns 0 when the primary call returned null or failed before producing a string.
- * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_batch_failure_kind_names`.
- */
-uintptr_t edax_batch_failure_kind_names_len(void);
-
-/**
- * The recovery action after a classified batch failure. Infrastructure never dead-letters.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_batch_recover(const char *kind,
-                         uint32_t attempt,
+char *edax_batch_recover(uint32_t attempt,
+                         uint32_t waits,
                          uint64_t count,
-                         uint32_t max_attempts);
+                         uint32_t max_attempts,
+                         int32_t rolled_back,
+                         int32_t isolable,
+                         const char *code);
 
 /**
  * Return the byte length of the C string most recently returned by `edax_batch_recover` on this
@@ -4326,35 +4313,13 @@ char *edax_batch_recover(const char *kind,
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_batch_recover`.
  */
-uintptr_t edax_batch_recover_len(const char *_kind,
-                                 uint32_t _attempt,
+uintptr_t edax_batch_recover_len(uint32_t _attempt,
+                                 uint32_t _waits,
                                  uint64_t _count,
-                                 uint32_t _max_attempts);
-
-/**
- * Recovery with the already-rejected fact supplied by the runner.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_batch_recover_with_rejections(const char *kind,
-                                         uint32_t attempt,
-                                         uint64_t count,
-                                         uint32_t max_attempts,
-                                         int32_t rejected);
-
-/**
- * Return the byte length of the C string most recently returned by
- * `edax_batch_recover_with_rejections` on this thread. Returns 0 when the primary call returned null
- * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
- * without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_batch_recover_with_rejections`.
- */
-uintptr_t edax_batch_recover_with_rejections_len(const char *_kind,
-                                                 uint32_t _attempt,
-                                                 uint64_t _count,
-                                                 uint32_t _max_attempts,
-                                                 int32_t _rejected);
+                                 uint32_t _max_attempts,
+                                 int32_t _rolled_back,
+                                 int32_t _isolable,
+                                 const char *_code);
 
 /**
  * Serialization headroom for fetching and preparing one original.
@@ -6343,24 +6308,6 @@ uintptr_t edax_postgres_erasure_writer_locks_len(const char *_scopes);
  */
 int32_t edax_postgres_forget_write(const char *key,
                                    const char *row);
-
-/**
- * Batch recovery classification; record-local isolation requires a confirmed rollback.
- * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
- * freed with the appropriate free function.
- */
-char *edax_postgres_ingest_recovery(int32_t rolled_back,
-                                    const char *sqlstate);
-
-/**
- * Return the byte length of the C string most recently returned by `edax_postgres_ingest_recovery` on
- * this thread. Returns 0 when the primary call returned null or failed before producing a string.
- * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
- * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
- * with `edax_postgres_ingest_recovery`.
- */
-uintptr_t edax_postgres_ingest_recovery_len(int32_t _rolled_back,
-                                            const char *_sqlstate);
 
 /**
  * SQL and reference DDL for the optional ingestion tables.

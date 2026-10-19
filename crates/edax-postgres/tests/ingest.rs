@@ -1,4 +1,4 @@
-use edax_postgres::ingest::{recovery, statements};
+use edax_postgres::ingest::statements;
 
 #[test]
 fn ingestion_configuration_rejects_unsafe_or_ambiguous_names() {
@@ -67,37 +67,5 @@ fn ingestion_ddl_indexes_pending_rejections_of_the_configured_table() {
         let sql = statements(config).unwrap();
         let index = format!("CREATE INDEX ON {table} (key) WHERE NOT (value->>'published')::boolean;");
         assert_eq!(sql["ddl"].matches(&index).count(), 1);
-    }
-}
-
-#[test]
-fn only_record_failures_with_proven_rollback_are_isolated() {
-    for (state, rolled_back, expected) in [
-        (Some("22003"), true, "isolate"),
-        (Some("23514"), true, "isolate"),
-        (Some("54000"), true, "isolate"),
-        (Some("54000"), false, "retry"),
-        (Some("23505"), false, "retry"),
-        (Some("23505"), true, "retry"),
-        (Some("22003"), false, "retry"),
-        (Some("08006"), true, "retry"),
-        (Some("40001"), true, "retry"),
-        (Some("40P01"), true, "retry"),
-        (Some("53000"), true, "retry"),
-        (Some("57014"), true, "retry"),
-        (Some("XX000"), true, "retry"),
-        (None, true, "retry"),
-        (None, false, "retry"),
-        (Some(""), true, "retry"),
-        (Some("28P01"), true, "fatal"),
-        (Some("3D000"), false, "fatal"),
-        (Some("3F000"), true, "fatal"),
-        (Some("42P01"), false, "fatal"),
-    ] {
-        assert_eq!(
-            recovery(state, rolled_back),
-            expected,
-            "{state:?}, rollback={rolled_back}"
-        );
     }
 }

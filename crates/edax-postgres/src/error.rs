@@ -43,6 +43,8 @@ edax_core::closed_names! {
         SagaWrite = "saga_write",
         /// Any projection state operation, each run under its generation's advisory lock.
         ProjectionState = "projection_state",
+        /// An ingestion commit, rejection read or publication mark.
+        Ingest = "ingest",
     }
 }
 
@@ -66,31 +68,40 @@ impl Op {
 /// reports through the [`crate::Compatibility`] the table check answered; `None` when no key of the
 /// contract was violated.
 ///
+/// Exact states first:
+///
 /// - `23505`, a unique violation: of the events' `(stream, sequence)` a `concurrency` conflict (another
-///   writer appended first); of any other key a reused id, `codec`, which fails the same way again.
+///   writer appended first); on an ingestion commit `concurrency` too (another commit inserted the key
+///   first, so a retry reads the committed row); of any other key a reused id, `codec`, which fails the
+///   same way again.
 /// - `55P03` (a lock wait ran out) and `57014` (a statement ran out) on a claim: `in_progress`, since
 ///   another unit of work holds the key. `55P03` on projection state: `in_progress`, since another
 ///   runner holds the generation lock.
 /// - `55P03` on an append, a projection save, a saga write or a settle: `concurrency`, since another unit
 ///   of work holds the row it would write. Elsewhere, and `57014` everywhere but a claim, `store`: a read
 ///   or an unversioned write that ran out of time is transient, not a version conflict.
-/// - `40001`, `40P01`, the `08` connection class, the `53` resource class, `25006` (a read-only server
-///   after a failover) and `25P02` (an earlier statement aborted the transaction): `store`, transient.
-/// - Data the server cannot store (`22P05`, `22021`, `22P02`, `22003`, `2201W`, `54000`): `codec`.
-/// - A missing table, column, function or schema, or a refused privilege or login (`42P01`,
-///   `42703`, `42883`, `3F000`, `42501`, `28P01`): `bad_handle`, a wiring mistake no retry fixes.
-/// - Anything else: `store`.
+/// - `40001`, `40P01`, `25006` (a read-only server after a failover) and `25P02` (an earlier statement
+///   aborted the transaction): `store`, transient.
+///
+/// Then by class:
+///
+/// - Data the server cannot store or a constraint it refuses (`22`, `23`, `54`): `codec`, since the same
+///   write fails the same way again.
+/// - A refused login, a missing database or schema, a syntax or access rule (`28`, `3D`, `3F`, `42`):
+///   `bad_handle`, a wiring mistake no retry fixes.
+/// - Anything else, the `08` connection and `53` resource classes among them: `store`, transient.
 pub fn verdict(op: Op, sqlstate: &str, unique: Option<UniqueKey>, message: &str) -> Error {
     let code = match (sqlstate, op) {
         ("23505", _) if unique == Some(UniqueKey::EventsStreamSequence) => ErrorCode::Concurrency,
-        ("23505", _) => ErrorCode::Codec,
+        ("23505", Op::Ingest) => ErrorCode::Concurrency,
         ("55P03" | "57014", Op::Claim) | ("55P03", Op::ProjectionState) => ErrorCode::InProgress,
         ("55P03", _) if op.waits_on_a_writer() => ErrorCode::Concurrency,
-        ("40001" | "40P01" | "25006" | "25P02", _) => ErrorCode::Store,
-        ("22P05" | "22021" | "22P02" | "22003" | "2201W" | "54000", _) => ErrorCode::Codec,
-        ("42P01" | "42703" | "42883" | "3F000" | "42501" | "28P01", _) => ErrorCode::BadHandle,
-        // The `08` connection and `53` resource classes land here too: transient.
-        _ => ErrorCode::Store,
+        ("40001" | "40P01" | "25006" | "25P02" | "55P03" | "57014", _) => ErrorCode::Store,
+        _ => match sqlstate.get(..2) {
+            Some("22" | "23" | "54") => ErrorCode::Codec,
+            Some("28" | "3D" | "3F" | "42") => ErrorCode::BadHandle,
+            _ => ErrorCode::Store,
+        },
     };
     let named = unique.map_or_else(String::new, |key| format!(" on {}", key.as_str()));
     Error::new(
@@ -133,7 +144,7 @@ mod tests {
 
     #[test]
     fn verdict_branches() {
-        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 14] = [
+        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 20] = [
             (
                 "stream_race",
                 Op::Append,
@@ -164,6 +175,12 @@ mod tests {
             ("aborted_earlier", Op::Load, "25P02", None, ErrorCode::Store),
             ("nul_text", Op::ProjectionSave, "22P05", None, ErrorCode::Codec),
             ("missing_table", Op::Load, "42P01", None, ErrorCode::BadHandle),
+            ("check_violation", Op::Ingest, "23514", None, ErrorCode::Codec),
+            ("ingest_unique_race", Op::Ingest, "23505", None, ErrorCode::Concurrency),
+            ("ingest_lock_wait", Op::Ingest, "55P03", None, ErrorCode::Store),
+            ("data_class", Op::Ingest, "22012", None, ErrorCode::Codec),
+            ("missing_database", Op::Ingest, "3D000", None, ErrorCode::BadHandle),
+            ("short_state", Op::Ingest, "2", None, ErrorCode::Store),
             ("connection_class", Op::Outbox, "08006", None, ErrorCode::Store),
             ("unknown_state", Op::Outbox, "XX000", None, ErrorCode::Store),
         ];
