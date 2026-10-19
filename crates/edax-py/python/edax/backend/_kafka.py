@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import traceback
 import warnings
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -430,8 +429,11 @@ def record_bytes(record: FetchedRecord) -> int:
 
 
 def clear_failure_frames(error: BaseException) -> None:
-    """Release the frame locals of ``error`` and every cause behind it, keeping types, messages and
-    traceback locations. A saved failure must not keep an already-released batch alive."""
+    """Detach saved tracebacks, keeping exception types, messages and cause relationships.
+
+    Clearing frame locals can close a suspended coroutine on Python 3.10, including a host
+    still handling this same exception. Drop our traceback references without mutating frames.
+    """
     pending: list[BaseException] = [error]
     seen: set[int] = set()
     while pending:
@@ -439,11 +441,23 @@ def clear_failure_frames(error: BaseException) -> None:
         if id(failure) in seen:
             continue
         seen.add(id(failure))
-        if failure.__traceback__ is not None:
-            traceback.clear_frames(failure.__traceback__)
+        failure.__traceback__ = None
         for cause in (failure.__cause__, failure.__context__, getattr(failure, "cause", None)):
             if isinstance(cause, BaseException):
                 pending.append(cause)
+
+
+async def wait_event(event: asyncio.Event, timeout: float) -> None:
+    """Wait for a runner wakeup or timeout without losing concurrent caller cancellation."""
+    waiter = asyncio.create_task(event.wait())
+    try:
+        # Python 3.10 wait_for can absorb cancellation when the event finishes concurrently.
+        await asyncio.wait({waiter}, timeout=timeout)
+        if waiter.done():
+            waiter.result()
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 def rebalance_listener(

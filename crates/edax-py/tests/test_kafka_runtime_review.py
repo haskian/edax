@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from aiokafka import TopicPartition
@@ -403,3 +403,55 @@ async def test_invalid_event_identity_is_a_source_rejection(change: dict[str, st
     assert len(dead) == 1 and isinstance(dead[0].failure, Rejected)
     assert dead[0].origin.offset == 0
     assert await sink.get("tenant-7", "order-0") is not None
+
+
+async def test_failure_cleanup_preserves_a_suspended_exception_handler() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    error = CodecError("invalid order state")
+    resumed: list[bool] = []
+
+    async def host() -> None:
+        try:
+            raise error
+        except CodecError:
+            entered.set()
+            await release.wait()
+            resumed.append(True)
+
+    task = asyncio.create_task(host())
+    await entered.wait()
+    try:
+        _kafka.clear_failure_frames(error)
+        release.set()
+        done, _ = await asyncio.wait({task}, timeout=0.1)
+        assert done
+        task.result()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert resumed == [True]
+    assert str(error) == "invalid order state"
+
+
+async def test_ingestion_idle_wakeup_cannot_swallow_caller_cancellation() -> None:
+    stop = asyncio.Event()
+    run = KafkaIngestion(
+        BatchClient([]), RecordingSink(), mapper, no_dead, settings=settings(), serializer=EventIds([])
+    )
+    owner: asyncio.Task[None]
+
+    class CancellingEvent(asyncio.Event):
+        async def wait(self) -> Literal[True]:
+            owner.cancel()
+            return True
+
+    run._changed = CancellingEvent()
+    owner = asyncio.create_task(run.run(stop))
+    try:
+        done, _ = await asyncio.wait({owner}, timeout=0.1)
+        assert done and owner.cancelled()
+    finally:
+        stop.set()
+        await asyncio.gather(owner, return_exceptions=True)
+        await run.wait_closed()

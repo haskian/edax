@@ -99,3 +99,14 @@ The Python suite used isolated Kafka 3.8.0, Redis 8 and Postgres 17 containers, 
 Before deployment, provision the [aggregate delivery index](../docs/sdk/projection-processing.md#provision-and-initialize), then follow the [stop/drain fence-protocol upgrade](../docs/guides/crypto-shredding.md). Mixed old/new writers and erasers are unsupported. Register every retained generation before freezing erasure participants. The hash and subjectless-state limits in this plan remain deliberate contracts, with matching documentation.
 
 Detailed local command logs, query plans and independent review reports remain in `.context/merged-review/`; the test results and deployment requirements above are tracked with the implementation.
+
+## Python 3.10 CI follow-up
+
+Run `39260275997` stopped reporting progress at 44% and remained in its test step for over 80 minutes. The stalled run was cancelled to recover its logs. Two deterministic regressions reproduced Python 3.10 lifecycle failures:
+
+- An idle event completing concurrently with caller cancellation lets `asyncio.wait_for` absorb that cancellation. Both Kafka runners now share a bounded event wait based on `asyncio.wait`.
+- Clearing traceback frame locals can close a suspended host coroutine still handling the same exception. Cleanup now detaches saved traceback references. Exception types, messages and cause relationships survive; saved traceback locations are deliberately discarded. Existing weak-reference tests still prove released payloads are collectible.
+
+Both new regressions failed before the fix. Afterward, 66 focused tests passed under Python 3.10. Its full suite with live Kafka, Redis and Postgres passed: **3,214 passed, 29 skipped in 82.43 seconds**. This supersedes the earlier lack of Python 3.10 runtime verification. The local Python 3.13 suite also passed: **2,793 passed, 128 skipped** without live-service environment variables. Rust workspace tests (575), Go race tests (eight packages), Ruff, formatting, ty and strict mypy passed again.
+
+CI now prints individual test names, emits a stack dump after a 60-second test stall and limits the test step to ten minutes. The stack dump diagnoses a stall; the step limit bounds it. No tests were removed or disabled.

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
@@ -608,8 +607,7 @@ class KafkaProjection:
                 if not progressed:
                     await self._keepalive()
                 # Avoid busy polling empty partitions and wake immediately on stop.
-                with suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(self._stopped.wait(), 0.01 if progressed else 0.05)
+                await _kafka.wait_event(self._stopped, 0.01 if progressed else 0.05)
         except asyncio.CancelledError:
             if not self._stopped.is_set():
                 raise

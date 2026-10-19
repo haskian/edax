@@ -11,7 +11,6 @@ import inspect
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
@@ -823,8 +822,7 @@ class KafkaIngestion:
                 if not progressed and not stop.is_set():
                     await self._keepalive()
                     self._changed.clear()
-                    with suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(self._changed.wait(), self.settings.flush_ms / 1000)
+                    await _kafka.wait_event(self._changed, self.settings.flush_ms / 1000)
             for tp, part in tuple(self._parts.items()):
                 self._launch(tp, part)
             if self._workers:
